@@ -53,6 +53,7 @@ add_library(router_management STATIC
   src/cli.cpp
   src/cli_classic.cpp
   src/cli_md.cpp
+  src/cli_parser.cpp
   src/project_configuration.cpp
 )
 target_link_libraries(router_management PUBLIC
@@ -186,6 +187,7 @@ if(ROUTER_BUILD_TESTS)
     tests/hardware_test.cpp
     tests/module_test_main.cpp
     tests/network_test.cpp
+    tests/project_configuration_test.cpp
   )
   target_link_libraries(module_tests PRIVATE router_management)
   if(EMSCRIPTEN)

@@ -20,7 +20,7 @@ export function Inspector({ selected, hosts, snapshot, updateHost, hardware }: P
       <aside className="inspector">
         <div className="panel-kicker">NODE INSPECTOR</div>
         <h2>{host.name}</h2>
-        <p className="panel-subtitle">Endpoint configured by the lab UI</p>
+        <p className="panel-subtitle">External IPv4 host</p>
         <label>Name<input value={host.name} onChange={(event) => update("name", event.target.value)} /></label>
         <label>IPv4 prefix<input value={host.address} onChange={(event) => update("address", event.target.value)} /></label>
         <label>Default gateway<input value={host.gateway} onChange={(event) => update("gateway", event.target.value)} /></label>
@@ -50,7 +50,7 @@ export function Inspector({ selected, hosts, snapshot, updateHost, hardware }: P
     hardwareState.mdaLifecycle === "ready") || linkedPortsOperational;
   return (
     <aside className="inspector">
-      <div className="inspector-title"><div><h2>R1 <i className={`node-state ${routerOperational ? "up" : "down"}`} /></h2><p>{routerOperational ? "Operational" : "Degraded"}</p></div><button>×</button></div>
+      <div className="inspector-title"><div><h2>R1</h2><p>{routerOperational ? "Operational" : "Degraded"}</p></div><button>×</button></div>
       <nav className="inspector-tabs"><button className="active">Chassis</button><button>CPM</button><button>Cards</button><button>Ports</button><button>Operational</button></nav>
 
       <div className="panel-kicker inspector-section-title">CHASSIS</div>
@@ -58,7 +58,7 @@ export function Inspector({ selected, hosts, snapshot, updateHost, hardware }: P
         <span>Model</span><strong>{GENERATED_PROFILE.chassis}</strong>
         <span>Slot count</span><strong>{GENERATED_PROFILE.chassisSlots}</strong>
         <span>Release</span><strong>{GENERATED_PROFILE.release}</strong>
-        <span>System state</span><strong className="text-good">● Operational</strong>
+        <span>System state</span><strong className="text-good">Operational</strong>
         <span>CPM A</span><strong className="text-good">active / ready</strong>
       </div>
 
@@ -68,28 +68,20 @@ export function Inspector({ selected, hosts, snapshot, updateHost, hardware }: P
         <button onClick={() => hardware(card ? "hardware:remove-card" : "hardware:insert-card")}>{card ? "Remove card" : "Insert IOM4-e"}</button>
       </div>
 
-      {[2, 3, 4, 5].map((slot) => (
-        <div className="hardware-slot unsupported-slot" key={slot}>
-          <div className="slot-head"><span>SLOT {slot}</span><StatePill up={false}>unsupported</StatePill></div>
-          <strong>No line card</strong>
-          <small>Not supported by the current capability profile</small>
-        </div>
-      ))}
-
       <div className="hardware-slot">
         <div className="slot-head"><span>MDA 1/1</span><StatePill up={compatible}>{mda ? (compatible ? "operational" : "mismatch") : "absent"}</StatePill></div>
         <strong>{mda ? hardwareState.mda11 : "No adapter"}</strong>
         <div className="button-pair">
           {mda ? <button onClick={() => hardware("hardware:remove-mda")}>Remove</button> : <>
             <button disabled={!card} onClick={() => hardware("hardware:insert-mda:me10-10gb-sfp+")}>Insert 10G MDA</button>
-            <button disabled={!card} onClick={() => hardware("hardware:insert-mda:me1-100gb-cfp2")}>Test mismatch</button>
+            <button disabled={!card} onClick={() => hardware("hardware:insert-mda:me1-100gb-cfp2")}>Insert 100G MDA</button>
           </>}
         </div>
       </div>
 
       <div className="ports-summary">
         <div className="panel-kicker">PORTS</div>
-        {snapshot?.ports.map((port) => <div key={port.id}><span><i className={`node-state ${port.oper}`} />{port.id}</span><strong>{port.oper} · {GENERATED_PROFILE.portSpeedMbps / 1000}G</strong></div>)}
+        {snapshot?.ports.map((port) => <div key={port.id}><span>{port.id}</span><strong>{port.oper} · {GENERATED_PROFILE.portSpeedMbps / 1000}G</strong></div>)}
       </div>
     </aside>
   );

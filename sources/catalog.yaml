@@ -80,7 +80,7 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/src/cli.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts]
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli.cpp, core/src/cli_parser.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts]
     tests: [core/tests/cli_test.cpp, apps/web/src/ui/terminal-model.test.ts]
     status: partially-implemented
     notes: The first milestone implements a sourced subset, engine-switch messages, retained dirty candidate state, an out-of-date baseline indicator and explicit unsupported errors for other commands.
@@ -94,7 +94,7 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/src/cli.cpp, apps/web/src/ui/TerminalPanel.tsx]
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli_parser.cpp, apps/web/src/ui/TerminalPanel.tsx]
     tests: [core/tests/cli_test.cpp]
     status: partially-implemented
     notes: Tab completion exposes only executable commands in the active terminal engine.
@@ -248,8 +248,8 @@ records:
     rfc_refs: []
     yang_path: /configure/port
     last_verified_at: 2026-07-14
-    implementation: [core/src/cli.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, core/src/device_routing.cpp, core/src/routing.cpp, core/src/network.cpp]
-    tests: [core/tests/cli_test.cpp, core/tests/routing_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp]
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli_parser.cpp, core/src/cli.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, core/src/device_routing.cpp, core/src/routing.cpp, core/src/network.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/project_configuration_test.cpp, core/tests/routing_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp]
     status: partially-implemented
     notes: The milestone implements system name, port admin state, description, MTU, interface admin state and directly resolved IPv4 static routes.
   - id: whatwg.storage.opfs

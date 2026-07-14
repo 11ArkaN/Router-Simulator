@@ -1,0 +1,158 @@
+schema_version: 1
+release: 26.7.R1
+
+# The schema contains grammar, never a startup transcript. Execution handlers
+# are selected by stable IDs while tokens and parameter providers remain data.
+commands:
+  - id: switch_engine
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.md_cli.navigation
+    tokens: ["//"]
+  - id: help
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.md_cli.command_completion
+    tokens: [help]
+  - id: help_question
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.md_cli.command_completion
+    tokens: ["?"]
+  - id: show_system_information
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.md_cli.navigation
+    tokens: [show, system, information]
+  - id: show_system_alarms
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.md_cli.navigation
+    tokens: [show, system, alarms]
+  - id: show_card
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.physical_port.provisioning
+    tokens: [show, card]
+  - id: show_mda
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.physical_port.provisioning
+    tokens: [show, mda]
+  - id: show_port
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [show, port]
+  - id: show_router_interface
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [show, router, interface]
+  - id: show_router_route_table
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [show, router, route-table]
+  - id: show_router_fib
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [show, router, fib]
+  - id: show_router_arp
+    engines: [md, classic]
+    source_id: ietf.arp.rfc826
+    tokens: [show, router, arp]
+  - id: ping
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.ping
+    tokens: [ping, { parameter: ipv4 }]
+  - id: ping_count
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.ping
+    tokens: [ping, { parameter: ipv4 }, count, { parameter: count }]
+  - id: configure_card_type
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.physical_port.provisioning
+    tokens: [configure, card, { parameter: card_slot }, card-type, { parameter: card_type }]
+  - id: configure_mda_type
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.physical_port.provisioning
+    tokens: [configure, card, { parameter: card_slot }, mda, { parameter: mda_slot }, mda-type, { parameter: mda_type }]
+  - id: configure_system_name
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.md_cli.navigation
+    tokens: [configure, system, name, { parameter: system_name }]
+  - id: md_port_enable
+    engines: [md]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [configure, port, { parameter: port_id }, admin-state, enable]
+  - id: md_port_disable
+    engines: [md]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [configure, port, { parameter: port_id }, admin-state, disable]
+  - id: md_port_description
+    engines: [md]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [configure, port, { parameter: port_id }, description, { parameter: description }]
+  - id: md_port_mtu
+    engines: [md]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [configure, port, { parameter: port_id }, ethernet, mtu, { parameter: mtu }]
+  - id: md_interface_enable
+    engines: [md]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, admin-state, enable]
+  - id: md_interface_disable
+    engines: [md]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, admin-state, disable]
+  - id: md_static_route
+    engines: [md]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [configure, router, '"Base"', static-routes, route, { parameter: ipv4_prefix }, next-hop, { parameter: ipv4 }]
+  - id: md_delete_card
+    engines: [md]
+    source_id: nokia.sros.26_7.physical_port.provisioning
+    tokens: [delete, card, { parameter: card_slot }]
+  - id: md_delete_mda
+    engines: [md]
+    source_id: nokia.sros.26_7.physical_port.provisioning
+    tokens: [delete, card, { parameter: card_slot }, mda, { parameter: mda_slot }]
+  - id: md_compare
+    engines: [md]
+    source_id: nokia.sros.26_7.md_cli.navigation
+    tokens: [compare]
+  - id: md_commit
+    engines: [md]
+    source_id: nokia.sros.26_7.md_cli.navigation
+    tokens: [commit]
+  - id: md_discard
+    engines: [md]
+    source_id: nokia.sros.26_7.md_cli.navigation
+    tokens: [discard]
+  - id: classic_remove_card_type
+    engines: [classic]
+    source_id: nokia.sros.26_7.physical_port.provisioning
+    tokens: [configure, card, { parameter: card_slot }, no, card-type]
+  - id: classic_remove_mda_type
+    engines: [classic]
+    source_id: nokia.sros.26_7.physical_port.provisioning
+    tokens: [configure, card, { parameter: card_slot }, mda, { parameter: mda_slot }, no, mda-type]
+  - id: classic_port_shutdown
+    engines: [classic]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [configure, port, { parameter: port_id }, shutdown]
+  - id: classic_port_no_shutdown
+    engines: [classic]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [configure, port, { parameter: port_id }, no, shutdown]
+  - id: classic_port_description
+    engines: [classic]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [configure, port, { parameter: port_id }, description, { parameter: description }]
+  - id: classic_port_mtu
+    engines: [classic]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [configure, port, { parameter: port_id }, ethernet, mtu, { parameter: mtu }]
+  - id: classic_interface_shutdown
+    engines: [classic]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [configure, router, interface, { parameter: interface_name }, shutdown]
+  - id: classic_interface_no_shutdown
+    engines: [classic]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [configure, router, interface, { parameter: interface_name }, no, shutdown]
+  - id: classic_static_route
+    engines: [classic]
+    source_id: nokia.sros.26_7.port.configuration
+    tokens: [configure, router, static-route-entry, { parameter: ipv4_prefix }, next-hop, { parameter: ipv4 }]

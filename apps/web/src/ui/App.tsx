@@ -1,7 +1,7 @@
 // Router Lab application composition. React owns views and project drafts while
 // C++ remains the sole owner of live operational and protocol state.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { DEFAULT_PROJECT, GENERATED_PROFILE, parseProject, parseRuntimeSnapshot, type HostConfig, type LabProject, type RuntimeSnapshot } from "@router-simulator/contracts";
 import { RuntimeClient } from "../runtime/client";
 import { downloadBinary, exportCheckpoint, exportProject, importNetsim, loadProject, saveBinary, saveProject } from "../persistence";
@@ -17,6 +17,15 @@ const projectHardware = (hardware: RuntimeSnapshot["hardware"]): LabProject["har
   card1: hardware.card1,
   mda11: hardware.mda11
 });
+
+function visibleFailure(area: "startup" | "operation", cause: unknown): string {
+  // Detailed transport and core failures remain available to developers while
+  // the product surface exposes only a stable, actionable message.
+  console.error(`Lab ${area} failure`, cause);
+  return area === "startup"
+    ? "The lab could not start. Reload the page and try again."
+    : "The operation could not be completed. No changes were applied.";
+}
 
 export function App() {
   const [project, setProject] = useState<LabProject>(DEFAULT_PROJECT);
@@ -51,16 +60,16 @@ export function App() {
         }
       })
       .catch((cause) => {
-        if (!cancelled) setOperationError(cause instanceof Error ? cause.message : String(cause));
+        if (!cancelled) setOperationError(visibleFailure("operation", cause));
       });
     try {
       client = new RuntimeClient();
       setRuntime(client);
       void client.snapshot()
         .then((value) => !cancelled && setSnapshot(value))
-        .catch((cause) => !cancelled && setRuntimeError(String(cause)));
+        .catch((cause) => !cancelled && setRuntimeError(visibleFailure("startup", cause)));
     } catch (cause) {
-      setRuntimeError(cause instanceof Error ? cause.message : String(cause));
+      setRuntimeError(visibleFailure("startup", cause));
     }
     return () => {
       cancelled = true;
@@ -84,7 +93,7 @@ export function App() {
     const timer = window.setTimeout(() => {
       void saveProject({ ...project, updatedAt: new Date().toISOString() })
         .then(() => setOperationError(undefined))
-        .catch((cause) => setOperationError(cause instanceof Error ? cause.message : String(cause)));
+        .catch((cause) => setOperationError(visibleFailure("operation", cause)));
     }, 400);
     return () => window.clearTimeout(timer);
   }, [project, projectLoaded]);
@@ -129,7 +138,7 @@ export function App() {
         const next = await runtime.configureHosts(project.hosts);
         if (!cancelled && next) setSnapshot(next);
       } catch (cause) {
-        if (!cancelled) setOperationError(cause instanceof Error ? cause.message : String(cause));
+        if (!cancelled) setOperationError(visibleFailure("operation", cause));
       }
     })();
     return () => { cancelled = true; };
@@ -160,7 +169,7 @@ export function App() {
     const timer = window.setTimeout(() => {
       void runtime.snapshot()
         .then((next) => { if (!cancelled) setSnapshot(next); })
-        .catch((cause) => { if (!cancelled) setOperationError(cause instanceof Error ? cause.message : String(cause)); });
+        .catch((cause) => { if (!cancelled) setOperationError(visibleFailure("operation", cause)); });
     }, 250);
     return () => {
       cancelled = true;
@@ -210,7 +219,7 @@ export function App() {
       // state immediately, rather than waiting for a sampled UI projection.
       setProject((current) => ({ ...current, hardware: projectHardware(next.hardware) }));
     } catch (cause) {
-      setOperationError(cause instanceof Error ? cause.message : String(cause));
+      setOperationError(visibleFailure("operation", cause));
     }
   }, [runtime, projectLoaded]);
 
@@ -241,7 +250,7 @@ export function App() {
       setProjectLoaded(true);
       setOperationError(undefined);
     } catch (cause) {
-      setOperationError(cause instanceof Error ? cause.message : String(cause));
+      setOperationError(visibleFailure("operation", cause));
     }
   }, [runtime]);
 
@@ -261,7 +270,7 @@ export function App() {
       downloadBinary("router-lab.pcapng", bytes, "application/vnd.tcpdump.pcap");
       setOperationError(undefined);
     } catch (cause) {
-      setOperationError(cause instanceof Error ? cause.message : String(cause));
+      setOperationError(visibleFailure("operation", cause));
     }
   }, [runtime]);
 
@@ -274,7 +283,7 @@ export function App() {
       exportCheckpoint(project, checkpoint, capture);
       setOperationError(undefined);
     } catch (cause) {
-      setOperationError(cause instanceof Error ? cause.message : String(cause));
+      setOperationError(visibleFailure("operation", cause));
     }
   }, [runtime, project]);
 
@@ -284,7 +293,7 @@ export function App() {
       setProjectLoaded(true);
       setOperationError(undefined);
     } catch (cause) {
-      setOperationError(cause instanceof Error ? cause.message : String(cause));
+      setOperationError(visibleFailure("operation", cause));
     }
   }, [project]);
 
@@ -293,15 +302,9 @@ export function App() {
       exportProject(project);
       setOperationError(undefined);
     } catch (cause) {
-      setOperationError(cause instanceof Error ? cause.message : String(cause));
+      setOperationError(visibleFailure("operation", cause));
     }
   }, [project]);
-
-  const runtimeLabel = useMemo(() => {
-    if (runtimeError) return "runtime blocked";
-    if (!snapshot) return "starting pthreads";
-    return `${snapshot.ports.filter((port) => port.oper === "up").length}/${snapshot.ports.length} ports up`;
-  }, [runtimeError, snapshot]);
 
   const visibleError = runtimeError ?? operationError;
 
@@ -311,9 +314,6 @@ export function App() {
         <div className="brand"><span className="brand-mark"><i /><i /><i /></span><strong>Router Lab</strong><span className="chevron">⌄</span></div>
         <nav className="top-nav"><button className={view === "topology" ? "active" : ""} onClick={() => setView("topology")}>Topology</button><button>Devices</button><button className={view === "captures" ? "active" : ""} onClick={() => setView("captures")}>Captures</button></nav>
         <div className="top-actions">
-          <span className={`runtime-chip ${runtimeError ? "bad" : ""}`}><i />{runtimeLabel}</span>
-          <span className="runtime-stat"><small>Workers</small><strong>2</strong></span>
-          <span className="runtime-stat"><small>Shared memory</small><strong>256 MiB</strong></span>
           <button className="icon-action" onClick={() => void persistNow()}>▣ <span>Save</span></button>
           <button className="icon-action" onClick={exportNow}>⇧ <span>Export</span></button>
           <button className="more-action" title="Import project" onClick={() => importRef.current?.click()}>⋮</button>
@@ -333,7 +333,7 @@ export function App() {
           <div className="side-divider" />
           <div className="panel-kicker">DEVICE PALETTE</div>
           <section><h3>ENDPOINTS</h3><div className="library-item"><span className="mini-icon">H</span><div><strong>IP Host</strong><small>IPv4 endpoint</small></div></div></section>
-          <section><h3>ROUTERS</h3><div className="library-item active"><span className="mini-icon router">R</span><div><strong>{GENERATED_PROFILE.chassis}</strong><small>{GENERATED_PROFILE.release} profile</small></div></div></section>
+          <section><h3>ROUTERS</h3><div className="library-item active"><span className="mini-icon router">R</span><div><strong>{GENERATED_PROFILE.chassis}</strong><small>SR OS {GENERATED_PROFILE.release}</small></div></div></section>
           <section><h3>MEDIA</h3><div className="library-item"><span className="mini-icon link">↔</span><div><strong>Physical link</strong><small>Full duplex</small></div></div></section>
           <div className="side-divider" />
           <div className="panel-kicker">PROJECT</div>
@@ -342,10 +342,10 @@ export function App() {
         </aside>
 
         <section className="center-stage">
-          {visibleError && <div className="runtime-error"><strong>{runtimeError ? "Runtime could not start" : "Operation could not complete"}</strong><span>{visibleError}</span></div>}
+          {visibleError && <div className="runtime-error"><strong>{runtimeError ? "Lab unavailable" : "Operation failed"}</strong><span>{visibleError}</span></div>}
           {view === "topology" ? <Topology hosts={project.hosts} snapshot={snapshot} selected={selected} onSelect={setSelected} /> :
             <section className="capture-workspace">
-              <div className="capture-workspace-head"><div><span>PACKET OBSERVATION</span><h2>Capture session</h2></div><i className={captureActive ? "live" : ""} /></div>
+              <div className="capture-workspace-head"><div><span>PACKET OBSERVATION</span><h2>Capture session</h2></div></div>
               <div className="capture-stats">
                 <div><small>Records</small><strong>{snapshot?.captureCount ?? 0}</strong></div>
                 <div><small>Capture drops</small><strong>{snapshot?.captureDropped ?? 0}</strong></div>
@@ -354,19 +354,12 @@ export function App() {
               <div className="capture-actions">
                 <button onClick={() => void toggleCapture()}>{captureActive ? "Stop capture" : "Start capture"}</button>
                 <button onClick={() => void exportCaptureNow()}>Export PCAPNG</button>
-                <button onClick={() => void exportCheckpointNow()}>Export checkpoint</button>
+                <button onClick={() => void exportCheckpointNow()}>Export snapshot</button>
               </div>
               <div className="capture-points">
                 {["4 link directions", "2 router ingress", "2 router egress", "1 CPM punt"].map((point) => <span key={point}>{point}</span>)}
               </div>
             </section>}
-          <div className="telemetry-strip">
-            <div><span>CAPTURED FRAMES</span><strong>{snapshot?.captureCount ?? 0}</strong></div>
-            <div><span>DROPPED</span><strong>{snapshot?.droppedPackets ?? 0}</strong></div>
-            <div><span>ARP ENTRIES</span><strong>{snapshot?.arp.length ?? 0}</strong></div>
-            <div><span>FIB ROUTES</span><strong>{snapshot?.routes.length ?? 0}</strong></div>
-            <div className="capture-live"><i /> LIVE CAPTURE</div>
-          </div>
         </section>
 
         <Inspector selected={selected} hosts={project.hosts} snapshot={snapshot} updateHost={updateHost} hardware={hardware} />

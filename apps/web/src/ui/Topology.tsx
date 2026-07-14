@@ -2,7 +2,7 @@ import { Background, Controls, Handle, Position, ReactFlow, type Edge, type Node
 import { GENERATED_PROFILE, type HostConfig, type RuntimeSnapshot } from "@router-simulator/contracts";
 import { useMemo } from "react";
 
-type DeviceData = { kind: "host" | "router"; title: string; subtitle: string; status: "up" | "down" };
+type DeviceData = { kind: "host" | "router"; title: string; subtitle: string };
 
 function DeviceNode({ data, selected }: NodeProps<Node<DeviceData>>) {
   const router = data.kind === "router";
@@ -14,7 +14,6 @@ function DeviceNode({ data, selected }: NodeProps<Node<DeviceData>>) {
         <strong>{data.title}</strong>
         <span>{data.subtitle}</span>
       </div>
-      <i className={`node-state ${data.status}`} />
       <Handle type="source" position={Position.Right} id="right" />
     </div>
   );
@@ -39,10 +38,10 @@ export function Topology({ hosts, snapshot, selected, onSelect }: Props) {
   // Recreating these arrays for every sample leaves nodes perpetually hidden
   // while the library repeatedly restarts its measurement pass.
   const nodes = useMemo<Node<DeviceData>[]>(() => [
-    { id: "host-a", type: "device", position: { x: 80, y: 190 }, selected: selected === "host-a", data: { kind: "host", title: hosts[0].name, subtitle: hosts[0].address, status: leftUp ? "up" : "down" } },
-    { id: "r1", type: "device", position: { x: 390, y: 175 }, selected: selected === "r1", data: { kind: "router", title: "R1", subtitle: GENERATED_PROFILE.chassis, status: leftUp || rightUp ? "up" : "down" } },
-    { id: "host-b", type: "device", position: { x: 710, y: 190 }, selected: selected === "host-b", data: { kind: "host", title: hosts[1].name, subtitle: hosts[1].address, status: rightUp ? "up" : "down" } }
-  ], [hosts, leftUp, rightUp, selected]);
+    { id: "host-a", type: "device", position: { x: 80, y: 190 }, selected: selected === "host-a", data: { kind: "host", title: hosts[0].name, subtitle: hosts[0].address } },
+    { id: "r1", type: "device", position: { x: 390, y: 175 }, selected: selected === "r1", data: { kind: "router", title: "R1", subtitle: GENERATED_PROFILE.chassis } },
+    { id: "host-b", type: "device", position: { x: 710, y: 190 }, selected: selected === "host-b", data: { kind: "host", title: hosts[1].name, subtitle: hosts[1].address } }
+  ], [hosts, selected]);
   const edges = useMemo<Edge[]>(() => [
     { id: "a-r1", source: "host-a", target: "r1", sourceHandle: "right", targetHandle: "left", className: leftUp ? "link-up" : "link-down", label: `1/1/1 · ${GENERATED_PROFILE.portSpeedMbps / 1000}G` },
     { id: "r1-b", source: "r1", target: "host-b", sourceHandle: "right", targetHandle: "left", className: rightUp ? "link-up" : "link-down", label: `1/1/2 · ${GENERATED_PROFILE.portSpeedMbps / 1000}G` }

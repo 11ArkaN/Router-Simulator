@@ -15,6 +15,10 @@ inline constexpr char id[] = "7750-sr-7-iom4-e";
 inline constexpr char release[] = "26.7.R1";
 inline constexpr char chassis[] = "7750 SR-7";
 inline constexpr std::size_t chassis_slots = 5;
+inline constexpr std::size_t line_card_slot = 1;
+inline constexpr std::size_t mda_slot = 1;
+inline constexpr char line_card_type[] = "iom4-e";
+inline constexpr char modeled_mda_type[] = "me10-10gb-sfp+";
 inline constexpr std::size_t port_count = 10;
 inline constexpr std::size_t endpoint_count = 2;
 inline constexpr std::uint32_t port_speed_mbps = 10000U;
@@ -58,6 +62,8 @@ inline constexpr std::array<std::uint32_t, endpoint_count> router_networks{
     0xc0000200U, 0xc6336400U};
 inline constexpr std::array<const char*, port_count> port_ids{
     "1/1/1", "1/1/2", "1/1/3", "1/1/4", "1/1/5", "1/1/6", "1/1/7", "1/1/8", "1/1/9", "1/1/10"};
+inline constexpr std::array<const char*, 2> supported_mda_types{
+    "me10-10gb-sfp+", "me1-100gb-cfp2"};
 inline constexpr std::array<const char*, endpoint_count> interface_names{
     "to-host-a", "to-host-b"};
 inline constexpr std::array<const char*, endpoint_count> interface_addresses{

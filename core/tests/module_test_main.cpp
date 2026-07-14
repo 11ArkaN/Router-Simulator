@@ -8,12 +8,14 @@
 void checkpoint_tests();
 void hardware_tests();
 void network_tests();
+void project_configuration_tests();
 
 int main() {
   try {
     checkpoint_tests();
     hardware_tests();
     network_tests();
+    project_configuration_tests();
     std::cout << "module tests passed\n";
     return 0;
   } catch (const std::exception &error) {

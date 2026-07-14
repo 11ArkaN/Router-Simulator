@@ -7,9 +7,12 @@ import { parse } from "yaml";
 
 const root = resolve(import.meta.dirname, "..");
 const sourcePath = resolve(root, "profiles/7750-sr-7-iom4-e.yaml");
+const cliSourcePath = resolve(root, "schemas/cli/26.7.R1.yaml");
 const headerPath = resolve(root, "core/include/router/generated_profile.hpp");
+const cliHeaderPath = resolve(root, "core/include/router/generated_cli_schema.hpp");
 const typescriptPath = resolve(root, "packages/contracts/src/generated-profile.ts");
 const profile = parse(readFileSync(sourcePath, "utf8"));
+const cliSchema = parse(readFileSync(cliSourcePath, "utf8"));
 
 const ip = (value) => value.split("/")[0].split(".").map(Number);
 const prefix = (value) => Number(value.split("/")[1]);
@@ -52,6 +55,10 @@ inline constexpr char id[] = "${profile.id}";
 inline constexpr char release[] = "${profile.release}";
 inline constexpr char chassis[] = "${profile.chassis}";
 inline constexpr std::size_t chassis_slots = 5;
+inline constexpr std::size_t line_card_slot = ${profile.line_card.slot};
+inline constexpr std::size_t mda_slot = ${profile.mda.slot};
+inline constexpr char line_card_type[] = "${profile.line_card.type}";
+inline constexpr char modeled_mda_type[] = "${profile.mda.modeled_type}";
 inline constexpr std::size_t port_count = ${profile.ports.count};
 inline constexpr std::size_t endpoint_count = ${endpointCount};
 inline constexpr std::uint32_t port_speed_mbps = ${profile.ports.speed_mbps}U;
@@ -90,6 +97,8 @@ inline constexpr std::array<std::uint32_t, endpoint_count> router_networks{
     ${profile.router_interfaces.map((item) => networkHex(item.network)).join(", ")}};
 inline constexpr std::array<const char*, port_count> port_ids{
     ${quoted(portIds)}};
+inline constexpr std::array<const char*, ${profile.mda.supported.length}> supported_mda_types{
+    ${quoted(profile.mda.supported)}};
 inline constexpr std::array<const char*, endpoint_count> interface_names{
     ${quoted(profile.router_interfaces.map((item) => item.name))}};
 inline constexpr std::array<const char*, endpoint_count> interface_addresses{
@@ -100,6 +109,91 @@ inline constexpr std::array<const char*, ${profile.capture_interfaces.length}> c
     ${quoted(profile.capture_interfaces)}};
 
 }  // namespace router::profile
+`;
+
+const parameterKinds = [
+  "card_slot", "mda_slot", "card_type", "mda_type", "port_id",
+  "interface_name", "ipv4", "ipv4_prefix", "count", "mtu",
+  "system_name", "description"
+];
+const commandIds = new Set();
+const sourceIds = new Set();
+let maximumTokens = 0;
+for (const command of cliSchema.commands ?? []) {
+  if (!/^[a-z][a-z0-9_]*$/.test(command.id ?? "")) {
+    throw new Error(`Invalid CLI command id: ${command.id}`);
+  }
+  if (commandIds.has(command.id)) throw new Error(`Duplicate CLI command id: ${command.id}`);
+  commandIds.add(command.id);
+  sourceIds.add(command.source_id);
+  if (!command.engines?.length || command.engines.some((engine) => !["md", "classic"].includes(engine))) {
+    throw new Error(`${command.id}: invalid CLI engine list`);
+  }
+  if (!command.tokens?.length) throw new Error(`${command.id}: empty CLI token list`);
+  maximumTokens = Math.max(maximumTokens, command.tokens.length);
+  for (const token of command.tokens) {
+    if (typeof token === "string") continue;
+    if (!parameterKinds.includes(token?.parameter)) {
+      throw new Error(`${command.id}: invalid CLI parameter ${token?.parameter}`);
+    }
+  }
+}
+if (cliSchema.release !== profile.release) {
+  throw new Error(`CLI schema ${cliSchema.release} does not match profile ${profile.release}`);
+}
+
+const cppToken = (token) => typeof token === "string"
+  ? `{TokenKind::literal, "${token.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"}`
+  : `{TokenKind::${token.parameter}, "<${token.parameter.replaceAll("_", "-")}>"}`;
+const cliRows = cliSchema.commands.map((command) => {
+  const mask = (command.engines.includes("md") ? 1 : 0) |
+    (command.engines.includes("classic") ? 2 : 0);
+  const tokens = command.tokens.map(cppToken);
+  while (tokens.length < maximumTokens) tokens.push("{}");
+  return `    {CommandId::${command.id}, ${mask}, ${command.tokens.length}, {{${tokens.join(", ")}}}, "${command.source_id}"}`;
+}).join(",\n");
+
+const cliHeader = `#pragma once
+
+// Generated from the release-pinned CLI grammar. The runtime matches token
+// descriptors and never carries a second handwritten list of command lines.
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string_view>
+
+namespace router::cli_schema {
+
+enum class CommandId : std::uint16_t {
+${[...commandIds].map((id) => `  ${id}`).join(",\n")}
+};
+
+enum class TokenKind : std::uint8_t {
+  literal,
+${parameterKinds.map((kind) => `  ${kind}`).join(",\n")}
+};
+
+struct TokenSpec {
+  TokenKind kind{TokenKind::literal};
+  std::string_view display{};
+};
+
+inline constexpr std::size_t maximum_tokens = ${maximumTokens};
+
+struct CommandSpec {
+  CommandId id{};
+  std::uint8_t engine_mask{};
+  std::uint8_t token_count{};
+  std::array<TokenSpec, maximum_tokens> tokens{};
+  std::string_view source_id{};
+};
+
+inline constexpr std::array<CommandSpec, ${cliSchema.commands.length}> commands{{
+${cliRows}
+}};
+
+}  // namespace router::cli_schema
 `;
 
 const typescript = `// Typed projection of the canonical 7750 SR-7 profile. Full-output
@@ -124,7 +218,7 @@ ${profile.hosts.map((host) => `    { id: "${host.id}", name: "${host.name}", mac
 } as const;
 `;
 
-const outputs = [[headerPath, header], [typescriptPath, typescript]];
+const outputs = [[headerPath, header], [cliHeaderPath, cliHeader], [typescriptPath, typescript]];
 if (process.argv.includes("--check")) {
   const drift = outputs.filter(([path, expected]) => readFileSync(path, "utf8") !== expected);
   if (drift.length) {

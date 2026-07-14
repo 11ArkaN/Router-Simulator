@@ -281,6 +281,8 @@ std::string Runtime::dispatch(const std::string &text) {
     return configure_hosts(text);
   if (std::string_view(text).starts_with("project:links|"))
     return configure_links(text);
+  if (std::string_view(text).starts_with("project:running|"))
+    return configure_running(text);
   if (text == "capture:prepare")
     return prepare_capture();
   if (text == "checkpoint:prepare") {

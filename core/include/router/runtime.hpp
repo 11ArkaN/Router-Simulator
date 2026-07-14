@@ -58,6 +58,7 @@ private:
   std::string run_ping(ForwardJobKind kind, std::uint32_t count = 1);
   std::string configure_hosts(const std::string &text);
   std::string configure_links(const std::string &text);
+  std::string configure_running(const std::string &text);
   std::string prepare_capture();
   std::span<const std::uint8_t> encode_checkpoint_on_control();
   bool decode_checkpoint_on_control(std::span<const std::uint8_t> bytes);

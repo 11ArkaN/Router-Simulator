@@ -6,6 +6,7 @@ const root = resolve(import.meta.dirname, "..");
 const catalog = parse(readFileSync(resolve(root, "sources/catalog.yaml"), "utf8"));
 const capabilities = parse(readFileSync(resolve(root, "sources/capabilities.yaml"), "utf8"));
 const profile = parse(readFileSync(resolve(root, "profiles/7750-sr-7-iom4-e.yaml"), "utf8"));
+const cliSchema = parse(readFileSync(resolve(root, "schemas/cli/26.7.R1.yaml"), "utf8"));
 const required = [
   "id", "kind", "release", "platforms", "source_type", "source_url", "section",
   "rfc_refs", "yang_path", "last_verified_at", "implementation", "tests", "status", "notes"
@@ -66,6 +67,13 @@ for (const [feature, capability] of Object.entries(capabilities.features ?? {}))
 // label that CI never resolves.
 for (const id of [...(profile.source_ids ?? []), profile.link_defaults?.source_id].filter(Boolean)) {
   if (!ids.has(id)) errors.push(`profile ${profile.id}: unknown source id ${id}`);
+}
+
+// Every executable grammar row carries its normative source. This prevents a
+// generated command from becoming visible merely because a handler exists.
+for (const command of cliSchema.commands ?? []) {
+  if (!ids.has(command.source_id))
+    errors.push(`CLI command ${command.id}: unknown source id ${command.source_id}`);
 }
 
 // Source IDs in code comments are machine checked. A misspelling would make a

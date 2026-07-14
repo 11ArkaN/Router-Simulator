@@ -5,6 +5,13 @@ import { parseRuntimeSnapshot, type HostConfig, type LinkConfig, type RunningCon
 
 type Pending = { resolve(value: string): void; reject(error: Error): void };
 type BinaryPending = { resolve(value: Uint8Array): void; reject(error: Error): void };
+const utf8 = new TextEncoder();
+
+function netstrings(values: string[]): string {
+  // Length framing keeps user text separate from the control protocol. Names
+  // and descriptions may contain separators without becoming commands.
+  return values.map((value) => `${utf8.encode(value).byteLength}:${value}`).join("");
+}
 
 export class RuntimeClient {
   // The browser Worker owns the Emscripten module. React sees only request IDs
@@ -153,26 +160,19 @@ export class RuntimeClient {
   }
 
   async configureRunning(config: RunningConfig): Promise<void> {
-    // Project import starts a fresh MD session. Applying every leaf to its
-    // candidate and committing once preserves transactional visibility. The
-    // commands are from the same executable schema used by interactive CLI.
-    const commands = [
-      `configure system name ${config.systemName}`,
-      ...config.ports.flatMap((port) => [
-        `configure port ${port.id} admin-state ${port.admin === "up" ? "enable" : "disable"}`,
-        `configure port ${port.id} ethernet mtu ${port.mtu}`,
-        `configure port ${port.id} description "${port.description}"`
-      ]),
-      ...config.interfaces.map((item) =>
-        `configure router "Base" interface "${item.name}" admin-state ${item.admin === "up" ? "enable" : "disable"}`),
-      ...config.staticRoutes.map((route) =>
-        `configure router "Base" static-routes route ${route.prefix} next-hop ${route.nextHop}`),
-      "commit"
+    // Project restoration is a structured atomic operation. The browser does
+    // not know CLI grammar and cannot accidentally expose a partial candidate.
+    const fields = [
+      config.systemName,
+      String(config.ports.length),
+      ...config.ports.flatMap((port) => [port.id, port.admin, String(port.mtu), port.description]),
+      String(config.interfaces.length),
+      ...config.interfaces.flatMap((item) => [item.name, item.admin]),
+      String(config.staticRoutes.length),
+      ...config.staticRoutes.flatMap((route) => [route.prefix, route.nextHop])
     ];
-    for (const command of commands) {
-      const output = await this.command(`terminal:${command}`);
-      if (output.includes("MINOR:") || output.includes("ERROR:")) throw new Error(output);
-    }
+    const output = await this.command(`project:running|${netstrings(fields)}`);
+    if (output.startsWith("ERROR:")) throw new Error(output);
   }
 
   close(): void {

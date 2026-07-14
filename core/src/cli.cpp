@@ -26,24 +26,9 @@ std::string trim(std::string_view value) {
   return std::string{value.substr(first, last - first + 1)};
 }
 
-bool starts_with(const std::string &value, std::string_view prefix) {
-  return std::string_view(value).starts_with(prefix);
-}
-
 std::optional<std::size_t> port_index(std::string_view text) {
   for (std::size_t index = 0; index < profile::port_ids.size(); ++index) {
     if (text == profile::port_ids[index])
-      return index;
-  }
-  return std::nullopt;
-}
-
-std::optional<std::size_t>
-interface_index(const DeviceConfiguration &configuration,
-                std::string_view input) {
-  for (std::size_t index = 0; index < configuration.interface_count; ++index) {
-    const auto &interface = configuration.interfaces[index];
-    if (interface.valid && input.find(interface.name) != std::string_view::npos)
       return index;
   }
   return std::nullopt;
@@ -153,21 +138,22 @@ std::string arp_table(const DeviceState &state) {
 }
 
 std::optional<std::string>
-operational_command(const DeviceState &state, const std::string &input,
-                    const std::function<std::string(std::uint32_t)> &ping) {
+operational_command(const DeviceState &state, const ParsedCommand &command,
+                    const std::function<std::string(std::uint32_t)> &send_ping) {
+  using enum cli_schema::CommandId;
   const auto &running = state.configuration.running;
-  if (input == "show system information") {
+  if (command.spec->id == show_system_information) {
     return std::string{"System Name            : "} +
            running.system_name.data() +
            "\nSystem Type            : " + profile::chassis +
            "\nSystem Version         : " + profile::release +
            "\nControl Processor      : CPM A active/ready";
   }
-  if (input == "show card" || input == "show mda")
+  if (command.spec->id == show_card || command.spec->id == show_mda)
     return hardware_table(state);
-  if (input == "show port")
+  if (command.spec->id == show_port)
     return port_table(state);
-  if (input == "show router interface") {
+  if (command.spec->id == show_router_interface) {
     std::ostringstream out;
     out << "Interface    Port    Admin  Oper  IP Address\n";
     for (std::size_t index = 0; index < running.interface_count; ++index) {
@@ -183,7 +169,8 @@ operational_command(const DeviceState &state, const std::string &input,
     }
     return out.str();
   }
-  if (input == "show router route-table" || input == "show router fib") {
+  if (command.spec->id == show_router_route_table ||
+      command.spec->id == show_router_fib) {
     std::ostringstream out;
     out << "Prefix              Type   Next Hop       Interface";
     bool any = false;
@@ -214,9 +201,9 @@ operational_command(const DeviceState &state, const std::string &input,
                : "No active routes: forwarding hardware or interface is not "
                  "operational";
   }
-  if (input == "show router arp")
+  if (command.spec->id == show_router_arp)
     return arp_table(state);
-  if (input == "show system alarms") {
+  if (command.spec->id == show_system_alarms) {
     if (!state.operational.alarm_count)
       return "No active alarms";
     std::ostringstream out;
@@ -229,42 +216,39 @@ operational_command(const DeviceState &state, const std::string &input,
     }
     return out.str();
   }
-  if (starts_with(input, "ping ")) {
-    std::istringstream tokens(input);
-    std::string command;
-    std::string destination;
-    std::string option;
-    std::string trailing;
+  if (command.spec->id == cli_schema::CommandId::ping ||
+      command.spec->id == ping_count) {
+    const auto destination =
+        *argument(command, cli_schema::TokenKind::ipv4);
     std::uint32_t count = 5;
-    tokens >> command >> destination;
-    if (destination != endpoint_ipv4(state.project.hosts.back())) {
-      return "MINOR: destination is outside the implemented milestone topology";
+    if (destination != endpoint_ipv4(state.project.hosts.back()))
+      return "MINOR: CLI Destination unreachable";
+    if (command.spec->id == ping_count) {
+      const auto text = *argument(command, cli_schema::TokenKind::count);
+      const auto parsed =
+          std::from_chars(text.data(), text.data() + text.size(), count);
+      if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() ||
+          count < 1 || count > 100)
+        return "MINOR: MGMT_CORE #2301: Invalid element value";
     }
-    if (tokens >> option) {
-      if (option != "count" || !(tokens >> count) || count < 1 || count > 100 ||
-          (tokens >> trailing))
-        return "MINOR: invalid ping parameters";
-    }
-    return ping(count);
+    return send_ping(count);
   }
   return std::nullopt;
 }
 
 } // namespace
 
-std::optional<ParsedStaticRoute> parse_static_route(std::string_view text) {
-  const auto slash = text.find('/');
-  const auto next = text.find(" next-hop ");
-  if (slash == std::string_view::npos || next == std::string_view::npos ||
-      slash > next) {
+std::optional<ParsedStaticRoute> parse_static_route(std::string_view prefix_text,
+                                                    std::string_view next_text) {
+  const auto slash = prefix_text.find('/');
+  if (slash == std::string_view::npos)
     return std::nullopt;
-  }
-  const auto network = ipv4_value(text.substr(0, slash));
+  const auto network = ipv4_value(prefix_text.substr(0, slash));
   unsigned prefix{};
-  const auto prefix_text = text.substr(slash + 1, next - slash - 1);
+  prefix_text.remove_prefix(slash + 1);
   const auto parsed = std::from_chars(
       prefix_text.data(), prefix_text.data() + prefix_text.size(), prefix);
-  const auto next_hop = ipv4_value(text.substr(next + 10));
+  const auto next_hop = ipv4_value(next_text);
   if (!network || !next_hop || parsed.ec != std::errc{} ||
       parsed.ptr != prefix_text.data() + prefix_text.size() || prefix > 32) {
     return std::nullopt;
@@ -299,18 +283,10 @@ bool install_static(DeviceConfiguration &configuration,
   return true;
 }
 
-std::optional<std::pair<std::size_t, std::string_view>>
-port_tail(const std::string &input, std::string_view prefix) {
-  if (!starts_with(input, prefix))
-    return std::nullopt;
-  const auto remaining = std::string_view(input).substr(prefix.size());
-  const auto separator = remaining.find(' ');
-  if (separator == std::string_view::npos)
-    return std::nullopt;
-  const auto index = port_index(remaining.substr(0, separator));
-  if (!index)
-    return std::nullopt;
-  return std::pair{*index, remaining.substr(separator + 1)};
+std::string_view unquote(std::string_view value) noexcept {
+  if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
+    return value.substr(1, value.size() - 2);
+  return value;
 }
 
 void synchronize_candidate(ConfigurationState &configuration,
@@ -343,71 +319,46 @@ std::string execute_cli(DeviceState &state, CliSession &session,
                         const std::function<std::string(std::uint32_t)> &ping) {
   const auto input = cli_detail::trim(raw);
   std::string output;
-  if (input == "//") {
+  if (input.empty())
+    return cli_detail::prompt(session);
+
+  const auto command = cli_detail::parse_command(state, session.engine, input);
+  if (!command) {
+    if (session.engine == CliEngine::classic) {
+      output = "Error: Bad command.";
+    } else if (const auto help =
+                   cli_detail::incomplete_command_help(state, session.engine,
+                                                       input);
+               !help.empty()) {
+      // Enter completion is enabled by default in MD-CLI. A known but
+      // incomplete path displays its next context instead of claiming that the
+      // already matched keyword is unknown.
+      output = help;
+    } else {
+      const auto separator = input.find(' ');
+      output = "MINOR: MGMT_CORE #2201: Unknown element - '" +
+               input.substr(0, separator) + "'";
+    }
+  } else if (command->spec->id == cli_schema::CommandId::switch_engine) {
     session.engine =
         session.engine == CliEngine::md ? CliEngine::classic : CliEngine::md;
     output = session.engine == CliEngine::md
                  ? "INFO: CLI #2052: Switching to the MD-CLI engine"
                  : "INFO: CLI #2051: Switching to the classic CLI engine";
-  } else if (input.empty()) {
-    output.clear();
   } else if (const auto common =
-                 cli_detail::operational_command(state, input, ping)) {
+                 cli_detail::operational_command(state, *command, ping)) {
     output = *common;
   } else if (session.engine == CliEngine::md) {
-    output = cli_detail::execute_md(state.configuration, session, input);
+    output = cli_detail::execute_md(state.configuration, session, *command);
   } else {
-    output = cli_detail::execute_classic(state.configuration, session, input);
+    output = cli_detail::execute_classic(state.configuration, session, *command);
   }
   return output + cli_detail::prompt(session);
 }
 
 std::string complete_cli(const DeviceState &state, const CliSession &session,
                          const std::string &raw) {
-  const std::vector<std::string> common{
-      "show system information",
-      "show system alarms",
-      "show card",
-      "show mda",
-      "show port",
-      "show router interface",
-      "show router route-table",
-      "show router fib",
-      "show router arp",
-      "ping " + cli_detail::endpoint_ipv4(state.project.hosts.back())};
-  static const std::vector<std::string> md{
-      "compare",
-      "commit",
-      "discard",
-      "configure card 1 card-type iom4-e",
-      "configure card 1 mda 1 mda-type me10-10gb-sfp+",
-      "delete card 1",
-      "delete card 1 mda 1"};
-  static const std::vector<std::string> classic{
-      "configure card 1 card-type iom4-e",
-      "configure card 1 mda 1 mda-type me10-10gb-sfp+",
-      "configure card 1 no card-type", "configure card 1 mda 1 no mda-type"};
-  const auto input = cli_detail::trim(raw);
-  std::vector<std::string> matches;
-  const auto collect = [&](const auto &commands) {
-    for (const auto &command : commands) {
-      if (command.rfind(input, 0) == 0)
-        matches.push_back(command);
-    }
-  };
-  collect(common);
-  collect(session.engine == CliEngine::md ? md : classic);
-  if (matches.empty())
-    return {};
-  if (matches.size() == 1)
-    return matches.front();
-  std::ostringstream out;
-  for (std::size_t index = 0; index < matches.size(); ++index) {
-    if (index)
-      out << '\n';
-    out << matches[index];
-  }
-  return out.str();
+  return cli_detail::complete_command(state, session.engine, raw);
 }
 
 } // namespace router

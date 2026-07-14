@@ -58,12 +58,6 @@ button { color: inherit; }
 .top-nav button.active::after { content: ""; position: absolute; height: 2px; left: 6px; right: 6px; bottom: 0; background: var(--blue); }
 
 .top-actions { display: flex; align-items: stretch; min-width: 0; }
-.runtime-chip { display: flex; align-items: center; gap: 8px; padding: 0 15px; color: var(--green); font-size: 12px; border-right: 1px solid #253039; white-space: nowrap; }
-.runtime-chip i { width: 8px; height: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
-.runtime-chip.bad { color: #e7746c; }
-.runtime-stat { display: flex; flex-direction: column; justify-content: center; min-width: 84px; padding: 0 14px; border-right: 1px solid #253039; line-height: 1.25; }
-.runtime-stat small { color: #86939a; font-size: 10px; }
-.runtime-stat strong { color: #c8d1d4; font-size: 11px; font-weight: 500; }
 .icon-action, .more-action { border: 0; background: transparent; padding: 0 17px; cursor: pointer; font-size: 14px; }
 .icon-action span { margin-left: 7px; }
 .more-action { padding: 0 15px; font-size: 20px; }
@@ -105,7 +99,7 @@ button { color: inherit; }
 .side-footer button b { margin-left: auto; font-weight: 400; }
 
 .center-stage { grid-column: 2; grid-row: 2; position: relative; min-width: 0; min-height: 0; border-bottom: 1px solid var(--line); }
-.topology { position: absolute; inset: 0 0 49px; background: #0d1c25; }
+.topology { position: absolute; inset: 0; background: #0d1c25; }
 .topology::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at center, transparent 20%, rgba(3, 10, 14, .25) 100%); }
 .react-flow__pane { cursor: default; }
 .react-flow__controls { display: none; }
@@ -127,18 +121,7 @@ button { color: inherit; }
 .router-node .device-icon { width: 65px; height: 65px; }
 .rack-face { display: flex !important; align-items: stretch; gap: 2px; width: 37px; height: 47px; padding: 4px; border: 2px solid #879198; background: #252b2e; box-shadow: inset 0 0 0 2px #0a0e10; }
 .rack-face i { flex: 1; border: 1px solid #4e595e; background: repeating-linear-gradient(0deg, #777f7f 0 1px, #242a2d 1px 5px); }
-.node-state { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #627078; }
-.device-node > .node-state { position: absolute; top: 11px; right: 18px; }
-.node-state.up { background: var(--green); box-shadow: 0 0 7px rgba(105, 211, 111, .65); }
-.node-state.down { background: #d89b44; }
 .react-flow__handle { width: 8px; height: 8px; border: 1px solid #9eefff; background: #d8f9ff; }
-
-.telemetry-strip { position: absolute; left: 0; right: 0; bottom: 0; display: flex; height: 49px; border-top: 1px solid #263943; background: #09151d; }
-.telemetry-strip > div { display: flex; align-items: center; gap: 9px; padding: 0 18px; border-right: 1px solid #24333c; }
-.telemetry-strip span { color: #73828a; font-size: 8px; letter-spacing: .07em; }
-.telemetry-strip strong { color: #c0cbd0; font: 12px "Cascadia Mono", monospace; }
-.telemetry-strip .capture-live { margin-left: auto; color: var(--green); font-size: 10px; letter-spacing: .05em; }
-.capture-live i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .runtime-error { position: absolute; z-index: 10; top: 70px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; width: min(520px, 85%); padding: 12px 14px; border: 1px solid #73443e; background: #2a1717ee; color: #efaaa4; font-size: 11px; }
 
 .inspector { grid-column: 3; grid-row: 2 / 4; overflow: auto; min-height: 0; background: linear-gradient(110deg, #0d1921, #0b1720); border-left: 1px solid var(--line); }
@@ -179,9 +162,6 @@ button { color: inherit; }
 .terminal-panel { grid-column: 2; grid-row: 3; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #050d12; }
 .terminal-head { display: flex; align-items: center; height: 45px; flex: 0 0 45px; border-bottom: 1px solid #28353c; background: #071117; }
 .terminal-head > div:first-child { display: flex; align-items: center; gap: 8px; align-self: stretch; padding: 0 15px; border-bottom: 2px solid var(--blue); color: #e0e6e8; font-size: 13px; }
-.status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
-.terminal-engine { display: flex; align-items: center; gap: 10px; padding-left: 15px; color: #9ba7ac; font-size: 12px; }
-.terminal-engine span { color: #586970; font-size: 9px; }
 .terminal-host { flex: 1; min-height: 0; padding: 16px 20px 8px; }
 .xterm { height: 100%; }
 .xterm-viewport { scrollbar-color: #34444d transparent; scrollbar-width: thin; }
@@ -199,7 +179,6 @@ button { color: inherit; }
       clamp(240px, 25.5vw, 280px);
   }
   .topbar { grid-template-columns: clamp(150px, 15.5vw, 170px) minmax(0, 1fr) auto; }
-  .runtime-stat { display: none; }
   .icon-action { padding: 0 10px; }
   .icon-action span { display: none; }
 }
@@ -221,12 +200,6 @@ button { color: inherit; }
   }
   .top-nav { display: none; }
 
-  /* Telemetry remains one row and may contract before the right panel does.
-     Hiding labels rather than values preserves the operational signal while
-     avoiding a horizontal scrollbar inside the canvas. */
-  .telemetry-strip > div { gap: 6px; padding-inline: 10px; }
-  .telemetry-strip span { display: none; }
-  .telemetry-strip .capture-live { padding-inline: 10px; }
 }
 
 @media (max-height: 700px) {
@@ -241,11 +214,6 @@ button { color: inherit; }
 }
 
 @media (max-width: 480px) {
-  /* The runtime status text competes with the brand and three project actions
-     on phone-sized screens. Port state remains visible in topology nodes and
-     the inspector, so the duplicate chip can disappear without hiding the
-     underlying state or changing runtime behavior. */
-  .runtime-chip { display: none; }
   .brand { padding-inline: 11px; }
   .brand-mark { transform: scale(.88); transform-origin: left center; }
   .icon-action, .more-action { padding-inline: 9px; }
@@ -253,9 +221,6 @@ button { color: inherit; }
   .spec-grid { grid-template-columns: minmax(82px, 42%) 1fr; padding-inline: 11px; }
   .hardware-slot { padding-inline: 11px; }
 }
-
-.unsupported-slot { opacity: .58; }
-.unsupported-slot small { color: var(--muted); display: block; font-size: 10px; line-height: 1.4; margin-top: 4px; }
 
 .capture-workspace {
   align-self: stretch;
@@ -269,8 +234,6 @@ button { color: inherit; }
 .capture-workspace-head, .capture-actions, .capture-points { align-items: center; display: flex; justify-content: space-between; }
 .capture-workspace-head span, .capture-stats small { color: #71827d; font-size: 10px; font-weight: 700; letter-spacing: .11em; }
 .capture-workspace-head h2 { font-family: "Cascadia Mono", monospace; font-size: 24px; margin: 7px 0 0; }
-.capture-workspace-head > i { background: #56605d; border-radius: 50%; height: 12px; width: 12px; }
-.capture-workspace-head > i.live { background: #76d99a; box-shadow: 0 0 0 6px #76d99a18; }
 .capture-stats { display: grid; gap: 1px; grid-template-columns: repeat(3, 1fr); margin: 32px 0; }
 .capture-stats > div { background: #171d1b; border: 1px solid #293330; padding: 20px; }
 .capture-stats strong { display: block; font-family: "Cascadia Mono", monospace; font-size: 28px; margin-top: 8px; }

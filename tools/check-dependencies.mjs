@@ -38,7 +38,7 @@ for (const file of files) {
 // or a lower layer only. CMake target links enforce symbol dependencies, while
 // this check also catches header-only inversions that a linker cannot observe.
 const cppLayers = new Map([
-  ["bounded_queue.hpp", 0], ["generated_profile.hpp", 0], ["link_direction.hpp", 0],
+  ["bounded_queue.hpp", 0], ["generated_profile.hpp", 0], ["generated_cli_schema.hpp", 0], ["link_direction.hpp", 0],
   ["packet.hpp", 0], ["packet_pool.hpp", 0], ["spsc_ring.hpp", 0], ["telemetry.hpp", 0],
   ["packet.cpp", 0],
   ["device.hpp", 1], ["device_routing.hpp", 1], ["hardware.hpp", 1], ["routing.hpp", 1],
@@ -47,9 +47,9 @@ const cppLayers = new Map([
   ["network_adjacency.cpp", 2], ["network_endpoint.hpp", 2], ["network_endpoint.cpp", 2],
   ["network_link_fabric.hpp", 2], ["network_link_fabric.cpp", 2],
   ["capture_store.hpp", 3], ["checkpoint.hpp", 3], ["cli.hpp", 3],
-  ["project_configuration.hpp", 3], ["cli_internal.hpp", 3],
+  ["project_configuration.hpp", 3], ["cli_internal.hpp", 3], ["cli_parser.hpp", 3],
   ["capture_store.cpp", 3], ["checkpoint.cpp", 3], ["cli.cpp", 3],
-  ["cli_classic.cpp", 3], ["cli_md.cpp", 3], ["project_configuration.cpp", 3],
+  ["cli_classic.cpp", 3], ["cli_md.cpp", 3], ["cli_parser.cpp", 3], ["project_configuration.cpp", 3],
   ["runtime_messages.hpp", 4], ["runtime.hpp", 4], ["runtime.cpp", 4],
   ["runtime_checkpoint.cpp", 4], ["runtime_project.cpp", 4], ["runtime_projection.cpp", 4],
   ["wasm_api.cpp", 5]
@@ -70,6 +70,38 @@ for (const [source, dependencies] of graph) {
         `${relative(root, dependency)} (${dependencyLayer})`
       );
     }
+  }
+}
+
+// Command syntax belongs only to the generated release schema. A whole-line
+// literal in a handler would silently recreate a second command catalog and
+// make completion, source status and execution drift independently again.
+for (const name of ["cli.cpp", "cli_md.cpp", "cli_classic.cpp"]) {
+  const source = readFileSync(resolve(root, "core/src", name), "utf8");
+  if (/"(?:show|configure|delete|ping)\s+[a-z0-9]/i.test(source))
+    throw new Error(`${name}: whole CLI command literal must be defined in schemas/cli`);
+}
+
+// The browser controls projects through structured runtime operations. It must
+// not become a second CLI client with release-specific command text hidden in
+// React callbacks, project restoration or demo initialization.
+for (const file of files) {
+  const path = relative(root, file).replaceAll("\\", "/");
+  if (!path.startsWith("apps/web/src/") || /\.test\.[^.]+$/.test(path)) continue;
+  const source = readFileSync(file, "utf8");
+  if (/["'`](?:show|configure|delete|ping)\s+[a-z0-9]/i.test(source))
+    throw new Error(`${path}: frontend must use structured runtime operations, not CLI command lines`);
+}
+
+// Runtime diagnostics belong in developer logs. These exact labels previously
+// exposed implementation state as unexplained product UI and are prohibited
+// from returning as visible JSX strings.
+const forbiddenUiLabels = ["Workers", "Shared memory", "LIVE CAPTURE", "type // to switch engine"];
+for (const file of files.filter((item) => relative(root, item).replaceAll("\\", "/").startsWith("apps/web/src/ui/"))) {
+  const source = readFileSync(file, "utf8");
+  for (const label of forbiddenUiLabels) {
+    if (source.includes(`>${label}<`) || source.includes(`\"${label}\"`))
+      throw new Error(`${relative(root, file)}: forbidden runtime diagnostic label ${label}`);
   }
 }
 

@@ -1,7 +1,7 @@
 // xterm renderer and lossless byte-input adapter for one router CLI session.
 // Engine selection and candidate semantics remain in the C++ session owner.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { paginateTerminal, TerminalInputQueue, TerminalLineEditor } from "./terminal-model";
@@ -17,7 +17,6 @@ export function TerminalPanel({ ready, execute, complete }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const executeRef = useRef(execute);
   const completeRef = useRef(complete);
-  const [engine, setEngine] = useState<"MD-CLI" | "classic CLI">("MD-CLI");
   executeRef.current = execute;
   completeRef.current = complete;
 
@@ -125,11 +124,13 @@ export function TerminalPanel({ ready, execute, complete }: Props) {
           const output = await executeRef.current(submitted);
           if (submitted.trim() === "//") {
             engineName = engineName === "MD-CLI" ? "classic CLI" : "MD-CLI";
-            setEngine(engineName);
           }
           writePaged(output);
         } catch (cause) {
-          terminal.write(`ERROR: ${cause instanceof Error ? cause.message : String(cause)}\r\n${prompt()}`);
+          // Transport diagnostics belong in developer tools. The router
+          // console must never expose Worker, Wasm or mailbox implementation.
+          console.error("Console command transport failed", cause);
+          terminal.write(`Console unavailable.\r\n${prompt()}`);
         } finally {
           busy = false;
           terminal.options.disableStdin = false;
@@ -182,8 +183,7 @@ export function TerminalPanel({ ready, execute, complete }: Props) {
   return (
     <section className="terminal-panel">
       <div className="terminal-head">
-        <div><span className="status-dot" /> R1 console</div>
-        <div className="terminal-engine">{engine}<span>type // to switch engine</span></div>
+        <div>R1 console</div>
       </div>
       <div className="terminal-host" ref={hostRef} />
     </section>

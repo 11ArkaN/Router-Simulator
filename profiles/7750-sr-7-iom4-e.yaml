@@ -16,6 +16,7 @@ line_card:
   timing_status: experimental
 mda:
   slot: 1
+  modeled_type: me10-10gb-sfp+
   supported:
     - me10-10gb-sfp+
     - me1-100gb-cfp2

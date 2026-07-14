@@ -91,6 +91,10 @@ void cli_tests() {
   }
   router::execute_cli(state, session, "discard", ping);
 
+  // Port nodes exist only below provisioned MDA inventory. Recreate that
+  // parent before testing port leaves instead of relying on implicit ports.
+  router::execute_cli(state, session,
+                      "configure card 1 mda 1 mda-type me10-10gb-sfp+", ping);
   router::execute_cli(state, session, "configure system name edge-r1", ping);
   router::execute_cli(state, session,
                       "configure port 1/1/1 admin-state disable", ping);
@@ -129,13 +133,31 @@ void cli_tests() {
     throw std::runtime_error("Explicit ping count was ignored");
 
   // Completion queries the active engine schema without executing a command.
-  // Unique input expands fully, while an ambiguous prefix returns only commands
-  // that have real handlers in the selected engine.
+  // A context lists only its immediate children. It must never print complete
+  // provisioning or ping lines that resemble a preloaded demo transcript.
+  const auto root_completion = router::complete_cli(state, session, "");
   if (router::complete_cli(state, session, "show router ar") !=
           "show router arp" ||
-      router::complete_cli(state, session, "show").find("show port") ==
-          std::string::npos) {
+      router::complete_cli(state, session, "show").find("port") ==
+          std::string::npos ||
+      root_completion.find("configure card 1") != std::string::npos ||
+      root_completion.find("ping 198.51.100.2") != std::string::npos) {
     throw std::runtime_error(
-        "CLI completion is not backed by executable commands");
+        "CLI completion exposed a hardcoded command transcript");
+  }
+
+  const auto unknown = router::execute_cli(state, session, "jjj", ping);
+  if (unknown.find("MGMT_CORE #2201") == std::string::npos ||
+      unknown.find("milestone") != std::string::npos ||
+      unknown.find("profile") != std::string::npos) {
+    throw std::runtime_error("CLI leaked implementation status to the console");
+  }
+  const auto incomplete_ping =
+      router::execute_cli(state, session, "ping", ping);
+  if (incomplete_ping.find("<ipv4>") == std::string::npos ||
+      incomplete_ping.find("192.0.2.2") == std::string::npos ||
+      incomplete_ping.find("198.51.100.2") == std::string::npos) {
+    throw std::runtime_error(
+        "Incomplete ping did not show its contextual destination choices");
   }
 }

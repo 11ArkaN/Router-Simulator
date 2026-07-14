@@ -17,10 +17,18 @@ struct ParseResult {
   std::string error;
 };
 
+struct RunningParseResult {
+  bool success{};
+  DeviceConfiguration configuration{};
+  std::string error;
+};
+
 [[nodiscard]] ParseResult parse_hosts(const ProjectState &current,
                                       const std::string &command);
 [[nodiscard]] ParseResult parse_links(const ProjectState &current,
                                       const std::string &command);
+[[nodiscard]] RunningParseResult
+parse_running(const DeviceConfiguration &current, const std::string &command);
 
 // Preconditions: every connected project link references a profile port.
 // Missing routed interface configuration disables that link in the projection

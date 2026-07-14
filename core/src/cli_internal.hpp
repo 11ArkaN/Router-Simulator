@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include "cli_parser.hpp"
 #include "router/device.hpp"
 
 #include <array>
@@ -21,18 +22,12 @@ struct ParsedStaticRoute {
 };
 
 [[nodiscard]] std::string trim(std::string_view value);
-[[nodiscard]] bool starts_with(const std::string &value,
-                               std::string_view prefix);
 [[nodiscard]] std::optional<std::size_t> port_index(std::string_view text);
-[[nodiscard]] std::optional<std::size_t>
-interface_index(const DeviceConfiguration &configuration,
-                std::string_view input);
 [[nodiscard]] std::optional<ParsedStaticRoute>
-parse_static_route(std::string_view text);
+parse_static_route(std::string_view prefix, std::string_view next_hop);
 [[nodiscard]] bool install_static(DeviceConfiguration &configuration,
                                   ParsedStaticRoute route);
-[[nodiscard]] std::optional<std::pair<std::size_t, std::string_view>>
-port_tail(const std::string &input, std::string_view prefix);
+[[nodiscard]] std::string_view unquote(std::string_view value) noexcept;
 
 template <std::size_t N>
 bool copy_config_text(std::array<char, N> &destination,
@@ -50,10 +45,10 @@ void synchronize_candidate(ConfigurationState &configuration,
                            CliSession &session, bool running_changed) noexcept;
 [[nodiscard]] std::string execute_md(ConfigurationState &configuration,
                                      CliSession &session,
-                                     const std::string &input);
+                                     const ParsedCommand &command);
 [[nodiscard]] std::string execute_classic(ConfigurationState &configuration,
                                           CliSession &session,
-                                          const std::string &input);
+                                          const ParsedCommand &command);
 [[nodiscard]] std::string prompt(const CliSession &session);
 
 } // namespace router::cli_detail
