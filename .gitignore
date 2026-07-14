@@ -1,0 +1,16 @@
+node_modules/
+dist/
+build/
+.tools/
+.vite/
+coverage/
+playwright-report/
+.playwright-cli/
+test-results/
+*.tsbuildinfo
+*.log
+*.pcapng
+*.netsim
+apps/web/public/wasm/simulator.js
+apps/web/public/wasm/simulator.wasm
+apps/web/public/wasm/simulator.worker.js

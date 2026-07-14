@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 22, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "native-base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "generator": "Ninja",
+      "cacheVariables": { "CMAKE_CXX_STANDARD": "20" }
+    },
+    { "name": "windows-msvc-debug", "inherits": "native-base", "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }, "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "CMAKE_CXX_COMPILER": "cl" } },
+    { "name": "windows-msvc-release", "inherits": "windows-msvc-debug", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } },
+    { "name": "linux-clang-debug", "inherits": "native-base", "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }, "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "CMAKE_CXX_COMPILER": "clang++" } },
+    { "name": "linux-clang-release", "inherits": "linux-clang-debug", "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } },
+    { "name": "linux-asan-ubsan", "inherits": "linux-clang-debug", "cacheVariables": { "ROUTER_SANITIZERS": "address,undefined" } },
+    { "name": "linux-tsan", "inherits": "linux-clang-debug", "cacheVariables": { "ROUTER_SANITIZERS": "thread" } }
+  ],
+  "buildPresets": [
+    { "name": "windows-msvc-debug", "configurePreset": "windows-msvc-debug" },
+    { "name": "windows-msvc-release", "configurePreset": "windows-msvc-release" },
+    { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug" },
+    { "name": "linux-clang-release", "configurePreset": "linux-clang-release" },
+    { "name": "linux-asan-ubsan", "configurePreset": "linux-asan-ubsan" },
+    { "name": "linux-tsan", "configurePreset": "linux-tsan" }
+  ],
+  "testPresets": [
+    { "name": "windows-msvc-debug", "configurePreset": "windows-msvc-debug", "output": { "outputOnFailure": true } },
+    { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug", "output": { "outputOnFailure": true } },
+    { "name": "linux-asan-ubsan", "configurePreset": "linux-asan-ubsan", "output": { "outputOnFailure": true } },
+    { "name": "linux-tsan", "configurePreset": "linux-tsan", "output": { "outputOnFailure": true } }
+  ]
+}

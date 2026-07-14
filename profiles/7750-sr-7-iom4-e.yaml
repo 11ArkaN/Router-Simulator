@@ -1,0 +1,75 @@
+id: 7750-sr-7-iom4-e
+vendor: Nokia
+nos: SR OS
+release: 26.7.R1
+reference_date: 2026-07-09
+chassis: 7750 SR-7
+control:
+  slot: A
+  card: cpm5
+  initial_state: active-ready
+line_card:
+  slot: 1
+  type: iom4-e
+  initial_state: absent
+  initialization_milliseconds: 2000
+  timing_status: experimental
+mda:
+  slot: 1
+  supported:
+    - me10-10gb-sfp+
+    - me1-100gb-cfp2
+  initial_state: absent
+  initialization_milliseconds: 1000
+  timing_status: experimental
+forwarding_complexes: 1
+ports:
+  count: 10
+  speed_mbps: 10000
+  modeled:
+    - 1/1/1
+    - 1/1/2
+router_interfaces:
+  - name: to-host-a
+    port: 1/1/1
+    mac: "02:00:00:00:01:01"
+    address: 192.0.2.1/30
+    network: 192.0.2.0/30
+  - name: to-host-b
+    port: 1/1/2
+    mac: "02:00:00:00:01:02"
+    address: 198.51.100.1/30
+    network: 198.51.100.0/30
+hosts:
+  - id: host-a
+    name: Host A
+    mac: "02:00:00:00:00:0A"
+    address: 192.0.2.2/30
+    gateway: 192.0.2.1
+  - id: host-b
+    name: Host B
+    mac: "02:00:00:00:00:0B"
+    address: 198.51.100.2/30
+    gateway: 198.51.100.1
+link_defaults:
+  # Propagation belongs to the cable or circuit, not to the Nokia port. The
+  # project copies this value into each new physical link and may override it
+  # independently without changing the 10 Gb/s serialization rate.
+  propagation_delay_nanoseconds: 100
+  propagation_status: experimental
+  source_id: ieee.802_3.ethernet_frame_timing
+capture_interfaces:
+  - link-host-a-to-router
+  - link-router-to-host-a
+  - link-router-to-host-b
+  - link-host-b-to-router
+  - router-1/1/1-ingress
+  - router-1/1/2-ingress
+  - router-1/1/1-egress
+  - router-1/1/2-egress
+  - cpm-punt
+capability_status: partially-implemented
+source_ids:
+  - nokia.sros.26_7.sr7.supported_hardware
+  - nokia.sros.26_7.physical_port.provisioning
+  - ieee.802_3.ethernet_frame_timing

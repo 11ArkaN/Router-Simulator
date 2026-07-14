@@ -1,0 +1,282 @@
+schema_version: 1
+records:
+  - id: nokia.sros.26_7.sr7.supported_hardware
+    kind: hardware-capability
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7x50-shared/vsim-installation-setup/appendixes.html
+    section: 7750 SR-7 supported hardware
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [profiles/7750-sr-7-iom4-e.yaml, core/src/hardware.cpp]
+    tests: [packages/contracts/tests/project.test.ts]
+    status: implemented
+    notes: Supported identities are sourced. Initialization delays remain explicitly experimental emulator profile values, not physical platform measurements.
+  - id: nokia.sros.26_7.physical_port.provisioning
+    kind: hardware-behavior
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/titles/interface-configuration.html
+    section: Configuring physical ports with CLI
+    rfc_refs: []
+    yang_path: /configure/card
+    last_verified_at: 2026-07-14
+    implementation: [core/src/runtime.cpp, core/src/hardware.cpp]
+    tests: [core/tests/runtime_test.cpp]
+    status: implemented
+    notes: A physical port is created by compatible equipped MDA inventory and requires matching provisioning plus completed lifecycle before it can become operational.
+  - id: ietf.arp.rfc826
+    kind: protocol
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc826
+    section: Packet format and operation
+    rfc_refs: [RFC826]
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [core/src/packet.cpp, core/src/network.cpp]
+    tests: [core/tests/packet_test.cpp, core/tests/runtime_test.cpp]
+    status: implemented
+    notes: Requests and replies cross TX, link propagation, RX and receiver parsing. Sender mappings gate pending IPv4 traffic.
+  - id: ietf.host_requirements.rfc1122
+    kind: host-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-internet-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc1122
+    section: 3.3.1 Routing Outbound Datagrams
+    rfc_refs: [RFC1122]
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [core/include/router/routing.hpp, core/src/network.cpp, core/src/runtime.cpp, packages/contracts/src/index.ts]
+    tests: [core/tests/routing_test.cpp, core/tests/runtime_test.cpp, packages/contracts/tests/project.test.ts]
+    status: partially-implemented
+    notes: The endpoint selects an on-link destination or configured gateway from its prefix before ARP. Full RFC 1122 host behavior is outside this milestone.
+  - id: ietf.icmp.rfc792
+    kind: protocol
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc792
+    section: Echo or Echo Reply Message
+    rfc_refs: [RFC792, RFC791]
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [core/src/packet.cpp, core/src/network.cpp, core/src/runtime.cpp]
+    tests: [core/tests/packet_test.cpp, core/tests/runtime_test.cpp]
+    status: implemented
+    notes: Echo Reply is derived from received bytes and preserves ICMP identifier, sequence and 56 data octets.
+  - id: nokia.sros.26_7.md_cli.navigation
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7x50-shared/md-cli-user/navigate.html
+    section: Navigating the MD-CLI
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [core/src/cli.cpp, apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts]
+    tests: [core/tests/cli_test.cpp, apps/web/src/ui/terminal-model.test.ts]
+    status: partially-implemented
+    notes: The first milestone implements a sourced subset, engine-switch messages, retained dirty candidate state, an out-of-date baseline indicator and explicit unsupported errors for other commands.
+  - id: nokia.sros.26_7.md_cli.command_completion
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7x50-shared/md-cli-user/navigate.html
+    section: Command completion
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [core/src/cli.cpp, apps/web/src/ui/TerminalPanel.tsx]
+    tests: [core/tests/cli_test.cpp]
+    status: partially-implemented
+    notes: Tab completion exposes only executable commands in the active terminal engine.
+  - id: nokia.sros.26_7.ping
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/_global.html
+    section: ping and count number
+    rfc_refs: [RFC792]
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [core/src/cli.cpp, core/src/runtime.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/runtime_test.cpp]
+    status: implemented
+    notes: Default count is five, count 1 is accepted, payload is 56 octets and RTT is measured from the runtime path.
+  - id: ieee.802_3.ethernet_frame_timing
+    kind: link-behavior
+    release: 2022
+    platforms: [all-supported]
+    source_type: ieee-official-standard
+    source_url: https://standards.ieee.org/ieee/802.3/10422/
+    section: IEEE 802.3-2022 Clause 4 MAC parameters, minFrameSize and interPacketGap
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [core/include/router/link_direction.hpp, core/src/network.cpp, core/src/runtime.cpp, packages/contracts/src/index.ts, profiles/7750-sr-7-iom4-e.yaml]
+    tests: [core/tests/runtime_test.cpp]
+    status: implemented
+    notes: Serialization derives from port speed and includes preamble, SFD, FCS and IFG. Propagation is persisted per physical project link, affects delivery only, and never reduces transmitter throughput.
+  - id: ietf.checksum.rfc1071
+    kind: packet-algorithm
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc1071
+    section: Computing the Internet checksum
+    rfc_refs: [RFC1071]
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [core/src/packet.cpp]
+    tests: [core/tests/packet_test.cpp]
+    status: implemented
+    notes: One's-complement addition handles odd input and folds carries before complementing.
+  - id: ietf.ipv4.rfc791
+    kind: protocol
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc791
+    section: Internet header format and forwarding
+    rfc_refs: [RFC791]
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [core/src/packet.cpp, core/src/routing.cpp]
+    tests: [core/tests/packet_test.cpp, core/tests/routing_test.cpp]
+    status: partially-implemented
+    notes: The vertical slice validates IPv4 version, IHL, length, checksum, destination, TTL and connected-route lookup. Fragmentation is unsupported.
+  - id: ietf.ipv4.router_requirements.rfc1812
+    kind: router-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc1812
+    section: Forwarding algorithm, address resolution and TTL expiry
+    rfc_refs: [RFC1812]
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [core/src/network.cpp, core/src/packet.cpp, core/src/routing.cpp]
+    tests: [core/tests/packet_test.cpp, core/tests/runtime_test.cpp, core/tests/routing_test.cpp]
+    status: partially-implemented
+    notes: Connected forwarding, bounded ARP pending queues and ICMP Time Exceeded are implemented. MTU and fragmentation paths remain unsupported.
+  - id: ietf.pcapng.draft_ietf_opsawg_05
+    kind: capture-format
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-internet-draft
+    source_url: https://datatracker.ietf.org/doc/html/draft-ietf-opsawg-pcapng-05
+    section: Section Header Block, Interface Description Block, Enhanced Packet Block
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [core/src/runtime.cpp, core/src/wasm_api.cpp]
+    tests: [core/tests/runtime_test.cpp]
+    status: implemented
+    notes: Export uses nine named Ethernet IDBs for four link directions, two router ingress points, two router egress points and one CPM punt point, with microsecond timestamps and explicit capture-drop accounting.
+  - id: iana.pcap.linktype_ethernet
+    kind: capture-format
+    release: current
+    platforms: [all-supported]
+    source_type: iana-official-registry
+    source_url: https://www.iana.org/assignments/pcap/pcap.xhtml
+    section: LINKTYPE_ETHERNET value 1
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [core/src/runtime.cpp]
+    tests: [core/tests/runtime_test.cpp]
+    status: implemented
+    notes: Every Interface Description Block uses registered link type 1 and snap length 1514.
+  - id: emscripten.pthreads.shared_memory
+    kind: runtime-platform
+    release: 6.0.3
+    platforms: [Chrome, Edge, Firefox]
+    source_type: emscripten-official-doc
+    source_url: https://emscripten.org/docs/porting/pthreads.html
+    section: Compiling with pthreads enabled
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [core/CMakeLists.txt, apps/web/src/runtime/runtime.worker.ts]
+    tests: [core/tests/runtime_test.cpp]
+    status: implemented
+    notes: The runtime uses a fixed pthread pool and shared Wasm memory with no single-thread fallback.
+  - id: w3c.indexeddb.persistence
+    kind: browser-storage
+    release: 3.0
+    platforms: [Chrome, Edge, Firefox]
+    source_type: w3c-official-spec
+    source_url: https://w3c.github.io/IndexedDB/
+    section: Indexed Database API
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [apps/web/src/persistence.ts, packages/contracts/src/index.ts]
+    tests: [packages/contracts/tests/project.test.ts]
+    status: implemented
+    notes: Structured project state is schema-validated on load and import before it is applied to the runtime.
+  - id: ecma.number.max_safe_integer
+    kind: project-data-boundary
+    release: ECMA-262
+    platforms: [all-supported]
+    source_type: ecma-official-standard
+    source_url: https://tc39.es/ecma262/multipage/numbers-and-dates.html#sec-number.max_safe_integer
+    section: Number.MAX_SAFE_INTEGER
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [packages/contracts/src/index.ts, core/src/runtime.cpp]
+    tests: [packages/contracts/tests/project.test.ts, core/tests/runtime_test.cpp]
+    status: implemented
+    notes: Per-link nanosecond delays are limited only to non-negative integers that JavaScript can transport without rounding.
+  - id: nokia.sros.26_7.port.configuration
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/titles/interface-configuration.html
+    section: Port and router interface configuration using MD-CLI and classic CLI
+    rfc_refs: []
+    yang_path: /configure/port
+    last_verified_at: 2026-07-14
+    implementation: [core/src/cli.cpp, core/src/routing.cpp, core/src/network.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/routing_test.cpp, core/tests/runtime_test.cpp]
+    status: partially-implemented
+    notes: The milestone implements system name, port admin state, description, MTU, interface admin state and directly resolved IPv4 static routes.
+  - id: whatwg.storage.opfs
+    kind: browser-storage
+    release: current
+    platforms: [Chrome, Edge, Firefox]
+    source_type: whatwg-living-standard
+    source_url: https://storage.spec.whatwg.org/
+    section: Origin private file system
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [apps/web/src/persistence.ts]
+    tests: [apps/web/src/persistence.test.ts]
+    status: implemented
+    notes: Binary capture and structural checkpoint data use OPFS while project metadata remains in IndexedDB.
+  - id: w3c.webappsec.coop_coep_csp
+    kind: runtime-platform
+    release: current
+    platforms: [Chrome, Edge, Firefox]
+    source_type: w3c-official-spec
+    source_url: https://www.w3.org/TR/CSP3/
+    section: Content Security Policy and cross-origin isolated browser execution
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-14
+    implementation: [apps/web/vite.config.ts, apps/web/src/runtime/runtime.worker.ts]
+    tests: [apps/web/src/runtime/client.ts]
+    status: implemented
+    notes: Local and preview servers publish isolation, CSP and Permissions Policy headers and reject runtime startup when the pthread smoke test fails.

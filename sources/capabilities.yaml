@@ -1,0 +1,54 @@
+release: 26.7.R1
+profile: 7750-sr-7-iom4-e
+features:
+  hardware.card_iom4_e:
+    status: implemented
+    source_ids: [nokia.sros.26_7.sr7.supported_hardware, nokia.sros.26_7.physical_port.provisioning]
+  hardware.mda_me10_10gb_sfp:
+    status: implemented
+    source_ids: [nokia.sros.26_7.sr7.supported_hardware, nokia.sros.26_7.physical_port.provisioning]
+  hardware.mda_me1_100gb_cfp2_mismatch:
+    status: implemented
+    source_ids: [nokia.sros.26_7.sr7.supported_hardware]
+  ethernet.unicast:
+    status: implemented
+    source_ids: [ieee.802_3.ethernet_frame_timing]
+  arp.ipv4:
+    status: implemented
+    source_ids: [ietf.arp.rfc826, ietf.ipv4.router_requirements.rfc1812]
+  host.ipv4_next_hop:
+    status: partially-implemented
+    source_ids: [ietf.host_requirements.rfc1122, ietf.arp.rfc826]
+  ipv4.forwarding:
+    status: partially-implemented
+    source_ids: [ietf.ipv4.rfc791, ietf.ipv4.router_requirements.rfc1812, ietf.checksum.rfc1071]
+  icmp.echo:
+    status: implemented
+    source_ids: [ietf.icmp.rfc792, nokia.sros.26_7.ping]
+  icmp.time_exceeded:
+    status: implemented
+    source_ids: [ietf.icmp.rfc792, ietf.ipv4.router_requirements.rfc1812]
+  cli.md.session:
+    status: partially-implemented
+    source_ids: [nokia.sros.26_7.md_cli.navigation, nokia.sros.26_7.md_cli.command_completion]
+  cli.classic.session:
+    status: partially-implemented
+    source_ids: [nokia.sros.26_7.md_cli.navigation]
+  capture.pcapng:
+    status: implemented
+    source_ids: [ietf.pcapng.draft_ietf_opsawg_05, iana.pcap.linktype_ethernet]
+  persistence.project:
+    status: implemented
+    source_ids: [w3c.indexeddb.persistence]
+  persistence.checkpoint:
+    status: partially-implemented
+    source_ids: [whatwg.storage.opfs, emscripten.pthreads.shared_memory]
+  runtime.shared_telemetry:
+    status: implemented
+    source_ids: [emscripten.pthreads.shared_memory]
+  browser.platform_gate:
+    status: implemented
+    source_ids: [w3c.webappsec.coop_coep_csp, emscripten.pthreads.shared_memory]
+  cli.port_and_static_configuration:
+    status: partially-implemented
+    source_ids: [nokia.sros.26_7.port.configuration]

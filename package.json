@@ -1,0 +1,30 @@
+{
+  "name": "router-simulator",
+  "private": true,
+  "packageManager": "pnpm@11.0.4",
+  "scripts": {
+    "build": "pnpm core:publish && pnpm --filter @router-simulator/web build",
+    "dev": "pnpm --filter @router-simulator/web dev",
+    "toolchain:bootstrap": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap-toolchain.ps1",
+    "core:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/core.ps1 build",
+    "core:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/core.ps1 test",
+    "core:manual": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/core.ps1 manual",
+    "core:benchmark": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/core.ps1 benchmark",
+    "core:runtime-benchmark": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/core.ps1 runtime-benchmark",
+    "core:structure-benchmark": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/core.ps1 structure-benchmark",
+    "benchmark:check": "node tools/check-benchmark.mjs",
+    "core:publish": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/core.ps1 publish",
+    "sources:validate": "node tools/validate-sources.mjs",
+    "profiles:check": "node tools/generate-profile.mjs --check",
+    "architecture:check": "node tools/check-dependencies.mjs",
+    "test": "pnpm core:test && pnpm -r test",
+    "typecheck": "pnpm -r typecheck",
+    "verify": "pnpm sources:validate && pnpm profiles:check && pnpm architecture:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm core:structure-benchmark && pnpm core:runtime-benchmark && pnpm build"
+  },
+  "devDependencies": {
+    "yaml": "^2.8.1"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  }
+}
