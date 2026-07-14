@@ -10,8 +10,8 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [profiles/7750-sr-7-iom4-e.yaml, core/src/hardware.cpp]
-    tests: [packages/contracts/tests/project.test.ts]
+    implementation: [profiles/7750-sr-7-iom4-e.yaml, core/include/router/device.hpp, core/src/hardware.cpp]
+    tests: [core/tests/hardware_test.cpp, packages/contracts/tests/project.test.ts]
     status: implemented
     notes: Supported identities are sourced. Initialization delays remain explicitly experimental emulator profile values, not physical platform measurements.
   - id: nokia.sros.26_7.physical_port.provisioning
@@ -24,8 +24,8 @@ records:
     rfc_refs: []
     yang_path: /configure/card
     last_verified_at: 2026-07-14
-    implementation: [core/src/runtime.cpp, core/src/hardware.cpp]
-    tests: [core/tests/runtime_test.cpp]
+    implementation: [core/include/router/device.hpp, core/src/runtime.cpp, core/src/hardware.cpp]
+    tests: [core/tests/hardware_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp]
     status: implemented
     notes: A physical port is created by compatible equipped MDA inventory and requires matching provisioning plus completed lifecycle before it can become operational.
   - id: ietf.arp.rfc826
@@ -38,8 +38,8 @@ records:
     rfc_refs: [RFC826]
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/src/packet.cpp, core/src/network.cpp]
-    tests: [core/tests/packet_test.cpp, core/tests/runtime_test.cpp]
+    implementation: [core/src/packet.cpp, core/src/network.cpp, core/src/network_adjacency.cpp, core/src/network_endpoint.cpp]
+    tests: [core/tests/packet_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp]
     status: implemented
     notes: Requests and replies cross TX, link propagation, RX and receiver parsing. Sender mappings gate pending IPv4 traffic.
   - id: ietf.host_requirements.rfc1122
@@ -52,8 +52,8 @@ records:
     rfc_refs: [RFC1122]
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/include/router/routing.hpp, core/src/network.cpp, core/src/runtime.cpp, packages/contracts/src/index.ts]
-    tests: [core/tests/routing_test.cpp, core/tests/runtime_test.cpp, packages/contracts/tests/project.test.ts]
+    implementation: [core/include/router/routing.hpp, core/src/network.cpp, core/src/network_endpoint.cpp, core/src/project_configuration.cpp, core/src/runtime.cpp, packages/contracts/src/index.ts]
+    tests: [core/tests/routing_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp, packages/contracts/tests/project.test.ts]
     status: partially-implemented
     notes: The endpoint selects an on-link destination or configured gateway from its prefix before ARP. Full RFC 1122 host behavior is outside this milestone.
   - id: ietf.icmp.rfc792
@@ -67,7 +67,7 @@ records:
     yang_path: null
     last_verified_at: 2026-07-14
     implementation: [core/src/packet.cpp, core/src/network.cpp, core/src/runtime.cpp]
-    tests: [core/tests/packet_test.cpp, core/tests/runtime_test.cpp]
+    tests: [core/tests/packet_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp]
     status: implemented
     notes: Echo Reply is derived from received bytes and preserves ICMP identifier, sequence and 56 data octets.
   - id: nokia.sros.26_7.md_cli.navigation
@@ -80,7 +80,7 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/src/cli.cpp, apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts]
+    implementation: [core/src/cli.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts]
     tests: [core/tests/cli_test.cpp, apps/web/src/ui/terminal-model.test.ts]
     status: partially-implemented
     notes: The first milestone implements a sourced subset, engine-switch messages, retained dirty candidate state, an out-of-date baseline indicator and explicit unsupported errors for other commands.
@@ -122,8 +122,8 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/include/router/link_direction.hpp, core/src/network.cpp, core/src/runtime.cpp, packages/contracts/src/index.ts, profiles/7750-sr-7-iom4-e.yaml]
-    tests: [core/tests/runtime_test.cpp]
+    implementation: [core/include/router/link_direction.hpp, core/src/network.cpp, core/src/project_configuration.cpp, packages/contracts/src/index.ts, profiles/7750-sr-7-iom4-e.yaml]
+    tests: [core/tests/network_test.cpp, core/tests/runtime_test.cpp]
     status: implemented
     notes: Serialization derives from port speed and includes preamble, SFD, FCS and IFG. Propagation is persisted per physical project link, affects delivery only, and never reduces transmitter throughput.
   - id: ietf.checksum.rfc1071
@@ -164,8 +164,8 @@ records:
     rfc_refs: [RFC1812]
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/src/network.cpp, core/src/packet.cpp, core/src/routing.cpp]
-    tests: [core/tests/packet_test.cpp, core/tests/runtime_test.cpp, core/tests/routing_test.cpp]
+    implementation: [core/src/network.cpp, core/src/network_adjacency.cpp, core/src/network_endpoint.cpp, core/src/network_link_fabric.cpp, core/src/packet.cpp, core/src/routing.cpp]
+    tests: [core/tests/packet_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp, core/tests/routing_test.cpp]
     status: partially-implemented
     notes: Connected forwarding, bounded ARP pending queues and ICMP Time Exceeded are implemented. MTU and fragmentation paths remain unsupported.
   - id: ietf.pcapng.draft_ietf_opsawg_05
@@ -178,7 +178,7 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/src/runtime.cpp, core/src/wasm_api.cpp]
+    implementation: [core/src/capture_store.cpp, core/src/runtime.cpp, core/src/wasm_api.cpp]
     tests: [core/tests/runtime_test.cpp]
     status: implemented
     notes: Export uses nine named Ethernet IDBs for four link directions, two router ingress points, two router egress points and one CPM punt point, with microsecond timestamps and explicit capture-drop accounting.
@@ -192,7 +192,7 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/src/runtime.cpp]
+    implementation: [core/src/capture_store.cpp]
     tests: [core/tests/runtime_test.cpp]
     status: implemented
     notes: Every Interface Description Block uses registered link type 1 and snap length 1514.
@@ -206,8 +206,8 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/CMakeLists.txt, apps/web/src/runtime/runtime.worker.ts]
-    tests: [core/tests/runtime_test.cpp]
+    implementation: [core/CMakeLists.txt, core/src/checkpoint.cpp, core/src/runtime_checkpoint.cpp, core/src/runtime_projection.cpp, apps/web/src/runtime/runtime.worker.ts]
+    tests: [core/tests/checkpoint_test.cpp, core/tests/runtime_test.cpp]
     status: implemented
     notes: The runtime uses a fixed pthread pool and shared Wasm memory with no single-thread fallback.
   - id: w3c.indexeddb.persistence
@@ -234,7 +234,7 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [packages/contracts/src/index.ts, core/src/runtime.cpp]
+    implementation: [packages/contracts/src/index.ts, core/src/project_configuration.cpp, core/src/runtime_project.cpp]
     tests: [packages/contracts/tests/project.test.ts, core/tests/runtime_test.cpp]
     status: implemented
     notes: Per-link nanosecond delays are limited only to non-negative integers that JavaScript can transport without rounding.
@@ -248,8 +248,8 @@ records:
     rfc_refs: []
     yang_path: /configure/port
     last_verified_at: 2026-07-14
-    implementation: [core/src/cli.cpp, core/src/routing.cpp, core/src/network.cpp]
-    tests: [core/tests/cli_test.cpp, core/tests/routing_test.cpp, core/tests/runtime_test.cpp]
+    implementation: [core/src/cli.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, core/src/device_routing.cpp, core/src/routing.cpp, core/src/network.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/routing_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp]
     status: partially-implemented
     notes: The milestone implements system name, port admin state, description, MTU, interface admin state and directly resolved IPv4 static routes.
   - id: whatwg.storage.opfs

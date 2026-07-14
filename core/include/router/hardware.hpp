@@ -1,6 +1,6 @@
 // Hardware reconciler for profile-driven inventory, provisioning and lifecycle.
-// DeviceState remains control-shard owned. This module has no packet-path or UI
-// dependency and mutates hardware fields only when called by that owner.
+// It receives only running config, physical state and operational projections,
+// so hardware code cannot mutate candidate config or project endpoint state.
 
 #pragma once
 
@@ -18,14 +18,23 @@ struct ReconcileResult {
   std::optional<std::chrono::steady_clock::time_point> next_deadline;
 };
 
-// Preconditions: state belongs to the calling control shard and now comes from
-// steady_clock. Postconditions: lifecycle, reason and deadlines agree with
-// inventory and running provisioning. This function allocates no memory and
-// never blocks. There are no error codes because unsupported inventory is
-// represented by mismatch state and a stable reason.
-[[nodiscard]] ReconcileResult reconcile(
-    DeviceState& state, std::chrono::steady_clock::time_point now) noexcept;
+// Preconditions: all three values belong to the calling control shard and now
+// comes from steady_clock. Postconditions: lifecycle, reasons, alarms and
+// deadlines agree with inventory and running provisioning. This function does
+// not allocate or block. Unsupported inventory becomes mismatch state.
+[[nodiscard]] ReconcileResult
+reconcile(const DeviceConfiguration &running, HardwareState &hardware,
+          OperationalState &operational,
+          std::chrono::steady_clock::time_point now) noexcept;
 
-[[nodiscard]] const char* lifecycle_name(EquipmentLifecycle value) noexcept;
+[[nodiscard]] bool operational(const DeviceConfiguration &running,
+                               const HardwareState &hardware) noexcept;
+[[nodiscard]] std::size_t
+inventory_port_count(const HardwareState &hardware) noexcept;
+[[nodiscard]] bool port_operational(const DeviceConfiguration &running,
+                                    const HardwareState &hardware,
+                                    std::size_t index) noexcept;
 
-}  // namespace router::hardware
+[[nodiscard]] const char *lifecycle_name(EquipmentLifecycle value) noexcept;
+
+} // namespace router::hardware

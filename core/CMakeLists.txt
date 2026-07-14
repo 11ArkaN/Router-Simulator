@@ -14,28 +14,83 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # benchmark and C ABI code can otherwise hide a narrowing conversion or unused
 # result even though CI reports the library itself as warning-free.
 if(MSVC)
-  add_compile_options(/W4 /WX)
+  # C4324 reports that alignas(64) inserted padding. The padding is the stated
+  # cache-isolation contract of SpscRing and TelemetryPageV1, not an accidental
+  # layout loss. Keep every other level-four warning fatal and silence only this
+  # MSVC diagnostic so Windows validates the same intentional layout as Clang.
+  add_compile_options(/W4 /WX /wd4324)
 else()
   add_compile_options(-Wall -Wextra -Wpedantic -Werror)
 endif()
 
-add_library(router_core STATIC
-  src/cli.cpp
-  src/hardware.cpp
-  src/network.cpp
-  src/packet.cpp
-  src/routing.cpp
-  src/runtime.cpp
-)
-target_include_directories(router_core PUBLIC include)
+add_library(router_build_options INTERFACE)
+target_include_directories(router_build_options INTERFACE include)
 
-if(NOT EMSCRIPTEN AND ROUTER_SANITIZERS AND
-   CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+# Targets encode the permitted dependency direction. Splitting translation
+# units alone is insufficient because a lower layer could otherwise include a
+# management header and keep compiling inside one archive.
+add_library(router_primitives STATIC src/packet.cpp)
+target_link_libraries(router_primitives PUBLIC router_build_options)
+
+add_library(router_device STATIC
+  src/device_routing.cpp
+  src/hardware.cpp
+  src/routing.cpp
+)
+target_link_libraries(router_device PUBLIC router_primitives router_build_options)
+
+add_library(router_network STATIC
+  src/network.cpp
+  src/network_adjacency.cpp
+  src/network_endpoint.cpp
+  src/network_link_fabric.cpp
+)
+target_link_libraries(router_network PUBLIC router_device router_primitives router_build_options)
+
+add_library(router_management STATIC
+  src/capture_store.cpp
+  src/checkpoint.cpp
+  src/cli.cpp
+  src/cli_classic.cpp
+  src/cli_md.cpp
+  src/project_configuration.cpp
+)
+target_link_libraries(router_management PUBLIC
+  router_network router_device router_primitives router_build_options)
+
+add_library(router_runtime STATIC
+  src/runtime.cpp
+  src/runtime_checkpoint.cpp
+  src/runtime_project.cpp
+  src/runtime_projection.cpp
+)
+target_link_libraries(router_runtime PUBLIC
+  router_management router_network router_device router_primitives router_build_options)
+
+# Existing tools and the stable Wasm ABI consume one facade target. INTERFACE
+# adds no archive or runtime dispatch and preserves the explicit layers above.
+add_library(router_core INTERFACE)
+target_link_libraries(router_core INTERFACE router_runtime)
+
+if(NOT EMSCRIPTEN AND ROUTER_SANITIZERS)
   # Sanitizers are native-only because Wasm pthread execution is validated in
   # the browser build. Applying the flags transitively ensures test executables
-  # and router_core use the same instrumented allocation and thread runtime.
-  target_compile_options(router_core PUBLIC "-fsanitize=${ROUTER_SANITIZERS}" -fno-omit-frame-pointer)
-  target_link_options(router_core PUBLIC "-fsanitize=${ROUTER_SANITIZERS}")
+  # and every layer use the same instrumented allocation runtime.
+  if(MSVC)
+    if(NOT ROUTER_SANITIZERS STREQUAL "address")
+      message(FATAL_ERROR "MSVC supports ROUTER_SANITIZERS=address only")
+    endif()
+    # Address instrumentation is applied to every layer and test executable.
+    # Incremental linking is disabled because the sanitizer linker requires it.
+    target_compile_options(router_build_options INTERFACE /fsanitize=address)
+    target_link_options(router_build_options INTERFACE /INCREMENTAL:NO)
+  elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    target_compile_options(router_build_options INTERFACE
+      "-fsanitize=${ROUTER_SANITIZERS}" -fno-omit-frame-pointer)
+    target_link_options(router_build_options INTERFACE "-fsanitize=${ROUTER_SANITIZERS}")
+  else()
+    message(FATAL_ERROR "ROUTER_SANITIZERS is unsupported by this compiler")
+  endif()
 endif()
 
 if(EMSCRIPTEN)
@@ -46,7 +101,7 @@ if(EMSCRIPTEN)
   # executable leaves parsers, checksums and forwarding at Clang's -O0 default.
   # Keep the optimization contract on the archive itself to make every Wasm
   # consumer, including the browser runtime, use the same production code.
-  target_compile_options(router_core PUBLIC -pthread -O3)
+  target_compile_options(router_build_options INTERFACE -pthread -O3)
 endif()
 
 if(ROUTER_BUILD_BENCHMARKS)
@@ -122,6 +177,23 @@ if(ROUTER_BUILD_TESTS)
     set_target_properties(core_tests PROPERTIES SUFFIX ".js")
   endif()
   add_test(NAME core_tests COMMAND core_tests)
+
+  # These tests link below Runtime and the Wasm ABI. A module that accidentally
+  # grows an orchestration dependency fails here even if the integration target
+  # would otherwise provide the missing symbol transitively.
+  add_executable(module_tests
+    tests/checkpoint_test.cpp
+    tests/hardware_test.cpp
+    tests/module_test_main.cpp
+    tests/network_test.cpp
+  )
+  target_link_libraries(module_tests PRIVATE router_management)
+  if(EMSCRIPTEN)
+    target_compile_options(module_tests PRIVATE -pthread)
+    target_link_options(module_tests PRIVATE -pthread "-sPTHREAD_POOL_SIZE=2" "-sINITIAL_MEMORY=201326592")
+    set_target_properties(module_tests PROPERTIES SUFFIX ".js")
+  endif()
+  add_test(NAME module_tests COMMAND module_tests)
   if(NOT EMSCRIPTEN)
     add_executable(capture_fixture tools/capture_fixture.cpp)
     target_link_libraries(capture_fixture PRIVATE router_core)

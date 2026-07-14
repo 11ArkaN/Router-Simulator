@@ -61,8 +61,8 @@ link_defaults:
 capture_interfaces:
   - link-host-a-to-router
   - link-router-to-host-a
-  - link-router-to-host-b
   - link-host-b-to-router
+  - link-router-to-host-b
   - router-1/1/1-ingress
   - router-1/1/2-ingress
   - router-1/1/1-egress

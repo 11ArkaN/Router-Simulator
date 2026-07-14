@@ -15,7 +15,18 @@ if (-not (Test-Path (Join-Path $Emsdk "emsdk_env.ps1"))) {
 }
 
 $env:EMSDK_QUIET = "1"
-. (Join-Path $Emsdk "emsdk_env.ps1")
+# emsdk_env.ps1 creates and removes one fixed emsdk_set_env.ps1 file. Parallel
+# benchmark or CI invocations would race on that file and fail before CMake.
+# A machine-local mutex serializes only environment construction; builds still
+# run concurrently after every process has received its private environment.
+$EmsdkMutex = [System.Threading.Mutex]::new($false, "Local\RouterSimulatorEmsdkEnv")
+try {
+  $EmsdkMutex.WaitOne() | Out-Null
+  . (Join-Path $Emsdk "emsdk_env.ps1")
+} finally {
+  $EmsdkMutex.ReleaseMutex()
+  $EmsdkMutex.Dispose()
+}
 $env:PATH = "$CmakeBin;$NinjaBin;$env:PATH"
 
 if (-not (Test-Path (Join-Path $Build "build.ninja"))) {
@@ -26,7 +37,10 @@ cmake --build $Build
 if ($LASTEXITCODE -ne 0) { throw "Core build failed." }
 
 switch ($Task) {
-  "test" { node (Join-Path $Build "core_tests.js") }
+  "test" {
+    node (Join-Path $Build "module_tests.js")
+    if ($LASTEXITCODE -eq 0) { node (Join-Path $Build "core_tests.js") }
+  }
   "manual" { node (Join-Path $Build "manual_session.js") }
   "benchmark" { node (Join-Path $Build "packet_benchmark.js") }
   "structure-benchmark" { node (Join-Path $Build "structure_benchmark.js") }

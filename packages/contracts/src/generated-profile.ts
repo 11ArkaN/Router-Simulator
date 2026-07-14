@@ -10,8 +10,6 @@ export const GENERATED_PROFILE = {
   portSpeedMbps: 10000,
   cardInitializationMs: 2000,
   mdaInitializationMs: 1000,
-  // A project persists one value per physical link. This profile value is only
-  // the initial local-lab default used by new and legacy projects.
   defaultPropagationDelayNs: 100,
   routerInterfaces: [
     { mac: "02:00:00:00:01:01", address: "192.0.2.1/30" },

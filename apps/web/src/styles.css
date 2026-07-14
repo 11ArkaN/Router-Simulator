@@ -229,6 +229,17 @@ button { color: inherit; }
   .telemetry-strip .capture-live { padding-inline: 10px; }
 }
 
+@media (max-height: 700px) {
+  /* The normal 360 px topology plus 280 px terminal minimum requires 692 px
+     after the top bar. On shorter laptop windows that fixed sum pushed the
+     inspector below the viewport while document scrolling remained disabled.
+     Both work areas keep useful minimums here, then share every remaining
+     pixel through the same grid instead of clipping the right panel. */
+  .app-shell {
+    grid-template-rows: 52px minmax(180px, 1fr) minmax(160px, 36.5vh);
+  }
+}
+
 @media (max-width: 480px) {
   /* The runtime status text competes with the brand and three project actions
      on phone-sized screens. Port state remains visible in topology nodes and

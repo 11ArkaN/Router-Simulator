@@ -1,9 +1,10 @@
-// Control-owned RIB selection and immutable FIB programs consumed by forwarding.
-// Route values contain no pointers and may cross the SPSC shard boundary.
+// Control-owned RIB selection and immutable FIB programs consumed by
+// forwarding. Route values contain no pointers and may cross the SPSC shard
+// boundary.
 
 #pragma once
 
-#include "router/device.hpp"
+#include "router/generated_profile.hpp"
 
 #include <array>
 #include <cstddef>
@@ -14,7 +15,8 @@ namespace router::routing {
 
 constexpr std::uint32_t ipv4(std::uint8_t a, std::uint8_t b, std::uint8_t c,
                              std::uint8_t d) noexcept {
-  return static_cast<std::uint32_t>(a) << 24 | static_cast<std::uint32_t>(b) << 16 |
+  return static_cast<std::uint32_t>(a) << 24 |
+         static_cast<std::uint32_t>(b) << 16 |
          static_cast<std::uint32_t>(c) << 8 | d;
 }
 
@@ -25,15 +27,22 @@ constexpr std::uint32_t prefix_mask(std::uint8_t length) noexcept {
   return length ? 0xffffffffU << (32U - length) : 0;
 }
 
-constexpr std::uint32_t host_next_hop(std::uint32_t source,
-                                      std::uint8_t prefix_length,
-                                      std::uint32_t destination,
-                                      std::uint32_t gateway) noexcept {
+struct HostNextHopInput {
+  // Named fields prevent four integer address arguments from being reordered
+  // at a call site while keeping the calculation allocation-free.
+  std::uint32_t source{};
+  std::uint8_t prefix_length{};
+  std::uint32_t destination{};
+  std::uint32_t gateway{};
+};
+
+constexpr std::uint32_t host_next_hop(HostNextHopInput input) noexcept {
   // Source: ietf.host_requirements.rfc1122. A host resolves the destination
   // itself when it is on-link and resolves its selected gateway otherwise.
   // Returning an IPv4 value keeps ARP responsible for deriving the MAC.
-  const auto mask = prefix_mask(prefix_length);
-  return (source & mask) == (destination & mask) ? destination : gateway;
+  const auto mask = prefix_mask(input.prefix_length);
+  return (input.source & mask) == (input.destination & mask) ? input.destination
+                                                             : input.gateway;
 }
 
 struct Route {
@@ -53,26 +62,51 @@ struct FibProgram {
   std::uint64_t generation{};
   std::array<Route, 8> entries{};
   std::uint8_t count{};
-  std::array<bool, 2> port_operational{};
+  std::array<bool, profile::port_count> port_operational{};
+};
+
+struct ConnectedRouteInput {
+  // Runtime projects only route-relevant interface values. The route manager
+  // cannot inspect hardware inventory, CLI sessions, counters or alarms.
+  bool valid{};
+  bool operational{};
+  std::uint32_t network{};
+  std::uint8_t prefix_length{};
+  std::uint8_t port_index{};
+};
+
+struct StaticRouteInput {
+  bool valid{};
+  std::uint32_t network{};
+  std::uint32_t next_hop{};
+  std::uint8_t prefix_length{};
+};
+
+struct RibInput {
+  // Fixed capacities mirror profile and configuration limits, so rebuilding a
+  // RIB performs no allocation and the input may be assembled on the stack.
+  std::array<ConnectedRouteInput, profile::port_count> connected{};
+  std::uint8_t connected_count{};
+  std::array<StaticRouteInput, 8> statics{};
 };
 
 class ConnectedRib final {
- public:
+public:
   // The route manager is the sole owner of this RIB projection. rebuild returns
   // false when no operational input changed, avoiding redundant FIB messages.
-  bool rebuild(const DeviceState& device) noexcept;
+  bool rebuild(const RibInput &input) noexcept;
   [[nodiscard]] std::span<const Route> entries() const noexcept {
     return {entries_.data(), count_};
   }
   [[nodiscard]] FibProgram compile(std::uint64_t generation) const noexcept;
 
- private:
+private:
   std::array<Route, 8> entries_{};
   std::uint8_t count_{};
 };
 
-[[nodiscard]] bool lookup(const FibProgram& fib, std::uint32_t destination,
-                          std::uint8_t& port_index,
-                          std::uint32_t* next_hop = nullptr) noexcept;
+[[nodiscard]] bool lookup(const FibProgram &fib, std::uint32_t destination,
+                          std::uint8_t &port_index,
+                          std::uint32_t *next_hop = nullptr) noexcept;
 
-}  // namespace router::routing
+} // namespace router::routing

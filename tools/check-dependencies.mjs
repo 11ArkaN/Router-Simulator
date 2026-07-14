@@ -34,6 +34,45 @@ for (const file of files) {
   graph.set(normalize(file), dependencies.map(normalize).filter((item) => nodes.has(item)));
 }
 
+// C++ layer numbers increase toward orchestration. A source may include its own
+// or a lower layer only. CMake target links enforce symbol dependencies, while
+// this check also catches header-only inversions that a linker cannot observe.
+const cppLayers = new Map([
+  ["bounded_queue.hpp", 0], ["generated_profile.hpp", 0], ["link_direction.hpp", 0],
+  ["packet.hpp", 0], ["packet_pool.hpp", 0], ["spsc_ring.hpp", 0], ["telemetry.hpp", 0],
+  ["packet.cpp", 0],
+  ["device.hpp", 1], ["device_routing.hpp", 1], ["hardware.hpp", 1], ["routing.hpp", 1],
+  ["device_routing.cpp", 1], ["hardware.cpp", 1], ["routing.cpp", 1],
+  ["network.hpp", 2], ["network.cpp", 2], ["network_adjacency.hpp", 2],
+  ["network_adjacency.cpp", 2], ["network_endpoint.hpp", 2], ["network_endpoint.cpp", 2],
+  ["network_link_fabric.hpp", 2], ["network_link_fabric.cpp", 2],
+  ["capture_store.hpp", 3], ["checkpoint.hpp", 3], ["cli.hpp", 3],
+  ["project_configuration.hpp", 3], ["cli_internal.hpp", 3],
+  ["capture_store.cpp", 3], ["checkpoint.cpp", 3], ["cli.cpp", 3],
+  ["cli_classic.cpp", 3], ["cli_md.cpp", 3], ["project_configuration.cpp", 3],
+  ["runtime_messages.hpp", 4], ["runtime.hpp", 4], ["runtime.cpp", 4],
+  ["runtime_checkpoint.cpp", 4], ["runtime_project.cpp", 4], ["runtime_projection.cpp", 4],
+  ["wasm_api.cpp", 5]
+]);
+const cppLayer = (file) => {
+  const relativePath = relative(root, file).replaceAll("\\", "/");
+  if (relativePath.startsWith("core/tests/") || relativePath.startsWith("core/tools/")) return 99;
+  return cppLayers.get(relativePath.split("/").at(-1));
+};
+for (const [source, dependencies] of graph) {
+  const sourceLayer = cppLayer(source);
+  if (sourceLayer === undefined) continue;
+  for (const dependency of dependencies) {
+    const dependencyLayer = cppLayer(dependency);
+    if (dependencyLayer !== undefined && sourceLayer < dependencyLayer) {
+      throw new Error(
+        `Dependency layer violation: ${relative(root, source)} (${sourceLayer}) -> ` +
+        `${relative(root, dependency)} (${dependencyLayer})`
+      );
+    }
+  }
+}
+
 const active = new Set();
 const complete = new Set();
 const visit = (node, stack) => {
@@ -45,4 +84,4 @@ const visit = (node, stack) => {
   complete.add(node);
 };
 for (const node of graph.keys()) visit(node, []);
-console.log(`dependency graph valid: ${graph.size} modules`);
+console.log(`dependency graph and C++ layers valid: ${graph.size} modules`);
