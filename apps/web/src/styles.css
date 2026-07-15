@@ -24,26 +24,49 @@ button { cursor: pointer; transition: background-color 160ms ease, border-color 
 button:active:not(:disabled) { transform: translateY(1px); }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #159ff3; outline-offset: 2px; }
 
-/* Three desktop columns keep the library, canvas and inspector independent.
-   minmax on the center prevents the right inspector from being clipped. */
+/* The saved inspector width and terminal height are user preferences, not
+   absolute viewport reservations. The tracks below cap those preferences by
+   the current viewport, while minmax(0, 1fr) lets the topology absorb every
+   remaining pixel without creating document-level overflow. Track variables
+   also give open and closed states one source of truth across breakpoints. */
 .app-shell {
+  --header-track: 52px;
+  --topology-min-track: 120px;
+  --workspace-min-track: 240px;
+  --inspector-track: clamp(
+    160px,
+    var(--inspector-preferred-width, 324px),
+    calc(100vw - var(--workspace-min-track) - 96px)
+  );
+  --library-track: clamp(
+    96px,
+    var(--library-preferred-width, 194px),
+    calc(100vw - var(--workspace-min-track) - var(--inspector-track))
+  );
+  --terminal-track: clamp(
+    90px,
+    var(--terminal-preferred-height, 360px),
+    calc(100dvh - var(--header-track) - var(--topology-min-track))
+  );
   display: grid;
-  grid-template-columns: 194px minmax(0, 1fr) var(--inspector-width, 324px);
-  grid-template-rows: 52px minmax(0, 1fr) var(--terminal-height, 360px);
+  grid-template-columns: var(--library-track) minmax(0, 1fr) var(--inspector-track);
+  grid-template-rows: var(--header-track) minmax(var(--topology-min-track), 1fr) var(--terminal-track);
   width: 100vw;
-  height: 100vh;
   height: 100dvh;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   background: #091118;
 }
-.app-shell.inspector-closed { grid-template-columns: 194px minmax(0, 1fr) 0; }
-.app-shell.terminal-closed { grid-template-rows: 52px minmax(0, 1fr) 0; }
+.app-shell.inspector-closed { --inspector-track: 0px; }
+.app-shell.terminal-closed { --terminal-track: 0px; }
 
 /* Header tracks the same column boundaries as the content grid so controls
    stay aligned while the center canvas absorbs viewport width changes. */
 .topbar {
   grid-column: 1 / 4;
   display: grid;
-  grid-template-columns: 194px minmax(340px, 1fr) auto;
+  grid-template-columns: var(--library-track) minmax(0, 1fr) auto;
   align-items: stretch;
   min-width: 0;
   background: #071017;
@@ -173,7 +196,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 /* Inspector owns its scroll container across canvas and terminal rows. This
    keeps every hardware control reachable on short screens. */
-.inspector { grid-column: 3; grid-row: 2 / 4; overflow: auto; min-height: 0; background: linear-gradient(110deg, #0d1921, #0b1720); border-left: 1px solid var(--line); }
+.inspector { grid-column: 3; grid-row: 2 / 4; position: relative; overflow: auto; min-height: 0; background: linear-gradient(110deg, #0d1921, #0b1720); border-left: 1px solid var(--line); }
 .inspector-title { display: flex; justify-content: space-between; min-height: 68px; padding: 13px 15px 8px; }
 .inspector-title h2 { display: flex; align-items: center; gap: 9px; margin: 0; color: #f1f5f6; font-size: 18px; font-weight: 500; }
 .inspector-title p { margin: 3px 0 0; color: #8f9ca3; font-size: 10px; }
@@ -231,68 +254,120 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .inspector input { width: 100%; height: 34px; margin-top: 6px; padding: 0 9px; border: 1px solid #33434c; outline: 0; color: #ccd5d8; background: #09151c; font: 11px "Cascadia Mono", monospace; }
 .inspector input:focus { border-color: var(--blue); }
 
-/* xterm receives a stable flex height and performs its own cell measurement.
+/* xterm receives a bounded flex rectangle and performs its own cell
+   measurement. The panel clips renderer helpers that xterm positions just
+   outside its screen, while the nested viewport remains the sole scroll owner.
    Transforms never scale terminal pixels or change keyboard geometry. */
-.terminal-panel { grid-column: 2; grid-row: 3; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #050d12; }
+.terminal-panel { grid-column: 2; grid-row: 3; position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: #050d12; }
 .terminal-head { display: flex; align-items: center; height: 45px; flex: 0 0 45px; border-bottom: 1px solid #28353c; background: #071117; }
-.terminal-head > div:first-child { display: flex; align-items: center; gap: 8px; align-self: stretch; padding: 0 15px; border-bottom: 2px solid var(--blue); color: #e0e6e8; font-size: 13px; }
+.terminal-head > div:first-child { display: flex; align-items: center; gap: 8px; align-self: stretch; min-width: 0; padding: 0 15px; overflow: hidden; border-bottom: 2px solid var(--blue); color: #e0e6e8; font-size: 13px; white-space: nowrap; }
 .terminal-panel:fullscreen { background: #050d12; }
 .terminal-actions { display: flex; align-items: stretch; height: 100%; margin-left: auto; }
-.terminal-actions button { width: 43px; border: 0; border-left: 1px solid #1c2b33; background: transparent; color: #86959c; font-size: 15px; }
+.terminal-actions button { width: clamp(38px, 3.4vw, 43px); border: 0; border-left: 1px solid #1c2b33; background: transparent; color: #86959c; font-size: 15px; }
 .terminal-actions button:hover, .terminal-actions button.active { color: #e2eaed; background: #12212a; }
 .terminal-settings { flex: 0 0 auto; padding: 8px 14px; border-bottom: 1px solid #24333b; background: #0b171e; }
 .terminal-settings label { display: grid; grid-template-columns: auto minmax(120px, 220px) 42px; align-items: center; gap: 11px; color: #8f9ca3; font-size: 9px; text-transform: uppercase; letter-spacing: .05em; }
 .terminal-settings input { accent-color: var(--blue); }
 .terminal-settings span { color: #c1cbd0; font: 10px "Cascadia Mono", monospace; }
-.terminal-host { flex: 1; min-height: 0; padding: 16px 20px 8px; }
-.xterm { height: 100%; }
-.xterm-viewport { scrollbar-color: #34444d transparent; scrollbar-width: thin; }
+.terminal-host { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; padding: clamp(8px, 1.5dvh, 16px) clamp(10px, 1.55vw, 20px) 8px; overflow: hidden; }
+.terminal-host > .xterm { width: 100%; height: 100%; }
+
+/* xterm maps this element directly to its scrollback buffer. Keeping native
+   vertical scrolling enabled supports wheel, touchpad, scrollbar dragging and
+   touch panning without translating any of them into router input bytes.
+   Contained overscroll prevents a terminal boundary from moving another panel. */
+.terminal-host .xterm-viewport {
+  overflow-x: hidden !important;
+  overflow-y: scroll !important;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  scrollbar-color: #465963 #0a1115;
+  scrollbar-width: thin;
+}
+.terminal-host .xterm-viewport::-webkit-scrollbar { width: 10px; }
+.terminal-host .xterm-viewport::-webkit-scrollbar-track { background: #0a1115; }
+.terminal-host .xterm-viewport::-webkit-scrollbar-thumb { background: #465963; border: 2px solid #0a1115; }
+
+/* Resize boundaries occupy a generous transparent hit target but draw only a
+   one-pixel guide, preserving the approved flat panel separators. touch-action
+   disables browser panning only while the user is dragging a boundary. */
+.panel-resizer {
+  position: absolute;
+  z-index: 12;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent !important;
+  box-shadow: none;
+  color: transparent;
+  touch-action: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.panel-resizer::after { content: ""; position: absolute; background: #40535e; opacity: 0; transition: opacity 120ms ease, background-color 120ms ease; }
+.panel-resizer:hover::after, .panel-resizer:focus-visible::after { opacity: 1; background: var(--blue); }
+.panel-resizer:focus-visible { outline: 1px solid #1b9df0; outline-offset: -3px; }
+.library-resizer, .inspector-resizer { top: 0; bottom: 0; width: 9px; cursor: col-resize; }
+.library-resizer { right: 0; }
+.inspector-resizer { left: 0; }
+.library-resizer::after, .inspector-resizer::after { top: 0; bottom: 0; left: 4px; width: 1px; }
+.terminal-resizer { top: 0; right: 0; left: 0; height: 9px; cursor: row-resize; }
+.terminal-resizer::after { top: 4px; right: 0; left: 0; height: 1px; }
 
 @media (max-width: 1100px) {
-  /* The previous 520 px center minimum made the three columns wider than the
-     viewport below 970 px. Because the application intentionally suppresses
-     document scrolling, the inspector was clipped instead of becoming
-     reachable. Only side panels keep readable minimums now; the topology owns
-     the remaining space and React Flow fits its content to that rectangle. */
-  .app-shell {
-    grid-template-columns:
-      clamp(150px, 15.5vw, 170px)
-      minmax(0, 1fr)
-      clamp(240px, 25.5vw, 280px);
-  }
-  .topbar { grid-template-columns: clamp(150px, 15.5vw, 170px) minmax(0, 1fr) auto; }
+  /* Labels disappear before their icon buttons need to compress the center
+     navigation. The grid itself remains fluid through the track variables. */
   .icon-action { padding: 0 10px; }
   .icon-action span { display: none; }
 }
 
-@media (max-width: 840px) {
+@media (max-width: 900px) {
   /* At compact desktop and tablet widths the palette contributes less than
      the live topology and inspector. Removing its grid track yields roughly
-     150 extra pixels without shrinking controls or scaling text below the
-     render's intended size. The palette remains available on wider layouts. */
+     164 extra pixels without shrinking controls or scaling text below the
+     render's intended size. Device selection remains available on the canvas
+     and the Devices workspace, so no operation disappears with the palette. */
   .app-shell {
-    grid-template-columns: minmax(0, 1fr) clamp(224px, 34vw, 280px);
+    --library-track: 0px;
+    --inspector-track: clamp(
+      160px,
+      var(--inspector-preferred-width, 324px),
+      calc(100vw - var(--workspace-min-track))
+    );
   }
   .library { display: none; }
-  .center-stage, .terminal-panel { grid-column: 1; }
-  .inspector { grid-column: 2; }
   .topbar {
-    grid-column: 1 / 3;
     grid-template-columns: minmax(145px, 1fr) auto;
   }
   .top-nav { display: none; }
-
 }
 
-@media (max-height: 700px) {
-  /* The normal 360 px topology plus 280 px terminal minimum requires 692 px
-     after the top bar. On shorter laptop windows that fixed sum pushed the
-     inspector below the viewport while document scrolling remained disabled.
-     Both work areas keep useful minimums here, then share every remaining
-     pixel through the same grid instead of clipping the right panel. */
-  .app-shell {
-    grid-template-rows: 52px minmax(180px, 1fr) minmax(160px, 36.5vh);
+@media (max-width: 680px) {
+  /* On a phone-sized viewport the inspector becomes a closeable drawer. It no
+     longer consumes a permanent grid column, so topology and terminal each use
+     the full width. The existing close button and node selection retain the
+     same interaction contract without adding a second mobile-only state. */
+  .app-shell { --inspector-track: 0px; }
+  .inspector {
+    position: fixed;
+    z-index: 40;
+    inset: var(--header-track) 0 0 auto;
+    width: min(calc(100vw - 16px), var(--inspector-preferred-width, 324px));
+    max-width: none;
+    box-shadow: -18px 0 36px rgba(2, 8, 12, .48);
   }
+}
+
+@media (max-height: 520px) {
+  /* Landscape phones need a smaller but still interactive console. Its xterm
+     rows are recomputed by ResizeObserver after this track changes. */
+  .app-shell {
+    --header-track: 46px;
+    --topology-min-track: 80px;
+    --workspace-min-track: 180px;
+  }
+  .terminal-head { height: 40px; flex-basis: 40px; }
 }
 
 @media (max-width: 480px) {
@@ -302,6 +377,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .inspector-tabs button { font-size: 9px; }
   .spec-grid { grid-template-columns: minmax(82px, 42%) 1fr; padding-inline: 11px; }
   .hardware-slot { padding-inline: 11px; }
+  .inspector { width: min(100vw, var(--inspector-preferred-width, 324px)); }
+  .terminal-head > div:first-child { padding-inline: 10px; font-size: 11px; }
 }
 
 /* Secondary workspaces reuse the render's flat separators and restrained

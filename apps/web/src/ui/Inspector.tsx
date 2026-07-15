@@ -5,6 +5,7 @@
 import { useState } from "react";
 import { GENERATED_PROFILE, type HostConfig, type RuntimeSnapshot } from "@router-simulator/contracts";
 import type { HardwareAction } from "../runtime/client";
+import { PanelResizeHandle } from "./PanelResizeHandle";
 
 export type RouterTab = "chassis" | "cpm" | "cards" | "ports" | "operational";
 
@@ -19,6 +20,8 @@ interface Props {
   hardware(action: HardwareAction): void;
   setLink(portId: string, up: boolean): void;
   ping(sourceId: string, destinationId: string): Promise<string>;
+  width: number;
+  onWidthChange(value: number): void;
   openConsole(): void;
   close(): void;
 }
@@ -36,9 +39,15 @@ function speedLabel(speedMbps: number): string {
 }
 
 export function Inspector({ selected, tab, onTabChange, hosts, snapshot,
-  systemName, updateHost, hardware, setLink, ping, openConsole, close }: Props) {
+  systemName, updateHost, hardware, setLink, ping, width, onWidthChange,
+  openConsole, close }: Props) {
   const [pingResult, setPingResult] = useState("");
   const [pingBusy, setPingBusy] = useState(false);
+  const resizeHandle = <PanelResizeHandle axis="x" className="inspector-resizer"
+    defaultValue={GENERATED_PROFILE.uiDefaults.inspector_width} direction={-1}
+    label="Resize inspector" min={GENERATED_PROFILE.uiDefaults.inspector_width_min}
+    max={GENERATED_PROFILE.uiDefaults.inspector_width_max} value={width}
+    onChange={onWidthChange} />;
   const host = hosts.find((item) => item.id === selected);
   if (host) {
     const update = (key: keyof HostConfig, value: string) => updateHost({ ...host, [key]: value });
@@ -66,6 +75,7 @@ export function Inspector({ selected, tab, onTabChange, hosts, snapshot,
           <button className="inspector-action" disabled={!peer || pingBusy} onClick={() => void runPing()}>{pingBusy ? "Pinging" : `Ping ${peer?.name ?? "peer"}`}</button>
           {pingResult && <pre className="operation-result">{pingResult}</pre>}
         </div>
+        {resizeHandle}
       </aside>
     );
   }
@@ -106,6 +116,7 @@ export function Inspector({ selected, tab, onTabChange, hosts, snapshot,
       <div className="inspector-title"><div><h2>{systemName}<i className={runtimeReady ? "dot-good" : "dot-muted"} /></h2><p>{runtimeReady ? "Running" : "Unavailable"}</p></div><button aria-label="Close inspector" onClick={close}>×</button></div>
       <nav className="inspector-tabs">{(["chassis", "cpm", "cards", "ports", "operational"] as const).map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => onTabChange(item)}>{item === "cpm" ? "CPM" : item[0].toUpperCase() + item.slice(1)}</button>)}</nav>
       {renderTab()}
+      {resizeHandle}
     </aside>
   );
 }

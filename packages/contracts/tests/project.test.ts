@@ -24,8 +24,11 @@ describe("project format", () => {
     const legacy = structuredClone(DEFAULT_PROJECT) as Partial<typeof DEFAULT_PROJECT>;
     delete legacy.links;
     delete legacy.notes;
+    delete (legacy.layout as Partial<typeof DEFAULT_PROJECT.layout>).sidebarWidth;
     expect(parseProject(legacy).links).toEqual(DEFAULT_PROJECT.links);
     expect(parseProject(legacy).notes).toBe("");
+    expect(parseProject(legacy).layout.sidebarWidth)
+      .toBe(GENERATED_PROFILE.uiDefaults.sidebar_width);
   });
 
   it("bounds portable project notes", () => {
@@ -40,9 +43,12 @@ describe("project format", () => {
 
   it("bounds portable workspace dimensions", () => {
     // Import validation uses the same generated limits as range inputs. A
-    // hand-edited .netsim file cannot make the inspector or terminal controls
-    // permanently unreachable outside the responsive application grid.
+    // hand-edited .netsim file cannot make a sidebar, inspector or terminal
+    // control permanently unreachable outside the responsive application grid.
     const project = structuredClone(DEFAULT_PROJECT);
+    project.layout.sidebarWidth = GENERATED_PROFILE.uiDefaults.sidebar_width_max + 1;
+    expect(() => parseProject(project)).toThrow("UI layout");
+    project.layout.sidebarWidth = GENERATED_PROFILE.uiDefaults.sidebar_width;
     project.layout.inspectorWidth = GENERATED_PROFILE.uiDefaults.inspector_width_max + 1;
     expect(() => parseProject(project)).toThrow("UI layout");
     project.layout.inspectorWidth = GENERATED_PROFILE.uiDefaults.inspector_width;

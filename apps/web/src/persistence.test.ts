@@ -4,9 +4,26 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_PROJECT } from "@router-simulator/contracts";
 import { createCheckpointManifest, createProjectManifest,
-  IncompatibleCheckpointError, importProject, parseNetsim } from "./persistence";
+  decodeStoredProject, IncompatibleCheckpointError, importProject, parseNetsim } from "./persistence";
 
 describe("project file import", () => {
+  it("quarantines an incompatible stored record without accepting its fields", () => {
+    // Recovery keeps the rejected object byte-for-byte for the IndexedDB
+    // transaction, while the active replacement comes only from generated
+    // defaults. This prevents a stale record from disabling every later boot.
+    const legacy = { format: "obsolete-lab", arbitrary: { retained: true } };
+    const decoded = decodeStoredProject(legacy);
+    expect(decoded).toEqual({
+      project: DEFAULT_PROJECT,
+      rejected: true,
+      recovery: legacy
+    });
+    expect(decodeStoredProject(undefined)).toEqual({
+      project: DEFAULT_PROJECT,
+      rejected: false
+    });
+  });
+
   it("accepts an exported project wrapper", async () => {
     // The browser import path and IndexedDB load path share parseProject. This
     // test exercises the file wrapper without mocking or bypassing validation.

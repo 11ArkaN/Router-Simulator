@@ -118,6 +118,7 @@ export interface RuntimeSnapshot {
 
 export interface UiLayout {
   nodes: Record<string, { x: number; y: number }>;
+  sidebarWidth: number;
   inspectorWidth: number;
   terminalHeight: number;
 }
@@ -320,6 +321,7 @@ export function createDefaultProject(now = new Date()): LabProject {
     notes: "",
     layout: {
       nodes: structuredClone(GENERATED_PROFILE.uiDefaults.nodes),
+      sidebarWidth: GENERATED_PROFILE.uiDefaults.sidebar_width,
       inspectorWidth: GENERATED_PROFILE.uiDefaults.inspector_width,
       terminalHeight: GENERATED_PROFILE.uiDefaults.terminal_height
     },
@@ -400,7 +402,16 @@ export function parseProject(input: unknown): LabProject {
       };
     })
   } as RunningConfig : rawRunning;
-  const layout = value.layout ?? structuredClone(DEFAULT_PROJECT.layout);
+  // sidebarWidth was added after project v2 shipped. Missing values migrate to
+  // the profile default, while an explicitly supplied invalid value still
+  // fails below. The merge keeps old .netsim files portable without silently
+  // repairing arbitrary width data.
+  const rawLayout = value.layout ?? structuredClone(DEFAULT_PROJECT.layout);
+  const layout = rawLayout && typeof rawLayout === "object" ? {
+    ...rawLayout,
+    ...(Object.prototype.hasOwnProperty.call(rawLayout, "sidebarWidth") ? {} :
+      { sidebarWidth: GENERATED_PROFILE.uiDefaults.sidebar_width })
+  } as UiLayout : rawLayout;
   // Notes are an additive version-2 field. Older projects receive an empty
   // document, while imported values are bounded before they can enter
   // IndexedDB or a portable manifest.
@@ -550,6 +561,9 @@ export function parseProject(input: unknown): LabProject {
     typeof point.x === "number" && Number.isFinite(point.x) &&
     typeof point.y === "number" && Number.isFinite(point.y);
   if (!layout.nodes || requiredNodeIds.some((id) => !validPoint(layout.nodes[id])) ||
+      !Number.isFinite(layout.sidebarWidth) ||
+      layout.sidebarWidth < GENERATED_PROFILE.uiDefaults.sidebar_width_min ||
+      layout.sidebarWidth > GENERATED_PROFILE.uiDefaults.sidebar_width_max ||
       !Number.isFinite(layout.inspectorWidth) ||
       layout.inspectorWidth < GENERATED_PROFILE.uiDefaults.inspector_width_min ||
       layout.inspectorWidth > GENERATED_PROFILE.uiDefaults.inspector_width_max ||

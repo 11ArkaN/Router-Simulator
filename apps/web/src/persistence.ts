@@ -35,16 +35,58 @@ function database(): Promise<IDBDatabase> {
   return databasePromise;
 }
 
+export function decodeStoredProject(value: unknown): {
+  project: LabProject;
+  rejected: boolean;
+  recovery?: unknown;
+} {
+  // An absent record is a normal first run. An incompatible record is returned
+  // separately for quarantine and never gains legitimacy through normalization.
+  // The valid replacement is cloned so UI edits cannot mutate DEFAULT_PROJECT.
+  if (value === undefined) {
+    return { project: structuredClone(DEFAULT_PROJECT), rejected: false };
+  }
+  try {
+    return { project: parseProject(value), rejected: false };
+  } catch {
+    return { project: structuredClone(DEFAULT_PROJECT), rejected: true, recovery: value };
+  }
+}
+
+async function quarantineProject(db: IDBDatabase, recovery: unknown,
+  replacement: LabProject): Promise<void> {
+  // One atomic transaction preserves the rejected bytes before replacing the
+  // active key. A crash cannot leave the user with neither the old record nor
+  // a bootable project, and the stable recovery key avoids unbounded storage
+  // growth after repeated startup attempts.
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(STORE, "readwrite");
+    const store = transaction.objectStore(STORE);
+    store.put({ recoveredAt: new Date().toISOString(), value: recovery }, "recovery:active");
+    store.put(replacement, "active");
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error ??
+      new Error("Project recovery transaction was aborted"));
+  });
+}
+
 export async function loadProject(): Promise<LabProject> {
-  // Imported storage is validated before use. A fresh project is cloned so UI
-  // edits cannot mutate the shared DEFAULT_PROJECT constant.
+  // Stored data crosses the same strict parser as file imports. A rejected old
+  // schema is quarantined once, allowing later starts to use the replacement
+  // without repeatedly surfacing the same non-actionable error banner.
   const db = await database();
   const value = await new Promise<unknown>((resolve, reject) => {
     const request = db.transaction(STORE).objectStore(STORE).get("active");
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
-  return value ? parseProject(value) : structuredClone(DEFAULT_PROJECT);
+  const decoded = decodeStoredProject(value);
+  if (!decoded.rejected) return decoded.project;
+  const replacement = { ...decoded.project, updatedAt: new Date().toISOString() };
+  await quarantineProject(db, decoded.recovery, replacement);
+  console.warn("Stored project was preserved under recovery:active and replaced with the current default profile");
+  return replacement;
 }
 
 export async function saveProject(project: LabProject): Promise<void> {

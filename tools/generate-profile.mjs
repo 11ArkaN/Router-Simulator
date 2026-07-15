@@ -59,7 +59,14 @@ const stableJson = (value) => {
   }
   return JSON.stringify(value);
 };
-const profileHash = createHash("sha256").update(stableJson(profile)).digest("hex").slice(0, 16);
+// UI layout preferences are generated with the profile but do not alter any
+// router, packet or checkpoint semantics. Excluding them from compatibility
+// hashes prevents a resizable-panel change from invalidating live structural
+// state or forcing an otherwise identical C++ runtime rebuild.
+const runtimeProfile = { ...profile };
+delete runtimeProfile.ui_defaults;
+const profileHash = createHash("sha256")
+  .update(stableJson(runtimeProfile)).digest("hex").slice(0, 16);
 // Checkpoint hash covers field order and meaning, while the profile hash covers
 // values. A matching version number alone is insufficient for safe restore.
 const checkpointSchemaPath = resolve(root, "schemas/checkpoint", `${profile.abi.checkpoint}.yaml`);
@@ -85,7 +92,7 @@ const coreFiles = readdirSync(coreRoot, { recursive: true })
     /\.(cpp|hpp)$/.test(name) && !name.includes("generated_"))
   .sort();
 const buildHasher = createHash("sha256")
-  .update(stableJson(profile))
+  .update(stableJson(runtimeProfile))
   .update(stableJson(cliSchema))
   .update(stableJson(checkpointSchema))
   .update(stableJson(runtimeSchema));

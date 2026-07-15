@@ -8,6 +8,7 @@ import { RuntimeClient, type HardwareAction, type TerminalState } from "../runti
 import { downloadBinary, exportCheckpoint, exportProject, importNetsim,
   IncompatibleCheckpointError, loadProject, saveBinary, saveProject } from "../persistence";
 import { Inspector, type RouterTab } from "./Inspector";
+import { PanelResizeHandle } from "./PanelResizeHandle";
 import { TerminalPanel } from "./TerminalPanel";
 import { Topology } from "./Topology";
 import { CaptureWorkspace, ConfigWorkspace, DevicesWorkspace, NotesWorkspace,
@@ -61,6 +62,7 @@ export function App() {
   const [operationError, setOperationError] = useState<string>();
   const [runtime, setRuntime] = useState<RuntimeClient>();
   const [projectLoaded, setProjectLoaded] = useState(false);
+  const [projectReadSettled, setProjectReadSettled] = useState(false);
   const [view, setView] = useState<WorkspaceView>("topology");
   const [captureActive, setCaptureActive] = useState(true);
   const [inspectorOpen, setInspectorOpen] = useState(true);
@@ -93,10 +95,18 @@ export function App() {
         if (!cancelled) {
           setProject(value);
           setProjectLoaded(true);
+          setProjectReadSettled(true);
         }
       })
       .catch((cause) => {
-        if (!cancelled) setOperationError(visibleFailure("operation", cause));
+        if (!cancelled) {
+          // A rejected persisted project must not leave the independent C++
+          // console disabled. DEFAULT_PROJECT stays only in memory and is not
+          // autosaved because projectLoaded remains false, preserving the bad
+          // record for explicit user recovery or replacement.
+          setProjectReadSettled(true);
+          setOperationError(visibleFailure("operation", cause));
+        }
       });
     try {
       client = new RuntimeClient();
@@ -514,6 +524,17 @@ export function App() {
       nodes: structuredClone(GENERATED_PROFILE.uiDefaults.nodes) } }));
   }, []);
 
+  const resizePanel = useCallback((field: "sidebarWidth" | "inspectorWidth" |
+    "terminalHeight", value: number) => {
+    // The portable project owns preferred panel dimensions. ResizeHandle has
+    // already bounded and frame-coalesced the value, so this update changes one
+    // layout leaf without touching topology coordinates or runtime state.
+    setProject((current) => ({ ...current, layout: {
+      ...current.layout,
+      [field]: value
+    } }));
+  }, []);
+
   const visibleError = runtimeError ?? operationError;
   const navigate = (next: WorkspaceView) => {
     // Navigation closes transient menus so an invisible overlay cannot retain
@@ -523,9 +544,13 @@ export function App() {
     setAccountMenuOpen(false);
     setMoreMenuOpen(false);
   };
+  // Persisted dimensions describe the user's preferred desktop proportions.
+  // CSS constrains them against the live viewport, so importing a project made
+  // on a large monitor cannot clip panels on a laptop or phone-sized window.
   const shellStyle = {
-    "--inspector-width": `${project.layout.inspectorWidth}px`,
-    "--terminal-height": `${project.layout.terminalHeight}px`
+    "--library-preferred-width": `${project.layout.sidebarWidth}px`,
+    "--inspector-preferred-width": `${project.layout.inspectorWidth}px`,
+    "--terminal-preferred-height": `${project.layout.terminalHeight}px`
   } as CSSProperties;
 
   return (
@@ -559,6 +584,12 @@ export function App() {
           <div className="panel-kicker">PROJECT</div>
           <nav className="project-nav"><button className={view === "topology" ? "active" : ""} onClick={() => navigate("topology")}>□ <span>Lab topology</span></button><button className={view === "configs" ? "active" : ""} onClick={() => navigate("configs")}>▤ <span>Configs</span></button><button className={view === "captures" ? "active" : ""} onClick={() => navigate("captures")}>▧ <span>Captures</span></button><button className={view === "snapshots" ? "active" : ""} onClick={() => navigate("snapshots")}>▣ <span>Snapshots</span></button><button className={view === "notes" ? "active" : ""} onClick={() => navigate("notes")}>▱ <span>Notes</span></button></nav>
           <div className="side-footer"><button className={view === "settings" ? "active" : ""} onClick={() => navigate("settings")}>⚙ <span>Settings</span></button><div className="account-wrap"><button aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((value) => !value)}>♙ <span>admin</span><b>⌄</b></button>{accountMenuOpen && <div className="account-menu"><strong>Local administrator</strong><small>Browser-only session</small><button onClick={() => void persistNow()}>Save session</button><button onClick={() => setAccountMenuOpen(false)}>Close</button></div>}</div></div>
+          <PanelResizeHandle axis="x" className="library-resizer"
+            defaultValue={GENERATED_PROFILE.uiDefaults.sidebar_width} direction={1}
+            label="Resize sidebar" min={GENERATED_PROFILE.uiDefaults.sidebar_width_min}
+            max={GENERATED_PROFILE.uiDefaults.sidebar_width_max}
+            value={project.layout.sidebarWidth}
+            onChange={(value) => resizePanel("sidebarWidth", value)} />
         </aside>
 
         <section className="center-stage">
@@ -586,11 +617,16 @@ export function App() {
           onTabChange={setRouterTab} hosts={project.hosts} snapshot={snapshot}
           systemName={project.runningConfig.systemName} updateHost={updateHost} hardware={hardware}
           setLink={(port, up) => void setLink(port, up)} ping={ping}
+          width={project.layout.inspectorWidth}
+          onWidthChange={(value) => resizePanel("inspectorWidth", value)}
           openConsole={() => setTerminalOpen(true)} close={() => setInspectorOpen(false)} />}
       </div>
-      {terminalOpen && <TerminalPanel ready={Boolean(runtime && !runtimeError && projectLoaded)}
+      {terminalOpen && <TerminalPanel ready={Boolean(runtime && !runtimeError &&
+        projectReadSettled && ready)}
         systemName={project.runningConfig.systemName} execute={execute}
         complete={complete} cancel={cancelTerminal} state={terminalState}
+        height={project.layout.terminalHeight}
+        onHeightChange={(value) => resizePanel("terminalHeight", value)}
         close={() => setTerminalOpen(false)} />}
     </main>
   );

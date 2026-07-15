@@ -21,7 +21,7 @@ export const GENERATED_PROFILE = {
   limits: {"system_name_bytes":64,"port_description_bytes":80,"host_name_bytes":64,"project_name_bytes":128,"project_notes_bytes":65536},
   cliDefaults: {"ping_count":5,"ping_size":56,"ping_min_size":12,"ping_max_size":1472,"ping_max_count":100000,"history_entries":50},
   abi: {"runtime_snapshot":4,"telemetry":4,"runtime_messages":2,"checkpoint":4},
-  uiDefaults: {"router_id":"r1","inspector_width":324,"inspector_width_min":260,"inspector_width_max":430,"terminal_height":360,"terminal_height_min":190,"terminal_height_max":520,"nodes":{"host-a":{"x":72,"y":170},"r1":{"x":410,"y":170},"host-b":{"x":748,"y":170}}},
-  profileHash: "daa0fd70c45ad53f",
-  buildHash: "c721149d2865c77b"
+  uiDefaults: {"router_id":"r1","sidebar_width":194,"sidebar_width_min":96,"sidebar_width_max":4096,"inspector_width":324,"inspector_width_min":160,"inspector_width_max":4096,"terminal_height":360,"terminal_height_min":90,"terminal_height_max":4096,"nodes":{"host-a":{"x":72,"y":170},"r1":{"x":410,"y":170},"host-b":{"x":748,"y":170}}},
+  profileHash: "b22da40eb8506cad",
+  buildHash: "4f8380f5543eb4a5"
 } as const;

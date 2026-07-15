@@ -63,6 +63,32 @@ afterEach(() => {
 });
 
 describe("terminal raw-key transcript", () => {
+  it("does not repeat an MD context marker while editing one line", async () => {
+    const resize = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = TestResizeObserver;
+    try {
+      render(<TerminalPanel ready systemName="R1" execute={vi.fn()}
+        complete={async (input) => input} cancel={vi.fn()} state={async () => ({
+          engine: "md", historyRegion: "md-operational", banner: "SR OS 26.7.R1",
+          prompt: "\n[/]\nA:admin@R1# "
+        })} height={360} onHeightChange={vi.fn()} close={vi.fn()} />);
+      await waitFor(() => expect(recorder.current?.writes.join("")).toContain("[/]"));
+
+      // Each printable byte redraws only the editable prompt line. The context
+      // marker was already rendered once when the terminal state arrived.
+      recorder.current!.emit("a");
+      recorder.current!.emit("b");
+      expect(recorder.current!.writes).toEqual([
+        "SR OS 26.7.R1\r\n",
+        "[/]\r\nA:admin@R1# ",
+        "\r\u001b[2KA:admin@R1# a",
+        "\r\u001b[2KA:admin@R1# ab"
+      ]);
+    } finally {
+      globalThis.ResizeObserver = resize;
+    }
+  });
+
   it("completes MD input, switches the same router session and executes classic input", async () => {
     // Prompt and engine are always returned by the router owner after a command.
     // The UI test changes this fixture only when execute simulates the router's
@@ -88,6 +114,7 @@ describe("terminal raw-key transcript", () => {
     try {
       render(<TerminalPanel ready systemName="R1" execute={execute}
         complete={complete} cancel={vi.fn()} state={async () => terminalState}
+        height={360} onHeightChange={vi.fn()}
         close={vi.fn()} />);
       await waitFor(() => expect(recorder.current?.writes.join("")).toContain("A:admin@R1# "));
 

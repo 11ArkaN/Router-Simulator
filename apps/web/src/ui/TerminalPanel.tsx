@@ -11,6 +11,7 @@ import {
 } from "./terminal-model";
 import { GENERATED_PROFILE } from "@router-simulator/contracts";
 import type { TerminalState } from "../runtime/client";
+import { PanelResizeHandle } from "./PanelResizeHandle";
 
 interface Props {
   ready: boolean;
@@ -19,10 +20,13 @@ interface Props {
   complete(input: string, trigger: "tab" | "question" | "space"): Promise<string>;
   cancel(): void;
   state(): Promise<TerminalState>;
+  height: number;
+  onHeightChange(value: number): void;
   close(): void;
 }
 
-export function TerminalPanel({ ready, systemName, execute, complete, cancel, state, close }: Props) {
+export function TerminalPanel({ ready, systemName, execute, complete, cancel, state,
+  height, onHeightChange, close }: Props) {
   const panelRef = useRef<HTMLElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -44,7 +48,12 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
       fontFamily: '"Cascadia Mono", "IBM Plex Mono", monospace',
       fontSize,
       lineHeight: 1.35,
+      // The buffer belongs to xterm presentation, not the router session. User
+      // input returns to the newest prompt, while wheel and touchpad movement
+      // can inspect up to 3000 previously rendered lines without emitting CLI
+      // bytes or asking the C++ owner to replay a command.
       scrollback: 3000,
+      scrollOnUserInput: true,
       theme: {
         background: "#090b0c",
         foreground: "#cdd4d2",
@@ -79,10 +88,18 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
 
     const editor = () => editors[sessionState?.historyRegion ?? "md-operational"];
     const prompt = () => sessionState?.prompt.replace(/^\n/, "") ?? "";
+    const inputPrompt = () => {
+      // MD-CLI state includes a context line such as [/], followed by the
+      // editable prompt. Context belongs to command boundaries, not to every
+      // cursor redraw. Returning only the final line preserves the router-owned
+      // prompt text while preventing one context marker per typed character.
+      const lines = prompt().split("\n");
+      return lines[lines.length - 1] ?? "";
+    };
     const redraw = () => {
       const active = editor();
       const tail = active.value.length - active.cursor;
-      terminal.write(`\r\x1b[2K${prompt()}${active.value}${tail ? `\x1b[${tail}D` : ""}`);
+      terminal.write(`\r\x1b[2K${inputPrompt()}${active.value}${tail ? `\x1b[${tail}D` : ""}`);
     };
 
     if (ready) {
@@ -301,7 +318,7 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
       } else if (data === "\u0003") {
         // Ctrl-C cancels the editable line without submitting a router command.
         editor().replace("");
-        terminal.write(`^C\r\n${prompt()}`);
+        terminal.write(`^C\r\n${inputPrompt()}`);
       } else if (data === "\t" || data === "?") {
         if (data === "?" && editor().hasOpenQuote()) {
           editor().insert(data);
@@ -361,6 +378,11 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
 
   return (
     <section className="terminal-panel" ref={panelRef}>
+      <PanelResizeHandle axis="y" className="terminal-resizer"
+        defaultValue={GENERATED_PROFILE.uiDefaults.terminal_height} direction={-1}
+        label="Resize console" min={GENERATED_PROFILE.uiDefaults.terminal_height_min}
+        max={GENERATED_PROFILE.uiDefaults.terminal_height_max} value={height}
+        onChange={onHeightChange} />
       <div className="terminal-head">
         <div><i className="dot-good" />{systemName} console</div>
         <div className="terminal-actions">

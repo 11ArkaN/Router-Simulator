@@ -89,12 +89,17 @@ links:
     router_port: 1/1/2
 ui_defaults:
   router_id: r1
+  sidebar_width: 194
+  sidebar_width_min: 96
+  sidebar_width_max: 4096
   inspector_width: 324
-  inspector_width_min: 260
-  inspector_width_max: 430
+  inspector_width_min: 160
+  inspector_width_max: 4096
   terminal_height: 360
-  terminal_height_min: 190
-  terminal_height_max: 520
+  terminal_height_min: 90
+  # Validation rejects nonsensical imported numbers, while CSS applies the
+  # actual limit from the live viewport and keeps the topology reachable.
+  terminal_height_max: 4096
   nodes:
     host-a: { x: 72, y: 170 }
     r1: { x: 410, y: 170 }
