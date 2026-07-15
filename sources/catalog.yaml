@@ -24,7 +24,7 @@ records:
     rfc_refs: []
     yang_path: /configure/card
     last_verified_at: 2026-07-15
-    implementation: [profiles/7750-sr-7-iom4-e.yaml, tools/generate-profile.mjs, core/include/router/device.hpp, core/src/runtime.cpp, core/src/hardware.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp]
+    implementation: [profiles/7750-sr-7-iom4-e.yaml, tools/generate-profile.mjs, packages/contracts/src/index.ts, core/include/router/device.hpp, core/src/runtime.cpp, core/src/hardware.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp]
     tests: [core/tests/cli_test.cpp, core/tests/hardware_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp]
     status: implemented
     notes: A physical port is created by compatible equipped MDA inventory and requires matching provisioning plus completed lifecycle before it can become operational. New ports are administratively disabled; the saved starter lab explicitly enables only its two endpoint-facing ports.
@@ -483,13 +483,13 @@ records:
     source_type: nokia-official-doc
     source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-p-commands.html
     section: show port
-    rfc_refs: []
+    rfc_refs: [RFC2863]
     yang_path: null
     last_verified_at: 2026-07-15
-    implementation: [core/src/cli.cpp]
-    tests: [core/tests/cli_test.cpp]
+    implementation: [core/src/cli.cpp, core/src/runtime_projection.cpp, packages/contracts/src/index.ts]
+    tests: [core/tests/cli_test.cpp, core/tests/runtime_test.cpp, packages/contracts/tests/project.test.ts]
     status: partially-implemented
-    notes: Summary covers modeled Ethernet ports and their actual admin, carrier, operational and MTU state.
+    notes: Summary and runtime projection distinguish administrative state, Physical Link presence, operational state and MTU.
   - id: nokia.sros.26_7.show.router_interface
     kind: cli-output
     release: 26.7.R1
@@ -546,3 +546,17 @@ records:
     tests: [core/tests/cli_test.cpp, core/tests/network_test.cpp, core/tests/checkpoint_test.cpp, core/tests/runtime_test.cpp]
     status: partially-implemented
     notes: Learned IPv4 adjacencies, MAC addresses, dynamic type, interface and live expiry countdown are displayed from forwarding-owned adjacency state.
+  - id: internal.runtime_protocol.netstrings
+    kind: runtime-protocol
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: upstream-spec
+    source_url: https://cr.yp.to/proto/netstrings.txt
+    section: Definition
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-15
+    implementation: [apps/web/src/runtime/client.ts, core/src/project_configuration.cpp]
+    tests: [core/tests/project_configuration_test.cpp]
+    status: implemented
+    notes: Atomic running configuration fields use canonical decimal byte length, colon, payload and comma framing. Missing terminators and excess fields are rejected before mutation.

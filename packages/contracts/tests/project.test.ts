@@ -13,14 +13,41 @@ describe("project format", () => {
       card.equippedType === null)).toBe(true);
     expect(parseProject(DEFAULT_PROJECT).links[0].propagationDelayNs)
       .toBe(GENERATED_PROFILE.defaultPropagationDelayNs);
+    expect(parseProject(DEFAULT_PROJECT).notes).toBe("");
+    expect(DEFAULT_PROJECT.runningConfig.ports.filter((port) => port.admin === "up")
+      .map((port) => port.id)).toEqual([...GENERATED_PROFILE.ports.initiallyEnabled]);
   });
 
-  it("migrates only the absent legacy link field", () => {
+  it("migrates absent additive project fields", () => {
     // The sole migration is lossless because links are deterministic profile
     // defaults. No unknown version or malformed provided value is repaired.
     const legacy = structuredClone(DEFAULT_PROJECT) as Partial<typeof DEFAULT_PROJECT>;
     delete legacy.links;
+    delete legacy.notes;
     expect(parseProject(legacy).links).toEqual(DEFAULT_PROJECT.links);
+    expect(parseProject(legacy).notes).toBe("");
+  });
+
+  it("bounds portable project notes", () => {
+    // Notes travel with the .netsim project but never enter C++ runtime state.
+    // The bound prevents a text field from bypassing binary-storage policy.
+    const project = structuredClone(DEFAULT_PROJECT);
+    project.notes = "Link maintenance window: 02:00 UTC";
+    expect(parseProject(project).notes).toBe(project.notes);
+    project.notes = "x".repeat(GENERATED_PROFILE.limits.project_notes_bytes + 1);
+    expect(() => parseProject(project)).toThrow("invalid metadata");
+  });
+
+  it("bounds portable workspace dimensions", () => {
+    // Import validation uses the same generated limits as range inputs. A
+    // hand-edited .netsim file cannot make the inspector or terminal controls
+    // permanently unreachable outside the responsive application grid.
+    const project = structuredClone(DEFAULT_PROJECT);
+    project.layout.inspectorWidth = GENERATED_PROFILE.uiDefaults.inspector_width_max + 1;
+    expect(() => parseProject(project)).toThrow("UI layout");
+    project.layout.inspectorWidth = GENERATED_PROFILE.uiDefaults.inspector_width;
+    project.layout.terminalHeight = GENERATED_PROFILE.uiDefaults.terminal_height_min - 1;
+    expect(() => parseProject(project)).toThrow("UI layout");
   });
 
   it("validates link identity and exactly representable nanoseconds", () => {
@@ -155,13 +182,18 @@ describe("project format", () => {
       nowMs: 1,
       hardware: runtimeHardware,
       ports: GENERATED_PROFILE.links.map((link) => ({ id: link.router_port,
-        admin: "up", oper: "up", speedMbps: GENERATED_PROFILE.ports.speedMbps,
+        admin: "up", oper: "up", physicalLink: true,
+        speedMbps: GENERATED_PROFILE.ports.speedMbps,
         mtu: GENERATED_PROFILE.ports.defaultMtu, description: "", rxPackets: 0,
         txPackets: 0 })),
       arp: [], routes: [], alarms: [], runningConfig: DEFAULT_PROJECT.runningConfig,
       captureCount: 0, captureDropped: 0, droppedPackets: 0
     };
     expect(parseRuntimeSnapshot(snapshot).abiVersion).toBe(ABI_VERSION);
+    // Physical media is not inferred from ifOperStatus. The versioned snapshot
+    // rejects older projections that omit the independent carrier observation.
+    expect(() => parseRuntimeSnapshot({ ...snapshot, ports: snapshot.ports.map(
+      ({ physicalLink: _physicalLink, ...port }) => port) })).toThrow("operational data");
     expect(() => parseRuntimeSnapshot({ ...snapshot, abiVersion: 999 })).toThrow("incompatible ABI");
   });
 

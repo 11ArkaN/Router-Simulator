@@ -2,10 +2,10 @@
 // positions come from the validated project and generated profile.
 
 import { Background, Controls, Handle, Position, ReactFlow, type Edge,
-  type Node, type NodeProps } from "@xyflow/react";
+  type Node, type NodeProps, type ReactFlowInstance } from "@xyflow/react";
 import { GENERATED_PROFILE, type HostConfig, type LinkConfig,
   type RuntimeSnapshot, type UiLayout } from "@router-simulator/contracts";
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 
 type DeviceData = { kind: "host" | "router"; title: string; subtitle: string };
 
@@ -34,6 +34,11 @@ interface Props {
   snapshot?: RuntimeSnapshot;
   selected: string;
   onSelect(id: string): void;
+  onLayoutChange(id: string, position: { x: number; y: number }): void;
+  onLinkToggle(portId: string, up: boolean): void;
+  onOpenHardware(): void;
+  tool: "select" | "link";
+  onToolChange(tool: "select" | "link"): void;
 }
 
 function speedLabel(speedMbps: number): string {
@@ -41,10 +46,13 @@ function speedLabel(speedMbps: number): string {
   return speedMbps % 1000 === 0 ? `${speedMbps / 1000}G` : `${speedMbps}M`;
 }
 
-export function Topology({ hosts, links, layout, systemName, snapshot, selected, onSelect }: Props) {
-  // Layout remains project data. The graph reads it but disables dragging until
-  // a persisted onNodesChange transaction is available.
+export function Topology({ hosts, links, layout, systemName, snapshot, selected,
+  onSelect, onLayoutChange, onLinkToggle, onOpenHardware, tool, onToolChange }: Props) {
+  // Node positions remain portable project data. React Flow may animate a drag,
+  // but only the final finite coordinate is persisted through App.
   const routerId = GENERATED_PROFILE.uiDefaults.router_id;
+  const topologyRef = useRef<HTMLDivElement>(null);
+  const flowRef = useRef<ReactFlowInstance<Node<DeviceData>, Edge> | null>(null);
   // Snapshot counters change frequently but node identity and measurement do
   // not. Memoized arrays keep React Flow from restarting its layout pass.
   const nodes = useMemo<Node<DeviceData>[]>(() => [
@@ -67,7 +75,8 @@ export function Topology({ hosts, links, layout, systemName, snapshot, selected,
     // Edge orientation follows stored coordinates so handles remain on the
     // inward side for endpoints placed on either side of the router.
     const hostOnLeft = layout.nodes[link.host].x < layout.nodes[routerId].x;
-    const up = snapshot?.ports.find((port) => port.id === link.routerPort)?.oper === "up";
+    const port = snapshot?.ports.find((item) => item.id === link.routerPort);
+    const up = port?.oper === "up";
     return {
       id: link.id,
       source: hostOnLeft ? link.host : routerId,
@@ -75,15 +84,30 @@ export function Topology({ hosts, links, layout, systemName, snapshot, selected,
       sourceHandle: "right",
       targetHandle: "left",
       className: up ? "link-up" : "link-down",
-      label: `${link.routerPort} · ${speedLabel(GENERATED_PROFILE.ports.speedMbps)}`
+      label: `${link.routerPort} · ${speedLabel(GENERATED_PROFILE.ports.speedMbps)}`,
+      // Edge interaction changes the cable signal, not ifOperStatus. Keeping
+      // both values separate is essential when the port is admin-down.
+      data: { portId: link.routerPort, up: Boolean(port?.physicalLink) }
     };
   }), [layout.nodes, links, routerId, snapshot?.ports]);
   return (
-    <div className="topology">
-      <div className="canvas-toolbar"><button className="active">⌁</button><button>⊞</button><button>⌗</button><button>⛶</button></div>
+    <div className="topology" ref={topologyRef}>
+      <div className="canvas-toolbar" aria-label="Topology tools">
+        <button className={tool === "select" ? "active" : ""} title="Select and move devices" aria-label="Select and move devices" onClick={() => onToolChange("select")}>⌁</button>
+        <button title="Open router hardware" aria-label="Open router hardware" onClick={onOpenHardware}>⊞</button>
+        <button title="Fit topology" aria-label="Fit topology" onClick={() => void flowRef.current?.fitView({ padding: 0.22, duration: 260 })}>⌑</button>
+        <button title="Fullscreen topology" aria-label="Fullscreen topology" onClick={() => void (document.fullscreenElement ? document.exitFullscreen() : topologyRef.current?.requestFullscreen())}>⛶</button>
+      </div>
       <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView
-        minZoom={0.35} maxZoom={1.8} nodesDraggable={false}
+        minZoom={0.35} maxZoom={1.8} nodesDraggable={tool === "select"}
+        onInit={(instance) => { flowRef.current = instance; }}
+        onNodeDragStop={(_, node) => onLayoutChange(node.id, node.position)}
         onNodeClick={(_, node) => onSelect(node.id)}
+        onEdgeClick={(_, edge) => {
+          if (tool !== "link") return;
+          const data = edge.data as { portId?: string; up?: boolean } | undefined;
+          if (data?.portId) onLinkToggle(data.portId, !data.up);
+        }}
         proOptions={{ hideAttribution: true }}>
         <Background color="#252b2d" gap={22} size={1} />
         <Controls showInteractive={false} />

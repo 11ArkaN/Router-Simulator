@@ -77,6 +77,9 @@ export interface PortState {
   id: string;
   admin: "up" | "down";
   oper: OperState;
+  // Physical-link presence is independent from administrative and operational
+  // status. An administratively down port may still receive carrier.
+  physicalLink: boolean;
   speedMbps: number;
   mtu: number;
   description: string;
@@ -125,6 +128,7 @@ export interface LabProject {
   links: LinkConfig[];
   hardware: ProjectHardware;
   runningConfig: RunningConfig;
+  notes: string;
   layout: UiLayout;
   updatedAt: string;
 }
@@ -267,6 +271,10 @@ function migrateHardwareV1(hardware: HardwareState): ProjectHardware {
 // Creates a fresh project from generated profile data. Injectable time makes
 // deterministic tests possible while real projects receive their creation time.
 export function createDefaultProject(now = new Date()): LabProject {
+  // Widen generated literal identities to a lookup set without losing their
+  // source. This allows all generated port IDs to be tested against the smaller
+  // starter no-shutdown subset under strict TypeScript checking.
+  const initiallyEnabled = new Set<string>(GENERATED_PROFILE.ports.initiallyEnabled);
   return {
     format: "router-simulator-project",
     version: PROJECT_VERSION,
@@ -284,11 +292,20 @@ export function createDefaultProject(now = new Date()): LabProject {
     runningConfig: {
       systemName: GENERATED_PROFILE.defaultSystemName,
       ports: GENERATED_PROFILE.ports.ids.map((id) => ({
-        id, admin: "up" as const, mtu: GENERATED_PROFILE.ports.defaultMtu, description: ""
+        // The generated profile is the single owner of starter no-shutdown
+        // intent. Equipping an MDA alone must not enable every exposed port.
+        id,
+        admin: initiallyEnabled.has(id) ? "up" as const : "down" as const,
+        mtu: GENERATED_PROFILE.ports.defaultMtu,
+        description: ""
       })),
-      interfaces: GENERATED_PROFILE.routerInterfaces.map((item) => ({ name: item.name, admin: "up" as const })),
+      interfaces: GENERATED_PROFILE.routerInterfaces.map((item) => ({
+        name: item.name,
+        admin: item.admin_state === "enable" ? "up" as const : "down" as const
+      })),
       staticRoutes: []
     },
+    notes: "",
     layout: {
       nodes: structuredClone(GENERATED_PROFILE.uiDefaults.nodes),
       inspectorWidth: GENERATED_PROFILE.uiDefaults.inspector_width,
@@ -320,6 +337,7 @@ export function parseRuntimeSnapshot(input: unknown): RuntimeSnapshot {
   if (value.ports.some((port) => !port || !knownPorts.has(port.id) || seenPorts.has(port.id) ||
       !seenPorts.add(port.id) || !["up", "down"].includes(port.admin) ||
       !["up", "down", "absent"].includes(port.oper) ||
+      typeof port.physicalLink !== "boolean" ||
       port.speedMbps !== GENERATED_PROFILE.ports.speedMbps ||
       !Number.isInteger(port.mtu) || port.mtu < GENERATED_PROFILE.ports.minimumMtu ||
       port.mtu > GENERATED_PROFILE.ports.maximumMtu || typeof port.description !== "string" ||
@@ -355,6 +373,10 @@ export function parseProject(input: unknown): LabProject {
   const links = value.links ?? structuredClone(DEFAULT_PROJECT.links);
   const running = value.runningConfig ?? structuredClone(DEFAULT_PROJECT.runningConfig);
   const layout = value.layout ?? structuredClone(DEFAULT_PROJECT.layout);
+  // Notes are an additive version-2 field. Older projects receive an empty
+  // document, while imported values are bounded before they can enter
+  // IndexedDB or a portable manifest.
+  const notes = value.notes ?? "";
   if (!Array.isArray(value.hosts) || value.hosts.length !== GENERATED_PROFILE.hosts.length ||
       !Array.isArray(links) || links.length !== GENERATED_PROFILE.links.length || !value.hardware) {
     throw new Error("Project is missing required topology state");
@@ -419,6 +441,8 @@ export function parseProject(input: unknown): LabProject {
   }
   if (typeof value.name !== "string" || !value.name.trim() ||
       value.name.length > GENERATED_PROFILE.limits.project_name_bytes ||
+      typeof notes !== "string" ||
+      notes.length > GENERATED_PROFILE.limits.project_notes_bytes ||
       typeof value.updatedAt !== "string" || Number.isNaN(Date.parse(value.updatedAt)) ||
       !isProjectHardware(value.hardware)) {
     throw new Error("Project contains invalid metadata or hardware state");
@@ -457,8 +481,13 @@ export function parseProject(input: unknown): LabProject {
     typeof point.x === "number" && Number.isFinite(point.x) &&
     typeof point.y === "number" && Number.isFinite(point.y);
   if (!layout.nodes || requiredNodeIds.some((id) => !validPoint(layout.nodes[id])) ||
-      !Number.isFinite(layout.inspectorWidth) || !Number.isFinite(layout.terminalHeight)) {
+      !Number.isFinite(layout.inspectorWidth) ||
+      layout.inspectorWidth < GENERATED_PROFILE.uiDefaults.inspector_width_min ||
+      layout.inspectorWidth > GENERATED_PROFILE.uiDefaults.inspector_width_max ||
+      !Number.isFinite(layout.terminalHeight) ||
+      layout.terminalHeight < GENERATED_PROFILE.uiDefaults.terminal_height_min ||
+      layout.terminalHeight > GENERATED_PROFILE.uiDefaults.terminal_height_max) {
     throw new Error("Project contains invalid UI layout");
   }
-  return { ...value, hosts: value.hosts, links, runningConfig: running, layout } as LabProject;
+  return { ...value, hosts: value.hosts, links, runningConfig: running, notes, layout } as LabProject;
 }

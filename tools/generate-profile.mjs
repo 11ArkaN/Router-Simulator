@@ -425,6 +425,7 @@ export const GENERATED_PROFILE = {
   ports: ${JSON.stringify({
     ids: portIds,
     count: profile.ports.count,
+    initiallyEnabled: profile.ports.initially_enabled,
     speedMbps: profile.ports.speed_mbps,
     defaultMtu: profile.ports.default_mtu,
     minimumMtu: profile.ports.minimum_mtu,

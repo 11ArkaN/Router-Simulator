@@ -90,7 +90,11 @@ links:
 ui_defaults:
   router_id: r1
   inspector_width: 324
-  terminal_height: 240
+  inspector_width_min: 260
+  inspector_width_max: 430
+  terminal_height: 360
+  terminal_height_min: 190
+  terminal_height_max: 520
   nodes:
     host-a: { x: 72, y: 170 }
     r1: { x: 410, y: 170 }
@@ -130,6 +134,9 @@ limits:
   port_description_bytes: 80
   host_name_bytes: 64
   project_name_bytes: 128
+  # Notes are portable project metadata, not an SR OS leaf. The bound prevents
+  # an imported text field from dominating IndexedDB and .netsim memory.
+  project_notes_bytes: 65536
 cli_defaults:
   ping_count: 5
   # SR OS 26.7.R1 global ping count range is 1 to 100000. The optional count
@@ -137,7 +144,9 @@ cli_defaults:
   ping_max_count: 100000
   history_entries: 50
 abi:
-  runtime_snapshot: 3
+  # Version 4 exposes physical-link presence separately from ifOperStatus.
+  # Nokia show port documents that Physical Link and Oper State are distinct.
+  runtime_snapshot: 4
   telemetry: 4
   # Version 2 adds the router-owned terminal history region to terminal:state.
   runtime_messages: 2

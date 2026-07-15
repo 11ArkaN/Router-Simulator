@@ -193,7 +193,12 @@ std::string Runtime::snapshot() {
     out << "{\"id\":\"" << profile::port_ids[index] << "\",\"admin\":\""
         << (port.admin_enabled ? "up" : "down") << "\",\"oper\":\""
         << (state_.port_operational(index) ? "up" : "down")
-        << "\",\"speedMbps\":" << profile::port_speed_mbps
+        // Nokia show port exposes Physical Link separately from Oper State.
+        // Publishing the actual hardware signal prevents a management client
+        // from interpreting admin-down as a disconnected cable.
+        << "\",\"physicalLink\":"
+        << (state_.hardware.link_signal[index] ? "true" : "false")
+        << ",\"speedMbps\":" << profile::port_speed_mbps
         << ",\"mtu\":" << port.mtu << ",\"description\":\""
         << json_text(port.description.data())
         << "\",\"rxPackets\":" << counters.rx_packets

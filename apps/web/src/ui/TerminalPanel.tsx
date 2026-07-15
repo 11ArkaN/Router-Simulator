@@ -1,7 +1,7 @@
 // xterm renderer and lossless byte-input adapter for one router CLI session.
 // Engine selection and candidate semantics remain in the C++ session owner.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import {
@@ -19,10 +19,16 @@ interface Props {
   complete(input: string, trigger: "tab" | "question" | "space"): Promise<string>;
   cancel(): void;
   state(): Promise<TerminalState>;
+  close(): void;
 }
 
-export function TerminalPanel({ ready, systemName, execute, complete, cancel, state }: Props) {
+export function TerminalPanel({ ready, systemName, execute, complete, cancel, state, close }: Props) {
+  const panelRef = useRef<HTMLElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
+  const terminalRef = useRef<Terminal | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
+  const [fontSize, setFontSize] = useState(12);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const executeRef = useRef(execute);
   const completeRef = useRef(complete);
   const stateRef = useRef(state);
@@ -36,7 +42,7 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
       cursorBlink: true,
       convertEol: true,
       fontFamily: '"Cascadia Mono", "IBM Plex Mono", monospace',
-      fontSize: 12,
+      fontSize,
       lineHeight: 1.35,
       scrollback: 3000,
       theme: {
@@ -52,6 +58,8 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(hostRef.current);
+    terminalRef.current = terminal;
+    fitRef.current = fit;
 
     // xterm.js owns rendering only. The session owner remains C++, while this
     // adapter translates byte-level editing keys into complete command lines.
@@ -332,14 +340,37 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
       resize.disconnect();
       inputDisposable.dispose();
       terminal.dispose();
+      terminalRef.current = null;
+      fitRef.current = null;
     };
   }, [ready, cancel]);
 
+  useEffect(() => {
+    // Font size is a renderer preference, not session state. Updating the live
+    // xterm option preserves scrollback, the active edit buffer and the C++
+    // session while ResizeObserver recalculates the available row count.
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    terminal.options.fontSize = fontSize;
+    // xterm installs renderer dimensions on its next animation frame. Fitting
+    // synchronously during the opening effect can read an uninitialized canvas
+    // dimension object, so font changes join the same paint boundary as resize.
+    const frame = window.requestAnimationFrame(() => fitRef.current?.fit());
+    return () => window.cancelAnimationFrame(frame);
+  }, [fontSize]);
+
   return (
-    <section className="terminal-panel">
+    <section className="terminal-panel" ref={panelRef}>
       <div className="terminal-head">
-        <div>{systemName} console</div>
+        <div><i className="dot-good" />{systemName} console</div>
+        <div className="terminal-actions">
+          <button title="Clear terminal" aria-label="Clear terminal" onClick={() => terminalRef.current?.clear()}>♲</button>
+          <button title="Terminal settings" aria-label="Terminal settings" className={settingsOpen ? "active" : ""} onClick={() => setSettingsOpen((value) => !value)}>⚙</button>
+          <button title="Fullscreen console" aria-label="Fullscreen console" onClick={() => void (document.fullscreenElement ? document.exitFullscreen() : panelRef.current?.requestFullscreen())}>⛶</button>
+          <button title="Close console" aria-label="Close console" onClick={close}>×</button>
+        </div>
       </div>
+      {settingsOpen && <div className="terminal-settings"><label>Font size<input type="range" min="10" max="18" value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} /><span>{fontSize}px</span></label></div>}
       <div className="terminal-host" ref={hostRef} />
     </section>
   );

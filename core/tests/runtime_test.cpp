@@ -205,6 +205,8 @@ int main() {
                                 router::profile::equipment_poll_interval);
     const auto equipped = runtime->command(router::runtime_protocol::snapshot);
     if (equipped.find("\"lifecycle\":\"ready\"") == std::string::npos ||
+        equipped.find("\"physicalLink\":true,\"speedMbps\":") ==
+            std::string::npos ||
         equipped.find(std::string{"\"id\":\""} +
                       router::profile::port_ids.back() + "\"") ==
             std::string::npos) {
@@ -348,7 +350,12 @@ int main() {
     }
     runtime->command("link:down:1/1/2");
     const auto degraded = runtime->command("snapshot");
-    if (degraded.find("\"prefix\":\"192.0.2.0/30\"") == std::string::npos ||
+    // Physical Link and Oper State are separate Nokia observations. The JSON
+    // projection must expose the actual cable signal so an admin-down port is
+    // not mistaken for a disconnected medium by the UI.
+    if (degraded.find("\"id\":\"1/1/2\",\"admin\":\"up\",\"oper\":\"down\",\"physicalLink\":false,\"speedMbps\":") ==
+            std::string::npos ||
+        degraded.find("\"prefix\":\"192.0.2.0/30\"") == std::string::npos ||
         degraded.find("\"prefix\":\"198.51.100.0/30\"") != std::string::npos) {
       throw std::runtime_error(
           "Interface failure did not withdraw only its connected route");

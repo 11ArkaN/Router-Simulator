@@ -14,7 +14,7 @@ std::string command(const std::vector<std::string> &fields) {
   // knows nothing about the order or meaning of running configuration fields.
   std::string result{"project:running|"};
   for (const auto &field : fields)
-    result += std::to_string(field.size()) + ':' + field;
+    result += std::to_string(field.size()) + ':' + field + ',';
   return result;
 }
 
@@ -59,6 +59,13 @@ void project_configuration_tests() {
     // A declared byte length must never read beyond the received command.
     throw std::runtime_error(
         "Running configuration accepted a truncated field");
+  }
+  if (router::project::parse_running(current, "project:running|1:x")
+          .success) {
+    // Accepting a missing comma would recreate the browser/native framing
+    // mismatch and permit an ambiguous boundary before the next field length.
+    throw std::runtime_error(
+        "Running configuration accepted a netstring without terminator");
   }
 
   // Empty fields consume no payload bytes, so field count needs its own bound

@@ -122,6 +122,12 @@ netstrings(std::string_view command, std::string_view prefix,
       return std::nullopt;
     result.push_back(command.substr(0, length));
     command.remove_prefix(length);
+    // The canonical netstring grammar is [len]:[string], including the comma
+    // for an empty string. Requiring it keeps concatenated fields synchronized
+    // and makes the C++ decoder match the browser encoder byte for byte.
+    if (command.empty() || command.front() != ',')
+      return std::nullopt;
+    command.remove_prefix(1U);
   }
   return result;
 }

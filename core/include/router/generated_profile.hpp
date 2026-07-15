@@ -67,11 +67,11 @@ inline constexpr std::size_t project_name_bytes = 128;
 inline constexpr std::uint32_t default_ping_count = 5U;
 inline constexpr std::uint32_t maximum_ping_count = 100000U;
 inline constexpr std::size_t cli_history_entries = 50;
-inline constexpr std::uint32_t runtime_snapshot_abi = 3;
+inline constexpr std::uint32_t runtime_snapshot_abi = 4;
 inline constexpr std::uint32_t telemetry_abi = 4;
 inline constexpr std::uint32_t runtime_message_abi = 2;
 inline constexpr std::uint32_t checkpoint_abi = 3;
-inline constexpr std::uint64_t profile_hash = 0xbf930a8c47c9a9e8ULL;
+inline constexpr std::uint64_t profile_hash = 0x58711c31116ab595ULL;
 inline constexpr std::uint64_t checkpoint_schema_hash = 0x9e1630da53ef95fcULL;
 
 // Hardware initialization values are experimental emulator timing profiles,
