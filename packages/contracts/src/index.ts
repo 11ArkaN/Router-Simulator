@@ -6,7 +6,7 @@ export { GENERATED_PROFILE };
 export { RUNTIME_PROTOCOL } from "./generated-runtime-protocol";
 
 export const ABI_VERSION = GENERATED_PROFILE.abi.runtime_snapshot;
-export const PROJECT_VERSION = 1 as const;
+export const PROJECT_VERSION = 2 as const;
 
 export type CliEngine = "md" | "classic";
 export type RuntimeStatus = "booting" | "ready" | "blocked" | "stopped";
@@ -246,6 +246,24 @@ function emptyHardware(): ProjectHardware {
   };
 }
 
+// Version 1 persisted a complete runtime projection. Its only portable fields
+// were provisioning and physical type, so migration deliberately discards
+// lifecycle, compatibility and reasons and never tries to replay them.
+function migrateHardwareV1(hardware: HardwareState): ProjectHardware {
+  return {
+    cards: hardware.cards.map((card) => ({
+      slot: card.slot,
+      provisionedType: card.provisionedType,
+      equippedType: card.equippedType,
+      mdas: card.mdas.map((mda) => ({
+        slot: mda.slot,
+        provisionedType: mda.provisionedType,
+        equippedType: mda.equippedType
+      }))
+    }))
+  };
+}
+
 // Creates a fresh project from generated profile data. Injectable time makes
 // deterministic tests possible while real projects receive their creation time.
 export function createDefaultProject(now = new Date()): LabProject {
@@ -322,7 +340,14 @@ export function parseRuntimeSnapshot(input: unknown): RuntimeSnapshot {
 // defaults, while malformed present values are never replaced silently.
 export function parseProject(input: unknown): LabProject {
   if (!input || typeof input !== "object") throw new Error("Project must be an object");
-  const value = input as Partial<LabProject>;
+  const raw = input as { version?: unknown; hardware?: unknown };
+  // Version 1 to 2 is the only recognized structural migration. Validate the
+  // complete old live hardware shape before projecting it, so malformed input
+  // cannot gain legitimacy by having unknown fields stripped.
+  const value: Partial<LabProject> = raw.version === 1 && isHardwareState(raw.hardware)
+    ? { ...(input as LabProject), version: PROJECT_VERSION,
+      hardware: migrateHardwareV1(raw.hardware) }
+    : input as Partial<LabProject>;
   if (value.format !== "router-simulator-project" || value.version !== PROJECT_VERSION ||
       value.release !== GENERATED_PROFILE.release || value.profile !== GENERATED_PROFILE.id) {
     throw new Error("Unsupported project format, release or profile");

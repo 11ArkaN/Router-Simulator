@@ -2,7 +2,8 @@
 // boundary. Every accepted object must remain safe to send into C++.
 
 import { describe, expect, it } from "vitest";
-import { ABI_VERSION, DEFAULT_PROJECT, GENERATED_PROFILE, parseProject, parseRuntimeSnapshot } from "../src";
+import { ABI_VERSION, DEFAULT_PROJECT, GENERATED_PROFILE, PROJECT_VERSION,
+  parseProject, parseRuntimeSnapshot } from "../src";
 
 describe("project format", () => {
   it("accepts the pinned default profile", () => {
@@ -38,7 +39,7 @@ describe("project format", () => {
 
   it("rejects a future ABI instead of guessing a migration", () => {
     // A future writer may change semantics even when fields look familiar.
-    expect(() => parseProject({ ...DEFAULT_PROJECT, version: 2 })).toThrow("Unsupported project");
+    expect(() => parseProject({ ...DEFAULT_PROJECT, version: 3 })).toThrow("Unsupported project");
   });
 
   it("rejects malformed endpoint data before runtime configuration", () => {
@@ -60,8 +61,38 @@ describe("project format", () => {
     expect(() => parseProject(malformed)).toThrow("hardware state");
   });
 
-  it("rejects live lifecycle fields in portable project hardware", () => {
-    // Runtime-owned lifecycle must never become replayable project intent.
+  it("migrates version 1 live hardware into portable intent", () => {
+    // Runtime-owned lifecycle is accepted only through the exact legacy shape
+    // and discarded before the current project reaches restoration.
+    const malformed = structuredClone(DEFAULT_PROJECT) as unknown as {
+      version: number;
+      hardware: {
+        chassis?: string;
+        control?: unknown;
+        cards: Array<Record<string, unknown> & { mdas: Array<Record<string, unknown>> }>
+      }
+    };
+    malformed.version = 1;
+    malformed.hardware.chassis = GENERATED_PROFILE.chassis;
+    malformed.hardware.control = {
+      slot: GENERATED_PROFILE.control.slot,
+      type: GENERATED_PROFILE.control.card,
+      state: GENERATED_PROFILE.control.initial_state
+    };
+    for (const card of malformed.hardware.cards) {
+      Object.assign(card, { compatible: true, lifecycle: "absent", reason: "not-equipped" });
+      for (const mda of card.mdas) {
+        Object.assign(mda, { compatible: true, lifecycle: "absent", reason: "not-equipped" });
+      }
+    }
+    const migrated = parseProject(malformed);
+    expect(migrated.version).toBe(PROJECT_VERSION);
+    expect("lifecycle" in migrated.hardware.cards[0]).toBe(false);
+  });
+
+  it("rejects live lifecycle fields in a current project", () => {
+    // Version 2 files cannot claim the legacy migration path merely by adding
+    // operational fields to otherwise valid portable hardware.
     const malformed = structuredClone(DEFAULT_PROJECT) as unknown as {
       hardware: { cards: Array<Record<string, unknown>> }
     };
