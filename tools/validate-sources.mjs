@@ -1,3 +1,6 @@
+// Source-catalog integrity check. It resolves every active profile and CLI
+// schema and fails when an implementation claim lacks its evidence record.
+
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse } from "yaml";
@@ -5,8 +8,14 @@ import { parse } from "yaml";
 const root = resolve(import.meta.dirname, "..");
 const catalog = parse(readFileSync(resolve(root, "sources/catalog.yaml"), "utf8"));
 const capabilities = parse(readFileSync(resolve(root, "sources/capabilities.yaml"), "utf8"));
-const profile = parse(readFileSync(resolve(root, "profiles/7750-sr-7-iom4-e.yaml"), "utf8"));
-const cliSchema = parse(readFileSync(resolve(root, "schemas/cli/26.7.R1.yaml"), "utf8"));
+// Every checked-in profile participates in source validation. Adding another
+// platform or release must not require editing a privileged filename here.
+const profiles = readdirSync(resolve(root, "profiles"))
+  .filter((name) => name.endsWith(".yaml"))
+  .map((name) => ({ name, value: parse(readFileSync(resolve(root, "profiles", name), "utf8")) }));
+const cliSchemas = readdirSync(resolve(root, "schemas/cli"))
+  .filter((name) => name.endsWith(".yaml"))
+  .map((name) => ({ name, value: parse(readFileSync(resolve(root, "schemas/cli", name), "utf8")) }));
 const required = [
   "id", "kind", "release", "platforms", "source_type", "source_url", "section",
   "rfc_refs", "yang_path", "last_verified_at", "implementation", "tests", "status", "notes"
@@ -65,15 +74,19 @@ for (const [feature, capability] of Object.entries(capabilities.features ?? {}))
 // Profile dependencies use the same catalog namespace as feature claims. This
 // prevents a timing or hardware value from carrying a plausible but dead source
 // label that CI never resolves.
-for (const id of [...(profile.source_ids ?? []), profile.link_defaults?.source_id].filter(Boolean)) {
-  if (!ids.has(id)) errors.push(`profile ${profile.id}: unknown source id ${id}`);
+for (const { value: profile } of profiles) {
+  for (const id of [...(profile.source_ids ?? []), profile.link_defaults?.source_id].filter(Boolean)) {
+    if (!ids.has(id)) errors.push(`profile ${profile.id}: unknown source id ${id}`);
+  }
 }
 
 // Every executable grammar row carries its normative source. This prevents a
 // generated command from becoming visible merely because a handler exists.
-for (const command of cliSchema.commands ?? []) {
-  if (!ids.has(command.source_id))
-    errors.push(`CLI command ${command.id}: unknown source id ${command.source_id}`);
+for (const { name, value: schema } of cliSchemas) {
+  for (const command of schema.commands ?? []) {
+    if (!ids.has(command.source_id))
+      errors.push(`${name} CLI command ${command.id}: unknown source id ${command.source_id}`);
+  }
 }
 
 // Source IDs in code comments are machine checked. A misspelling would make a

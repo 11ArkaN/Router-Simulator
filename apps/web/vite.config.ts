@@ -1,3 +1,6 @@
+// Static browser build and cross-origin isolation headers required by Wasm
+// pthreads. Development and preview use the same isolation contract.
+
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 

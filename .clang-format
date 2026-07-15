@@ -1,0 +1,8 @@
+# C++ formatting is intentionally deterministic across native Windows and
+# Emscripten builds. Comments remain wrapped to the same review width as code.
+BasedOnStyle: LLVM
+IndentWidth: 2
+ContinuationIndentWidth: 4
+ColumnLimit: 80
+BreakBeforeBraces: Attach
+SortIncludes: CaseSensitive

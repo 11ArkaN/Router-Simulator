@@ -1,3 +1,6 @@
+// Routing policy tests cover longest-prefix match, host next-hop selection and
+// the operational-state boundary used to build connected RIB entries.
+
 #include "router/device.hpp"
 #include "router/device_routing.hpp"
 #include "router/routing.hpp"
@@ -6,6 +9,9 @@
 
 void routing_tests() {
   using namespace router::routing;
+
+  // The overlapping default, /24 and /30 entries make lookup precedence
+  // observable without relying on insertion order or a specific container.
   FibProgram fib{.generation = 7, .count = 3};
   fib.entries[0] = {ipv4(0, 0, 0, 0), 0, 7};
   fib.entries[1] = {ipv4(192, 0, 2, 0), 24, 3};
@@ -32,15 +38,25 @@ void routing_tests() {
 
   router::DeviceState device;
   ConnectedRib rib;
+
+  // Default hardware is absent, so configured addresses alone cannot produce
+  // connected routes. This prevents control-plane reachability without ports.
   if (rib.rebuild(router::make_rib_input(device)) || !rib.entries().empty()) {
     throw std::runtime_error("Down interfaces installed connected routes");
   }
-  device.hardware.card.present = true;
-  device.hardware.mda.present = true;
-  device.configuration.running.card_provisioned = true;
-  device.configuration.running.mda_provisioned = true;
-  device.hardware.card.lifecycle = router::EquipmentLifecycle::ready;
-  device.hardware.mda.lifecycle = router::EquipmentLifecycle::ready;
+  router::profile_card(device.hardware).type = router::profile::line_card_type;
+  router::profile_mda(device.hardware).type = router::profile::modeled_mda_type;
+  router::profile_card(device.configuration.running).type =
+      router::profile::line_card_type;
+  router::profile_mda(device.configuration.running).type =
+      router::profile::modeled_mda_type;
+  router::profile_card(device.hardware).equipment.lifecycle =
+      router::EquipmentLifecycle::ready;
+  router::profile_mda(device.hardware).equipment.lifecycle =
+      router::EquipmentLifecycle::ready;
+
+  // Once configured inventory and ready physical inventory agree, every
+  // operational interface contributes its profile-defined connected prefix.
   if (!rib.rebuild(router::make_rib_input(device)) ||
       rib.entries().size() != 2) {
     throw std::runtime_error(

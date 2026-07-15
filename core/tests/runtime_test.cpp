@@ -1,4 +1,5 @@
 #include "router/bounded_queue.hpp"
+#include "router/generated_runtime_protocol.hpp"
 #include "router/link_direction.hpp"
 #include "router/packet_pool.hpp"
 #include "router/runtime.hpp"
@@ -85,7 +86,7 @@ void ethernet_timing_tests() {
   // heap ownership just like LabNetwork::Impl so WebAssembly's small entry
   // stack is not consumed by diagnostic storage unrelated to call depth.
   auto direction = std::make_unique<router::LinkDirection>(
-      10000000000ULL, std::chrono::milliseconds(1));
+      router::profile::port_bits_per_second, std::chrono::milliseconds(1));
   const auto origin = Clock::time_point{};
   const auto first = direction->try_transmit({1, 60}, origin);
   const auto second = direction->try_transmit({2, 60}, origin);
@@ -115,7 +116,7 @@ void ethernet_timing_tests() {
   // before its propagation deadline. The old 100 ns frame remains due at 158
   // ns, while the next frame uses 200 ns and remains independently serialized.
   auto configurable = std::make_unique<router::LinkDirection>(
-      10000000000ULL, std::chrono::nanoseconds(100));
+      router::profile::port_bits_per_second, std::chrono::nanoseconds(100));
   const auto before_change = configurable->try_transmit({1, 60}, origin);
   configurable->set_propagation(std::chrono::nanoseconds(200));
   const auto after_change = configurable->try_transmit({2, 60}, origin);
@@ -134,14 +135,18 @@ void ethernet_timing_tests() {
   // full direction rejects the new handle and leaves all admitted deadlines in
   // FIFO order, proving that a burst cannot allocate an unbounded event list.
   auto saturated = std::make_unique<router::LinkDirection>(
-      10000000000ULL, std::chrono::seconds(1));
-  for (std::uint32_t value = 0; value < 2048; ++value) {
+      router::profile::port_bits_per_second, std::chrono::seconds(1));
+  for (std::uint32_t value = 0; value < router::profile::link_inflight_capacity;
+       ++value) {
     if (!saturated->try_transmit({value, 60}, origin)) {
       throw std::runtime_error(
           "Link direction rejected traffic before capacity");
     }
   }
-  if (saturated->try_transmit({2048, 60}, origin)) {
+  if (saturated->try_transmit(
+          {static_cast<std::uint32_t>(router::profile::link_inflight_capacity),
+           60},
+          origin)) {
     throw std::runtime_error(
         "Link direction did not enforce in-flight capacity");
   }
@@ -160,26 +165,39 @@ int main() {
     // Mirroring that lifecycle also keeps bounded mailbox storage off the small
     // WebAssembly entry stack.
     auto runtime = std::make_unique<router::Runtime>();
-    const auto initial = runtime->command("snapshot");
-    if (initial.find("\"card1\":\"absent\"") == std::string::npos) {
+    const auto initial = runtime->command(router::runtime_protocol::snapshot);
+    if (initial.find("\"equippedType\":null") == std::string::npos) {
       throw std::runtime_error("Initial hardware state is not absent");
     }
-    if (initial.find("\"card1Provisioned\":\"absent\"") == std::string::npos ||
-        initial.find("\"mda11Provisioned\":\"absent\"") == std::string::npos ||
+    if (initial.find("\"provisionedType\":null") == std::string::npos ||
         initial.find("\"ports\":[]") == std::string::npos) {
       throw std::runtime_error(
           "Fresh lab invented provisioning or hardware ports");
     }
-    runtime->command("project:provisioning|iom4-e|me10-10gb-sfp+");
-    runtime->command("hardware:insert-card");
-    runtime->command("hardware:insert-mda:me10-10gb-sfp+");
+    runtime->command(
+        std::string{router::runtime_protocol::project_provisioning} +
+        router::profile::line_card_type + "|" +
+        router::profile::modeled_mda_type);
+    runtime->command(
+        std::string{router::runtime_protocol::hardware_insert_card} +
+        std::to_string(router::profile::line_card_slot) + ":" +
+        router::profile::line_card_type);
+    runtime->command(
+        std::string{router::runtime_protocol::hardware_insert_mda} +
+        std::to_string(router::profile::line_card_slot) + ":" +
+        std::to_string(router::profile::mda_slot) + ":" +
+        router::profile::modeled_mda_type);
     // Experimental profile delays run on real steady-clock deadlines. Waiting
     // here verifies the autonomous control-shard wakeup rather than bypassing
     // lifecycle state through a test-only clock or hidden fast-forward path.
-    std::this_thread::sleep_for(std::chrono::milliseconds(3200));
-    const auto equipped = runtime->command("snapshot");
-    if (equipped.find("\"mdaLifecycle\":\"ready\"") == std::string::npos ||
-        equipped.find("\"id\":\"1/1/10\"") == std::string::npos) {
+    std::this_thread::sleep_for(router::profile::card_initialization +
+                                router::profile::mda_initialization +
+                                router::profile::equipment_poll_interval);
+    const auto equipped = runtime->command(router::runtime_protocol::snapshot);
+    if (equipped.find("\"lifecycle\":\"ready\"") == std::string::npos ||
+        equipped.find(std::string{"\"id\":\""} +
+                      router::profile::port_ids.back() + "\"") ==
+            std::string::npos) {
       throw std::runtime_error("Equipped MDA did not create ten profile ports");
     }
     const auto invalid_links = runtime->command("project:links|-1|100");
@@ -335,10 +353,25 @@ int main() {
 
     if (!rs_create())
       throw std::runtime_error("Wasm C ABI did not create runtime");
-    rs_command("project:provisioning|iom4-e|me10-10gb-sfp+");
-    rs_command("hardware:insert-card");
-    rs_command("hardware:insert-mda:me10-10gb-sfp+");
-    std::this_thread::sleep_for(std::chrono::milliseconds(3200));
+    const auto provisioning =
+        std::string{router::runtime_protocol::project_provisioning} +
+        router::profile::line_card_type + "|" +
+        router::profile::modeled_mda_type;
+    const auto insert_card =
+        std::string{router::runtime_protocol::hardware_insert_card} +
+        std::to_string(router::profile::line_card_slot) + ":" +
+        router::profile::line_card_type;
+    const auto insert_mda =
+        std::string{router::runtime_protocol::hardware_insert_mda} +
+        std::to_string(router::profile::line_card_slot) + ":" +
+        std::to_string(router::profile::mda_slot) + ":" +
+        router::profile::modeled_mda_type;
+    rs_command(provisioning.c_str());
+    rs_command(insert_card.c_str());
+    rs_command(insert_mda.c_str());
+    std::this_thread::sleep_for(router::profile::card_initialization +
+                                router::profile::mda_initialization +
+                                router::profile::equipment_poll_interval);
     rs_command("host:ping:host-a:host-b");
     const auto *checkpoint_data = checkpoint_export();
     const auto checkpoint_size = checkpoint_export_size();

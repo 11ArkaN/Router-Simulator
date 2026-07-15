@@ -101,9 +101,8 @@ constexpr std::uint8_t engine_mask(CliEngine engine) noexcept {
 bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
   // Literal structure selects the handler. Parameter range and model checks
   // stay in that handler so malformed input receives a precise CLI error.
-  return token.kind == cli_schema::TokenKind::literal
-             ? value == token.display
-             : !value.empty();
+  return token.kind == cli_schema::TokenKind::literal ? value == token.display
+                                                      : !value.empty();
 }
 
 const DeviceConfiguration &active_configuration(const DeviceState &state,
@@ -121,10 +120,10 @@ void add_candidate(std::vector<Candidate> &items, std::string value,
   // before sorting so help never repeats a keyword for each descendant row.
   if (!std::string_view(value).starts_with(partial))
     return;
-  const auto duplicate = std::find_if(items.begin(), items.end(),
-                                      [&value](const Candidate &item) {
-                                        return item.value == value;
-                                      });
+  const auto duplicate =
+      std::find_if(items.begin(), items.end(), [&value](const Candidate &item) {
+        return item.value == value;
+      });
   if (duplicate == items.end())
     items.push_back({std::move(value), completable});
 }
@@ -171,7 +170,7 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
     // if the physical module is absent. Equipment controls operational state,
     // while the configured parent controls whether port nodes exist in CLI.
     for (std::size_t index = 0;
-         index < (configuration.mda_provisioned ? profile::port_count : 0U);
+         index < (profile_mda(configuration).type ? profile::port_count : 0U);
          ++index)
       add_candidate(items, profile::port_ids[index], true, partial);
     break;
@@ -179,7 +178,8 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
     // The placeholder documents the parameter shape. Only existing interface
     // names are marked as safe replacements for the editable command line.
     add_candidate(items, std::string{token.display}, false, partial);
-    for (std::size_t index = 0; index < configuration.interface_count; ++index) {
+    for (std::size_t index = 0; index < configuration.interface_count;
+         ++index) {
       if (configuration.interfaces[index].valid)
         add_candidate(items, configuration.interfaces[index].name, true,
                       partial);
@@ -204,9 +204,8 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
 
 } // namespace
 
-std::optional<ParsedCommand> parse_command(const DeviceState &,
-                                           CliEngine engine,
-                                           std::string_view input) {
+std::optional<ParsedCommand>
+parse_command(const DeviceState &, CliEngine engine, std::string_view input) {
   const auto line = tokenize(trim_view(input), false);
   if (!line.valid || !line.count)
     return std::nullopt;
@@ -229,8 +228,8 @@ std::optional<ParsedCommand> parse_command(const DeviceState &,
   return std::nullopt;
 }
 
-std::optional<std::string_view>
-argument(const ParsedCommand &command, cli_schema::TokenKind kind) noexcept {
+std::optional<std::string_view> argument(const ParsedCommand &command,
+                                         cli_schema::TokenKind kind) noexcept {
   // Each current command uses a parameter kind at most once. Looking up by
   // kind keeps execution independent from token offsets in release schemas.
   for (std::size_t index = 0; index < command.token_count; ++index) {
@@ -254,20 +253,20 @@ std::string complete_command(const DeviceState &state, CliEngine engine,
   if (!line.trailing_space && line.count) {
     // Tab on an already complete keyword advances to its child context. This
     // differs from an abbreviation such as "sho", which completes to "show".
-    const auto exact_keyword = std::any_of(
-        cli_schema::commands.begin(), cli_schema::commands.end(),
-        [&](const cli_schema::CommandSpec &spec) {
-          if (!(spec.engine_mask & engine_mask(engine)) ||
-              spec.token_count <= line.count)
-            return false;
-          for (std::size_t index = 0; index < line.count; ++index) {
-            if (!accepts(spec.tokens[index], line.tokens[index]))
-              return false;
-          }
-          const auto &last = spec.tokens[line.count - 1U];
-          return last.kind == cli_schema::TokenKind::literal &&
-                 last.display == line.tokens[line.count - 1U];
-        });
+    const auto exact_keyword =
+        std::any_of(cli_schema::commands.begin(), cli_schema::commands.end(),
+                    [&](const cli_schema::CommandSpec &spec) {
+                      if (!(spec.engine_mask & engine_mask(engine)) ||
+                          spec.token_count <= line.count)
+                        return false;
+                      for (std::size_t index = 0; index < line.count; ++index) {
+                        if (!accepts(spec.tokens[index], line.tokens[index]))
+                          return false;
+                      }
+                      const auto &last = spec.tokens[line.count - 1U];
+                      return last.kind == cli_schema::TokenKind::literal &&
+                             last.display == line.tokens[line.count - 1U];
+                    });
     if (exact_keyword) {
       completed_count = line.count;
       partial = {};
@@ -290,8 +289,8 @@ std::string complete_command(const DeviceState &state, CliEngine engine,
       }
     }
     if (prefix_matches)
-      parameter_candidates(state, engine, spec.tokens[completed_count],
-                           partial, candidates);
+      parameter_candidates(state, engine, spec.tokens[completed_count], partial,
+                           candidates);
   }
   std::sort(candidates.begin(), candidates.end(),
             [](const Candidate &left, const Candidate &right) {
@@ -337,18 +336,18 @@ std::string incomplete_command_help(const DeviceState &state, CliEngine engine,
   const auto line = tokenize(trim_view(input), false);
   if (!line.valid || !line.count)
     return {};
-  const auto incomplete = std::any_of(
-      cli_schema::commands.begin(), cli_schema::commands.end(),
-      [&](const cli_schema::CommandSpec &spec) {
-        if (!(spec.engine_mask & engine_mask(engine)) ||
-            spec.token_count <= line.count)
-          return false;
-        for (std::size_t index = 0; index < line.count; ++index) {
-          if (!accepts(spec.tokens[index], line.tokens[index]))
-            return false;
-        }
-        return true;
-      });
+  const auto incomplete =
+      std::any_of(cli_schema::commands.begin(), cli_schema::commands.end(),
+                  [&](const cli_schema::CommandSpec &spec) {
+                    if (!(spec.engine_mask & engine_mask(engine)) ||
+                        spec.token_count <= line.count)
+                      return false;
+                    for (std::size_t index = 0; index < line.count; ++index) {
+                      if (!accepts(spec.tokens[index], line.tokens[index]))
+                        return false;
+                    }
+                    return true;
+                  });
   return incomplete ? complete_command(state, engine, input) : std::string{};
 }
 

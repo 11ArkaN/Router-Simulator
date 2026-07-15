@@ -10,17 +10,17 @@ bool ConnectedRib::rebuild(const RibInput &input) noexcept {
   // Connected routes are derived only from operational routed interfaces.
   // Removing a card, MDA, signal, or interface therefore withdraws the route
   // through the same dependency chain instead of a special failure shortcut.
-  std::array<Route, 8> next{};
+  std::array<Route, profile::fib_route_capacity> next{};
   std::uint8_t next_count = 0;
   for (std::size_t index = 0; index < input.connected_count; ++index) {
     const auto &route = input.connected[index];
-    if (route.valid && route.operational && next_count < next.size()) {
+    if (route.valid && route.operational) {
       next[next_count++] = {route.network, route.prefix_length,
                             route.port_index, 0};
     }
   }
   for (const auto &route : input.statics) {
-    if (!route.valid || next_count == next.size())
+    if (!route.valid)
       continue;
     for (std::size_t index = 0; index < input.connected_count; ++index) {
       const auto &connected = input.connected[index];

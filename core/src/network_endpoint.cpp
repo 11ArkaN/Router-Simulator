@@ -13,10 +13,12 @@ namespace {
 
 constexpr packet::Mac no_mac{};
 
+// Converts configured endpoint bytes to the route helper's network-order key.
 std::uint32_t to_u32(packet::Ipv4 address) noexcept {
   return routing::ipv4(address[0], address[1], address[2], address[3]);
 }
 
+// Converts the selected next hop back to packet bytes for ARP encoding.
 packet::Ipv4 to_ipv4(std::uint32_t value) noexcept {
   return {static_cast<std::uint8_t>(value >> 24),
           static_cast<std::uint8_t>(value >> 16),
@@ -24,11 +26,14 @@ packet::Ipv4 to_ipv4(std::uint32_t value) noexcept {
           static_cast<std::uint8_t>(value)};
 }
 
+// Rejects an all-zero sender MAC before it can enter the neighbor cache.
 bool is_zero(packet::Mac value) noexcept {
   return std::all_of(value.begin(), value.end(),
                      [](auto byte) { return byte == 0; });
 }
 
+// Appends into the bounded response batch. Encoders never allocate a hidden
+// overflow vector when one received frame produces multiple replies.
 void append(EndpointFrames &result, const packet::Frame &frame) noexcept {
   if (result.count < result.frames.size())
     result.frames[result.count++] = frame;
@@ -38,6 +43,8 @@ void append(EndpointFrames &result, const packet::Frame &frame) noexcept {
 
 void EndpointStack::configure(
     const NetworkEndpointConfiguration &configuration) noexcept {
+  // Replacement is a neighbor-generation boundary. Old gateway state cannot
+  // survive an address, prefix, MAC or gateway edit.
   mac_ = configuration.endpoint_mac;
   address_ = configuration.endpoint_address;
   prefix_length_ = configuration.endpoint_prefix_length;
@@ -47,14 +54,16 @@ void EndpointStack::configure(
 
 EndpointFrames EndpointStack::begin_echo(packet::Ipv4 destination,
                                          std::uint16_t sequence) noexcept {
+  // Host next-hop selection occurs before ARP. A cached exact mapping releases
+  // the packet immediately; otherwise the encoded IP frame remains pending.
   EndpointFrames result;
   auto request =
       packet::icmp_echo(mac_, no_mac, address_, destination, false, sequence);
-  const auto next_hop = to_ipv4(routing::host_next_hop(
-      {.source = to_u32(address_),
-       .prefix_length = prefix_length_,
-       .destination = to_u32(destination),
-       .gateway = to_u32(gateway_)}));
+  const auto next_hop =
+      to_ipv4(routing::host_next_hop({.source = to_u32(address_),
+                                      .prefix_length = prefix_length_,
+                                      .destination = to_u32(destination),
+                                      .gateway = to_u32(gateway_)}));
   if (neighbor_address_ == next_hop && neighbor_mac_) {
     packet::rewrite_ethernet(request, mac_, *neighbor_mac_);
     append(result, request);
@@ -72,6 +81,8 @@ EndpointFrames EndpointStack::begin_echo(packet::Ipv4 destination,
 EndpointFrames EndpointStack::receive(const packet::Frame &frame,
                                       std::uint16_t expected_sequence,
                                       bool probe_source) noexcept {
+  // The endpoint accepts only frames addressed to its MAC or broadcast, then
+  // handles ARP and ICMP strictly from decoded bytes.
   EndpointFrames result;
   const auto ethernet = packet::parse_ethernet(frame);
   if (!ethernet || !packet::ethernet_for_local(ethernet->destination, mac_))
@@ -120,6 +131,8 @@ EndpointFrames EndpointStack::receive(const packet::Frame &frame,
 }
 
 void EndpointStack::clear_neighbor() noexcept {
+  // Clearing also discards the unresolved packet because it belongs to the old
+  // address or link generation and cannot be forwarded safely later.
   neighbor_address_.reset();
   neighbor_mac_.reset();
   pending_.reset();
@@ -128,6 +141,8 @@ void EndpointStack::clear_neighbor() noexcept {
 
 void EndpointStack::restore_router_neighbor(packet::Ipv4 address,
                                             packet::Mac mac) noexcept {
+  // Checkpoint restore installs only a completed exact mapping, never pending
+  // packet storage or an outstanding request flag.
   clear_neighbor();
   neighbor_address_ = address;
   neighbor_mac_ = mac;

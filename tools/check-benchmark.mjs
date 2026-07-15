@@ -1,3 +1,6 @@
+// Packet-path regression gate. It compares current Wasm measurements against
+// the committed machine-independent scale and per-stage thresholds.
+
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";

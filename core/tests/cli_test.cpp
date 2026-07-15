@@ -5,7 +5,9 @@
 void cli_tests() {
   router::DeviceState state;
   router::CliSession session;
-  const auto ping = [](std::uint32_t) { return std::string{}; };
+  const auto ping = [](router::packet::Ipv4, std::uint32_t) {
+    return std::string{};
+  };
   const auto no_routes =
       router::execute_cli(state, session, "show router route-table", ping);
   if (no_routes.find("No active routes") == std::string::npos ||
@@ -21,13 +23,13 @@ void cli_tests() {
   router::execute_cli(state, session,
                       "configure card 1 mda 1 mda-type me10-10gb-sfp+", ping);
   router::execute_cli(state, session, "commit", ping);
-  if (!state.configuration.running.card_provisioned ||
-      !state.configuration.running.mda_provisioned) {
+  if (!router::profile_card(state.configuration.running).type ||
+      !router::profile_mda(state.configuration.running).type) {
     throw std::runtime_error("MD-CLI did not provision fresh hardware");
   }
   const auto candidate =
       router::execute_cli(state, session, "delete card 1", ping);
-  if (state.hardware.card.present || !session.candidate_dirty) {
+  if (router::profile_card(state.hardware).type || !session.candidate_dirty) {
     throw std::runtime_error("MD-CLI changed running state before commit");
   }
   if (candidate.find("*[ex:/]") == std::string::npos) {
@@ -44,7 +46,7 @@ void cli_tests() {
         "MD-CLI compare did not represent candidate removals");
   }
   router::execute_cli(state, session, "commit", ping);
-  if (state.configuration.running.card_provisioned) {
+  if (router::profile_card(state.configuration.running).type) {
     throw std::runtime_error("MD-CLI commit did not remove provisioning");
   }
 
@@ -57,8 +59,8 @@ void cli_tests() {
                       ping);
   router::execute_cli(state, session,
                       "configure card 1 mda 1 mda-type me10-10gb-sfp+", ping);
-  if (!state.configuration.running.mda_provisioned ||
-      state.hardware.mda.present) {
+  if (!router::profile_mda(state.configuration.running).type ||
+      router::profile_mda(state.hardware).type) {
     throw std::runtime_error(
         "classic CLI provisioning changed physical equipment");
   }
@@ -79,7 +81,7 @@ void cli_tests() {
                       ping);
   const auto stale_prompt = router::execute_cli(state, session, "//", ping);
   if (!session.candidate_dirty || !session.candidate_outdated ||
-      !state.configuration.candidate.mda_provisioned ||
+      !router::profile_mda(state.configuration.candidate).type ||
       stale_prompt.find("!*[ex:/]") == std::string::npos) {
     throw std::runtime_error(
         "classic CLI overwrote or hid a dirty MD candidate");
@@ -117,13 +119,17 @@ void cli_tests() {
   }
 
   std::uint32_t requested_count{};
-  const auto counted_ping = [&](std::uint32_t count) {
+  router::packet::Ipv4 requested_destination{};
+  const auto counted_ping = [&](router::packet::Ipv4 destination,
+                                std::uint32_t count) {
+    requested_destination = destination;
     requested_count = count;
     return std::string{"ping-result"};
   };
   const auto default_ping =
       router::execute_cli(state, session, "ping 198.51.100.2", counted_ping);
   if (requested_count != 5 ||
+      requested_destination != router::packet::Ipv4{198, 51, 100, 2} ||
       default_ping.find("ping-result") == std::string::npos) {
     throw std::runtime_error("SR OS ping default count was not applied");
   }

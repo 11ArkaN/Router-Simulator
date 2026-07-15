@@ -49,6 +49,10 @@ void synchronize_candidate(ConfigurationState &configuration,
 [[nodiscard]] std::string execute_classic(ConfigurationState &configuration,
                                           CliSession &session,
                                           const ParsedCommand &command);
-[[nodiscard]] std::string prompt(const CliSession &session);
+// The prompt is rendered from the running system name on every response. The
+// terminal therefore cannot retain a stale frontend copy after configuration
+// changes or checkpoint restore.
+[[nodiscard]] std::string prompt(const DeviceConfiguration &configuration,
+                                 const CliSession &session);
 
 } // namespace router::cli_detail

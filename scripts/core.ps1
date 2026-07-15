@@ -1,3 +1,6 @@
+# Native Windows entry point for the pinned Emscripten build, tests, benchmarks
+# and browser artifact publication. It never enters or depends on WSL.
+
 param(
   [ValidateSet("build", "test", "manual", "benchmark", "structure-benchmark", "runtime-benchmark", "publish")]
   [string]$Task = "build"
@@ -30,6 +33,8 @@ try {
 $env:PATH = "$CmakeBin;$NinjaBin;$env:PATH"
 
 if (-not (Test-Path (Join-Path $Build "build.ninja"))) {
+  # Configure once with the repository-local native Windows toolchain. CMake
+  # reruns itself automatically when profile or build inputs change.
   emcmake cmake -S (Join-Path $Root "core") -B $Build -G Ninja
 }
 
@@ -37,6 +42,8 @@ cmake --build $Build
 if ($LASTEXITCODE -ne 0) { throw "Core build failed." }
 
 switch ($Task) {
+  # Each task consumes the same fully built graph, preventing manual and
+  # benchmark executables from testing different compile flags than production.
   "test" {
     node (Join-Path $Build "module_tests.js")
     if ($LASTEXITCODE -eq 0) { node (Join-Path $Build "core_tests.js") }

@@ -1,3 +1,6 @@
+// File import tests cover the browser-side wrapper and validation boundary.
+// IndexedDB and OPFS are intentionally outside this DOM-free unit suite.
+
 import { describe, expect, it } from "vitest";
 import { DEFAULT_PROJECT } from "@router-simulator/contracts";
 import { importProject } from "./persistence";
@@ -16,6 +19,8 @@ describe("project file import", () => {
   });
 
   it("rejects malformed endpoint data from a file", async () => {
+    // File extension is not trusted. Parsed contents reach the same strict
+    // project validator used by the live runtime restoration path.
     const project = structuredClone(DEFAULT_PROJECT);
     project.hosts[0].address = "999.0.2.2/30";
     const file = new File([JSON.stringify(project)], "invalid.netsim");

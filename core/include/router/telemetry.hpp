@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "router/generated_profile.hpp"
+
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -18,10 +20,10 @@ struct alignas(64) TelemetryPageV1 {
   // There is one producer and any number of UI readers. Overflow wraps modulo
   // 2^32 and remains safe because only equality and oddness are tested.
   std::uint32_t sequence{};
-  std::uint32_t abi_version{3};
+  std::uint32_t abi_version{profile::telemetry_abi};
   std::uint32_t byte_size{};
   std::uint32_t status{1};
-  std::uint32_t worker_count{2};
+  std::uint32_t worker_count{profile::runtime_worker_count};
   std::uint32_t inventory_ports{};
   std::uint32_t operational_ports{};
   std::uint32_t port_oper_bitmap{};
@@ -38,4 +40,4 @@ struct alignas(64) TelemetryPageV1 {
 
 static_assert(std::is_standard_layout_v<TelemetryPageV1>);
 
-}  // namespace router
+} // namespace router

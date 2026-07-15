@@ -23,6 +23,8 @@ struct RunningParseResult {
   std::string error;
 };
 
+// Parsers are fail-closed control-plane transactions. On failure they return
+// the original value untouched together with a stable diagnostic string.
 [[nodiscard]] ParseResult parse_hosts(const ProjectState &current,
                                       const std::string &command);
 [[nodiscard]] ParseResult parse_links(const ProjectState &current,

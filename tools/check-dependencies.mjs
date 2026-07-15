@@ -38,7 +38,8 @@ for (const file of files) {
 // or a lower layer only. CMake target links enforce symbol dependencies, while
 // this check also catches header-only inversions that a linker cannot observe.
 const cppLayers = new Map([
-  ["bounded_queue.hpp", 0], ["generated_profile.hpp", 0], ["generated_cli_schema.hpp", 0], ["link_direction.hpp", 0],
+  ["bounded_queue.hpp", 0], ["generated_profile.hpp", 0], ["generated_cli_schema.hpp", 0],
+  ["generated_runtime_protocol.hpp", 0], ["link_direction.hpp", 0],
   ["packet.hpp", 0], ["packet_pool.hpp", 0], ["spsc_ring.hpp", 0], ["telemetry.hpp", 0],
   ["packet.cpp", 0],
   ["device.hpp", 1], ["device_routing.hpp", 1], ["hardware.hpp", 1], ["routing.hpp", 1],
@@ -91,6 +92,43 @@ for (const file of files) {
   const source = readFileSync(file, "utf8");
   if (/["'`](?:show|configure|delete|ping)\s+[a-z0-9]/i.test(source))
     throw new Error(`${path}: frontend must use structured runtime operations, not CLI command lines`);
+}
+
+// Profile identities may occur only in generated projections, schemas, profile
+// inputs and focused tests. Production modules must use the generated symbols
+// so a profile change cannot leave a hidden second hardware catalog behind.
+const profileLiteral = /(?:iom4-e|me10-10gb-sfp\+|me1-100gb-cfp2|host-a|host-b|1\/1\/[0-9]+|7750-sr-7-iom4-e)/i;
+for (const file of files) {
+  const path = relative(root, file).replaceAll("\\", "/");
+  if (/generated[_-]/.test(path) || path.includes("/tests/") ||
+      path.includes("/tools/") || path.includes(".test.")) continue;
+  const source = readFileSync(file, "utf8");
+  if (profileLiteral.test(source))
+    throw new Error(`${path}: profile identity must come from generated data`);
+}
+
+// Raw management commands are encoded only by RuntimeClient or the C++
+// dispatcher. React components operate on typed methods and cannot assemble a
+// private protocol dialect.
+for (const file of files) {
+  const path = relative(root, file).replaceAll("\\", "/");
+  if (!path.startsWith("apps/web/src/ui/") || path.includes(".test.")) continue;
+  const source = readFileSync(file, "utf8");
+  if (/\.command\s*\(/.test(source) ||
+      /["'`](?:hardware|project|terminal|host|capture|link):/.test(source))
+    throw new Error(`${path}: UI must use typed RuntimeClient operations`);
+}
+
+// Shared-memory field offsets are produced by C++ offsetof. Numeric DataView
+// offsets outside tests would silently reinterpret a newer telemetry layout.
+for (const file of files) {
+  const path = relative(root, file).replaceAll("\\", "/");
+  if (!path.startsWith("apps/web/src/") || path.includes(".test.")) continue;
+  const source = readFileSync(file, "utf8");
+  if (/get(?:Uint32|BigUint64)\(\s*\d+/.test(source) ||
+      /new BigUint64Array\([^\n]+\+\s*\d+/.test(source)) {
+    throw new Error(`${path}: telemetry offsets must come from the compiled layout ABI`);
+  }
 }
 
 // Runtime diagnostics belong in developer logs. These exact labels previously

@@ -1,20 +1,36 @@
-import { GENERATED_PROFILE, type HardwareState, type HostConfig, type RuntimeSnapshot } from "@router-simulator/contracts";
+// Inspector for profile-driven endpoint and router state. It emits structured
+// user intent and never encodes runtime protocol strings.
+
+import { GENERATED_PROFILE, type HostConfig, type RuntimeSnapshot } from "@router-simulator/contracts";
+import type { HardwareAction } from "../runtime/client";
 
 interface Props {
   selected: string;
-  hosts: [HostConfig, HostConfig];
+  hosts: HostConfig[];
   snapshot?: RuntimeSnapshot;
+  systemName: string;
   updateHost(host: HostConfig): void;
-  hardware(command: string): void;
+  hardware(action: HardwareAction): void;
 }
 
 function StatePill({ up, children }: { up: boolean; children: string }) {
+  // The pill visualizes an already computed state and never derives router
+  // operation from CSS or user selection.
   return <span className={`state-pill ${up ? "good" : "muted"}`}>{children}</span>;
 }
 
-export function Inspector({ selected, hosts, snapshot, updateHost, hardware }: Props) {
+function speedLabel(speedMbps: number): string {
+  // Preserve exact profile units when speed is not a whole gigabit value.
+  return speedMbps % 1000 === 0 ? `${speedMbps / 1000}G` : `${speedMbps}M`;
+}
+
+export function Inspector({ selected, hosts, snapshot, systemName, updateHost, hardware }: Props) {
+  // Selection chooses one validated project object. Editing a host updates the
+  // project draft, while router hardware actions remain structured intent.
   const host = hosts.find((item) => item.id === selected);
   if (host) {
+    // Host fields stay controlled even while temporarily invalid. App retains
+    // them as draft text and persistence validates the complete project later.
     const update = (key: keyof HostConfig, value: string) => updateHost({ ...host, [key]: value });
     return (
       <aside className="inspector">
@@ -29,28 +45,23 @@ export function Inspector({ selected, hosts, snapshot, updateHost, hardware }: P
     );
   }
 
-  const hardwareState: HardwareState = snapshot?.hardware ?? {
-    chassis: GENERATED_PROFILE.chassis,
-    cpmA: "active-ready",
-    card1Provisioned: "absent",
-    mda11Provisioned: "absent",
-    card1: "absent",
-    mda11: "absent"
-  };
-  const card = hardwareState.card1 !== "absent";
-  const mda = hardwareState.mda11 !== "absent";
-  const compatible = hardwareState.mda11 === "me10-10gb-sfp+";
-  // Unwired ports are expected to remain down, so router health cannot be
-  // derived from every physical port being up. Hardware lifecycle readiness
-  // is the correct equipment-level signal; per-port oper state stays visible
-  // independently in the list below.
-  const linkedPortsOperational = Boolean(snapshot && snapshot.ports.length >= 2 &&
-    snapshot.ports[0].oper === "up" && snapshot.ports[1].oper === "up");
-  const routerOperational = (hardwareState.cardLifecycle === "ready" &&
-    hardwareState.mdaLifecycle === "ready") || linkedPortsOperational;
+  // The inspector displays the modeled profile slot, but hardware snapshots
+  // still contain every chassis slot. Selection therefore uses explicit slot
+  // identity and never assumes that the modeled card is array element zero.
+  const card = snapshot?.hardware.cards.find((item) => item.slot === GENERATED_PROFILE.lineCard.slot);
+  const mda = card?.mdas.find((item) => item.slot === GENERATED_PROFILE.mda.slot);
+  const linkedPortsOperational = GENERATED_PROFILE.links.every((link) =>
+    snapshot?.ports.find((port) => port.id === link.router_port)?.oper === "up");
+  const routerOperational = Boolean(card?.lifecycle === "ready" &&
+    mda?.lifecycle === "ready" && linkedPortsOperational);
+
+  // Physical presence controls Remove versus Insert. Readiness is displayed
+  // separately because an initializing or mismatched item is still equipped.
+  const cardEquipped = Boolean(card?.equippedType);
+  const mdaEquipped = Boolean(mda?.equippedType);
   return (
     <aside className="inspector">
-      <div className="inspector-title"><div><h2>R1</h2><p>{routerOperational ? "Operational" : "Degraded"}</p></div><button>×</button></div>
+      <div className="inspector-title"><div><h2>{systemName}</h2><p>{routerOperational ? "Operational" : "Degraded"}</p></div><button>×</button></div>
       <nav className="inspector-tabs"><button className="active">Chassis</button><button>CPM</button><button>Cards</button><button>Ports</button><button>Operational</button></nav>
 
       <div className="panel-kicker inspector-section-title">CHASSIS</div>
@@ -58,30 +69,41 @@ export function Inspector({ selected, hosts, snapshot, updateHost, hardware }: P
         <span>Model</span><strong>{GENERATED_PROFILE.chassis}</strong>
         <span>Slot count</span><strong>{GENERATED_PROFILE.chassisSlots}</strong>
         <span>Release</span><strong>{GENERATED_PROFILE.release}</strong>
-        <span>System state</span><strong className="text-good">Operational</strong>
-        <span>CPM A</span><strong className="text-good">active / ready</strong>
+        <span>System state</span><strong className={routerOperational ? "text-good" : ""}>{routerOperational ? "Operational" : "Degraded"}</strong>
+        <span>Control {GENERATED_PROFILE.control.slot}</span><strong className="text-good">{GENERATED_PROFILE.control.card} / {GENERATED_PROFILE.control.initial_state}</strong>
       </div>
 
       <div className="hardware-slot">
-        <div className="slot-head"><span>SLOT 1</span><StatePill up={card}>{card ? "equipped" : "absent"}</StatePill></div>
-        <strong>{card ? "IOM4-e" : "No line card"}</strong>
-        <button onClick={() => hardware(card ? "hardware:remove-card" : "hardware:insert-card")}>{card ? "Remove card" : "Insert IOM4-e"}</button>
+        {/* Physical presence and provisioning remain separate in the snapshot.
+            This control changes inventory and lets App provision explicitly. */}
+        <div className="slot-head"><span>SLOT {GENERATED_PROFILE.lineCard.slot}</span><StatePill up={cardEquipped}>{cardEquipped ? "equipped" : "absent"}</StatePill></div>
+        <strong>{card?.equippedType ?? "No line card"}</strong>
+        <button onClick={() => hardware(cardEquipped
+          ? { kind: "remove-card", slot: GENERATED_PROFILE.lineCard.slot }
+          : { kind: "insert-card", slot: GENERATED_PROFILE.lineCard.slot,
+              type: GENERATED_PROFILE.lineCard.type })}>
+          {cardEquipped ? "Remove card" : `Insert ${GENERATED_PROFILE.lineCard.type}`}
+        </button>
       </div>
 
       <div className="hardware-slot">
-        <div className="slot-head"><span>MDA 1/1</span><StatePill up={compatible}>{mda ? (compatible ? "operational" : "mismatch") : "absent"}</StatePill></div>
-        <strong>{mda ? hardwareState.mda11 : "No adapter"}</strong>
+        <div className="slot-head"><span>MDA {GENERATED_PROFILE.lineCard.slot}/{GENERATED_PROFILE.mda.slot}</span><StatePill up={Boolean(mda?.compatible && mda.lifecycle === "ready")}>{mdaEquipped ? (mda?.compatible ? mda.lifecycle : "mismatch") : "absent"}</StatePill></div>
+        <strong>{mda?.equippedType ?? "No adapter"}</strong>
         <div className="button-pair">
-          {mda ? <button onClick={() => hardware("hardware:remove-mda")}>Remove</button> : <>
-            <button disabled={!card} onClick={() => hardware("hardware:insert-mda:me10-10gb-sfp+")}>Insert 10G MDA</button>
-            <button disabled={!card} onClick={() => hardware("hardware:insert-mda:me1-100gb-cfp2")}>Insert 100G MDA</button>
-          </>}
+          {mdaEquipped ? <button onClick={() => hardware({ kind: "remove-mda",
+            cardSlot: GENERATED_PROFILE.lineCard.slot, mdaSlot: GENERATED_PROFILE.mda.slot })}>Remove</button> :
+            GENERATED_PROFILE.mda.supportedTypes.map((type) => <button key={type}
+              disabled={!cardEquipped} onClick={() => hardware({ kind: "insert-mda",
+                cardSlot: GENERATED_PROFILE.lineCard.slot, mdaSlot: GENERATED_PROFILE.mda.slot,
+                type })}>Insert {type}</button>)}
         </div>
       </div>
 
       <div className="ports-summary">
         <div className="panel-kicker">PORTS</div>
-        {snapshot?.ports.map((port) => <div key={port.id}><span>{port.id}</span><strong>{port.oper} · {GENERATED_PROFILE.portSpeedMbps / 1000}G</strong></div>)}
+        {/* Runtime emits only ports exposed by compatible equipped inventory.
+            No placeholder rows are manufactured for absent line hardware. */}
+        {snapshot?.ports.map((port) => <div key={port.id}><span>{port.id}</span><strong>{port.oper} · {speedLabel(port.speedMbps)}</strong></div>)}
       </div>
     </aside>
   );

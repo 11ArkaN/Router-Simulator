@@ -8,6 +8,8 @@
 namespace router {
 
 std::string Runtime::configure_running(const std::string &text) {
+  // Parse a complete datastore before forwarding receives its matching network
+  // projection and before control publishes running or candidate state.
   const auto parsed =
       project::parse_running(state_.configuration.running, text);
   if (!parsed.success)
@@ -29,15 +31,17 @@ std::string Runtime::configure_running(const std::string &text) {
   session_.candidate_dirty = false;
   session_.candidate_outdated = false;
   state_.operational.arp = {};
-  const auto hardware = hardware::reconcile(
-      state_.configuration.running, state_.hardware, state_.operational,
-      std::chrono::steady_clock::now());
+  const auto hardware =
+      hardware::reconcile(state_.configuration.running, state_.hardware,
+                          state_.operational, std::chrono::steady_clock::now());
   hardware_deadline_ = hardware.next_deadline;
   reconcile_fib(true);
   return snapshot();
 }
 
 std::string Runtime::configure_hosts(const std::string &text) {
+  // Host identities form one project generation, allowing valid identity swaps
+  // without an observable transient duplicate endpoint.
   const auto parsed = project::parse_hosts(state_.project, text);
   if (!parsed.success)
     return parsed.error;
@@ -55,6 +59,8 @@ std::string Runtime::configure_hosts(const std::string &text) {
 }
 
 std::string Runtime::configure_links(const std::string &text) {
+  // All delay values cross in one job. Already admitted frames retain their old
+  // link-owned delivery deadlines while later frames use the new propagation.
   const auto parsed = project::parse_links(state_.project, text);
   if (!parsed.success)
     return parsed.error;

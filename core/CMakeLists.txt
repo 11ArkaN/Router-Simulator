@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.22)
 project(router_simulator_core LANGUAGES CXX)
 
+# The active profile owns the fixed Wasm memory budget. Keeping the generated
+# value in CMake prevents the linker and runtime model from drifting apart.
+include(${CMAKE_CURRENT_SOURCE_DIR}/generated-profile.cmake)
+
 option(ROUTER_BUILD_TESTS "Build core conformance tests" ON)
 option(ROUTER_BUILD_MANUAL "Build the manual runtime session" ON)
 option(ROUTER_BUILD_BENCHMARKS "Build packet-path benchmarks" ON)
@@ -103,6 +107,12 @@ if(EMSCRIPTEN)
   # Keep the optimization contract on the archive itself to make every Wasm
   # consumer, including the browser runtime, use the same production code.
   target_compile_options(router_build_options INTERFACE -pthread -O3)
+  # Source: Emscripten pthreads documentation. Pre-created workers make the
+  # two synchronous std::thread owners available before main returns to the
+  # browser event loop. The count is generated with the active runtime profile.
+  set(ROUTER_PTHREAD_POOL_OPTION
+      "-sPTHREAD_POOL_SIZE=${ROUTER_RUNTIME_WORKERS}")
+  set(ROUTER_MEMORY_OPTION "-sINITIAL_MEMORY=${ROUTER_WASM_INITIAL_MEMORY}")
 endif()
 
 if(ROUTER_BUILD_BENCHMARKS)
@@ -110,21 +120,26 @@ if(ROUTER_BUILD_BENCHMARKS)
   target_link_libraries(packet_benchmark PRIVATE router_core)
   if(EMSCRIPTEN)
     target_compile_options(packet_benchmark PRIVATE -O3 -pthread)
-    target_link_options(packet_benchmark PRIVATE -O3 -pthread "-sPTHREAD_POOL_SIZE=2" "-sINITIAL_MEMORY=67108864")
+    target_link_options(packet_benchmark PRIVATE -O3 -pthread
+      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}")
     set_target_properties(packet_benchmark PROPERTIES SUFFIX ".js")
   endif()
   add_executable(structure_benchmark tools/structure_benchmark.cpp)
   target_link_libraries(structure_benchmark PRIVATE router_core)
   if(EMSCRIPTEN)
     target_compile_options(structure_benchmark PRIVATE -O3 -pthread)
-    target_link_options(structure_benchmark PRIVATE -O3 -pthread "-sPTHREAD_POOL_SIZE=2" "-sINITIAL_MEMORY=134217728" "-sALLOW_MEMORY_GROWTH=0")
+    target_link_options(structure_benchmark PRIVATE -O3 -pthread
+      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}"
+      "-sALLOW_MEMORY_GROWTH=0")
     set_target_properties(structure_benchmark PROPERTIES SUFFIX ".js")
   endif()
   add_executable(runtime_benchmark tools/runtime_benchmark.cpp)
   target_link_libraries(runtime_benchmark PRIVATE router_core)
   if(EMSCRIPTEN)
     target_compile_options(runtime_benchmark PRIVATE -O3 -pthread)
-    target_link_options(runtime_benchmark PRIVATE -O3 -pthread "-sPTHREAD_POOL_SIZE=2" "-sINITIAL_MEMORY=268435456" "-sALLOW_MEMORY_GROWTH=0")
+    target_link_options(runtime_benchmark PRIVATE -O3 -pthread
+      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}"
+      "-sALLOW_MEMORY_GROWTH=0")
     set_target_properties(runtime_benchmark PROPERTIES SUFFIX ".js")
   endif()
 endif()
@@ -134,7 +149,8 @@ if(ROUTER_BUILD_MANUAL)
   target_link_libraries(manual_session PRIVATE router_core)
   if(EMSCRIPTEN)
     target_compile_options(manual_session PRIVATE -pthread)
-    target_link_options(manual_session PRIVATE -pthread "-sPTHREAD_POOL_SIZE=2" "-sINITIAL_MEMORY=201326592")
+    target_link_options(manual_session PRIVATE -pthread
+      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}")
     set_target_properties(manual_session PROPERTIES SUFFIX ".js")
   endif()
 endif()
@@ -146,14 +162,14 @@ if(EMSCRIPTEN)
   target_link_options(simulator PRIVATE
     -pthread
     -O3
-    "-sPTHREAD_POOL_SIZE=2"
-    "-sINITIAL_MEMORY=268435456"
+    "${ROUTER_PTHREAD_POOL_OPTION}"
+    "${ROUTER_MEMORY_OPTION}"
     "-sALLOW_MEMORY_GROWTH=0"
     "-sMODULARIZE=1"
     "-sEXPORT_ES6=1"
     "-sEXPORT_NAME=createRouterRuntime"
     "-sENVIRONMENT=worker"
-    "-sEXPORTED_FUNCTIONS=['_malloc','_free','_rs_create','_rs_command','_rs_capture_prepare','_rs_capture_data','_rs_capture_size','_rs_shutdown','_runtime_initialize','_runtime_capabilities','_lab_open','_lab_close','_lab_submit_command','_cli_open_session','_cli_push_input','_cli_read_output','_telemetry_get_page','_telemetry_get_page_size','_capture_start','_capture_stop','_capture_export_pcapng','_checkpoint_export','_checkpoint_export_size','_checkpoint_import','_project_export','_project_import']"
+    "-sEXPORTED_FUNCTIONS=['_malloc','_free','_rs_create','_rs_command','_rs_capture_prepare','_rs_capture_data','_rs_capture_size','_rs_shutdown','_runtime_initialize','_runtime_capabilities','_lab_open','_lab_close','_lab_submit_command','_cli_open_session','_cli_push_input','_cli_read_output','_telemetry_get_page','_telemetry_get_page_size','_telemetry_get_layout','_capture_start','_capture_stop','_capture_export_pcapng','_checkpoint_export','_checkpoint_export_size','_checkpoint_import','_project_export','_project_import']"
     # HEAPU8 is an explicit Emscripten module API dependency. Newer optimized
     # builds keep the internal view lexical unless it is exported, so relying
     # on an accidental Module property makes browser startup version-sensitive.
@@ -174,7 +190,9 @@ if(ROUTER_BUILD_TESTS)
   target_link_libraries(core_tests PRIVATE router_core)
   if(EMSCRIPTEN)
     target_compile_options(core_tests PRIVATE -pthread)
-    target_link_options(core_tests PRIVATE -pthread "-sPTHREAD_POOL_SIZE=2" "-sINITIAL_MEMORY=201326592" "-sNO_DISABLE_EXCEPTION_CATCHING")
+    target_link_options(core_tests PRIVATE -pthread
+      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}"
+      "-sNO_DISABLE_EXCEPTION_CATCHING")
     set_target_properties(core_tests PROPERTIES SUFFIX ".js")
   endif()
   add_test(NAME core_tests COMMAND core_tests)
@@ -192,7 +210,8 @@ if(ROUTER_BUILD_TESTS)
   target_link_libraries(module_tests PRIVATE router_management)
   if(EMSCRIPTEN)
     target_compile_options(module_tests PRIVATE -pthread)
-    target_link_options(module_tests PRIVATE -pthread "-sPTHREAD_POOL_SIZE=2" "-sINITIAL_MEMORY=201326592")
+    target_link_options(module_tests PRIVATE -pthread
+      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}")
     set_target_properties(module_tests PROPERTIES SUFFIX ".js")
   endif()
   add_test(NAME module_tests COMMAND module_tests)

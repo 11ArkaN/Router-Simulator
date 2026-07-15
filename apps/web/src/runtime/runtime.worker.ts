@@ -3,6 +3,15 @@
 // Emscripten Worker owner, pthread smoke gate and binary ABI adapter. All Wasm
 // calls stay off the React thread and binary exports are copied before transfer.
 
+import { GENERATED_PROFILE, RUNTIME_PROTOCOL } from "@router-simulator/contracts";
+
+interface TelemetryLayout {
+  abi: number; size: number; sequence: number; abiVersion: number;
+  workerCount: number; portBitmap: number; controlThreadId: number;
+  forwardingThreadId: number; capturedFrames: number; captureDropped: number;
+  droppedPackets: number;
+}
+
 interface WasmModule {
   // ccall owns UTF-8 marshalling for pointer-based C exports. Calling raw
   // _rs_command with a JavaScript string would pass an invalid numeric pointer.
@@ -20,7 +29,7 @@ interface WasmModule {
   _free(pointer: number): void;
   HEAPU8: Uint8Array;
   ccall(name: string, returnType: "number" | "string" | null,
-        argumentTypes: "string"[], arguments_: string[]): number | string | null;
+        argumentTypes: Array<"string">, arguments_: string[]): number | string | null;
 }
 
 type RuntimeRequest = { id: number; command?: string; action?: "capture-export" | "checkpoint-export" | "checkpoint-import";
@@ -49,24 +58,33 @@ async function loadRuntime(): Promise<WasmModule> {
         }
         const offset = module._telemetry_get_page();
         const size = module._telemetry_get_page_size();
+        const layoutText = module.ccall("telemetry_get_layout", "string", [], []);
+        if (typeof layoutText !== "string") throw new Error("Telemetry layout ABI is unavailable");
+        const layout = JSON.parse(layoutText) as TelemetryLayout;
+        if (layout.abi !== GENERATED_PROFILE.abi.telemetry || layout.size !== size) {
+          throw new Error("Telemetry layout ABI does not match the active profile");
+        }
         const health = new DataView(buffer, offset, size);
-        const threadIds = new BigUint64Array(buffer, offset + 40, 2);
+        const controlOwner = new BigUint64Array(buffer, offset + layout.controlThreadId, 1);
+        const forwardingOwner = new BigUint64Array(buffer, offset + layout.forwardingThreadId, 1);
         // pthread creation is asynchronous in Emscripten. Polling the shared
         // health page for at most two seconds distinguishes a genuine startup
         // failure from the short interval before both C++ entry points publish
         // their owner IDs. Each snapshot asks the control owner to republish;
         // no packet state or device timer is advanced by this startup gate.
         let ownersReady = false;
-        for (let attempt = 0; attempt < 200; ++attempt) {
-          module.ccall("rs_command", "string", ["string"], ["snapshot"]);
-          const control = Atomics.load(threadIds, 0);
-          const forwarding = Atomics.load(threadIds, 1);
-          if (health.getUint32(16, true) >= 2 && control !== 0n &&
+        for (let attempt = 0; attempt < GENERATED_PROFILE.timing.worker_startup_attempts; ++attempt) {
+          module.ccall("rs_command", "string", ["string"], [RUNTIME_PROTOCOL.snapshot]);
+          const control = Atomics.load(controlOwner, 0);
+          const forwarding = Atomics.load(forwardingOwner, 0);
+          if (health.getUint32(layout.workerCount, true) >=
+                GENERATED_PROFILE.resources.runtime_worker_count && control !== 0n &&
               forwarding !== 0n && control !== forwarding) {
             ownersReady = true;
             break;
           }
-          await new Promise((resolve) => setTimeout(resolve, 10));
+          await new Promise((resolve) => setTimeout(
+            resolve, GENERATED_PROFILE.timing.worker_startup_poll_milliseconds));
         }
         // This smoke test executes before the lab is announced ready. It proves
         // that both worker domains published distinct owners into shared memory
@@ -74,7 +92,7 @@ async function loadRuntime(): Promise<WasmModule> {
         if (!ownersReady) {
           throw new Error("pthread smoke test did not observe distinct control and forwarding owners");
         }
-        self.postMessage({ kind: "telemetry-page", buffer, offset, size });
+        self.postMessage({ kind: "telemetry-page", buffer, offset, size, layout });
         return module;
       });
   }

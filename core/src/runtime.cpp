@@ -5,9 +5,11 @@
 
 #include "router/runtime.hpp"
 
+#include "router/generated_runtime_protocol.hpp"
 #include "router/project_configuration.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <cstring>
 #include <functional>
 #include <iomanip>
@@ -18,6 +20,8 @@ namespace router {
 namespace {
 
 template <std::size_t N>
+// Copies one bridge response into bounded mailbox storage. False means the
+// caller must publish an explicit overflow error instead of truncating text.
 bool copy_text(std::array<char, N> &destination, const std::string &source) {
   const auto length = std::min(source.size(), N - 1);
   std::memcpy(destination.data(), source.data(), length);
@@ -25,6 +29,8 @@ bool copy_text(std::array<char, N> &destination, const std::string &source) {
   return length == source.size();
 }
 
+// Formats packet-layer IPv4 bytes without locale or platform socket helpers.
+// Runtime output uses this only after forwarding has accepted the address.
 std::string ipv4_text(packet::Ipv4 address) {
   std::ostringstream out;
   out << static_cast<unsigned>(address[0]) << '.'
@@ -34,6 +40,8 @@ std::string ipv4_text(packet::Ipv4 address) {
   return out.str();
 }
 
+// Maps forwarding failures to stable operational projection values. The
+// terminal may format its own message, while telemetry keeps this short code.
 const char *drop_name(NetworkDrop reason) noexcept {
   switch (reason) {
   case NetworkDrop::ingress_down:
@@ -54,6 +62,32 @@ const char *drop_name(NetworkDrop reason) noexcept {
   return "unknown";
 }
 
+// Converts an external one-based chassis slot to internal zero-based storage.
+// Parsing rejects signs, suffixes and zero so array arithmetic stays bounded.
+std::optional<std::size_t> parse_slot(std::string_view text) noexcept {
+  std::size_t slot{};
+  const auto parsed =
+      std::from_chars(text.data(), text.data() + text.size(), slot);
+  if (text.empty() || parsed.ec != std::errc{} ||
+      parsed.ptr != text.data() + text.size() || slot == 0)
+    return std::nullopt;
+  return slot - 1U;
+}
+
+// Serializes the router-owned terminal engine, banner and prompt as netstrings.
+// UI rendering therefore never predicts prompt markers or system names.
+std::string terminal_state(const DeviceState &state,
+                           const CliSession &session) {
+  // Netstrings preserve spaces and control characters in the prompt without
+  // teaching the browser how a specific CLI engine renders it.
+  const auto field = [](std::string_view value) {
+    return std::to_string(value.size()) + ":" + std::string{value} + ",";
+  };
+  const auto engine = session.engine == CliEngine::md ? "md" : "classic";
+  const auto banner = std::string{"SR OS "} + profile::release;
+  return field(engine) + field(banner) + field(cli_prompt(state, session));
+}
+
 } // namespace
 
 Runtime::Runtime() : started_(std::chrono::steady_clock::now()) {
@@ -65,20 +99,26 @@ Runtime::Runtime() : started_(std::chrono::steady_clock::now()) {
 
 Runtime::~Runtime() { stop(); }
 
+// Freezes the latest control-owned state after a forwarding barrier. The span
+// remains owned by Runtime and is invalidated by the next export.
 std::span<const std::uint8_t> Runtime::export_checkpoint() {
-  return command("checkpoint:prepare") == "checkpoint ready"
+  return command(runtime_protocol::checkpoint_prepare) == "checkpoint ready"
              ? prepared_checkpoint_
              : std::span<const std::uint8_t>{};
 }
 
+// Stages borrowed import bytes under a mutex, then asks the control owner to
+// validate and apply them atomically. Live state is unchanged on failure.
 bool Runtime::import_checkpoint(std::span<const std::uint8_t> bytes) {
   {
     std::scoped_lock lock(checkpoint_mutex_);
     pending_checkpoint_import_.assign(bytes.begin(), bytes.end());
   }
-  return command("checkpoint:import") == "checkpoint imported";
+  return command(runtime_protocol::checkpoint_import) == "checkpoint imported";
 }
 
+// Stops both owners by publishing the release-ordered flag, advancing every
+// wait epoch and joining each thread before member storage is destroyed.
 void Runtime::stop() {
   // Joining remains mandatory when a worker already published stopping_. A
   // joinable std::thread destructor would otherwise terminate the process.
@@ -96,6 +136,8 @@ void Runtime::stop() {
     forwarding_thread_.join();
 }
 
+// Submits one management request to the control owner. submit_mutex preserves
+// the SPSC producer contract even if several host API calls arrive together.
 std::string Runtime::command(const std::string &text) {
   // submit_mutex_ preserves the single-producer ring contract for public API
   // callers. Epoch predicates close the empty-check to wait lost-wakeup gap.
@@ -125,6 +167,9 @@ std::string Runtime::command(const std::string &text) {
   return "ERROR: runtime stopped";
 }
 
+// Owns configuration, hardware lifecycle, RIB, CLI session and projections.
+// It sleeps on mailbox epochs or the nearest hardware deadline, never on a
+// global event queue and never advances an artificial clock.
 void Runtime::control_loop() {
   control_thread_id_.store(
       static_cast<std::uint64_t>(
@@ -192,6 +237,9 @@ void Runtime::control_loop() {
 }
 
 std::string Runtime::dispatch(const std::string &text) {
+  // Every mutating hardware path ends through the same reconciliation closure.
+  // This guarantees alarms, deadlines and FIB withdrawal are published before
+  // a successful command returns its snapshot.
   const auto reconcile = [this] {
     const auto result = hardware::reconcile(state_.configuration.running,
                                             state_.hardware, state_.operational,
@@ -200,7 +248,9 @@ std::string Runtime::dispatch(const std::string &text) {
     reconcile_fib();
     return snapshot();
   };
-  if (text == "snapshot") {
+  if (text == runtime_protocol::snapshot) {
+    // Snapshot is observational, but overdue real-time hardware deadlines must
+    // be reconciled before rendering so the projection cannot remain stale.
     const auto result = hardware::reconcile(state_.configuration.running,
                                             state_.hardware, state_.operational,
                                             std::chrono::steady_clock::now());
@@ -209,39 +259,93 @@ std::string Runtime::dispatch(const std::string &text) {
       reconcile_fib();
     return snapshot();
   }
-  if (text == "hardware:insert-card") {
-    state_.hardware.card.present = true;
-    state_.hardware.card.lifecycle =
-        EquipmentLifecycle::waiting_for_provisioning;
+  const auto input = std::string_view{text};
+  if (input.starts_with(runtime_protocol::hardware_insert_card)) {
+    // Physical insertion accepts an explicit profile slot and inventory type.
+    // It does not provision configuration or manufacture child inventory.
+    const auto fields = input.substr(
+        std::string_view{runtime_protocol::hardware_insert_card}.size());
+    const auto separator = fields.find(':');
+    const auto slot = parse_slot(fields.substr(0, separator));
+    const auto type = separator == std::string_view::npos
+                          ? std::string_view{}
+                          : fields.substr(separator + 1U);
+    if (!slot || *slot >= state_.hardware.cards.size() ||
+        *slot != profile::line_card_index || type != profile::line_card_type)
+      return "ERROR: unsupported card or slot";
+    auto &card = state_.hardware.cards[*slot];
+    card.type = profile::line_card_type;
+    card.compatible = true;
+    card.equipment.lifecycle = EquipmentLifecycle::waiting_for_provisioning;
     return reconcile();
   }
-  if (text == "hardware:remove-card") {
-    state_.hardware.card.present = false;
-    state_.hardware.mda.present = false;
+  if (input.starts_with(runtime_protocol::hardware_remove_card)) {
+    // Removing a parent atomically removes its physical children and clears
+    // learned adjacencies whose egress inventory no longer exists.
+    const auto slot = parse_slot(input.substr(
+        std::string_view{runtime_protocol::hardware_remove_card}.size()));
+    if (!slot || *slot >= state_.hardware.cards.size())
+      return "ERROR: unknown card slot";
+    state_.hardware.cards[*slot] = {};
     state_.operational.arp = {};
     return reconcile();
   }
-  if (text == "hardware:insert-mda:me10-10gb-sfp+" ||
-      text == "hardware:insert-mda:me1-100gb-cfp2") {
-    if (!state_.hardware.card.present)
-      return "ERROR: equip card 1 before MDA 1/1";
-    state_.hardware.mda.present = true;
-    state_.hardware.mda.compatible = text.ends_with("me10-10gb-sfp+");
-    state_.hardware.mda.lifecycle =
-        state_.hardware.mda.compatible
-            ? EquipmentLifecycle::waiting_for_provisioning
-            : EquipmentLifecycle::mismatch;
-    if (!state_.hardware.mda.compatible)
+  if (input.starts_with(runtime_protocol::hardware_insert_mda)) {
+    // Inventory can contain a sourced but incompatible MDA type. Keeping that
+    // value lets reconciliation expose mismatch rather than rejecting reality.
+    auto fields = input.substr(
+        std::string_view{runtime_protocol::hardware_insert_mda}.size());
+    const auto first = fields.find(':');
+    const auto card_slot = parse_slot(fields.substr(0, first));
+    if (first == std::string_view::npos)
+      return "ERROR: invalid MDA location";
+    fields.remove_prefix(first + 1U);
+    const auto second = fields.find(':');
+    const auto mda_slot = parse_slot(fields.substr(0, second));
+    const auto type = second == std::string_view::npos
+                          ? std::string_view{}
+                          : fields.substr(second + 1U);
+    const auto supported = std::find(profile::supported_mda_types.begin(),
+                                     profile::supported_mda_types.end(), type);
+    if (!card_slot || !mda_slot || *card_slot >= state_.hardware.cards.size() ||
+        *mda_slot >= profile::mda_slots_per_card ||
+        supported == profile::supported_mda_types.end())
+      return "ERROR: unsupported MDA or slot";
+    auto &card = state_.hardware.cards[*card_slot];
+    if (!card.type)
+      return "ERROR: equip the parent card before its MDA";
+    auto &mda = card.mdas[*mda_slot];
+    mda.type = *supported;
+    mda.compatible = type == profile::modeled_mda_type;
+    mda.equipment.lifecycle = mda.compatible
+                                  ? EquipmentLifecycle::waiting_for_provisioning
+                                  : EquipmentLifecycle::mismatch;
+    if (!mda.compatible)
       state_.operational.arp = {};
     return reconcile();
   }
-  if (text == "hardware:remove-mda") {
-    state_.hardware.mda.present = false;
+  if (input.starts_with(runtime_protocol::hardware_remove_mda)) {
+    // MDA removal preserves running provisioning, matching a physical pull.
+    // The next insertion can therefore recover without replaying CLI config.
+    auto fields = input.substr(
+        std::string_view{runtime_protocol::hardware_remove_mda}.size());
+    const auto separator = fields.find(':');
+    const auto card_slot = parse_slot(fields.substr(0, separator));
+    const auto mda_slot = separator == std::string_view::npos
+                              ? std::optional<std::size_t>{}
+                              : parse_slot(fields.substr(separator + 1U));
+    if (!card_slot || !mda_slot || *card_slot >= state_.hardware.cards.size() ||
+        *mda_slot >= profile::mda_slots_per_card)
+      return "ERROR: unknown MDA slot";
+    state_.hardware.cards[*card_slot].mdas[*mda_slot] = {};
     state_.operational.arp = {};
     return reconcile();
   }
   for (const auto up : {false, true}) {
-    const std::string_view prefix = up ? "link:up:" : "link:down:";
+    // Carrier transitions address generated physical port IDs. Clearing only
+    // the affected ARP slot avoids withdrawing unrelated link adjacencies.
+    const std::string_view prefix =
+        up ? runtime_protocol::link_up : runtime_protocol::link_down;
     if (!std::string_view(text).starts_with(prefix))
       continue;
     const auto id = std::string_view(text).substr(prefix.size());
@@ -256,41 +360,54 @@ std::string Runtime::dispatch(const std::string &text) {
       state_.operational.arp[index] = {};
     return reconcile();
   }
-  constexpr std::string_view provisioning = "project:provisioning|";
+  const std::string_view provisioning = runtime_protocol::project_provisioning;
   if (std::string_view(text).starts_with(provisioning)) {
+    // Project restore changes the canonical running provisioning as one pair.
+    // Parent-child validation happens before either field is written.
     const auto values = std::string_view(text).substr(provisioning.size());
     const auto separator = values.find('|');
     if (separator == std::string_view::npos)
       return "ERROR: invalid provisioning state";
     const auto card = values.substr(0, separator);
     const auto mda = values.substr(separator + 1);
-    if ((card != "absent" && card != "iom4-e") ||
-        (mda != "absent" && mda != "me10-10gb-sfp+") ||
-        (card == "absent" && mda != "absent")) {
+    if ((card != runtime_protocol::provisioning_absent &&
+         card != profile::line_card_type) ||
+        (mda != runtime_protocol::provisioning_absent &&
+         mda != profile::modeled_mda_type) ||
+        (card == runtime_protocol::provisioning_absent &&
+         mda != runtime_protocol::provisioning_absent)) {
       return "ERROR: unsupported provisioning state";
     }
     auto &running = state_.configuration.running;
-    running.card_provisioned = card == "iom4-e";
-    running.mda_provisioned = mda == "me10-10gb-sfp+";
+    auto &configured_card = profile_card(running);
+    auto &configured_mda = profile_mda(running);
+    configured_card.type = card == runtime_protocol::provisioning_absent
+                               ? nullptr
+                               : profile::line_card_type;
+    configured_mda.type = mda == runtime_protocol::provisioning_absent
+                              ? nullptr
+                              : profile::modeled_mda_type;
     state_.configuration.candidate = running;
     session_.candidate_dirty = false;
     session_.candidate_outdated = false;
     return reconcile();
   }
-  if (std::string_view(text).starts_with("project:hosts|"))
+  if (input.starts_with(runtime_protocol::project_hosts))
     return configure_hosts(text);
-  if (std::string_view(text).starts_with("project:links|"))
+  if (input.starts_with(runtime_protocol::project_links))
     return configure_links(text);
-  if (std::string_view(text).starts_with("project:running|"))
+  if (input.starts_with(runtime_protocol::project_running))
     return configure_running(text);
-  if (text == "capture:prepare")
+  if (text == runtime_protocol::capture_prepare)
     return prepare_capture();
-  if (text == "checkpoint:prepare") {
+  if (text == runtime_protocol::checkpoint_prepare) {
     return encode_checkpoint_on_control().empty()
                ? "ERROR: checkpoint barrier failed"
                : "checkpoint ready";
   }
-  if (text == "checkpoint:import") {
+  if (text == runtime_protocol::checkpoint_import) {
+    // Move staged bytes out while holding the bridge mutex, then perform the
+    // expensive structural decode without blocking another producer copy.
     std::vector<std::uint8_t> bytes;
     {
       std::scoped_lock lock(checkpoint_mutex_);
@@ -301,22 +418,30 @@ std::string Runtime::dispatch(const std::string &text) {
                ? "checkpoint imported"
                : "ERROR: incompatible checkpoint";
   }
-  if (text == "capture:start" || text == "capture:stop") {
-    const bool active = text == "capture:start";
+  if (text == runtime_protocol::capture_start ||
+      text == runtime_protocol::capture_stop) {
+    // Relaxed ordering is sufficient because this diagnostic flag publishes
+    // no packet data. Forwarding reads it only to decide whether to call the
+    // already thread-safe capture observer for later frames.
+    const bool active = text == runtime_protocol::capture_start;
     capture_active_.store(active, std::memory_order_relaxed);
     return active ? "capture started" : "capture stopped";
   }
-  constexpr std::string_view completion = "terminal:complete:";
+  const std::string_view completion = runtime_protocol::terminal_complete;
   if (std::string_view(text).starts_with(completion)) {
     return complete_cli(state_, session_, text.substr(completion.size()));
   }
-  constexpr std::string_view terminal = "terminal:";
-  if (std::string_view(text).starts_with(terminal)) {
-    auto output =
-        execute_cli(state_, session_, text.substr(terminal.size()),
-                    [this](std::uint32_t count) {
-                      return run_ping(ForwardJobKind::router_ping, count);
-                    });
+  if (text == runtime_protocol::terminal_state)
+    return terminal_state(state_, session_);
+  const std::string_view terminal = runtime_protocol::terminal_execute;
+  if (input.starts_with(terminal)) {
+    // CLI execution stays on control. Ping is dependency-injected and crosses
+    // the forwarding ring, so a command cannot call another device directly.
+    auto output = execute_cli(
+        state_, session_, text.substr(terminal.size()),
+        [this](packet::Ipv4 destination, std::uint32_t count) {
+          return run_ping(ForwardJobKind::router_ping, destination, 0, count);
+        });
     const auto result = hardware::reconcile(state_.configuration.running,
                                             state_.hardware, state_.operational,
                                             std::chrono::steady_clock::now());
@@ -324,21 +449,52 @@ std::string Runtime::dispatch(const std::string &text) {
     reconcile_fib();
     return output;
   }
-  if (text == "host:ping:host-a:host-b") {
-    return run_ping(ForwardJobKind::endpoint_ping, 1);
+  if (input.starts_with(runtime_protocol::host_ping)) {
+    // Host IDs are resolved through generated topology arrays. The selected
+    // destination address and source endpoint then enter normal packet flow.
+    const auto fields =
+        input.substr(std::string_view{runtime_protocol::host_ping}.size());
+    const auto separator = fields.find(':');
+    if (separator == std::string_view::npos)
+      return "ERROR: invalid host ping request";
+    const auto source_id = fields.substr(0, separator);
+    const auto destination_id = fields.substr(separator + 1U);
+    const auto source = std::find(profile::host_ids.begin(),
+                                  profile::host_ids.end(), source_id);
+    const auto destination = std::find(profile::host_ids.begin(),
+                                       profile::host_ids.end(), destination_id);
+    if (source == profile::host_ids.end() ||
+        destination == profile::host_ids.end())
+      return "ERROR: unknown host";
+    return run_ping(
+        ForwardJobKind::endpoint_ping,
+        state_.project
+            .hosts[static_cast<std::size_t>(destination -
+                                            profile::host_ids.begin())]
+            .address,
+        static_cast<std::uint8_t>(source - profile::host_ids.begin()), 1);
   }
   return "ERROR: unsupported runtime command";
 }
 
-std::string Runtime::run_ping(ForwardJobKind kind, std::uint32_t count) {
+std::string Runtime::run_ping(ForwardJobKind kind, packet::Ipv4 destination_ip,
+                              std::uint8_t source_endpoint,
+                              std::uint32_t count) {
+  // The CLI schema bounds count, but this internal boundary clamps again for
+  // typed host operations and future ABI callers that do not use CLI parsing.
   count = std::clamp<std::uint32_t>(count, 1, 100);
-  const auto destination = ipv4_text(state_.project.hosts.back().address);
+  const auto destination = ipv4_text(destination_ip);
   std::ostringstream out;
   out << "PING " << destination << " 56 data bytes\n";
   std::uint32_t received = 0;
   for (std::uint32_t sequence = 1; sequence <= count; ++sequence) {
-    const auto result = submit_forward(
-        {.id = next_id_.fetch_add(1, std::memory_order_relaxed), .kind = kind});
+    // Each probe is a distinct forwarding job and receives real ARP, queue and
+    // link processing. Results return only value projections to control.
+    const auto result =
+        submit_forward({.id = next_id_.fetch_add(1, std::memory_order_relaxed),
+                        .kind = kind,
+                        .destination = destination_ip,
+                        .source_endpoint = source_endpoint});
     state_.operational.capture_count += result.captured_frames;
     state_.operational.capture_dropped += result.capture_drops;
     state_.operational.arp = {};
@@ -382,6 +538,8 @@ std::string Runtime::run_ping(ForwardJobKind kind, std::uint32_t count) {
 }
 
 ForwardResult Runtime::submit_forward(ForwardJob job) {
+  // Control is the sole producer and forwarding the sole consumer. Epochs
+  // close the empty-check-to-sleep race without locking ring contents.
   if (!forward_jobs_.try_push(job))
     return {};
   forward_epoch_.fetch_add(1, std::memory_order_release);
@@ -403,6 +561,8 @@ ForwardResult Runtime::submit_forward(ForwardJob job) {
 }
 
 std::string Runtime::prepare_capture() {
+  // Encoding runs on forwarding after all earlier jobs, producing a stable
+  // immutable buffer for the Wasm C ABI to borrow.
   const auto result =
       submit_forward({.id = next_id_.fetch_add(1, std::memory_order_relaxed),
                       .kind = ForwardJobKind::export_capture});
@@ -412,6 +572,8 @@ std::string Runtime::prepare_capture() {
 }
 
 void Runtime::reconcile_fib(bool force) {
+  // RIB rebuild owns route selection. Forwarding receives a complete new
+  // generation and acknowledges installation before control returns.
   if (!rib_.rebuild(make_rib_input(state_)) && fib_generation_ && !force)
     return;
   const auto result =
@@ -423,12 +585,16 @@ void Runtime::reconcile_fib(bool force) {
 }
 
 void Runtime::forwarding_loop() {
+  // This thread exclusively owns LabNetwork and every mutable packet-path
+  // queue, adjacency and link deadline. Control can only exchange bounded jobs.
   LabNetwork network;
   forwarding_thread_id_.store(
       static_cast<std::uint64_t>(
           std::hash<std::thread::id>{}(std::this_thread::get_id())),
       std::memory_order_release);
   const auto publish = [this](const ForwardResult &result) {
+    // Accepted jobs require one result. If the return ring is temporarily full,
+    // yielding preserves delivery instead of dropping control-plane state.
     while (!forward_results_.try_push(result) &&
            !stopping_.load(std::memory_order_acquire))
       std::this_thread::yield();
@@ -442,6 +608,8 @@ void Runtime::forwarding_loop() {
                                                            timestamp_us);
   };
   while (!stopping_.load(std::memory_order_acquire)) {
+    // A failed pop is paired with an epoch snapshot and a second pop before
+    // sleep, preventing a notification between the first check and wait.
     ForwardJob job;
     if (!forward_jobs_.try_pop(job)) {
       const auto observed = forward_epoch_.load(std::memory_order_acquire);
@@ -490,6 +658,7 @@ void Runtime::forwarding_loop() {
     const auto outcome = network.ping(
         job.kind == ForwardJobKind::endpoint_ping ? PingOrigin::endpoint
                                                   : PingOrigin::router,
+        job.source_endpoint, job.destination,
         static_cast<std::uint16_t>(job.id),
         capture_active_.load(std::memory_order_relaxed) ? capture : nullptr,
         this);
@@ -509,6 +678,8 @@ void Runtime::forwarding_loop() {
 bool Runtime::record_capture(std::uint8_t interface_id,
                              const packet::Frame &frame,
                              std::uint64_t timestamp_us) {
+  // CaptureStore owns its bounded arena. The boolean reports tail drop to the
+  // forwarding operation without throwing or allocating on packet flow.
   return capture_store_.record(interface_id, frame, timestamp_us);
 }
 

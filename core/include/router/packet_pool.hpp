@@ -1,5 +1,6 @@
 #pragma once
 
+#include "router/generated_profile.hpp"
 #include "router/packet.hpp"
 
 #include <cassert>
@@ -18,7 +19,7 @@ public:
   // the initial ABI. Exhaustion is reported as packet admission failure.
   // The size_t first operand also keeps larger future profiles from performing
   // the multiplication in 32 bits before widening the result.
-  static constexpr std::size_t bytes = std::size_t{64} * 1024U * 1024U;
+  static constexpr std::size_t bytes = profile::packet_pool_bytes;
 
   PacketPool()
       : slots_(bytes / sizeof(packet::Frame)), free_(slots_.size()),

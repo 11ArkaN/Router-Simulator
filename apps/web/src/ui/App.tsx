@@ -2,21 +2,37 @@
 // C++ remains the sole owner of live operational and protocol state.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { DEFAULT_PROJECT, GENERATED_PROFILE, parseProject, parseRuntimeSnapshot, type HostConfig, type LabProject, type RuntimeSnapshot } from "@router-simulator/contracts";
-import { RuntimeClient } from "../runtime/client";
+import { DEFAULT_PROJECT, GENERATED_PROFILE, parseProject, type HostConfig,
+  type LabProject, type ProjectHardware, type RuntimeSnapshot } from "@router-simulator/contracts";
+import { RuntimeClient, type HardwareAction, type TerminalState } from "../runtime/client";
 import { downloadBinary, exportCheckpoint, exportProject, importNetsim, loadProject, saveBinary, saveProject } from "../persistence";
 import { Inspector } from "./Inspector";
 import { TerminalPanel } from "./TerminalPanel";
 import { Topology } from "./Topology";
 
-const projectHardware = (hardware: RuntimeSnapshot["hardware"]): LabProject["hardware"] => ({
-  chassis: hardware.chassis,
-  cpmA: hardware.cpmA,
-  card1Provisioned: hardware.card1Provisioned,
-  mda11Provisioned: hardware.mda11Provisioned,
-  card1: hardware.card1,
-  mda11: hardware.mda11
-});
+function projectHardware(current: ProjectHardware,
+  runtime: RuntimeSnapshot["hardware"]): ProjectHardware {
+  // Copy only portable intent from the live projection. If all values already
+  // match, preserve object identity so React does not replay hardware restore
+  // after an unrelated terminal command or counter refresh.
+  let changed = false;
+  const cards = runtime.cards.map((card, cardIndex) => {
+    const previous = current.cards[cardIndex];
+    const mdas = card.mdas.map((mda, mdaIndex) => {
+      const before = previous?.mdas[mdaIndex];
+      if (!before || before.slot !== mda.slot || before.provisionedType !== mda.provisionedType ||
+          before.equippedType !== mda.equippedType) changed = true;
+      return { slot: mda.slot, provisionedType: mda.provisionedType,
+        equippedType: mda.equippedType };
+    });
+    if (!previous || previous.slot !== card.slot || previous.provisionedType !== card.provisionedType ||
+        previous.equippedType !== card.equippedType || previous.mdas.length !== mdas.length) changed = true;
+    return { slot: card.slot, provisionedType: card.provisionedType,
+      equippedType: card.equippedType, mdas };
+  });
+  if (current.cards.length !== cards.length) changed = true;
+  return changed ? { cards } : current;
+}
 
 function visibleFailure(area: "startup" | "operation", cause: unknown): string {
   // Detailed transport and core failures remain available to developers while
@@ -30,7 +46,7 @@ function visibleFailure(area: "startup" | "operation", cause: unknown): string {
 export function App() {
   const [project, setProject] = useState<LabProject>(DEFAULT_PROJECT);
   const [snapshot, setSnapshot] = useState<RuntimeSnapshot>();
-  const [selected, setSelected] = useState("r1");
+  const [selected, setSelected] = useState<string>(GENERATED_PROFILE.uiDefaults.router_id);
   // Runtime failures and project-operation failures have different lifetimes.
   // A rejected import must not disable a healthy terminal or claim that the
   // two C++ ownership domains stopped running.
@@ -94,7 +110,7 @@ export function App() {
       void saveProject({ ...project, updatedAt: new Date().toISOString() })
         .then(() => setOperationError(undefined))
         .catch((cause) => setOperationError(visibleFailure("operation", cause)));
-    }, 400);
+    }, GENERATED_PROFILE.timing.autosave_debounce_milliseconds);
     return () => window.clearTimeout(timer);
   }, [project, projectLoaded]);
 
@@ -117,19 +133,20 @@ export function App() {
     }
     void (async () => {
       try {
-        let raw = await runtime.command(
-          `project:provisioning|${project.hardware.card1Provisioned}|${project.hardware.mda11Provisioned}`
-        );
-        if (raw.startsWith("ERROR")) throw new Error(raw);
+        const card = project.hardware.cards[GENERATED_PROFILE.lineCard.slot - 1];
+        const mda = card?.mdas[GENERATED_PROFILE.mda.slot - 1];
+        await runtime.configureProvisioning(card?.provisionedType ?? null,
+          mda?.provisionedType ?? null);
         await runtime.configureRunning(project.runningConfig);
-        raw = await runtime.command(project.hardware.card1 === "iom4-e"
-          ? "hardware:insert-card" : "hardware:remove-card");
-        if (raw.startsWith("ERROR")) throw new Error(raw);
-        if (project.hardware.card1 === "iom4-e") {
-          raw = await runtime.command(project.hardware.mda11 === "absent"
-            ? "hardware:remove-mda"
-            : `hardware:insert-mda:${project.hardware.mda11}`);
-          if (raw.startsWith("ERROR")) throw new Error(raw);
+        await runtime.changeHardware(card?.equippedType
+          ? { kind: "insert-card", slot: card.slot, type: card.equippedType }
+          : { kind: "remove-card", slot: GENERATED_PROFILE.lineCard.slot });
+        if (card?.equippedType) {
+          await runtime.changeHardware(mda?.equippedType
+            ? { kind: "insert-mda", cardSlot: card.slot, mdaSlot: mda.slot,
+                type: mda.equippedType }
+            : { kind: "remove-mda", cardSlot: card.slot,
+                mdaSlot: GENERATED_PROFILE.mda.slot });
         }
         // Medium timing is installed before endpoint state. Both link values
         // cross as one forwarding job, so a terminal command cannot observe a
@@ -151,18 +168,18 @@ export function App() {
     // needed for this sampling path.
     const timer = window.setInterval(() => {
       setSnapshot((current) => current ? runtime.telemetry(current) : current);
-    }, 250);
+    }, GENERATED_PROFILE.timing.telemetry_interval_milliseconds);
     return () => window.clearInterval(timer);
   }, [runtime, ready]);
 
   useEffect(() => {
     if (!runtime || !snapshot) return;
-    const transitioning = snapshot.hardware.cardLifecycle === "initializing" ||
-      snapshot.hardware.mdaLifecycle === "initializing" ||
-      snapshot.hardware.mdaLifecycle === "waiting-parent";
+    const transitioning = snapshot.hardware.cards.some((card) =>
+      card.lifecycle === "initializing" || card.mdas.some((mda) =>
+        mda.lifecycle === "initializing" || mda.lifecycle === "waiting-parent"));
     if (!transitioning) return;
     // Equipment deadlines are slow control-plane changes and are intentionally
-    // absent from the high-frequency telemetry page. One bounded 250 ms read
+    // absent from the high-frequency telemetry page. One profile-paced read
     // while a transition is active makes the final lifecycle and alarm state
     // visible without turning JSON snapshots into packet telemetry polling.
     let cancelled = false;
@@ -170,29 +187,34 @@ export function App() {
       void runtime.snapshot()
         .then((next) => { if (!cancelled) setSnapshot(next); })
         .catch((cause) => { if (!cancelled) setOperationError(visibleFailure("operation", cause)); });
-    }, 250);
+    }, GENERATED_PROFILE.timing.equipment_poll_milliseconds);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [runtime, snapshot?.hardware.cardLifecycle, snapshot?.hardware.mdaLifecycle]);
+  }, [runtime, snapshot?.hardware.cards]);
 
   const execute = useCallback(async (command: string) => {
     if (!runtime) throw new Error("Runtime is not ready");
-    const output = await runtime.command(`terminal:${command}`);
+    const output = await runtime.executeTerminal(command);
     const next = await runtime.snapshot();
     setSnapshot(next);
     setProject((current) => ({ ...current, runningConfig: next.runningConfig,
-      hardware: projectHardware(next.hardware) }));
+      hardware: projectHardware(current.hardware, next.hardware) }));
     return output;
   }, [runtime]);
 
   const complete = useCallback(async (input: string) => {
     if (!runtime) return "";
-    return runtime.command(`terminal:complete:${input}`);
+    return runtime.completeTerminal(input);
   }, [runtime]);
 
-  const hardware = useCallback(async (command: string) => {
+  const terminalState = useCallback(async (): Promise<TerminalState> => {
+    if (!runtime) throw new Error("Runtime is not ready");
+    return runtime.terminalState();
+  }, [runtime]);
+
+  const hardware = useCallback(async (action: HardwareAction) => {
     if (!runtime || !projectLoaded) return;
     try {
       // The palette action describes the hardware the user wants in the lab.
@@ -200,24 +222,21 @@ export function App() {
       // state, so the UI sends two acknowledged control operations instead of
       // inventing ports directly. Removing equipment intentionally preserves
       // provisioning, matching a physical pull without a config deletion.
-      if (command === "hardware:insert-card") {
-        const provisioned = await runtime.command("project:provisioning|iom4-e|absent");
-        if (provisioned.startsWith("ERROR")) throw new Error(provisioned);
-      } else if (command === "hardware:insert-mda:me10-10gb-sfp+" ||
-                 command === "hardware:insert-mda:me1-100gb-cfp2") {
+      if (action.kind === "insert-card") {
+        await runtime.configureProvisioning(action.type, null);
+      } else if (action.kind === "insert-mda") {
         // The mismatch action deliberately provisions the supported 10G MDA
         // and equips a different inventory type so lifecycle reconciliation,
         // alarms and absence of usable ports can be tested from the UI.
-        const provisioned = await runtime.command("project:provisioning|iom4-e|me10-10gb-sfp+");
-        if (provisioned.startsWith("ERROR")) throw new Error(provisioned);
+        await runtime.configureProvisioning(GENERATED_PROFILE.lineCard.type,
+          GENERATED_PROFILE.mda.modeledType);
       }
-      const output = await runtime.command(command);
-      if (output.startsWith("ERROR")) throw new Error(output);
-      const next = parseRuntimeSnapshot(JSON.parse(output));
+      const next = await runtime.changeHardware(action);
       setSnapshot(next);
       // Physical changes initiated in the inspector become portable project
       // state immediately, rather than waiting for a sampled UI projection.
-      setProject((current) => ({ ...current, hardware: projectHardware(next.hardware) }));
+      setProject((current) => ({ ...current,
+        hardware: projectHardware(current.hardware, next.hardware) }));
     } catch (cause) {
       setOperationError(visibleFailure("operation", cause));
     }
@@ -226,7 +245,7 @@ export function App() {
   const updateHost = useCallback((host: HostConfig) => {
     setProject((current) => ({
       ...current,
-      hosts: current.hosts.map((item) => item.id === host.id ? host : item) as [HostConfig, HostConfig]
+      hosts: current.hosts.map((item) => item.id === host.id ? host : item)
     }));
   }, []);
 
@@ -257,7 +276,7 @@ export function App() {
   const toggleCapture = useCallback(async () => {
     if (!runtime) return;
     const next = !captureActive;
-    const response = await runtime.command(next ? "capture:start" : "capture:stop");
+    const response = await runtime.setCapture(next);
     if (response.startsWith("ERROR")) throw new Error(response);
     setCaptureActive(next);
   }, [runtime, captureActive]);
@@ -343,13 +362,15 @@ export function App() {
 
         <section className="center-stage">
           {visibleError && <div className="runtime-error"><strong>{runtimeError ? "Lab unavailable" : "Operation failed"}</strong><span>{visibleError}</span></div>}
-          {view === "topology" ? <Topology hosts={project.hosts} snapshot={snapshot} selected={selected} onSelect={setSelected} /> :
+          {view === "topology" ? <Topology hosts={project.hosts} links={project.links}
+            layout={project.layout} systemName={project.runningConfig.systemName}
+            snapshot={snapshot} selected={selected} onSelect={setSelected} /> :
             <section className="capture-workspace">
               <div className="capture-workspace-head"><div><span>PACKET OBSERVATION</span><h2>Capture session</h2></div></div>
               <div className="capture-stats">
                 <div><small>Records</small><strong>{snapshot?.captureCount ?? 0}</strong></div>
                 <div><small>Capture drops</small><strong>{snapshot?.captureDropped ?? 0}</strong></div>
-                <div><small>Observation points</small><strong>9</strong></div>
+                <div><small>Observation points</small><strong>{GENERATED_PROFILE.captureInterfaces.length}</strong></div>
               </div>
               <div className="capture-actions">
                 <button onClick={() => void toggleCapture()}>{captureActive ? "Stop capture" : "Start capture"}</button>
@@ -357,14 +378,17 @@ export function App() {
                 <button onClick={() => void exportCheckpointNow()}>Export snapshot</button>
               </div>
               <div className="capture-points">
-                {["4 link directions", "2 router ingress", "2 router egress", "1 CPM punt"].map((point) => <span key={point}>{point}</span>)}
+                {GENERATED_PROFILE.captureInterfaces.map((point) => <span key={point}>{point}</span>)}
               </div>
             </section>}
         </section>
 
-        <Inspector selected={selected} hosts={project.hosts} snapshot={snapshot} updateHost={updateHost} hardware={hardware} />
+        <Inspector selected={selected} hosts={project.hosts} snapshot={snapshot}
+          systemName={project.runningConfig.systemName} updateHost={updateHost} hardware={hardware} />
       </div>
-      <TerminalPanel ready={Boolean(runtime && !runtimeError && projectLoaded)} execute={execute} complete={complete} />
+      <TerminalPanel ready={Boolean(runtime && !runtimeError && projectLoaded)}
+        systemName={project.runningConfig.systemName} execute={execute}
+        complete={complete} state={terminalState} />
     </main>
   );
 }

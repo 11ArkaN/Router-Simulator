@@ -10,6 +10,7 @@
 namespace router::cli_detail {
 namespace {
 
+// Parses unsigned CLI leaves without accepting signs or trailing characters.
 std::optional<unsigned> unsigned_value(std::string_view text) {
   unsigned value{};
   const auto result =
@@ -22,6 +23,8 @@ std::optional<unsigned> unsigned_value(std::string_view text) {
 std::optional<std::size_t>
 exact_interface(const DeviceConfiguration &configuration,
                 std::string_view name) {
+  // Interface names are generated stable pointers. Exact matching prevents an
+  // abbreviation from being accepted by execution after parser completion.
   name = unquote(name);
   for (std::size_t index = 0; index < configuration.interface_count; ++index) {
     if (configuration.interfaces[index].valid &&
@@ -31,6 +34,7 @@ exact_interface(const DeviceConfiguration &configuration,
   return std::nullopt;
 }
 
+// Confirms that both the external slot and card type match active capability.
 bool profile_card(const ParsedCommand &command) {
   const auto slot = argument(command, cli_schema::TokenKind::card_slot);
   const auto type = argument(command, cli_schema::TokenKind::card_type);
@@ -38,17 +42,20 @@ bool profile_card(const ParsedCommand &command) {
          *type == profile::line_card_type;
 }
 
+// Validates the generated line-card slot for removal and child operations.
 bool profile_card_slot(const ParsedCommand &command) {
   const auto slot = argument(command, cli_schema::TokenKind::card_slot);
   return slot && *slot == std::to_string(profile::line_card_slot);
 }
 
+// Validates the generated MDA location without assuming a field named 1/1.
 bool profile_mda_slot(const ParsedCommand &command) {
   const auto slot = argument(command, cli_schema::TokenKind::mda_slot);
   return profile_card_slot(command) && slot &&
          *slot == std::to_string(profile::mda_slot);
 }
 
+// Validates the complete provisionable MDA identity from generated capability.
 bool profile_mda(const ParsedCommand &command) {
   const auto card_slot = argument(command, cli_schema::TokenKind::card_slot);
   const auto mda_slot = argument(command, cli_schema::TokenKind::mda_slot);
@@ -64,6 +71,8 @@ bool profile_mda(const ParsedCommand &command) {
 
 std::string execute_md(ConfigurationState &configuration, CliSession &session,
                        const ParsedCommand &command) {
+  // MD commands mutate only candidate until commit. Every successful mutation
+  // passes through changed() so prompt state cannot drift from datastore state.
   using enum cli_schema::CommandId;
   auto &candidate = configuration.candidate;
   const auto changed = [&session]() {
@@ -74,20 +83,23 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
   switch (command.spec->id) {
   case help:
   case help_question:
-    return "show | configure | delete | compare | commit | discard | //";
+    // Public dispatch resolves schema-derived help before entering the engine.
+    // This branch only keeps the internal switch exhaustive.
+    return {};
   case configure_card_type:
     if (!profile_card(command))
       return "MINOR: MGMT_CORE #2301: Invalid element value";
-    candidate.card_provisioned = true;
+    router::profile_card(candidate).type = profile::line_card_type;
     return changed();
   case configure_mda_type:
     if (!profile_mda(command))
       return "MINOR: MGMT_CORE #2301: Invalid element value";
-    candidate.card_provisioned = true;
-    candidate.mda_provisioned = true;
+    router::profile_card(candidate).type = profile::line_card_type;
+    router::profile_mda(candidate).type = profile::modeled_mda_type;
     return changed();
   case configure_system_name: {
-    const auto name = unquote(*argument(command, cli_schema::TokenKind::system_name));
+    const auto name =
+        unquote(*argument(command, cli_schema::TokenKind::system_name));
     if (name.empty() || !copy_config_text(candidate.system_name, name))
       return "MINOR: MGMT_CORE #2301: Invalid element value";
     return changed();
@@ -96,21 +108,26 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
   case md_port_disable:
   case md_port_description:
   case md_port_mtu: {
-    if (!candidate.mda_provisioned)
+    if (!router::profile_mda(candidate).type)
       return "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
-    const auto index = port_index(*argument(command, cli_schema::TokenKind::port_id));
+    const auto index =
+        port_index(*argument(command, cli_schema::TokenKind::port_id));
     if (!index)
       return "MINOR: MGMT_CORE #2301: Invalid element value";
     auto &port = candidate.ports[*index];
-    if (command.spec->id == md_port_enable || command.spec->id == md_port_disable) {
+    if (command.spec->id == md_port_enable ||
+        command.spec->id == md_port_disable) {
       port.admin_enabled = command.spec->id == md_port_enable;
     } else if (command.spec->id == md_port_description) {
-      const auto value = unquote(*argument(command, cli_schema::TokenKind::description));
+      const auto value =
+          unquote(*argument(command, cli_schema::TokenKind::description));
       if (!copy_config_text(port.description, value))
         return "MINOR: MGMT_CORE #2301: Invalid element value";
     } else {
-      const auto mtu = unsigned_value(*argument(command, cli_schema::TokenKind::mtu));
-      if (!mtu || *mtu < 576 || *mtu > 1500)
+      const auto mtu =
+          unsigned_value(*argument(command, cli_schema::TokenKind::mtu));
+      if (!mtu || *mtu < profile::minimum_port_mtu ||
+          *mtu > profile::maximum_port_mtu)
         return "MINOR: MGMT_CORE #2301: Invalid element value";
       port.mtu = static_cast<std::uint16_t>(*mtu);
     }
@@ -139,13 +156,13 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
   case md_delete_card:
     if (!profile_card_slot(command))
       return "MINOR: MGMT_CORE #2301: Invalid element value";
-    candidate.card_provisioned = false;
-    candidate.mda_provisioned = false;
+    router::profile_card(candidate).type = nullptr;
+    router::profile_mda(candidate).type = nullptr;
     return changed();
   case md_delete_mda:
     if (!profile_mda_slot(command))
       return "MINOR: MGMT_CORE #2301: Invalid element value";
-    candidate.mda_provisioned = false;
+    router::profile_mda(candidate).type = nullptr;
     return changed();
   case md_compare: {
     if (!session.candidate_dirty)
@@ -157,12 +174,20 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
         result += '\n';
       result += value;
     };
-    if (candidate.card_provisioned != running.card_provisioned)
-      append(candidate.card_provisioned ? "+ card 1 iom4-e"
-                                        : "- card 1 iom4-e");
-    if (candidate.mda_provisioned != running.mda_provisioned)
-      append(candidate.mda_provisioned ? "+ mda 1 me10-10gb-sfp+"
-                                       : "- mda 1 me10-10gb-sfp+");
+    if (router::profile_card(candidate).type !=
+        router::profile_card(running).type) {
+      append(std::string{router::profile_card(candidate).type ? "+ card "
+                                                              : "- card "} +
+             std::to_string(profile::line_card_slot) + " " +
+             profile::line_card_type);
+    }
+    if (router::profile_mda(candidate).type !=
+        router::profile_mda(running).type) {
+      append(std::string{router::profile_mda(candidate).type ? "+ mda "
+                                                             : "- mda "} +
+             std::to_string(profile::mda_slot) + " " +
+             profile::modeled_mda_type);
+    }
     if (candidate.system_name != running.system_name)
       append(std::string{"~ system name "} + candidate.system_name.data());
     for (std::size_t index = 0; index < candidate.ports.size(); ++index) {
@@ -178,9 +203,10 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
   }
   case md_commit:
     if (session.candidate_outdated)
-      return "MINOR: MGMT_CORE #2203: Invalid element - candidate baseline is out of date";
-    if (!candidate.card_provisioned)
-      candidate.mda_provisioned = false;
+      return "MINOR: MGMT_CORE #2203: Invalid element - candidate baseline is "
+             "out of date";
+    if (!router::profile_card(candidate).type)
+      router::profile_mda(candidate).type = nullptr;
     configuration.running = candidate;
     session.candidate_dirty = false;
     session.candidate_outdated = false;

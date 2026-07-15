@@ -1,13 +1,22 @@
+// Portable project and runtime projection tests exercise the browser trust
+// boundary. Every accepted object must remain safe to send into C++.
+
 import { describe, expect, it } from "vitest";
-import { ABI_VERSION, DEFAULT_PROJECT, parseProject, parseRuntimeSnapshot } from "../src";
+import { ABI_VERSION, DEFAULT_PROJECT, GENERATED_PROFILE, parseProject, parseRuntimeSnapshot } from "../src";
 
 describe("project format", () => {
   it("accepts the pinned default profile", () => {
-    expect(parseProject(DEFAULT_PROJECT).hardware.card1).toBe("absent");
-    expect(parseProject(DEFAULT_PROJECT).links[0].propagationDelayNs).toBe(100);
+    // Defaults are compiled from the active profile and must already satisfy
+    // the same parser used for IndexedDB and imported files.
+    expect(parseProject(DEFAULT_PROJECT).hardware.cards.every((card) =>
+      card.equippedType === null)).toBe(true);
+    expect(parseProject(DEFAULT_PROJECT).links[0].propagationDelayNs)
+      .toBe(GENERATED_PROFILE.defaultPropagationDelayNs);
   });
 
   it("migrates only the absent legacy link field", () => {
+    // The sole migration is lossless because links are deterministic profile
+    // defaults. No unknown version or malformed provided value is repaired.
     const legacy = structuredClone(DEFAULT_PROJECT) as Partial<typeof DEFAULT_PROJECT>;
     delete legacy.links;
     expect(parseProject(legacy).links).toEqual(DEFAULT_PROJECT.links);
@@ -16,22 +25,24 @@ describe("project format", () => {
   it("validates link identity and exactly representable nanoseconds", () => {
     const malformed = structuredClone(DEFAULT_PROJECT);
     malformed.links[0].propagationDelayNs = -1;
-    expect(() => parseProject(malformed)).toThrow("invalid link propagation");
+    expect(() => parseProject(malformed)).toThrow("invalid link configuration");
 
     malformed.links[0].propagationDelayNs = 1.5;
-    expect(() => parseProject(malformed)).toThrow("invalid link propagation");
+    expect(() => parseProject(malformed)).toThrow("invalid link configuration");
 
     // Source: ecma.number.max_safe_integer. A larger JSON number could round to
     // a different integer before it reaches the runtime command.
     malformed.links[0].propagationDelayNs = Number.MAX_SAFE_INTEGER + 1;
-    expect(() => parseProject(malformed)).toThrow("invalid link propagation");
+    expect(() => parseProject(malformed)).toThrow("invalid link configuration");
   });
 
   it("rejects a future ABI instead of guessing a migration", () => {
+    // A future writer may change semantics even when fields look familiar.
     expect(() => parseProject({ ...DEFAULT_PROJECT, version: 2 })).toThrow("Unsupported project");
   });
 
   it("rejects malformed endpoint data before runtime configuration", () => {
+    // Invalid text must remain an editable UI draft and never cross to C++.
     const malformed = structuredClone(DEFAULT_PROJECT);
     malformed.hosts[0].mac = "not-a-mac";
     expect(() => parseProject(malformed)).toThrow("invalid host");
@@ -39,21 +50,36 @@ describe("project format", () => {
 
   it("rejects a child provisioned without its parent", () => {
     const malformed = structuredClone(DEFAULT_PROJECT);
-    malformed.hardware.card1Provisioned = "absent";
-    malformed.hardware.mda11Provisioned = "me10-10gb-sfp+";
+    const card = malformed.hardware.cards[GENERATED_PROFILE.lineCard.slot - 1];
+    card.provisionedType = null;
+    card.mdas[GENERATED_PROFILE.mda.slot - 1].provisionedType =
+      GENERATED_PROFILE.mda.modeledType;
     // The structural validator accepts only supported values. Dependency
     // validation remains explicit here so invalid persisted hardware cannot be
     // normalized silently while restoring the project.
-    expect(() => parseProject(malformed)).toThrow("unsupported hardware");
+    expect(() => parseProject(malformed)).toThrow("hardware state");
+  });
+
+  it("rejects live lifecycle fields in portable project hardware", () => {
+    // Runtime-owned lifecycle must never become replayable project intent.
+    const malformed = structuredClone(DEFAULT_PROJECT) as unknown as {
+      hardware: { cards: Array<Record<string, unknown>> }
+    };
+    malformed.hardware.cards[0].lifecycle = "ready";
+    expect(() => parseProject(malformed)).toThrow("hardware state");
   });
 
   it("rejects a gateway outside the host prefix", () => {
+    // Endpoint next-hop selection assumes gateway reachability on the local
+    // medium, so a remote gateway would make ARP behavior undefined.
     const malformed = structuredClone(DEFAULT_PROJECT);
     malformed.hosts[0].gateway = "198.51.100.1";
     expect(() => parseProject(malformed)).toThrow("local prefix");
   });
 
   it("rejects reversed endpoint order and duplicate identities", () => {
+    // Profile order is the compact endpoint index shared with C++. Reordering
+    // would silently attach identities to different links without this check.
     const reversed = structuredClone(DEFAULT_PROJECT);
     reversed.hosts.reverse();
     expect(() => parseProject(reversed)).toThrow("invalid host");
@@ -64,6 +90,8 @@ describe("project format", () => {
   });
 
   it("rejects group MAC and IPv4 broadcast endpoint values", () => {
+    // Hosts require unicast identities. Multicast MAC and subnet broadcast
+    // values cannot participate in the modeled ARP and ICMP endpoint stack.
     const groupMac = structuredClone(DEFAULT_PROJECT);
     groupMac.hosts[0].mac = "01:00:5E:00:00:01";
     expect(() => parseProject(groupMac)).toThrow("duplicate endpoint");
@@ -74,15 +102,31 @@ describe("project format", () => {
   });
 
   it("rejects an incompatible runtime snapshot ABI", () => {
+    // Runtime projections deliberately include reconciler-owned fields that
+    // portable project hardware excludes. Build that live shape explicitly.
+    const runtimeHardware = {
+      chassis: GENERATED_PROFILE.chassis,
+      control: {
+        slot: GENERATED_PROFILE.control.slot,
+        type: GENERATED_PROFILE.control.card,
+        state: GENERATED_PROFILE.control.initial_state
+      },
+      cards: DEFAULT_PROJECT.hardware.cards.map((card) => ({
+        ...card, compatible: true, lifecycle: "absent", reason: "not-equipped",
+        mdas: card.mdas.map((mda) => ({
+          ...mda, compatible: true, lifecycle: "absent", reason: "not-equipped"
+        }))
+      }))
+    };
     const snapshot = {
       abiVersion: ABI_VERSION,
       status: "ready",
       nowMs: 1,
-      hardware: DEFAULT_PROJECT.hardware,
-      ports: [
-        { id: "1/1/1", admin: "up", oper: "up", speedMbps: 10000, mtu: 1500, description: "", rxPackets: 0, txPackets: 0 },
-        { id: "1/1/2", admin: "up", oper: "up", speedMbps: 10000, mtu: 1500, description: "", rxPackets: 0, txPackets: 0 }
-      ],
+      hardware: runtimeHardware,
+      ports: GENERATED_PROFILE.links.map((link) => ({ id: link.router_port,
+        admin: "up", oper: "up", speedMbps: GENERATED_PROFILE.ports.speedMbps,
+        mtu: GENERATED_PROFILE.ports.defaultMtu, description: "", rxPackets: 0,
+        txPackets: 0 })),
       arp: [], routes: [], alarms: [], runningConfig: DEFAULT_PROJECT.runningConfig,
       captureCount: 0, captureDropped: 0, droppedPackets: 0
     };
@@ -91,6 +135,8 @@ describe("project format", () => {
   });
 
   it("rejects non-canonical and duplicate static route keys", () => {
+    // Canonical network keys keep route identity independent of host bits and
+    // serialization order.
     const hostBits = structuredClone(DEFAULT_PROJECT);
     hostBits.runningConfig.staticRoutes = [{ prefix: "203.0.113.7/24", nextHop: "192.0.2.2" }];
     expect(() => parseProject(hostBits)).toThrow("canonical and unique");
@@ -106,6 +152,8 @@ describe("project format", () => {
   });
 
   it("mutation-fuzzes the portable netsim project boundary", () => {
+    // Deterministic xorshift mutation gives broad parser coverage without
+    // introducing a flaky random seed into CI.
     const original = JSON.stringify(DEFAULT_PROJECT);
     let random = 0x9e3779b9;
     for (let iteration = 0; iteration < 1000; ++iteration) {
@@ -118,6 +166,8 @@ describe("project format", () => {
         const parsed = parseProject(decoded);
         expect(parseProject(parsed)).toEqual(parsed);
       } catch (cause) {
+        // Rejection is expected for most mutations, but the boundary must fail
+        // through a controlled Error rather than an unchecked type exception.
         expect(cause).toBeInstanceOf(Error);
       }
     }

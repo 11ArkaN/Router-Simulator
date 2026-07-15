@@ -1,7 +1,7 @@
 #pragma once
 
-// Generated from the release-pinned CLI grammar. The runtime matches token
-// descriptors and never carries a second handwritten list of command lines.
+// Generated release grammar. Execution and completion consume the same rows,
+// which prevents a handwritten command catalog from drifting from sources.
 
 #include <array>
 #include <cstddef>

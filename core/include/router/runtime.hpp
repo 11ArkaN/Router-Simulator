@@ -55,7 +55,9 @@ private:
   // dispatch runs only on control and is the sole mutation gateway for device,
   // session and connected RIB state.
   std::string dispatch(const std::string &text);
-  std::string run_ping(ForwardJobKind kind, std::uint32_t count = 1);
+  std::string run_ping(ForwardJobKind kind, packet::Ipv4 destination,
+                       std::uint8_t source_endpoint = 0,
+                       std::uint32_t count = 1);
   std::string configure_hosts(const std::string &text);
   std::string configure_links(const std::string &text);
   std::string configure_running(const std::string &text);
@@ -74,14 +76,14 @@ private:
   // Each ring has one producer and one consumer. Blocking waits only park a
   // worker after a failed pop; they do not protect ring contents or packet
   // data. commands_: browser bridge -> control. responses_: control -> bridge.
-  SpscRing<CommandMessage, 64> commands_;
+  SpscRing<CommandMessage, profile::command_ring_capacity> commands_;
   // Only one browser caller enters command() at a time, but several slots keep
   // shutdown and diagnostic paths independent of a single consumer wakeup.
-  SpscRing<ResponseMessage, 8> responses_;
+  SpscRing<ResponseMessage, profile::response_ring_capacity> responses_;
   // forward_jobs_: control -> forwarding. forward_results_: forwarding ->
   // control. Packet handles never enter either cross-thread ring.
-  SpscRing<ForwardJob, 16> forward_jobs_;
-  SpscRing<ForwardResult, 16> forward_results_;
+  SpscRing<ForwardJob, profile::forwarding_ring_capacity> forward_jobs_;
+  SpscRing<ForwardResult, profile::forwarding_ring_capacity> forward_results_;
 
   std::atomic_bool stopping_{false};
   // Control toggles capture through the stable ABI while forwarding tests the

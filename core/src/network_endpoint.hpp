@@ -24,22 +24,34 @@ struct EndpointFrames {
 
 class EndpointStack final {
 public:
+  // configure replaces endpoint identity and clears neighbors when values
+  // change. The configuration value is copied and may be discarded by caller.
   void configure(const NetworkEndpointConfiguration &configuration) noexcept;
+  // begin_echo either emits ARP or ICMP and retains at most one pending frame.
+  // The returned value owns every frame passed to the link fabric.
   [[nodiscard]] EndpointFrames begin_echo(packet::Ipv4 destination,
                                           std::uint16_t sequence) noexcept;
+  // receive parses encoded Ethernet. Malformed or unrelated packets produce an
+  // empty result and cannot mutate another endpoint or the router adjacency.
   [[nodiscard]] EndpointFrames receive(const packet::Frame &frame,
                                        std::uint16_t expected_sequence,
                                        bool probe_source) noexcept;
+  // Link loss clears only this endpoint's learned router neighbor.
   void clear_neighbor() noexcept;
+  // Checkpoint restore installs a previously validated exact protocol address.
   void restore_router_neighbor(packet::Ipv4 address, packet::Mac mac) noexcept;
 
+  // Identity accessors expose immutable values copied during configure.
   [[nodiscard]] packet::Ipv4 address() const noexcept { return address_; }
   [[nodiscard]] packet::Mac mac() const noexcept { return mac_; }
 
 private:
   packet::Mac mac_{};
   packet::Ipv4 address_{};
-  std::uint8_t prefix_length_{30};
+  // Zero is deliberately unusable until configure installs the project prefix.
+  // A protocol-specific /30 default here would make an unconfigured endpoint
+  // appear valid and couple the reusable stack to the first sample topology.
+  std::uint8_t prefix_length_{};
   packet::Ipv4 gateway_{};
   std::optional<packet::Ipv4> neighbor_address_;
   std::optional<packet::Mac> neighbor_mac_;

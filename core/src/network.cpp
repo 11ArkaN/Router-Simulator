@@ -18,17 +18,18 @@
 namespace router {
 namespace {
 
-using namespace std::chrono_literals;
 using packet::Frame;
 using packet::Ipv4;
 using packet::Mac;
 
 constexpr Mac no_mac{};
 
+// Converts packet byte order to the RIB's network-order integer key.
 std::uint32_t to_u32(Ipv4 address) noexcept {
   return routing::ipv4(address[0], address[1], address[2], address[3]);
 }
 
+// Converts a selected RIB next hop back into packet encoder bytes.
 Ipv4 to_ipv4(std::uint32_t value) noexcept {
   return {static_cast<std::uint8_t>(value >> 24),
           static_cast<std::uint8_t>(value >> 16),
@@ -36,11 +37,14 @@ Ipv4 to_ipv4(std::uint32_t value) noexcept {
           static_cast<std::uint8_t>(value)};
 }
 
+// A zero MAC marks unresolved adjacency storage and is never a valid neighbor.
 bool is_zero(Mac value) noexcept {
   return std::all_of(value.begin(), value.end(),
                      [](auto byte) { return byte == 0; });
 }
 
+// Builds the initial endpoint projection entirely from generated profile data.
+// Later project operations replace this value through configure().
 NetworkConfiguration default_configuration() noexcept {
   NetworkConfiguration result;
   for (std::size_t index = 0; index < result.endpoints.size(); ++index) {
@@ -91,7 +95,6 @@ struct LabNetwork::Impl {
     PingOrigin origin{};
     NetworkDrop drop{NetworkDrop::none};
     std::uint8_t source_endpoint{};
-    std::uint8_t destination_endpoint{};
     std::uint16_t sequence{};
     std::optional<std::chrono::steady_clock::time_point> echo_started;
     std::uint8_t reply_ttl{};
@@ -109,7 +112,9 @@ struct LabNetwork::Impl {
   NetworkConfiguration configuration{};
   routing::FibProgram fib{};
   network_detail::AdjacencyTable adjacencies;
-  std::array<BoundedQueue<PendingFrame, 8>, profile::port_count> pending{};
+  std::array<BoundedQueue<PendingFrame, profile::adjacency_pending_capacity>,
+             profile::port_count>
+      pending{};
 
   // PacketPool allocates its fixed arena during construction. Propagating
   // allocation failure is safer than promising noexcept and terminating the
@@ -118,6 +123,8 @@ struct LabNetwork::Impl {
 
   [[nodiscard]] std::optional<std::size_t>
   endpoint_for_port(std::uint8_t port) const noexcept {
+    // Physical binding is project data. Scanning the small bounded endpoint
+    // array avoids a second mutable reverse index that could become stale.
     for (std::size_t endpoint = 0; endpoint < configuration.endpoints.size();
          ++endpoint) {
       const auto &link = configuration.endpoints[endpoint];
@@ -128,6 +135,8 @@ struct LabNetwork::Impl {
   }
 
   void observe(std::uint8_t interface_id, const Frame &frame) noexcept {
+    // Capture timestamps use wall-clock epoch for PCAP interoperability, while
+    // delivery and protocol deadlines use steady_clock and cannot jump.
     if (!operation.observer)
       return;
     const auto timestamp =
@@ -143,6 +152,8 @@ struct LabNetwork::Impl {
   }
 
   bool fail(NetworkDrop reason) noexcept {
+    // The first terminal failure wins. Later frames already in flight cannot
+    // overwrite the causal drop reported to control.
     if (operation.active && !operation.terminal) {
       operation.terminal = true;
       operation.success = false;
@@ -153,17 +164,19 @@ struct LabNetwork::Impl {
 
   [[nodiscard]] bool enqueue(std::size_t direction,
                              const Frame &frame) noexcept {
+    // Admission copies bytes into the bounded fabric-owned packet pool. A full
+    // ring is an explicit modeled tail drop, never a heap allocation fallback.
     if (direction >= direction_count)
       return fail(NetworkDrop::route_miss);
     if (!fabric.enqueue(direction, frame))
       return fail(NetworkDrop::queue_full);
     if ((direction & 1U) != 0U) {
-      // For the starter profile these resolve to capture IDs 6 and 7, matching
-      // the persisted PCAP interface table while avoiding named path constants.
+      // Capture groups are generated with the profile. Direction arithmetic
+      // selects the endpoint within the egress group without naming a link.
       const auto endpoint = direction / 2;
-      observe(static_cast<std::uint8_t>(direction_count + endpoint_count +
-                                        endpoint),
-              frame);
+      observe(
+          static_cast<std::uint8_t>(profile::capture_egress_base + endpoint),
+          frame);
     }
     return true;
   }
@@ -176,6 +189,8 @@ struct LabNetwork::Impl {
   }
 
   void pump_transmit() noexcept {
+    // Link admission observes encoded bytes before propagation and increments
+    // counters for the physical router port selected by project binding.
     fabric.pump_transmit(this, [](void *context, std::size_t index,
                                   const Frame &frame) {
       auto &self = *static_cast<Impl *>(context);
@@ -209,6 +224,8 @@ struct LabNetwork::Impl {
   }
 
   void process_host(std::uint8_t index, const Frame &frame) noexcept {
+    // EndpointStack receives bytes only after link delivery. Returned replies
+    // must re-enter the opposite physical direction through normal admission.
     if (index >= hosts.size())
       return;
     const auto ip = packet::parse_ipv4(frame);
@@ -232,12 +249,16 @@ struct LabNetwork::Impl {
 
   void learn_router_arp(std::uint8_t port,
                         const packet::ArpView &arp) noexcept {
+    // Adjacency keys include the egress port, preventing the same protocol
+    // address on separate links from releasing the wrong pending queue.
     if (port >= profile::port_count || is_zero(arp.sender_mac))
       return;
     adjacencies.learn(port, arp.sender_ip, arp.sender_mac);
   }
 
   void flush_pending(std::uint8_t port) noexcept {
+    // Only frames matching the newly learned next hop are released. Others
+    // retain FIFO order and wait for their own ARP transaction.
     if (port >= pending.size())
       return;
     const auto *adjacency = adjacencies.get(port);
@@ -276,6 +297,8 @@ struct LabNetwork::Impl {
 
   void resolve_or_queue(std::uint8_t port, const Frame &frame, bool routed,
                         Ipv4 next_hop) noexcept {
+    // Queue before transmitting ARP so an immediate reply cannot race ahead of
+    // the frame that depends on it. One request per port is outstanding.
     if (port >= pending.size()) {
       fail(NetworkDrop::route_miss);
       return;
@@ -308,6 +331,8 @@ struct LabNetwork::Impl {
   }
 
   void process_router(std::uint8_t ingress, const Frame &frame) noexcept {
+    // Processing follows Ethernet acceptance, protocol parsing, local delivery,
+    // FIB lookup, TTL handling and adjacency resolution in that order.
     const auto endpoint = endpoint_for_port(ingress);
     if (!endpoint || ingress >= fib.port_operational.size()) {
       fail(NetworkDrop::ingress_down);
@@ -315,7 +340,9 @@ struct LabNetwork::Impl {
     }
     // Capture ingress IDs follow physical directions and remain stable for the
     // current profile even when endpoint bindings move to another router port.
-    observe(static_cast<std::uint8_t>(direction_count + *endpoint), frame);
+    observe(
+        static_cast<std::uint8_t>(profile::capture_ingress_base + *endpoint),
+        frame);
     if (!fib.port_operational[ingress]) {
       fail(NetworkDrop::ingress_down);
       return;
@@ -334,7 +361,7 @@ struct LabNetwork::Impl {
         return;
       learn_router_arp(ingress, *arp);
       if (arp->target_ip == local.router_address) {
-        observe(static_cast<std::uint8_t>(direction_count * 2), frame);
+        observe(static_cast<std::uint8_t>(profile::capture_cpm_index), frame);
       }
       if (arp->operation == 1 && arp->target_ip == local.router_address) {
         static_cast<void>(
@@ -360,7 +387,7 @@ struct LabNetwork::Impl {
           return item.connected && item.router_address == ip->destination;
         });
     if (local_destination != configuration.endpoints.end()) {
-      observe(static_cast<std::uint8_t>(direction_count * 2), frame);
+      observe(static_cast<std::uint8_t>(profile::capture_cpm_index), frame);
       const auto icmp = packet::parse_icmp(frame);
       if (!icmp)
         return;
@@ -408,10 +435,13 @@ struct LabNetwork::Impl {
 
   [[nodiscard]] std::array<NetworkArpEntry, profile::port_count>
   arp_projection() const noexcept {
+    // Control receives a bounded value copy and cannot mutate forwarding state.
     return adjacencies.projection();
   }
 
   void apply_configuration(const NetworkConfiguration &next) noexcept {
+    // Project replacement is atomic on this owner. Endpoint stacks and link
+    // delays update before every previous adjacency generation is invalidated.
     configuration = next;
     for (std::size_t endpoint = 0; endpoint < hosts.size(); ++endpoint) {
       const auto &item = configuration.endpoints[endpoint];
@@ -428,50 +458,66 @@ struct LabNetwork::Impl {
     }
   }
 
-  [[nodiscard]] NetworkResult ping(PingOrigin origin, std::uint16_t sequence,
+  [[nodiscard]] NetworkResult ping(PingOrigin origin,
+                                   std::uint8_t source_endpoint,
+                                   Ipv4 destination, std::uint16_t sequence,
                                    CaptureObserver observer,
                                    void *context) noexcept {
+    // One operation owns its probe bookkeeping until success, a modeled drop or
+    // the real-time timeout. No other device object is called by this loop.
     operation = {};
     operation.active = true;
     operation.origin = origin;
     operation.sequence = sequence;
-    operation.source_endpoint = 0;
-    operation.destination_endpoint = endpoint_count > 1 ? 1 : 0;
+    operation.source_endpoint = source_endpoint;
     operation.observer = observer;
     operation.observer_context = context;
-    const auto deadline = std::chrono::steady_clock::now() + 2s;
-    const auto destination = operation.destination_endpoint;
-    const auto &target_link = configuration.endpoints[destination];
+    const auto deadline =
+        std::chrono::steady_clock::now() + profile::ping_timeout;
 
-    const auto target_missing =
-        !target_link.connected ||
-        target_link.router_port >= fib.port_operational.size();
-    const auto router_egress_down =
-        !target_missing && origin == PingOrigin::router &&
-        !fib.port_operational[target_link.router_port];
-    if (target_missing || router_egress_down) {
-      fail(NetworkDrop::route_miss);
-    } else if (origin == PingOrigin::endpoint) {
-      const auto source = operation.source_endpoint;
-      const auto &source_link = configuration.endpoints[source];
-      if (!source_link.connected ||
-          !fib.port_operational[source_link.router_port]) {
-        fail(NetworkDrop::ingress_down);
+    if (origin == PingOrigin::endpoint) {
+      const auto source = static_cast<std::size_t>(source_endpoint);
+      if (source >= hosts.size()) {
+        fail(NetworkDrop::route_miss);
       } else {
-        const auto frames =
-            hosts[source].begin_echo(hosts[destination].address(), sequence);
-        for (std::size_t index = 0; index < frames.count; ++index) {
-          static_cast<void>(enqueue(to_router(source), frames.frames[index]));
+        const auto &source_link = configuration.endpoints[source];
+        if (!source_link.connected ||
+            !fib.port_operational[source_link.router_port]) {
+          fail(NetworkDrop::ingress_down);
+        } else {
+          // The endpoint stack decides whether the destination is on-link or
+          // requires its configured gateway. No topology index is substituted
+          // for the destination supplied by the terminal or host action.
+          const auto frames = hosts[source].begin_echo(destination, sequence);
+          for (std::size_t index = 0; index < frames.count; ++index) {
+            static_cast<void>(enqueue(to_router(source), frames.frames[index]));
+          }
+          if (frames.start_echo_clock)
+            start_echo_clock();
         }
-        if (frames.start_echo_clock)
-          start_echo_clock();
       }
     } else {
-      const auto request = packet::icmp_echo(
-          target_link.router_mac, no_mac, target_link.router_address,
-          hosts[destination].address(), false, sequence);
-      resolve_or_queue(target_link.router_port, request, false,
-                       hosts[destination].address());
+      std::uint8_t egress{};
+      std::uint32_t configured_next_hop{};
+      if (!routing::lookup(fib, to_u32(destination), egress,
+                           &configured_next_hop) ||
+          egress >= fib.port_operational.size() ||
+          !fib.port_operational[egress]) {
+        fail(NetworkDrop::route_miss);
+      } else if (const auto endpoint = endpoint_for_port(egress)) {
+        // Router-originated traffic takes its source address and MAC from the
+        // selected egress interface. This is a FIB decision, not a shortcut to
+        // a known host object.
+        const auto &local = configuration.endpoints[*endpoint];
+        const auto request =
+            packet::icmp_echo(local.router_mac, no_mac, local.router_address,
+                              destination, false, sequence);
+        const auto next_hop =
+            configured_next_hop ? to_ipv4(configured_next_hop) : destination;
+        resolve_or_queue(egress, request, false, next_hop);
+      } else {
+        fail(NetworkDrop::route_miss);
+      }
     }
 
     // The forwarding shard waits only for the nearest link-owned deadline.
@@ -510,9 +556,13 @@ struct LabNetwork::Impl {
   }
 };
 
+// Large packet pools and link queues live on the heap rather than the Wasm
+// entry stack. Construction also installs the generated default topology.
 LabNetwork::LabNetwork() : impl_(std::make_unique<Impl>()) {}
 LabNetwork::~LabNetwork() = default;
 
+// Replaces one immutable FIB generation. Ports withdrawn by the generation
+// lose adjacency and endpoint neighbor state before later packets are handled.
 void LabNetwork::install_fib(const routing::FibProgram &fib) noexcept {
   for (std::size_t port = 0; port < fib.port_operational.size(); ++port) {
     if (fib.port_operational[port])
@@ -532,6 +582,7 @@ void LabNetwork::install_fib(const routing::FibProgram &fib) noexcept {
     impl_->fib = fib;
 }
 
+// Applies a complete validated project topology on the forwarding owner.
 void LabNetwork::configure(const NetworkConfiguration &configuration) noexcept {
   impl_->apply_configuration(configuration);
 }
@@ -556,13 +607,18 @@ void LabNetwork::restore_adjacencies(
 
 std::array<NetworkArpEntry, profile::port_count>
 LabNetwork::adjacencies() const noexcept {
+  // Checkpoint and telemetry callers receive values, never mutable pointers.
   return impl_->arp_projection();
 }
 
-NetworkResult LabNetwork::ping(PingOrigin origin, std::uint16_t sequence,
+// Runs one probe with explicit origin, source endpoint and destination. The
+// capture observer is borrowed only until the synchronous result returns.
+NetworkResult LabNetwork::ping(PingOrigin origin, std::uint8_t source_endpoint,
+                               packet::Ipv4 destination, std::uint16_t sequence,
                                CaptureObserver observer,
                                void *observer_context) noexcept {
-  return impl_->ping(origin, sequence, observer, observer_context);
+  return impl_->ping(origin, source_endpoint, destination, sequence, observer,
+                     observer_context);
 }
 
 } // namespace router

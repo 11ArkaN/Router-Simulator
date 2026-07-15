@@ -30,9 +30,11 @@ void packet_tests() {
   const auto parsed_arp = parse_arp(arp);
   const auto parsed_ip = parse_ipv4(echo);
   const auto parsed_icmp = parse_icmp(echo);
-  if (!parsed_arp || parsed_arp->operation != 1 || parsed_arp->sender_ip != source_ip ||
-      !parsed_ip || parsed_ip->source != source_ip || parsed_ip->destination != target_ip ||
-      !parsed_icmp || parsed_icmp->type != 8 || parsed_icmp->data.size() != 56) {
+  if (!parsed_arp || parsed_arp->operation != 1 ||
+      parsed_arp->sender_ip != source_ip || !parsed_ip ||
+      parsed_ip->source != source_ip || parsed_ip->destination != target_ip ||
+      !parsed_icmp || parsed_icmp->type != 8 ||
+      parsed_icmp->data.size() != 56) {
     throw std::runtime_error("Packet parser did not preserve protocol fields");
   }
   // Parsing and destination acceptance are separate responsibilities. Preserve
@@ -45,13 +47,16 @@ void packet_tests() {
   if (!wrong_l2_view || wrong_l2_view->destination != stranger ||
       ethernet_for_local(wrong_l2_view->destination, target) ||
       !ethernet_for_local(Mac{0xff, 0xff, 0xff, 0xff, 0xff, 0xff}, target)) {
-    throw std::runtime_error("Ethernet destination rewrite or parsing is invalid");
+    throw std::runtime_error(
+        "Ethernet destination rewrite or parsing is invalid");
   }
   const auto routed = route_ipv4(echo, target, source);
-  if (!routed || (*routed)[22] != 63 || checksum(routed->view().subspan(14, 20)) != 0 ||
+  if (!routed || (*routed)[22] != 63 ||
+      checksum(routed->view().subspan(14, 20)) != 0 ||
       !std::equal(routed->bytes.begin() + 34, routed->bytes.begin() + 98,
                   echo.bytes.begin() + 34)) {
-    throw std::runtime_error("IPv4 forwarding rewrite changed payload or checksum");
+    throw std::runtime_error(
+        "IPv4 forwarding rewrite changed payload or checksum");
   }
 
   // The receiver must derive a reply from the request bytes. These checks make
@@ -65,18 +70,22 @@ void packet_tests() {
       reply_icmp->sequence != 1 || reply_icmp->data.size() != 56 ||
       !std::equal(reply_icmp->data.begin(), reply_icmp->data.end(),
                   parsed_icmp->data.begin())) {
-    throw std::runtime_error("ICMP Echo Reply was not derived from the received request");
+    throw std::runtime_error(
+        "ICMP Echo Reply was not derived from the received request");
   }
 
   // RFC 1812 requires a router to return Time Exceeded when forwarding would
   // decrement TTL to zero. The ICMP payload must quote enough of the original
   // datagram to identify the failed probe.
-  const auto expiring = icmp_echo(source, target, source_ip, target_ip, false, 9, 1);
-  const auto exceeded = icmp_time_exceeded(expiring, target, source, target_ip, source_ip);
+  const auto expiring =
+      icmp_echo(source, target, source_ip, target_ip, false, 9, 1);
+  const auto exceeded =
+      icmp_time_exceeded(expiring, target, source, target_ip, source_ip);
   const auto exceeded_icmp = exceeded ? parse_icmp(*exceeded) : std::nullopt;
   if (!exceeded || !exceeded_icmp || exceeded_icmp->type != 11 ||
       exceeded_icmp->code != 0 || exceeded_icmp->data.size() < 28) {
-    throw std::runtime_error("TTL expiry did not produce a valid ICMP Time Exceeded packet");
+    throw std::runtime_error(
+        "TTL expiry did not produce a valid ICMP Time Exceeded packet");
   }
 
   // Deterministic mutation fuzzing covers every legal frame length and random
@@ -89,7 +98,8 @@ void packet_tests() {
     random ^= random << 13;
     random ^= random >> 17;
     random ^= random << 5;
-    candidate.length = static_cast<std::uint16_t>(random % (candidate.bytes.size() + 1));
+    candidate.length =
+        static_cast<std::uint16_t>(random % (candidate.bytes.size() + 1));
     for (std::size_t index = 0; index < candidate.length; ++index) {
       random ^= random << 13;
       random ^= random >> 17;

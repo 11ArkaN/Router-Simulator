@@ -12,20 +12,23 @@
 
 namespace router {
 
-inline constexpr std::uint32_t runtime_message_version = 1;
+inline constexpr std::uint32_t runtime_message_version =
+    profile::runtime_message_abi;
 
 struct CommandMessage {
   // Producer: browser bridge. Consumer: control shard. Overflow causes command
   // submission to wait, so accepted commands are never silently discarded.
   std::uint64_t id{};
-  std::array<char, 1024> text{};
+  // Capacity is generated with the shared-memory profile. Overflow is rejected
+  // before enqueue and never truncates a management operation silently.
+  std::array<char, profile::command_message_bytes> text{};
 };
 
 struct ResponseMessage {
   // Producer: control shard. Consumer: browser bridge. Capacity covers the
   // bounded multi-ping response without allocating across pthread ownership.
   std::uint64_t id{};
-  std::array<char, 16384> text{};
+  std::array<char, profile::response_message_bytes> text{};
 };
 
 enum class ForwardJobKind : std::uint8_t {
@@ -43,6 +46,8 @@ struct ForwardJob {
   // zero initialized. Fixed capacities bound copy time and shared-memory use.
   std::uint64_t id{};
   ForwardJobKind kind{};
+  packet::Ipv4 destination{};
+  std::uint8_t source_endpoint{};
   routing::FibProgram fib{};
   NetworkConfiguration network{};
   std::array<NetworkArpEntry, profile::port_count> restored_arp{};

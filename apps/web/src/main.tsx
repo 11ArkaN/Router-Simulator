@@ -1,3 +1,6 @@
+// Browser composition root. It creates React only after module loading and
+// leaves runtime construction to App where failure can be shown to the user.
+
 import ReactDOM from "react-dom/client";
 import { RouterProvider } from "@tanstack/react-router";
 import "@xyflow/react/dist/style.css";

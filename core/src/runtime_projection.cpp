@@ -13,6 +13,7 @@
 namespace router {
 namespace {
 
+// Formats packet IPv4 storage for JSON and operational tables.
 std::string ipv4_text(packet::Ipv4 address) {
   std::ostringstream out;
   out << static_cast<unsigned>(address[0]) << '.'
@@ -22,6 +23,7 @@ std::string ipv4_text(packet::Ipv4 address) {
   return out.str();
 }
 
+// Converts RIB network-order keys through the same byte formatter.
 std::string ipv4_text(std::uint32_t address) {
   return ipv4_text({static_cast<std::uint8_t>(address >> 24),
                     static_cast<std::uint8_t>(address >> 16),
@@ -29,6 +31,7 @@ std::string ipv4_text(std::uint32_t address) {
                     static_cast<std::uint8_t>(address)});
 }
 
+// Emits canonical uppercase colon-separated MAC text for UI and captures.
 std::string mac_text(packet::Mac address) {
   std::ostringstream out;
   out << std::uppercase << std::hex << std::setfill('0');
@@ -40,6 +43,8 @@ std::string mac_text(packet::Mac address) {
   return out.str();
 }
 
+// Escapes every JSON-sensitive control character without depending on a DOM or
+// third-party serializer in the portable C++ core.
 std::string json_text(std::string_view value) {
   std::string result;
   result.reserve(value.size());
@@ -84,10 +89,10 @@ void Runtime::publish_telemetry() noexcept {
   if (generation & 1U)
     ++generation;
   sequence.store(generation + 1U, std::memory_order_release);
-  telemetry_.abi_version = 3;
+  telemetry_.abi_version = profile::telemetry_abi;
   telemetry_.byte_size = sizeof(TelemetryPageV1);
   telemetry_.status = stopping_.load(std::memory_order_acquire) ? 3U : 1U;
-  telemetry_.worker_count = 2;
+  telemetry_.worker_count = profile::runtime_worker_count;
   telemetry_.inventory_ports =
       static_cast<std::uint32_t>(state_.inventory_port_count());
   telemetry_.operational_ports = 0;
@@ -115,6 +120,8 @@ void Runtime::publish_telemetry() noexcept {
 }
 
 std::string Runtime::snapshot() {
+  // Snapshot serialization executes only on control, so every referenced value
+  // belongs to the same ownership epoch and needs no cross-thread locks.
   publish_telemetry();
   const auto &running = state_.configuration.running;
   const auto &hardware = state_.hardware;
@@ -123,25 +130,62 @@ std::string Runtime::snapshot() {
                            std::chrono::steady_clock::now() - started_)
                            .count();
   std::ostringstream out;
-  out << "{\"abiVersion\":3,\"status\":\"ready\",\"nowMs\":" << elapsed
+  out << "{\"abiVersion\":" << profile::runtime_snapshot_abi
+      << ",\"status\":\"ready\",\"nowMs\":" << elapsed
       << ",\"hardware\":{\"chassis\":\"" << profile::chassis
-      << "\",\"cpmA\":\"active-ready\""
-      << ",\"card1Provisioned\":\""
-      << (running.card_provisioned ? "iom4-e" : "absent")
-      << "\",\"mda11Provisioned\":\""
-      << (running.mda_provisioned ? "me10-10gb-sfp+" : "absent")
-      << "\",\"card1\":\"" << (hardware.card.present ? "iom4-e" : "absent")
-      << "\",\"mda11\":\""
-      << (hardware.mda.present
-              ? (hardware.mda.compatible ? "me10-10gb-sfp+" : "me1-100gb-cfp2")
-              : "absent")
-      << "\",\"cardLifecycle\":\""
-      << hardware::lifecycle_name(hardware.card.lifecycle)
-      << "\",\"mdaLifecycle\":\""
-      << hardware::lifecycle_name(hardware.mda.lifecycle)
-      << "\",\"cardReason\":\"" << hardware.card.reason << "\",\"mdaReason\":\""
-      << hardware.mda.reason << "\"},\"ports\":[";
+      << "\",\"control\":{\"slot\":\"" << profile::control_slot
+      << "\",\"type\":\"" << profile::control_card_type << "\",\"state\":\""
+      << profile::control_initial_state << "\"},\"cards\":[";
+  for (std::size_t card_index = 0; card_index < hardware.cards.size();
+       ++card_index) {
+    // Emit every generated slot, including empty ones. UI can render chassis
+    // capacity without synthesizing missing card records.
+    if (card_index)
+      out << ',';
+    const auto &card_config = running.cards[card_index];
+    const auto &card = hardware.cards[card_index];
+    out << "{\"slot\":" << card_index + 1U << ",\"provisionedType\":";
+    if (card_config.type)
+      out << '"' << card_config.type << '"';
+    else
+      out << "null";
+    out << ",\"equippedType\":";
+    if (card.type)
+      out << '"' << card.type << '"';
+    else
+      out << "null";
+    out << ",\"compatible\":" << (card.compatible ? "true" : "false")
+        << ",\"lifecycle\":\""
+        << hardware::lifecycle_name(card.equipment.lifecycle)
+        << "\",\"reason\":\"" << card.equipment.reason << "\",\"mdas\":[";
+    for (std::size_t mda_index = 0; mda_index < card.mdas.size(); ++mda_index) {
+      // Child provisioning and equipped type remain distinct to expose physical
+      // mismatch and parent removal accurately.
+      if (mda_index)
+        out << ',';
+      const auto &mda_config = card_config.mdas[mda_index];
+      const auto &mda = card.mdas[mda_index];
+      out << "{\"slot\":" << mda_index + 1U << ",\"provisionedType\":";
+      if (mda_config.type)
+        out << '"' << mda_config.type << '"';
+      else
+        out << "null";
+      out << ",\"equippedType\":";
+      if (mda.type)
+        out << '"' << mda.type << '"';
+      else
+        out << "null";
+      out << ",\"compatible\":" << (mda.compatible ? "true" : "false")
+          << ",\"lifecycle\":\""
+          << hardware::lifecycle_name(mda.equipment.lifecycle)
+          << "\",\"reason\":\"" << mda.equipment.reason << "\"}";
+    }
+    out << "]}";
+  }
+  out << "]},\"ports\":[";
   for (std::size_t index = 0; index < state_.inventory_port_count(); ++index) {
+    // Only ports created by compatible equipped inventory appear operationally;
+    // running configuration for absent ports is serialized later and retained.
     if (index)
       out << ',';
     const auto &port = running.ports[index];
@@ -170,6 +214,8 @@ std::string Runtime::snapshot() {
   out << "],\"routes\":[";
   first = true;
   for (const auto &route : rib_.entries()) {
+    // Route source is derived from next-hop presence. Connected prefixes keep
+    // their configured interface spelling when that binding still exists.
     if (!first)
       out << ',';
     first = false;
@@ -203,6 +249,8 @@ std::string Runtime::snapshot() {
   out << "],\"runningConfig\":{\"systemName\":\""
       << json_text(running.system_name.data()) << "\",\"ports\":[";
   for (std::size_t index = 0; index < running.ports.size(); ++index) {
+    // Running config always includes the full generated port capacity, even
+    // when no physical inventory currently exposes those ports.
     if (index)
       out << ',';
     const auto &port = running.ports[index];

@@ -3,6 +3,7 @@
 
 #include "router/project_configuration.hpp"
 
+#include "router/generated_runtime_protocol.hpp"
 #include "router/routing.hpp"
 
 #include <algorithm>
@@ -100,8 +101,7 @@ netstrings(std::string_view command, std::string_view prefix,
     return std::nullopt;
   command.remove_prefix(prefix.size());
   std::vector<std::string_view> result;
-  result.reserve(1U + profile::port_count * 4U +
-                 profile::endpoint_count * 4U);
+  result.reserve(1U + profile::port_count * 4U + profile::endpoint_count * 4U);
   while (!command.empty()) {
     // A bounded field count prevents a stream of zero-length netstrings from
     // causing unbounded vector growth before structural validation.
@@ -112,9 +112,8 @@ netstrings(std::string_view command, std::string_view prefix,
       return std::nullopt;
     std::size_t length{};
     const auto length_text = command.substr(0, colon);
-    const auto parsed = std::from_chars(length_text.data(),
-                                        length_text.data() + length_text.size(),
-                                        length);
+    const auto parsed = std::from_chars(
+        length_text.data(), length_text.data() + length_text.size(), length);
     if (length_text.empty() || parsed.ec != std::errc{} ||
         parsed.ptr != length_text.data() + length_text.size())
       return std::nullopt;
@@ -159,7 +158,9 @@ ParseResult parse_hosts(const ProjectState &current,
   // pass validation, so an address swap has no transient duplicate state.
   constexpr auto count = ProjectState::endpoint_count;
   const auto values = fields<1 + count * 3>(command);
-  if (!values || (*values)[0] != "project:hosts") {
+  constexpr std::string_view operation = runtime_protocol::project_hosts;
+  const auto operation_name = operation.substr(0, operation.size() - 1U);
+  if (!values || (*values)[0] != operation_name) {
     return {.error = "ERROR: invalid atomic host configuration command"};
   }
   ProjectState next = current;
@@ -235,7 +236,9 @@ ParseResult parse_links(const ProjectState &current,
   // delay therefore cannot leave only one side changed.
   constexpr auto count = ProjectState::endpoint_count;
   const auto values = fields<1 + count>(command);
-  if (!values || (*values)[0] != "project:links") {
+  constexpr std::string_view operation = runtime_protocol::project_links;
+  const auto operation_name = operation.substr(0, operation.size() - 1U);
+  if (!values || (*values)[0] != operation_name) {
     return {.error = "ERROR: invalid atomic link configuration command"};
   }
   ProjectState next = current;
@@ -259,12 +262,12 @@ ParseResult parse_links(const ProjectState &current,
 
 RunningParseResult parse_running(const DeviceConfiguration &current,
                                  const std::string &command) {
-  constexpr std::string_view prefix = "project:running|";
+  constexpr std::string_view prefix = runtime_protocol::project_running;
   // Four scalar counts and headers surround bounded port, interface and route
   // arrays. The parser never needs to accept more fields than this capacity.
-  const auto maximum_fields =
-      4U + current.ports.size() * 4U + current.interfaces.size() * 2U +
-      current.static_routes.size() * 2U;
+  const auto maximum_fields = 4U + current.ports.size() * 4U +
+                              current.interfaces.size() * 2U +
+                              current.static_routes.size() * 2U;
   const auto values = netstrings(command, prefix, maximum_fields);
   if (!values)
     return {.error = "ERROR: invalid atomic running configuration"};
@@ -282,9 +285,8 @@ RunningParseResult parse_running(const DeviceConfiguration &current,
   // device-owned leaves that are outside the portable project transaction.
   const auto system_name = take();
   const auto port_count_text = take();
-  const auto port_count = port_count_text
-                              ? integer<std::size_t>(*port_count_text)
-                              : std::nullopt;
+  const auto port_count =
+      port_count_text ? integer<std::size_t>(*port_count_text) : std::nullopt;
   if (!system_name || !port_count || *port_count != profile::port_count ||
       !copy_text(next.system_name, *system_name))
     return {.error = "ERROR: invalid running system or port configuration"};
@@ -299,7 +301,8 @@ RunningParseResult parse_running(const DeviceConfiguration &current,
     const auto mtu = mtu_text ? integer<unsigned>(*mtu_text) : std::nullopt;
     if (!id || !admin || !mtu || !description ||
         *id != profile::port_ids[index] ||
-        (*admin != "up" && *admin != "down") || *mtu < 576 || *mtu > 1500 ||
+        (*admin != "up" && *admin != "down") ||
+        *mtu < profile::minimum_port_mtu || *mtu > profile::maximum_port_mtu ||
         !copy_text(next.ports[index].description, *description)) {
       return {.error = "ERROR: invalid running port configuration"};
     }
@@ -326,9 +329,8 @@ RunningParseResult parse_running(const DeviceConfiguration &current,
   }
 
   const auto route_count_text = take();
-  const auto route_count = route_count_text
-                               ? integer<std::size_t>(*route_count_text)
-                               : std::nullopt;
+  const auto route_count =
+      route_count_text ? integer<std::size_t>(*route_count_text) : std::nullopt;
   if (!route_count || *route_count > next.static_routes.size())
     return {.error = "ERROR: invalid running route configuration"};
   // Clear the fixed route table in the local copy so routes omitted from the
@@ -343,16 +345,17 @@ RunningParseResult parse_running(const DeviceConfiguration &current,
     const auto network = slash == std::string_view::npos
                              ? std::nullopt
                              : parse_ipv4(route_prefix->substr(0, slash));
-    const auto prefix_length = slash == std::string_view::npos
-                                   ? std::nullopt
-                                   : integer<unsigned>(route_prefix->substr(slash + 1U));
+    const auto prefix_length =
+        slash == std::string_view::npos
+            ? std::nullopt
+            : integer<unsigned>(route_prefix->substr(slash + 1U));
     const auto next_hop = parse_ipv4(*next_hop_text);
     if (!network || !prefix_length || *prefix_length > 32 || !next_hop)
       return {.error = "ERROR: invalid running route configuration"};
     const auto network_value = routing::ipv4((*network)[0], (*network)[1],
                                              (*network)[2], (*network)[3]);
-    const auto mask = routing::prefix_mask(
-        static_cast<std::uint8_t>(*prefix_length));
+    const auto mask =
+        routing::prefix_mask(static_cast<std::uint8_t>(*prefix_length));
     // Static route prefixes are stored canonically. Host bits in the network
     // field would make show output and route matching disagree.
     if ((network_value & mask) != network_value)

@@ -13,6 +13,12 @@
 
 namespace router::routing {
 
+// The generated profile guarantees that a complete RIB generation fits. A
+// build fails instead of compiling code that could silently truncate routes.
+static_assert(profile::fib_route_capacity >=
+              profile::port_count + profile::static_route_capacity);
+static_assert(profile::fib_route_capacity <= 255U);
+
 constexpr std::uint32_t ipv4(std::uint8_t a, std::uint8_t b, std::uint8_t c,
                              std::uint8_t d) noexcept {
   return static_cast<std::uint32_t>(a) << 24 |
@@ -60,7 +66,7 @@ struct FibProgram {
   // Generation makes programming monotonic. A delayed older message cannot
   // overwrite a newer forwarding table after a topology change.
   std::uint64_t generation{};
-  std::array<Route, 8> entries{};
+  std::array<Route, profile::fib_route_capacity> entries{};
   std::uint8_t count{};
   std::array<bool, profile::port_count> port_operational{};
 };
@@ -87,7 +93,7 @@ struct RibInput {
   // RIB performs no allocation and the input may be assembled on the stack.
   std::array<ConnectedRouteInput, profile::port_count> connected{};
   std::uint8_t connected_count{};
-  std::array<StaticRouteInput, 8> statics{};
+  std::array<StaticRouteInput, profile::static_route_capacity> statics{};
 };
 
 class ConnectedRib final {
@@ -101,7 +107,7 @@ public:
   [[nodiscard]] FibProgram compile(std::uint64_t generation) const noexcept;
 
 private:
-  std::array<Route, 8> entries_{};
+  std::array<Route, profile::fib_route_capacity> entries_{};
   std::uint8_t count_{};
 };
 

@@ -10,7 +10,7 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [profiles/7750-sr-7-iom4-e.yaml, core/include/router/device.hpp, core/src/hardware.cpp]
+    implementation: [profiles/7750-sr-7-iom4-e.yaml, tools/generate-profile.mjs, core/include/router/generated_profile.hpp, packages/contracts/src/generated-profile.ts, core/include/router/device.hpp, core/src/hardware.cpp]
     tests: [core/tests/hardware_test.cpp, packages/contracts/tests/project.test.ts]
     status: implemented
     notes: Supported identities are sourced. Initialization delays remain explicitly experimental emulator profile values, not physical platform measurements.
@@ -181,7 +181,7 @@ records:
     implementation: [core/src/capture_store.cpp, core/src/runtime.cpp, core/src/wasm_api.cpp]
     tests: [core/tests/runtime_test.cpp]
     status: implemented
-    notes: Export uses nine named Ethernet IDBs for four link directions, two router ingress points, two router egress points and one CPM punt point, with microsecond timestamps and explicit capture-drop accounting.
+    notes: Export generates named Ethernet IDBs from the active profile for every link direction, router ingress, router egress and CPM punt point, with microsecond timestamps and explicit capture-drop accounting.
   - id: iana.pcap.linktype_ethernet
     kind: capture-format
     release: current
@@ -206,10 +206,10 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/CMakeLists.txt, core/src/checkpoint.cpp, core/src/runtime_checkpoint.cpp, core/src/runtime_projection.cpp, apps/web/src/runtime/runtime.worker.ts]
+    implementation: [core/CMakeLists.txt, schemas/runtime/1.yaml, schemas/checkpoint/2.yaml, core/include/router/generated_runtime_protocol.hpp, core/src/checkpoint.cpp, core/src/runtime_checkpoint.cpp, core/src/runtime_projection.cpp, core/src/wasm_api.cpp, apps/web/src/runtime/runtime.worker.ts, apps/web/src/runtime/client.ts]
     tests: [core/tests/checkpoint_test.cpp, core/tests/runtime_test.cpp]
     status: implemented
-    notes: The runtime uses a fixed pthread pool and shared Wasm memory with no single-thread fallback.
+    notes: The active profile generates the required pthread pool size and fixed shared Wasm memory budget. There is no single-thread fallback, and JavaScript obtains telemetry offsets from the compiled C++ layout.
   - id: w3c.indexeddb.persistence
     kind: browser-storage
     release: 3.0

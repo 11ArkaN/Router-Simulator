@@ -1,0 +1,18 @@
+version: 2
+byte_order: little-endian
+fields:
+  - magic
+  - checkpoint_schema_hash
+  - profile_hash
+  - hardware_deadlines
+  - running_configuration
+  - candidate_configuration
+  - hardware_inventory
+  - link_signals
+  - project_hosts
+  - project_links
+  - port_counters
+  - operational_counters
+  - arp_entries
+  - cli_session
+  - fib_generation

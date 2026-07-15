@@ -9,6 +9,8 @@
 namespace router {
 
 std::span<const std::uint8_t> Runtime::encode_checkpoint_on_control() {
+  // The forwarding barrier returns adjacency after every earlier job. Control
+  // then encodes one cross-owner consistent structural image.
   const auto barrier =
       submit_forward({.id = next_id_.fetch_add(1, std::memory_order_relaxed),
                       .kind = ForwardJobKind::checkpoint_barrier});
@@ -31,19 +33,29 @@ std::span<const std::uint8_t> Runtime::encode_checkpoint_on_control() {
 
 bool Runtime::decode_checkpoint_on_control(
     std::span<const std::uint8_t> bytes) {
+  // Decode completes into private storage, so incompatible input cannot mutate
+  // any live owner before the whole image is validated.
   auto image = checkpoint::decode(bytes);
   if (!image)
     return false;
   const auto now = std::chrono::steady_clock::now();
-  if (image->device.hardware.card.lifecycle ==
-      EquipmentLifecycle::initializing) {
-    image->device.hardware.card.deadline =
-        now + std::chrono::nanoseconds(image->card_remaining_ns);
-  }
-  if (image->device.hardware.mda.lifecycle ==
-      EquipmentLifecycle::initializing) {
-    image->device.hardware.mda.deadline =
-        now + std::chrono::nanoseconds(image->mda_remaining_ns);
+  // Remaining initialization durations are rebased to this process clock.
+  // Absolute steady-clock timestamps are never portable across sessions.
+  for (std::size_t card_index = 0;
+       card_index < image->device.hardware.cards.size(); ++card_index) {
+    auto &card = image->device.hardware.cards[card_index];
+    if (card.equipment.lifecycle == EquipmentLifecycle::initializing) {
+      card.equipment.deadline =
+          now + std::chrono::nanoseconds(image->card_remaining_ns[card_index]);
+    }
+    for (std::size_t mda_index = 0; mda_index < card.mdas.size(); ++mda_index) {
+      auto &mda = card.mdas[mda_index];
+      const auto flat = card_index * profile::mda_slots_per_card + mda_index;
+      if (mda.equipment.lifecycle == EquipmentLifecycle::initializing) {
+        mda.equipment.deadline =
+            now + std::chrono::nanoseconds(image->mda_remaining_ns[flat]);
+      }
+    }
   }
 
   const auto network = project::network_configuration(
@@ -56,6 +68,8 @@ bool Runtime::decode_checkpoint_on_control(
     return false;
 
   std::array<NetworkArpEntry, profile::port_count> restored{};
+  // Only completed adjacency values cross restore. Pending packets, pool
+  // handles and request flags deliberately do not exist in the checkpoint.
   for (std::size_t index = 0; index < restored.size(); ++index) {
     const auto &entry = image->device.operational.arp[index];
     restored[index] = {.valid = entry.valid,
@@ -71,6 +85,8 @@ bool Runtime::decode_checkpoint_on_control(
     return false;
 
   state_ = image->device;
+  // Publish control-owned aggregates only after forwarding accepted both the
+  // topology generation and adjacency value projection.
   session_ = image->session;
   fib_generation_ = image->fib_generation;
   const auto hardware_result = hardware::reconcile(

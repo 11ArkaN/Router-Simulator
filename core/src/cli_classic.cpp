@@ -11,6 +11,7 @@
 namespace router::cli_detail {
 namespace {
 
+// Parses unsigned CLI leaves without accepting signs or trailing characters.
 std::optional<unsigned> unsigned_value(std::string_view text) {
   unsigned value{};
   const auto result =
@@ -23,6 +24,8 @@ std::optional<unsigned> unsigned_value(std::string_view text) {
 std::optional<std::size_t>
 exact_interface(const DeviceConfiguration &configuration,
                 std::string_view name) {
+  // Classic execution still requires an exact generated interface identity;
+  // tokenizer abbreviations apply to literals, not arbitrary variable values.
   name = unquote(name);
   for (std::size_t index = 0; index < configuration.interface_count; ++index) {
     if (configuration.interfaces[index].valid &&
@@ -32,6 +35,7 @@ exact_interface(const DeviceConfiguration &configuration,
   return std::nullopt;
 }
 
+// Confirms external slot and type against the active generated card capability.
 bool profile_card(const ParsedCommand &command) {
   const auto slot = argument(command, cli_schema::TokenKind::card_slot);
   const auto type = argument(command, cli_schema::TokenKind::card_type);
@@ -39,17 +43,20 @@ bool profile_card(const ParsedCommand &command) {
          *type == profile::line_card_type;
 }
 
+// Validates the generated line-card slot for immediate removal operations.
 bool profile_card_slot(const ParsedCommand &command) {
   const auto slot = argument(command, cli_schema::TokenKind::card_slot);
   return slot && *slot == std::to_string(profile::line_card_slot);
 }
 
+// Validates the generated parent and child location for MDA removal.
 bool profile_mda_slot(const ParsedCommand &command) {
   const auto slot = argument(command, cli_schema::TokenKind::mda_slot);
   return profile_card_slot(command) && slot &&
          *slot == std::to_string(profile::mda_slot);
 }
 
+// Validates the only provisionable MDA type in this release profile.
 bool profile_mda(const ParsedCommand &command) {
   const auto card_slot = argument(command, cli_schema::TokenKind::card_slot);
   const auto mda_slot = argument(command, cli_schema::TokenKind::mda_slot);
@@ -64,8 +71,9 @@ bool profile_mda(const ParsedCommand &command) {
 } // namespace
 
 std::string execute_classic(ConfigurationState &configuration,
-                            CliSession &session,
-                            const ParsedCommand &command) {
+                            CliSession &session, const ParsedCommand &command) {
+  // Classic commands update running immediately. finish() synchronizes or
+  // invalidates the shared MD candidate after each real state change.
   using enum cli_schema::CommandId;
   auto &running = configuration.running;
   const auto finish = [&](bool changed, const char *message) {
@@ -76,39 +84,43 @@ std::string execute_classic(ConfigurationState &configuration,
   switch (command.spec->id) {
   case help:
   case help_question:
-    return "show | configure | //";
+    // Public dispatch resolves schema-derived help before entering the engine.
+    // This branch only keeps the internal switch exhaustive.
+    return {};
   case configure_card_type: {
     if (!profile_card(command))
       return "Error: Bad command.";
-    const bool changed = !running.card_provisioned;
-    running.card_provisioned = true;
-    return finish(changed, "Card 1 provisioned");
+    const bool changed = !router::profile_card(running).type;
+    router::profile_card(running).type = profile::line_card_type;
+    return finish(changed, "Card provisioned");
   }
   case classic_remove_card_type: {
     if (!profile_card_slot(command))
       return "Error: Bad command.";
-    const bool changed = running.card_provisioned || running.mda_provisioned;
-    running.card_provisioned = false;
-    running.mda_provisioned = false;
-    return finish(changed, "Card 1 provisioning removed");
+    const bool changed =
+        router::profile_card(running).type || router::profile_mda(running).type;
+    router::profile_card(running).type = nullptr;
+    router::profile_mda(running).type = nullptr;
+    return finish(changed, "Card provisioning removed");
   }
   case configure_mda_type: {
-    if (!profile_mda(command) || !running.card_provisioned)
+    if (!profile_mda(command) || !router::profile_card(running).type)
       return "Error: Bad command.";
-    const bool changed = !running.mda_provisioned;
-    running.mda_provisioned = true;
-    return finish(changed, "MDA 1/1 provisioned");
+    const bool changed = !router::profile_mda(running).type;
+    router::profile_mda(running).type = profile::modeled_mda_type;
+    return finish(changed, "MDA provisioned");
   }
   case classic_remove_mda_type: {
     if (!profile_mda_slot(command))
       return "Error: Bad command.";
-    const bool changed = running.mda_provisioned;
-    running.mda_provisioned = false;
-    return finish(changed, "MDA 1/1 provisioning removed");
+    const bool changed = router::profile_mda(running).type;
+    router::profile_mda(running).type = nullptr;
+    return finish(changed, "MDA provisioning removed");
   }
   case configure_system_name: {
     const auto before = running.system_name;
-    const auto name = unquote(*argument(command, cli_schema::TokenKind::system_name));
+    const auto name =
+        unquote(*argument(command, cli_schema::TokenKind::system_name));
     if (name.empty() || !copy_config_text(running.system_name, name))
       return "Error: Bad command.";
     return finish(before != running.system_name, "System name updated");
@@ -117,9 +129,10 @@ std::string execute_classic(ConfigurationState &configuration,
   case classic_port_no_shutdown:
   case classic_port_description:
   case classic_port_mtu: {
-    if (!running.mda_provisioned)
+    if (!router::profile_mda(running).type)
       return "Error: Bad command.";
-    const auto index = port_index(*argument(command, cli_schema::TokenKind::port_id));
+    const auto index =
+        port_index(*argument(command, cli_schema::TokenKind::port_id));
     if (!index)
       return "Error: Bad command.";
     const auto before = running.ports[*index];
@@ -128,12 +141,15 @@ std::string execute_classic(ConfigurationState &configuration,
         command.spec->id == classic_port_no_shutdown) {
       port.admin_enabled = command.spec->id == classic_port_no_shutdown;
     } else if (command.spec->id == classic_port_description) {
-      const auto value = unquote(*argument(command, cli_schema::TokenKind::description));
+      const auto value =
+          unquote(*argument(command, cli_schema::TokenKind::description));
       if (!copy_config_text(port.description, value))
         return "Error: Bad command.";
     } else {
-      const auto mtu = unsigned_value(*argument(command, cli_schema::TokenKind::mtu));
-      if (!mtu || *mtu < 576 || *mtu > 1500)
+      const auto mtu =
+          unsigned_value(*argument(command, cli_schema::TokenKind::mtu));
+      if (!mtu || *mtu < profile::minimum_port_mtu ||
+          *mtu > profile::maximum_port_mtu)
         return "Error: Bad command.";
       port.mtu = static_cast<std::uint16_t>(*mtu);
     }

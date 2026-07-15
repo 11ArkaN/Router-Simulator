@@ -10,10 +10,13 @@
 
 namespace router {
 
+// Reserve the complete bounded record arena before packet observation starts.
 CaptureStore::CaptureStore() { records_.reserve(capacity); }
 
 bool CaptureStore::record(std::uint8_t interface_id, const packet::Frame &frame,
                           std::uint64_t timestamp_us) {
+  // Capacity exhaustion is explicit tail drop. Existing records remain stable
+  // and forwarding never blocks on capture memory.
   if (records_.size() == capacity)
     return false;
   records_.push_back({timestamp_us, interface_id, frame});
@@ -34,10 +37,12 @@ void CaptureStore::encode() {
   prepared_.clear();
   prepared_.reserve(size);
   const auto put16 = [this](std::uint16_t value) {
+    // PCAPNG fields are emitted little-endian independently of host byte order.
     prepared_.push_back(static_cast<std::uint8_t>(value));
     prepared_.push_back(static_cast<std::uint8_t>(value >> 8));
   };
   const auto put32 = [this](std::uint32_t value) {
+    // Shifted byte output avoids unaligned integer stores into vector storage.
     for (int shift = 0; shift < 32; shift += 8) {
       prepared_.push_back(static_cast<std::uint8_t>(value >> shift));
     }
@@ -51,6 +56,7 @@ void CaptureStore::encode() {
   put32(0xffffffffU);
   put32(28);
   for (const auto *name : profile::capture_interface_names) {
+    // Each generated observation point receives one IDB with its stable name.
     const auto length = std::char_traits<char>::length(name);
     const auto padded = (length + 3U) & ~std::size_t{3U};
     const auto total = static_cast<std::uint32_t>(28U + padded);
@@ -58,7 +64,7 @@ void CaptureStore::encode() {
     put32(total);
     put16(1);
     put16(0);
-    put32(1514);
+    put32(static_cast<std::uint32_t>(packet::maximum_frame_octets));
     put16(2);
     put16(static_cast<std::uint16_t>(length));
     prepared_.insert(prepared_.end(), name, name + length);
@@ -68,6 +74,8 @@ void CaptureStore::encode() {
     put32(total);
   }
   for (const auto &record : records_) {
+    // Enhanced Packet Blocks preserve captured length, original frame length,
+    // microsecond timestamp and observation interface without packet parsing.
     const auto padded = (record.frame.size() + 3U) & ~std::size_t{3U};
     const auto total = static_cast<std::uint32_t>(32U + padded);
     put32(6);

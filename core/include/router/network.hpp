@@ -91,9 +91,10 @@ public:
       const std::array<NetworkArpEntry, profile::port_count> &entries) noexcept;
   [[nodiscard]] std::array<NetworkArpEntry, profile::port_count>
   adjacencies() const noexcept;
-  [[nodiscard]] NetworkResult ping(PingOrigin origin, std::uint16_t sequence,
-                                   CaptureObserver observer,
-                                   void *observer_context) noexcept;
+  [[nodiscard]] NetworkResult
+  ping(PingOrigin origin, std::uint8_t source_endpoint,
+       packet::Ipv4 destination, std::uint16_t sequence,
+       CaptureObserver observer, void *observer_context) noexcept;
 
 private:
   // PIMPL prevents packet pool and queue storage from leaking into runtime

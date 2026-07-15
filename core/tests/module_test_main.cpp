@@ -12,6 +12,8 @@ void project_configuration_tests();
 
 int main() {
   try {
+    // Run low-level suites in dependency order. A thrown failure stops before a
+    // higher layer can obscure which standalone contract was violated.
     checkpoint_tests();
     hardware_tests();
     network_tests();
@@ -19,6 +21,8 @@ int main() {
     std::cout << "module tests passed\n";
     return 0;
   } catch (const std::exception &error) {
+    // CTest treats the nonzero exit as failure and preserves the focused module
+    // diagnostic written by the suite that detected the broken invariant.
     std::cerr << error.what() << '\n';
     return 1;
   }

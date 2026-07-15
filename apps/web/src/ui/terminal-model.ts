@@ -1,3 +1,8 @@
+// DOM-independent terminal editor, pager and bounded byte queue. xterm renders
+// these values but does not own CLI session semantics or router prompts.
+
+import { GENERATED_PROFILE } from "@router-simulator/contracts";
+
 export class TerminalLineEditor {
   // This model owns only local keystroke editing. Router session state, current
   // CLI engine and configuration remain in C++. Keeping editing deterministic
@@ -8,7 +13,7 @@ export class TerminalLineEditor {
   // Source: nokia.sros.26_7.md_cli.navigation. The default MD-CLI per-session
   // history size is 50. Bounding the local keystroke projection also prevents
   // an indefinitely open browser tab from retaining every submitted line.
-  private static readonly historyLimit = 50;
+  private static readonly historyLimit = GENERATED_PROFILE.cliDefaults.history_entries;
 
   get value(): string { return this.buffer; }
 
@@ -58,7 +63,9 @@ export class TerminalInputQueue {
   // the adapter then disables stdin to apply visible backpressure.
   private readonly chunks: Array<{ text: string; bytes: number }> = [];
   private used = 0;
-  constructor(private readonly capacity = 64 * 1024) {}
+  // Capacity is supplied by the active generated runtime profile. Requiring it
+  // here prevents a second browser-only mailbox limit from drifting.
+  constructor(private readonly capacity: number) {}
 
   push(text: string): boolean {
     const bytes = new TextEncoder().encode(text).byteLength;

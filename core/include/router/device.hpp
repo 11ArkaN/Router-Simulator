@@ -6,10 +6,12 @@
 
 #include "router/generated_profile.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 namespace router {
 
@@ -28,8 +30,9 @@ struct PortConfiguration {
   // can therefore be copied between running and candidate atomically on the
   // control shard without copying runtime observations.
   bool admin_enabled{true};
-  std::uint16_t mtu{1500};
-  std::array<char, 65> description{};
+  std::uint16_t mtu{profile::default_port_mtu};
+  // One extra byte guarantees NUL termination for CLI and JSON projections.
+  std::array<char, profile::port_description_bytes + 1U> description{};
   bool operator==(const PortConfiguration &) const = default;
 };
 
@@ -56,21 +59,39 @@ struct StaticRouteConfiguration {
   bool operator==(const StaticRouteConfiguration &) const = default;
 };
 
+struct MdaConfiguration {
+  // A null type means that the slot is not provisioned. The pointer always
+  // targets generated profile storage, so candidate copies retain stable
+  // identity without allocating or owning text.
+  const char *type{};
+  bool admin_enabled{true};
+};
+
+struct CardConfiguration {
+  // Card and MDA slots are fixed-capacity profile resources. Adding another
+  // modeled slot changes generated dimensions instead of the configuration
+  // object layout by hand.
+  const char *type{};
+  bool admin_enabled{true};
+  std::array<MdaConfiguration, profile::mda_slots_per_card> mdas{};
+};
+
 struct DeviceConfiguration {
   // Provisioning is configuration, while presence and lifecycle belong to
   // HardwareState. Keeping them separate prevents a CLI command from equipping
   // hardware or a physical action from silently changing running config.
-  bool card_provisioned{};
-  bool mda_provisioned{};
-  bool card_admin_enabled{true};
-  bool mda_admin_enabled{true};
-  std::array<char, 65> system_name{'R', '1', '\0'};
+  std::array<CardConfiguration, profile::chassis_slots> cards{};
+  std::array<char, profile::system_name_bytes + 1U> system_name{};
   std::array<PortConfiguration, profile::port_count> ports{};
   std::array<InterfaceConfiguration, profile::port_count> interfaces{};
   std::uint8_t interface_count{};
-  std::array<StaticRouteConfiguration, 8> static_routes{};
+  std::array<StaticRouteConfiguration, profile::static_route_capacity>
+      static_routes{};
 
   DeviceConfiguration() noexcept {
+    std::copy_n(profile::default_system_name,
+                std::char_traits<char>::length(profile::default_system_name),
+                system_name.begin());
     // The initial routed interfaces are profile data, not a two-port limit in
     // the model. Remaining fixed-capacity slots can be filled by later CLI
     // commands without changing the configuration ABI or reallocating storage.
@@ -85,7 +106,7 @@ struct DeviceConfiguration {
                            .ipv4 = profile::router_addresses[index],
                            .network = profile::router_networks[index],
                            .prefix_length = profile::host_prefix_lengths[index],
-                           .port_index = static_cast<std::uint8_t>(index),
+                           .port_index = profile::interface_port_indices[index],
                            .admin_enabled = true};
     }
   }
@@ -100,18 +121,28 @@ struct ConfigurationState {
 };
 
 struct EquipmentState {
-  bool present{};
-  bool compatible{true};
   EquipmentLifecycle lifecycle{EquipmentLifecycle::absent};
   const char *reason{"not-equipped"};
   std::chrono::steady_clock::time_point deadline{};
 };
 
+struct MdaHardwareState {
+  EquipmentState equipment{};
+  const char *type{};
+  bool compatible{true};
+};
+
+struct CardHardwareState {
+  EquipmentState equipment{};
+  const char *type{};
+  bool compatible{true};
+  std::array<MdaHardwareState, profile::mda_slots_per_card> mdas{};
+};
+
 struct HardwareState {
   // Physical carrier is stored for every port the equipped profile can expose.
   // Topology updates change this array through control and never mutate config.
-  EquipmentState card{};
-  EquipmentState mda{};
+  std::array<CardHardwareState, profile::chassis_slots> cards{};
   std::array<bool, profile::port_count> link_signal{};
 };
 
@@ -124,7 +155,7 @@ struct LabHostConfiguration {
 
 struct LabLinkConfiguration {
   // A link binds one endpoint to a router port. Forwarding builds directions
-  // from these values instead of relying on host-a and host-b enum constants.
+  // from these values instead of relying on topology-specific endpoint enums.
   bool connected{};
   std::uint8_t router_port{};
   std::chrono::nanoseconds propagation{profile::default_link_propagation};
@@ -143,7 +174,7 @@ struct ProjectState {
                       profile::host_prefix_lengths[index],
                       profile::host_gateways[index]};
       links[index] = {.connected = true,
-                      .router_port = static_cast<std::uint8_t>(index),
+                      .router_port = profile::link_port_indices[index],
                       .propagation = profile::default_link_propagation};
     }
   }
@@ -181,6 +212,40 @@ struct OperationalState {
   const char *last_drop_reason{};
 };
 
+// These accessors translate the active profile's external slot numbers to
+// zero-based storage exactly once. Modules never encode slot 1 or MDA 1/1 in
+// their own field names or array arithmetic.
+inline CardConfiguration &
+profile_card(DeviceConfiguration &configuration) noexcept {
+  return configuration.cards[profile::line_card_index];
+}
+inline const CardConfiguration &
+profile_card(const DeviceConfiguration &configuration) noexcept {
+  return configuration.cards[profile::line_card_index];
+}
+inline MdaConfiguration &
+profile_mda(DeviceConfiguration &configuration) noexcept {
+  return profile_card(configuration).mdas[profile::mda_index];
+}
+inline const MdaConfiguration &
+profile_mda(const DeviceConfiguration &configuration) noexcept {
+  return profile_card(configuration).mdas[profile::mda_index];
+}
+inline CardHardwareState &profile_card(HardwareState &hardware) noexcept {
+  return hardware.cards[profile::line_card_index];
+}
+inline const CardHardwareState &
+profile_card(const HardwareState &hardware) noexcept {
+  return hardware.cards[profile::line_card_index];
+}
+inline MdaHardwareState &profile_mda(HardwareState &hardware) noexcept {
+  return profile_card(hardware).mdas[profile::mda_index];
+}
+inline const MdaHardwareState &
+profile_mda(const HardwareState &hardware) noexcept {
+  return profile_card(hardware).mdas[profile::mda_index];
+}
+
 struct DeviceState {
   // DeviceState is the control-shard aggregate root, not a flat shared state
   // bag. Callers should accept the narrow substate they need whenever possible.
@@ -200,20 +265,22 @@ struct DeviceState {
   }
 
   [[nodiscard]] bool hardware_operational() const noexcept {
-    const auto &running = configuration.running;
-    return running.card_provisioned && running.mda_provisioned &&
-           hardware.card.present && hardware.mda.present &&
-           running.card_admin_enabled && running.mda_admin_enabled &&
-           hardware.mda.compatible &&
-           hardware.card.lifecycle == EquipmentLifecycle::ready &&
-           hardware.mda.lifecycle == EquipmentLifecycle::ready;
+    const auto &card = profile_card(configuration.running);
+    const auto &mda = profile_mda(configuration.running);
+    const auto &card_hardware = profile_card(hardware);
+    const auto &mda_hardware = profile_mda(hardware);
+    return card.type && mda.type && card_hardware.type && mda_hardware.type &&
+           card.admin_enabled && mda.admin_enabled &&
+           card_hardware.compatible && mda_hardware.compatible &&
+           card_hardware.equipment.lifecycle == EquipmentLifecycle::ready &&
+           mda_hardware.equipment.lifecycle == EquipmentLifecycle::ready;
   }
 
   [[nodiscard]] std::size_t inventory_port_count() const noexcept {
     // Port identities come from equipped compatible hardware. Removing an MDA
     // hides its ports but retains running config for later reinsertion.
-    return hardware.mda.present && hardware.mda.compatible ? profile::port_count
-                                                           : 0U;
+    const auto &mda = profile_mda(hardware);
+    return mda.type && mda.compatible ? profile::port_count : 0U;
   }
 
   [[nodiscard]] bool port_operational(std::size_t index) const noexcept {

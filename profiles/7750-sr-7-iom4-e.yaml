@@ -4,6 +4,9 @@ nos: SR OS
 release: 26.7.R1
 reference_date: 2026-07-09
 chassis: 7750 SR-7
+chassis_slots: 5
+system:
+  default_name: R1
 control:
   slot: A
   card: cpm5
@@ -16,6 +19,7 @@ line_card:
   timing_status: experimental
 mda:
   slot: 1
+  slots_per_card: 1
   modeled_type: me10-10gb-sfp+
   supported:
     - me10-10gb-sfp+
@@ -27,6 +31,9 @@ forwarding_complexes: 1
 ports:
   count: 10
   speed_mbps: 10000
+  default_mtu: 1500
+  minimum_mtu: 576
+  maximum_mtu: 1500
   modeled:
     - 1/1/1
     - 1/1/2
@@ -52,6 +59,62 @@ hosts:
     mac: "02:00:00:00:00:0B"
     address: 198.51.100.2/30
     gateway: 198.51.100.1
+links:
+  - id: host-a-r1
+    host: host-a
+    router_port: 1/1/1
+  - id: r1-host-b
+    host: host-b
+    router_port: 1/1/2
+ui_defaults:
+  router_id: r1
+  inspector_width: 324
+  terminal_height: 240
+  nodes:
+    host-a: { x: 72, y: 170 }
+    r1: { x: 410, y: 170 }
+    host-b: { x: 748, y: 170 }
+resources:
+  runtime_worker_count: 2
+  command_message_bytes: 1024
+  response_message_bytes: 16384
+  static_route_capacity: 8
+  fib_route_capacity: 18
+  packet_pool_bytes: 67108864
+  capture_memory_bytes: 33554432
+  # TX and RX queues are device buffers owned by one forwarding shard. Their
+  # capacity is independent from frames already admitted onto the medium.
+  link_queue_frames: 256
+  link_inflight_frames: 2048
+  adjacency_pending_frames: 8
+  command_ring_capacity: 64
+  response_ring_capacity: 8
+  forwarding_ring_capacity: 16
+  cli_input_queue_bytes: 65536
+  wasm_initial_memory_bytes: 268435456
+timing:
+  ping_timeout_milliseconds: 2000
+  telemetry_interval_milliseconds: 250
+  equipment_poll_milliseconds: 250
+  worker_shutdown_milliseconds: 250
+  worker_startup_poll_milliseconds: 10
+  worker_startup_attempts: 200
+  telemetry_read_attempts: 4
+  autosave_debounce_milliseconds: 400
+limits:
+  system_name_bytes: 64
+  port_description_bytes: 64
+  host_name_bytes: 64
+  project_name_bytes: 128
+cli_defaults:
+  ping_count: 5
+  ping_max_count: 100
+  history_entries: 50
+abi:
+  runtime_snapshot: 3
+  telemetry: 3
+  runtime_messages: 1
+  checkpoint: 2
 link_defaults:
   # Propagation belongs to the cable or circuit, not to the Nokia port. The
   # project copies this value into each new physical link and may override it

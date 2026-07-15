@@ -1,6 +1,7 @@
 #pragma once
 
 #include "router/bounded_queue.hpp"
+#include "router/generated_profile.hpp"
 #include "router/packet.hpp"
 
 #include <algorithm>
@@ -112,7 +113,7 @@ private:
   // would limit a 10 Gb/s link to roughly one frame per millisecond.
   std::chrono::nanoseconds propagation_;
   std::chrono::steady_clock::time_point transmitter_available_{};
-  BoundedQueue<InFlight, 2048> in_flight_;
+  BoundedQueue<InFlight, profile::link_inflight_capacity> in_flight_;
 };
 
 } // namespace router

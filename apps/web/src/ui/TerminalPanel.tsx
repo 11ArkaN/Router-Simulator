@@ -6,19 +6,24 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { paginateTerminal, TerminalInputQueue, TerminalLineEditor } from "./terminal-model";
 import { GENERATED_PROFILE } from "@router-simulator/contracts";
+import type { TerminalState } from "../runtime/client";
 
 interface Props {
   ready: boolean;
+  systemName: string;
   execute(command: string): Promise<string>;
   complete(input: string): Promise<string>;
+  state(): Promise<TerminalState>;
 }
 
-export function TerminalPanel({ ready, execute, complete }: Props) {
+export function TerminalPanel({ ready, systemName, execute, complete, state }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const executeRef = useRef(execute);
   const completeRef = useRef(complete);
+  const stateRef = useRef(state);
   executeRef.current = execute;
   completeRef.current = complete;
+  stateRef.current = state;
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -42,21 +47,27 @@ export function TerminalPanel({ ready, execute, complete }: Props) {
     const fit = new FitAddon();
     terminal.loadAddon(fit);
     terminal.open(hostRef.current);
-    terminal.writeln(`SR OS ${GENERATED_PROFILE.release}  |  ${GENERATED_PROFILE.chassis}  |  session R1`);
-    terminal.write("[ex:/]\r\nA:admin@R1# ");
 
     // xterm.js owns rendering only. The session owner remains C++, while this
     // adapter translates byte-level editing keys into complete command lines.
     // History is local terminal ergonomics and cannot mutate router state.
     const editor = new TerminalLineEditor();
     let busy = false;
-    const queuedInput = new TerminalInputQueue();
-    let engineName: "MD-CLI" | "classic CLI" = "MD-CLI";
+    const queuedInput = new TerminalInputQueue(GENERATED_PROFILE.resources.cli_input_queue_bytes);
+    let sessionState: TerminalState | undefined;
     let pages: string[][] = [];
     let pageIndex = 0;
 
-    const prompt = () => engineName === "MD-CLI" ? "A:admin@R1# " : "A:R1# ";
+    const prompt = () => sessionState?.prompt.replace(/^\n/, "") ?? "";
     const redraw = () => terminal.write(`\r\x1b[2K${prompt()}${editor.value}`);
+
+    if (ready) {
+      void stateRef.current().then((next) => {
+        sessionState = next;
+        terminal.writeln(next.banner);
+        terminal.write(next.prompt.replaceAll("\n", "\r\n").replace(/^\r\n/, ""));
+      }).catch((cause) => console.error("Console session startup failed", cause));
+    }
 
     const writePage = () => {
       // Paging is a presentation boundary, not a CLI command retry. The full
@@ -122,9 +133,10 @@ export function TerminalPanel({ ready, execute, complete }: Props) {
         const submitted = editor.submit();
         try {
           const output = await executeRef.current(submitted);
-          if (submitted.trim() === "//") {
-            engineName = engineName === "MD-CLI" ? "classic CLI" : "MD-CLI";
-          }
+          // The backend may change engine, prompt markers or system name while
+          // executing. Refreshing state prevents the renderer from predicting
+          // any of those router-owned semantics.
+          sessionState = await stateRef.current();
           writePaged(output);
         } catch (cause) {
           // Transport diagnostics belong in developer tools. The router
@@ -183,7 +195,7 @@ export function TerminalPanel({ ready, execute, complete }: Props) {
   return (
     <section className="terminal-panel">
       <div className="terminal-head">
-        <div>R1 console</div>
+        <div>{systemName} console</div>
       </div>
       <div className="terminal-host" ref={hostRef} />
     </section>

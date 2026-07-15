@@ -1,3 +1,5 @@
+/* Application layout mirrors the approved router-lab render. CSS owns visual
+   scaling only and never derives or invents operational network state. */
 :root {
   font-family: "Bahnschrift", "Segoe UI", sans-serif;
   color: #c5ced2;
@@ -19,6 +21,8 @@ html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 button, input { font: inherit; }
 button { color: inherit; }
 
+/* Three desktop columns keep the library, canvas and inspector independent.
+   minmax on the center prevents the right inspector from being clipped. */
 .app-shell {
   display: grid;
   grid-template-columns: 194px minmax(620px, 1fr) 324px;
@@ -29,6 +33,8 @@ button { color: inherit; }
   background: #091118;
 }
 
+/* Header tracks the same column boundaries as the content grid so controls
+   stay aligned while the center canvas absorbs viewport width changes. */
 .topbar {
   grid-column: 1 / 4;
   display: grid;
@@ -63,7 +69,12 @@ button { color: inherit; }
 .more-action { padding: 0 15px; font-size: 20px; }
 .top-actions button:hover { background: #13212a; }
 
+/* display: contents lets children share the application grid without a second
+   competing layout context. */
 .workspace { display: contents; }
+
+/* The left library is fixed navigation. Its footer stays reachable because the
+   central canvas, rather than this column, absorbs excess layout pressure. */
 .library {
   grid-column: 1;
   grid-row: 2 / 4;
@@ -98,7 +109,12 @@ button { color: inherit; }
 .side-footer button { height: 57px; border-bottom: 1px solid #26353e; font-size: 12px; }
 .side-footer button b { margin-left: auto; font-weight: 400; }
 
+/* Zero intrinsic minima prevent topology content from pushing the inspector
+   beyond the viewport edge. */
 .center-stage { grid-column: 2; grid-row: 2; position: relative; min-width: 0; min-height: 0; border-bottom: 1px solid var(--line); }
+
+/* React Flow fills only the center cell. Operational colors arrive as classes
+   from validated runtime projections. */
 .topology { position: absolute; inset: 0; background: #0d1c25; }
 .topology::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at center, transparent 20%, rgba(3, 10, 14, .25) 100%); }
 .react-flow__pane { cursor: default; }
@@ -124,6 +140,8 @@ button { color: inherit; }
 .react-flow__handle { width: 8px; height: 8px; border: 1px solid #9eefff; background: #d8f9ff; }
 .runtime-error { position: absolute; z-index: 10; top: 70px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; width: min(520px, 85%); padding: 12px 14px; border: 1px solid #73443e; background: #2a1717ee; color: #efaaa4; font-size: 11px; }
 
+/* Inspector owns its scroll container across canvas and terminal rows. This
+   keeps every hardware control reachable on short screens. */
 .inspector { grid-column: 3; grid-row: 2 / 4; overflow: auto; min-height: 0; background: linear-gradient(110deg, #0d1921, #0b1720); border-left: 1px solid var(--line); }
 .inspector-title { display: flex; justify-content: space-between; min-height: 68px; padding: 13px 15px 8px; }
 .inspector-title h2 { display: flex; align-items: center; gap: 9px; margin: 0; color: #f1f5f6; font-size: 18px; font-weight: 500; }
@@ -159,6 +177,8 @@ button { color: inherit; }
 .inspector input { width: 100%; height: 34px; margin-top: 6px; padding: 0 9px; border: 1px solid #33434c; outline: 0; color: #ccd5d8; background: #09151c; font: 11px "Cascadia Mono", monospace; }
 .inspector input:focus { border-color: var(--blue); }
 
+/* xterm receives a stable flex height and performs its own cell measurement.
+   Transforms never scale terminal pixels or change keyboard geometry. */
 .terminal-panel { grid-column: 2; grid-row: 3; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #050d12; }
 .terminal-head { display: flex; align-items: center; height: 45px; flex: 0 0 45px; border-bottom: 1px solid #28353c; background: #071117; }
 .terminal-head > div:first-child { display: flex; align-items: center; gap: 8px; align-self: stretch; padding: 0 15px; border-bottom: 2px solid var(--blue); color: #e0e6e8; font-size: 13px; }
@@ -222,6 +242,8 @@ button { color: inherit; }
   .hardware-slot { padding-inline: 11px; }
 }
 
+/* Capture view remains a bounded projection and export surface. It never adds
+   one React element per observed frame. */
 .capture-workspace {
   align-self: stretch;
   background: #111615;

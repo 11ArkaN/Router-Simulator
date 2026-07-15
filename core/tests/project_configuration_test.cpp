@@ -57,7 +57,8 @@ void project_configuration_tests() {
   if (router::project::parse_running(current, "project:running|9:truncated")
           .success) {
     // A declared byte length must never read beyond the received command.
-    throw std::runtime_error("Running configuration accepted a truncated field");
+    throw std::runtime_error(
+        "Running configuration accepted a truncated field");
   }
 
   // Empty fields consume no payload bytes, so field count needs its own bound
