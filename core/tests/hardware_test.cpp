@@ -4,6 +4,7 @@
 #include "router/hardware.hpp"
 
 #include <stdexcept>
+#include <string_view>
 
 void hardware_tests() {
   // Configuration expresses desired equipment while HardwareState represents
@@ -46,8 +47,8 @@ void hardware_tests() {
     throw std::runtime_error("MDA initialization did not follow ready card");
   }
 
-  // The final reconciliation exposes all modeled ports. Only the two signaled
-  // links are up, so remaining ports must contribute explicit alarms.
+  // The final reconciliation exposes every modeled port. A port that has
+  // never been Up does not raise linkDown merely because carrier is absent.
   const auto mda_ready = router::hardware::reconcile(
       configuration.running, hardware, operational,
       origin + router::profile::card_initialization +
@@ -56,9 +57,48 @@ void hardware_tests() {
       !router::hardware::operational(configuration.running, hardware) ||
       router::hardware::inventory_port_count(hardware) !=
           router::profile::port_count ||
-      operational.alarm_count != router::profile::port_count - 2) {
+      operational.alarm_count != 0) {
     throw std::runtime_error(
-        "Hardware did not expose or alarm every profile port");
+        "Hardware inventory or facility-alarm separation is invalid");
+  }
+
+  // Facility alarm 59-2004-1 represents a real Up-to-Down transition. It is a
+  // Warning by default and clears when the operator administratively disables
+  // the port, because that down state is then deliberate.
+  hardware.link_signal[0] = false;
+  const auto link_down = router::hardware::reconcile(
+      configuration.running, hardware, operational,
+      origin + router::profile::card_initialization +
+          router::profile::mda_initialization);
+  (void)link_down;
+  if (operational.alarm_count != 1 ||
+      std::string_view{operational.alarms[0].code} != "59-2004-1" ||
+      std::string_view{operational.alarms[0].severity} != "warning") {
+    throw std::runtime_error("linkDown transition alarm was not preserved");
+  }
+  configuration.running.ports[0].admin_enabled = false;
+  const auto admin_down = router::hardware::reconcile(
+      configuration.running, hardware, operational,
+      origin + router::profile::card_initialization +
+          router::profile::mda_initialization);
+  (void)admin_down;
+  if (operational.alarm_count != 0 || operational.port_link_alarm_active[0]) {
+    throw std::runtime_error("Administrative shutdown did not clear linkDown");
+  }
+
+  // The CHASSIS event catalog assigns different default severities to removal
+  // and wrong-type insertion. Mismatch is MINOR even though removal is MAJOR.
+  router::profile_mda(hardware).type = router::profile::supported_mda_types[1];
+  router::profile_mda(configuration.running).admin_enabled = true;
+  const auto mismatch = router::hardware::reconcile(
+      configuration.running, hardware, operational,
+      origin + router::profile::card_initialization +
+          router::profile::mda_initialization);
+  (void)mismatch;
+  if (operational.alarm_count != 1 ||
+      std::string_view{operational.alarms[0].code} != "7-2004-1" ||
+      std::string_view{operational.alarms[0].severity} != "minor") {
+    throw std::runtime_error("Wrong-card alarm did not retain MINOR severity");
   }
   // Reconciliation receives no candidate reference. This assertion guards the
   // datastore boundary against future broad DeviceState parameters.

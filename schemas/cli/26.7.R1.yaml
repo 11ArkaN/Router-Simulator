@@ -1,6 +1,82 @@
 schema_version: 1
 release: 26.7.R1
 
+# Parameter labels are release grammar and must match the vocabulary shown by
+# router help. Keeping them beside commands prevents C++ and React from
+# inventing user-visible names for YANG keys and operational arguments.
+parameters:
+  card_slot: { display: "<slot-number>", description: "Card slot number" }
+  mda_slot: { display: "<mda-number>", description: "MDA slot number" }
+  card_type: { display: "<card-type>", description: "Card type" }
+  mda_type: { display: "<mda-type>", description: "MDA type" }
+  port_id: { display: "<port-id>", description: "Physical port identifier" }
+  interface_name: { display: "<interface-name>", description: "Router interface name" }
+  ipv4: { display: "<ip-address>", description: "IPv4 address in dotted-decimal notation" }
+  ipv4_key: { display: '"<ip-address>"', description: "Quoted IPv4 next-hop key" }
+  ipv4_prefix: { display: "<ip-prefix/prefix-length>", description: "IPv4 prefix and prefix length" }
+  count: { display: "<number>", description: "Number of echo requests" }
+  mtu: { display: "<bytes>", description: "Ethernet MTU in bytes" }
+  levels: { display: "<number>", description: "Number of parent levels" }
+  system_name: { display: "<system-name>", description: "System name" }
+  description: { display: "<description>", description: "Description text" }
+
+# Question-mark help descriptions are release data. The renderer receives them
+# from generated TokenSpec rows and never invents help text in React.
+literals:
+  '"Base"': "Base router instance"
+  '/': "Navigate to the root context"
+  '//': "Switch to the other CLI engine"
+  '\': "Navigate to the classic operational root"
+  '}': "Navigate to the parent MD-CLI context"
+  admin-state: "Configure administrative state"
+  alarms: "Display facility alarms"
+  all: "Navigate to the operational root"
+  arp: "Display the ARP table"
+  back: "Navigate to a parent context"
+  card: "Configure or display card information"
+  card-type: "Configure the card type"
+  commit: "Commit candidate configuration changes"
+  compare: "Display candidate configuration changes"
+  configure: "Enter or address the configuration branch"
+  count: "Configure the number of echo requests"
+  delete: "Delete a candidate configuration element"
+  description: "Configure descriptive text"
+  disable: "Set the administrative state to disabled"
+  discard: "Discard candidate configuration changes"
+  edit: "Display help for line-editing keys"
+  edit-config: "Enter the explicit configuration workflow"
+  enable: "Set the administrative state to enabled"
+  ethernet: "Configure Ethernet parameters"
+  exclusive: "Use exclusive candidate configuration mode"
+  exit: "Return to a previous or parent context"
+  fib: "Display forwarding information base entries"
+  global: "Display help for global commands"
+  globals: "Display help for global commands"
+  help: "Display help for the classic CLI"
+  information: "Display system information"
+  interface: "Configure or display router interfaces"
+  mda: "Configure or display MDA information"
+  mda-type: "Configure the MDA type"
+  mtu: "Configure Ethernet MTU"
+  name: "Configure the system name"
+  next-hop: "Configure a route next hop"
+  no: "Remove configuration or negate a command"
+  ping: "Verify reachability of a remote host"
+  port: "Configure or display physical ports"
+  quit-config: "Exit explicit candidate configuration mode"
+  route: "Configure a static route entry"
+  route-table: "Display the route table"
+  route-type: "Configure the route type"
+  router: "Configure or display router information"
+  show: "Display operational information"
+  shutdown: "Administratively disable an object"
+  special-characters: "Display help for special CLI characters"
+  static-route-entry: "Configure a classic static route entry"
+  static-routes: "Configure static routes"
+  system: "Configure or display system information"
+  top: "Navigate to the top context"
+  unicast: "Select the unicast route type"
+
 # The schema contains grammar, never a startup transcript. Execution handlers
 # are selected by stable IDs while tokens and parameter providers remain data.
 commands:
@@ -9,48 +85,108 @@ commands:
     source_id: nokia.sros.26_7.md_cli.navigation
     tokens: ["//"]
   - id: help
-    engines: [md, classic]
-    source_id: nokia.sros.26_7.md_cli.command_completion
+    engines: [classic]
+    source_id: nokia.sros.26_7.classic_cli.navigation
     tokens: [help]
-  - id: help_question
-    engines: [md, classic]
-    source_id: nokia.sros.26_7.md_cli.command_completion
-    tokens: ["?"]
-  - id: show_system_information
+  - id: help_edit
+    engines: [classic]
+    source_id: nokia.sros.26_7.classic_cli.navigation
+    tokens: [help, edit]
+  - id: help_global
+    engines: [classic]
+    source_id: nokia.sros.26_7.classic_cli.navigation
+    tokens: [help, global]
+  - id: help_globals
+    engines: [classic]
+    source_id: nokia.sros.26_7.classic_cli.navigation
+    tokens: [help, globals]
+  - id: help_special_characters
+    engines: [classic]
+    source_id: nokia.sros.26_7.classic_cli.navigation
+    tokens: [help, special-characters]
+  # Navigation is executable CLI behavior, so it is generated from the release
+  # schema instead of being recognized by string comparisons in the dispatcher.
+  - id: navigate_back
     engines: [md, classic]
     source_id: nokia.sros.26_7.md_cli.navigation
+    tokens: [back]
+  - id: navigate_back_levels
+    engines: [md]
+    source_id: nokia.sros.26_7.md_cli.navigation
+    tokens: [back, { parameter: levels }]
+  - id: navigate_closing_brace
+    engines: [md]
+    source_id: nokia.sros.26_7.md_cli.navigation
+    tokens: ["}"]
+  - id: navigate_exit
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.md_cli.navigation
+    tokens: [exit]
+  - id: navigate_exit_all
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.md_cli.navigation
+    tokens: [exit, all]
+  - id: navigate_top
+    engines: [md]
+    source_id: nokia.sros.26_7.md_cli.navigation
+    tokens: [top]
+  - id: navigate_root
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.md_cli.navigation
+    tokens: ["/"]
+  - id: navigate_classic_root
+    engines: [classic]
+    source_id: nokia.sros.26_7.classic_cli.navigation
+    tokens: ["\\"]
+  - id: md_quit_config
+    engines: [md]
+    source_id: nokia.sros.26_7.md_cli.configuration_workflow
+    tokens: [quit-config]
+  # Question mark is an input action, not a command submitted with Enter. The
+  # browser sends it through completion and therefore it must not be executable.
+  - id: md_configure_exclusive
+    engines: [md]
+    source_id: nokia.sros.26_7.md_cli.configuration_workflow
+    tokens: [configure, exclusive]
+  - id: md_edit_config_exclusive
+    engines: [md]
+    source_id: nokia.sros.26_7.md_cli.configuration_workflow
+    tokens: [edit-config, exclusive]
+  - id: show_system_information
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.show.system_information
     tokens: [show, system, information]
   - id: show_system_alarms
     engines: [md, classic]
-    source_id: nokia.sros.26_7.md_cli.navigation
+    source_id: nokia.sros.26_7.show.system_alarms
     tokens: [show, system, alarms]
   - id: show_card
     engines: [md, classic]
-    source_id: nokia.sros.26_7.physical_port.provisioning
+    source_id: nokia.sros.26_7.show.card
     tokens: [show, card]
   - id: show_mda
     engines: [md, classic]
-    source_id: nokia.sros.26_7.physical_port.provisioning
+    source_id: nokia.sros.26_7.show.mda
     tokens: [show, mda]
   - id: show_port
     engines: [md, classic]
-    source_id: nokia.sros.26_7.port.configuration
+    source_id: nokia.sros.26_7.show.port
     tokens: [show, port]
   - id: show_router_interface
     engines: [md, classic]
-    source_id: nokia.sros.26_7.port.configuration
+    source_id: nokia.sros.26_7.show.router_interface
     tokens: [show, router, interface]
   - id: show_router_route_table
     engines: [md, classic]
-    source_id: nokia.sros.26_7.port.configuration
+    source_id: nokia.sros.26_7.show.route_table
     tokens: [show, router, route-table]
   - id: show_router_fib
     engines: [md, classic]
-    source_id: nokia.sros.26_7.port.configuration
-    tokens: [show, router, fib]
+    source_id: nokia.sros.26_7.show.fib
+    tokens: [show, router, fib, { parameter: card_slot }]
   - id: show_router_arp
     engines: [md, classic]
-    source_id: ietf.arp.rfc826
+    source_id: nokia.sros.26_7.show.arp
     tokens: [show, router, arp]
   - id: ping
     engines: [md, classic]
@@ -70,7 +206,7 @@ commands:
     tokens: [configure, card, { parameter: card_slot }, mda, { parameter: mda_slot }, mda-type, { parameter: mda_type }]
   - id: configure_system_name
     engines: [md, classic]
-    source_id: nokia.sros.26_7.md_cli.navigation
+    source_id: nokia.sros.26_7.system.name
     tokens: [configure, system, name, { parameter: system_name }]
   - id: md_port_enable
     engines: [md]
@@ -82,7 +218,7 @@ commands:
     tokens: [configure, port, { parameter: port_id }, admin-state, disable]
   - id: md_port_description
     engines: [md]
-    source_id: nokia.sros.26_7.port.configuration
+    source_id: nokia.sros.26_7.port.description
     tokens: [configure, port, { parameter: port_id }, description, { parameter: description }]
   - id: md_port_mtu
     engines: [md]
@@ -98,8 +234,8 @@ commands:
     tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, admin-state, disable]
   - id: md_static_route
     engines: [md]
-    source_id: nokia.sros.26_7.port.configuration
-    tokens: [configure, router, '"Base"', static-routes, route, { parameter: ipv4_prefix }, next-hop, { parameter: ipv4 }]
+    source_id: nokia.sros.26_7.static_route.configuration
+    tokens: [configure, router, '"Base"', static-routes, route, { parameter: ipv4_prefix }, route-type, unicast, next-hop, { parameter: ipv4_key }]
   - id: md_delete_card
     engines: [md]
     source_id: nokia.sros.26_7.physical_port.provisioning
@@ -108,6 +244,14 @@ commands:
     engines: [md]
     source_id: nokia.sros.26_7.physical_port.provisioning
     tokens: [delete, card, { parameter: card_slot }, mda, { parameter: mda_slot }]
+  - id: md_delete_port_description
+    engines: [md]
+    source_id: nokia.sros.26_7.port.description
+    tokens: [delete, port, { parameter: port_id }, description]
+  - id: md_delete_static_route
+    engines: [md]
+    source_id: nokia.sros.26_7.static_route.configuration
+    tokens: [delete, router, '"Base"', static-routes, route, { parameter: ipv4_prefix }, route-type, unicast]
   - id: md_compare
     engines: [md]
     source_id: nokia.sros.26_7.md_cli.navigation
@@ -128,6 +272,22 @@ commands:
     engines: [classic]
     source_id: nokia.sros.26_7.physical_port.provisioning
     tokens: [configure, card, { parameter: card_slot }, mda, { parameter: mda_slot }, no, mda-type]
+  - id: classic_card_shutdown
+    engines: [classic]
+    source_id: nokia.sros.26_7.physical_port.provisioning
+    tokens: [configure, card, { parameter: card_slot }, shutdown]
+  - id: classic_card_no_shutdown
+    engines: [classic]
+    source_id: nokia.sros.26_7.physical_port.provisioning
+    tokens: [configure, card, { parameter: card_slot }, no, shutdown]
+  - id: classic_mda_shutdown
+    engines: [classic]
+    source_id: nokia.sros.26_7.physical_port.provisioning
+    tokens: [configure, card, { parameter: card_slot }, mda, { parameter: mda_slot }, shutdown]
+  - id: classic_mda_no_shutdown
+    engines: [classic]
+    source_id: nokia.sros.26_7.physical_port.provisioning
+    tokens: [configure, card, { parameter: card_slot }, mda, { parameter: mda_slot }, no, shutdown]
   - id: classic_port_shutdown
     engines: [classic]
     source_id: nokia.sros.26_7.port.configuration
@@ -138,8 +298,12 @@ commands:
     tokens: [configure, port, { parameter: port_id }, no, shutdown]
   - id: classic_port_description
     engines: [classic]
-    source_id: nokia.sros.26_7.port.configuration
+    source_id: nokia.sros.26_7.port.description
     tokens: [configure, port, { parameter: port_id }, description, { parameter: description }]
+  - id: classic_remove_port_description
+    engines: [classic]
+    source_id: nokia.sros.26_7.port.description
+    tokens: [configure, port, { parameter: port_id }, no, description]
   - id: classic_port_mtu
     engines: [classic]
     source_id: nokia.sros.26_7.port.configuration
@@ -154,5 +318,9 @@ commands:
     tokens: [configure, router, interface, { parameter: interface_name }, no, shutdown]
   - id: classic_static_route
     engines: [classic]
-    source_id: nokia.sros.26_7.port.configuration
+    source_id: nokia.sros.26_7.static_route.configuration
     tokens: [configure, router, static-route-entry, { parameter: ipv4_prefix }, next-hop, { parameter: ipv4 }]
+  - id: classic_remove_static_route
+    engines: [classic]
+    source_id: nokia.sros.26_7.static_route.configuration
+    tokens: [configure, router, no, static-route-entry, { parameter: ipv4_prefix }]

@@ -58,6 +58,9 @@ private:
   std::string run_ping(ForwardJobKind kind, packet::Ipv4 destination,
                        std::uint8_t source_endpoint = 0,
                        std::uint32_t count = 1);
+  // Reads the browser-owned cancellation word with acquire ordering. The word
+  // carries no packet data and is reset by control before each CLI ping.
+  [[nodiscard]] bool cli_cancelled() noexcept;
   std::string configure_hosts(const std::string &text);
   std::string configure_links(const std::string &text);
   std::string configure_running(const std::string &text);

@@ -27,7 +27,10 @@ struct ParsedStaticRoute {
 parse_static_route(std::string_view prefix, std::string_view next_hop);
 [[nodiscard]] bool install_static(DeviceConfiguration &configuration,
                                   ParsedStaticRoute route);
+[[nodiscard]] bool remove_static(DeviceConfiguration &configuration,
+                                 std::string_view prefix);
 [[nodiscard]] std::string_view unquote(std::string_view value) noexcept;
+[[nodiscard]] bool valid_cli_string(std::string_view value) noexcept;
 
 template <std::size_t N>
 bool copy_config_text(std::array<char, N> &destination,

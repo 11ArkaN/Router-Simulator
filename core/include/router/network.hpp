@@ -26,6 +26,7 @@ enum class NetworkDrop : std::uint8_t {
   queue_full,
   ttl_expired,
   timeout,
+  cancelled,
   malformed
 };
 
@@ -55,6 +56,9 @@ struct NetworkArpEntry {
   packet::Ipv4 address{};
   packet::Mac mac{};
   std::uint8_t port_index{};
+  // Forwarding exports a duration instead of its process-local time_point.
+  // Control converts it to wall time solely for CLI and checkpoint output.
+  std::uint32_t remaining_seconds{};
 };
 
 struct NetworkResult {
@@ -75,6 +79,7 @@ struct NetworkResult {
 using CaptureObserver = bool (*)(void *context, std::uint8_t interface_id,
                                  const packet::Frame &frame,
                                  std::uint64_t timestamp_us);
+using CancellationObserver = bool (*)(void *context) noexcept;
 
 class LabNetwork final {
 public:
@@ -94,7 +99,9 @@ public:
   [[nodiscard]] NetworkResult
   ping(PingOrigin origin, std::uint8_t source_endpoint,
        packet::Ipv4 destination, std::uint16_t sequence,
-       CaptureObserver observer, void *observer_context) noexcept;
+       CaptureObserver observer, void *observer_context,
+       CancellationObserver cancelled = nullptr,
+       void *cancellation_context = nullptr) noexcept;
 
 private:
   // PIMPL prevents packet pool and queue storage from leaking into runtime

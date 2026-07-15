@@ -27,6 +27,7 @@ std::string Runtime::configure_running(const std::string &text) {
   if (!result.success)
     return "ERROR: atomic running configuration was rejected";
   state_.configuration.running = parsed.configuration;
+  state_.configuration.running_unsaved = true;
   state_.configuration.candidate = parsed.configuration;
   session_.candidate_dirty = false;
   session_.candidate_outdated = false;

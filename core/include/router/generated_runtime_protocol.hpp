@@ -4,7 +4,7 @@
 // the same versioned schema instead of duplicating command prefixes.
 
 namespace router::runtime_protocol {
-inline constexpr unsigned version = 1;
+inline constexpr unsigned version = 2;
 inline constexpr char snapshot[] = "snapshot";
 inline constexpr char hardware_insert_card[] = "hardware:insert-card:";
 inline constexpr char hardware_remove_card[] = "hardware:remove-card:";

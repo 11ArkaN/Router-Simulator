@@ -1,169 +1,442 @@
 #include "router/cli.hpp"
+#include "router/hardware.hpp"
 
+#include <chrono>
 #include <stdexcept>
+#include <string_view>
+
+namespace {
+
+void require(bool condition, const char *message) {
+  // Keeping assertions local produces one readable failure reason in both the
+  // native and WebAssembly test executables without introducing a framework.
+  if (!condition)
+    throw std::runtime_error(message);
+}
+
+bool contains(std::string_view text, std::string_view fragment) {
+  return text.find(fragment) != std::string_view::npos;
+}
+
+} // namespace
 
 void cli_tests() {
   router::DeviceState state;
   router::CliSession session;
-  const auto ping = [](router::packet::Ipv4, std::uint32_t) {
+  const auto no_ping = [](router::packet::Ipv4, std::uint32_t) {
     return std::string{};
   };
-  const auto no_routes =
-      router::execute_cli(state, session, "show router route-table", ping);
-  if (no_routes.find("No active routes") == std::string::npos ||
-      no_routes.find("[ex:/]\nA:admin@R1#") == std::string::npos) {
-    throw std::runtime_error("Down hardware exposed active routes");
-  }
 
-  // A fresh lab has no line-card provisioning. Build and commit a candidate
-  // first, then verify that removing the parent is another isolated candidate
-  // transaction rather than relying on an implicit factory configuration.
-  router::execute_cli(state, session, "configure card 1 card-type iom4-e",
-                      ping);
-  router::execute_cli(state, session,
-                      "configure card 1 mda 1 mda-type me10-10gb-sfp+", ping);
-  router::execute_cli(state, session, "commit", ping);
-  if (!router::profile_card(state.configuration.running).type ||
-      !router::profile_mda(state.configuration.running).type) {
-    throw std::runtime_error("MD-CLI did not provision fresh hardware");
-  }
-  const auto candidate =
-      router::execute_cli(state, session, "delete card 1", ping);
-  if (router::profile_card(state.hardware).type || !session.candidate_dirty) {
-    throw std::runtime_error("MD-CLI changed running state before commit");
-  }
-  if (candidate.find("*[ex:/]") == std::string::npos) {
-    throw std::runtime_error(
-        "MD-CLI candidate marker is missing from the prompt");
-  }
-  const auto compare = router::execute_cli(state, session, "compare", ping);
-  // Deleting a parent also deletes its provisioned child in the candidate.
-  // Both removals must be shown with a minus sign rather than the old output
-  // that displayed every difference as an addition.
-  if (compare.find("- card 1") == std::string::npos ||
-      compare.find("- mda 1") == std::string::npos) {
-    throw std::runtime_error(
-        "MD-CLI compare did not represent candidate removals");
-  }
-  router::execute_cli(state, session, "commit", ping);
-  if (router::profile_card(state.configuration.running).type) {
-    throw std::runtime_error("MD-CLI commit did not remove provisioning");
-  }
+  // A new MD-CLI session starts at operational root. It does not silently own
+  // an exclusive candidate, and a read-only route report is available there.
+  require(router::cli_prompt(state, session) == "\n[/]\nA:admin@R1# ",
+          "MD-CLI did not start in operational root");
+  require(state.configuration.running.ports[0].admin_enabled &&
+              state.configuration.running.ports[1].admin_enabled &&
+              !state.configuration.running.ports[2].admin_enabled,
+          "Starter project did not distinguish explicit port enablement from "
+          "defaults");
+  const auto empty_routes =
+      router::execute_cli(state, session, "show router route-table", no_ping);
+  require(contains(empty_routes, "Route Table (Router: Base)") &&
+              contains(empty_routes, "No. of Routes: 0"),
+          "Empty route table did not use the Nokia report layout");
+  const auto incomplete_ping =
+      router::execute_cli(state, session, "ping", no_ping);
+  require(contains(incomplete_ping, "<ip-address>") &&
+              !contains(incomplete_ping, "Unknown element"),
+          "Incomplete ping did not display contextual argument help");
 
-  const auto switched = router::execute_cli(state, session, "//", ping);
-  if (switched.find("A:R1#") == std::string::npos) {
-    throw std::runtime_error(
-        "Session did not switch to the classic CLI prompt");
-  }
-  router::execute_cli(state, session, "configure card 1 card-type iom4-e",
-                      ping);
+  // The implicit exclusive workflow uses Nokia's two information messages and
+  // enters /configure. Successful leaves are silent; only the prompt marker
+  // reveals a candidate difference.
+  const auto entered =
+      router::execute_cli(state, session, "configure exclusive", no_ping);
+  require(contains(entered,
+                   "INFO: CLI #2060: Entering exclusive configuration mode") &&
+              contains(entered,
+                       "INFO: CLI #2061: Uncommitted changes are discarded") &&
+              contains(entered, "[ex:/configure]"),
+          "Implicit exclusive workflow did not match SR OS");
+  const auto card_edit =
+      router::execute_cli(state, session, "card 1 card-type iom4-e", no_ping);
+  require(!contains(card_edit, "configured") &&
+              contains(card_edit, "*[ex:/configure]"),
+          "MD card edit was not silent or did not mark the candidate");
+  router::execute_cli(state, session, "card 1 mda 1 mda-type me10-10gb-sfp+",
+                      no_ping);
+  const auto maximum_description = std::string(80, 'x');
   router::execute_cli(state, session,
-                      "configure card 1 mda 1 mda-type me10-10gb-sfp+", ping);
-  if (!router::profile_mda(state.configuration.running).type ||
-      router::profile_mda(state.hardware).type) {
-    throw std::runtime_error(
-        "classic CLI provisioning changed physical equipment");
-  }
+                      "port 1/1/1 description \"" + maximum_description + "\"",
+                      no_ping);
+  require(state.configuration.candidate.ports[0].description[79] == 'x',
+          "MD port description rejected the documented 80-character limit");
+  const auto oversized_description = router::execute_cli(
+      state, session, "port 1/1/1 description \"" + std::string(81, 'x') + "\"",
+      no_ping);
+  require(contains(oversized_description, "MINOR: MGMT_CORE #2301"),
+          "MD port description accepted more than 80 characters");
+  router::execute_cli(state, session, "delete port 1/1/1 description", no_ping);
+  require(state.configuration.candidate.ports[0].description[0] == '\0',
+          "MD delete did not remove the port description leaf");
+  router::execute_cli(state, session, "commit", no_ping);
+  require(router::profile_card(state.configuration.running).type &&
+              router::profile_mda(state.configuration.running).type &&
+              state.configuration.running_unsaved,
+          "MD commit did not atomically publish hardware provisioning");
 
-  // Official engine interaction retains a dirty MD candidate across classic
-  // writes. Returning to MD must show an outdated baseline and must not commit
-  // that stale candidate as though no concurrent configuration change occurred.
-  // Establish a clean unprovisioned running baseline through the classic
-  // engine, then create a new dirty MD candidate above that baseline.
-  router::execute_cli(state, session, "configure card 1 no card-type", ping);
-  router::execute_cli(state, session, "//", ping);
-  router::execute_cli(state, session,
-                      "configure card 1 mda 1 mda-type me10-10gb-sfp+", ping);
-  router::execute_cli(state, session, "configure card 1 card-type iom4-e",
-                      ping);
-  router::execute_cli(state, session, "//", ping);
-  router::execute_cli(state, session, "configure card 1 card-type iom4-e",
-                      ping);
-  const auto stale_prompt = router::execute_cli(state, session, "//", ping);
-  if (!session.candidate_dirty || !session.candidate_outdated ||
-      !router::profile_mda(state.configuration.candidate).type ||
-      stale_prompt.find("!*[ex:/]") == std::string::npos) {
-    throw std::runtime_error(
-        "classic CLI overwrote or hid a dirty MD candidate");
-  }
-  const auto stale_commit = router::execute_cli(state, session, "commit", ping);
-  if (stale_commit.find("baseline is out of date") == std::string::npos) {
-    throw std::runtime_error(
-        "MD-CLI accepted a commit from an outdated baseline");
-  }
-  router::execute_cli(state, session, "discard", ping);
+  // show is rooted in MD-CLI. A relative show from configuration context is an
+  // unknown child, while /show executes at operational root and returns to the
+  // saved configuration context afterward.
+  const auto relative_show =
+      router::execute_cli(state, session, "show card", no_ping);
+  require(contains(relative_show, "Unknown element - 'show'") &&
+              contains(relative_show, "[ex:/configure]"),
+          "Relative MD show escaped its configuration context");
+  const auto absolute_show =
+      router::execute_cli(state, session, "/show card", no_ping);
+  require(contains(absolute_show, "Card Summary") &&
+              contains(absolute_show, "iom4-e") &&
+              contains(absolute_show, "[ex:/configure]"),
+          "Absolute MD show did not preserve working context");
+  const auto forbidden_navigation =
+      router::execute_cli(state, session, "/show", no_ping);
+  require(contains(forbidden_navigation,
+                   "cannot navigate out of configuration region") &&
+              contains(forbidden_navigation, "[ex:/configure]"),
+          "Implicit workflow navigated outside the configuration region");
 
-  // Port nodes exist only below provisioned MDA inventory. Recreate that
-  // parent before testing port leaves instead of relying on implicit ports.
-  router::execute_cli(state, session,
-                      "configure card 1 mda 1 mda-type me10-10gb-sfp+", ping);
-  router::execute_cli(state, session, "configure system name edge-r1", ping);
-  router::execute_cli(state, session,
-                      "configure port 1/1/1 admin-state disable", ping);
-  router::execute_cli(state, session, "configure port 1/1/1 ethernet mtu 1400",
-                      ping);
-  router::execute_cli(state, session,
-                      "configure port 1/1/1 description \"host-a\"", ping);
-  router::execute_cli(state, session,
-                      "configure router \"Base\" static-routes route "
-                      "203.0.113.0/24 next-hop 198.51.100.2",
-                      ping);
-  router::execute_cli(state, session, "commit", ping);
-  const auto &running = state.configuration.running;
-  if (std::string_view(running.system_name.data()) != "edge-r1" ||
-      running.ports[0].admin_enabled || running.ports[0].mtu != 1400 ||
-      std::string_view(running.ports[0].description.data()) != "host-a" ||
-      !running.static_routes[0].valid) {
-    throw std::runtime_error(
-        "MD-CLI canonical configuration did not commit atomically");
-  }
+  // Configuration statements entered before a candidate workflow receive the
+  // documented CLI #2069 response. Switching an existing implicit exclusive
+  // session to explicit retains its dirty candidate and working context.
+  router::DeviceState workflow_state;
+  router::CliSession workflow_session;
+  const auto forbidden_edit =
+      router::execute_cli(workflow_state, workflow_session,
+                          "configure card 1 card-type iom4-e", no_ping);
+  require(contains(forbidden_edit, "MINOR: CLI #2069") &&
+              contains(forbidden_edit, "currently in operational mode"),
+          "Operational MD-CLI did not reject a configuration statement");
+  router::execute_cli(workflow_state, workflow_session, "configure exclusive",
+                      no_ping);
+  router::execute_cli(workflow_state, workflow_session,
+                      "system name workflow-test", no_ping);
+  const auto explicit_transition = router::execute_cli(
+      workflow_state, workflow_session, "edit-config exclusive", no_ping);
+  require(workflow_session.candidate_dirty &&
+              workflow_session.md_workflow ==
+                  router::MdCliWorkflow::explicit_exclusive &&
+              contains(explicit_transition, "*(ex)[/configure]") &&
+              !contains(explicit_transition, "Entering exclusive"),
+          "Implicit-to-explicit transition discarded or re-created candidate");
 
+  // Configuration strings follow the shared SR OS 7-bit printable rule. The
+  // parser must reject UTF-8 bytes instead of accepting a value that a real
+  // router cannot store and later emitting it through a different encoding.
+  router::DeviceState string_state;
+  router::CliSession string_session;
+  router::execute_cli(string_state, string_session, "configure exclusive",
+                      no_ping);
+  const auto non_ascii_name = router::execute_cli(
+      string_state, string_session, "system name \"\xC3\xB3\"", no_ping);
+  require(contains(non_ascii_name, "MINOR: MGMT_CORE #2301") &&
+              std::string_view{
+                  string_state.configuration.candidate.system_name.data()} ==
+                  router::profile::default_system_name,
+          "Configuration accepted a non-ASCII SR OS string");
+
+  router::DeviceState back_state;
+  router::CliSession back_session;
+  router::execute_cli(back_state, back_session, "configure exclusive", no_ping);
+  router::execute_cli(back_state, back_session, "system name dirty", no_ping);
+  const auto dirty_back =
+      router::execute_cli(back_state, back_session, "back", no_ping);
+  require(contains(dirty_back, "Discard uncommitted changes? [y,n]") &&
+              contains(dirty_back, "*[ex:/configure]") &&
+              back_session.md_exit_confirmation,
+          "Dirty back navigation left the implicit region before confirmation");
+  const auto canceled_back =
+      router::execute_cli(back_state, back_session, "n", no_ping);
+  require(contains(canceled_back, "INFO: CLI #2065") &&
+              contains(canceled_back, "*[ex:/configure]"),
+          "Canceled implicit exit did not restore its working context");
+
+  // MD static routes are keyed by prefix and route type, and next-hop is a
+  // quoted string key. The former shortened syntax must not mutate candidate.
+  const auto old_route =
+      router::execute_cli(state, session,
+                          "router \"Base\" static-routes route 203.0.113.0/24 "
+                          "next-hop 198.51.100.2",
+                          no_ping);
+  require(contains(old_route, "Unknown element"),
+          "Obsolete shortened MD static-route syntax remained executable");
+  router::execute_cli(
+      state, session,
+      "router \"Base\" static-routes route 203.0.113.0/24 route-type unicast "
+      "next-hop \"198.51.100.2\"",
+      no_ping);
+  const auto route_compare =
+      router::execute_cli(state, session, "compare", no_ping);
+  require(contains(route_compare,
+                   "+           route 203.0.113.0/24 route-type unicast {") &&
+              contains(route_compare,
+                       "+               next-hop \"198.51.100.2\" {") &&
+              !contains(route_compare,
+                        "route 203.0.113.0/24 next-hop 198.51.100.2"),
+          "MD compare did not emit copyable static-route hierarchy");
+  router::execute_cli(state, session, "commit", no_ping);
+  require(state.configuration.running.static_routes[0].valid,
+          "Documented MD static-route syntax did not install the candidate");
+  router::execute_cli(state, session,
+                      "delete router \"Base\" static-routes route "
+                      "203.0.113.0/24 route-type unicast",
+                      no_ping);
+  router::execute_cli(state, session, "commit", no_ping);
+  require(!state.configuration.running.static_routes[0].valid,
+          "MD delete did not remove the keyed static-route entry");
+
+  // System reports consume modeled state rather than fixed demo text. Uptime,
+  // pinned image identity and the unsaved configuration indicator must exist.
+  const auto information =
+      router::execute_cli(state, session, "/show system information", no_ping);
+  require(
+      contains(information, "System Version         : C-26.7.R1") &&
+          contains(information, "Configuration Mode Cfg : mixed") &&
+          contains(information, "System Up Time (64-bit):") &&
+          contains(information, "Changes Since Last Save: Yes"),
+      "System information was not derived from the device profile and state");
+  const auto alarms = [&] {
+    // The report test needs one explicit control-plane reconciliation so
+    // that active alarms reflect the deliberately absent card and MDA.
+    const auto reconciliation = router::hardware::reconcile(
+        state.configuration.running, state.hardware, state.operational,
+        std::chrono::steady_clock::now());
+    (void)reconciliation;
+    return router::execute_cli(state, session, "/show system alarms", no_ping);
+  }();
+  require(contains(alarms, "Alarms [Critical:0 Major:2") &&
+              contains(alarms, "7-2003-1") && contains(alarms, "MDA 1/1"),
+          "Active facility alarm did not use the Nokia alarm report");
+
+  // The spaces in classic operational reports are observable terminal
+  // behavior. These assertions protect the documented SR OS column layout so
+  // later UI work cannot quietly replace it with browser-owned formatting.
+  const auto interfaces =
+      router::execute_cli(state, session, "/show router interface", no_ping);
+  const auto first_address_row =
+      std::string{"\n   "} + router::profile::interface_addresses.front();
+  require(
+      contains(interfaces, "   IP-Address                                      "
+                           "            PfxState") &&
+          contains(interfaces, first_address_row),
+      "Router interface report did not preserve SR OS child-row indentation");
+  state.operational.arp[0] = {
+      .valid = true,
+      .address = {198, 51, 100, 2},
+      .mac = {0x02, 0x00, 0x00, 0x00, 0x00, 0x02},
+      .port_index = 0,
+      .expires_at = std::chrono::steady_clock::now() + std::chrono::hours{4},
+  };
+  const auto arp =
+      router::execute_cli(state, session, "/show router arp", no_ping);
+  require(contains(arp, "02:00:00:00:00:02 04h00m00s Dyn[I] to-host-a"),
+          "ARP report columns differed from the documented SR OS layout");
+  auto &equipped_card = router::profile_card(state.hardware);
+  auto &equipped_mda = router::profile_mda(state.hardware);
+  equipped_card.type = router::profile::line_card_type;
+  equipped_card.compatible = true;
+  equipped_card.equipment.lifecycle = router::EquipmentLifecycle::ready;
+  equipped_mda.type = router::profile::modeled_mda_type;
+  equipped_mda.compatible = true;
+  equipped_mda.equipment.lifecycle = router::EquipmentLifecycle::ready;
+  const auto ports = router::execute_cli(state, session, "/show port", no_ping);
+  require(
+      contains(
+          ports,
+          "1/1/1         Up    Yes  Up      9212 9212    - netw null xgige"),
+      "Port report columns differed from the documented SR OS layout");
+
+  // quit-config belongs to the operational root of an explicit candidate
+  // workflow. It must not escape an arbitrary MD configuration context.
+  const auto misplaced_quit =
+      router::execute_cli(state, session, "quit-config", no_ping);
+  require(contains(misplaced_quit, "Unknown element") &&
+              session.md_workflow == router::MdCliWorkflow::implicit_exclusive,
+          "quit-config ignored its documented workflow context");
+
+  // MD navigation accepts both the closing-brace shortcut and a bounded level
+  // count. Crossing above /configure leaves an implicit workflow, as do slash,
+  // exit all and Ctrl-Z on hardware.
+  router::execute_cli(state, session, "card 1 mda 1", no_ping);
+  router::execute_cli(state, session, "}", no_ping);
+  require(contains(router::cli_prompt(state, session), "/configure card 1]"),
+          "Closing brace did not move to the MD parent context");
+  router::execute_cli(state, session, "back 2", no_ping);
+  require(session.md_workflow == router::MdCliWorkflow::operational &&
+              router::cli_prompt(state, session) == "\n[/]\nA:admin@R1# ",
+          "MD back level count did not leave implicit configuration mode");
+  router::execute_cli(state, session, "configure exclusive", no_ping);
+
+  // Engine switching retains independent contexts. The switch messages and
+  // classic prompt are generated by the router session, never by React.
+  const auto switched = router::execute_cli(state, session, "//", no_ping);
+  require(contains(switched,
+                   "INFO: CLI #2051: Switching to the classic CLI engine") &&
+              contains(switched, "A:R1#"),
+          "MD to classic engine switch was not Nokia-compatible");
+  router::execute_cli(state, session, "configure card 1", no_ping);
+  require(contains(router::cli_prompt(state, session), ">config>card#"),
+          "Classic card context prompt was not retained");
+  router::execute_cli(state, session, "exit", no_ping);
+  require(contains(router::cli_prompt(state, session), ">config#"),
+          "Classic exit did not move to the higher context");
+  router::execute_cli(state, session, "back", no_ping);
+  require(router::cli_prompt(state, session) == "\n*A:R1# ",
+          "Classic back did not reach operational root");
+  router::execute_cli(state, session,
+                      "configure port 1/1/1 description \"edge uplink\"",
+                      no_ping);
+  router::execute_cli(state, session, "configure port 1/1/1 no description",
+                      no_ping);
+  require(state.configuration.running.ports[0].description[0] == '\0',
+          "Classic no description did not remove the port description");
+  router::execute_cli(state, session,
+                      "configure router static-route-entry 203.0.113.0/24 "
+                      "next-hop 198.51.100.2",
+                      no_ping);
+  router::execute_cli(state, session,
+                      "configure router no static-route-entry 203.0.113.0/24",
+                      no_ping);
+  require(!state.configuration.running.static_routes[0].valid,
+          "Classic no static-route-entry did not remove the route");
+  const auto classic_help =
+      router::execute_cli(state, session, "help edit", no_ping);
+  require(contains(classic_help, "Delete current character") &&
+              contains(classic_help, "Ctrl-z"),
+          "Classic help edit did not expose the documented key bindings");
+  router::execute_cli(state, session, "configure card 1", no_ping);
+  const auto backslash_show =
+      router::execute_cli(state, session, "\\show card", no_ping);
+  require(contains(backslash_show, "Card Summary") &&
+              contains(router::cli_prompt(state, session), ">config>card#"),
+          "Classic backslash absolute path changed the working context");
+  router::execute_cli(state, session, "\\", no_ping);
+  require(router::cli_prompt(state, session) == "\n*A:R1# ",
+          "Classic standalone backslash did not return to root");
+
+  // A command prefixed with // runs as an absolute command in the other engine
+  // and immediately restores the originating engine and context.
+  const auto foreign =
+      router::execute_cli(state, session, "//show mda", no_ping);
+  require(
+      contains(foreign, "INFO: CLI #2052: Switching to the MD-CLI engine") &&
+          contains(foreign, "MDA Summary") &&
+          session.engine == router::CliEngine::classic,
+      "Inline other-engine command did not restore the classic session");
+
+  // Classic provisioning starts shut down. Administrative intent is legal on
+  // a child while its parent is down, but operational state still depends on
+  // the complete parent chain. Immediate writes retain the unsaved prompt.
+  router::DeviceState classic_state;
+  router::CliSession classic_session;
+  router::execute_cli(classic_state, classic_session, "//", no_ping);
+  router::execute_cli(classic_state, classic_session,
+                      "configure card 1 card-type iom4-e", no_ping);
+  require(
+      !router::profile_card(classic_state.configuration.running).admin_enabled,
+      "Classic card provisioning incorrectly enabled the card");
+  router::execute_cli(classic_state, classic_session,
+                      "configure card 1 mda 1 mda-type me10-10gb-sfp+",
+                      no_ping);
+  require(
+      !router::profile_mda(classic_state.configuration.running).admin_enabled,
+      "Classic MDA provisioning incorrectly enabled the MDA");
+  const auto early_mda =
+      router::execute_cli(classic_state, classic_session,
+                          "configure card 1 mda 1 no shutdown", no_ping);
+  require(!contains(early_mda, "Error: Bad command.") &&
+              router::profile_mda(classic_state.configuration.running)
+                  .admin_enabled &&
+              !router::profile_card(classic_state.configuration.running)
+                   .admin_enabled,
+          "Classic CLI did not preserve independent MDA administrative intent");
+  router::execute_cli(classic_state, classic_session,
+                      "configure card 1 no shutdown", no_ping);
+  require(
+      router::profile_card(classic_state.configuration.running).admin_enabled &&
+          router::profile_mda(classic_state.configuration.running)
+              .admin_enabled &&
+          contains(router::cli_prompt(classic_state, classic_session), "*A:"),
+      "Classic no shutdown or unsaved prompt behavior failed");
+  const auto remove_parent_with_child = router::execute_cli(
+      classic_state, classic_session, "configure card 1 no card-type", no_ping);
+  require(contains(remove_parent_with_child, "Error: Bad command.") &&
+              router::profile_card(classic_state.configuration.running).type &&
+              router::profile_mda(classic_state.configuration.running).type,
+          "Classic card removal bypassed the provisioned MDA dependency");
+
+  // Ping defaults and count bounds are release data. The injected callback
+  // proves that CLI syntax reaches forwarding without a direct device call.
   std::uint32_t requested_count{};
-  router::packet::Ipv4 requested_destination{};
   const auto counted_ping = [&](router::packet::Ipv4 destination,
                                 std::uint32_t count) {
-    requested_destination = destination;
     requested_count = count;
+    require(destination == router::packet::Ipv4{198, 51, 100, 2},
+            "Ping destination changed before forwarding");
     return std::string{"ping-result"};
   };
-  const auto default_ping =
-      router::execute_cli(state, session, "ping 198.51.100.2", counted_ping);
-  if (requested_count != 5 ||
-      requested_destination != router::packet::Ipv4{198, 51, 100, 2} ||
-      default_ping.find("ping-result") == std::string::npos) {
-    throw std::runtime_error("SR OS ping default count was not applied");
-  }
-  router::execute_cli(state, session, "ping 198.51.100.2 count 1",
+  router::execute_cli(classic_state, classic_session, "ping 198.51.100.2",
                       counted_ping);
-  if (requested_count != 1)
-    throw std::runtime_error("Explicit ping count was ignored");
+  require(requested_count == 5, "Default ping count was not five");
+  router::execute_cli(classic_state, classic_session,
+                      "ping 198.51.100.2 count 2", counted_ping);
+  require(requested_count == 2, "Explicit ping count was ignored");
+  const auto invalid_count =
+      router::execute_cli(classic_state, classic_session,
+                          "ping 198.51.100.2 count 100001", counted_ping);
+  require(contains(invalid_count, "Invalid element value"),
+          "Ping count range was not enforced");
 
-  // Completion queries the active engine schema without executing a command.
-  // A context lists only its immediate children. It must never print complete
-  // provisioning or ping lines that resemble a preloaded demo transcript.
-  const auto root_completion = router::complete_cli(state, session, "");
-  if (router::complete_cli(state, session, "show router ar") !=
-          "show router arp" ||
-      router::complete_cli(state, session, "show").find("port") ==
-          std::string::npos ||
-      root_completion.find("configure card 1") != std::string::npos ||
-      root_completion.find("ping 198.51.100.2") != std::string::npos) {
-    throw std::runtime_error(
-        "CLI completion exposed a hardcoded command transcript");
-  }
+  // Completion has engine-specific trigger semantics. MD Space completes only
+  // keywords, classic Space may list keys, and Tab completes live model data.
+  router::CliSession completion_session;
+  require(router::complete_cli(classic_state, completion_session, "sho",
+                               router::CliCompletionTrigger::space) == "show",
+          "Space did not complete a unique keyword");
+  require(router::complete_cli(classic_state, completion_session, "show por",
+                               router::CliCompletionTrigger::space) ==
+              "show port",
+          "Enter/Space completion could not expand the final MD keyword");
+  require(router::complete_cli(classic_state, completion_session, "ping ",
+                               router::CliCompletionTrigger::space)
+              .empty(),
+          "Space incorrectly completed a variable value");
+  router::CliSession classic_completion;
+  classic_completion.engine = router::CliEngine::classic;
+  const auto classic_address_help =
+      router::complete_cli(classic_state, classic_completion, "ping ",
+                           router::CliCompletionTrigger::space);
+  require(contains(classic_address_help, "<ip-address>") &&
+              !contains(classic_address_help, "198.51.100.2"),
+          "Classic help leaked project endpoints as router address choices");
+  require(router::complete_cli(
+              classic_state, completion_session, "show router ar",
+              router::CliCompletionTrigger::tab) == "show router arp",
+          "Tab did not complete the unique ARP keyword");
+  const auto question =
+      router::complete_cli(classic_state, completion_session, "show router ",
+                           router::CliCompletionTrigger::question);
+  require(
+      contains(question, "arp") && contains(question, "fib") &&
+          contains(question, "Display the ARP table") &&
+          contains(question, "Display forwarding information base entries") &&
+          contains(question, "arp                   - ") &&
+          !contains(question, "show router arp"),
+      "Question-mark help lacked descriptions or leaked complete commands");
 
-  const auto unknown = router::execute_cli(state, session, "jjj", ping);
-  if (unknown.find("MGMT_CORE #2201") == std::string::npos ||
-      unknown.find("milestone") != std::string::npos ||
-      unknown.find("profile") != std::string::npos) {
-    throw std::runtime_error("CLI leaked implementation status to the console");
-  }
-  const auto incomplete_ping =
-      router::execute_cli(state, session, "ping", ping);
-  if (incomplete_ping.find("<ipv4>") == std::string::npos ||
-      incomplete_ping.find("192.0.2.2") == std::string::npos ||
-      incomplete_ping.find("198.51.100.2") == std::string::npos) {
-    throw std::runtime_error(
-        "Incomplete ping did not show its contextual destination choices");
-  }
+  const auto unknown =
+      router::execute_cli(classic_state, classic_session, "jjj", no_ping);
+  require(contains(unknown, "Error: Bad command.") &&
+              !contains(unknown, "milestone") && !contains(unknown, "profile"),
+          "Classic error leaked emulator implementation details");
 }

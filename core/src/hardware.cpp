@@ -5,6 +5,7 @@
 #include "router/hardware.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 
 namespace router::hardware {
@@ -143,30 +144,80 @@ ReconcileResult reconcile(const DeviceConfiguration &running,
     }
   }
 
+  const auto previous_alarms = state.alarms;
+  const auto previous_alarm_count = state.alarm_count;
   state.alarm_count = 0;
-  const auto alarm = [&state](const char *id, const char *reason) {
+  const auto alarm = [&state, &previous_alarms, previous_alarm_count](
+                         const char *id, const char *severity, const char *code,
+                         const char *reason) {
     // Alarm storage is bounded by generated ports plus equipment records. The
     // guard remains defensive and never writes beyond the control projection.
     if (state.alarm_count < state.alarms.size()) {
-      state.alarms[state.alarm_count++] = {id, "minor", reason};
+      std::uint64_t raised_at{};
+      for (std::size_t index = 0; index < previous_alarm_count; ++index) {
+        const auto &previous = previous_alarms[index];
+        if (previous.id && previous.reason &&
+            std::strcmp(previous.id, id) == 0 &&
+            std::strcmp(previous.reason, reason) == 0) {
+          raised_at = previous.raised_at_epoch_ms;
+          break;
+        }
+      }
+      if (!raised_at) {
+        raised_at = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
+      }
+      state.alarms[state.alarm_count++] = {id, severity, code, reason,
+                                           raised_at};
     }
   };
-  if (card.equipment.lifecycle != EquipmentLifecycle::ready) {
-    alarm(profile::line_card_alarm_id, card.equipment.reason);
+  if (card_config.type && card_config.admin_enabled &&
+      (card.equipment.lifecycle == EquipmentLifecycle::absent ||
+       card.equipment.lifecycle == EquipmentLifecycle::mismatch)) {
+    // Source: nokia.sros.26_7.hardware_alarm_events. The two conditions use
+    // distinct default severities even though they share equipment storage.
+    alarm(profile::line_card_alarm_id,
+          card.equipment.lifecycle == EquipmentLifecycle::mismatch ? "minor"
+                                                                   : "major",
+          card.equipment.lifecycle == EquipmentLifecycle::mismatch ? "7-2004-1"
+                                                                   : "7-2003-1",
+          card.equipment.reason);
   }
-  if (card.type && mda.equipment.lifecycle != EquipmentLifecycle::ready) {
-    alarm(profile::mda_alarm_id, mda.equipment.reason);
+  if (mda_config.type && mda_config.admin_enabled &&
+      (mda.equipment.lifecycle == EquipmentLifecycle::absent ||
+       mda.equipment.lifecycle == EquipmentLifecycle::mismatch)) {
+    alarm(profile::mda_alarm_id,
+          mda.equipment.lifecycle == EquipmentLifecycle::mismatch ? "minor"
+                                                                  : "major",
+          mda.equipment.lifecycle == EquipmentLifecycle::mismatch ? "7-2004-1"
+                                                                  : "7-2003-1",
+          mda.equipment.reason);
   }
-  // Every port exposed by the equipped MDA participates in operational alarm
-  // projection. This avoids silently treating ports beyond the starter links
-  // as nonexistent while retaining fixed bounded storage.
-  for (std::size_t index = 0; index < inventory_port_count(hardware); ++index) {
-    if (!port_operational(running, hardware, index)) {
-      alarm(profile::port_ids[index],
-            !running.ports[index].admin_enabled
-                ? "admin-down"
-                : (!hardware.link_signal[index] ? "link-down"
-                                                : "hardware-not-ready"));
+
+  // Source: nokia.sros.26_7.facility_alarms. Alarm 59-2004-1 is
+  // raised only after ifOperStatus leaves an operational state, never merely
+  // because a newly discovered or administratively disabled port is Down.
+  // Parent failures mask an existing child alarm without destroying it.
+  const auto parent_operational = operational(running, hardware);
+  const auto inventory_count = inventory_port_count(hardware);
+  for (std::size_t index = 0; index < running.ports.size(); ++index) {
+    const auto admin_up = running.ports[index].admin_enabled;
+    const auto parent_visible = parent_operational && index < inventory_count;
+    const auto currently_up =
+        parent_visible && admin_up && hardware.link_signal[index];
+    if (!admin_up) {
+      state.port_seen_operational[index] = false;
+      state.port_link_alarm_active[index] = false;
+    } else if (currently_up) {
+      state.port_seen_operational[index] = true;
+      state.port_link_alarm_active[index] = false;
+    } else if (parent_visible && state.port_seen_operational[index]) {
+      state.port_link_alarm_active[index] = true;
+    }
+    if (parent_visible && state.port_link_alarm_active[index]) {
+      alarm(profile::port_ids[index], "warning", "59-2004-1", "link-down");
     }
   }
 

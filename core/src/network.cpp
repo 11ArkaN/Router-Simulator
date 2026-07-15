@@ -458,11 +458,10 @@ struct LabNetwork::Impl {
     }
   }
 
-  [[nodiscard]] NetworkResult ping(PingOrigin origin,
-                                   std::uint8_t source_endpoint,
-                                   Ipv4 destination, std::uint16_t sequence,
-                                   CaptureObserver observer,
-                                   void *context) noexcept {
+  [[nodiscard]] NetworkResult
+  ping(PingOrigin origin, std::uint8_t source_endpoint, Ipv4 destination,
+       std::uint16_t sequence, CaptureObserver observer, void *context,
+       CancellationObserver cancelled, void *cancellation_context) noexcept {
     // One operation owns its probe bookkeeping until success, a modeled drop or
     // the real-time timeout. No other device object is called by this loop.
     operation = {};
@@ -523,13 +522,25 @@ struct LabNetwork::Impl {
     // The forwarding shard waits only for the nearest link-owned deadline.
     // No global event queue, time scaling or direct device callback exists.
     while (!operation.terminal && std::chrono::steady_clock::now() < deadline) {
+      // Cancellation is read from an atomic shared control word. It never
+      // mutates packet state directly; the forwarding owner terminates its own
+      // operation and returns a normal result acknowledgement to control.
+      if (cancelled && cancelled(cancellation_context)) {
+        fail(NetworkDrop::cancelled);
+        break;
+      }
       pump_transmit();
       pump_delivery();
       pump_transmit();
       if (operation.terminal)
         break;
       if (const auto next = next_delivery()) {
-        std::this_thread::sleep_until(std::min(*next, deadline));
+        // Capping only the blocking interval bounds Ctrl-C latency. Link and
+        // protocol deadlines remain the real due times and are never advanced.
+        const auto cancellation_poll =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds{10};
+        std::this_thread::sleep_until(
+            std::min({*next, deadline, cancellation_poll}));
       } else if (std::chrono::steady_clock::now() < deadline) {
         fail(NetworkDrop::timeout);
       }
@@ -615,10 +626,11 @@ LabNetwork::adjacencies() const noexcept {
 // capture observer is borrowed only until the synchronous result returns.
 NetworkResult LabNetwork::ping(PingOrigin origin, std::uint8_t source_endpoint,
                                packet::Ipv4 destination, std::uint16_t sequence,
-                               CaptureObserver observer,
-                               void *observer_context) noexcept {
+                               CaptureObserver observer, void *observer_context,
+                               CancellationObserver cancelled,
+                               void *cancellation_context) noexcept {
   return impl_->ping(origin, source_endpoint, destination, sequence, observer,
-                     observer_context);
+                     observer_context, cancelled, cancellation_context);
 }
 
 } // namespace router

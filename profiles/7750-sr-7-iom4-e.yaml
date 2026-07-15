@@ -7,6 +7,18 @@ chassis: 7750 SR-7
 chassis_slots: 5
 system:
   default_name: R1
+  # These strings describe the pinned emulated image, not the Codex build or
+  # browser bundle. show system information consumes them as device identity.
+  software_version: C-26.7.R1
+  crypto_module_version: N/A
+  configuration_mode: mixed
+  # These values are SR OS system defaults exposed by show system information.
+  # They live in the release profile so another release can change them without
+  # modifying the shared report renderer.
+  snmp_port: 161
+  config_backup_count: 50
+  dns_resolve_preference: ipv4-only
+  dnssec_response_control: drop
 control:
   slot: A
   card: cpm5
@@ -31,20 +43,29 @@ forwarding_complexes: 1
 ports:
   count: 10
   speed_mbps: 10000
-  default_mtu: 1500
-  minimum_mtu: 576
-  maximum_mtu: 1500
+  # A newly exposed SR OS Ethernet port is administratively disabled. The two
+  # endpoint-facing ports below are enabled by the saved starter lab, not by a
+  # generic hardware or provisioning default.
+  initially_enabled: [1/1/1, 1/1/2]
+  # SR OS network Ethernet ports other than Fast Ethernet use 9212 bytes by
+  # default. The configured value includes the MAC addresses and EtherType but
+  # excludes preamble, SFD and FCS. Source: nokia.sros.26_7.port.ethernet_mtu.
+  default_mtu: 9212
+  minimum_mtu: 512
+  maximum_mtu: 9212
   modeled:
     - 1/1/1
     - 1/1/2
 router_interfaces:
   - name: to-host-a
     port: 1/1/1
+    admin_state: enable
     mac: "02:00:00:00:01:01"
     address: 192.0.2.1/30
     network: 192.0.2.0/30
   - name: to-host-b
     port: 1/1/2
+    admin_state: enable
     mac: "02:00:00:00:01:02"
     address: 198.51.100.1/30
     network: 198.51.100.0/30
@@ -94,6 +115,8 @@ resources:
   wasm_initial_memory_bytes: 268435456
 timing:
   ping_timeout_milliseconds: 2000
+  # Base router interfaces inherit the SR OS dynamic ARP aging default.
+  arp_timeout_seconds: 14400
   telemetry_interval_milliseconds: 250
   equipment_poll_milliseconds: 250
   worker_shutdown_milliseconds: 250
@@ -103,18 +126,22 @@ timing:
   autosave_debounce_milliseconds: 400
 limits:
   system_name_bytes: 64
-  port_description_bytes: 64
+  # The port description leaf accepts 1 to 80 printable ASCII characters.
+  port_description_bytes: 80
   host_name_bytes: 64
   project_name_bytes: 128
 cli_defaults:
   ping_count: 5
-  ping_max_count: 100
+  # SR OS 26.7.R1 global ping count range is 1 to 100000. The optional count
+  # syntax remains hidden until asynchronous Ctrl-C cancellation is available.
+  ping_max_count: 100000
   history_entries: 50
 abi:
   runtime_snapshot: 3
-  telemetry: 3
-  runtime_messages: 1
-  checkpoint: 2
+  telemetry: 4
+  # Version 2 adds the router-owned terminal history region to terminal:state.
+  runtime_messages: 2
+  checkpoint: 3
 link_defaults:
   # Propagation belongs to the cable or circuit, not to the Nokia port. The
   # project copies this value into each new physical link and may override it
@@ -136,4 +163,7 @@ capability_status: partially-implemented
 source_ids:
   - nokia.sros.26_7.sr7.supported_hardware
   - nokia.sros.26_7.physical_port.provisioning
+  - nokia.sros.26_7.show.system_information
+  - nokia.sros.26_7.show.system_alarms
+  - nokia.sros.26_7.arp.aging
   - ieee.802_3.ethernet_frame_timing

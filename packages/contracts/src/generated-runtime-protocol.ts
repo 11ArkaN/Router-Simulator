@@ -1,6 +1,6 @@
 // Generated runtime management protocol shared by the browser bridge.
 export const RUNTIME_PROTOCOL = {
-  "version": 1,
+  "version": 2,
   "snapshot": "snapshot",
   "hardware_insert_card": "hardware:insert-card:",
   "hardware_remove_card": "hardware:remove-card:",

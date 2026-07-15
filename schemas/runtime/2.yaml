@@ -1,0 +1,28 @@
+version: 2
+
+# Version 2 keeps operation names stable and extends the terminal_state
+# netstring payload to: engine, history-region, banner, prompt. The history
+# region remains router-owned because MD operational and configuration command
+# histories are separate session behaviors.
+operations:
+  snapshot: "snapshot"
+  hardware_insert_card: "hardware:insert-card:"
+  hardware_remove_card: "hardware:remove-card:"
+  hardware_insert_mda: "hardware:insert-mda:"
+  hardware_remove_mda: "hardware:remove-mda:"
+  link_up: "link:up:"
+  link_down: "link:down:"
+  project_provisioning: "project:provisioning|"
+  provisioning_absent: "absent"
+  project_hosts: "project:hosts|"
+  project_links: "project:links|"
+  project_running: "project:running|"
+  capture_prepare: "capture:prepare"
+  capture_start: "capture:start"
+  capture_stop: "capture:stop"
+  checkpoint_prepare: "checkpoint:prepare"
+  checkpoint_import: "checkpoint:import"
+  terminal_complete: "terminal:complete:"
+  terminal_execute: "terminal:"
+  terminal_state: "terminal:state"
+  host_ping: "host:ping:"

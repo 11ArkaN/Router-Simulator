@@ -41,7 +41,7 @@ int main(int argc, char **argv) {
   const auto ping = std::string{router::runtime_protocol::host_ping} +
                     router::profile::host_ids.front() + ":" +
                     router::profile::host_ids.back();
-  if (runtime->command(ping).find("1 packets received") == std::string::npos) {
+  if (runtime->command(ping).find("1 packet received") == std::string::npos) {
     return 3;
   }
 

@@ -45,7 +45,10 @@ void network_tests() {
   if (!result.success || !result.router_arp[ports[0]].valid ||
       !result.router_arp[ports[1]].valid || result.rx_delta[ports[0]] == 0 ||
       result.rx_delta[ports[1]] == 0 || result.tx_delta[ports[0]] == 0 ||
-      result.tx_delta[ports[1]] == 0) {
+      result.tx_delta[ports[1]] == 0 ||
+      result.router_arp[ports[0]].remaining_seconds == 0 ||
+      result.router_arp[ports[0]].remaining_seconds >
+          static_cast<std::uint32_t>(router::profile::arp_timeout.count())) {
     throw std::runtime_error(
         "Generic endpoint bindings did not route encoded ICMP frames");
   }

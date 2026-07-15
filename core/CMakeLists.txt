@@ -211,7 +211,11 @@ if(ROUTER_BUILD_TESTS)
   if(EMSCRIPTEN)
     target_compile_options(module_tests PRIVATE -pthread)
     target_link_options(module_tests PRIVATE -pthread
-      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}")
+      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}"
+      # Module suites deliberately throw on a failed invariant so the runner
+      # can print the violated contract. Without Wasm exception catching the
+      # first failure becomes an opaque __cxa_throw assertion instead.
+      "-sNO_DISABLE_EXCEPTION_CATCHING")
     set_target_properties(module_tests PROPERTIES SUFFIX ".js")
   endif()
   add_test(NAME module_tests COMMAND module_tests)

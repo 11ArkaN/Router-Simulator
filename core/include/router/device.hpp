@@ -16,6 +16,17 @@
 namespace router {
 
 enum class CliEngine : std::uint8_t { md, classic };
+enum class CliCompletionTrigger : std::uint8_t { tab, question, space };
+
+// MD-CLI starts in operational mode. Configuration requires an explicit
+// workflow choice, and the marker in the prompt depends on that choice.
+// The first milestone implements the exclusive variants because they provide
+// one unambiguous owner for the candidate datastore.
+enum class MdCliWorkflow : std::uint8_t {
+  operational,
+  implicit_exclusive,
+  explicit_exclusive
+};
 enum class EquipmentLifecycle : std::uint8_t {
   absent,
   waiting_for_provisioning,
@@ -29,7 +40,7 @@ struct PortConfiguration {
   // Configuration contains no physical carrier or counters. A complete value
   // can therefore be copied between running and candidate atomically on the
   // control shard without copying runtime observations.
-  bool admin_enabled{true};
+  bool admin_enabled{};
   std::uint16_t mtu{profile::default_port_mtu};
   // One extra byte guarantees NUL termination for CLI and JSON projections.
   std::array<char, profile::port_description_bytes + 1U> description{};
@@ -48,7 +59,8 @@ struct InterfaceConfiguration {
   std::uint32_t network{};
   std::uint8_t prefix_length{};
   std::uint8_t port_index{};
-  bool admin_enabled{true};
+  bool admin_enabled{};
+  bool operator==(const InterfaceConfiguration &) const = default;
 };
 
 struct StaticRouteConfiguration {
@@ -65,6 +77,7 @@ struct MdaConfiguration {
   // identity without allocating or owning text.
   const char *type{};
   bool admin_enabled{true};
+  bool operator==(const MdaConfiguration &) const = default;
 };
 
 struct CardConfiguration {
@@ -74,6 +87,7 @@ struct CardConfiguration {
   const char *type{};
   bool admin_enabled{true};
   std::array<MdaConfiguration, profile::mda_slots_per_card> mdas{};
+  bool operator==(const CardConfiguration &) const = default;
 };
 
 struct DeviceConfiguration {
@@ -97,6 +111,11 @@ struct DeviceConfiguration {
     // commands without changing the configuration ABI or reallocating storage.
     interface_count =
         static_cast<std::uint8_t>(profile::interface_names.size());
+    // Hardware discovery never enables ports. The saved starter project lists
+    // its intentional no-shutdown state in profile data, while every other
+    // port retains the SR OS administrative default of disabled.
+    for (std::size_t index = 0; index < ports.size(); ++index)
+      ports[index].admin_enabled = profile::initial_port_admin_enabled[index];
     for (std::size_t index = 0; index < interface_count; ++index) {
       interfaces[index] = {.valid = true,
                            .name = profile::interface_names[index],
@@ -107,9 +126,12 @@ struct DeviceConfiguration {
                            .network = profile::router_networks[index],
                            .prefix_length = profile::host_prefix_lengths[index],
                            .port_index = profile::interface_port_indices[index],
-                           .admin_enabled = true};
+                           .admin_enabled =
+                               profile::initial_interface_admin_enabled[index]};
     }
   }
+
+  bool operator==(const DeviceConfiguration &) const = default;
 };
 
 struct ConfigurationState {
@@ -118,6 +140,10 @@ struct ConfigurationState {
   // when the shared terminal session has no uncommitted MD changes.
   DeviceConfiguration running{};
   DeviceConfiguration candidate{running};
+  // This is the device's running-versus-persisted indication used by the
+  // classic prompt and system report. It is independent from MD candidate
+  // dirtiness and remains true until a future admin save implementation.
+  bool running_unsaved{};
 };
 
 struct EquipmentState {
@@ -190,12 +216,21 @@ struct ArpEntry {
   std::array<std::uint8_t, 4> address{};
   std::array<std::uint8_t, 6> mac{};
   std::uint8_t port_index{};
+  // Control reconstructs this monotonic deadline from the forwarding owner's
+  // remaining-duration projection. No wall-clock adjustment can extend or
+  // shorten adjacency lifetime.
+  std::chrono::steady_clock::time_point expires_at{};
 };
 
 struct AlarmRecord {
+  // Facility alarms retain their first raise time while the same condition is
+  // active. Code and severity use Nokia's documented facility-alarm identity;
+  // resource text is derived from the stable equipment ID at presentation.
   const char *id{};
   const char *severity{};
+  const char *code{};
   const char *reason{};
+  std::uint64_t raised_at_epoch_ms{};
 };
 
 struct OperationalState {
@@ -204,12 +239,31 @@ struct OperationalState {
   // telemetry publication independent of heap allocation.
   std::array<PortCounters, profile::port_count> port_counters{};
   std::array<ArpEntry, profile::port_count> arp{};
+  // Route age begins when a selected route first becomes active. Separate
+  // fixed arrays follow the configuration keys, so rebuilding an unchanged
+  // RIB retains age while withdrawal clears only the affected route clock.
+  std::array<std::chrono::steady_clock::time_point, profile::port_count>
+      connected_route_since{};
+  std::array<std::chrono::steady_clock::time_point,
+             profile::static_route_capacity>
+      static_route_since{};
+  // linkDown is a transition alarm, not a static reflection of carrier. The
+  // first bit records that the admin-up facility has previously reached Up;
+  // the second retains an active fault while a parent alarm temporarily masks
+  // the child in the facility hierarchy.
+  std::array<bool, profile::port_count> port_seen_operational{};
+  std::array<bool, profile::port_count> port_link_alarm_active{};
   std::array<AlarmRecord, profile::port_count + 2> alarms{};
   std::uint8_t alarm_count{};
   std::uint64_t capture_count{};
   std::uint64_t dropped_packets{};
   std::uint64_t capture_dropped{};
   const char *last_drop_reason{};
+  // Device uptime uses a local monotonic origin and is never restored as an
+  // absolute host timestamp. A restored runtime therefore starts a new boot
+  // interval, matching the lifecycle of the active emulator process.
+  std::chrono::steady_clock::time_point started_at{
+      std::chrono::steady_clock::now()};
 };
 
 // These accessors translate the active profile's external slot numbers to
@@ -312,10 +366,28 @@ struct CliSession {
   // MD and classic are engines in one router terminal session. Switching does
   // not create another device or a global application mode.
   CliEngine engine{CliEngine::md};
+  MdCliWorkflow md_workflow{MdCliWorkflow::operational};
+  // Each engine retains its own present working context across // switches.
+  // Paths contain canonical space-separated CLI tokens without a leading '/'.
+  // Fixed storage keeps checkpoint and cross-shard ownership bounded.
+  std::array<char, 160> md_path{};
+  std::array<char, 160> classic_path{};
+  // exit returns to the working context that preceded the latest navigation,
+  // while back walks to the structural parent. Keeping both values prevents
+  // an absolute multi-level jump from making these commands indistinguishable.
+  std::array<char, 160> md_previous_path{};
+  std::array<char, 160> classic_previous_path{};
+  // Exclusive mode asks before discarding dirty candidate data. Keeping the
+  // pending question in the router session makes the following y/n byte a real
+  // CLI interaction instead of a browser-side guess.
+  bool md_exit_confirmation{};
   bool candidate_dirty{};
   // Classic writes may advance running while an MD candidate is dirty. The
   // flag rejects a stale commit rather than silently rebasing or discarding it.
   bool candidate_outdated{};
+  // Classic changes take effect immediately but remain unsaved. The real
+  // prompt exposes that persistent-configuration state with a leading '*'.
+  bool classic_unsaved{};
 };
 
 } // namespace router

@@ -10,11 +10,14 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cmath>
 #include <cstring>
 #include <functional>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string_view>
+#include <thread>
 
 namespace router {
 namespace {
@@ -54,6 +57,8 @@ const char *drop_name(NetworkDrop reason) noexcept {
     return "ttl-expired";
   case NetworkDrop::timeout:
     return "timeout";
+  case NetworkDrop::cancelled:
+    return "cancelled";
   case NetworkDrop::malformed:
     return "malformed-packet";
   case NetworkDrop::none:
@@ -74,8 +79,9 @@ std::optional<std::size_t> parse_slot(std::string_view text) noexcept {
   return slot - 1U;
 }
 
-// Serializes the router-owned terminal engine, banner and prompt as netstrings.
-// UI rendering therefore never predicts prompt markers or system names.
+// Serializes the router-owned terminal engine, history region, banner and
+// prompt as netstrings. UI rendering therefore never predicts prompt markers,
+// workflow boundaries or system names.
 std::string terminal_state(const DeviceState &state,
                            const CliSession &session) {
   // Netstrings preserve spaces and control characters in the prompt without
@@ -84,8 +90,16 @@ std::string terminal_state(const DeviceState &state,
     return std::to_string(value.size()) + ":" + std::string{value} + ",";
   };
   const auto engine = session.engine == CliEngine::md ? "md" : "classic";
+  // MD-CLI intentionally separates operational and configuration histories.
+  // This small semantic projection lets the byte editor select the correct
+  // bounded history without exposing or duplicating the candidate workflow.
+  const auto history_region =
+      session.engine == CliEngine::classic                ? "classic"
+      : session.md_workflow == MdCliWorkflow::operational ? "md-operational"
+                                                          : "md-configuration";
   const auto banner = std::string{"SR OS "} + profile::release;
-  return field(engine) + field(banner) + field(cli_prompt(state, session));
+  return field(engine) + field(history_region) + field(banner) +
+         field(cli_prompt(state, session));
 }
 
 } // namespace
@@ -429,7 +443,18 @@ std::string Runtime::dispatch(const std::string &text) {
   }
   const std::string_view completion = runtime_protocol::terminal_complete;
   if (std::string_view(text).starts_with(completion)) {
-    return complete_cli(state_, session_, text.substr(completion.size()));
+    auto request = std::string_view{text}.substr(completion.size());
+    auto trigger = CliCompletionTrigger::tab;
+    if (request.starts_with("question|")) {
+      trigger = CliCompletionTrigger::question;
+      request.remove_prefix(9U);
+    } else if (request.starts_with("space|")) {
+      trigger = CliCompletionTrigger::space;
+      request.remove_prefix(6U);
+    } else if (request.starts_with("tab|")) {
+      request.remove_prefix(4U);
+    }
+    return complete_cli(state_, session_, std::string{request}, trigger);
   }
   if (text == runtime_protocol::terminal_state)
     return terminal_state(state_, session_);
@@ -482,12 +507,37 @@ std::string Runtime::run_ping(ForwardJobKind kind, packet::Ipv4 destination_ip,
                               std::uint32_t count) {
   // The CLI schema bounds count, but this internal boundary clamps again for
   // typed host operations and future ABI callers that do not use CLI parsing.
-  count = std::clamp<std::uint32_t>(count, 1, 100);
+  count = std::clamp<std::uint32_t>(count, 1, profile::maximum_ping_count);
+  std::atomic_ref<std::uint32_t>{telemetry_.cli_cancel_requested}.store(
+      0U, std::memory_order_release);
   const auto destination = ipv4_text(destination_ip);
   std::ostringstream out;
   out << "PING " << destination << " 56 data bytes\n";
   std::uint32_t received = 0;
+  std::uint32_t transmitted = 0;
+  std::uint64_t minimum_rtt = std::numeric_limits<std::uint64_t>::max();
+  std::uint64_t maximum_rtt{};
+  double rtt_sum{};
+  double rtt_square_sum{};
+  auto next_probe = std::chrono::steady_clock::now();
   for (std::uint32_t sequence = 1; sequence <= count; ++sequence) {
+    // SR OS defaults to one second between consecutive requests. Waiting on
+    // the host monotonic clock preserves real-time behavior and deliberately
+    // avoids a simulated event queue or accelerated test clock.
+    if (sequence > 1) {
+      next_probe += std::chrono::seconds{1};
+      // A local monotonic deadline preserves the one-second interval. Short
+      // sleeps only provide a bounded observation point for an atomic Ctrl-C
+      // request and do not advance or reschedule network time.
+      while (!cli_cancelled() &&
+             std::chrono::steady_clock::now() < next_probe) {
+        std::this_thread::sleep_until(
+            std::min(next_probe, std::chrono::steady_clock::now() +
+                                     std::chrono::milliseconds{10}));
+      }
+      if (cli_cancelled())
+        break;
+    }
     // Each probe is a distinct forwarding job and receives real ARP, queue and
     // link processing. Results return only value projections to control.
     const auto result =
@@ -495,16 +545,23 @@ std::string Runtime::run_ping(ForwardJobKind kind, packet::Ipv4 destination_ip,
                         .kind = kind,
                         .destination = destination_ip,
                         .source_endpoint = source_endpoint});
+    if (result.drop_reason == NetworkDrop::cancelled)
+      break;
+    ++transmitted;
     state_.operational.capture_count += result.captured_frames;
     state_.operational.capture_dropped += result.capture_drops;
     state_.operational.arp = {};
+    const auto arp_projection_time = std::chrono::steady_clock::now();
     for (std::size_t index = 0; index < result.arp.size(); ++index) {
       const auto &entry = result.arp[index];
       if (entry.valid) {
-        state_.operational.arp[index] = {.valid = true,
-                                         .address = entry.address,
-                                         .mac = entry.mac,
-                                         .port_index = entry.port_index};
+        state_.operational.arp[index] = {
+            .valid = true,
+            .address = entry.address,
+            .mac = entry.mac,
+            .port_index = entry.port_index,
+            .expires_at = arp_projection_time +
+                          std::chrono::seconds{entry.remaining_seconds}};
       }
       state_.operational.port_counters[index].rx_packets +=
           result.rx_delta[index];
@@ -519,22 +576,47 @@ std::string Runtime::run_ping(ForwardJobKind kind, packet::Ipv4 destination_ip,
     }
     ++received;
     state_.operational.last_drop_reason = nullptr;
+    minimum_rtt = std::min(minimum_rtt, result.rtt_us);
+    maximum_rtt = std::max(maximum_rtt, result.rtt_us);
+    rtt_sum += static_cast<double>(result.rtt_us);
+    rtt_square_sum += static_cast<double>(result.rtt_us) * result.rtt_us;
     out << "64 bytes from " << destination << ": icmp_seq=" << sequence
         << " ttl=" << static_cast<unsigned>(result.reply_ttl) << " time=";
-    if (result.rtt_us < 1000)
-      out << "<1 ms\n";
-    else
-      // RTT is bounded by the two-second operation deadline, so conversion to
-      // double is exact here. Spell it out to keep unit conversion auditable.
-      out << std::fixed << std::setprecision(3)
-          << static_cast<double>(result.rtt_us) / 1000.0 << " ms\n";
+    // SR OS writes the unit without an intervening space and terminates each
+    // reply line with a period. Microseconds provide stable three-decimal
+    // millisecond precision without inventing sub-clock measurements.
+    out << std::fixed << std::setprecision(3)
+        << static_cast<double>(result.rtt_us) / 1000.0 << "ms.\n";
   }
-  out << "--- " << destination << " ping statistics ---\n"
-      << count << " packets transmitted, " << received << " packets received, "
-      << std::fixed << std::setprecision(1)
-      << (100.0 * static_cast<double>(count - received) / count)
+  out << "\n---- " << destination << " PING Statistics ----\n"
+      << transmitted
+      << (transmitted == 1 ? " packet transmitted, " : " packets transmitted, ")
+      << received
+      << (received == 1 ? " packet received, " : " packets received, ")
+      << std::fixed << std::setprecision(2)
+      << (transmitted ? 100.0 * static_cast<double>(transmitted - received) /
+                            transmitted
+                      : 0.0)
       << "% packet loss";
+  if (received) {
+    const auto average = rtt_sum / received;
+    const auto variance =
+        std::max(0.0, rtt_square_sum / received - average * average);
+    out << "\nround-trip min = " << std::fixed << std::setprecision(3)
+        << static_cast<double>(minimum_rtt) / 1000.0
+        << "ms, avg = " << average / 1000.0
+        << "ms, max = " << static_cast<double>(maximum_rtt) / 1000.0
+        << "ms, stddev = " << std::sqrt(variance) / 1000.0 << "ms";
+  }
   return out.str();
+}
+
+bool Runtime::cli_cancelled() noexcept {
+  // atomic_ref matches JavaScript Atomics on the same aligned Wasm word. The
+  // acquire pairs with Atomics.store and makes cancellation visible to both
+  // runtime shards without routing a second command through the blocked owner.
+  return std::atomic_ref<std::uint32_t>{telemetry_.cli_cancel_requested}.load(
+             std::memory_order_acquire) != 0U;
 }
 
 ForwardResult Runtime::submit_forward(ForwardJob job) {
@@ -576,6 +658,53 @@ void Runtime::reconcile_fib(bool force) {
   // generation and acknowledges installation before control returns.
   if (!rib_.rebuild(make_rib_input(state_)) && fib_generation_ && !force)
     return;
+
+  // SR OS route tables report the age of the selected route, not a constant
+  // placeholder. These clocks belong to control because route selection also
+  // belongs here. A route keeps its original clock across unrelated rebuilds
+  // and receives a new clock only after withdrawal followed by reactivation.
+  std::array<bool, profile::port_count> connected_active{};
+  std::array<bool, profile::static_route_capacity> static_active{};
+  for (const auto &selected : rib_.entries()) {
+    if (selected.next_hop == 0) {
+      for (std::size_t index = 0;
+           index < state_.configuration.running.interface_count; ++index) {
+        const auto &interface = state_.configuration.running.interfaces[index];
+        if (interface.valid && interface.network == selected.network &&
+            interface.prefix_length == selected.prefix_length &&
+            interface.port_index == selected.port_index) {
+          connected_active[index] = true;
+          break;
+        }
+      }
+      continue;
+    }
+    for (std::size_t index = 0;
+         index < state_.configuration.running.static_routes.size(); ++index) {
+      const auto &route = state_.configuration.running.static_routes[index];
+      if (route.valid && route.network == selected.network &&
+          route.prefix_length == selected.prefix_length &&
+          route.next_hop == selected.next_hop) {
+        static_active[index] = true;
+        break;
+      }
+    }
+  }
+  const auto now = std::chrono::steady_clock::now();
+  const auto retain_or_reset =
+      [now](bool active, std::chrono::steady_clock::time_point &since) {
+        if (active && since == std::chrono::steady_clock::time_point{})
+          since = now;
+        else if (!active)
+          since = {};
+      };
+  for (std::size_t index = 0; index < connected_active.size(); ++index)
+    retain_or_reset(connected_active[index],
+                    state_.operational.connected_route_since[index]);
+  for (std::size_t index = 0; index < static_active.size(); ++index)
+    retain_or_reset(static_active[index],
+                    state_.operational.static_route_since[index]);
+
   const auto result =
       submit_forward({.id = next_id_.fetch_add(1, std::memory_order_relaxed),
                       .kind = ForwardJobKind::program_fib,
@@ -661,6 +790,10 @@ void Runtime::forwarding_loop() {
         job.source_endpoint, job.destination,
         static_cast<std::uint16_t>(job.id),
         capture_active_.load(std::memory_order_relaxed) ? capture : nullptr,
+        this,
+        [](void *context) noexcept {
+          return static_cast<Runtime *>(context)->cli_cancelled();
+        },
         this);
     result.success = outcome.success;
     result.reply_ttl = outcome.reply_ttl;

@@ -15,7 +15,7 @@ features:
     source_ids: [ieee.802_3.ethernet_frame_timing]
   arp.ipv4:
     status: implemented
-    source_ids: [ietf.arp.rfc826, ietf.ipv4.router_requirements.rfc1812]
+    source_ids: [ietf.arp.rfc826, ietf.ipv4.router_requirements.rfc1812, nokia.sros.26_7.arp.aging]
   host.ipv4_next_hop:
     status: partially-implemented
     source_ids: [ietf.host_requirements.rfc1122, ietf.arp.rfc826]
@@ -30,10 +30,13 @@ features:
     source_ids: [ietf.icmp.rfc792, ietf.ipv4.router_requirements.rfc1812]
   cli.md.session:
     status: partially-implemented
-    source_ids: [nokia.sros.26_7.md_cli.navigation, nokia.sros.26_7.md_cli.command_completion]
+    source_ids: [nokia.sros.26_7.md_cli.navigation, nokia.sros.26_7.md_cli.command_completion, nokia.sros.26_7.cli.pagination]
   cli.classic.session:
     status: partially-implemented
-    source_ids: [nokia.sros.26_7.md_cli.navigation]
+    source_ids: [nokia.sros.26_7.classic_cli.navigation, nokia.sros.26_7.cli.pagination]
+  cli.operational_reports:
+    status: partially-implemented
+    source_ids: [nokia.sros.26_7.show.system_information, nokia.sros.26_7.show.system_alarms, nokia.sros.26_7.facility_alarms, nokia.sros.26_7.hardware_alarm_events, nokia.sros.26_7.show.card, nokia.sros.26_7.show.mda, nokia.sros.26_7.show.port, nokia.sros.26_7.show.router_interface, nokia.sros.26_7.show.route_table, nokia.sros.26_7.show.fib, nokia.sros.26_7.show.arp]
   capture.pcapng:
     status: implemented
     source_ids: [ietf.pcapng.draft_ietf_opsawg_05, iana.pcap.linktype_ethernet]
@@ -51,4 +54,4 @@ features:
     source_ids: [w3c.webappsec.coop_coep_csp, emscripten.pthreads.shared_memory]
   cli.port_and_static_configuration:
     status: partially-implemented
-    source_ids: [nokia.sros.26_7.port.configuration]
+    source_ids: [nokia.sros.26_7.port.configuration, nokia.sros.26_7.port.description, nokia.sros.26_7.static_route.configuration, nokia.sros.26_7.system.name]

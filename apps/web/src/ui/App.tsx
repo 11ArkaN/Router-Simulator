@@ -204,9 +204,17 @@ export function App() {
     return output;
   }, [runtime]);
 
-  const complete = useCallback(async (input: string) => {
+  const complete = useCallback(async (
+    input: string, trigger: "tab" | "question" | "space"
+  ) => {
     if (!runtime) return "";
-    return runtime.completeTerminal(input);
+    return runtime.completeTerminal(input, trigger);
+  }, [runtime]);
+
+  const cancelTerminal = useCallback(() => {
+    // Cancellation is intentionally synchronous. It sets the shared signal
+    // while the command promise remains pending and requires no UI state guess.
+    runtime?.cancelTerminal();
   }, [runtime]);
 
   const terminalState = useCallback(async (): Promise<TerminalState> => {
@@ -388,7 +396,7 @@ export function App() {
       </div>
       <TerminalPanel ready={Boolean(runtime && !runtimeError && projectLoaded)}
         systemName={project.runningConfig.systemName} execute={execute}
-        complete={complete} state={terminalState} />
+        complete={complete} cancel={cancelTerminal} state={terminalState} />
     </main>
   );
 }

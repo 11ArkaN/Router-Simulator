@@ -22,8 +22,10 @@ std::string execute_cli(DeviceState &state, CliSession &session,
                         const std::string &input, const CliPing &ping);
 // Completion is read-only. It consults the same generated grammar as execution
 // and never exposes schema-only or unsupported command transcripts.
-std::string complete_cli(const DeviceState &state, const CliSession &session,
-                         const std::string &input);
+std::string
+complete_cli(const DeviceState &state, const CliSession &session,
+             const std::string &input,
+             CliCompletionTrigger trigger = CliCompletionTrigger::tab);
 // Returns the router-owned prompt for terminal redraws. The frontend must not
 // reconstruct engine markers or the configured system name.
 std::string cli_prompt(const DeviceState &state, const CliSession &session);

@@ -11,9 +11,14 @@ interface TelemetryLayout {
   abi: number; size: number; sequence: number; abiVersion: number;
   workerCount: number; portBitmap: number; controlThreadId: number;
   forwardingThreadId: number; capturedFrames: number; captureDropped: number;
-  droppedPackets: number;
+  droppedPackets: number; cliCancelRequested: number;
 }
-export interface TerminalState { engine: "md" | "classic"; banner: string; prompt: string }
+export interface TerminalState {
+  engine: "md" | "classic";
+  historyRegion: "md-operational" | "md-configuration" | "classic";
+  banner: string;
+  prompt: string;
+}
 export type HardwareAction =
   { kind: "insert-card"; slot: number; type: string } |
   { kind: "remove-card"; slot: number } |
@@ -261,19 +266,39 @@ export class RuntimeClient {
     return this.command(RUNTIME_PROTOCOL.terminal_execute + input);
   }
 
-  completeTerminal(input: string): Promise<string> {
+  completeTerminal(input: string, trigger: "tab" | "question" | "space"): Promise<string> {
     // Completion is read-only and cannot submit the completed command.
-    return this.command(RUNTIME_PROTOCOL.terminal_complete + input);
+    return this.command(RUNTIME_PROTOCOL.terminal_complete + `${trigger}|${input}`);
+  }
+
+  cancelTerminal(): void {
+    // The control owner is synchronously waiting for the active ping result, so
+    // another mailbox command could not overtake it. One documented atomic
+    // word reaches both C++ shards directly without exposing packet memory.
+    const page = this.telemetryPage;
+    if (!page || page.layout.cliCancelRequested + 4 > page.size) return;
+    const cancellation = new Int32Array(
+      page.buffer, page.offset + page.layout.cliCancelRequested, 1
+    );
+    Atomics.store(cancellation, 0, 1);
+    Atomics.notify(cancellation, 0);
   }
 
   async terminalState(): Promise<TerminalState> {
     // Prompt and engine state are returned by the same C++ session that executes
     // commands, eliminating duplicated frontend state transitions.
     const fields = parseNetstrings(await this.command(RUNTIME_PROTOCOL.terminal_state));
-    if (fields.length !== 3 || !["md", "classic"].includes(fields[0])) {
+    const regions = ["md-operational", "md-configuration", "classic"] as const;
+    if (fields.length !== 4 || !["md", "classic"].includes(fields[0]) ||
+        !regions.includes(fields[1] as typeof regions[number])) {
       throw new Error("Runtime returned an incompatible terminal state");
     }
-    return { engine: fields[0] as "md" | "classic", banner: fields[1], prompt: fields[2] };
+    return {
+      engine: fields[0] as "md" | "classic",
+      historyRegion: fields[1] as typeof regions[number],
+      banner: fields[2],
+      prompt: fields[3]
+    };
   }
 
   hostPing(sourceId: string, destinationId: string): Promise<string> {

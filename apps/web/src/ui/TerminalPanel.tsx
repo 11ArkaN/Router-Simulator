@@ -4,7 +4,11 @@
 import { useEffect, useRef } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { paginateTerminal, TerminalInputQueue, TerminalLineEditor } from "./terminal-model";
+import {
+  TerminalInputQueue,
+  TerminalLineEditor,
+  TerminalPager
+} from "./terminal-model";
 import { GENERATED_PROFILE } from "@router-simulator/contracts";
 import type { TerminalState } from "../runtime/client";
 
@@ -12,11 +16,12 @@ interface Props {
   ready: boolean;
   systemName: string;
   execute(command: string): Promise<string>;
-  complete(input: string): Promise<string>;
+  complete(input: string, trigger: "tab" | "question" | "space"): Promise<string>;
+  cancel(): void;
   state(): Promise<TerminalState>;
 }
 
-export function TerminalPanel({ ready, systemName, execute, complete, state }: Props) {
+export function TerminalPanel({ ready, systemName, execute, complete, cancel, state }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const executeRef = useRef(execute);
   const completeRef = useRef(complete);
@@ -51,15 +56,26 @@ export function TerminalPanel({ ready, systemName, execute, complete, state }: P
     // xterm.js owns rendering only. The session owner remains C++, while this
     // adapter translates byte-level editing keys into complete command lines.
     // History is local terminal ergonomics and cannot mutate router state.
-    const editor = new TerminalLineEditor();
+    // SR OS keeps separate MD operational, MD configuration and classic
+    // histories. The active region still comes only from C++; the renderer
+    // merely selects the corresponding bounded line-editing buffer.
+    const editors = {
+      "md-operational": new TerminalLineEditor(),
+      "md-configuration": new TerminalLineEditor(),
+      classic: new TerminalLineEditor()
+    };
     let busy = false;
     const queuedInput = new TerminalInputQueue(GENERATED_PROFILE.resources.cli_input_queue_bytes);
     let sessionState: TerminalState | undefined;
-    let pages: string[][] = [];
-    let pageIndex = 0;
+    let pager: TerminalPager | undefined;
 
+    const editor = () => editors[sessionState?.historyRegion ?? "md-operational"];
     const prompt = () => sessionState?.prompt.replace(/^\n/, "") ?? "";
-    const redraw = () => terminal.write(`\r\x1b[2K${prompt()}${editor.value}`);
+    const redraw = () => {
+      const active = editor();
+      const tail = active.value.length - active.cursor;
+      terminal.write(`\r\x1b[2K${prompt()}${active.value}${tail ? `\x1b[${tail}D` : ""}`);
+    };
 
     if (ready) {
       void stateRef.current().then((next) => {
@@ -69,29 +85,35 @@ export function TerminalPanel({ ready, systemName, execute, complete, state }: P
       }).catch((cause) => console.error("Console session startup failed", cause));
     }
 
-    const writePage = () => {
+    const writePaged = (output: string) => {
       // Paging is a presentation boundary, not a CLI command retry. The full
       // response has already been produced exactly once by the session owner.
-      terminal.write(pages[pageIndex].join("\r\n"));
-      if (++pageIndex < pages.length) terminal.write("\r\n--More--");
-      else pages = [];
+      const next = new TerminalPager(output, terminal.rows);
+      terminal.write(next.page.join("\r\n"));
+      if (next.active) {
+        pager = next;
+        terminal.write(`\r\n${next.status}`);
+      } else {
+        pager = undefined;
+      }
     };
 
-    const writePaged = (output: string) => {
-      pages = paginateTerminal(output, terminal.rows);
-      pageIndex = 0;
-      writePage();
-    };
-
-    const showCompletion = async () => {
+    const showCompletion = async (trigger: "tab" | "question" | "space") => {
       busy = true;
       try {
-        const result = await completeRef.current(editor.value);
-        if (!result) return;
-        if (!result.includes("\n")) {
+        const active = editor();
+        const result = await completeRef.current(active.value, trigger);
+        if (!result) {
+          if (trigger === "space") {
+            active.insert(" ");
+            redraw();
+          }
+          return;
+        }
+        if (!result.includes("\n") && trigger !== "question") {
           // A unique result replaces the editable buffer. Redrawing the current
           // line avoids synthesizing key presses or bypassing normal execution.
-          editor.replace(result);
+          active.replace(result + (trigger === "space" ? " " : ""));
           redraw();
         } else {
           terminal.write(`\r\n${result.replaceAll("\n", "\r\n")}\r\n`);
@@ -102,21 +124,48 @@ export function TerminalPanel({ ready, systemName, execute, complete, state }: P
       }
     };
 
+    const completeEnterKeyword = async () => {
+      // With default 26.7 MD settings, Enter completes a unique command
+      // keyword before execution. Variable parameters are deliberately left
+      // untouched because their completion is Tab-only.
+      if (sessionState?.engine !== "md") return;
+      const active = editor();
+      const result = await completeRef.current(active.value, "space");
+      if (result && !result.includes("\n") && result !== active.value) {
+        active.replace(result);
+        redraw();
+      }
+    };
+
     const processData = async (data: string): Promise<void> => {
-      // While the pager is active, only Space, Enter and q have meaning. Other
-      // bytes are ignored so they cannot leak into the next router command.
-      if (pages.length) {
-        if (data === "q" || data === "Q") {
-          pages = [];
+      // The 26.7 pager accepts line, half-screen, screen and absolute movement
+      // keys. Bytes consumed here never leak into the next router command.
+      if (pager) {
+        const action = pager.handle(data);
+        if (action === "quit") {
+          pager = undefined;
           terminal.write(`\r\x1b[2K\r\n${prompt()}`);
-        } else if (data === " " || data === "\r") {
-          terminal.write("\r\x1b[2K");
-          writePage();
+        } else if (action === "unchanged") {
+          terminal.write("\u0007");
+        } else {
+          // A pager redraw replaces the current screen, which permits backward
+          // navigation without duplicating old lines in the visible viewport.
+          terminal.write(`\x1b[2J\x1b[H${pager.page.join("\r\n")}`);
+          if (action === "complete") pager = undefined;
+          else terminal.write(`\r\n${pager.status}`);
         }
         return;
       }
       if (!ready) return;
       if (busy) {
+        if (data === "\u0003") {
+          // Ctrl-C is an out-of-band terminal signal. It must not wait behind
+          // the active command in the byte queue or the ping could never be
+          // interrupted until after its final probe.
+          cancel();
+          terminal.write("^C");
+          return;
+        }
         // The terminal adapter is the producer of the 64 KiB CLI input queue.
         // processData is its only consumer and preserves xterm byte order. A
         // full queue applies visible backpressure by disabling stdin instead of
@@ -127,11 +176,12 @@ export function TerminalPanel({ ready, systemName, execute, complete, state }: P
         }
         return;
       }
-      if (data === "\r") {
-        terminal.write("\r\n");
+      if (data === "\r" || data === "\n") {
         busy = true;
-        const submitted = editor.submit();
         try {
+          await completeEnterKeyword();
+          terminal.write("\r\n");
+          const submitted = editor().submit();
           const output = await executeRef.current(submitted);
           // The backend may change engine, prompt markers or system name while
           // executing. Refreshing state prevents the renderer from predicting
@@ -147,22 +197,115 @@ export function TerminalPanel({ ready, systemName, execute, complete, state }: P
           busy = false;
           terminal.options.disableStdin = false;
         }
-      } else if (data === "\u007f") {
-        if (editor.value.length) {
-          editor.backspace();
-          terminal.write("\b \b");
-        }
-      } else if (data === "\u001b[A" || data === "\u001b[B") {
+      } else if (data === "\u007f" || data === "\b") {
+        editor().backspace();
+        redraw();
+      } else if (data === "\u001b[A" || data === "\u001b[B" ||
+                 data === "\u0010" || data === "\u000e") {
         // Arrow navigation never submits a command. It only replaces the local
         // edit buffer and therefore preserves immediate classic CLI semantics.
-        if (data === "\u001b[A") editor.previous();
-        else editor.next();
+        if (data === "\u001b[A" || data === "\u0010") editor().previous();
+        else editor().next();
         redraw();
+      } else if (data === "\u001b[D" || data === "\u0002") {
+        editor().left();
+        redraw();
+      } else if (data === "\u001b[C" || data === "\u0006") {
+        editor().right();
+        redraw();
+      } else if (data === "\u001b[H" || data === "\u001b[1~" || data === "\u0001") {
+        editor().home();
+        redraw();
+      } else if (data === "\u001b[F" || data === "\u001b[4~" || data === "\u0005") {
+        editor().end();
+        redraw();
+      } else if (data === "\u001b[3~" || data === "\u0004") {
+        editor().deleteCharacter();
+        redraw();
+      } else if (data === "\u0017") {
+        editor().deletePreviousWord();
+        redraw();
+      } else if (data === "\u001b\u007f" || data === "\u001b\b") {
+        editor().deletePreviousWord();
+        redraw();
+      } else if (data === "\u001b[1;3D" || data === "\u001bb") {
+        editor().previousWord();
+        redraw();
+      } else if (data === "\u001b[1;3C" || data === "\u001bf") {
+        editor().nextWord();
+        redraw();
+      } else if (data === "\u001bd") {
+        editor().deleteNextWord();
+        redraw();
+      } else if (data === "\u001bc" || data === "\u001bC") {
+        editor().changeWordCase(true);
+        redraw();
+      } else if (data === "\u001bl" || data === "\u001bL") {
+        editor().changeWordCase(false);
+        redraw();
+      } else if (data === "\u0015") {
+        editor().deleteBeforeCursor();
+        redraw();
+      } else if (data === "\u000b") {
+        editor().deleteAfterCursor();
+        redraw();
+      } else if (data === "\u0014") {
+        editor().transposeCharacters();
+        redraw();
+      } else if (data === "\u0012") {
+        editor().reverseSearch();
+        redraw();
+      } else if (data === "\u001b.") {
+        editor().insertLastElement();
+        redraw();
+      } else if (data === "\u000c") {
+        // MD-CLI defines Ctrl-L as clear-screen, while classic CLI documents a
+        // refresh of the input line. Both preserve the router session and edit
+        // buffer, differing only in local terminal presentation.
+        if (sessionState?.engine === "md") terminal.write("\x1b[2J\x1b[H");
+        redraw();
+      } else if (data === "\u001a") {
+        // Ctrl-Z executes a pending line, then asks the active router engine to
+        // return to its operational root. The UI does not mutate CLI context.
+        busy = true;
+        try {
+          await completeEnterKeyword();
+          terminal.write("\r\n");
+          const submitted = editor().submit();
+          let output = "";
+          if (submitted) {
+            output = await executeRef.current(submitted);
+            sessionState = await stateRef.current();
+            const intermediatePrompt = sessionState.prompt;
+            if (output.endsWith(intermediatePrompt)) {
+              output = output.slice(0, -intermediatePrompt.length);
+            }
+          }
+          output += await executeRef.current("exit all");
+          sessionState = await stateRef.current();
+          writePaged(output);
+        } catch (cause) {
+          console.error("Console Ctrl-Z transport failed", cause);
+          terminal.write(`Console unavailable.\r\n${prompt()}`);
+        } finally {
+          busy = false;
+        }
+      } else if (data === "\u0003") {
+        // Ctrl-C cancels the editable line without submitting a router command.
+        editor().replace("");
+        terminal.write(`^C\r\n${prompt()}`);
       } else if (data === "\t" || data === "?") {
-        await showCompletion();
+        if (data === "?" && editor().hasOpenQuote()) {
+          editor().insert(data);
+          redraw();
+        } else {
+          await showCompletion(data === "\t" ? "tab" : "question");
+        }
+      } else if (data === " ") {
+        await showCompletion("space");
       } else if (data >= " " && data !== "\u007f") {
-        editor.insert(data);
-        terminal.write(data);
+        editor().insert(data);
+        redraw();
       }
       while (!busy && queuedInput.length) {
         const queued = queuedInput.shift()!;
@@ -190,7 +333,7 @@ export function TerminalPanel({ ready, systemName, execute, complete, state }: P
       inputDisposable.dispose();
       terminal.dispose();
     };
-  }, [ready]);
+  }, [ready, cancel]);
 
   return (
     <section className="terminal-panel">

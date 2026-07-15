@@ -8,6 +8,13 @@ import { dirname, extname, normalize, relative, resolve } from "node:path";
 const root = resolve(import.meta.dirname, "..");
 const roots = [resolve(root, "core"), resolve(root, "apps"), resolve(root, "packages")];
 const files = [];
+
+// Architecture checks inspect executable literals, not explanatory prose.
+// Full-line and block comments are removed centrally so every literal guard
+// can coexist with the repository's required design and invariant comments.
+const withoutComments = (source) => source
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .replace(/^\s*\/\/.*$/gm, "");
 const walk = (directory) => {
   for (const name of readdirSync(directory)) {
     const path = resolve(directory, name);
@@ -79,7 +86,15 @@ for (const [source, dependencies] of graph) {
 // make completion, source status and execution drift independently again.
 for (const name of ["cli.cpp", "cli_md.cpp", "cli_classic.cpp"]) {
   const source = readFileSync(resolve(root, "core/src", name), "utf8");
-  if (/"(?:show|configure|delete|ping)\s+[a-z0-9]/i.test(source))
+  // Documentation is intentionally dense in the CLI implementation and may
+  // quote a user-visible example while explaining a parser invariant. Remove
+  // comments before checking string literals so the guard detects executable
+  // shadow grammars without pressuring maintainers to delete useful rationale.
+  const executable = withoutComments(source);
+  // Schema command tokens are lowercase. Case-sensitive matching avoids
+  // confusing prose such as "Delete current character" in help output with a
+  // submitted `delete ...` command line.
+  if (/"(?:show|configure|delete|ping)\s+[a-z0-9]/.test(executable))
     throw new Error(`${name}: whole CLI command literal must be defined in schemas/cli`);
 }
 
@@ -89,7 +104,7 @@ for (const name of ["cli.cpp", "cli_md.cpp", "cli_classic.cpp"]) {
 for (const file of files) {
   const path = relative(root, file).replaceAll("\\", "/");
   if (!path.startsWith("apps/web/src/") || /\.test\.[^.]+$/.test(path)) continue;
-  const source = readFileSync(file, "utf8");
+  const source = withoutComments(readFileSync(file, "utf8"));
   if (/["'`](?:show|configure|delete|ping)\s+[a-z0-9]/i.test(source))
     throw new Error(`${path}: frontend must use structured runtime operations, not CLI command lines`);
 }
@@ -102,7 +117,7 @@ for (const file of files) {
   const path = relative(root, file).replaceAll("\\", "/");
   if (/generated[_-]/.test(path) || path.includes("/tests/") ||
       path.includes("/tools/") || path.includes(".test.")) continue;
-  const source = readFileSync(file, "utf8");
+  const source = withoutComments(readFileSync(file, "utf8"));
   if (profileLiteral.test(source))
     throw new Error(`${path}: profile identity must come from generated data`);
 }

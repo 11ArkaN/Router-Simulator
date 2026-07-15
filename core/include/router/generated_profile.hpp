@@ -16,6 +16,13 @@ inline constexpr char id[] = "7750-sr-7-iom4-e";
 inline constexpr char release[] = "26.7.R1";
 inline constexpr char chassis[] = "7750 SR-7";
 inline constexpr char default_system_name[] = "R1";
+inline constexpr char software_version[] = "C-26.7.R1";
+inline constexpr char crypto_module_version[] = "N/A";
+inline constexpr char configuration_mode[] = "mixed";
+inline constexpr std::uint16_t snmp_port = 161;
+inline constexpr std::uint16_t config_backup_count = 50;
+inline constexpr char dns_resolve_preference[] = "ipv4-only";
+inline constexpr char dnssec_response_control[] = "drop";
 inline constexpr char control_slot[] = "A";
 inline constexpr char control_card_type[] = "cpm5";
 inline constexpr char control_initial_state[] = "active-ready";
@@ -36,9 +43,9 @@ inline constexpr std::size_t capture_ingress_base = link_direction_count;
 inline constexpr std::size_t capture_egress_base = capture_ingress_base + endpoint_count;
 inline constexpr std::size_t capture_cpm_index = capture_egress_base + endpoint_count;
 inline constexpr std::uint32_t port_speed_mbps = 10000U;
-inline constexpr std::uint16_t default_port_mtu = 1500;
-inline constexpr std::uint16_t minimum_port_mtu = 576;
-inline constexpr std::uint16_t maximum_port_mtu = 1500;
+inline constexpr std::uint16_t default_port_mtu = 9212;
+inline constexpr std::uint16_t minimum_port_mtu = 512;
+inline constexpr std::uint16_t maximum_port_mtu = 9212;
 inline constexpr std::size_t static_route_capacity = 8;
 inline constexpr std::size_t fib_route_capacity = 18;
 inline constexpr std::uint32_t runtime_worker_count = 2U;
@@ -54,18 +61,18 @@ inline constexpr std::size_t response_ring_capacity = 8;
 inline constexpr std::size_t forwarding_ring_capacity = 16;
 inline constexpr std::size_t cli_input_queue_bytes = 65536U;
 inline constexpr std::size_t system_name_bytes = 64;
-inline constexpr std::size_t port_description_bytes = 64;
+inline constexpr std::size_t port_description_bytes = 80;
 inline constexpr std::size_t host_name_bytes = 64;
 inline constexpr std::size_t project_name_bytes = 128;
 inline constexpr std::uint32_t default_ping_count = 5U;
-inline constexpr std::uint32_t maximum_ping_count = 100U;
+inline constexpr std::uint32_t maximum_ping_count = 100000U;
 inline constexpr std::size_t cli_history_entries = 50;
 inline constexpr std::uint32_t runtime_snapshot_abi = 3;
-inline constexpr std::uint32_t telemetry_abi = 3;
-inline constexpr std::uint32_t runtime_message_abi = 1;
-inline constexpr std::uint32_t checkpoint_abi = 2;
-inline constexpr std::uint64_t profile_hash = 0xcccd30365f6b2ce0ULL;
-inline constexpr std::uint64_t checkpoint_schema_hash = 0x52dc86137d62fd04ULL;
+inline constexpr std::uint32_t telemetry_abi = 4;
+inline constexpr std::uint32_t runtime_message_abi = 2;
+inline constexpr std::uint32_t checkpoint_abi = 3;
+inline constexpr std::uint64_t profile_hash = 0xbf930a8c47c9a9e8ULL;
+inline constexpr std::uint64_t checkpoint_schema_hash = 0x9e1630da53ef95fcULL;
 
 // Hardware initialization values are experimental emulator timing profiles,
 // not claims about physical platform boot guarantees.
@@ -75,6 +82,8 @@ inline constexpr std::chrono::milliseconds mda_initialization{
     1000};
 inline constexpr std::chrono::milliseconds ping_timeout{
     2000};
+inline constexpr std::chrono::seconds arp_timeout{
+    14400};
 inline constexpr std::chrono::milliseconds telemetry_interval{
     250};
 inline constexpr std::chrono::milliseconds equipment_poll_interval{
@@ -112,6 +121,8 @@ inline constexpr std::array<std::uint32_t, endpoint_count> router_networks{
     0xc0000200U, 0xc6336400U};
 inline constexpr std::array<const char*, port_count> port_ids{
     "1/1/1", "1/1/2", "1/1/3", "1/1/4", "1/1/5", "1/1/6", "1/1/7", "1/1/8", "1/1/9", "1/1/10"};
+inline constexpr std::array<bool, port_count> initial_port_admin_enabled{
+    true, true, false, false, false, false, false, false, false, false};
 inline constexpr std::array<const char*, 2> supported_mda_types{
     "me10-10gb-sfp+", "me1-100gb-cfp2"};
 inline constexpr std::array<const char*, endpoint_count> host_ids{
@@ -130,6 +141,8 @@ inline constexpr std::array<const char*, endpoint_count> interface_prefixes{
     "192.0.2.0/30", "198.51.100.0/30"};
 inline constexpr std::array<std::uint8_t, endpoint_count> interface_port_indices{
     0, 1};
+inline constexpr std::array<bool, endpoint_count> initial_interface_admin_enabled{
+    true, true};
 inline constexpr std::array<const char*, 9> capture_interface_names{
     "link-host-a-to-router", "link-router-to-host-a", "link-host-b-to-router", "link-router-to-host-b", "router-1/1/1-ingress", "router-1/1/2-ingress", "router-1/1/1-egress", "router-1/1/2-egress", "cpm-punt"};
 

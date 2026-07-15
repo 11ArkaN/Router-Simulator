@@ -30,6 +30,15 @@ int main() {
     return result;
   };
 
+  // The manual CLI probe targets the configured endpoint address, but the
+  // text is derived from the generated binary address rather than duplicated
+  // in this scenario. This keeps the smoke test valid when a profile changes
+  // its lab prefixes.
+  const auto ipv4_text = [](router::packet::Ipv4 address) {
+    return std::to_string(address[0]) + '.' + std::to_string(address[1]) + '.' +
+           std::to_string(address[2]) + '.' + std::to_string(address[3]);
+  };
+
   // Endpoints and hardware identifiers come from the selected profile. This
   // scenario therefore survives reordered hosts, slots and supported types.
   const auto host_ping = std::string{router::runtime_protocol::host_ping} +
@@ -44,6 +53,12 @@ int main() {
            std::to_string(router::profile::line_card_slot) + ":" +
            std::to_string(router::profile::mda_slot) + ":" + type;
   };
+  const auto show_fib =
+      terminal(std::string{"show router fib "} +
+               std::to_string(router::profile::line_card_slot));
+  const auto cli_ping =
+      terminal(std::string{"ping "} +
+               ipv4_text(router::profile::host_addresses.back()) + " count 1");
 
   // First prove that an unprovisioned chassis does not forward or report
   // usable interfaces. This guards against implicit always-present ports.
@@ -57,6 +72,8 @@ int main() {
       router::profile::modeled_mda_type);
   run(insert_card);
   run(insert_mda(router::profile::supported_mda_types.back()));
+  run(terminal("show card"));
+  run(terminal("show mda"));
   run(terminal("show port"));
   run(host_ping);
 
@@ -73,8 +90,12 @@ int main() {
   // These reads exercise the whole configuration to RIB to FIB to packet path
   // chain. ARP appears only after encoded traffic traverses both links.
   run(terminal("show router interface"));
-  run(terminal("show router fib"));
+  run(terminal("show router route-table"));
+  run(show_fib);
   run(host_ping);
+  // Unlike host_ping, this passes through the actual CLI grammar and output
+  // renderer, including count parsing, the reply line and summary statistics.
+  run(cli_ping);
   run(terminal("show router arp"));
   run(router::runtime_protocol::capture_prepare);
 
@@ -83,7 +104,9 @@ int main() {
   run(std::string{router::runtime_protocol::link_down} +
       router::profile::port_ids[router::profile::link_port_indices.back()]);
   run(terminal("show router interface"));
-  run(terminal("show router fib"));
+  run(terminal("show router route-table"));
+  run(show_fib);
+  run(terminal("show system alarms"));
   run(host_ping);
   run(router::runtime_protocol::snapshot);
 

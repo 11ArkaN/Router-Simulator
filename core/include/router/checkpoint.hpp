@@ -35,6 +35,8 @@ encode(const DeviceState &device, const CliSession &session,
 // Decode validates family magic, ABI, profile and schema hashes, bounds and the
 // terminal offset. Failure returns nullopt and exposes no partially decoded
 // state.
-[[nodiscard]] std::optional<Image> decode(std::span<const std::uint8_t> bytes);
+[[nodiscard]] std::optional<Image>
+decode(std::span<const std::uint8_t> bytes,
+       std::chrono::steady_clock::time_point now);
 
 } // namespace router::checkpoint

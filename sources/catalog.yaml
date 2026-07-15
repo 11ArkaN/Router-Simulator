@@ -23,11 +23,11 @@ records:
     section: Configuring physical ports with CLI
     rfc_refs: []
     yang_path: /configure/card
-    last_verified_at: 2026-07-14
-    implementation: [core/include/router/device.hpp, core/src/runtime.cpp, core/src/hardware.cpp]
-    tests: [core/tests/hardware_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp]
+    last_verified_at: 2026-07-15
+    implementation: [profiles/7750-sr-7-iom4-e.yaml, tools/generate-profile.mjs, core/include/router/device.hpp, core/src/runtime.cpp, core/src/hardware.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/hardware_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp]
     status: implemented
-    notes: A physical port is created by compatible equipped MDA inventory and requires matching provisioning plus completed lifecycle before it can become operational.
+    notes: A physical port is created by compatible equipped MDA inventory and requires matching provisioning plus completed lifecycle before it can become operational. New ports are administratively disabled; the saved starter lab explicitly enables only its two endpoint-facing ports.
   - id: ietf.arp.rfc826
     kind: protocol
     release: 26.7.R1
@@ -79,11 +79,39 @@ records:
     section: Navigating the MD-CLI
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-07-14
-    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli.cpp, core/src/cli_parser.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts]
+    last_verified_at: 2026-07-15
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli.cpp, core/src/cli_parser.cpp, core/src/cli_md.cpp, apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts]
     tests: [core/tests/cli_test.cpp, apps/web/src/ui/terminal-model.test.ts]
     status: partially-implemented
-    notes: The first milestone implements a sourced subset, engine-switch messages, retained dirty candidate state, an out-of-date baseline indicator and explicit unsupported errors for other commands.
+    notes: MD-CLI retains its working context and implements slash, closing-brace, back with an optional level count, exit, exit all, top, editing keys, separate operational and configuration histories, engine-switch messages and prompt markers for the exposed tree. Navigation above /configure exits implicit mode and dirty exits preserve context until confirmed.
+  - id: nokia.sros.26_7.classic_cli.navigation
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7x50-shared/classic-cli-command-reference/classic-cli-overview.html
+    section: Navigating in the CLI, command completion, editing keystrokes and absolute paths
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-15
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli.cpp, core/src/cli_parser.cpp, core/src/cli_classic.cpp, apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts]
+    tests: [core/tests/cli_test.cpp, apps/web/src/ui/terminal-model.test.ts]
+    status: partially-implemented
+    notes: The exposed classic tree implements hierarchical prompts, global navigation, slash and backslash absolute paths, abbreviations, help variants and documented line-editing keys.
+  - id: nokia.sros.26_7.md_cli.configuration_workflow
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7x50-shared/md-cli-user/edit-configuration.html
+    section: Implicit and explicit configuration workflows
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-15
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/src/cli.cpp, core/src/cli_md.cpp, core/src/checkpoint.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/checkpoint_test.cpp]
+    status: partially-implemented
+    notes: Operational startup, exclusive implicit and explicit workflows, the one-way implicit-to-explicit transition, configuration-region confinement, silent successful edits, commit, discard and interactive dirty-exit confirmation are implemented. Private, global, read-only and confirmed commit remain unsupported.
   - id: nokia.sros.26_7.md_cli.command_completion
     kind: cli-behavior
     release: 26.7.R1
@@ -93,11 +121,25 @@ records:
     section: Command completion
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-07-14
+    last_verified_at: 2026-07-15
     implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli_parser.cpp, apps/web/src/ui/TerminalPanel.tsx]
     tests: [core/tests/cli_test.cpp]
     status: partially-implemented
-    notes: Tab completion exposes only executable commands in the active terminal engine.
+    notes: Tab, Spacebar, Enter and question-mark input query only commands available in the active engine, workflow and working context. Enter completes a unique MD keyword before execution, while variable completion remains Tab-only. Question-mark help includes schema-owned descriptions, parameter type labels and the documented context plus or leaf minus marker without exposing project endpoints as address choices.
+  - id: nokia.sros.26_7.cli.pagination
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7x50-shared/md-cli-user/navigate.html
+    section: Navigating output using the pager
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-15
+    implementation: [apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts]
+    tests: [apps/web/src/ui/terminal-model.test.ts]
+    status: partially-implemented
+    notes: Paginated output uses the 26.7 less-style status with percentage and line bounds. Line, half-screen, full-screen, beginning, end, backward and quit keys consume one immutable command result. Search and numeric prefixes remain unsupported.
   - id: nokia.sros.26_7.ping
     kind: cli-behavior
     release: 26.7.R1
@@ -107,11 +149,11 @@ records:
     section: ping and count number
     rfc_refs: [RFC792]
     yang_path: null
-    last_verified_at: 2026-07-14
+    last_verified_at: 2026-07-15
     implementation: [core/src/cli.cpp, core/src/runtime.cpp]
     tests: [core/tests/cli_test.cpp, core/tests/runtime_test.cpp]
     status: implemented
-    notes: Default count is five, count 1 is accepted, payload is 56 octets and RTT is measured from the runtime path.
+    notes: Default count is five, count accepts 1 to 100000, payload is 56 octets, probes use one-second host-clock intervals, RTT follows the forwarding path and Ctrl-C reaches both runtime shards through one atomic cancellation word.
   - id: ieee.802_3.ethernet_frame_timing
     kind: link-behavior
     release: 2022
@@ -206,7 +248,7 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/CMakeLists.txt, schemas/runtime/1.yaml, schemas/checkpoint/2.yaml, core/include/router/generated_runtime_protocol.hpp, core/src/checkpoint.cpp, core/src/runtime_checkpoint.cpp, core/src/runtime_projection.cpp, core/src/wasm_api.cpp, apps/web/src/runtime/runtime.worker.ts, apps/web/src/runtime/client.ts]
+    implementation: [core/CMakeLists.txt, schemas/runtime/2.yaml, schemas/checkpoint/3.yaml, core/include/router/generated_runtime_protocol.hpp, core/src/checkpoint.cpp, core/src/runtime_checkpoint.cpp, core/src/runtime_projection.cpp, core/src/wasm_api.cpp, apps/web/src/runtime/runtime.worker.ts, apps/web/src/runtime/client.ts]
     tests: [core/tests/checkpoint_test.cpp, core/tests/runtime_test.cpp]
     status: implemented
     notes: The active profile generates the required pthread pool size and fixed shared Wasm memory budget. There is no single-thread fallback, and JavaScript obtains telemetry offsets from the compiled C++ layout.
@@ -251,7 +293,49 @@ records:
     implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli_parser.cpp, core/src/cli.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, core/src/device_routing.cpp, core/src/routing.cpp, core/src/network.cpp]
     tests: [core/tests/cli_test.cpp, core/tests/project_configuration_test.cpp, core/tests/routing_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp]
     status: partially-implemented
-    notes: The milestone implements system name, port admin state, description, MTU, interface admin state and directly resolved IPv4 static routes.
+    notes: The milestone implements port admin state, MTU and interface admin state.
+  - id: nokia.sros.26_7.system.name
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/system-system_0.html
+    section: configure system name
+    rfc_refs: []
+    yang_path: /configure/system/name
+    last_verified_at: 2026-07-15
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/src/cli_md.cpp, core/src/cli_classic.cpp]
+    tests: [core/tests/cli_test.cpp]
+    status: implemented
+    notes: Both terminal engines change the shared system name, enforce the documented 1 to 64 character bound and use the result in router-owned prompts and operational output.
+  - id: nokia.sros.26_7.port.description
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/port-port_0.html
+    section: configure port description
+    rfc_refs: []
+    yang_path: /configure/port/description
+    last_verified_at: 2026-07-15
+    implementation: [profiles/7750-sr-7-iom4-e.yaml, schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/src/cli.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp]
+    tests: [core/tests/cli_test.cpp]
+    status: implemented
+    notes: Description accepts 1 to 80 printable 7-bit ASCII characters. MD delete and classic no remove the leaf instead of storing an empty compatibility value.
+  - id: nokia.sros.26_7.static_route.configuration
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html
+    section: configure router static-routes route
+    rfc_refs: [RFC 1812]
+    yang_path: /configure/router/static-routes/route
+    last_verified_at: 2026-07-15
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/src/cli.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, core/src/device_routing.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/routing_test.cpp, core/tests/runtime_test.cpp]
+    status: partially-implemented
+    notes: Directly resolved IPv4 unicast routes support creation and removal in both engines. Multiple next hops, indirect routes, IPv6 and optional route attributes remain unsupported.
   - id: whatwg.storage.opfs
     kind: browser-storage
     release: current
@@ -280,3 +364,185 @@ records:
     tests: [apps/web/src/runtime/client.ts]
     status: implemented
     notes: Local and preview servers publish isolation, CSP and Permissions Policy headers and reject runtime startup when the pthread smoke test fails.
+  - id: nokia.sros.26_7.port.ethernet_mtu
+    kind: cli-default
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7x50-shared/interface-configuration/mtu-configuration-guidelines.html
+    section: Ethernet MTU defaults and limits
+    rfc_refs: []
+    yang_path: /configure/port/ethernet/mtu
+    last_verified_at: 2026-07-15
+    implementation: [profiles/7750-sr-7-iom4-e.yaml, core/src/cli_md.cpp, core/src/cli_classic.cpp]
+    tests: [core/tests/cli_test.cpp]
+    status: implemented
+    notes: Modeled 10 Gb/s network Ethernet ports use default 9212 and configured range 512 to 9212.
+  - id: nokia.sros.26_7.arp.aging
+    kind: protocol-default
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-a-commands-app--3.html
+    section: arp-timeout
+    rfc_refs: [RFC826]
+    yang_path: /configure/router/interface/arp-timeout
+    last_verified_at: 2026-07-15
+    implementation: [profiles/7750-sr-7-iom4-e.yaml, tools/generate-profile.mjs, core/src/network_adjacency.hpp, core/src/network_adjacency.cpp, core/include/router/device.hpp, core/src/runtime.cpp, core/src/runtime_checkpoint.cpp, core/src/checkpoint.cpp, core/src/cli.cpp]
+    tests: [core/tests/network_test.cpp, core/tests/runtime_test.cpp]
+    status: implemented
+    notes: Dynamic router-interface ARP entries use the four-hour default, refresh on learning, expire against steady clock and preserve their remaining lifetime through checkpoints.
+  - id: nokia.sros.26_7.show.system_information
+    kind: cli-output
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-i-commands.html
+    section: show system information
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-15
+    implementation: [profiles/7750-sr-7-iom4-e.yaml, core/src/cli.cpp]
+    tests: [core/tests/cli_test.cpp]
+    status: partially-implemented
+    notes: The documented field order, system identity, both uptime widths, mode-change duration, persistence, management, DNS, BOF and reboot sections are emitted. Unimplemented management subsystems report N/A or Disabled.
+  - id: nokia.sros.26_7.show.system_alarms
+    kind: cli-output
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-a-commands.html
+    section: show system alarms
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-15
+    implementation: [core/include/router/device.hpp, core/src/hardware.cpp, core/src/cli.cpp]
+    tests: [core/tests/hardware_test.cpp, core/tests/cli_test.cpp]
+    status: partially-implemented
+    notes: Active equipment and link alarms retain raise time and use Nokia alarm IDs. Cleared-alarm history is not exposed.
+  - id: nokia.sros.26_7.facility_alarms
+    kind: operational-behavior
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/html/0_add-h-f/93-0071-10-01/7750_SR_OS_System_Management_Guide/Alarms-Intro.pdf
+    section: Facility Alarm List, alarms 7-2003-1, 7-2004-1 and 59-2004-1
+    rfc_refs: [RFC 3418]
+    yang_path: null
+    last_verified_at: 2026-07-15
+    implementation: [core/include/router/device.hpp, core/src/hardware.cpp, core/src/cli.cpp]
+    tests: [core/tests/hardware_test.cpp, core/tests/cli_test.cpp]
+    status: partially-implemented
+    notes: Card and MDA removal or mismatch alarms and transition-driven Ethernet linkDown alarms are implemented. Cleared alarm history and configurable event severities are not yet implemented.
+  - id: nokia.sros.26_7.hardware_alarm_events
+    kind: operational-behavior
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7x50-shared/log-events/log-chassis.html
+    section: tmnxEqCardRemoved and tmnxEqWrongCard
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-15
+    implementation: [core/src/hardware.cpp, core/src/cli.cpp]
+    tests: [core/tests/hardware_test.cpp, core/tests/cli_test.cpp]
+    status: implemented
+    notes: Removal uses major severity and wrong-type insertion uses minor severity, with the documented CHASSIS event IDs and message meanings.
+  - id: nokia.sros.26_7.show.card
+    kind: cli-output
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-c-commands.html
+    section: show card
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-15
+    implementation: [core/src/cli.cpp]
+    tests: [core/tests/cli_test.cpp]
+    status: implemented
+    notes: Summary distinguishes provisioned and equipped types, administrative state and operational state.
+  - id: nokia.sros.26_7.show.mda
+    kind: cli-output
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-m-commands.html
+    section: show mda
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-15
+    implementation: [core/src/cli.cpp]
+    tests: [core/tests/cli_test.cpp]
+    status: implemented
+    notes: Summary is derived from provisioned configuration and equipped inventory.
+  - id: nokia.sros.26_7.show.port
+    kind: cli-output
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-p-commands.html
+    section: show port
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-15
+    implementation: [core/src/cli.cpp]
+    tests: [core/tests/cli_test.cpp]
+    status: partially-implemented
+    notes: Summary covers modeled Ethernet ports and their actual admin, carrier, operational and MTU state.
+  - id: nokia.sros.26_7.show.router_interface
+    kind: cli-output
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-i-commands.html
+    section: show router interface
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-15
+    implementation: [core/src/cli.cpp]
+    tests: [core/tests/cli_test.cpp]
+    status: implemented
+    notes: Rows are generated from configured router interfaces and computed operational state.
+  - id: nokia.sros.26_7.show.route_table
+    kind: cli-output
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-r-commands.html
+    section: show router route-table
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-15
+    implementation: [core/include/router/device.hpp, core/src/runtime.cpp, core/src/checkpoint.cpp, core/src/cli.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/checkpoint_test.cpp, core/tests/runtime_test.cpp]
+    status: partially-implemented
+    notes: Connected and active static IPv4 routes are displayed from local RIB prerequisites with monotonic selection age preserved by checkpoints.
+  - id: nokia.sros.26_7.show.fib
+    kind: cli-output
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-f-commands.html
+    section: show router fib
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-15
+    implementation: [core/src/cli.cpp]
+    tests: [core/tests/cli_test.cpp]
+    status: partially-implemented
+    notes: The implemented slot form displays locally programmed connected and static IPv4 entries.
+  - id: nokia.sros.26_7.show.arp
+    kind: cli-output
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-a-commands.html
+    section: show router arp
+    rfc_refs: [RFC826]
+    yang_path: null
+    last_verified_at: 2026-07-15
+    implementation: [core/include/router/device.hpp, core/src/network_adjacency.cpp, core/src/runtime.cpp, core/src/runtime_checkpoint.cpp, core/src/checkpoint.cpp, core/src/cli.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/network_test.cpp, core/tests/checkpoint_test.cpp, core/tests/runtime_test.cpp]
+    status: partially-implemented
+    notes: Learned IPv4 adjacencies, MAC addresses, dynamic type, interface and live expiry countdown are displayed from forwarding-owned adjacency state.

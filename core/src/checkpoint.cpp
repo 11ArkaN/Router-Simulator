@@ -256,6 +256,24 @@ std::vector<std::uint8_t> encode(const DeviceState &device,
             equipment.deadline - now)
             .count());
   };
+  const auto deadline_remaining = [now](auto deadline) {
+    if (deadline == decltype(deadline){} || deadline <= now)
+      return std::uint64_t{};
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - now)
+            .count());
+  };
+  const auto elapsed_since = [now](auto since) {
+    // Zero marks an inactive route. One is added to active elapsed durations
+    // so a route selected at the checkpoint instant remains distinguishable.
+    if (since == decltype(since){})
+      return std::uint64_t{};
+    const auto elapsed = since < now ? now - since : decltype(now - since){};
+    return static_cast<std::uint64_t>(
+               std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed)
+                   .count()) +
+           1U;
+  };
   for (const auto &card : device.hardware.cards) {
     // Hardware inventory stores type, compatibility and lifecycle separately
     // from provisioning so a restored mismatch remains observable.
@@ -265,6 +283,7 @@ std::vector<std::uint8_t> encode(const DeviceState &device,
   }
   configuration(out, device.configuration.running);
   configuration(out, device.configuration.candidate);
+  out.integer<std::uint8_t>(device.configuration.running_unsaved);
   for (const auto &card : device.hardware.cards) {
     out.integer<std::uint8_t>(card.type ? 1U : 0U);
     out.integer<std::uint8_t>(card.compatible);
@@ -301,15 +320,36 @@ std::vector<std::uint8_t> encode(const DeviceState &device,
     out.fixed(entry.address);
     out.fixed(entry.mac);
     out.integer(entry.port_index);
+    // Only the remaining interval is portable across process-local monotonic
+    // clock epochs.
+    out.integer(deadline_remaining(entry.expires_at));
   }
+  // Route activation time is wall-clock presentation state. Persisting it
+  // prevents every restored route from falsely appearing newly installed.
+  for (const auto since : device.operational.connected_route_since)
+    out.integer(elapsed_since(since));
+  for (const auto since : device.operational.static_route_since)
+    out.integer(elapsed_since(since));
+  for (const auto seen : device.operational.port_seen_operational)
+    out.integer<std::uint8_t>(seen);
+  for (const auto active : device.operational.port_link_alarm_active)
+    out.integer<std::uint8_t>(active);
   out.integer(static_cast<std::uint8_t>(session.engine));
+  out.integer(static_cast<std::uint8_t>(session.md_workflow));
+  out.fixed(session.md_path);
+  out.fixed(session.classic_path);
+  out.fixed(session.md_previous_path);
+  out.fixed(session.classic_previous_path);
+  out.integer<std::uint8_t>(session.md_exit_confirmation);
   out.integer<std::uint8_t>(session.candidate_dirty);
   out.integer<std::uint8_t>(session.candidate_outdated);
+  out.integer<std::uint8_t>(session.classic_unsaved);
   out.integer(fib_generation);
   return std::move(out.bytes);
 }
 
-std::optional<Image> decode(std::span<const std::uint8_t> bytes) {
+std::optional<Image> decode(std::span<const std::uint8_t> bytes,
+                            std::chrono::steady_clock::time_point now) {
   // All work targets a local Image. The runtime does not receive it unless the
   // header, every field and complete-consumption check all succeed.
   Reader in(bytes);
@@ -337,7 +377,8 @@ std::optional<Image> decode(std::span<const std::uint8_t> bytes) {
     }
   }
   if (!configuration(in, image.device.configuration.running) ||
-      !configuration(in, image.device.configuration.candidate))
+      !configuration(in, image.device.configuration.candidate) ||
+      !boolean(in, image.device.configuration.running_unsaved))
     return std::nullopt;
   for (std::size_t card_index = 0;
        card_index < image.device.hardware.cards.size(); ++card_index) {
@@ -394,22 +435,65 @@ std::optional<Image> decode(std::span<const std::uint8_t> bytes) {
   }
   image.device.operational.last_drop_reason = drop_reason(reason);
   for (auto &entry : image.device.operational.arp) {
+    std::uint64_t remaining_ns{};
     if (!boolean(in, entry.valid) || !in.fixed(entry.address) ||
         !in.fixed(entry.mac) || !in.integer(entry.port_index) ||
-        entry.port_index >= profile::port_count) {
+        !in.integer(remaining_ns) || entry.port_index >= profile::port_count) {
       return std::nullopt;
     }
+    entry.valid = entry.valid && remaining_ns != 0;
+    entry.expires_at = entry.valid
+                           ? now + std::chrono::nanoseconds{remaining_ns}
+                           : std::chrono::steady_clock::time_point{};
+  }
+  for (auto &since : image.device.operational.connected_route_since) {
+    std::uint64_t elapsed_plus_one{};
+    if (!in.integer(elapsed_plus_one))
+      return std::nullopt;
+    since = elapsed_plus_one
+                ? now - std::chrono::nanoseconds{elapsed_plus_one - 1U}
+                : std::chrono::steady_clock::time_point{};
+  }
+  for (auto &since : image.device.operational.static_route_since) {
+    std::uint64_t elapsed_plus_one{};
+    if (!in.integer(elapsed_plus_one))
+      return std::nullopt;
+    since = elapsed_plus_one
+                ? now - std::chrono::nanoseconds{elapsed_plus_one - 1U}
+                : std::chrono::steady_clock::time_point{};
+  }
+  for (auto &seen : image.device.operational.port_seen_operational) {
+    if (!boolean(in, seen))
+      return std::nullopt;
+  }
+  for (auto &active : image.device.operational.port_link_alarm_active) {
+    if (!boolean(in, active))
+      return std::nullopt;
   }
   std::uint8_t engine{};
+  std::uint8_t workflow{};
   // Session engine and candidate flags are last so truncated terminal state
   // cannot produce an otherwise accepted device checkpoint.
   if (!in.integer(engine) ||
       engine > static_cast<std::uint8_t>(CliEngine::classic) ||
+      !in.integer(workflow) ||
+      workflow > static_cast<std::uint8_t>(MdCliWorkflow::explicit_exclusive) ||
+      !in.fixed(image.session.md_path) ||
+      !in.fixed(image.session.classic_path) ||
+      !in.fixed(image.session.md_previous_path) ||
+      !in.fixed(image.session.classic_previous_path) ||
+      image.session.md_path.back() != '\0' ||
+      image.session.classic_path.back() != '\0' ||
+      image.session.md_previous_path.back() != '\0' ||
+      image.session.classic_previous_path.back() != '\0' ||
+      !boolean(in, image.session.md_exit_confirmation) ||
       !boolean(in, image.session.candidate_dirty) ||
       !boolean(in, image.session.candidate_outdated) ||
+      !boolean(in, image.session.classic_unsaved) ||
       !in.integer(image.fib_generation) || !in.complete())
     return std::nullopt;
   image.session.engine = static_cast<CliEngine>(engine);
+  image.session.md_workflow = static_cast<MdCliWorkflow>(workflow);
   return image;
 }
 

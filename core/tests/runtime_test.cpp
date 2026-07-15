@@ -165,6 +165,16 @@ int main() {
     // Mirroring that lifecycle also keeps bounded mailbox storage off the small
     // WebAssembly entry stack.
     auto runtime = std::make_unique<router::Runtime>();
+    // The terminal state is a versioned bridge contract, not presentation
+    // metadata invented by React.  The second field selects the real SR OS
+    // history region: MD operational and MD configuration commands do not
+    // share a recall list, while classic keeps one list for all contexts.
+    const auto terminal_state =
+        runtime->command(router::runtime_protocol::terminal_state);
+    if (terminal_state.rfind("2:md,14:md-operational,", 0) != 0) {
+      throw std::runtime_error(
+          "Initial terminal state did not expose the MD operational history");
+    }
     const auto initial = runtime->command(router::runtime_protocol::snapshot);
     if (initial.find("\"equippedType\":null") == std::string::npos) {
       throw std::runtime_error("Initial hardware state is not absent");
@@ -238,8 +248,10 @@ int main() {
         "project:hosts|02:00:00:00:00:0C|192.0.2.2/"
         "30|192.0.2.1|02:00:00:00:00:0B|198.51.100.2/30|198.51.100.1");
     const auto ping = runtime->command("host:ping:host-a:host-b");
-    if (ping.find("1 packets received") == std::string::npos) {
-      throw std::runtime_error("Routed ICMP path failed");
+    if (ping.find("1 packet received") == std::string::npos) {
+      // Preserve the device response in the failure so a timing, adjacency or
+      // interface regression can be distinguished without a debugger.
+      throw std::runtime_error("Routed ICMP path failed: " + ping);
     }
     const auto final = runtime->command("snapshot");
     if (final.find("\"captureCount\":") == std::string::npos) {
@@ -253,12 +265,14 @@ int main() {
     const std::vector<std::uint8_t> checkpoint(checkpoint_view.begin(),
                                                checkpoint_view.end());
     runtime->command("link:down:1/1/1");
-    if (!runtime->import_checkpoint(checkpoint) ||
-        runtime->command("terminal:show router arp")
-                .find("02:00:00:00:00:0C") == std::string::npos) {
-      throw std::runtime_error(
-          "Structural checkpoint did not restore active ARP state");
-    }
+    if (!runtime->import_checkpoint(checkpoint))
+      throw std::runtime_error("Structural checkpoint import failed");
+    const auto restored_arp = runtime->command("terminal:show router arp");
+    if (restored_arp.find("02:00:00:00:00:0c") == std::string::npos ||
+        restored_arp.find("00h00m00s") != std::string::npos)
+      throw std::runtime_error("Structural checkpoint did not restore active "
+                               "ARP state and expiry: " +
+                               restored_arp);
     const auto capture_status = runtime->command("capture:prepare");
     const auto capture = runtime->prepared_capture();
     if (capture_status.rfind("capture ready: ", 0) != 0 ||
@@ -320,12 +334,13 @@ int main() {
         detail << static_cast<unsigned>(ttl) << ',';
       throw std::runtime_error(detail.str());
     }
-    // The CLI advertises a count range through 100 for this milestone. Exercise
-    // the upper bound through both pthread domains so a result larger than the
-    // old 2048-byte response mailbox cannot be truncated after valid execution.
+    // Two probes cross both pthread domains and verify the real one-second
+    // default interval without turning the deterministic suite into a
+    // 99-second upper-bound test. Ctrl-C is exercised in the browser test where
+    // JavaScript owns the shared cancellation producer.
     const auto long_ping =
-        runtime->command("terminal:ping 198.51.100.2 count 100");
-    if (long_ping.find("100 packets transmitted, 100 packets received") ==
+        runtime->command("terminal:ping 198.51.100.2 count 2");
+    if (long_ping.find("2 packets transmitted, 2 packets received") ==
             std::string::npos ||
         long_ping.find("ERROR: response exceeds") != std::string::npos) {
       throw std::runtime_error(

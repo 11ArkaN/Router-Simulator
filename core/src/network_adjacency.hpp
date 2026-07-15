@@ -14,6 +14,9 @@ namespace router::network_detail {
 struct Adjacency {
   packet::Ipv4 address{};
   packet::Mac mac{};
+  // Aging uses the forwarding owner's steady clock. Browser clock changes
+  // cannot extend or prematurely expire a learned protocol mapping.
+  std::chrono::steady_clock::time_point expires_at{};
 };
 
 class AdjacencyTable final {
@@ -27,7 +30,7 @@ public:
   // exact is the forwarding lookup. A MAC learned for another protocol address
   // on the same port is never returned as a convenient substitute.
   [[nodiscard]] const Adjacency *exact(std::size_t port,
-                                       packet::Ipv4 address) const noexcept;
+                                       packet::Ipv4 address) noexcept;
   // get supports operational projection and does not express resolution.
   [[nodiscard]] const Adjacency *get(std::size_t port) const noexcept;
   // Request flags suppress duplicate ARP while a bounded pending frame waits.

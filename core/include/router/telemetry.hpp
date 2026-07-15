@@ -1,6 +1,6 @@
-// Stable telemetry page shared read-only with the browser UI. Runtime owns all
-// writes on the control shard. JavaScript reads snapshots with the sequence
-// protocol and never receives pointers to C++ classes or packet storage.
+// Stable shared page between the runtime and browser terminal. Runtime owns
+// every telemetry field. The browser may atomically write only the documented
+// CLI cancellation word, which carries intent rather than device state.
 
 #pragma once
 
@@ -36,6 +36,12 @@ struct alignas(64) TelemetryPageV1 {
   std::uint64_t captured_frames{};
   std::uint64_t capture_dropped{};
   std::uint64_t dropped_packets{};
+  // Producer: browser terminal. Consumers: control and forwarding shards.
+  // Zero means continue and one means cancel the active CLI operation. JS uses
+  // Atomics.store/notify and C++ uses atomic_ref acquire loads. The word is not
+  // covered by the telemetry seqlock because the runtime publisher never
+  // writes it while an operation is active.
+  alignas(4) std::uint32_t cli_cancel_requested{};
 };
 
 static_assert(std::is_standard_layout_v<TelemetryPageV1>);

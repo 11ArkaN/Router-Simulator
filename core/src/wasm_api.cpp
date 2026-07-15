@@ -145,7 +145,9 @@ RS_EXPORT const char *telemetry_get_layout() {
       << ",\"captureDropped\":"
       << offsetof(router::TelemetryPageV1, capture_dropped)
       << ",\"droppedPackets\":"
-      << offsetof(router::TelemetryPageV1, dropped_packets) << '}';
+      << offsetof(router::TelemetryPageV1, dropped_packets)
+      << ",\"cliCancelRequested\":"
+      << offsetof(router::TelemetryPageV1, cli_cancel_requested) << '}';
   response = out.str();
   return response.c_str();
 }

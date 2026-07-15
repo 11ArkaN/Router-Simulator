@@ -17,13 +17,16 @@ std::span<const std::uint8_t> Runtime::encode_checkpoint_on_control() {
   if (!barrier.success)
     return {};
   state_.operational.arp = {};
+  const auto projection_time = std::chrono::steady_clock::now();
   for (const auto &entry : barrier.arp) {
     if (entry.valid) {
-      state_.operational.arp[entry.port_index] = {.valid = true,
-                                                  .address = entry.address,
-                                                  .mac = entry.mac,
-                                                  .port_index =
-                                                      entry.port_index};
+      state_.operational.arp[entry.port_index] = {
+          .valid = true,
+          .address = entry.address,
+          .mac = entry.mac,
+          .port_index = entry.port_index,
+          .expires_at =
+              projection_time + std::chrono::seconds{entry.remaining_seconds}};
     }
   }
   prepared_checkpoint_ = checkpoint::encode(state_, session_, fib_generation_,
@@ -35,10 +38,10 @@ bool Runtime::decode_checkpoint_on_control(
     std::span<const std::uint8_t> bytes) {
   // Decode completes into private storage, so incompatible input cannot mutate
   // any live owner before the whole image is validated.
-  auto image = checkpoint::decode(bytes);
+  const auto now = std::chrono::steady_clock::now();
+  auto image = checkpoint::decode(bytes, now);
   if (!image)
     return false;
-  const auto now = std::chrono::steady_clock::now();
   // Remaining initialization durations are rebased to this process clock.
   // Absolute steady-clock timestamps are never portable across sessions.
   for (std::size_t card_index = 0;
@@ -72,10 +75,20 @@ bool Runtime::decode_checkpoint_on_control(
   // handles and request flags deliberately do not exist in the checkpoint.
   for (std::size_t index = 0; index < restored.size(); ++index) {
     const auto &entry = image->device.operational.arp[index];
-    restored[index] = {.valid = entry.valid,
+    const auto remaining_seconds =
+        entry.valid && entry.expires_at > now
+            ? static_cast<std::uint32_t>(
+                  std::chrono::duration_cast<std::chrono::seconds>(
+                      entry.expires_at - now + std::chrono::milliseconds{999})
+                      .count())
+            : 0U;
+    restored[index] = {.valid = entry.valid && remaining_seconds != 0,
                        .address = entry.address,
                        .mac = entry.mac,
-                       .port_index = entry.port_index};
+                       .port_index = entry.port_index,
+                       .remaining_seconds = remaining_seconds};
+    if (entry.valid && remaining_seconds == 0)
+      image->device.operational.arp[index] = {};
   }
   const auto adjacency =
       submit_forward({.id = next_id_.fetch_add(1, std::memory_order_relaxed),

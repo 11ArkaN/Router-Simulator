@@ -3,7 +3,11 @@
 
 import { describe, expect, it } from "vitest";
 import { GENERATED_PROFILE } from "@router-simulator/contracts";
-import { paginateTerminal, TerminalInputQueue, TerminalLineEditor } from "./terminal-model";
+import {
+  TerminalInputQueue,
+  TerminalLineEditor,
+  TerminalPager
+} from "./terminal-model";
 
 describe("terminal byte editing", () => {
   it("applies printable input, backspace and history navigation in order", () => {
@@ -22,11 +26,19 @@ describe("terminal byte editing", () => {
     expect(editor.next()).toBe("");
   });
 
-  it("creates stable pager screens without dropping response lines", () => {
-    // Four terminal rows reserve two rows for prompt and pager marker, leaving
-    // two response lines per page. The final short page must remain present.
-    const pages = paginateTerminal("one\ntwo\nthree\nfour\nfive", 4);
-    expect(pages).toEqual([["one", "two"], ["three", "four"], ["five"]]);
+  it("navigates the sourced 26.7 pager without dropping response lines", () => {
+    // Four terminal rows leave three output rows above the less-style status.
+    // Screen, line, backward and end motions operate on one immutable result.
+    const pager = new TerminalPager("one\ntwo\nthree\nfour\nfive", 4);
+    expect(pager.page).toEqual(["one", "two", "three"]);
+    expect(pager.status).toBe("--(more)--(60%)--(lines 1-3/5)--");
+    expect(pager.handle("\r")).toBe("continue");
+    expect(pager.page).toEqual(["two", "three", "four"]);
+    expect(pager.handle("k")).toBe("continue");
+    expect(pager.page).toEqual(["one", "two", "three"]);
+    expect(pager.handle(" ")).toBe("complete");
+    expect(pager.page).toEqual(["three", "four", "five"]);
+    expect(pager.handle("Q")).toBe("quit");
   });
 
   it("bounds per-session history at the sourced default size", () => {
@@ -40,6 +52,53 @@ describe("terminal byte editing", () => {
     for (let index = 0; index < GENERATED_PROFILE.cliDefaults.history_entries; ++index) editor.previous();
     expect(editor.value).toBe("show command 1");
     expect(editor.previous()).toBe("show command 1");
+  });
+
+  it("implements documented word, case and transpose editing at the cursor", () => {
+    // The sequence covers the stateful operations behind Esc-B, Esc-C, Esc-L,
+    // Ctrl-T and Ctrl-W instead of checking only final submitted commands.
+    const editor = new TerminalLineEditor();
+    editor.insert("show prot");
+    editor.left();
+    editor.left();
+    expect(editor.transposeCharacters()).toBe("show port");
+    editor.home();
+    editor.nextWord();
+    expect(editor.changeWordCase(true)).toBe("show PORT");
+    editor.previousWord();
+    expect(editor.changeWordCase(false)).toBe("show port");
+    expect(editor.deletePreviousWord()).toBe("show ");
+  });
+
+  it("recalls matching history and the previous command's last element", () => {
+    // Ctrl-R and Esc-. are history editing actions, not backend commands. A
+    // quoted final element remains intact when it is recalled.
+    const editor = new TerminalLineEditor();
+    editor.insert("show card");
+    editor.submit();
+    editor.insert("show port");
+    editor.submit();
+    editor.insert('description "edge uplink"');
+    editor.submit();
+    expect(editor.insertLastElement()).toBe('"edge uplink"');
+    editor.replace("");
+    editor.insert("show");
+    expect(editor.reverseSearch()).toBe("show port");
+    // A repeated Ctrl-R retains the original "show" query. It must continue
+    // farther back instead of searching for the full first result.
+    expect(editor.reverseSearch()).toBe("show card");
+    editor.submit();
+    expect(editor.insertLastElement()).toBe("card");
+  });
+
+  it("recognizes a literal question mark inside an open quoted parameter", () => {
+    // Quote detection influences only terminal input dispatch. C++ remains the
+    // owner of whether the completed string is legal for a specific command.
+    const editor = new TerminalLineEditor();
+    editor.insert('description "edge?');
+    expect(editor.hasOpenQuote()).toBe(true);
+    editor.insert('"');
+    expect(editor.hasOpenQuote()).toBe(false);
   });
 
   it("buffers terminal bytes in FIFO order and rejects overflow without loss", () => {
