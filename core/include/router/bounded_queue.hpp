@@ -1,3 +1,6 @@
+// Fixed-capacity forwarding queue with explicit tail-drop semantics. One shard
+// owns every instance; cross-thread traffic uses SpscRing instead.
+
 #pragma once
 
 #include <array>
@@ -49,6 +52,23 @@ public:
 
   [[nodiscard]] std::size_t size() const noexcept { return size_; }
   [[nodiscard]] bool full() const noexcept { return size_ == Capacity; }
+
+  [[nodiscard]] bool copy_at(std::size_t offset, T &value) const noexcept {
+    // Structural checkpoints inspect FIFO order without popping live handles.
+    // The caller receives a value copy and cannot mutate queue storage.
+    if (offset >= size_)
+      return false;
+    value = slots_[(head_ + offset) % Capacity];
+    return true;
+  }
+
+  void clear() noexcept {
+    // Clearing is legal only for the sole owner after it has released any
+    // resources referenced by elements. This type cannot know handle policy.
+    head_ = 0;
+    tail_ = 0;
+    size_ = 0;
+  }
 
 private:
   // Capacity is part of the type. Queue memory is therefore allocated once

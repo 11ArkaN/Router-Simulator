@@ -1,3 +1,6 @@
+// CLI contract tests exercise generated syntax, router-owned session state and
+// datastore semantics without bypassing the injected forwarding boundary.
+
 #include "router/cli.hpp"
 #include "router/hardware.hpp"
 
@@ -23,7 +26,8 @@ bool contains(std::string_view text, std::string_view fragment) {
 void cli_tests() {
   router::DeviceState state;
   router::CliSession session;
-  const auto no_ping = [](router::packet::Ipv4, std::uint32_t) {
+  const auto no_ping = [](router::packet::Ipv4, std::uint32_t, std::uint16_t,
+                          bool) {
     return std::string{};
   };
 
@@ -378,9 +382,14 @@ void cli_tests() {
   // Ping defaults and count bounds are release data. The injected callback
   // proves that CLI syntax reaches forwarding without a direct device call.
   std::uint32_t requested_count{};
+  std::uint16_t requested_size{};
+  bool requested_df{};
   const auto counted_ping = [&](router::packet::Ipv4 destination,
-                                std::uint32_t count) {
+                                std::uint32_t count, std::uint16_t size,
+                                bool dont_fragment) {
     requested_count = count;
+    requested_size = size;
+    requested_df = dont_fragment;
     require(destination == router::packet::Ipv4{198, 51, 100, 2},
             "Ping destination changed before forwarding");
     return std::string{"ping-result"};
@@ -388,9 +397,17 @@ void cli_tests() {
   router::execute_cli(classic_state, classic_session, "ping 198.51.100.2",
                       counted_ping);
   require(requested_count == 5, "Default ping count was not five");
+  require(requested_size == router::profile::default_ping_payload_octets &&
+              !requested_df,
+          "Default ping size or DF state was not release-compatible");
   router::execute_cli(classic_state, classic_session,
                       "ping 198.51.100.2 count 2", counted_ping);
   require(requested_count == 2, "Explicit ping count was ignored");
+  router::execute_cli(
+      classic_state, classic_session,
+      "ping 198.51.100.2 count 2 size 1000 do-not-fragment", counted_ping);
+  require(requested_count == 2 && requested_size == 1000 && requested_df,
+          "Explicit ping size or DF option was lost before forwarding");
   const auto invalid_count =
       router::execute_cli(classic_state, classic_session,
                           "ping 198.51.100.2 count 100001", counted_ping);

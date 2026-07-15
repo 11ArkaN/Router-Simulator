@@ -51,6 +51,13 @@ public:
   // scheduler. nullopt means no direction owns an in-flight frame.
   [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
   next_delivery() const noexcept;
+  // Structural export translates every live handle into a frame value. Restore
+  // allocates fresh handles and preserves FIFO order plus relative deadlines.
+  void checkpoint(NetworkCheckpointState &state,
+                  std::chrono::steady_clock::time_point now) const;
+  [[nodiscard]] bool
+  restore(const NetworkCheckpointState &state,
+          std::chrono::steady_clock::time_point now) noexcept;
 
 private:
   struct Direction {
@@ -66,6 +73,11 @@ private:
 
   PacketPool pool_;
   std::array<Direction, direction_count> directions_;
+
+  // clear_owned releases each handle exactly once before a restore attempt or
+  // rollback. It is forwarding-shard-only and never runs concurrently with a
+  // pump operation.
+  void clear_owned(std::chrono::steady_clock::time_point now) noexcept;
 };
 
 } // namespace router::network_detail

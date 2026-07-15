@@ -87,16 +87,22 @@ function base64(bytes: Uint8Array): string {
 }
 
 export function decodeBase64(value: string): Uint8Array {
+  // atob rejects malformed alphabet or padding before any bytes reach the
+  // checkpoint decoder. Uint8Array then preserves all values including NUL.
   const binary = atob(value);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
 async function opfsRoot(): Promise<FileSystemDirectoryHandle> {
+  // OPFS is mandatory only for binary persistence actions. Project editing can
+  // still use IndexedDB until the user requests a capture or checkpoint write.
   if (!navigator.storage?.getDirectory) throw new Error("OPFS is not available in this browser");
   return navigator.storage.getDirectory();
 }
 
 export async function saveBinary(name: "active.pcapng" | "active.checkpoint", bytes: Uint8Array): Promise<void> {
+  // createWritable commits on close and discards an aborted temporary file.
+  // Copying severs ownership from a transferable runtime buffer before await.
   const handle = await (await opfsRoot()).getFileHandle(name, { create: true });
   const writer = await handle.createWritable();
   try {
@@ -111,6 +117,8 @@ export async function saveBinary(name: "active.pcapng" | "active.checkpoint", by
 }
 
 export async function loadBinary(name: "active.pcapng" | "active.checkpoint"): Promise<Uint8Array | undefined> {
+  // Absence is a normal fresh-lab state. Any permission, quota or I/O error is
+  // propagated because treating it as absence would hide lost persistence.
   try {
     const file = await (await opfsRoot()).getFileHandle(name).then((handle) => handle.getFile());
     return new Uint8Array(await file.arrayBuffer());
@@ -121,6 +129,8 @@ export async function loadBinary(name: "active.pcapng" | "active.checkpoint"): P
 }
 
 export function downloadBinary(name: string, bytes: Uint8Array, type: string): void {
+  // A Blob copy creates a browser-owned immutable download source. The URL is
+  // revoked after click because the download subsystem already holds it.
   const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }));
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -133,42 +143,103 @@ export function exportProject(project: LabProject): void {
   // Export uses the same validation boundary as local persistence. This avoids
   // producing a file that the application itself would correctly refuse later.
   const validated = parseProject(project);
-  const manifest: ProjectManifestV1 = {
+  const manifest = createProjectManifest(validated);
+  download(`${validated.name.replaceAll(" ", "-").toLowerCase()}.netsim`, manifest);
+}
+
+function profileLock(): ProjectManifestV1["profileLock"] {
+  // Project identity and checkpoint executable compatibility travel together.
+  // Plain projects ignore buildHash on import, while structural state requires
+  // every field to match before any runtime is created.
+  return {
+    id: GENERATED_PROFILE.id,
+    release: GENERATED_PROFILE.release,
+    profileHash: GENERATED_PROFILE.profileHash,
+    buildHash: GENERATED_PROFILE.buildHash,
+    checkpointAbi: GENERATED_PROFILE.abi.checkpoint
+  };
+}
+
+export function createProjectManifest(project: LabProject): ProjectManifestV1 {
+  // Plain project export deliberately carries no forwarding state. Importing
+  // it must start a new runtime with empty ARP, queues and protocol progress.
+  return {
     mode: "project",
     formatVersion: 1,
-    profileLock: { id: GENERATED_PROFILE.id, release: GENERATED_PROFILE.release },
-    project: validated
+    profileLock: profileLock(),
+    project: parseProject(project)
   };
-  download(`${validated.name.replaceAll(" ", "-").toLowerCase()}.netsim`, manifest);
 }
 
 export function exportCheckpoint(project: LabProject, checkpoint: Uint8Array,
   capture?: Uint8Array): void {
+  // Structural bytes and optional diagnostics share one profile-locked wrapper
+  // so a user cannot pair a capture with another lab generation accidentally.
   const validated = parseProject(project);
-  const manifest: ProjectManifestV1 = {
-    mode: "checkpoint",
-    formatVersion: 1,
-    profileLock: { id: GENERATED_PROFILE.id, release: GENERATED_PROFILE.release },
-    project: validated,
-    checkpointBase64: base64(checkpoint),
-    ...(capture?.length ? { captureBase64: base64(capture) } : {})
-  };
+  const manifest = createCheckpointManifest(validated, checkpoint, capture);
   download(`${validated.name.replaceAll(" ", "-").toLowerCase()}-checkpoint.netsim`, manifest);
 }
 
-export async function importNetsim(file: File): Promise<{ project: LabProject; checkpoint?: Uint8Array; capture?: Uint8Array }> {
-  const decoded = JSON.parse(await file.text()) as Partial<ProjectManifestV1>;
+export function createCheckpointManifest(project: LabProject,
+  checkpoint: Uint8Array, capture?: Uint8Array): ProjectManifestV1 {
+  // An empty structural payload can never be a valid checkpoint and would make
+  // fallback behavior ambiguous, so reject it before creating the manifest.
+  if (!checkpoint.length) throw new Error("A checkpoint export cannot be empty");
+  return {
+    mode: "checkpoint",
+    formatVersion: 1,
+    profileLock: profileLock(),
+    project: parseProject(project),
+    checkpointBase64: base64(checkpoint),
+    ...(capture?.length ? { captureBase64: base64(capture) } : {})
+  };
+}
+
+export class IncompatibleCheckpointError extends Error {
+  constructor() {
+    // A dedicated type lets App request explicit project-only consent without
+    // matching text or exposing checkpoint ABI details in the router console.
+    super("The checkpoint ABI or build is incompatible; the project can be imported without live state");
+    this.name = "IncompatibleCheckpointError";
+  }
+}
+
+export function parseNetsim(text: string, allowProjectOnly = false):
+  { project: LabProject; checkpoint?: Uint8Array; capture?: Uint8Array } {
+  // Header, project schema and profile identity are validated before binary
+  // decoding. No caller receives a partly trusted manifest on any failure.
+  const decoded = JSON.parse(text) as Partial<ProjectManifestV1>;
+  if (!decoded || typeof decoded !== "object" || decoded.formatVersion !== 1 ||
+      (decoded.mode !== "project" && decoded.mode !== "checkpoint"))
+    throw new Error("The .netsim manifest header is invalid");
   const project = parseProject(decoded && typeof decoded === "object" && "project" in decoded
     ? decoded.project : decoded);
-  if (decoded.profileLock && (decoded.profileLock.id !== GENERATED_PROFILE.id ||
-      decoded.profileLock.release !== GENERATED_PROFILE.release)) {
+  if (!decoded.profileLock || decoded.profileLock.id !== GENERATED_PROFILE.id ||
+      decoded.profileLock.release !== GENERATED_PROFILE.release ||
+      decoded.profileLock.profileHash !== GENERATED_PROFILE.profileHash) {
     throw new Error("The .netsim profile lock is incompatible");
   }
+  const checkpointCompatible = decoded.profileLock.buildHash === GENERATED_PROFILE.buildHash &&
+    decoded.profileLock.checkpointAbi === GENERATED_PROFILE.abi.checkpoint;
+  if (decoded.mode === "checkpoint" && !checkpointCompatible && !allowProjectOnly)
+    throw new IncompatibleCheckpointError();
+  if (decoded.mode === "checkpoint" &&
+      typeof decoded.checkpointBase64 !== "string")
+    throw new Error("The checkpoint manifest has no structural state");
+  if (decoded.mode === "checkpoint" && !checkpointCompatible)
+    return { project };
   return {
     project,
     checkpoint: typeof decoded.checkpointBase64 === "string" ? decodeBase64(decoded.checkpointBase64) : undefined,
     capture: typeof decoded.captureBase64 === "string" ? decodeBase64(decoded.captureBase64) : undefined
   };
+}
+
+export async function importNetsim(file: File, allowProjectOnly = false):
+  Promise<{ project: LabProject; checkpoint?: Uint8Array; capture?: Uint8Array }> {
+  // File is read once to avoid a replacement race between header validation
+  // and binary extraction on mutable host-backed File implementations.
+  return parseNetsim(await file.text(), allowProjectOnly);
 }
 
 export async function importProject(file: File): Promise<LabProject> {

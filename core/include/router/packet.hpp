@@ -1,3 +1,7 @@
+// Byte-level Ethernet, ARP, IPv4 and ICMP codecs. All functions own or return
+// fixed-capacity values, perform no packet-path allocation and use only wire
+// bytes as their protocol boundary.
+
 #pragma once
 
 #include <array>
@@ -12,6 +16,7 @@ namespace router::packet {
 // FCS is modeled by the link serializer and is not stored in captured Frame
 // bytes. Capture and encoders share this bound to prevent snaplen drift.
 inline constexpr std::size_t maximum_frame_octets = 1514;
+inline constexpr std::uint16_t ethernet_header_octets = 14;
 
 using Mac = std::array<std::uint8_t, 6>;
 using Ipv4 = std::array<std::uint8_t, 4>;
@@ -56,6 +61,19 @@ struct Ipv4View {
   std::uint8_t ttl{};
   std::uint8_t protocol{};
   std::uint16_t total_length{};
+  std::uint16_t identification{};
+  std::uint16_t fragment_offset{};
+  std::uint8_t header_length{};
+  bool dont_fragment{};
+  bool more_fragments{};
+};
+
+struct FragmentBatch {
+  // With the profile's minimum 512-byte MTU, a maximum untagged IPv4 packet
+  // produces at most four fragments. Fixed storage prevents MTU handling from
+  // allocating or hiding an overflow path in forwarding.
+  std::array<Frame, 4> frames{};
+  std::uint8_t count{};
 };
 
 struct EthernetView {
@@ -78,12 +96,18 @@ std::uint16_t checksum(std::span<const std::uint8_t> bytes) noexcept;
 Frame arp_request(Mac source_mac, Ipv4 source_ip, Ipv4 target_ip);
 Frame arp_reply(Mac source_mac, Ipv4 source_ip, Mac target_mac, Ipv4 target_ip);
 Frame icmp_echo(Mac source_mac, Mac target_mac, Ipv4 source_ip, Ipv4 target_ip,
-                bool reply, std::uint16_t sequence, std::uint8_t ttl = 64);
+                bool reply, std::uint16_t sequence, std::uint8_t ttl = 64,
+                std::size_t payload_octets = 56,
+                bool dont_fragment = false);
 std::optional<Frame> icmp_echo_reply(const Frame &request, Mac source_mac,
                                      Mac destination_mac) noexcept;
 std::optional<Frame> icmp_time_exceeded(const Frame &original, Mac source_mac,
                                         Mac destination_mac, Ipv4 source_ip,
                                         Ipv4 destination_ip) noexcept;
+std::optional<Frame>
+icmp_fragmentation_needed(const Frame &original, Mac source_mac,
+                          Mac destination_mac, Ipv4 source_ip,
+                          Ipv4 destination_ip, std::uint16_t mtu) noexcept;
 std::optional<EthernetView> parse_ethernet(const Frame &frame) noexcept;
 // Untagged endpoint and routed-port receive filters accept their own unicast
 // address and Ethernet broadcast. Promiscuous capture occurs at a separate tap.
@@ -97,5 +121,7 @@ void rewrite_ethernet(Frame &frame, Mac source_mac,
 // decrements TTL, and recalculates the IPv4 header checksum.
 std::optional<Frame> route_ipv4(const Frame &ingress, Mac source_mac,
                                 Mac destination_mac) noexcept;
+std::optional<FragmentBatch> fragment_ipv4(const Frame &routed,
+                                           std::uint16_t mtu) noexcept;
 
 } // namespace router::packet

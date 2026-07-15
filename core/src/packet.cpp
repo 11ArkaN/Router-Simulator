@@ -1,3 +1,7 @@
+// Standards-backed byte codecs for the first IPv4 forwarding milestone. This
+// module never owns routing state, timers or queues and never communicates a
+// protocol object between devices.
+
 #include "router/packet.hpp"
 
 #include <algorithm>
@@ -118,22 +122,27 @@ Frame arp_reply(Mac source_mac, Ipv4 source_ip, Mac target_mac,
 // sequence then TTL mirrors the varying ICMP field before the IP hop limit.
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 Frame icmp_echo(Mac source_mac, Mac target_mac, Ipv4 source_ip, Ipv4 target_ip,
-                bool reply, std::uint16_t sequence, std::uint8_t ttl) {
+                bool reply, std::uint16_t sequence, std::uint8_t ttl,
+                std::size_t payload_octets, bool dont_fragment) {
   // Source: ietf.icmp.rfc792 and nokia.sros.26_7.ping. A normal SR OS ping
   // reports 56 data bytes, so the encoded Echo payload has that exact length.
-  constexpr std::array<std::uint8_t, 56> payload{
+  constexpr std::array<std::uint8_t, 56> pattern{
       0x52, 0x4f, 0x55, 0x54, 0x45, 0x52, 0x2d, 0x53, 0x52, 0x4f, 0x55, 0x54,
       0x45, 0x52, 0x2d, 0x53, 0x52, 0x4f, 0x55, 0x54, 0x45, 0x52, 0x2d, 0x53,
       0x52, 0x4f, 0x55, 0x54, 0x45, 0x52, 0x2d, 0x53, 0x52, 0x4f, 0x55, 0x54,
       0x45, 0x52, 0x2d, 0x53, 0x52, 0x4f, 0x55, 0x54, 0x45, 0x52, 0x2d, 0x53,
       0x52, 0x4f, 0x55, 0x54, 0x45, 0x52, 0x2d, 0x53};
+  payload_octets = std::min(payload_octets, maximum_frame_octets - 42U);
   auto out = ethernet(target_mac, source_mac, 0x0800);
   const auto ip_start = out.position();
   out.put(0x45);
   out.put(0);
-  out.put16(84);
+  out.put16(static_cast<std::uint16_t>(28U + payload_octets));
   out.put16(sequence);
-  out.put16(0x4000);
+  // The operational ping option controls DF. Normal ping remains fragmentable;
+  // setting DF without an explicit command would make configured MTU behave
+  // differently from SR OS and RFC 1812.
+  out.put16(dont_fragment ? 0x4000U : 0U);
   out.put(ttl);
   out.put(1);
   out.put16(0);
@@ -149,14 +158,17 @@ Frame icmp_echo(Mac source_mac, Mac target_mac, Ipv4 source_ip, Ipv4 target_ip,
   out.put16(0);
   out.put16(0x5253);
   out.put16(sequence);
-  out.append(payload);
-  const auto icmp_checksum = checksum(out.span(icmp_start, 64));
+  for (std::size_t index = 0; index < payload_octets; ++index)
+    out.put(pattern[index % pattern.size()]);
+  const auto icmp_checksum = checksum(out.span(icmp_start, 8U + payload_octets));
   out.patch16(icmp_start + 2, icmp_checksum);
   return out.finish();
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
 std::optional<EthernetView> parse_ethernet(const Frame &frame) noexcept {
+  // Source: ieee.802_3.ethernet_frame_timing. Captured frames exclude preamble
+  // and FCS, so the first fourteen captured octets are the untagged MAC header.
   if (frame.size() < 14)
     return std::nullopt;
   EthernetView view;
@@ -167,6 +179,8 @@ std::optional<EthernetView> parse_ethernet(const Frame &frame) noexcept {
 }
 
 bool ethernet_for_local(Mac destination, Mac local) noexcept {
+  // The first milestone has no multicast membership or promiscuous receive
+  // mode. A port accepts only its station address and the broadcast address.
   constexpr Mac broadcast{0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
   return destination == local || destination == broadcast;
 }
@@ -200,12 +214,21 @@ std::optional<Ipv4View> parse_ipv4(const Frame &frame) noexcept {
   const auto total_length =
       static_cast<std::uint16_t>(frame[16] << 8 | frame[17]);
   if (header_length < 20 || 14 + header_length > frame.size() ||
-      total_length < header_length || 14 + total_length > frame.size() ||
+      static_cast<std::size_t>(total_length) < header_length ||
+      14U + static_cast<std::size_t>(total_length) > frame.size() ||
       checksum(frame.view().subspan(14, header_length)) != 0) {
     return std::nullopt;
   }
   Ipv4View view{
-      .ttl = frame[22], .protocol = frame[23], .total_length = total_length};
+      .ttl = frame[22],
+      .protocol = frame[23],
+      .total_length = total_length,
+      .identification = static_cast<std::uint16_t>(frame[18] << 8 | frame[19]),
+      .fragment_offset = static_cast<std::uint16_t>(
+          ((frame[20] & 0x1fU) << 8) | frame[21]),
+      .header_length = static_cast<std::uint8_t>(header_length),
+      .dont_fragment = (frame[20] & 0x40U) != 0,
+      .more_fragments = (frame[20] & 0x20U) != 0};
   std::copy_n(frame.bytes.begin() + 26, 4, view.source.begin());
   std::copy_n(frame.bytes.begin() + 30, 4, view.destination.begin());
   return view;
@@ -213,7 +236,10 @@ std::optional<Ipv4View> parse_ipv4(const Frame &frame) noexcept {
 
 std::optional<IcmpView> parse_icmp(const Frame &frame) noexcept {
   const auto ip = parse_ipv4(frame);
-  if (!ip || ip->protocol != 1)
+  // ICMP checksum spans the complete reassembled message. Individual IPv4
+  // fragments are valid IPv4 but cannot be parsed as ICMP until EndpointStack
+  // has reassembled them.
+  if (!ip || ip->protocol != 1 || ip->fragment_offset || ip->more_fragments)
     return std::nullopt;
   const auto header_length = static_cast<std::size_t>(frame[14] & 0x0fU) * 4U;
   const auto icmp_length =
@@ -236,6 +262,8 @@ std::optional<IcmpView> parse_icmp(const Frame &frame) noexcept {
 
 void rewrite_ethernet(Frame &frame, Mac source_mac,
                       Mac destination_mac) noexcept {
+  // Routing changes only the per-hop L2 envelope. IP bytes, including source,
+  // destination and payload, remain owned by the IPv4 forwarding operation.
   std::copy(destination_mac.begin(), destination_mac.end(),
             frame.bytes.begin());
   std::copy(source_mac.begin(), source_mac.end(), frame.bytes.begin() + 6);
@@ -320,6 +348,44 @@ std::optional<Frame> icmp_time_exceeded(const Frame &original, Mac source_mac,
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
+std::optional<Frame>
+icmp_fragmentation_needed(const Frame &original, Mac source_mac,
+                          Mac destination_mac, Ipv4 source_ip,
+                          Ipv4 destination_ip, std::uint16_t mtu) noexcept {
+  // RFC 792 type 3 code 4 plus RFC 1191 require the next-hop MTU in the low
+  // 16 bits of the formerly unused field. The quoted bytes are the original
+  // IPv4 header and at least its first eight payload octets.
+  const auto original_ip = parse_ipv4(original);
+  if (!original_ip)
+    return std::nullopt;
+  const auto quoted = std::min<std::size_t>(
+      original_ip->total_length,
+      static_cast<std::size_t>(original_ip->header_length) + 8U);
+  auto out = ethernet(destination_mac, source_mac, 0x0800);
+  const auto ip_start = out.position();
+  out.put(0x45);
+  out.put(0);
+  out.put16(static_cast<std::uint16_t>(28U + quoted));
+  out.put16(0);
+  out.put16(0);
+  out.put(64);
+  out.put(1);
+  out.put16(0);
+  out.append(source_ip);
+  out.append(destination_ip);
+  out.patch16(ip_start + 10, checksum(out.span(ip_start, 20)));
+  const auto icmp_start = out.position();
+  out.put(3);
+  out.put(4);
+  out.put16(0);
+  out.put16(0);
+  out.put16(mtu);
+  for (std::size_t index = 0; index < quoted; ++index)
+    out.put(original[14U + index]);
+  out.patch16(icmp_start + 2, checksum(out.span(icmp_start, 8U + quoted)));
+  return out.finish();
+}
+
 std::optional<Frame> route_ipv4(const Frame &ingress, Mac source_mac,
                                 Mac destination_mac) noexcept {
   // Source: ietf.ipv4.router_requirements.rfc1812. The forwarding caller must
@@ -339,6 +405,55 @@ std::optional<Frame> route_ipv4(const Frame &ingress, Mac source_mac,
   egress.bytes[24] = static_cast<std::uint8_t>(updated >> 8);
   egress.bytes[25] = static_cast<std::uint8_t>(updated);
   return egress;
+}
+
+std::optional<FragmentBatch> fragment_ipv4(const Frame &routed,
+                                           std::uint16_t mtu) noexcept {
+  // RFC 791 fragment offsets count eight-octet units. All non-final payloads
+  // therefore use the largest multiple of eight that fits the egress MTU.
+  // The caller has already decremented TTL exactly once in route_ipv4().
+  const auto ip = parse_ipv4(routed);
+  if (!ip || ip->dont_fragment || ip->fragment_offset ||
+      ip->total_length <= mtu || mtu <= ip->header_length)
+    return std::nullopt;
+  const auto fragment_payload =
+      static_cast<std::size_t>((mtu - ip->header_length) & ~7U);
+  const auto payload_length =
+      static_cast<std::size_t>(ip->total_length - ip->header_length);
+  if (!fragment_payload)
+    return std::nullopt;
+  FragmentBatch result;
+  for (std::size_t offset = 0; offset < payload_length;
+       offset += fragment_payload) {
+    if (result.count == result.frames.size())
+      return std::nullopt;
+    const auto length = std::min(fragment_payload, payload_length - offset);
+    Frame fragment{};
+    std::copy_n(routed.bytes.begin(), 14U + ip->header_length,
+                fragment.bytes.begin());
+    std::copy_n(routed.bytes.begin() + 14U + ip->header_length + offset,
+                length,
+                fragment.bytes.begin() + 14U + ip->header_length);
+    const auto total = static_cast<std::uint16_t>(ip->header_length + length);
+    fragment.bytes[16] = static_cast<std::uint8_t>(total >> 8);
+    fragment.bytes[17] = static_cast<std::uint8_t>(total);
+    const auto more = offset + length < payload_length || ip->more_fragments;
+    const auto fragment_field = static_cast<std::uint16_t>(
+        (more ? 0x2000U : 0U) | (offset / 8U));
+    fragment.bytes[20] = static_cast<std::uint8_t>(fragment_field >> 8);
+    fragment.bytes[21] = static_cast<std::uint8_t>(fragment_field);
+    fragment.bytes[24] = 0;
+    fragment.bytes[25] = 0;
+    const auto header_checksum = checksum(std::span<const std::uint8_t>(
+        fragment.bytes.data() + 14U, ip->header_length));
+    fragment.bytes[24] = static_cast<std::uint8_t>(header_checksum >> 8);
+    fragment.bytes[25] = static_cast<std::uint8_t>(header_checksum);
+    fragment.length = static_cast<std::uint16_t>(14U + total);
+    while (fragment.length < 60U)
+      fragment.bytes[fragment.length++] = 0;
+    result.frames[result.count++] = fragment;
+  }
+  return result.count ? std::optional<FragmentBatch>{result} : std::nullopt;
 }
 
 } // namespace router::packet

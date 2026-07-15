@@ -20,6 +20,7 @@ struct EndpointFrames {
   bool start_echo_clock{};
   bool echo_reply{};
   bool ttl_expired{};
+  bool mtu_exceeded{};
 };
 
 class EndpointStack final {
@@ -30,7 +31,10 @@ public:
   // begin_echo either emits ARP or ICMP and retains at most one pending frame.
   // The returned value owns every frame passed to the link fabric.
   [[nodiscard]] EndpointFrames begin_echo(packet::Ipv4 destination,
-                                          std::uint16_t sequence) noexcept;
+                                          std::uint16_t sequence,
+                                          std::size_t payload_octets =
+                                              profile::default_ping_payload_octets,
+                                          bool dont_fragment = false) noexcept;
   // receive parses encoded Ethernet. Malformed or unrelated packets produce an
   // empty result and cannot mutate another endpoint or the router adjacency.
   [[nodiscard]] EndpointFrames receive(const packet::Frame &frame,
@@ -40,6 +44,12 @@ public:
   void clear_neighbor() noexcept;
   // Checkpoint restore installs a previously validated exact protocol address.
   void restore_router_neighbor(packet::Ipv4 address, packet::Mac mac) noexcept;
+  // Structural checkpoint methods run only on forwarding. They persist local
+  // protocol values and encoded frames, never references into another owner.
+  void checkpoint(NetworkCheckpointState &state,
+                  std::uint8_t endpoint) const;
+  [[nodiscard]] bool restore(const NetworkCheckpointState &state,
+                             std::uint8_t endpoint) noexcept;
 
   // Identity accessors expose immutable values copied during configure.
   [[nodiscard]] packet::Ipv4 address() const noexcept { return address_; }
@@ -57,6 +67,21 @@ private:
   std::optional<packet::Mac> neighbor_mac_;
   std::optional<packet::Frame> pending_;
   std::optional<packet::Ipv4> pending_next_hop_;
+  struct Reassembly {
+    // LinkDirection preserves order, so one bounded contiguous accumulator is
+    // sufficient for this single-probe endpoint. A key mismatch discards the
+    // incomplete datagram instead of mixing generations or allocating a map.
+    bool active{};
+    packet::Ipv4 source{};
+    packet::Ipv4 destination{};
+    std::uint16_t identification{};
+    std::uint16_t payload_octets{};
+    packet::Frame frame{};
+  } reassembly_{};
+
+  [[nodiscard]] std::optional<packet::Frame>
+  reassemble(const packet::Frame &fragment,
+             const packet::Ipv4View &ip) noexcept;
 };
 
 } // namespace router::network_detail

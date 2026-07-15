@@ -57,6 +57,8 @@ NetworkConfiguration default_configuration() noexcept {
         .endpoint_gateway = profile::host_gateways[index],
         .router_mac = profile::router_macs[index],
         .router_address = profile::router_addresses[index],
+        .router_mtu = static_cast<std::uint16_t>(
+            profile::default_port_mtu - packet::ethernet_header_octets),
         .propagation = profile::default_link_propagation};
   }
   return result;
@@ -229,7 +231,8 @@ struct LabNetwork::Impl {
     if (index >= hosts.size())
       return;
     const auto ip = packet::parse_ipv4(frame);
-    const bool probe_source = operation.origin == PingOrigin::endpoint &&
+    const bool probe_source = operation.active &&
+                              operation.origin == PingOrigin::endpoint &&
                               index == operation.source_endpoint;
     const auto result =
         hosts[index].receive(frame, operation.sequence, probe_source);
@@ -245,6 +248,8 @@ struct LabNetwork::Impl {
     }
     if (result.ttl_expired)
       fail(NetworkDrop::ttl_expired);
+    if (result.mtu_exceeded)
+      fail(NetworkDrop::mtu_exceeded);
   }
 
   void learn_router_arp(std::uint8_t port,
@@ -285,7 +290,28 @@ struct LabNetwork::Impl {
           fail(NetworkDrop::malformed);
           continue;
         }
-        static_cast<void>(enqueue(to_endpoint(*endpoint), *routed));
+        const auto routed_ip = packet::parse_ipv4(*routed);
+        if (!routed_ip) {
+          fail(NetworkDrop::malformed);
+          continue;
+        }
+        if (routed_ip->total_length > local.router_mtu) {
+          // RFC 791 fragmentation happens after the single TTL decrement and
+          // after adjacency resolution. Every resulting Ethernet frame enters
+          // the same bounded egress queue and real-time link independently.
+          const auto fragments = packet::fragment_ipv4(*routed, local.router_mtu);
+          if (!fragments) {
+            fail(NetworkDrop::malformed);
+            continue;
+          }
+          for (std::size_t fragment = 0; fragment < fragments->count;
+               ++fragment) {
+            if (!enqueue(to_endpoint(*endpoint), fragments->frames[fragment]))
+              break;
+          }
+        } else {
+          static_cast<void>(enqueue(to_endpoint(*endpoint), *routed));
+        }
       } else {
         packet::rewrite_ethernet(item.frame, local.router_mac, adjacency->mac);
         start_echo_clock();
@@ -396,7 +422,8 @@ struct LabNetwork::Impl {
             packet::icmp_echo_reply(frame, local.router_mac, ethernet->source);
         if (reply)
           static_cast<void>(enqueue(to_endpoint(*endpoint), *reply));
-      } else if (icmp->type == 0 && operation.origin == PingOrigin::router &&
+      } else if (icmp->type == 0 && operation.active &&
+                 operation.origin == PingOrigin::router &&
                  icmp->sequence == operation.sequence) {
         operation.reply_ttl = ip->ttl;
         operation.success = true;
@@ -419,6 +446,26 @@ struct LabNetwork::Impl {
                                      local.router_address, ip->source);
       if (exceeded)
         static_cast<void>(enqueue(to_endpoint(*endpoint), *exceeded));
+      return;
+    }
+    const auto egress_endpoint = endpoint_for_port(egress);
+    if (!egress_endpoint) {
+      fail(NetworkDrop::route_miss);
+      return;
+    }
+    const auto egress_mtu =
+        configuration.endpoints[*egress_endpoint].router_mtu;
+    if (ip->total_length > egress_mtu && ip->dont_fragment) {
+      // RFC 1812 forbids forwarding an oversized DF datagram. RFC 1191 places
+      // the limiting next-hop MTU in ICMP type 3 code 4. The error travels back
+      // through the ingress link as encoded bytes, never as a direct callback.
+      const auto needed = packet::icmp_fragmentation_needed(
+          frame, local.router_mac, ethernet->source, local.router_address,
+          ip->source, egress_mtu);
+      if (needed)
+        static_cast<void>(enqueue(to_endpoint(*endpoint), *needed));
+      else
+        fail(NetworkDrop::malformed);
       return;
     }
     const auto next_hop =
@@ -460,7 +507,8 @@ struct LabNetwork::Impl {
 
   [[nodiscard]] NetworkResult
   ping(PingOrigin origin, std::uint8_t source_endpoint, Ipv4 destination,
-       std::uint16_t sequence, CaptureObserver observer, void *context,
+       std::uint16_t sequence, std::size_t payload_octets, bool dont_fragment,
+       CaptureObserver observer, void *context,
        CancellationObserver cancelled, void *cancellation_context) noexcept {
     // One operation owns its probe bookkeeping until success, a modeled drop or
     // the real-time timeout. No other device object is called by this loop.
@@ -487,7 +535,8 @@ struct LabNetwork::Impl {
           // The endpoint stack decides whether the destination is on-link or
           // requires its configured gateway. No topology index is substituted
           // for the destination supplied by the terminal or host action.
-          const auto frames = hosts[source].begin_echo(destination, sequence);
+          const auto frames = hosts[source].begin_echo(
+              destination, sequence, payload_octets, dont_fragment);
           for (std::size_t index = 0; index < frames.count; ++index) {
             static_cast<void>(enqueue(to_router(source), frames.frames[index]));
           }
@@ -510,7 +559,8 @@ struct LabNetwork::Impl {
         const auto &local = configuration.endpoints[*endpoint];
         const auto request =
             packet::icmp_echo(local.router_mac, no_mac, local.router_address,
-                              destination, false, sequence);
+                              destination, false, sequence, 64, payload_octets,
+                              dont_fragment);
         const auto next_hop =
             configured_next_hop ? to_ipv4(configured_next_hop) : destination;
         resolve_or_queue(egress, request, false, next_hop);
@@ -622,15 +672,119 @@ LabNetwork::adjacencies() const noexcept {
   return impl_->arp_projection();
 }
 
+NetworkCheckpointState LabNetwork::checkpoint() const {
+  // The caller established a forwarding barrier, so every owner below can be
+  // read in one generation. Frames are copied as wire values and no pool
+  // handle, clock epoch or component pointer escapes this method.
+  NetworkCheckpointState state;
+  state.adjacencies = impl_->arp_projection();
+  state.arp_requests = impl_->adjacencies.request_projection();
+  for (std::size_t endpoint = 0; endpoint < impl_->hosts.size(); ++endpoint)
+    impl_->hosts[endpoint].checkpoint(
+        state, static_cast<std::uint8_t>(endpoint));
+  for (std::size_t port = 0; port < impl_->pending.size(); ++port) {
+    PendingFrame pending;
+    for (std::size_t index = 0; index < impl_->pending[port].size(); ++index) {
+      static_cast<void>(impl_->pending[port].copy_at(index, pending));
+      state.frames.push_back(
+          {.stage = NetworkFrameStage::router_pending,
+           .direction = static_cast<std::uint8_t>(port),
+           .routed = pending.routed,
+           .next_hop = pending.next_hop,
+           .frame = pending.frame});
+    }
+  }
+  impl_->fabric.checkpoint(state, std::chrono::steady_clock::now());
+  return state;
+}
+
+bool LabNetwork::restore(const NetworkCheckpointState &state) noexcept {
+  // Validate all local queue counts before mutating any forwarding owner. The
+  // fabric performs its own handle-capacity validation and rolls back to empty
+  // on allocation failure, never retaining a half-restored generation.
+  std::array<std::size_t, profile::port_count> pending_counts{};
+  std::array<std::size_t, network_endpoint_capacity> endpoint_pending{};
+  std::array<std::size_t, network_endpoint_capacity> endpoint_reassembly{};
+  for (const auto &stored : state.frames) {
+    if (!stored.frame.length || stored.frame.length > stored.frame.bytes.size())
+      return false;
+    if (stored.stage == NetworkFrameStage::router_pending) {
+      if (stored.direction >= pending_counts.size() ||
+          ++pending_counts[stored.direction] >
+              profile::adjacency_pending_capacity)
+        return false;
+    } else if (stored.stage == NetworkFrameStage::endpoint_pending) {
+      if (stored.direction >= endpoint_pending.size() ||
+          ++endpoint_pending[stored.direction] > 1U)
+        return false;
+    } else if (stored.stage == NetworkFrameStage::endpoint_reassembly) {
+      if (stored.direction >= endpoint_reassembly.size() ||
+          ++endpoint_reassembly[stored.direction] > 1U ||
+          stored.frame.length < 34U ||
+          stored.frame.length !=
+              34U + state.endpoints[stored.direction].reassembly_payload_octets)
+        return false;
+    }
+  }
+  for (std::size_t port = 0; port < state.arp_requests.size(); ++port) {
+    if (state.arp_requests[port] && !pending_counts[port])
+      return false;
+  }
+  for (std::size_t endpoint = 0; endpoint < state.endpoints.size(); ++endpoint) {
+    if (state.endpoints[endpoint].pending_next_hop_valid !=
+            (endpoint_pending[endpoint] == 1U) ||
+        state.endpoints[endpoint].reassembly_active !=
+            (endpoint_reassembly[endpoint] == 1U))
+      return false;
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  if (!impl_->fabric.restore(state, now))
+    return false;
+  for (std::size_t endpoint = 0; endpoint < impl_->hosts.size(); ++endpoint) {
+    if (!impl_->hosts[endpoint].restore(
+            state, static_cast<std::uint8_t>(endpoint)))
+      return false;
+  }
+  impl_->adjacencies.restore(state.adjacencies);
+  impl_->adjacencies.restore_requests(state.arp_requests);
+  for (auto &queue : impl_->pending)
+    queue.clear();
+  for (const auto &stored : state.frames) {
+    if (stored.stage == NetworkFrameStage::router_pending &&
+        !impl_->pending[stored.direction].try_push(
+            {stored.frame, stored.routed, stored.next_hop}))
+      return false;
+  }
+  return true;
+}
+
+void LabNetwork::service() noexcept {
+  // A three-phase pass mirrors the active ping loop: admit queued handles,
+  // release every due link frame into its receiver, then admit replies created
+  // by receiver processing. No loop waits here, so mailbox latency remains
+  // controlled by Runtime's condition variable.
+  impl_->pump_transmit();
+  impl_->pump_delivery();
+  impl_->pump_transmit();
+}
+
+std::optional<std::chrono::steady_clock::time_point>
+LabNetwork::next_deadline() const noexcept {
+  return impl_->next_delivery();
+}
+
 // Runs one probe with explicit origin, source endpoint and destination. The
 // capture observer is borrowed only until the synchronous result returns.
 NetworkResult LabNetwork::ping(PingOrigin origin, std::uint8_t source_endpoint,
                                packet::Ipv4 destination, std::uint16_t sequence,
+                               std::size_t payload_octets, bool dont_fragment,
                                CaptureObserver observer, void *observer_context,
                                CancellationObserver cancelled,
                                void *cancellation_context) noexcept {
-  return impl_->ping(origin, source_endpoint, destination, sequence, observer,
-                     observer_context, cancelled, cancellation_context);
+  return impl_->ping(origin, source_endpoint, destination, sequence,
+                     payload_octets, dont_fragment, observer, observer_context,
+                     cancelled, cancellation_context);
 }
 
 } // namespace router

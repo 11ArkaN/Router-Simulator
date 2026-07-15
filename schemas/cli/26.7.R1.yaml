@@ -14,7 +14,9 @@ parameters:
   ipv4: { display: "<ip-address>", description: "IPv4 address in dotted-decimal notation" }
   ipv4_key: { display: '"<ip-address>"', description: "Quoted IPv4 next-hop key" }
   ipv4_prefix: { display: "<ip-prefix/prefix-length>", description: "IPv4 prefix and prefix length" }
+  prefix_length: { display: "<prefix-length>", description: "IPv4 prefix length" }
   count: { display: "<number>", description: "Number of echo requests" }
+  size: { display: "<bytes>", description: "ICMP data field size in bytes" }
   mtu: { display: "<bytes>", description: "Ethernet MTU in bytes" }
   levels: { display: "<number>", description: "Number of parent levels" }
   system_name: { display: "<system-name>", description: "System name" }
@@ -29,6 +31,7 @@ literals:
   '\': "Navigate to the classic operational root"
   '}': "Navigate to the parent MD-CLI context"
   admin-state: "Configure administrative state"
+  address: "Configure an IP address"
   alarms: "Display facility alarms"
   all: "Navigate to the operational root"
   arp: "Display the ARP table"
@@ -39,6 +42,7 @@ literals:
   compare: "Display candidate configuration changes"
   configure: "Enter or address the configuration branch"
   count: "Configure the number of echo requests"
+  do-not-fragment: "Set the IPv4 Don't Fragment bit"
   delete: "Delete a candidate configuration element"
   description: "Configure descriptive text"
   disable: "Set the administrative state to disabled"
@@ -63,6 +67,10 @@ literals:
   no: "Remove configuration or negate a command"
   ping: "Verify reachability of a remote host"
   port: "Configure or display physical ports"
+  prefix-length: "Configure the IPv4 prefix length"
+  primary: "Configure the primary IPv4 address"
+  size: "Configure the ICMP data field size"
+  ipv4: "Configure IPv4 parameters"
   quit-config: "Exit explicit candidate configuration mode"
   route: "Configure a static route entry"
   route-table: "Display the route table"
@@ -196,6 +204,30 @@ commands:
     engines: [md, classic]
     source_id: nokia.sros.26_7.ping
     tokens: [ping, { parameter: ipv4 }, count, { parameter: count }]
+  - id: ping_size
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.ping
+    tokens: [ping, { parameter: ipv4 }, size, { parameter: size }]
+  - id: ping_do_not_fragment
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.ping
+    tokens: [ping, { parameter: ipv4 }, do-not-fragment]
+  - id: ping_size_do_not_fragment
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.ping
+    tokens: [ping, { parameter: ipv4 }, size, { parameter: size }, do-not-fragment]
+  - id: ping_count_size
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.ping
+    tokens: [ping, { parameter: ipv4 }, count, { parameter: count }, size, { parameter: size }]
+  - id: ping_count_do_not_fragment
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.ping
+    tokens: [ping, { parameter: ipv4 }, count, { parameter: count }, do-not-fragment]
+  - id: ping_count_size_do_not_fragment
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.ping
+    tokens: [ping, { parameter: ipv4 }, count, { parameter: count }, size, { parameter: size }, do-not-fragment]
   - id: configure_card_type
     engines: [md, classic]
     source_id: nokia.sros.26_7.physical_port.provisioning
@@ -204,6 +236,22 @@ commands:
     engines: [md, classic]
     source_id: nokia.sros.26_7.physical_port.provisioning
     tokens: [configure, card, { parameter: card_slot }, mda, { parameter: mda_slot }, mda-type, { parameter: mda_type }]
+  - id: md_card_enable
+    engines: [md]
+    source_id: nokia.sros.26_7.physical_port.provisioning
+    tokens: [configure, card, { parameter: card_slot }, admin-state, enable]
+  - id: md_card_disable
+    engines: [md]
+    source_id: nokia.sros.26_7.physical_port.provisioning
+    tokens: [configure, card, { parameter: card_slot }, admin-state, disable]
+  - id: md_mda_enable
+    engines: [md]
+    source_id: nokia.sros.26_7.physical_port.provisioning
+    tokens: [configure, card, { parameter: card_slot }, mda, { parameter: mda_slot }, admin-state, enable]
+  - id: md_mda_disable
+    engines: [md]
+    source_id: nokia.sros.26_7.physical_port.provisioning
+    tokens: [configure, card, { parameter: card_slot }, mda, { parameter: mda_slot }, admin-state, disable]
   - id: configure_system_name
     engines: [md, classic]
     source_id: nokia.sros.26_7.system.name
@@ -232,6 +280,14 @@ commands:
     engines: [md]
     source_id: nokia.sros.26_7.port.configuration
     tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, admin-state, disable]
+  - id: md_interface_port
+    engines: [md]
+    source_id: nokia.sros.26_7.router_interface.configuration
+    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, port, { parameter: port_id }]
+  - id: md_interface_ipv4_primary
+    engines: [md]
+    source_id: nokia.sros.26_7.router_interface.configuration
+    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, primary, address, { parameter: ipv4 }, prefix-length, { parameter: prefix_length }]
   - id: md_static_route
     engines: [md]
     source_id: nokia.sros.26_7.static_route.configuration
@@ -316,6 +372,14 @@ commands:
     engines: [classic]
     source_id: nokia.sros.26_7.port.configuration
     tokens: [configure, router, interface, { parameter: interface_name }, no, shutdown]
+  - id: classic_interface_port
+    engines: [classic]
+    source_id: nokia.sros.26_7.router_interface.configuration
+    tokens: [configure, router, interface, { parameter: interface_name }, port, { parameter: port_id }]
+  - id: classic_interface_address
+    engines: [classic]
+    source_id: nokia.sros.26_7.router_interface.configuration
+    tokens: [configure, router, interface, { parameter: interface_name }, address, { parameter: ipv4_prefix }]
   - id: classic_static_route
     engines: [classic]
     source_id: nokia.sros.26_7.static_route.configuration

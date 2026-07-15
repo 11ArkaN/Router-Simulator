@@ -42,6 +42,8 @@ public:
 
 private:
   static constexpr std::size_t increment(std::size_t value) noexcept {
+    // Wrap without a shared size counter. Capacity is compile-time data and
+    // one deliberately unused slot distinguishes full from empty.
     return (value + 1) % Capacity;
   }
 

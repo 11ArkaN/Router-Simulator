@@ -111,12 +111,18 @@ bool configuration_only(cli_schema::CommandId id) noexcept {
   case configure_card_type:
   case configure_mda_type:
   case configure_system_name:
+  case md_card_enable:
+  case md_card_disable:
+  case md_mda_enable:
+  case md_mda_disable:
   case md_port_enable:
   case md_port_disable:
   case md_port_description:
   case md_port_mtu:
   case md_interface_enable:
   case md_interface_disable:
+  case md_interface_port:
+  case md_interface_ipv4_primary:
   case md_static_route:
   case md_delete_card:
   case md_delete_mda:
@@ -259,7 +265,9 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
                   token.description, context);
     break;
   case ipv4_prefix:
+  case prefix_length:
   case count:
+  case size:
   case mtu:
   case levels:
   case system_name:

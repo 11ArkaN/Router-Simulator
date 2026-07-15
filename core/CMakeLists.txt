@@ -22,7 +22,10 @@ if(MSVC)
   # cache-isolation contract of SpscRing and TelemetryPageV1, not an accidental
   # layout loss. Keep every other level-four warning fatal and silence only this
   # MSVC diagnostic so Windows validates the same intentional layout as Clang.
-  add_compile_options(/W4 /WX /wd4324)
+  # /EHsc is required because public boundaries report allocation and test
+  # failures through standard C++ exceptions. Without it MSVC warns inside the
+  # standard library itself and would not unwind automatic owners correctly.
+  add_compile_options(/W4 /WX /wd4324 /EHsc)
 else()
   add_compile_options(-Wall -Wextra -Wpedantic -Werror)
 endif()
@@ -107,11 +110,12 @@ if(EMSCRIPTEN)
   # Keep the optimization contract on the archive itself to make every Wasm
   # consumer, including the browser runtime, use the same production code.
   target_compile_options(router_build_options INTERFACE -pthread -O3)
-  # Source: Emscripten pthreads documentation. Pre-created workers make the
-  # two synchronous std::thread owners available before main returns to the
-  # browser event loop. The count is generated with the active runtime profile.
+  # Source: Emscripten pthreads documentation. The JavaScript expression is
+  # evaluated during module startup and pre-creates clamp(hardwareConcurrency
+  # minus one, 2, 4) workers. Two become control and forwarding owners; spare
+  # workers remain available for later profile shards without blocking spawn.
   set(ROUTER_PTHREAD_POOL_OPTION
-      "-sPTHREAD_POOL_SIZE=${ROUTER_RUNTIME_WORKERS}")
+      "-sPTHREAD_POOL_SIZE=Math.min(${ROUTER_PTHREAD_POOL_MAX},Math.max(${ROUTER_PTHREAD_POOL_MIN},navigator.hardwareConcurrency-1))")
   set(ROUTER_MEMORY_OPTION "-sINITIAL_MEMORY=${ROUTER_WASM_INITIAL_MEMORY}")
 endif()
 

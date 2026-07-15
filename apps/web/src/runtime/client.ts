@@ -211,7 +211,10 @@ export class RuntimeClient {
       String(config.ports.length),
       ...config.ports.flatMap((port) => [port.id, port.admin, String(port.mtu), port.description]),
       String(config.interfaces.length),
-      ...config.interfaces.flatMap((item) => [item.name, item.admin]),
+      // Interface port and prefix are control-plane configuration, not UI
+      // topology hints. They cross the same atomic netstring transaction as
+      // admin state so forwarding never observes a half-rebound interface.
+      ...config.interfaces.flatMap((item) => [item.name, item.admin, item.port, item.address]),
       String(config.staticRoutes.length),
       ...config.staticRoutes.flatMap((route) => [route.prefix, route.nextHop])
     ];

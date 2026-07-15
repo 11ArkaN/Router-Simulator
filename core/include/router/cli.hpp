@@ -10,7 +10,11 @@
 
 namespace router {
 
-using CliPing = std::function<std::string(packet::Ipv4, std::uint32_t)>;
+// The handler carries every operational ping option selected by the router
+// grammar. Defaults are applied by CLI before this boundary, so forwarding
+// never needs to infer what the user omitted.
+using CliPing = std::function<std::string(packet::Ipv4, std::uint32_t,
+                                          std::uint16_t, bool)>;
 
 // Operational commands share device state, while engine-specific configuration
 // semantics remain inside separate MD and classic dispatchers. ping is injected

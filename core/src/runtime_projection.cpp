@@ -236,7 +236,8 @@ std::string Runtime::snapshot() {
       out << ipv4_text(route.network) << '/'
           << static_cast<unsigned>(route.prefix_length);
     } else {
-      out << interface->prefix;
+      out << ipv4_text(interface->network) << '/'
+          << static_cast<unsigned>(interface->prefix_length);
     }
     out << "\",\"nextHop\":\""
         << (route.next_hop ? ipv4_text(route.next_hop) : "") << "\",\"port\":\""
@@ -269,7 +270,10 @@ std::string Runtime::snapshot() {
       out << ',';
     const auto &interface = running.interfaces[index];
     out << "{\"name\":\"" << interface.name << "\",\"admin\":\""
-        << (interface.admin_enabled ? "up" : "down") << "\"}";
+        << (interface.admin_enabled ? "up" : "down") << "\",\"port\":\""
+        << profile::port_ids[interface.port_index] << "\",\"address\":\""
+        << ipv4_text(interface.ipv4) << '/'
+        << static_cast<unsigned>(interface.prefix_length) << "\"}";
   }
   out << "],\"staticRoutes\":[";
   first = true;

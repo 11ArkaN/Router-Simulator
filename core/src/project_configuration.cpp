@@ -272,7 +272,7 @@ RunningParseResult parse_running(const DeviceConfiguration &current,
   // Four scalar counts and headers surround bounded port, interface and route
   // arrays. The parser never needs to accept more fields than this capacity.
   const auto maximum_fields = 4U + current.ports.size() * 4U +
-                              current.interfaces.size() * 2U +
+                              current.interfaces.size() * 4U +
                               current.static_routes.size() * 2U;
   const auto values = netstrings(command, prefix, maximum_fields);
   if (!values)
@@ -322,16 +322,71 @@ RunningParseResult parse_running(const DeviceConfiguration &current,
                                    : std::nullopt;
   if (!interface_count || *interface_count != next.interface_count)
     return {.error = "ERROR: invalid running interface configuration"};
-  // Interfaces are profile-backed in this milestone. Restore only their
-  // mutable administrative state and reject renamed or reordered entries.
+  // Interface names and MAC identities remain profile-backed, but binding and
+  // primary IPv4 addressing are genuine mutable leaves. All four fields are
+  // staged before publication, so a port move cannot briefly retain the old
+  // connected prefix on forwarding.
   for (std::size_t index = 0; index < *interface_count; ++index) {
     const auto name = take();
     const auto admin = take();
+    const auto port_id = take();
+    const auto address_prefix = take();
+    const auto port = port_id
+                          ? std::find(profile::port_ids.begin(),
+                                      profile::port_ids.end(), *port_id)
+                          : profile::port_ids.end();
+    const auto slash = address_prefix ? address_prefix->find('/')
+                                      : std::string_view::npos;
+    const auto address = slash == std::string_view::npos
+                             ? std::nullopt
+                             : parse_ipv4(address_prefix->substr(0, slash));
+    const auto prefix_length =
+        slash == std::string_view::npos
+            ? std::nullopt
+            : integer<unsigned>(address_prefix->substr(slash + 1U));
     if (!name || !admin || *name != next.interfaces[index].name ||
-        (*admin != "up" && *admin != "down")) {
+        (*admin != "up" && *admin != "down") ||
+        port == profile::port_ids.end() || !address || !prefix_length ||
+        *prefix_length > 32U) {
       return {.error = "ERROR: invalid running interface configuration"};
     }
-    next.interfaces[index].admin_enabled = *admin == "up";
+    auto &interface = next.interfaces[index];
+    const auto address_value = routing::ipv4(
+        (*address)[0], (*address)[1], (*address)[2], (*address)[3]);
+    const auto mask = routing::prefix_mask(
+        static_cast<std::uint8_t>(*prefix_length));
+    const auto host_bits = ~mask;
+    const auto first_octet = (*address)[0];
+    if (!address_value || address_value == 0xffffffffU || !first_octet ||
+        first_octet == 127U || first_octet >= 224U ||
+        (*prefix_length <= 30U &&
+         ((address_value & host_bits) == 0U ||
+          (address_value & host_bits) == host_bits))) {
+      return {.error = "ERROR: invalid running interface address"};
+    }
+    interface.admin_enabled = *admin == "up";
+    interface.port_index = static_cast<std::uint8_t>(
+        port - profile::port_ids.begin());
+    interface.ipv4 = *address;
+    interface.prefix_length = static_cast<std::uint8_t>(*prefix_length);
+    interface.network = address_value & mask;
+  }
+  // A physical port can terminate only one Base router network interface in
+  // this untagged milestone. Overlapping connected prefixes would make local
+  // delivery and route selection ambiguous, so the complete transaction is
+  // rejected rather than resolved by restore order.
+  for (std::size_t left = 0; left < *interface_count; ++left) {
+    for (std::size_t right = left + 1U; right < *interface_count; ++right) {
+      const auto &a = next.interfaces[left];
+      const auto &b = next.interfaces[right];
+      const auto a_mask = routing::prefix_mask(a.prefix_length);
+      const auto b_mask = routing::prefix_mask(b.prefix_length);
+      if (a.port_index == b.port_index ||
+          (a.network & b_mask) == b.network ||
+          (b.network & a_mask) == a.network) {
+        return {.error = "ERROR: duplicate port or overlapping interface prefix"};
+      }
+    }
   }
 
   const auto route_count_text = take();
@@ -409,6 +464,14 @@ network_configuration(const DeviceConfiguration &running,
         .endpoint_gateway = host.gateway,
         .router_mac = routed ? interface->mac : packet::Mac{},
         .router_address = routed ? interface->ipv4 : packet::Ipv4{},
+        // SR OS port Ethernet MTU includes destination/source MAC and
+        // EtherType, while IPv4 total-length excludes them. Untagged network
+        // links therefore subtract the fixed 14-byte Ethernet header exactly
+        // once before forwarding and RFC 1191 use the value.
+        .router_mtu = static_cast<std::uint16_t>(
+            (routed ? running.ports[interface->port_index].mtu
+                    : profile::default_port_mtu) -
+            packet::ethernet_header_octets),
         .propagation = link.propagation};
   }
   return result;

@@ -29,8 +29,9 @@ std::span<const std::uint8_t> Runtime::encode_checkpoint_on_control() {
               projection_time + std::chrono::seconds{entry.remaining_seconds}};
     }
   }
-  prepared_checkpoint_ = checkpoint::encode(state_, session_, fib_generation_,
-                                            std::chrono::steady_clock::now());
+  prepared_checkpoint_ = checkpoint::encode(
+      state_, session_, fib_generation_, forwarding_checkpoint_,
+      std::chrono::steady_clock::now());
   return prepared_checkpoint_;
 }
 
@@ -70,31 +71,14 @@ bool Runtime::decode_checkpoint_on_control(
   if (!configured.success)
     return false;
 
-  std::array<NetworkArpEntry, profile::port_count> restored{};
-  // Only completed adjacency values cross restore. Pending packets, pool
-  // handles and request flags deliberately do not exist in the checkpoint.
-  for (std::size_t index = 0; index < restored.size(); ++index) {
-    const auto &entry = image->device.operational.arp[index];
-    const auto remaining_seconds =
-        entry.valid && entry.expires_at > now
-            ? static_cast<std::uint32_t>(
-                  std::chrono::duration_cast<std::chrono::seconds>(
-                      entry.expires_at - now + std::chrono::milliseconds{999})
-                      .count())
-            : 0U;
-    restored[index] = {.valid = entry.valid && remaining_seconds != 0,
-                       .address = entry.address,
-                       .mac = entry.mac,
-                       .port_index = entry.port_index,
-                       .remaining_seconds = remaining_seconds};
-    if (entry.valid && remaining_seconds == 0)
-      image->device.operational.arp[index] = {};
-  }
-  const auto adjacency =
+  // The decoded state contains wire values and relative durations only.
+  // Publishing the restore job transfers the vector to forwarding, which
+  // allocates fresh packet handles and rebases every link deadline to now.
+  forwarding_checkpoint_ = std::move(image->forwarding);
+  const auto restored_forwarding =
       submit_forward({.id = next_id_.fetch_add(1, std::memory_order_relaxed),
-                      .kind = ForwardJobKind::restore_adjacencies,
-                      .restored_arp = restored});
-  if (!adjacency.success)
+                      .kind = ForwardJobKind::restore_checkpoint});
+  if (!restored_forwarding.success)
     return false;
 
   state_ = image->device;

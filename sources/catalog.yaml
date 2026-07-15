@@ -147,13 +147,13 @@ records:
     source_type: nokia-official-doc
     source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/_global.html
     section: ping and count number
-    rfc_refs: [RFC792]
+    rfc_refs: [RFC792, RFC1191]
     yang_path: null
     last_verified_at: 2026-07-15
-    implementation: [core/src/cli.cpp, core/src/runtime.cpp]
-    tests: [core/tests/cli_test.cpp, core/tests/runtime_test.cpp]
+    implementation: [schemas/cli/26.7.R1.yaml, core/src/cli.cpp, core/src/runtime.cpp, core/src/network.cpp, core/src/packet.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/packet_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp]
     status: implemented
-    notes: Default count is five, count accepts 1 to 100000, payload is 56 octets, probes use one-second host-clock intervals, RTT follows the forwarding path and Ctrl-C reaches both runtime shards through one atomic cancellation word.
+    notes: Default count is five, count accepts 1 to 100000, data size defaults to 56 octets, the first untagged endpoint profile accepts 12 to 1472 octets, do-not-fragment controls DF, probes use one-second host-clock intervals, and Ctrl-C reaches both runtime shards through one atomic cancellation word.
   - id: ieee.802_3.ethernet_frame_timing
     kind: link-behavior
     release: 2022
@@ -195,7 +195,7 @@ records:
     implementation: [core/src/packet.cpp, core/src/routing.cpp]
     tests: [core/tests/packet_test.cpp, core/tests/routing_test.cpp]
     status: partially-implemented
-    notes: The vertical slice validates IPv4 version, IHL, length, checksum, destination, TTL and connected-route lookup. Fragmentation is unsupported.
+    notes: The vertical slice validates IPv4 version, IHL, length, checksum, destination, TTL and connected-route lookup. It fragments oversized non-DF datagrams with eight-octet offsets and reassembles one ordered endpoint datagram.
   - id: ietf.ipv4.router_requirements.rfc1812
     kind: router-behavior
     release: 26.7.R1
@@ -209,7 +209,21 @@ records:
     implementation: [core/src/network.cpp, core/src/network_adjacency.cpp, core/src/network_endpoint.cpp, core/src/network_link_fabric.cpp, core/src/packet.cpp, core/src/routing.cpp]
     tests: [core/tests/packet_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp, core/tests/routing_test.cpp]
     status: partially-implemented
-    notes: Connected forwarding, bounded ARP pending queues and ICMP Time Exceeded are implemented. MTU and fragmentation paths remain unsupported.
+    notes: Connected forwarding, bounded ARP pending queues, ICMP Time Exceeded, egress IP MTU enforcement, IPv4 fragmentation and DF rejection are implemented.
+  - id: ietf.path_mtu.rfc1191
+    kind: router-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc1191
+    section: Router specification
+    rfc_refs: [RFC1191]
+    yang_path: null
+    last_verified_at: 2026-07-15
+    implementation: [core/include/router/packet.hpp, core/src/packet.cpp, core/src/network.cpp, core/src/network_endpoint.cpp, core/src/project_configuration.cpp]
+    tests: [core/tests/packet_test.cpp, core/tests/network_test.cpp]
+    status: implemented
+    notes: Oversized DF datagrams return ICMP type 3 code 4 with the egress IP MTU after translating the SR OS Ethernet MTU unit. The error traverses the ingress link as encoded bytes.
   - id: ietf.pcapng.draft_ietf_opsawg_05
     kind: capture-format
     release: 26.7.R1
@@ -248,10 +262,10 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/CMakeLists.txt, schemas/runtime/2.yaml, schemas/checkpoint/3.yaml, core/include/router/generated_runtime_protocol.hpp, core/src/checkpoint.cpp, core/src/runtime_checkpoint.cpp, core/src/runtime_projection.cpp, core/src/wasm_api.cpp, apps/web/src/runtime/runtime.worker.ts, apps/web/src/runtime/client.ts]
+    implementation: [core/CMakeLists.txt, schemas/runtime/2.yaml, schemas/checkpoint/4.yaml, core/include/router/generated_runtime_protocol.hpp, core/src/checkpoint.cpp, core/src/runtime_checkpoint.cpp, core/src/runtime_projection.cpp, core/src/wasm_api.cpp, apps/web/src/runtime/runtime.worker.ts, apps/web/src/runtime/client.ts]
     tests: [core/tests/checkpoint_test.cpp, core/tests/runtime_test.cpp]
     status: implemented
-    notes: The active profile generates the required pthread pool size and fixed shared Wasm memory budget. There is no single-thread fallback, and JavaScript obtains telemetry offsets from the compiled C++ layout.
+    notes: The active profile pre-creates clamp(hardwareConcurrency minus one, 2, 4) pthread workers with a fixed shared Wasm memory budget. There is no single-thread fallback, and JavaScript obtains telemetry offsets from the compiled C++ layout.
   - id: w3c.indexeddb.persistence
     kind: browser-storage
     release: 3.0
@@ -308,6 +322,20 @@ records:
     tests: [core/tests/cli_test.cpp]
     status: implemented
     notes: Both terminal engines change the shared system name, enforce the documented 1 to 64 character bound and use the result in router-owned prompts and operational output.
+  - id: nokia.sros.26_7.router_interface.configuration
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/peering-quick-reference/hardware-configuration.html
+    section: Configuring the router interface
+    rfc_refs: [RFC1812]
+    yang_path: /configure/router/interface
+    last_verified_at: 2026-07-15
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/src/cli.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, core/src/project_configuration.cpp, packages/contracts/src/index.ts, apps/web/src/ui/WorkspaceViews.tsx]
+    tests: [core/tests/cli_test.cpp, core/tests/project_configuration_test.cpp, core/tests/runtime_test.cpp, packages/contracts/tests/project.test.ts, apps/web/src/ui/WorkspaceViews.test.tsx]
+    status: implemented
+    notes: The profile-owned Base router interface names support independent physical-port association, primary IPv4 prefix, administrative state, connected-route selection and atomic project persistence in both terminal engines.
   - id: nokia.sros.26_7.port.description
     kind: cli-behavior
     release: 26.7.R1
@@ -374,10 +402,10 @@ records:
     rfc_refs: []
     yang_path: /configure/port/ethernet/mtu
     last_verified_at: 2026-07-15
-    implementation: [profiles/7750-sr-7-iom4-e.yaml, core/src/cli_md.cpp, core/src/cli_classic.cpp]
-    tests: [core/tests/cli_test.cpp]
+    implementation: [profiles/7750-sr-7-iom4-e.yaml, core/src/cli_md.cpp, core/src/cli_classic.cpp, core/src/project_configuration.cpp, core/src/network.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/network_test.cpp, core/tests/packet_test.cpp]
     status: implemented
-    notes: Modeled 10 Gb/s network Ethernet ports use default 9212 and configured range 512 to 9212.
+    notes: Modeled 10 Gb/s network Ethernet ports use default 9212 and configured range 512 to 9212. The SR OS value includes the untagged Ethernet header, so forwarding subtracts 14 octets before comparing IPv4 total length or reporting next-hop IP MTU.
   - id: nokia.sros.26_7.arp.aging
     kind: protocol-default
     release: 26.7.R1

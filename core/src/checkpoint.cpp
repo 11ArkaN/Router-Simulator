@@ -2,6 +2,7 @@
 // a private Image before the runtime replaces any live control-owned state.
 
 #include "router/checkpoint.hpp"
+#include "router/routing.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -46,6 +47,13 @@ public:
     const auto *first = reinterpret_cast<const std::uint8_t *>(value.data());
     bytes.insert(bytes.end(), first, first + sizeof(Type) * N);
   }
+  void frame(const packet::Frame &value) {
+    // Only initialized wire bytes are emitted. Serializing the entire fixed
+    // capacity would leak irrelevant stack contents and inflate sparse queues.
+    integer(value.length);
+    bytes.insert(bytes.end(), value.bytes.begin(),
+                 value.bytes.begin() + value.length);
+  }
   std::vector<std::uint8_t> bytes;
 };
 
@@ -77,6 +85,17 @@ public:
       return false;
     std::memcpy(value.data(), bytes_.data() + offset_, size);
     offset_ += size;
+    return true;
+  }
+
+  bool frame(packet::Frame &value) {
+    std::uint16_t length{};
+    if (!integer(length) || !length || length > value.bytes.size() ||
+        offset_ + length > bytes_.size())
+      return false;
+    value.length = length;
+    std::memcpy(value.bytes.data(), bytes_.data() + offset_, length);
+    offset_ += length;
     return true;
   }
 
@@ -113,6 +132,9 @@ void configuration(Writer &out, const DeviceConfiguration &value) {
     out.integer<std::uint8_t>(interface.valid);
     out.integer<std::uint8_t>(interface.admin_enabled);
     out.integer(interface.port_index);
+    out.fixed(interface.ipv4);
+    out.integer(interface.network);
+    out.integer(interface.prefix_length);
   }
   for (const auto &route : value.static_routes) {
     out.integer<std::uint8_t>(route.valid);
@@ -129,6 +151,99 @@ bool boolean(Reader &in, bool &value) {
   if (!in.integer(raw) || raw > 1)
     return false;
   value = raw != 0;
+  return true;
+}
+
+constexpr std::size_t maximum_stored_frames =
+    profile::link_direction_count *
+        (profile::link_queue_capacity * 2U +
+         profile::link_inflight_capacity) +
+    profile::port_count * profile::adjacency_pending_capacity +
+    network_endpoint_capacity * 2U;
+
+void forwarding(Writer &out, const NetworkCheckpointState &value) {
+  // Forwarding records use bounded generated dimensions. Vector length is
+  // written once, then each frame carries its queue stage and exact wire bytes.
+  for (const auto &entry : value.adjacencies) {
+    out.integer<std::uint8_t>(entry.valid);
+    out.fixed(entry.address);
+    out.fixed(entry.mac);
+    out.integer(entry.port_index);
+    out.integer(entry.remaining_seconds);
+  }
+  for (const auto request : value.arp_requests)
+    out.integer<std::uint8_t>(request);
+  for (const auto &endpoint : value.endpoints) {
+    out.integer<std::uint8_t>(endpoint.neighbor_valid);
+    out.fixed(endpoint.neighbor_address);
+    out.fixed(endpoint.neighbor_mac);
+    out.integer<std::uint8_t>(endpoint.pending_next_hop_valid);
+    out.fixed(endpoint.pending_next_hop);
+    out.integer<std::uint8_t>(endpoint.reassembly_active);
+    out.fixed(endpoint.reassembly_source);
+    out.fixed(endpoint.reassembly_destination);
+    out.integer(endpoint.reassembly_identification);
+    out.integer(endpoint.reassembly_payload_octets);
+  }
+  for (const auto remaining : value.transmitter_remaining_ns)
+    out.integer(remaining);
+  out.integer(static_cast<std::uint32_t>(value.frames.size()));
+  for (const auto &stored : value.frames) {
+    out.integer(static_cast<std::uint8_t>(stored.stage));
+    out.integer(stored.direction);
+    out.integer<std::uint8_t>(stored.routed);
+    out.fixed(stored.next_hop);
+    out.integer(stored.remaining_ns);
+    out.frame(stored.frame);
+  }
+}
+
+bool forwarding(Reader &in, NetworkCheckpointState &value) {
+  for (auto &entry : value.adjacencies) {
+    if (!boolean(in, entry.valid) || !in.fixed(entry.address) ||
+        !in.fixed(entry.mac) || !in.integer(entry.port_index) ||
+        entry.port_index >= profile::port_count ||
+        !in.integer(entry.remaining_seconds))
+      return false;
+  }
+  for (auto &request : value.arp_requests) {
+    if (!boolean(in, request))
+      return false;
+  }
+  for (auto &endpoint : value.endpoints) {
+    if (!boolean(in, endpoint.neighbor_valid) ||
+        !in.fixed(endpoint.neighbor_address) ||
+        !in.fixed(endpoint.neighbor_mac) ||
+        !boolean(in, endpoint.pending_next_hop_valid) ||
+        !in.fixed(endpoint.pending_next_hop) ||
+        !boolean(in, endpoint.reassembly_active) ||
+        !in.fixed(endpoint.reassembly_source) ||
+        !in.fixed(endpoint.reassembly_destination) ||
+        !in.integer(endpoint.reassembly_identification) ||
+        !in.integer(endpoint.reassembly_payload_octets) ||
+        endpoint.reassembly_payload_octets >
+            packet::maximum_frame_octets - 34U)
+      return false;
+  }
+  for (auto &remaining : value.transmitter_remaining_ns) {
+    if (!in.integer(remaining))
+      return false;
+  }
+  std::uint32_t frame_count{};
+  if (!in.integer(frame_count) || frame_count > maximum_stored_frames)
+    return false;
+  value.frames.resize(frame_count);
+  for (auto &stored : value.frames) {
+    std::uint8_t stage{};
+    if (!in.integer(stage) ||
+        stage > static_cast<std::uint8_t>(
+                    NetworkFrameStage::endpoint_reassembly) ||
+        !in.integer(stored.direction) || !boolean(in, stored.routed) ||
+        !in.fixed(stored.next_hop) || !in.integer(stored.remaining_ns) ||
+        !in.frame(stored.frame))
+      return false;
+    stored.stage = static_cast<NetworkFrameStage>(stage);
+  }
   return true;
 }
 
@@ -179,7 +294,13 @@ bool configuration(Reader &in, DeviceConfiguration &value) {
     if (!boolean(in, interface.valid) ||
         !boolean(in, interface.admin_enabled) ||
         !in.integer(interface.port_index) ||
-        interface.port_index >= profile::port_count) {
+        interface.port_index >= profile::port_count ||
+        !in.fixed(interface.ipv4) || !in.integer(interface.network) ||
+        !in.integer(interface.prefix_length) || interface.prefix_length > 32U ||
+        interface.network !=
+            (routing::ipv4(interface.ipv4[0], interface.ipv4[1],
+                           interface.ipv4[2], interface.ipv4[3]) &
+             routing::prefix_mask(interface.prefix_length))) {
       return false;
     }
   }
@@ -197,18 +318,22 @@ bool configuration(Reader &in, DeviceConfiguration &value) {
 std::uint8_t drop_reason_code(const char *reason) noexcept {
   if (!reason)
     return 0;
-  if (std::strcmp(reason, "ingress-down") == 0)
+  if (std::strcmp(reason, "interface-down") == 0)
     return 1;
   if (std::strcmp(reason, "route-miss") == 0)
     return 2;
   if (std::strcmp(reason, "queue-full") == 0)
     return 3;
-  if (std::strcmp(reason, "ttl-expired") == 0)
+  if (std::strcmp(reason, "mtu-exceeded") == 0)
     return 4;
-  if (std::strcmp(reason, "timeout") == 0)
+  if (std::strcmp(reason, "ttl-expired") == 0)
     return 5;
-  if (std::strcmp(reason, "malformed") == 0)
+  if (std::strcmp(reason, "timeout") == 0)
     return 6;
+  if (std::strcmp(reason, "cancelled") == 0)
+    return 7;
+  if (std::strcmp(reason, "malformed-packet") == 0)
+    return 8;
   return 0;
 }
 
@@ -216,17 +341,21 @@ std::uint8_t drop_reason_code(const char *reason) noexcept {
 const char *drop_reason(std::uint8_t code) noexcept {
   switch (code) {
   case 1:
-    return "ingress-down";
+    return "interface-down";
   case 2:
     return "route-miss";
   case 3:
     return "queue-full";
   case 4:
-    return "ttl-expired";
+    return "mtu-exceeded";
   case 5:
-    return "timeout";
+    return "ttl-expired";
   case 6:
-    return "malformed";
+    return "timeout";
+  case 7:
+    return "cancelled";
+  case 8:
+    return "malformed-packet";
   default:
     return nullptr;
   }
@@ -237,6 +366,7 @@ const char *drop_reason(std::uint8_t code) noexcept {
 std::vector<std::uint8_t> encode(const DeviceState &device,
                                  const CliSession &session,
                                  std::uint64_t fib_generation,
+                                 const NetworkCheckpointState &forwarding_state,
                                  std::chrono::steady_clock::time_point now) {
   // Header compatibility fields are generated from the active profile and
   // schema contents. No build date or manually maintained version is trusted.
@@ -245,6 +375,7 @@ std::vector<std::uint8_t> encode(const DeviceState &device,
   out.integer(profile::checkpoint_abi);
   out.integer(profile::checkpoint_schema_hash);
   out.integer(profile::profile_hash);
+  out.integer(profile::build_hash);
   const auto remaining = [now](const EquipmentState &equipment) {
     // Absolute steady-clock points are process-local. Only remaining duration
     // is portable, and expired initialization restores as immediately due.
@@ -345,6 +476,7 @@ std::vector<std::uint8_t> encode(const DeviceState &device,
   out.integer<std::uint8_t>(session.candidate_outdated);
   out.integer<std::uint8_t>(session.classic_unsaved);
   out.integer(fib_generation);
+  forwarding(out, forwarding_state);
   return std::move(out.bytes);
 }
 
@@ -357,12 +489,14 @@ std::optional<Image> decode(std::span<const std::uint8_t> bytes,
   std::uint32_t input_version{};
   std::uint64_t input_schema{};
   std::uint64_t input_profile{};
+  std::uint64_t input_build{};
   Image image;
   if (!in.fixed(input_magic) || input_magic != magic ||
       !in.integer(input_version) || input_version != profile::checkpoint_abi ||
       !in.integer(input_schema) ||
       input_schema != profile::checkpoint_schema_hash ||
-      !in.integer(input_profile) || input_profile != profile::profile_hash)
+      !in.integer(input_profile) || input_profile != profile::profile_hash ||
+      !in.integer(input_build) || input_build != profile::build_hash)
     return std::nullopt;
   for (std::size_t card_index = 0;
        card_index < image.device.hardware.cards.size(); ++card_index) {
@@ -430,7 +564,7 @@ std::optional<Image> decode(std::span<const std::uint8_t> bytes,
   if (!in.integer(image.device.operational.capture_count) ||
       !in.integer(image.device.operational.dropped_packets) ||
       !in.integer(image.device.operational.capture_dropped) ||
-      !in.integer(reason) || reason > 6) {
+      !in.integer(reason) || reason > 8) {
     return std::nullopt;
   }
   image.device.operational.last_drop_reason = drop_reason(reason);
@@ -490,7 +624,8 @@ std::optional<Image> decode(std::span<const std::uint8_t> bytes,
       !boolean(in, image.session.candidate_dirty) ||
       !boolean(in, image.session.candidate_outdated) ||
       !boolean(in, image.session.classic_unsaved) ||
-      !in.integer(image.fib_generation) || !in.complete())
+      !in.integer(image.fib_generation) ||
+      !forwarding(in, image.forwarding) || !in.complete())
     return std::nullopt;
   image.session.engine = static_cast<CliEngine>(engine);
   image.session.md_workflow = static_cast<MdCliWorkflow>(workflow);

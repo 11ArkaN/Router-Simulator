@@ -1,3 +1,7 @@
+// One full-duplex link direction owns serialization and delivery deadlines.
+// Structural state uses relative durations so checkpoints never persist a
+// process-local steady_clock epoch.
+
 #pragma once
 
 #include "router/bounded_queue.hpp"
@@ -27,6 +31,17 @@ public:
     // metadata without growing the argument list.
     std::uint32_t packet_handle{};
     std::size_t captured_octets{};
+  };
+
+  struct StoredTransmission {
+    std::uint32_t packet_handle{};
+    std::uint64_t remaining_ns{};
+  };
+
+  struct State {
+    std::uint64_t transmitter_remaining_ns{};
+    std::array<StoredTransmission, profile::link_inflight_capacity> in_flight{};
+    std::size_t count{};
   };
 
   // A direction owns its transmitter deadline. Full-duplex links use two
@@ -88,6 +103,52 @@ public:
 
   [[nodiscard]] std::size_t in_flight() const noexcept {
     return in_flight_.size();
+  }
+
+  [[nodiscard]] State checkpoint(Clock::time_point now) const noexcept {
+    // Negative durations clamp to zero. On restore they become immediately
+    // deliverable, but no elapsed downtime is replayed as protocol catch-up.
+    State result;
+    if (transmitter_available_ > now)
+      result.transmitter_remaining_ns = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              transmitter_available_ - now)
+              .count());
+    for (std::size_t index = 0; index < in_flight_.size(); ++index) {
+      InFlight value;
+      static_cast<void>(in_flight_.copy_at(index, value));
+      result.in_flight[result.count++] = {
+          .packet_handle = value.packet_handle,
+          .remaining_ns = value.delivered > now
+                              ? static_cast<std::uint64_t>(
+                                    std::chrono::duration_cast<
+                                        std::chrono::nanoseconds>(
+                                        value.delivered - now)
+                                        .count())
+                              : 0U};
+    }
+    return result;
+  }
+
+  [[nodiscard]] bool restore(const State &state,
+                             Clock::time_point now) noexcept {
+    // Caller supplies newly allocated packet handles. The direction either
+    // accepts the complete bounded sequence or remains empty.
+    if (state.count > state.in_flight.size())
+      return false;
+    in_flight_.clear();
+    transmitter_available_ =
+        now + std::chrono::nanoseconds{state.transmitter_remaining_ns};
+    for (std::size_t index = 0; index < state.count; ++index) {
+      if (!in_flight_.try_push(
+              {state.in_flight[index].packet_handle,
+               now + std::chrono::nanoseconds{
+                         state.in_flight[index].remaining_ns}})) {
+        in_flight_.clear();
+        return false;
+      }
+    }
+    return true;
   }
 
 private:

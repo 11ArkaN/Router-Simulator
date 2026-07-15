@@ -22,6 +22,9 @@ features:
   ipv4.forwarding:
     status: partially-implemented
     source_ids: [ietf.ipv4.rfc791, ietf.ipv4.router_requirements.rfc1812, ietf.checksum.rfc1071]
+  ipv4.fragmentation_and_pmtu:
+    status: implemented
+    source_ids: [ietf.ipv4.rfc791, ietf.ipv4.router_requirements.rfc1812, ietf.path_mtu.rfc1191, nokia.sros.26_7.port.ethernet_mtu]
   icmp.echo:
     status: implemented
     source_ids: [ietf.icmp.rfc792, nokia.sros.26_7.ping]
@@ -44,7 +47,7 @@ features:
     status: implemented
     source_ids: [w3c.indexeddb.persistence]
   persistence.checkpoint:
-    status: partially-implemented
+    status: implemented
     source_ids: [whatwg.storage.opfs, emscripten.pthreads.shared_memory]
   runtime.shared_telemetry:
     status: implemented
@@ -55,3 +58,6 @@ features:
   cli.port_and_static_configuration:
     status: partially-implemented
     source_ids: [nokia.sros.26_7.port.configuration, nokia.sros.26_7.port.description, nokia.sros.26_7.static_route.configuration, nokia.sros.26_7.system.name]
+  cli.router_interface_configuration:
+    status: implemented
+    source_ids: [nokia.sros.26_7.router_interface.configuration, nokia.sros.26_7.port.configuration]

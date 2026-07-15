@@ -49,11 +49,12 @@ struct PortConfiguration {
 
 struct InterfaceConfiguration {
   // valid separates configured interfaces from fixed-capacity storage. The
-  // port index is a stable profile handle and never points into movable memory.
+  // first milestone keeps the two profile-owned interface names, while port
+  // binding and IPv4 addressing are ordinary datastore leaves. Storing their
+  // numeric values avoids self-referential text pointers when candidate and
+  // running configurations are copied during commit.
   bool valid{};
   const char *name{};
-  const char *address{};
-  const char *prefix{};
   packet::Mac mac{};
   packet::Ipv4 ipv4{};
   std::uint32_t network{};
@@ -119,8 +120,6 @@ struct DeviceConfiguration {
     for (std::size_t index = 0; index < interface_count; ++index) {
       interfaces[index] = {.valid = true,
                            .name = profile::interface_names[index],
-                           .address = profile::interface_addresses[index],
-                           .prefix = profile::interface_prefixes[index],
                            .mac = profile::router_macs[index],
                            .ipv4 = profile::router_addresses[index],
                            .network = profile::router_networks[index],

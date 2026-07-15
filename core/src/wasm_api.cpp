@@ -83,6 +83,10 @@ RS_EXPORT const char *runtime_capabilities() {
              std::to_string(router::profile::runtime_snapshot_abi) +
              ",\"threads\":true,\"sharedTelemetry\":true,\"checkpoint\":" +
              std::to_string(router::profile::checkpoint_abi) +
+             ",\"pthreadPoolMin\":" +
+             std::to_string(router::profile::pthread_pool_min) +
+             ",\"pthreadPoolMax\":" +
+             std::to_string(router::profile::pthread_pool_max) +
              ",\"profile\":\"" + router::profile::id + "\"}";
   return response.c_str();
 }

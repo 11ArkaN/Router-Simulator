@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <vector>
 
 namespace router {
 
@@ -24,6 +25,7 @@ enum class NetworkDrop : std::uint8_t {
   ingress_down,
   route_miss,
   queue_full,
+  mtu_exceeded,
   ttl_expired,
   timeout,
   cancelled,
@@ -41,6 +43,11 @@ struct NetworkEndpointConfiguration {
   packet::Ipv4 endpoint_gateway{};
   packet::Mac router_mac{};
   packet::Ipv4 router_address{};
+  // This is the IP MTU after control subtracts the untagged Ethernet header
+  // from SR OS port Ethernet MTU. Forwarding therefore compares like units and
+  // can place the correct next-hop IP MTU in RFC 1191 ICMP errors.
+  std::uint16_t router_mtu{
+      profile::default_port_mtu - packet::ethernet_header_octets};
   std::chrono::nanoseconds propagation{profile::default_link_propagation};
 };
 
@@ -76,6 +83,54 @@ struct NetworkResult {
   std::array<NetworkArpEntry, profile::port_count> router_arp{};
 };
 
+enum class NetworkFrameStage : std::uint8_t {
+  fabric_tx,
+  fabric_in_flight,
+  fabric_rx,
+  router_pending,
+  endpoint_pending,
+  endpoint_reassembly
+};
+
+struct NetworkStoredFrame {
+  // A checkpoint stores wire bytes rather than process-local PacketHandles.
+  // direction is a link direction for fabric stages and a port or endpoint
+  // index for local queues. remaining_ns applies only to in-flight frames.
+  NetworkFrameStage stage{};
+  std::uint8_t direction{};
+  bool routed{};
+  packet::Ipv4 next_hop{};
+  std::uint64_t remaining_ns{};
+  packet::Frame frame{};
+};
+
+struct NetworkEndpointState {
+  // Neighbor and pending values belong to one endpoint stack. Reassembly
+  // progress is stored as bytes already accepted, not as parser pointers.
+  bool neighbor_valid{};
+  packet::Ipv4 neighbor_address{};
+  packet::Mac neighbor_mac{};
+  bool pending_next_hop_valid{};
+  packet::Ipv4 pending_next_hop{};
+  bool reassembly_active{};
+  packet::Ipv4 reassembly_source{};
+  packet::Ipv4 reassembly_destination{};
+  std::uint16_t reassembly_identification{};
+  std::uint16_t reassembly_payload_octets{};
+};
+
+struct NetworkCheckpointState {
+  // This value is produced and consumed only at a forwarding barrier. Vectors
+  // are permitted here because checkpoint export is outside the packet hot
+  // path. Runtime transfers ownership through release/acquire mailbox acks.
+  std::array<NetworkArpEntry, profile::port_count> adjacencies{};
+  std::array<bool, profile::port_count> arp_requests{};
+  std::array<NetworkEndpointState, network_endpoint_capacity> endpoints{};
+  std::array<std::uint64_t, profile::link_direction_count>
+      transmitter_remaining_ns{};
+  std::vector<NetworkStoredFrame> frames;
+};
+
 using CaptureObserver = bool (*)(void *context, std::uint8_t interface_id,
                                  const packet::Frame &frame,
                                  std::uint64_t timestamp_us);
@@ -96,9 +151,24 @@ public:
       const std::array<NetworkArpEntry, profile::port_count> &entries) noexcept;
   [[nodiscard]] std::array<NetworkArpEntry, profile::port_count>
   adjacencies() const noexcept;
+  // Checkpoint methods require forwarding-shard affinity and quiescence. They
+  // translate pool handles into wire values and rebuild fresh ownership on
+  // restore. Failure leaves the network empty rather than partially restored.
+  [[nodiscard]] NetworkCheckpointState checkpoint() const;
+  [[nodiscard]] bool restore(const NetworkCheckpointState &state) noexcept;
+  // service executes work already admitted to forwarding-owned queues and the
+  // physical medium. It never creates traffic or advances a virtual clock.
+  // The forwarding shard calls it after checkpoint restore so a live frame
+  // continues at its rebased steady-clock deadline even when no CLI job runs.
+  void service() noexcept;
+  // The returned deadline belongs to the nearest local LinkDirection. Callers
+  // may use it only as a sleep bound and must re-check their mailbox on wake.
+  [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
+  next_deadline() const noexcept;
   [[nodiscard]] NetworkResult
   ping(PingOrigin origin, std::uint8_t source_endpoint,
        packet::Ipv4 destination, std::uint16_t sequence,
+       std::size_t payload_octets, bool dont_fragment,
        CaptureObserver observer, void *observer_context,
        CancellationObserver cancelled = nullptr,
        void *cancellation_context = nullptr) noexcept;

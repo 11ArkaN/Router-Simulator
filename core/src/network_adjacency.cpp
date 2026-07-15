@@ -102,4 +102,17 @@ AdjacencyTable::projection() const noexcept {
   return result;
 }
 
+std::array<bool, profile::port_count>
+AdjacencyTable::request_projection() const noexcept {
+  // Request suppression is transient forwarding state and is meaningful only
+  // when the matching pending queue is restored in the same barrier image.
+  return requests_;
+}
+
+void AdjacencyTable::restore_requests(
+    const std::array<bool, profile::port_count> &requests) noexcept {
+  // The caller validates that each true bit owns at least one queued frame.
+  requests_ = requests;
+}
+
 } // namespace router::network_detail

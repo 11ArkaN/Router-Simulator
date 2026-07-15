@@ -1,10 +1,11 @@
-// Structural checkpoint codec for control-owned state. The format contains
-// values only and deliberately excludes pthreads, queues, packet handles,
-// condition variables and absolute steady-clock timestamps.
+// Structural checkpoint codec for control and forwarding values. Queue stages
+// and wire bytes are persisted, while pthreads, packet handles, condition
+// variables and absolute steady-clock timestamps are deliberately excluded.
 
 #pragma once
 
 #include "router/device.hpp"
+#include "router/network.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -20,6 +21,7 @@ struct Image {
   DeviceState device{};
   CliSession session{};
   std::uint64_t fib_generation{};
+  NetworkCheckpointState forwarding{};
   std::array<std::uint64_t, profile::chassis_slots> card_remaining_ns{};
   std::array<std::uint64_t,
              profile::chassis_slots * profile::mda_slots_per_card>
@@ -31,7 +33,8 @@ struct Image {
 // bytes.
 [[nodiscard]] std::vector<std::uint8_t>
 encode(const DeviceState &device, const CliSession &session,
-       std::uint64_t fib_generation, std::chrono::steady_clock::time_point now);
+       std::uint64_t fib_generation, const NetworkCheckpointState &forwarding,
+       std::chrono::steady_clock::time_point now);
 // Decode validates family magic, ABI, profile and schema hashes, bounds and the
 // terminal offset. Failure returns nullopt and exposes no partially decoded
 // state.

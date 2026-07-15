@@ -53,6 +53,8 @@ const char *drop_name(NetworkDrop reason) noexcept {
     return "route-miss";
   case NetworkDrop::queue_full:
     return "queue-full";
+  case NetworkDrop::mtu_exceeded:
+    return "mtu-exceeded";
   case NetworkDrop::ttl_expired:
     return "ttl-expired";
   case NetworkDrop::timeout:
@@ -166,12 +168,26 @@ std::string Runtime::command(const std::string &text) {
   wake_control_.notify_one();
 
   ResponseMessage response;
+  std::string output;
+  output.reserve(profile::response_message_bytes);
   while (!stopping_.load(std::memory_order_acquire)) {
-    if (responses_.try_pop(response))
-      return response.text.data();
+    if (responses_.try_pop(response)) {
+      if (response.id != message.id)
+        return "ERROR: control response ordering violation";
+      output.append(response.text.data());
+      if (!response.more)
+        return output;
+      continue;
+    }
     const auto observed = response_epoch_.load(std::memory_order_acquire);
-    if (responses_.try_pop(response))
-      return response.text.data();
+    if (responses_.try_pop(response)) {
+      if (response.id != message.id)
+        return "ERROR: control response ordering violation";
+      output.append(response.text.data());
+      if (!response.more)
+        return output;
+      continue;
+    }
     std::unique_lock lock(wake_mutex_);
     wake_response_.wait(lock, [this, observed] {
       return stopping_.load(std::memory_order_acquire) ||
@@ -231,22 +247,30 @@ void Runtime::control_loop() {
         continue;
       }
     }
-    ResponseMessage response{.id = request.id};
-    const auto output = dispatch(request.text.data());
-    if (!copy_text(response.text, output)) {
-      copy_text(response.text, "ERROR: response exceeds control mailbox limit");
-    }
-    if (!responses_.try_push(response)) {
-      // A full response ring violates the one-response-per-command contract.
-      // Stop and wake every domain so no thread remains parked indefinitely.
-      stopping_.store(true, std::memory_order_release);
-      wake_control_.notify_all();
-      wake_forward_.notify_all();
-      wake_response_.notify_all();
-      continue;
-    }
-    response_epoch_.fetch_add(1, std::memory_order_release);
-    wake_response_.notify_one();
+    auto output = dispatch(request.text.data());
+    if (output.size() > profile::cli_output_queue_bytes)
+      output = "ERROR: response exceeds CLI output queue limit";
+
+    // Chunking prevents a large show result from inflating every response-ring
+    // slot. The browser bridge drains concurrently; if all slots are occupied,
+    // control yields until the sole consumer returns capacity. Accepted bytes
+    // are therefore never overwritten or silently truncated.
+    std::size_t offset{};
+    do {
+      ResponseMessage response{.id = request.id};
+      const auto remaining = output.size() - offset;
+      const auto count = std::min(remaining, response.text.size() - 1U);
+      std::memcpy(response.text.data(), output.data() + offset, count);
+      response.text[count] = '\0';
+      offset += count;
+      response.more = offset < output.size();
+      while (!responses_.try_push(response) &&
+             !stopping_.load(std::memory_order_acquire))
+        std::this_thread::yield();
+      response_epoch_.fetch_add(1, std::memory_order_release);
+      wake_response_.notify_one();
+    } while (offset < output.size() &&
+             !stopping_.load(std::memory_order_acquire));
   }
 }
 
@@ -464,8 +488,10 @@ std::string Runtime::dispatch(const std::string &text) {
     // the forwarding ring, so a command cannot call another device directly.
     auto output = execute_cli(
         state_, session_, text.substr(terminal.size()),
-        [this](packet::Ipv4 destination, std::uint32_t count) {
-          return run_ping(ForwardJobKind::router_ping, destination, 0, count);
+        [this](packet::Ipv4 destination, std::uint32_t count,
+               std::uint16_t payload_octets, bool dont_fragment) {
+          return run_ping(ForwardJobKind::router_ping, destination, 0, count,
+                          payload_octets, dont_fragment);
         });
     const auto result = hardware::reconcile(state_.configuration.running,
                                             state_.hardware, state_.operational,
@@ -504,7 +530,9 @@ std::string Runtime::dispatch(const std::string &text) {
 
 std::string Runtime::run_ping(ForwardJobKind kind, packet::Ipv4 destination_ip,
                               std::uint8_t source_endpoint,
-                              std::uint32_t count) {
+                              std::uint32_t count,
+                              std::uint16_t payload_octets,
+                              bool dont_fragment) {
   // The CLI schema bounds count, but this internal boundary clamps again for
   // typed host operations and future ABI callers that do not use CLI parsing.
   count = std::clamp<std::uint32_t>(count, 1, profile::maximum_ping_count);
@@ -512,7 +540,7 @@ std::string Runtime::run_ping(ForwardJobKind kind, packet::Ipv4 destination_ip,
       0U, std::memory_order_release);
   const auto destination = ipv4_text(destination_ip);
   std::ostringstream out;
-  out << "PING " << destination << " 56 data bytes\n";
+  out << "PING " << destination << ' ' << payload_octets << " data bytes\n";
   std::uint32_t received = 0;
   std::uint32_t transmitted = 0;
   std::uint64_t minimum_rtt = std::numeric_limits<std::uint64_t>::max();
@@ -544,7 +572,9 @@ std::string Runtime::run_ping(ForwardJobKind kind, packet::Ipv4 destination_ip,
         submit_forward({.id = next_id_.fetch_add(1, std::memory_order_relaxed),
                         .kind = kind,
                         .destination = destination_ip,
-                        .source_endpoint = source_endpoint});
+                        .source_endpoint = source_endpoint,
+                        .payload_octets = payload_octets,
+                        .dont_fragment = dont_fragment});
     if (result.drop_reason == NetworkDrop::cancelled)
       break;
     ++transmitted;
@@ -571,7 +601,10 @@ std::string Runtime::run_ping(ForwardJobKind kind, packet::Ipv4 destination_ip,
     if (!result.success) {
       ++state_.operational.dropped_packets;
       state_.operational.last_drop_reason = drop_name(result.drop_reason);
-      out << "Request timeout for icmp_seq " << sequence << '\n';
+      if (result.drop_reason == NetworkDrop::mtu_exceeded)
+        out << "Packet too big for icmp_seq " << sequence << '\n';
+      else
+        out << "Request timeout for icmp_seq " << sequence << '\n';
       continue;
     }
     ++received;
@@ -709,8 +742,25 @@ void Runtime::reconcile_fib(bool force) {
       submit_forward({.id = next_id_.fetch_add(1, std::memory_order_relaxed),
                       .kind = ForwardJobKind::program_fib,
                       .fib = rib_.compile(++fib_generation_)});
-  if (!result.success)
+  if (!result.success) {
     state_.operational.last_drop_reason = "fib-programming-failed";
+    return;
+  }
+  // FIB installation also invalidates adjacency and pending packets on every
+  // withdrawn port. Publish the post-install table immediately so CLI and UI
+  // cannot display a stale MAC until the next unrelated ping result arrives.
+  state_.operational.arp = {};
+  const auto arp_projection_time = std::chrono::steady_clock::now();
+  for (const auto &entry : result.arp) {
+    if (entry.valid)
+      state_.operational.arp[entry.port_index] = {
+          .valid = true,
+          .address = entry.address,
+          .mac = entry.mac,
+          .port_index = entry.port_index,
+          .expires_at = arp_projection_time +
+                        std::chrono::seconds{entry.remaining_seconds}};
+  }
 }
 
 void Runtime::forwarding_loop() {
@@ -737,6 +787,10 @@ void Runtime::forwarding_loop() {
                                                            timestamp_us);
   };
   while (!stopping_.load(std::memory_order_acquire)) {
+    // Progress restored or previously admitted frames even when no operation
+    // currently waits for a reply. The call is nonblocking and remains on the
+    // sole forwarding owner.
+    network.service();
     // A failed pop is paired with an epoch snapshot and a second pop before
     // sleep, preventing a notification between the first check and wait.
     ForwardJob job;
@@ -744,10 +798,17 @@ void Runtime::forwarding_loop() {
       const auto observed = forward_epoch_.load(std::memory_order_acquire);
       if (!forward_jobs_.try_pop(job)) {
         std::unique_lock lock(wake_mutex_);
-        wake_forward_.wait(lock, [this, observed] {
+        const auto ready = [this, observed] {
           return stopping_.load(std::memory_order_acquire) ||
                  forward_epoch_.load(std::memory_order_acquire) != observed;
-        });
+        };
+        // Link deadlines are local physical-medium state. Waiting for the
+        // nearest one does not create a global scheduler and a newly published
+        // mailbox epoch always interrupts the sleep.
+        if (const auto deadline = network.next_deadline())
+          static_cast<void>(wake_forward_.wait_until(lock, *deadline, ready));
+        else
+          wake_forward_.wait(lock, ready);
         forwarding_wakeups_.fetch_add(1, std::memory_order_relaxed);
         continue;
       }
@@ -756,6 +817,7 @@ void Runtime::forwarding_loop() {
     switch (job.kind) {
     case ForwardJobKind::program_fib:
       network.install_fib(job.fib);
+      result.arp = network.adjacencies();
       result.success = true;
       publish(result);
       continue;
@@ -770,8 +832,16 @@ void Runtime::forwarding_loop() {
       publish(result);
       continue;
     case ForwardJobKind::checkpoint_barrier:
-      result.arp = network.adjacencies();
+      // A release on the result ring publishes the complete structural value
+      // to control. No handle or mutable network pointer crosses this handoff.
+      forwarding_checkpoint_ = network.checkpoint();
+      result.arp = forwarding_checkpoint_.adjacencies;
       result.success = true;
+      publish(result);
+      continue;
+    case ForwardJobKind::restore_checkpoint:
+      result.success = network.restore(forwarding_checkpoint_);
+      result.arp = network.adjacencies();
       publish(result);
       continue;
     case ForwardJobKind::restore_adjacencies:
@@ -788,7 +858,8 @@ void Runtime::forwarding_loop() {
         job.kind == ForwardJobKind::endpoint_ping ? PingOrigin::endpoint
                                                   : PingOrigin::router,
         job.source_endpoint, job.destination,
-        static_cast<std::uint16_t>(job.id),
+        static_cast<std::uint16_t>(job.id), job.payload_octets,
+        job.dont_fragment,
         capture_active_.load(std::memory_order_relaxed) ? capture : nullptr,
         this,
         [](void *context) noexcept {

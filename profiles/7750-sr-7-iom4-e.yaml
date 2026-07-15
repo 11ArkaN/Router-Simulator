@@ -101,7 +101,11 @@ ui_defaults:
     host-b: { x: 748, y: 170 }
 resources:
   runtime_worker_count: 2
-  command_message_bytes: 1024
+  pthread_pool_min: 2
+  pthread_pool_max: 4
+  # One command slot must hold the complete atomic running datastore with ten
+  # maximum-length port descriptions. Partial configuration is never streamed.
+  command_message_bytes: 4096
   response_message_bytes: 16384
   static_route_capacity: 8
   fib_route_capacity: 18
@@ -116,6 +120,9 @@ resources:
   response_ring_capacity: 8
   forwarding_ring_capacity: 16
   cli_input_queue_bytes: 65536
+  # CLI output is streamed through bounded 16 KiB response chunks. The whole
+  # command result remains capped at 1 MiB before xterm's pager owns it.
+  cli_output_queue_bytes: 1048576
   wasm_initial_memory_bytes: 268435456
 timing:
   ping_timeout_milliseconds: 2000
@@ -139,6 +146,11 @@ limits:
   project_notes_bytes: 65536
 cli_defaults:
   ping_count: 5
+  ping_size: 56
+  ping_min_size: 12
+  # The first endpoint profile stores one untagged 1514-byte frame. Larger SR
+  # OS ping sizes remain outside this profile until jumbo endpoint buffers land.
+  ping_max_size: 1472
   # SR OS 26.7.R1 global ping count range is 1 to 100000. The optional count
   # syntax remains hidden until asynchronous Ctrl-C cancellation is available.
   ping_max_count: 100000
@@ -150,7 +162,9 @@ abi:
   telemetry: 4
   # Version 2 adds the router-owned terminal history region to terminal:state.
   runtime_messages: 2
-  checkpoint: 3
+  # Version 4 adds structural forwarding queues, encoded frames, relative link
+  # deadlines, ARP request suppression and endpoint protocol progress.
+  checkpoint: 4
 link_defaults:
   # Propagation belongs to the cable or circuit, not to the Nokia port. The
   # project copies this value into each new physical link and may override it

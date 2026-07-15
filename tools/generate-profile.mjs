@@ -75,6 +75,24 @@ if (runtimeSchema.version !== profile.abi.runtime_messages) {
   throw new Error("Runtime protocol schema version does not match the active profile");
 }
 
+// Checkpoint compatibility depends on executable semantics, not only field
+// order. Hash every hand-maintained core source and header while excluding
+// generated outputs whose content already derives from these same inputs.
+const coreRoot = resolve(root, "core");
+const coreFiles = readdirSync(coreRoot, { recursive: true })
+  .map((name) => String(name).replaceAll("\\", "/"))
+  .filter((name) => (name.startsWith("src/") || name.startsWith("include/")) &&
+    /\.(cpp|hpp)$/.test(name) && !name.includes("generated_"))
+  .sort();
+const buildHasher = createHash("sha256")
+  .update(stableJson(profile))
+  .update(stableJson(cliSchema))
+  .update(stableJson(checkpointSchema))
+  .update(stableJson(runtimeSchema));
+for (const name of coreFiles)
+  buildHasher.update(name).update(readFileSync(resolve(coreRoot, name)));
+const buildCompatibilityHash = buildHasher.digest("hex").slice(0, 16);
+
 const endpointCount = profile.hosts?.length ?? 0;
 const interfaceCount = profile.router_interfaces?.length ?? 0;
 const links = profile.links ?? [];
@@ -95,11 +113,32 @@ if (profile.ports.count > 32) {
 if (profile.capture_interfaces.length > 255 || endpointCount > 127) {
   throw new Error("Current capture and link identifiers require capacities below 256");
 }
+// The largest legal first-stage running configuration contains every port
+// description and every static route. Netstring framing adds a decimal length,
+// colon and comma to each value. A conservative 12-byte framing allowance per
+// field keeps this proof independent from the exact number of decimal digits.
+const runningFieldCount = 2 + profile.ports.count * 4 + 1 +
+  interfaceCount * 4 + 1 + profile.resources.static_route_capacity * 2;
+const maximumRunningCommandBytes = 32 + profile.limits.system_name_bytes +
+  profile.ports.count * (32 + profile.limits.port_description_bytes) +
+  interfaceCount * 128 + profile.resources.static_route_capacity * 96 +
+  runningFieldCount * 12;
+if (profile.resources.command_message_bytes < maximumRunningCommandBytes) {
+  throw new Error(`Command mailbox cannot hold a maximum valid running datastore (${maximumRunningCommandBytes} bytes)`);
+}
 if (profile.resources.fib_route_capacity < profile.ports.count + profile.resources.static_route_capacity) {
   throw new Error("FIB capacity must cover every connected and static route slot");
 }
 if (profile.resources.fib_route_capacity > 255 || profile.ports.count > 255) {
   throw new Error("Current bounded route and port counters require capacities at or below 255");
+}
+if (!Number.isInteger(profile.resources.pthread_pool_min) ||
+    !Number.isInteger(profile.resources.pthread_pool_max) ||
+    profile.resources.pthread_pool_min < 2 ||
+    profile.resources.pthread_pool_max > 4 ||
+    profile.resources.pthread_pool_min > profile.resources.pthread_pool_max ||
+    profile.resources.runtime_worker_count > profile.resources.pthread_pool_min) {
+  throw new Error("pthread pool must contain 2 to 4 workers and cover active shard owners");
 }
 // Template capacities become array extents in C++. Reject zero, fractional or
 // unsafe values here so invalid queue types never reach a compiler diagnostic.
@@ -112,9 +151,10 @@ for (const key of ["link_queue_frames", "link_inflight_frames", "adjacency_pendi
 }
 // Text and UI limits are cross-language contracts. Validate them once before
 // using them as C++ array extents or browser parser bounds.
-for (const [group, keys] of [[profile.resources, ["command_message_bytes", "response_message_bytes"]],
+for (const [group, keys] of [[profile.resources, ["command_message_bytes", "response_message_bytes",
+  "cli_input_queue_bytes", "cli_output_queue_bytes"]],
   [profile.limits, ["system_name_bytes", "port_description_bytes", "host_name_bytes", "project_name_bytes"]],
-  [profile.cli_defaults, ["ping_count", "ping_max_count", "history_entries"]],
+  [profile.cli_defaults, ["ping_count", "ping_max_count", "ping_size", "ping_min_size", "ping_max_size", "history_entries"]],
   [profile.timing, ["arp_timeout_seconds", "telemetry_read_attempts", "autosave_debounce_milliseconds"]]]) {
   for (const key of keys) {
     if (!Number.isSafeInteger(group?.[key]) || group[key] <= 0) {
@@ -129,6 +169,11 @@ for (const key of ["snmp_port", "config_backup_count"]) {
 }
 if (profile.cli_defaults.ping_count > profile.cli_defaults.ping_max_count) {
   throw new Error("Default ping count cannot exceed its CLI limit");
+}
+if (profile.cli_defaults.ping_min_size > profile.cli_defaults.ping_size ||
+    profile.cli_defaults.ping_size > profile.cli_defaults.ping_max_size ||
+    profile.cli_defaults.ping_max_size > 1472) {
+  throw new Error("Ping data-size defaults exceed the untagged endpoint frame profile");
 }
 
 const portIds = Array.from({ length: profile.ports.count }, (_, index) =>
@@ -206,6 +251,8 @@ inline constexpr std::uint16_t maximum_port_mtu = ${profile.ports.maximum_mtu};
 inline constexpr std::size_t static_route_capacity = ${profile.resources.static_route_capacity};
 inline constexpr std::size_t fib_route_capacity = ${profile.resources.fib_route_capacity};
 inline constexpr std::uint32_t runtime_worker_count = ${profile.resources.runtime_worker_count}U;
+inline constexpr std::uint32_t pthread_pool_min = ${profile.resources.pthread_pool_min}U;
+inline constexpr std::uint32_t pthread_pool_max = ${profile.resources.pthread_pool_max}U;
 inline constexpr std::size_t command_message_bytes = ${profile.resources.command_message_bytes};
 inline constexpr std::size_t response_message_bytes = ${profile.resources.response_message_bytes};
 inline constexpr std::size_t packet_pool_bytes = ${profile.resources.packet_pool_bytes}U;
@@ -217,12 +264,16 @@ inline constexpr std::size_t command_ring_capacity = ${profile.resources.command
 inline constexpr std::size_t response_ring_capacity = ${profile.resources.response_ring_capacity};
 inline constexpr std::size_t forwarding_ring_capacity = ${profile.resources.forwarding_ring_capacity};
 inline constexpr std::size_t cli_input_queue_bytes = ${profile.resources.cli_input_queue_bytes}U;
+inline constexpr std::size_t cli_output_queue_bytes = ${profile.resources.cli_output_queue_bytes}U;
 inline constexpr std::size_t system_name_bytes = ${profile.limits.system_name_bytes};
 inline constexpr std::size_t port_description_bytes = ${profile.limits.port_description_bytes};
 inline constexpr std::size_t host_name_bytes = ${profile.limits.host_name_bytes};
 inline constexpr std::size_t project_name_bytes = ${profile.limits.project_name_bytes};
 inline constexpr std::uint32_t default_ping_count = ${profile.cli_defaults.ping_count}U;
 inline constexpr std::uint32_t maximum_ping_count = ${profile.cli_defaults.ping_max_count}U;
+inline constexpr std::uint16_t default_ping_payload_octets = ${profile.cli_defaults.ping_size}U;
+inline constexpr std::uint16_t minimum_ping_payload_octets = ${profile.cli_defaults.ping_min_size}U;
+inline constexpr std::uint16_t maximum_ping_payload_octets = ${profile.cli_defaults.ping_max_size}U;
 inline constexpr std::size_t cli_history_entries = ${profile.cli_defaults.history_entries};
 inline constexpr std::uint32_t runtime_snapshot_abi = ${profile.abi.runtime_snapshot};
 inline constexpr std::uint32_t telemetry_abi = ${profile.abi.telemetry};
@@ -230,6 +281,7 @@ inline constexpr std::uint32_t runtime_message_abi = ${profile.abi.runtime_messa
 inline constexpr std::uint32_t checkpoint_abi = ${profile.abi.checkpoint};
 inline constexpr std::uint64_t profile_hash = 0x${profileHash}ULL;
 inline constexpr std::uint64_t checkpoint_schema_hash = 0x${checkpointSchemaHash}ULL;
+inline constexpr std::uint64_t build_hash = 0x${buildCompatibilityHash}ULL;
 
 // Hardware initialization values are experimental emulator timing profiles,
 // not claims about physical platform boot guarantees.
@@ -303,7 +355,7 @@ inline constexpr std::array<const char*, ${profile.capture_interfaces.length}> c
 
 const parameterKinds = [
   "card_slot", "mda_slot", "card_type", "mda_type", "port_id",
-  "interface_name", "ipv4", "ipv4_key", "ipv4_prefix", "count", "mtu",
+  "interface_name", "ipv4", "ipv4_key", "ipv4_prefix", "prefix_length", "count", "size", "mtu",
   "levels", "system_name", "description"
 ];
 for (const kind of parameterKinds) {
@@ -442,11 +494,12 @@ export const GENERATED_PROFILE = {
   cliDefaults: ${JSON.stringify(profile.cli_defaults)},
   abi: ${JSON.stringify(profile.abi)},
   uiDefaults: ${JSON.stringify(profile.ui_defaults)},
-  profileHash: ${JSON.stringify(profileHash)}
+  profileHash: ${JSON.stringify(profileHash)},
+  buildHash: ${JSON.stringify(buildCompatibilityHash)}
 } as const;
 `;
 
-const cmake = `# Generated from ${basename(sourcePath)}. Do not edit.\nset(ROUTER_WASM_INITIAL_MEMORY ${profile.resources.wasm_initial_memory_bytes})\nset(ROUTER_RUNTIME_WORKERS ${profile.resources.runtime_worker_count})\n`;
+const cmake = `# Generated from ${basename(sourcePath)}. Do not edit.\nset(ROUTER_WASM_INITIAL_MEMORY ${profile.resources.wasm_initial_memory_bytes})\nset(ROUTER_RUNTIME_WORKERS ${profile.resources.runtime_worker_count})\nset(ROUTER_PTHREAD_POOL_MIN ${profile.resources.pthread_pool_min})\nset(ROUTER_PTHREAD_POOL_MAX ${profile.resources.pthread_pool_max})\n`;
 const runtimeHeader = `#pragma once
 
 // Generated runtime management protocol. Browser and C++ consume names from

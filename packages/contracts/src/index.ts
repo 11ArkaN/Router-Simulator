@@ -90,7 +90,11 @@ export interface PortState {
 export interface RunningConfig {
   systemName: string;
   ports: Array<{ id: string; admin: "up" | "down"; mtu: number; description: string }>;
-  interfaces: Array<{ name: string; admin: "up" | "down" }>;
+  // Router interfaces retain profile-backed names and MAC identities, while
+  // their port association and primary IPv4 prefix are portable user intent.
+  // Keeping those leaves in the project prevents reload from silently
+  // restoring the starter topology over CLI configuration.
+  interfaces: Array<{ name: string; admin: "up" | "down"; port: string; address: string }>;
   staticRoutes: Array<{ prefix: string; nextHop: string }>;
 }
 
@@ -136,7 +140,13 @@ export interface LabProject {
 export interface ProjectManifestV1 {
   mode: "project" | "checkpoint";
   formatVersion: 1;
-  profileLock: { id: typeof GENERATED_PROFILE.id; release: typeof GENERATED_PROFILE.release };
+  profileLock: {
+    id: typeof GENERATED_PROFILE.id;
+    release: typeof GENERATED_PROFILE.release;
+    profileHash: string;
+    buildHash: string;
+    checkpointAbi: number;
+  };
   project: LabProject;
   captureBase64?: string;
   checkpointBase64?: string;
@@ -301,7 +311,9 @@ export function createDefaultProject(now = new Date()): LabProject {
       })),
       interfaces: GENERATED_PROFILE.routerInterfaces.map((item) => ({
         name: item.name,
-        admin: item.admin_state === "enable" ? "up" as const : "down" as const
+        admin: item.admin_state === "enable" ? "up" as const : "down" as const,
+        port: item.port,
+        address: item.address
       })),
       staticRoutes: []
     },
@@ -371,7 +383,23 @@ export function parseProject(input: unknown): LabProject {
     throw new Error("Unsupported project format, release or profile");
   }
   const links = value.links ?? structuredClone(DEFAULT_PROJECT.links);
-  const running = value.runningConfig ?? structuredClone(DEFAULT_PROJECT.runningConfig);
+  const rawRunning = value.runningConfig ?? structuredClone(DEFAULT_PROJECT.runningConfig);
+  // Project v2 originally stored only interface name and admin state. Missing
+  // leaves receive their profile values, while present malformed values remain
+  // untouched and fail validation below. This is a one-way structural
+  // migration and never repairs arbitrary imported data.
+  const running = rawRunning && Array.isArray(rawRunning.interfaces) ? {
+    ...rawRunning,
+    interfaces: rawRunning.interfaces.map((item, index) => {
+      const fallback = GENERATED_PROFILE.routerInterfaces[index];
+      const object = item as typeof item & { port?: unknown; address?: unknown };
+      return {
+        ...item,
+        ...(Object.prototype.hasOwnProperty.call(object, "port") ? {} : { port: fallback?.port }),
+        ...(Object.prototype.hasOwnProperty.call(object, "address") ? {} : { address: fallback?.address })
+      };
+    })
+  } as RunningConfig : rawRunning;
   const layout = value.layout ?? structuredClone(DEFAULT_PROJECT.layout);
   // Notes are an additive version-2 field. Older projects receive an empty
   // document, while imported values are bounded before they can enter
@@ -458,11 +486,52 @@ export function parseProject(input: unknown): LabProject {
         port.description.length > GENERATED_PROFILE.limits.port_description_bytes ||
         /["\r\n]/.test(port.description)) ||
       running.interfaces.length !== interfaceNames.size ||
-      running.interfaces.some((item) => !interfaceNames.has(item.name) || !["up", "down"].includes(item.admin)) ||
+      running.interfaces.some((item) => !interfaceNames.has(item.name) ||
+        !["up", "down"].includes(item.admin) || !knownPorts.has(item.port) ||
+        !cidrPattern.test(item.address) || !validOctets(item.address)) ||
       running.staticRoutes.length > GENERATED_PROFILE.resources.static_route_capacity ||
       running.staticRoutes.some((route) => !route || !cidrPattern.test(route.prefix) ||
         !ipv4Pattern.test(route.nextHop) || !validOctets(route.prefix) || !validOctets(route.nextHop))) {
     throw new Error("Project contains invalid running configuration");
+  }
+  const interfacePorts = new Set<string>();
+  const interfaceNetworks: Array<{ network: number; mask: number; prefix: number }> = [];
+  for (const item of running.interfaces) {
+    const [addressText, prefixText] = item.address.split("/");
+    const address = ipv4Number(addressText);
+    const prefix = Number(prefixText);
+    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    const hostBits = (~mask) >>> 0;
+    const first = address >>> 24;
+    if (interfacePorts.has(item.port) || address === 0 || address === 0xffffffff ||
+        first === 0 || first === 127 || first >= 224 ||
+        (prefix <= 30 && ((address & hostBits) === 0 || (address & hostBits) === hostBits))) {
+      throw new Error("Router interfaces require unique ports and unicast IPv4 addresses");
+    }
+    const network = address & mask;
+    if (interfaceNetworks.some((existing) =>
+      (network & existing.mask) === existing.network ||
+      (existing.network & mask) === network)) {
+      throw new Error("Router interface prefixes must not overlap");
+    }
+    interfacePorts.add(item.port);
+    interfaceNetworks.push({ network, mask, prefix });
+  }
+  // Each starter endpoint link terminates on the router interface bound to the
+  // same physical port. Its gateway must be that interface address and both
+  // addresses must share the endpoint prefix. This makes host edits and CLI
+  // interface edits one validated topology instead of two unrelated views.
+  for (const host of value.hosts) {
+    const link = links.find((item) => item.host === host.id);
+    const routerInterface = running.interfaces.find((item) => item.port === link?.routerPort);
+    const [hostAddress, hostPrefixText] = host.address.split("/");
+    const [routerAddress] = routerInterface?.address.split("/") ?? [];
+    const prefix = Number(hostPrefixText);
+    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    if (!routerInterface || host.gateway !== routerAddress ||
+        (ipv4Number(hostAddress) & mask) !== (ipv4Number(routerAddress) & mask)) {
+      throw new Error("Host gateway must match the router interface on its physical link");
+    }
   }
   const prefixes = new Set<string>();
   for (const route of running.staticRoutes) {

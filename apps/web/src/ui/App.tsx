@@ -5,7 +5,8 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Chan
 import { DEFAULT_PROJECT, GENERATED_PROFILE, parseProject, type HostConfig,
   type LabProject, type ProjectHardware, type RuntimeSnapshot } from "@router-simulator/contracts";
 import { RuntimeClient, type HardwareAction, type TerminalState } from "../runtime/client";
-import { downloadBinary, exportCheckpoint, exportProject, importNetsim, loadProject, saveBinary, saveProject } from "../persistence";
+import { downloadBinary, exportCheckpoint, exportProject, importNetsim,
+  IncompatibleCheckpointError, loadProject, saveBinary, saveProject } from "../persistence";
 import { Inspector, type RouterTab } from "./Inspector";
 import { TerminalPanel } from "./TerminalPanel";
 import { Topology } from "./Topology";
@@ -280,20 +281,11 @@ export function App() {
   const hardware = useCallback(async (action: HardwareAction) => {
     if (!runtime || !projectLoaded) return;
     try {
-      // The palette action describes the hardware the user wants in the lab.
-      // SR OS still keeps provisioned type and physical presence as distinct
-      // state, so the UI sends two acknowledged control operations instead of
-      // inventing ports directly. Removing equipment intentionally preserves
-      // provisioning, matching a physical pull without a config deletion.
-      if (action.kind === "insert-card") {
-        await runtime.configureProvisioning(action.type, null);
-      } else if (action.kind === "insert-mda") {
-        // The mismatch action deliberately provisions the supported 10G MDA
-        // and equips a different inventory type so lifecycle reconciliation,
-        // alarms and absence of usable ports can be tested from the UI.
-        await runtime.configureProvisioning(GENERATED_PROFILE.lineCard.type,
-          GENERATED_PROFILE.mda.modeledType);
-      }
+      // Chassis controls represent physical handling only. They never edit the
+      // router datastore: an unprovisioned insertion remains waiting for CLI
+      // provisioning, and a mismatched insertion remains offline until the
+      // user corrects either inventory or configuration. Removal intentionally
+      // preserves provisioning, matching a physical pull on SR OS.
       const next = await runtime.changeHardware(action);
       setSnapshot(next);
       // Physical changes initiated in the inspector become portable project
@@ -362,7 +354,17 @@ export function App() {
     // instance remains alive until the replacement validates and opens.
     if (!file) return;
     try {
-      const imported = await importNetsim(file);
+      let imported: Awaited<ReturnType<typeof importNetsim>>;
+      try {
+        imported = await importNetsim(file);
+      } catch (cause) {
+        if (!(cause instanceof IncompatibleCheckpointError) ||
+            !window.confirm("This checkpoint was created by an incompatible build. Import only the project and start with fresh operational state?"))
+          throw cause;
+        // Consent is explicit and scoped to this file. No checkpoint, ARP,
+        // capture or queued packet is retained in the project-only fallback.
+        imported = await importNetsim(file, true);
+      }
       const replacement = new RuntimeClient();
       await replacement.snapshot();
       if (imported.checkpoint) {

@@ -78,8 +78,10 @@ export function ConfigWorkspace({ config, onChange }: ConfigProps) {
   // project owner and allows one schema check before crossing into C++.
   const updatePort = (index: number, patch: Partial<RunningConfig["ports"][number]>) =>
     onChange({ ...config, ports: config.ports.map((port, item) => item === index ? { ...port, ...patch } : port) });
-  const updateInterface = (index: number, admin: "up" | "down") =>
-    onChange({ ...config, interfaces: config.interfaces.map((value, item) => item === index ? { ...value, admin } : value) });
+  const updateInterface = (index: number,
+    patch: Partial<RunningConfig["interfaces"][number]>) =>
+    onChange({ ...config, interfaces: config.interfaces.map((value, item) =>
+      item === index ? { ...value, ...patch } : value) });
   const updateRoute = (index: number, key: "prefix" | "nextHop", value: string) =>
     onChange({ ...config, staticRoutes: config.staticRoutes.map((route, item) => item === index ? { ...route, [key]: value } : route) });
   // A new row is intentionally blank. Supplying a documentation prefix or a
@@ -99,7 +101,14 @@ export function ConfigWorkspace({ config, onChange }: ConfigProps) {
         </div>)}
       </div>
       <h2>Router interfaces</h2>
-      <div className="compact-list">{config.interfaces.map((item, index) => <label key={item.name}><strong>{item.name}</strong><select value={item.admin} onChange={(event) => updateInterface(index, event.target.value as "up" | "down")}><option value="up">up</option><option value="down">down</option></select></label>)}</div>
+      <div className="config-grid config-grid-interfaces"><span>Interface</span><span>Admin</span><span>Port</span><span>Primary IPv4</span>
+        {config.interfaces.map((item, index) => <div className="config-grid-row" key={item.name}>
+          <strong>{item.name}</strong>
+          <select value={item.admin} onChange={(event) => updateInterface(index, { admin: event.target.value as "up" | "down" })}><option value="up">up</option><option value="down">down</option></select>
+          <select value={item.port} onChange={(event) => updateInterface(index, { port: event.target.value })}>{GENERATED_PROFILE.ports.ids.map((port) => <option key={port} value={port}>{port}</option>)}</select>
+          <input value={item.address} aria-label={`${item.name} primary IPv4`} onChange={(event) => updateInterface(index, { address: event.target.value })} />
+        </div>)}
+      </div>
       <div className="section-heading"><h2>Static routes</h2><button disabled={config.staticRoutes.length >= GENERATED_PROFILE.resources.static_route_capacity} onClick={addRoute}>Add route</button></div>
       <div className="route-list">{config.staticRoutes.length ? config.staticRoutes.map((route, index) => <div key={`${index}-${route.prefix}`}><input aria-label="Route prefix" value={route.prefix} onChange={(event) => updateRoute(index, "prefix", event.target.value)} /><input aria-label="Route next hop" value={route.nextHop} onChange={(event) => updateRoute(index, "nextHop", event.target.value)} /><button aria-label={`Remove route ${route.prefix}`} onClick={() => onChange({ ...config, staticRoutes: config.staticRoutes.filter((_, item) => item !== index) })}>Remove</button></div>) : <p className="empty-copy">No static routes configured.</p>}</div>
     </section>

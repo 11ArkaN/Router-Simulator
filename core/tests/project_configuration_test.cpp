@@ -1,3 +1,6 @@
+// Project framing tests validate the browser-to-control netstring transaction
+// and prove malformed or partial values never replace running configuration.
+
 #include "router/project_configuration.hpp"
 
 #include "router/generated_profile.hpp"
@@ -36,6 +39,8 @@ void project_configuration_tests() {
   for (std::size_t index = 0; index < current.interface_count; ++index) {
     fields.emplace_back(current.interfaces[index].name);
     fields.emplace_back("up");
+    fields.emplace_back(router::profile::port_ids[index]);
+    fields.emplace_back(router::profile::interface_addresses[index]);
   }
   fields.emplace_back("1");
   fields.emplace_back("203.0.113.0/24");
@@ -50,6 +55,9 @@ void project_configuration_tests() {
       parsed.configuration.ports[0].mtu != 1400 ||
       std::string_view(parsed.configuration.ports[0].description.data()) !=
           "host|a" ||
+      parsed.configuration.interfaces[0].port_index != 0 ||
+      parsed.configuration.interfaces[0].ipv4 !=
+          router::packet::Ipv4{192, 0, 2, 1} ||
       !parsed.configuration.static_routes[0].valid) {
     throw std::runtime_error(
         "Atomic running configuration did not preserve structured fields");

@@ -112,6 +112,26 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
       router::profile_mda(candidate).type = profile::modeled_mda_type;
       return changed(modified);
     }
+  case md_card_enable:
+  case md_card_disable: {
+    if (!profile_card_slot(command) || !router::profile_card(candidate).type)
+      return "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+    auto &card = router::profile_card(candidate);
+    const bool enabled = command.spec->id == md_card_enable;
+    const bool modified = card.admin_enabled != enabled;
+    card.admin_enabled = enabled;
+    return changed(modified);
+  }
+  case md_mda_enable:
+  case md_mda_disable: {
+    if (!profile_mda_slot(command) || !router::profile_mda(candidate).type)
+      return "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+    auto &mda = router::profile_mda(candidate);
+    const bool enabled = command.spec->id == md_mda_enable;
+    const bool modified = mda.admin_enabled != enabled;
+    mda.admin_enabled = enabled;
+    return changed(modified);
+  }
   case configure_system_name: {
     const auto raw_name =
         *argument(command, cli_schema::TokenKind::system_name);
@@ -169,6 +189,31 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
     const bool modified = candidate.interfaces[*index].admin_enabled != next;
     candidate.interfaces[*index].admin_enabled = next;
     return changed(modified);
+  }
+  case md_interface_port: {
+    const auto index = exact_interface(
+        candidate, *argument(command, cli_schema::TokenKind::interface_name));
+    const auto port = port_index(
+        *argument(command, cli_schema::TokenKind::port_id));
+    if (!index || !port)
+      return "MINOR: MGMT_CORE #2301: Invalid element value";
+    const auto before = candidate.interfaces[*index].port_index;
+    if (!set_interface_port(candidate, *index, *port))
+      return "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+    return changed(before != candidate.interfaces[*index].port_index);
+  }
+  case md_interface_ipv4_primary: {
+    const auto index = exact_interface(
+        candidate, *argument(command, cli_schema::TokenKind::interface_name));
+    const auto parsed = parse_interface_address(
+        *argument(command, cli_schema::TokenKind::ipv4),
+        *argument(command, cli_schema::TokenKind::prefix_length));
+    if (!index || !parsed)
+      return "MINOR: MGMT_CORE #2301: Invalid element value";
+    const auto before = candidate.interfaces[*index];
+    if (!set_interface_address(candidate, *index, *parsed))
+      return "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+    return changed(before != candidate.interfaces[*index]);
   }
   case md_static_route: {
     const auto route = parse_static_route(
@@ -288,6 +333,47 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
         append("+           mtu " + std::to_string(left.mtu));
         append("        }");
       }
+      append("    }");
+    }
+    for (std::size_t index = 0; index < candidate.interface_count; ++index) {
+      const auto &left = candidate.interfaces[index];
+      const auto &right = running.interfaces[index];
+      if (left == right)
+        continue;
+      const auto address_text = [](const InterfaceConfiguration &value) {
+        return std::to_string(value.ipv4[0]) + '.' +
+               std::to_string(value.ipv4[1]) + '.' +
+               std::to_string(value.ipv4[2]) + '.' +
+               std::to_string(value.ipv4[3]);
+      };
+      append(std::string{"    router \"Base\" {"});
+      append(std::string{"        interface \""} + left.name + "\" {");
+      if (left.admin_enabled != right.admin_enabled) {
+        append(std::string{"-           admin-state "} +
+               (right.admin_enabled ? "enable" : "disable"));
+        append(std::string{"+           admin-state "} +
+               (left.admin_enabled ? "enable" : "disable"));
+      }
+      if (left.port_index != right.port_index) {
+        append(std::string{"-           port "} +
+               profile::port_ids[right.port_index]);
+        append(std::string{"+           port "} +
+               profile::port_ids[left.port_index]);
+      }
+      if (left.ipv4 != right.ipv4 ||
+          left.prefix_length != right.prefix_length) {
+        append("            ipv4 {");
+        append("                primary {");
+        append("-                   address " + address_text(right));
+        append("-                   prefix-length " +
+               std::to_string(right.prefix_length));
+        append("+                   address " + address_text(left));
+        append("+                   prefix-length " +
+               std::to_string(left.prefix_length));
+        append("                }");
+        append("            }");
+      }
+      append("        }");
       append("    }");
     }
     if (candidate.static_routes != running.static_routes) {

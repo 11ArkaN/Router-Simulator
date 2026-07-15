@@ -44,6 +44,10 @@ public:
   // projection copies learned state for control and checkpoint consumers.
   [[nodiscard]] std::array<NetworkArpEntry, profile::port_count>
   projection() const noexcept;
+  [[nodiscard]] std::array<bool, profile::port_count>
+  request_projection() const noexcept;
+  void restore_requests(
+      const std::array<bool, profile::port_count> &requests) noexcept;
 
 private:
   std::array<std::optional<Adjacency>, profile::port_count> entries_{};

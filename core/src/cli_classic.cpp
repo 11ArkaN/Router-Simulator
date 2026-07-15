@@ -211,6 +211,30 @@ std::string execute_classic(ConfigurationState &configuration,
     running.interfaces[*index].admin_enabled = next;
     return finish(changed, "");
   }
+  case classic_interface_port: {
+    const auto index = exact_interface(
+        running, *argument(command, cli_schema::TokenKind::interface_name));
+    const auto port = port_index(
+        *argument(command, cli_schema::TokenKind::port_id));
+    if (!index || !port)
+      return "Error: Bad command.";
+    const auto before = running.interfaces[*index].port_index;
+    if (!set_interface_port(running, *index, *port))
+      return "Error: Bad command.";
+    return finish(before != running.interfaces[*index].port_index, "");
+  }
+  case classic_interface_address: {
+    const auto index = exact_interface(
+        running, *argument(command, cli_schema::TokenKind::interface_name));
+    const auto parsed = parse_interface_address(
+        *argument(command, cli_schema::TokenKind::ipv4_prefix));
+    if (!index || !parsed)
+      return "Error: Bad command.";
+    const auto before = running.interfaces[*index];
+    if (!set_interface_address(running, *index, *parsed))
+      return "Error: Bad command.";
+    return finish(before != running.interfaces[*index], "");
+  }
   case classic_remove_port_description: {
     if (!router::profile_mda(running).type)
       return "Error: Bad command.";

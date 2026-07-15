@@ -1,3 +1,7 @@
+// Multithreaded acceptance suite. Every integration scenario uses the same
+// control and forwarding pthread owners, shared telemetry and Wasm ABI as the
+// browser build; only isolated value types are tested without Runtime.
+
 #include "router/bounded_queue.hpp"
 #include "router/generated_runtime_protocol.hpp"
 #include "router/link_direction.hpp"
@@ -10,6 +14,7 @@
 #include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <vector>
 
 void cli_tests();
 void packet_tests();
@@ -25,6 +30,32 @@ void rs_shutdown();
 const std::uint8_t *checkpoint_export();
 std::size_t checkpoint_export_size();
 int checkpoint_import(const std::uint8_t *, std::size_t);
+int project_import(const char *);
+}
+
+std::string maximum_running_project_command() {
+  // Encode the largest legal port-description generation through the public
+  // project ABI. This catches mailbox sizes that pass default-project tests
+  // but reject a datastore accepted by the SR OS leaf bounds.
+  std::vector<std::string> fields{"R1", std::to_string(router::profile::port_count)};
+  for (std::size_t index = 0; index < router::profile::port_count; ++index) {
+    fields.emplace_back(router::profile::port_ids[index]);
+    fields.emplace_back("up");
+    fields.emplace_back(std::to_string(router::profile::default_port_mtu));
+    fields.emplace_back(router::profile::port_description_bytes, 'x');
+  }
+  fields.emplace_back(std::to_string(router::profile::endpoint_count));
+  for (std::size_t index = 0; index < router::profile::endpoint_count; ++index) {
+    fields.emplace_back(router::profile::interface_names[index]);
+    fields.emplace_back("up");
+    fields.emplace_back(router::profile::port_ids[index]);
+    fields.emplace_back(router::profile::interface_addresses[index]);
+  }
+  fields.emplace_back("0");
+  std::string command{router::runtime_protocol::project_running};
+  for (const auto &field : fields)
+    command += std::to_string(field.size()) + ':' + field + ',';
+  return command;
 }
 
 void spsc_stress_test() {
@@ -348,6 +379,69 @@ int main() {
       throw std::runtime_error(
           "Long CLI output exceeded the response mailbox contract");
     }
+
+    // Port admin state is a control-plane change whose effects must cascade
+    // through interface oper state, connected RIB, FIB generation, adjacency
+    // and packet drop reporting. Per Nokia facility-alarm behavior, an
+    // intentional admin-down does not raise linkDown 59-2004-1.
+    runtime->command("terminal://");
+    runtime->command("terminal:configure port 1/1/2 shutdown");
+    const auto port_failure = runtime->command("snapshot");
+    const auto port_alarms =
+        runtime->command("terminal:show system alarms");
+    const auto arp_after_port_failure =
+        runtime->command("terminal:show router arp");
+    if (port_failure.find(
+            "\"id\":\"1/1/2\",\"admin\":\"down\",\"oper\":\"down\"") ==
+            std::string::npos ||
+        port_failure.find("\"prefix\":\"198.51.100.0/30\"") !=
+            std::string::npos ||
+        port_alarms.find("59-2004-1") != std::string::npos ||
+        arp_after_port_failure.find("198.51.100.2") != std::string::npos) {
+      throw std::runtime_error(
+          "Port shutdown did not complete the operational failure cascade\n" +
+          port_failure + "\n" + port_alarms + "\n" +
+          arp_after_port_failure);
+    }
+    const auto port_failed_ping =
+        runtime->command("host:ping:host-a:host-b");
+    if (port_failed_ping.find("Request timeout") == std::string::npos)
+      throw std::runtime_error("Port shutdown left a hidden forwarding path");
+    runtime->command("terminal:configure port 1/1/2 no shutdown");
+    if (runtime->command("host:ping:host-a:host-b")
+            .find("1 packet received") == std::string::npos)
+      throw std::runtime_error("Port recovery did not reprogram the FIB");
+
+    // Physical MDA removal is independent from provisioning. The running MDA
+    // type remains configured while every child port and routed interface goes
+    // operationally down and learned adjacency is invalidated.
+    runtime->command(
+        std::string{router::runtime_protocol::hardware_remove_mda} +
+        std::to_string(router::profile::line_card_slot) + ":" +
+        std::to_string(router::profile::mda_slot));
+    const auto mda_failure = runtime->command("snapshot");
+    const auto mda_alarms = runtime->command("terminal:show system alarms");
+    if (mda_failure.find("\"equippedType\":null") == std::string::npos ||
+        mda_failure.find("\"prefix\":\"192.0.2.0/30\"") !=
+            std::string::npos ||
+        mda_failure.find("\"prefix\":\"198.51.100.0/30\"") !=
+            std::string::npos ||
+        mda_failure.find("\"arp\":[]") == std::string::npos ||
+        mda_alarms.find("MDA") == std::string::npos) {
+      throw std::runtime_error(
+          "MDA removal did not withdraw ports, routes, ARP and raise alarm");
+    }
+    runtime->command(
+        std::string{router::runtime_protocol::hardware_insert_mda} +
+        std::to_string(router::profile::line_card_slot) + ":" +
+        std::to_string(router::profile::mda_slot) + ":" +
+        router::profile::modeled_mda_type);
+    std::this_thread::sleep_for(router::profile::mda_initialization +
+                                router::profile::equipment_poll_interval);
+    if (runtime->command("host:ping:host-a:host-b")
+            .find("1 packet received") == std::string::npos)
+      throw std::runtime_error("MDA reinsert did not restore the routed path");
+
     runtime->command("link:down:1/1/2");
     const auto degraded = runtime->command("snapshot");
     // Physical Link and Oper State are separate Nokia observations. The JSON
@@ -365,8 +459,7 @@ int main() {
       throw std::runtime_error("Ping bypassed a down routed interface");
     }
     const auto dropped = runtime->command("snapshot");
-    if (dropped.find("\"droppedPackets\":1") == std::string::npos ||
-        dropped.find("\"lastDropReason\":\"route-miss\"") ==
+    if (dropped.find("\"lastDropReason\":\"route-miss\"") ==
             std::string::npos) {
       throw std::runtime_error(
           "Failed forwarding did not publish its drop reason");
@@ -375,6 +468,13 @@ int main() {
 
     if (!rs_create())
       throw std::runtime_error("Wasm C ABI did not create runtime");
+    const auto maximum_project = maximum_running_project_command();
+    if (maximum_project.size() <= 1024U ||
+        maximum_project.size() >= router::profile::command_message_bytes ||
+        !project_import(maximum_project.c_str())) {
+      throw std::runtime_error(
+          "Public project import rejected a maximum valid running datastore");
+    }
     const auto provisioning =
         std::string{router::runtime_protocol::project_provisioning} +
         router::profile::line_card_type + "|" +

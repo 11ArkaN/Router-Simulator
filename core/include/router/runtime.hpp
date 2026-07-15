@@ -57,7 +57,10 @@ private:
   std::string dispatch(const std::string &text);
   std::string run_ping(ForwardJobKind kind, packet::Ipv4 destination,
                        std::uint8_t source_endpoint = 0,
-                       std::uint32_t count = 1);
+                       std::uint32_t count = 1,
+                       std::uint16_t payload_octets =
+                           profile::default_ping_payload_octets,
+                       bool dont_fragment = false);
   // Reads the browser-owned cancellation word with acquire ordering. The word
   // carries no packet data and is reset by control before each CLI ping.
   [[nodiscard]] bool cli_cancelled() noexcept;
@@ -125,6 +128,10 @@ private:
   // completed export before the bridge reads its immutable prepared span.
   CaptureStore capture_store_;
   std::vector<std::uint8_t> prepared_checkpoint_;
+  // Forwarding writes this structural value before publishing a barrier ack.
+  // Control reads after acquire, or writes before a restore job whose release
+  // transfers it back. It never contains live handles or borrowed pointers.
+  NetworkCheckpointState forwarding_checkpoint_;
 
   // Device and CLI state have control-thread affinity. The forwarding shard
   // returns immutable deltas so it never mutates RIB, ARP or session state.

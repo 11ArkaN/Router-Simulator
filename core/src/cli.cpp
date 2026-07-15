@@ -497,7 +497,12 @@ std::optional<std::string> operational_command(const DeviceState &state,
           // Address rows are children of an interface row in the SR OS
           // report. The three-column indent is part of that hierarchy, not a
           // cosmetic choice made by the browser terminal.
-          << "\n   " << std::setw(61) << interface.address << "n/a";
+          << "\n   " << std::setw(61)
+          << (ipv4_value_text(routing::ipv4(
+                  interface.ipv4[0], interface.ipv4[1], interface.ipv4[2],
+                  interface.ipv4[3])) +
+              '/' + std::to_string(interface.prefix_length))
+          << "n/a";
     }
     out << '\n' << row_rule << "\nInterfaces : " << count << '\n' << table_rule;
     return out.str();
@@ -518,7 +523,10 @@ std::optional<std::string> operational_command(const DeviceState &state,
         continue;
       ++count;
       out << '\n'
-          << std::left << std::setw(47) << interface.prefix << std::setw(8)
+          << std::left << std::setw(47)
+          << (ipv4_value_text(interface.network) + '/' +
+              std::to_string(interface.prefix_length))
+          << std::setw(8)
           << "Local" << std::setw(10) << "Local" << std::setw(11)
           << route_age_text(state.operational.connected_route_since[index])
           << "0\n      " << std::setw(60) << interface.name << "0";
@@ -560,7 +568,10 @@ std::optional<std::string> operational_command(const DeviceState &state,
         continue;
       ++count;
       out << '\n'
-          << std::left << std::setw(61) << interface.prefix << "LOCAL\n  "
+          << std::left << std::setw(61)
+          << (ipv4_value_text(interface.network) + '/' +
+              std::to_string(interface.prefix_length))
+          << "LOCAL\n  "
           << ipv4_value_text(interface.network) << " (" << interface.name
           << ')';
     }
@@ -655,16 +666,21 @@ std::optional<std::string> operational_command(const DeviceState &state,
     return out.str();
   }
   if (command.spec->id == cli_schema::CommandId::ping ||
-      command.spec->id == cli_schema::CommandId::ping_count) {
+      command.spec->id == cli_schema::CommandId::ping_count ||
+      command.spec->id == cli_schema::CommandId::ping_size ||
+      command.spec->id == cli_schema::CommandId::ping_do_not_fragment ||
+      command.spec->id == cli_schema::CommandId::ping_size_do_not_fragment ||
+      command.spec->id == cli_schema::CommandId::ping_count_size ||
+      command.spec->id == cli_schema::CommandId::ping_count_do_not_fragment ||
+      command.spec->id ==
+          cli_schema::CommandId::ping_count_size_do_not_fragment) {
     const auto destination = *argument(command, cli_schema::TokenKind::ipv4);
     // Nokia-compatible defaults and bounds belong to the pinned release
     // profile, not to the generic parser or packet encoder.
     std::uint32_t count = profile::default_ping_count;
-    if (command.spec->id == cli_schema::CommandId::ping_count) {
-      const auto count_text = argument(command, cli_schema::TokenKind::count);
+    if (const auto count_text =
+            argument(command, cli_schema::TokenKind::count)) {
       unsigned parsed_count{};
-      if (!count_text)
-        return "MINOR: MGMT_CORE #2301: Invalid element value";
       const auto parsed = std::from_chars(
           count_text->data(), count_text->data() + count_text->size(),
           parsed_count);
@@ -676,6 +692,28 @@ std::optional<std::string> operational_command(const DeviceState &state,
                std::to_string(profile::maximum_ping_count);
       count = parsed_count;
     }
+    std::uint16_t payload_octets = profile::default_ping_payload_octets;
+    if (const auto size_text = argument(command, cli_schema::TokenKind::size)) {
+      unsigned parsed_size{};
+      const auto parsed = std::from_chars(
+          size_text->data(), size_text->data() + size_text->size(),
+          parsed_size);
+      // The first endpoint profile supports one untagged 1500-byte IPv4
+      // packet. Keeping this upper bound beside Frame prevents the CLI from
+      // accepting data that its selected hardware profile cannot encode.
+      if (parsed.ec != std::errc{} ||
+          parsed.ptr != size_text->data() + size_text->size() ||
+          parsed_size < profile::minimum_ping_payload_octets ||
+          parsed_size > profile::maximum_ping_payload_octets)
+        return "MINOR: MGMT_CORE #2301: Invalid element value - " +
+               std::string{*size_text} + " out of range " +
+               std::to_string(profile::minimum_ping_payload_octets) + ".." +
+               std::to_string(profile::maximum_ping_payload_octets);
+      payload_octets = static_cast<std::uint16_t>(parsed_size);
+    }
+    const bool dont_fragment = std::any_of(
+        command.tokens.begin(), command.tokens.begin() + command.token_count,
+        [](std::string_view token) { return token == "do-not-fragment"; });
     const auto destination_value = ipv4_value(destination);
     if (!destination_value)
       return "MINOR: MGMT_CORE #2301: Invalid element value";
@@ -683,7 +721,7 @@ std::optional<std::string> operational_command(const DeviceState &state,
                       static_cast<std::uint8_t>(*destination_value >> 16),
                       static_cast<std::uint8_t>(*destination_value >> 8),
                       static_cast<std::uint8_t>(*destination_value)},
-                     count);
+                     count, payload_octets, dont_fragment);
   }
   return std::nullopt;
 }
@@ -756,6 +794,82 @@ bool remove_static(DeviceConfiguration &configuration,
   if (existing == configuration.static_routes.end())
     return false;
   *existing = {};
+  return true;
+}
+
+std::optional<ParsedInterfaceAddress>
+parse_interface_address(std::string_view address,
+                        std::string_view prefix_length) {
+  // Classic supplies one CIDR token, while MD supplies address and
+  // prefix-length as separate leaves. Normalizing both syntaxes here keeps
+  // engine renderers separate without duplicating IPv4 validation semantics.
+  if (prefix_length.empty()) {
+    const auto slash = address.find('/');
+    if (slash == std::string_view::npos)
+      return std::nullopt;
+    prefix_length = address.substr(slash + 1U);
+    address = address.substr(0, slash);
+  }
+  const auto value = ipv4_value(address);
+  unsigned prefix{};
+  const auto parsed = std::from_chars(prefix_length.data(),
+                                      prefix_length.data() + prefix_length.size(),
+                                      prefix);
+  if (!value || parsed.ec != std::errc{} ||
+      parsed.ptr != prefix_length.data() + prefix_length.size() ||
+      prefix > 32U)
+    return std::nullopt;
+  const auto mask = routing::prefix_mask(static_cast<std::uint8_t>(prefix));
+  const auto host_bits = ~mask;
+  const auto first = *value >> 24;
+  if (!*value || *value == 0xffffffffU || !first || first == 127U ||
+      first >= 224U ||
+      (prefix <= 30U &&
+       (((*value) & host_bits) == 0U || ((*value) & host_bits) == host_bits)))
+    return std::nullopt;
+  return ParsedInterfaceAddress{
+      .address = {static_cast<std::uint8_t>(*value >> 24),
+                  static_cast<std::uint8_t>(*value >> 16),
+                  static_cast<std::uint8_t>(*value >> 8),
+                  static_cast<std::uint8_t>(*value)},
+      .network = *value & mask,
+      .prefix = static_cast<std::uint8_t>(prefix)};
+}
+
+bool set_interface_address(DeviceConfiguration &configuration,
+                           std::size_t interface_index,
+                           ParsedInterfaceAddress address) {
+  if (interface_index >= configuration.interface_count)
+    return false;
+  const auto mask = routing::prefix_mask(address.prefix);
+  for (std::size_t index = 0; index < configuration.interface_count; ++index) {
+    if (index == interface_index || !configuration.interfaces[index].valid)
+      continue;
+    const auto &existing = configuration.interfaces[index];
+    const auto existing_mask = routing::prefix_mask(existing.prefix_length);
+    if ((address.network & existing_mask) == existing.network ||
+        (existing.network & mask) == address.network)
+      return false;
+  }
+  auto &interface = configuration.interfaces[interface_index];
+  interface.ipv4 = address.address;
+  interface.network = address.network;
+  interface.prefix_length = address.prefix;
+  return true;
+}
+
+bool set_interface_port(DeviceConfiguration &configuration,
+                        std::size_t interface_index, std::size_t port_index) {
+  if (interface_index >= configuration.interface_count ||
+      port_index >= profile::port_count)
+    return false;
+  for (std::size_t index = 0; index < configuration.interface_count; ++index) {
+    if (index != interface_index && configuration.interfaces[index].valid &&
+        configuration.interfaces[index].port_index == port_index)
+      return false;
+  }
+  configuration.interfaces[interface_index].port_index =
+      static_cast<std::uint8_t>(port_index);
   return true;
 }
 

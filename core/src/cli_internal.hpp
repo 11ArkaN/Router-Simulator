@@ -21,6 +21,14 @@ struct ParsedStaticRoute {
   std::uint32_t next_hop{};
 };
 
+struct ParsedInterfaceAddress {
+  // Network-order numeric storage matches RIB keys and removes text lifetime
+  // from candidate copies. The packet form is retained for wire encoders.
+  packet::Ipv4 address{};
+  std::uint32_t network{};
+  std::uint8_t prefix{};
+};
+
 [[nodiscard]] std::string trim(std::string_view value);
 [[nodiscard]] std::optional<std::size_t> port_index(std::string_view text);
 [[nodiscard]] std::optional<ParsedStaticRoute>
@@ -29,6 +37,15 @@ parse_static_route(std::string_view prefix, std::string_view next_hop);
                                   ParsedStaticRoute route);
 [[nodiscard]] bool remove_static(DeviceConfiguration &configuration,
                                  std::string_view prefix);
+[[nodiscard]] std::optional<ParsedInterfaceAddress>
+parse_interface_address(std::string_view address,
+                        std::string_view prefix_length = {});
+[[nodiscard]] bool set_interface_address(DeviceConfiguration &configuration,
+                                         std::size_t interface_index,
+                                         ParsedInterfaceAddress address);
+[[nodiscard]] bool set_interface_port(DeviceConfiguration &configuration,
+                                      std::size_t interface_index,
+                                      std::size_t port_index);
 [[nodiscard]] std::string_view unquote(std::string_view value) noexcept;
 [[nodiscard]] bool valid_cli_string(std::string_view value) noexcept;
 

@@ -1,4 +1,8 @@
+// Wire-codec conformance tests validate lengths, checksums, routing rewrites,
+// MTU errors, fragmentation and parser safety independently of device state.
+
 #include "router/packet.hpp"
+#include "router/generated_profile.hpp"
 
 #include <stdexcept>
 
@@ -21,7 +25,9 @@ void packet_tests() {
   // RFC 792 defines an eight-octet Echo header followed by arbitrary data.
   // The pinned SR OS command profile uses 56 data octets, producing 64 ICMP
   // octets and an unpadded 98-octet captured Ethernet frame.
-  const auto echo = icmp_echo(source, target, source_ip, target_ip, false, 1);
+  const auto echo = icmp_echo(
+      source, target, source_ip, target_ip, false, 1, 64,
+      router::profile::default_ping_payload_octets, false);
   if (echo.size() != 98 || checksum(echo.view().subspan(14, 20)) != 0 ||
       checksum(echo.view().subspan(34, 64)) != 0 || echo[22] != 64 ||
       echo[23] != 1 || echo[34] != 8) {
@@ -34,7 +40,8 @@ void packet_tests() {
       parsed_arp->sender_ip != source_ip || !parsed_ip ||
       parsed_ip->source != source_ip || parsed_ip->destination != target_ip ||
       !parsed_icmp || parsed_icmp->type != 8 ||
-      parsed_icmp->data.size() != 56) {
+      parsed_icmp->data.size() !=
+          router::profile::default_ping_payload_octets) {
     throw std::runtime_error("Packet parser did not preserve protocol fields");
   }
   // Parsing and destination acceptance are separate responsibilities. Preserve
@@ -67,7 +74,9 @@ void packet_tests() {
   const auto reply_icmp = reply ? parse_icmp(*reply) : std::nullopt;
   if (!reply || !reply_ip || !reply_icmp || reply_ip->source != target_ip ||
       reply_ip->destination != source_ip || reply_icmp->type != 0 ||
-      reply_icmp->sequence != 1 || reply_icmp->data.size() != 56 ||
+      reply_icmp->sequence != 1 ||
+      reply_icmp->data.size() !=
+          router::profile::default_ping_payload_octets ||
       !std::equal(reply_icmp->data.begin(), reply_icmp->data.end(),
                   parsed_icmp->data.begin())) {
     throw std::runtime_error(
@@ -78,7 +87,8 @@ void packet_tests() {
   // decrement TTL to zero. The ICMP payload must quote enough of the original
   // datagram to identify the failed probe.
   const auto expiring =
-      icmp_echo(source, target, source_ip, target_ip, false, 9, 1);
+      icmp_echo(source, target, source_ip, target_ip, false, 9, 1,
+                router::profile::default_ping_payload_octets, false);
   const auto exceeded =
       icmp_time_exceeded(expiring, target, source, target_ip, source_ip);
   const auto exceeded_icmp = exceeded ? parse_icmp(*exceeded) : std::nullopt;
@@ -86,6 +96,45 @@ void packet_tests() {
       exceeded_icmp->code != 0 || exceeded_icmp->data.size() < 28) {
     throw std::runtime_error(
         "TTL expiry did not produce a valid ICMP Time Exceeded packet");
+  }
+
+  // RFC 1191 requires type 3 code 4 to quote the rejected datagram and carry
+  // the limiting next-hop MTU in the low 16 bits of the ICMP unused field.
+  // The test reads wire bytes instead of relying on an internal error object.
+  const auto oversized_df =
+      icmp_echo(source, target, source_ip, target_ip, false, 11, 64, 1000, true);
+  const auto needed = icmp_fragmentation_needed(
+      oversized_df, target, source, target_ip, source_ip, 512);
+  const auto needed_icmp = needed ? parse_icmp(*needed) : std::nullopt;
+  if (!needed || !needed_icmp || needed_icmp->type != 3 ||
+      needed_icmp->code != 4 || (*needed)[40] != 2 || (*needed)[41] != 0 ||
+      needed_icmp->data.size() < 28) {
+    throw std::runtime_error(
+        "Oversized DF datagram did not encode the RFC 1191 next-hop MTU");
+  }
+
+  // A fragmentable 1028-byte IPv4 datagram crosses a 512-byte MTU as three
+  // datagrams. Non-final payloads are multiples of eight and offsets continue
+  // from the original payload, while TTL was decremented only once beforehand.
+  const auto fragmentable =
+      icmp_echo(source, target, source_ip, target_ip, false, 12, 64, 1000, false);
+  const auto routed_large = route_ipv4(fragmentable, target, source);
+  const auto fragments = routed_large ? fragment_ipv4(*routed_large, 512)
+                                      : std::nullopt;
+  if (!fragments || fragments->count != 3) {
+    throw std::runtime_error("IPv4 fragmentation produced the wrong batch");
+  }
+  std::uint16_t expected_offset{};
+  for (std::size_t index = 0; index < fragments->count; ++index) {
+    const auto view = parse_ipv4(fragments->frames[index]);
+    if (!view || view->total_length > 512 || view->ttl != 63 ||
+        view->fragment_offset != expected_offset ||
+        view->more_fragments != (index + 1U < fragments->count)) {
+      throw std::runtime_error(
+          "IPv4 fragment offset, size, flag or checksum was invalid");
+    }
+    expected_offset = static_cast<std::uint16_t>(
+        expected_offset + (view->total_length - view->header_length) / 8U);
   }
 
   // Deterministic mutation fuzzing covers every legal frame length and random
@@ -111,5 +160,6 @@ void packet_tests() {
     static_cast<void>(parse_ipv4(candidate));
     static_cast<void>(parse_icmp(candidate));
     static_cast<void>(route_ipv4(candidate, target, source));
+    static_cast<void>(fragment_ipv4(candidate, 512));
   }
 }

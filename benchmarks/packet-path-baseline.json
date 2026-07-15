@@ -1,13 +1,13 @@
 {
-  "date": "2026-07-14",
+  "date": "2026-07-15",
   "runtime": "Emscripten 6.0.3, WebAssembly, Node.js 22.20.0",
   "runs": 7,
   "encodingFramesPerRun": 400000,
   "forwardingFramesPerRun": 200000,
   "linkFramesPerRun": 5000000,
-  "encodingMedianNsPerFrame": 132.321,
-  "forwardingMedianNsPerFrame": 127.965,
-  "linkSchedulingMedianNsPerFrame": 7.83447,
+  "encodingMedianNsPerFrame": 73.5667,
+  "forwardingMedianNsPerFrame": 86.8019,
+  "linkSchedulingMedianNsPerFrame": 4.38456,
   "regressionLimitPercent": 10,
   "coherentSlowdownLimitPercent": 100
 }

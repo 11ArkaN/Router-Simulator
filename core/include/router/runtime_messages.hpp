@@ -25,9 +25,12 @@ struct CommandMessage {
 };
 
 struct ResponseMessage {
-  // Producer: control shard. Consumer: browser bridge. Capacity covers the
-  // bounded multi-ping response without allocating across pthread ownership.
+  // Producer: control shard. Consumer: browser bridge. A response may consist
+  // of several ordered chunks with the same id. `more` is published in the
+  // same release operation as the bytes, so the consumer never observes a
+  // terminal marker before its corresponding payload.
   std::uint64_t id{};
+  bool more{};
   std::array<char, profile::response_message_bytes> text{};
 };
 
@@ -38,6 +41,7 @@ enum class ForwardJobKind : std::uint8_t {
   configure_network,
   export_capture,
   checkpoint_barrier,
+  restore_checkpoint,
   restore_adjacencies
 };
 
@@ -48,6 +52,11 @@ struct ForwardJob {
   ForwardJobKind kind{};
   packet::Ipv4 destination{};
   std::uint8_t source_endpoint{};
+  // Ping options are values selected by the CLI owner. Forwarding receives
+  // them with the probe job so neither the packet codec nor the UI invents a
+  // release default. The fixed-width payload keeps the mailbox ABI bounded.
+  std::uint16_t payload_octets{profile::default_ping_payload_octets};
+  bool dont_fragment{};
   routing::FibProgram fib{};
   NetworkConfiguration network{};
   std::array<NetworkArpEntry, profile::port_count> restored_arp{};

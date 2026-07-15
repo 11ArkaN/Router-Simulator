@@ -349,6 +349,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .config-grid-ports > span:nth-child(2) { width: 15%; }
 .config-grid-ports > span:nth-child(3) { width: 17%; }
 .config-grid-ports > span:nth-child(4) { width: 48%; }
+.config-grid-interfaces > span:nth-child(1) { width: 18%; }
+.config-grid-interfaces > span:nth-child(2) { width: 15%; }
+.config-grid-interfaces > span:nth-child(3) { width: 17%; }
+.config-grid-interfaces > span:nth-child(4) { width: 48%; }
 .config-grid-row { display: grid; grid-template-columns: 18% 15% 17% 1fr; gap: 8px; align-items: center; min-height: 49px; padding: 7px 9px; border-top: 1px solid #213039; }
 .config-grid-row strong { color: #c0cbd0; font: 10px "Cascadia Mono", monospace; font-weight: 400; }
 .compact-list { border-top: 1px solid #26363f; }
@@ -374,6 +378,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .device-table small { display: none; }
   .field-row { grid-template-columns: 1fr; gap: 6px; padding: 9px 0; }
   .config-grid-row { grid-template-columns: 1fr 1fr; }
-  .config-grid-ports > span { display: none; }
+  .config-grid-ports > span, .config-grid-interfaces > span { display: none; }
   .route-list > div { grid-template-columns: 1fr; }
 }
