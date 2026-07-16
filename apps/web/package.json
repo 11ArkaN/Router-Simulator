@@ -2,11 +2,12 @@
   "name": "@router-simulator/web",
   "version": "0.1.0",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "preview": "vite preview",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node ../../tools/generate-third-party-notices.mjs",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -b --pretty false"
   },

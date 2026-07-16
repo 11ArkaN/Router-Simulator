@@ -1,66 +1,66 @@
-# Zasady pracy w repozytorium
+# Repository Working Rules
 
-## Priorytety
+## Priorities
 
-Decyzje implementacyjne podejmuj w tej kolejności:
+Make implementation decisions in this order:
 
-1. zgodność ze źródłami i poprawność zachowania,
-2. bezpieczeństwo danych i stabilność runtime,
-3. modularność i jednoznaczna własność stanu,
-4. wydajność potwierdzona pomiarem,
-5. minimalna liczba wykonywalnych linii kodu.
+1. source conformance and behavioral correctness,
+2. data safety and runtime stability,
+3. modularity and unambiguous state ownership,
+4. performance confirmed by measurement,
+5. the fewest executable lines of code.
 
-## Architektura
+## Architecture
 
-- Każdy moduł ma mieć mały, jawny kontrakt i jednego właściciela modyfikowalnego stanu.
-- Zależności między modułami prowadź przez wersjonowane typy, komunikaty lub wąskie interfejsy.
-- Nowa funkcja nie może wymagać modyfikowania niepowiązanych modułów.
-- Nie twórz globalnego zegara symulacji, kolejki przyszłych zdarzeń ani funkcji Run, Pause, Step, przewijania lub mnożnika czasu.
-- Informacja sieciowa między urządzeniami zawsze przechodzi jako zakodowana ramka lub pakiet przez port, kolejkę i łącze.
-- Rdzeń nie może zależeć od Reacta, DOM, IndexedDB, OPFS, xterm.js ani hostingu.
-- MD-CLI i classic CLI są dwoma silnikami terminala tego samego routera i tej samej sesji. Nie przedstawiaj ich jako dwóch globalnych trybów aplikacji.
+- Every module must have a small, explicit contract and one owner of mutable state.
+- Connect modules through versioned types, messages or narrow interfaces.
+- A new feature must not require changes to unrelated modules.
+- Do not create a global simulation clock, future event queue, Run, Pause or Step controls, time seeking or a speed multiplier.
+- Network information between devices must always travel as an encoded frame or packet through a port, queue and link.
+- The core must not depend on React, the DOM, IndexedDB, OPFS, xterm.js or hosting infrastructure.
+- MD-CLI and classic CLI are two terminal engines for the same router and session. Do not present them as two global application modes.
 
-## Wielowątkowość
+## Multithreading
 
-- Pierwszy uruchamialny runtime musi korzystać z WebAssembly threads, pthreads i SharedArrayBuffer.
-- Nie dodawaj jednowątkowego trybu awaryjnego. Brak cross-origin isolation ma zakończyć start czytelnym błędem.
-- Runtime ma działać poza wątkiem UI i posiadać co najmniej osobny shard control plane oraz shard forwarding/link.
-- Preferuj SPSC. MPSC stosuj tylko z udokumentowanym uzasadnieniem. W pierwszym etapie nie używaj MPMC.
-- Każdy współdzielony typ musi opisywać właściciela, kierunek przepływu, gwarancję pamięci i zachowanie przy przepełnieniu.
+- The runtime must use WebAssembly threads, pthreads and `SharedArrayBuffer`.
+- Do not add a single-threaded fallback. Missing cross-origin isolation must stop startup with a clear error.
+- The runtime must run outside the UI thread and have at least a separate control-plane shard and forwarding/link shard.
+- Prefer SPSC. Use MPSC only with a documented justification. Use MPMC only when the ownership and traffic topology cannot be represented safely with SPSC or MPSC, and require a benchmark plus an ADR for that decision.
+- Every shared type must document its owner, flow direction, memory guarantee and overflow behavior.
 
-## Wydajność i rozmiar kodu
+## Performance and Code Size
 
-- Optymalizuj od początku układ danych, liczbę alokacji, kopiowanie pakietów, synchronizację i częstotliwość aktualizacji UI.
-- Nie deklaruj poprawy wydajności bez benchmarku albo profilu. Zachowuj wynik bazowy i próg regresji.
-- Minimalizuj wykonywalne linie kodu przez współdzielenie mechanizmów i danych, nie przez code golf, makra ukrywające logikę ani łączenie odpowiedzialności.
-- Komentarze, testy, schematy i rekordy źródeł nie podlegają minimalizacji.
-- React nie może otrzymywać zdarzenia dla każdego pakietu. UI konsumuje ograniczone częstotliwościowo projekcje stanu.
+- Optimize data layout, allocation count, packet copying, synchronization and UI update frequency from the start.
+- Do not claim a performance improvement without a benchmark or profile. Keep a baseline result and a regression threshold.
+- Minimize executable lines by sharing mechanisms and data, not through code golf, macros that hide logic or merged responsibilities.
+- Comments, tests, schemas and source records are not subject to line-count minimization.
+- React must not receive an event for every packet. The UI consumes rate-limited state projections.
 
-## Komentarze
+## Comments
 
-- Każdy moduł rozpoczynaj komentarzem nagłówkowym opisującym odpowiedzialność, właściciela stanu i dozwolony kierunek zależności.
-- Publiczne API dokumentuj przez preconditions, postconditions, kody błędów, własność pamięci i shard affinity.
-- Każda struktura współbieżna musi wskazywać producenta, konsumenta, pojemność, kolejność, politykę przepełnienia i użyte memory ordering.
-- Komentuj decyzje, nie oczywistą składnię.
-- Opisuj niezmienniki, własność stanu, affinity wątku, memory ordering, zachowanie przy przeciążeniu, źródło zgodności i założenie wydajnościowe.
-- Przy nietrywialnym kodzie wyjaśnij, dlaczego wybrany mechanizm jest bezpieczny i co mogłoby go naruszyć.
-- Nie zostawiaj komentarzy powtarzających nazwę funkcji lub pojedynczą instrukcję.
+- Start every module with a header comment describing its responsibility, state owner and permitted dependency direction.
+- Document public APIs with preconditions, postconditions, error codes, memory ownership and shard affinity.
+- Every concurrent structure must identify its producer, consumer, capacity, ordering, overflow policy and memory ordering.
+- Comment decisions, not obvious syntax.
+- Describe invariants, state ownership, thread affinity, memory ordering, overload behavior, conformance source and performance assumptions.
+- For non-trivial code, explain why the selected mechanism is safe and what could violate that safety.
+- Do not leave comments that repeat a function name or a single statement.
 
-## Zgodność
+## Conformance
 
-- Nie zgaduj zachowania SR OS, komend, wartości domyślnych ani ograniczeń platformy.
-- Funkcja produkcyjna wymaga rekordu w katalogu źródeł, testu oraz wpisu w macierzy możliwości.
-- Niezaimplementowana funkcja ma zwrócić jawny błąd. No-op zakończony sukcesem jest zabroniony.
-- Profil bazowy to Nokia SR OS 26.7.R1, lecz w interfejsie nie używaj logo Nokia.
+- Do not guess SR OS behavior, commands, default values or platform limits.
+- A production feature requires a source-catalog record, a test and a capability-matrix entry.
+- An unimplemented feature must return an explicit error. A successful no-op is prohibited.
+- The baseline profile is Nokia SR OS 26.7.R1, but the interface must not use the Nokia logo.
 
-## Styl
+## Style
 
-- W tworzonych artefaktach nie umieszczaj metatekstu.
-- Nie używaj długiego myślnika ani jego wariantów.
-- Używaj prostego łącznika `-` tylko tam, gdzie jest potrzebny.
+- Do not put metatext in created artifacts.
+- Do not use an em dash, en dash or another long-dash variant.
+- Use the plain hyphen `-` only where needed.
 
-## Weryfikacja zmiany
+## Change Verification
 
-- Zmiana funkcjonalna musi zawierać test na odpowiednim poziomie.
-- Przed zakończeniem uruchom formatowanie, analizę statyczną, testy, benchmarki objęte zmianą i build produkcyjny.
-- Dla zmian UI sprawdź działanie w prawdziwej przeglądarce przy aktywnym cross-origin isolation.
+- A functional change must include a test at the appropriate level.
+- Before finishing, run formatting, static analysis, relevant tests and benchmarks, and the production build.
+- For UI changes, verify behavior in a real browser with cross-origin isolation active.

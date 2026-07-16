@@ -1,6 +1,7 @@
 {
   "name": "router-simulator",
   "private": true,
+  "license": "Apache-2.0",
   "packageManager": "pnpm@11.0.4",
   "scripts": {
     "build": "pnpm core:publish && pnpm --filter @router-simulator/web build",
@@ -17,11 +18,12 @@
     "sources:validate": "node tools/validate-sources.mjs",
     "profiles:check": "node tools/generate-profile.mjs --check",
     "architecture:check": "node tools/check-dependencies.mjs",
+    "public-release:check": "node tools/check-public-release.mjs",
     "test": "pnpm core:test && pnpm -r test",
     "test:e2e:install": "playwright install firefox",
     "test:e2e": "playwright test",
     "typecheck": "pnpm -r typecheck",
-    "verify": "pnpm sources:validate && pnpm profiles:check && pnpm architecture:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm core:structure-benchmark && pnpm core:runtime-benchmark && pnpm build",
+    "verify": "pnpm sources:validate && pnpm profiles:check && pnpm architecture:check && pnpm public-release:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm core:structure-benchmark && pnpm core:runtime-benchmark && pnpm build",
     "verify:browser": "pnpm build && pnpm test:e2e"
   },
   "devDependencies": {
