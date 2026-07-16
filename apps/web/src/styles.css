@@ -130,6 +130,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   z-index: 20;
 }
 
+/* Hamburger is desktop-hidden; the compact breakpoints reveal it and turn the
+   library into an off-canvas drawer so navigation and the palette stay reachable
+   at every width. */
+.nav-toggle { display: none; place-items: center; align-self: stretch; width: 50px; border: 0; background: transparent; color: var(--text-dim); }
+.nav-toggle:hover { background: var(--surface); color: var(--text); }
+.sidebar-backdrop { display: none; }
+
 .brand-area, .more-wrap { position: relative; min-width: 0; }
 .brand { display: flex; align-items: center; gap: 11px; width: 100%; height: 100%; padding: 0 16px; border: 0; background: transparent; color: var(--text); font-size: 15px; }
 .brand:hover { background: var(--surface); }
@@ -486,20 +493,45 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 
 @media (max-width: 900px) {
-  /* At compact widths the palette contributes less than the live topology and
-     inspector. Device selection remains available on the canvas and the Devices
-     workspace, so no operation disappears with the palette. */
+  /* The library stops reserving a grid column and becomes an off-canvas drawer.
+     Navigation and the device palette stay fully available behind the hamburger,
+     while the topology and inspector get the reclaimed width. */
   .app-shell {
     --library-track: 0px;
+    /* Cap the inspector so a large saved width cannot starve the canvas at
+       tablet sizes; the resize handle still works up to this bound. */
     --inspector-track: clamp(
       160px,
       var(--inspector-preferred-width, 328px),
-      calc(100vw - var(--workspace-min-track))
+      min(360px, 44vw)
     );
   }
-  .library { display: none; }
-  .topbar { grid-template-columns: minmax(145px, 1fr) auto; }
+  .nav-toggle { display: grid; }
+  .topbar { grid-template-columns: auto minmax(120px, 1fr) auto; }
   .top-context { display: none; }
+  .library {
+    position: fixed;
+    top: var(--header-track);
+    bottom: 0;
+    left: 0;
+    z-index: 45;
+    width: min(286px, 82vw);
+    transform: translateX(-100%);
+    transition: transform 220ms cubic-bezier(.4, 0, .2, 1);
+    border-right: 1px solid var(--line-strong);
+    box-shadow: 20px 0 50px rgba(0, 0, 0, .6);
+  }
+  .app-shell.sidebar-open .library { transform: none; }
+  .library-resizer { display: none; }
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: var(--header-track) 0 0 0;
+    z-index: 44;
+    background: rgba(0, 0, 0, .5);
+    backdrop-filter: blur(2px);
+    animation: menu-in 140ms ease;
+  }
 }
 
 @media (max-width: 680px) {
@@ -641,7 +673,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .settings-page .secondary-action { margin-top: 24px; }
 
 @media (max-width: 650px) {
-  .workspace-page { padding-inline: 18px; }
+  .workspace-page { padding: 22px 18px 44px; }
+  /* Title and its actions stack instead of colliding on a narrow row. */
+  .workspace-page-head { flex-wrap: wrap; align-items: flex-start; gap: 12px; }
+  .workspace-page-head h1 { font-size: 22px; }
+  .workspace-page-head .workspace-actions { width: 100%; }
   .device-table .virtual-list-row > button { grid-template-columns: 42px 1fr auto; }
   .device-table small { display: none; }
   .field-row { grid-template-columns: 1fr; gap: 7px; padding: 10px 0; }
