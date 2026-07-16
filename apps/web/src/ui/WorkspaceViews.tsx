@@ -6,6 +6,7 @@ import { PROFILE_CATALOG, type LabProjectV3, type LabRuntimeSnapshotV5,
   type RouterProjectV3 } from "@router-simulator/contracts";
 import { useEffect, useState, type ChangeEvent, type RefObject } from "react";
 import { VirtualizedList } from "./VirtualizedList";
+import { Monitor, Router as RouterIcon } from "lucide-react";
 
 export type WorkspaceView = "topology" | "devices" | "captures" | "configs" |
   "snapshots" | "notes" | "settings";
@@ -24,14 +25,14 @@ export function DevicesWorkspace({ project, snapshot, onInspect, onConsole }: {
       itemKey={(item) => item.kind === "router" ? item.router.id : item.host.id}
       renderItem={(item) => {
         if (item.kind === "host") return <button onClick={() =>
-          onInspect(item.host.id)}><span className="inventory-icon">H</span>
+          onInspect(item.host.id)}><span className="inventory-icon"><Monitor size={16} /></span>
           <strong>{item.host.name}</strong><small>{item.host.eth0.address}</small>
           <b className="good">Configured</b></button>;
         const live = snapshot?.routers.find((value) =>
           value.id === item.router.id);
         return <button onDoubleClick={() => onConsole(item.router.id)}
           onClick={() => onInspect(item.router.id)}><span
-            className="inventory-icon router">R</span>
+            className="inventory-icon router"><RouterIcon size={16} /></span>
           <strong>{item.router.systemName}</strong>
           <small>{live?.chassis ?? item.router.profileId}</small>
           <b className={live ? "good" : "muted"}>{live

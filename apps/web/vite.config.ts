@@ -6,6 +6,12 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  // React, react-dom and any React-context consumer (lucide-react ships an icon
+  // default-props context) must be prebundled in one optimizer pass so the dev
+  // server never serves two React instances with divergent hook dispatchers.
+  optimizeDeps: {
+    include: ["react", "react-dom", "react-dom/client", "react/jsx-runtime", "lucide-react"]
+  },
   server: {
     headers: {
       "Cross-Origin-Opener-Policy": "same-origin",

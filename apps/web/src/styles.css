@@ -1,19 +1,55 @@
-/* Application layout mirrors the approved router-lab render. CSS owns visual
-   scaling only and never derives or invents operational network state. */
+/* Router Lab visual system. CSS owns presentation and layout scaling only; it
+   never derives or invents operational network state. Structural mechanics
+   (grid tracks, paint containment, resize geometry, xterm viewport ownership)
+   are preserved from the approved render — only the visual language is new. */
 :root {
-  font-family: "Bahnschrift", "Segoe UI", sans-serif;
-  color: #c5ced2;
-  background: #091016;
+  /* Surfaces — neutral true-black with faint lilac lift on elevated panels. */
+  --bg: #000000;
+  --bg-header: #0a0a0c;
+  --panel: #0b0a0d;
+  --panel-2: #141317;
+  --surface: #171519;
+  --surface-hover: #221f27;
+  --surface-active: #271d33;
+  /* Lines */
+  --line: #262329;
+  --line-soft: #1a181d;
+  --line-strong: #38343f;
+  /* Text */
+  --text: #f3f0f7;
+  --text-dim: #b6b0c0;
+  --text-mute: #837d8e;
+  --text-faint: #5d5766;
+  /* Accents — lilac */
+  --blue: #b47cf0;
+  --accent: #b47cf0;
+  --accent-bright: #cba6ff;
+  --accent-dim: #9a5fd8;
+  --accent-soft: rgba(180, 124, 240, .15);
+  --accent-line: rgba(180, 124, 240, .42);
+  --cyan: #d0a8ff;
+  --green: #46d585;
+  --amber: #f2c15c;
+  --red: #f47a6c;
+  /* Type — self-hosted platform stack only; the dev/preview CSP forbids
+     external font hosts, and Segoe UI Variable + Cascadia Mono read cleanly
+     on the Windows target. */
+  --font-ui: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Mono", "Cascadia Code", "Consolas", ui-monospace, monospace;
+  /* Shape + depth */
+  --radius: 9px;
+  --radius-sm: 6px;
+  --radius-pill: 999px;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, .35);
+  --shadow-2: 0 10px 30px rgba(0, 0, 0, .45);
+  --shadow-pop: 0 18px 46px rgba(0, 0, 0, .62);
+
+  font-family: var(--font-ui);
+  color: var(--text);
+  background: var(--bg);
   font-synthesis: none;
-  --line: #26343d;
-  --line-soft: #1b2830;
-  --panel: #0d1820;
-  --panel-deep: #081117;
-  --text: #d8dfe2;
-  --muted: #8f9ca4;
-  --blue: #1b9df0;
-  --cyan: #67dcf5;
-  --green: #69d36f;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 * {
@@ -21,38 +57,44 @@
   /* Every scroll owner belongs to the same dark application surface. Keeping
      the platform scrollbar in that palette prevents a system-white control
      from appearing when a short viewport makes an inspector or form overflow. */
-  scrollbar-color: #34454e #081117;
+  scrollbar-color: #35323c transparent;
   scrollbar-width: thin;
 }
-*::-webkit-scrollbar { width: 9px; height: 9px; }
-*::-webkit-scrollbar-track { background: #081117; }
-*::-webkit-scrollbar-thumb { border: 2px solid #081117; background: #34454e; }
-*::-webkit-scrollbar-thumb:hover { background: #475b65; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 999px; background: #37343d; background-clip: padding-box; }
+*::-webkit-scrollbar-thumb:hover { background: #48444f; background-clip: padding-box; }
 html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
-button, input { font: inherit; }
-select { font: inherit; color-scheme: dark; }
+button, input, select, textarea { font: inherit; }
+select { color-scheme: dark; }
 button { color: inherit; }
-button { cursor: pointer; transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, transform 120ms ease; }
-button:active:not(:disabled) { transform: translateY(1px); }
-button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #159ff3; outline-offset: 2px; }
+button { cursor: pointer; transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease, transform 90ms ease; }
+button:active:not(:disabled) { transform: translateY(.5px); }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+::selection { background: rgba(180, 124, 240, .3); }
 
-/* The saved inspector width and terminal height are user preferences, not
+/* Lucide icons render as inline SVG that inherits currentColor. Block display
+   removes the descender gap, and shrink-0 keeps them from being squeezed by
+   flexed labels. */
+.lucide { display: block; flex: 0 0 auto; }
+
+/* ── Application shell ──────────────────────────────────────────────────────
+   The saved inspector width and terminal height are user preferences, not
    absolute viewport reservations. The tracks below cap those preferences by
    the current viewport, while minmax(0, 1fr) lets the topology absorb every
-   remaining pixel without creating document-level overflow. Track variables
-   also give open and closed states one source of truth across breakpoints. */
+   remaining pixel without creating document-level overflow. */
 .app-shell {
-  --header-track: 52px;
+  --header-track: 56px;
   --topology-min-track: 0px;
   --workspace-min-track: 64px;
   --inspector-track: clamp(
     64px,
-    var(--inspector-preferred-width, 324px),
+    var(--inspector-preferred-width, 328px),
     calc(100vw - var(--workspace-min-track) - 64px)
   );
   --library-track: clamp(
     64px,
-    var(--library-preferred-width, 194px),
+    var(--library-preferred-width, 208px),
     calc(100vw - var(--workspace-min-track) - var(--inspector-track))
   );
   --terminal-track: clamp(
@@ -68,63 +110,74 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: #091118;
+  background:
+    radial-gradient(1200px 680px at 78% -10%, rgba(180, 124, 240, .07), transparent 60%),
+    radial-gradient(900px 600px at 8% 110%, rgba(208, 168, 255, .05), transparent 55%),
+    var(--bg);
 }
 .app-shell.inspector-closed { --inspector-track: 0px; }
 .app-shell.terminal-closed { --terminal-track: 0px; }
 
-/* Header tracks the same column boundaries as the content grid so controls
-   stay aligned while the center canvas absorbs viewport width changes. */
+/* ── Top bar ──────────────────────────────────────────────────────────────*/
 .topbar {
   grid-column: 1 / 4;
   display: grid;
   grid-template-columns: var(--library-track) minmax(0, 1fr) auto;
   align-items: stretch;
   min-width: 0;
-  background: #071017;
-  border-bottom: 1px solid #1c2b34;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .015), transparent), var(--bg-header);
+  border-bottom: 1px solid var(--line);
   z-index: 20;
 }
 
 .brand-area, .more-wrap { position: relative; min-width: 0; }
-.brand { display: flex; align-items: center; gap: 11px; width: 100%; height: 100%; padding: 0 16px; border: 0; background: transparent; color: #f2f6f7; font-size: 17px; }
-.brand:hover { background: #0e1b23; }
-.brand strong { font-weight: 500; letter-spacing: .01em; white-space: nowrap; }
-.brand .chevron { margin-left: auto; color: #9aa6ac; font-size: 18px; }
-.brand-mark { position: relative; width: 28px; height: 28px; display: block; }
-.brand-mark i { position: absolute; width: 9px; height: 9px; border: 1.7px solid #e5ecef; border-radius: 50%; }
-.brand-mark i:nth-child(1) { left: 10px; top: 1px; }
-.brand-mark i:nth-child(2) { left: 2px; top: 15px; }
-.brand-mark i:nth-child(3) { right: 1px; top: 15px; }
-.brand-mark::before, .brand-mark::after { content: ""; position: absolute; top: 11px; width: 12px; height: 1px; background: #d5dfe3; transform-origin: center; }
-.brand-mark::before { left: 3px; transform: rotate(-55deg); }
-.brand-mark::after { right: 2px; transform: rotate(55deg); }
+.brand { display: flex; align-items: center; gap: 11px; width: 100%; height: 100%; padding: 0 16px; border: 0; background: transparent; color: var(--text); font-size: 15px; }
+.brand:hover { background: var(--surface); }
+.brand[aria-expanded="true"] { background: var(--surface); }
+.brand strong { font-weight: 600; letter-spacing: -.01em; white-space: nowrap; }
+.brand .chevron { margin-left: auto; color: var(--text-mute); transition: transform 160ms ease; }
+.brand[aria-expanded="true"] .chevron { transform: rotate(180deg); }
+.brand-mark {
+  display: grid; place-items: center;
+  width: 32px; height: 32px;
+  border-radius: 9px;
+  color: #fff;
+  background: linear-gradient(150deg, var(--accent-bright), var(--accent-dim));
+  box-shadow: 0 3px 10px rgba(180, 124, 240, .4), inset 0 1px 0 rgba(255, 255, 255, .28);
+}
 
-.top-nav { display: flex; height: 100%; justify-content: center; gap: 12px; }
-.top-nav button { position: relative; min-width: 82px; padding: 0 12px; border: 0; background: transparent; color: #aab4b9; font-size: 13px; cursor: pointer; }
-.top-nav button.active { color: #eef3f4; }
-.top-nav button.active::after { content: ""; position: absolute; height: 2px; left: 6px; right: 6px; bottom: 0; background: var(--blue); }
+/* Center header context replaces the former duplicate top navigation. It is a
+   quiet breadcrumb, not an interactive control, so the sidebar remains the one
+   authoritative navigation surface. */
+.top-context { display: flex; align-items: center; gap: 9px; justify-content: center; min-width: 0; padding: 0 16px; color: var(--text-mute); font-size: 12px; }
+.top-context-name { color: var(--text-dim); font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.top-context-view { position: relative; padding-left: 15px; text-transform: capitalize; letter-spacing: .01em; white-space: nowrap; }
+.top-context-view::before { content: ""; position: absolute; left: 0; top: 50%; width: 4px; height: 4px; margin-top: -2px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px var(--accent); }
 
-.top-actions { display: flex; align-items: stretch; min-width: 0; }
-.icon-action, .more-action { border: 0; background: transparent; padding: 0 17px; cursor: pointer; font-size: 14px; }
-.icon-action span { margin-left: 7px; }
-.more-action { padding: 0 15px; font-size: 20px; }
-.top-actions button:hover { background: #13212a; }
-.header-menu { position: absolute; z-index: 80; top: calc(100% + 1px); display: flex; flex-direction: column; min-width: 210px; padding: 8px; border: 1px solid #30424c; background: #0c1820; box-shadow: 0 15px 36px rgba(1, 7, 11, .48); }
-.header-menu strong { padding: 7px 8px 2px; color: #e5ecef; font-size: 12px; }
-.header-menu small { padding: 0 8px 8px; color: #7e8e96; font-size: 9px; }
-.header-menu > button, .confirm-row button { min-height: 34px; padding: 0 9px; border: 0; background: transparent; text-align: left; color: #b9c5ca; font-size: 11px; }
-.header-menu > button:hover, .confirm-row button:hover { background: #182832; color: #f0f5f6; }
+.top-actions { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 0 12px 0 8px; }
+.icon-action { display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 13px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-dim); font-size: 12.5px; font-weight: 500; }
+.icon-action:hover { border-color: var(--line-strong); background: var(--surface-hover); color: var(--text); }
+.more-action { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border: 1px solid transparent; border-radius: var(--radius-sm); background: transparent; color: var(--text-mute); }
+.more-action:hover, .more-action[aria-expanded="true"] { border-color: var(--line); background: var(--surface-hover); color: var(--text); }
+
+.header-menu { position: absolute; z-index: 80; top: calc(100% + 6px); display: flex; flex-direction: column; min-width: 224px; padding: 7px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--panel-2); box-shadow: var(--shadow-pop); animation: menu-in 130ms ease; }
+@keyframes menu-in { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+.header-menu strong { padding: 8px 9px 3px; color: var(--text); font-size: 12px; font-weight: 600; }
+.header-menu small { padding: 0 9px 9px; color: var(--text-mute); font-size: 11px; font-family: var(--font-mono); }
+.header-menu > button, .confirm-row button { display: flex; align-items: center; min-height: 34px; padding: 0 10px; border: 0; border-radius: var(--radius-sm); background: transparent; text-align: left; color: var(--text-dim); font-size: 12.5px; }
+.header-menu > button:hover, .confirm-row button:hover { background: var(--surface-hover); color: var(--text); }
 .project-menu { left: 8px; }
-.more-menu { right: 4px; }
-.confirm-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 4px; padding: 5px 7px; color: #d3dcdf; font-size: 10px; }
-.confirm-row button { min-height: 28px; padding-inline: 7px; }
+.more-menu { right: 12px; }
+.confirm-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 5px; padding: 6px 8px; color: var(--text-dim); font-size: 12px; }
+.confirm-row button { min-height: 30px; padding-inline: 9px; border: 1px solid var(--line) !important; }
+.confirm-row button:first-of-type { border-color: var(--accent-line) !important; color: var(--accent-bright); }
 
 /* display: contents lets children share the application grid without a second
    competing layout context. */
 .workspace { display: contents; }
 
-/* The left library is fixed navigation. Its footer stays reachable because the
+/* ── Left library / navigation ──────────────────────────────────────────────
+   The left library is fixed navigation. Its footer stays reachable because the
    central canvas, rather than this column, absorbs excess layout pressure. */
 .library {
   grid-column: 1;
@@ -135,58 +188,62 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  background: linear-gradient(100deg, #0c1922, #0d1c25);
+  background: var(--panel);
   border-right: 1px solid var(--line);
   padding-top: 16px;
-  scrollbar-color: #34454e transparent;
   scrollbar-width: thin;
 }
-.panel-kicker { padding: 0 16px 9px; color: #9eabb1; font-size: 10px; letter-spacing: .08em; }
-.side-nav, .project-nav { display: flex; flex-direction: column; gap: 1px; }
-.side-nav button, .project-nav button, .side-footer button { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 38px; padding: 0 16px; border: 0; background: transparent; text-align: left; color: #aab6bc; font-size: 12px; cursor: pointer; }
-.side-nav button span { width: 19px; color: #c3cdd1; font-size: 17px; text-align: center; }
-.side-nav button.active { color: #f1f5f6; background: #1a2a34; box-shadow: inset 2px 0 #748893; }
-.side-divider { height: 1px; margin: 14px 0 15px; background: #26353e; flex: 0 0 auto; }
-.library section { padding: 0 10px 6px; }
-.library section h3 { margin: 0 6px 5px; color: #71818a; font-size: 9px; font-weight: 500; letter-spacing: .08em; }
-.library-item { display: flex; align-items: center; gap: 11px; width: 100%; min-height: 51px; padding: 6px 7px; border: 1px solid transparent; border-radius: 2px; text-align: left; background: transparent; }
-.library-item.active { background: #12232d; border-color: #263c48; }
-.library-item:hover { background: #152630; border-color: #2c414c; }
-.library-item > span:last-child { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
-.library-item strong { color: #b7c2c7; font-size: 11px; font-weight: 500; }
-.library-item small { color: #7c8a91; font-size: 10px; }
-.mini-icon { display: grid; place-items: center; width: 43px; height: 28px; border: 1px solid #64727a; border-radius: 50%; color: #aeb9be; font: 11px "Cascadia Mono", monospace; background: linear-gradient(#26343b, #0b1318); }
-.mini-icon.router { box-shadow: inset 0 0 0 5px #172229; }
-.mini-icon.link { height: 22px; border-radius: 2px; color: var(--cyan); }
-.project-nav button { min-height: 34px; font-size: 12px; }
-.project-nav button:first-child { color: #d4dcdf; }
-.project-nav button.active, .side-footer button.active { color: #eef3f4; background: #172730; }
-.side-footer { margin-top: auto; border-top: 1px solid #26353e; }
-.side-footer button { height: 57px; border-bottom: 1px solid #26353e; font-size: 12px; }
-.side-footer button b { margin-left: auto; font-weight: 400; }
-.account-wrap { position: relative; }
-.account-menu { position: absolute; z-index: 60; left: 10px; bottom: 54px; display: flex; flex-direction: column; width: 174px; padding: 10px; border: 1px solid #30424c; background: #0a161e; box-shadow: 0 12px 32px rgba(0, 0, 0, .42); }
-.account-menu strong { color: #e0e7ea; font-size: 11px; }
-.account-menu small { margin: 3px 0 10px; color: #7e8c93; font-size: 9px; }
-.account-menu button { min-height: 30px; border: 0; background: transparent; text-align: left; color: #aebac0; font-size: 10px; }
-.account-menu button:hover { background: #172730; }
+.panel-kicker { padding: 0 18px 8px; color: var(--text-mute); font-size: 10.5px; font-weight: 600; letter-spacing: .11em; text-transform: uppercase; }
+.side-nav, .project-nav { display: flex; flex-direction: column; gap: 2px; padding: 0 10px; }
+.side-nav button, .project-nav button, .side-footer button { display: flex; align-items: center; gap: 11px; width: 100%; min-height: 38px; padding: 0 10px; border: 0; border-radius: var(--radius-sm); background: transparent; text-align: left; color: var(--text-dim); font-size: 13px; font-weight: 500; }
+.side-nav button span { display: grid; place-items: center; width: 20px; color: var(--text-mute); }
+.side-nav button:hover, .project-nav button:hover, .side-footer button:hover { background: var(--surface-hover); color: var(--text); }
+.side-nav button:hover span { color: var(--text-dim); }
+.side-nav button.active, .project-nav button.active, .side-footer button.active { color: var(--text); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.side-nav button.active span, .side-nav button.active > .lucide,
+.project-nav button.active > .lucide, .side-footer button.active > .lucide { color: var(--accent-bright); }
+.side-nav button > .lucide, .project-nav button > .lucide, .side-footer button > .lucide { color: var(--text-mute); }
+.side-nav button:hover > .lucide, .project-nav button:hover > .lucide, .side-footer button:hover > .lucide { color: var(--text-dim); }
+.side-divider { height: 1px; margin: 16px 18px; background: var(--line); flex: 0 0 auto; }
 
-/* Zero intrinsic minima let the user collapse the canvas completely when the
+.library section { padding: 0 10px 4px; }
+.library section h3 { margin: 2px 8px 6px; color: var(--text-faint); font-size: 9.5px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; }
+.library-item { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 54px; padding: 8px 10px; border: 1px solid transparent; border-radius: var(--radius); text-align: left; background: transparent; cursor: grab; }
+.library-item:active { cursor: grabbing; }
+.library-item.active { background: var(--surface); border-color: var(--line-strong); }
+.library-item:hover { background: var(--surface-hover); border-color: var(--line-strong); }
+.library-item > span:last-child { display: flex; flex-direction: column; gap: 2px; min-width: 0; line-height: 1.25; }
+.library-item strong { color: var(--text); font-size: 12.5px; font-weight: 600; }
+.library-item small { color: var(--text-mute); font-size: 11px; }
+.mini-icon { display: grid; place-items: center; flex: 0 0 auto; width: 40px; height: 40px; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--text-dim); background: linear-gradient(160deg, var(--surface-hover), var(--panel-2)); box-shadow: var(--shadow-1); }
+.mini-icon.router { color: var(--accent-bright); border-color: var(--accent-line); background: linear-gradient(160deg, rgba(180, 124, 240, .16), var(--panel-2)); }
+.mini-icon.link { color: var(--cyan); border-color: rgba(208, 168, 255, .34); background: linear-gradient(160deg, rgba(208, 168, 255, .12), var(--panel-2)); }
+.project-nav button { min-height: 35px; }
+.project-nav button > .lucide { margin-left: 2px; }
+
+.side-footer { margin-top: auto; padding: 8px 10px 10px; border-top: 1px solid var(--line); }
+.side-footer button { min-height: 40px; border-radius: var(--radius-sm); }
+.side-footer button > .lucide { margin-left: 2px; }
+.side-footer button b { margin-left: auto; display: grid; place-items: center; color: var(--text-mute); font-weight: 400; }
+.account-wrap { position: relative; }
+.account-menu { position: absolute; z-index: 60; left: 6px; right: 6px; bottom: 48px; display: flex; flex-direction: column; padding: 11px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--panel-2); box-shadow: var(--shadow-pop); animation: menu-in 130ms ease; }
+.account-menu strong { color: var(--text); font-size: 12px; font-weight: 600; }
+.account-menu small { margin: 3px 0 11px; color: var(--text-mute); font-size: 10.5px; }
+.account-menu button { min-height: 32px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); text-align: center; color: var(--text-dim); font-size: 11.5px; }
+.account-menu button:hover { background: var(--surface-hover); color: var(--text); }
+
+/* ── Center stage / topology canvas ─────────────────────────────────────────
+   Zero intrinsic minima let the user collapse the canvas completely when the
    terminal needs the full workspace. The clipping boundary is essential at
    that exact zero-height state: React Flow and its absolutely positioned
    toolbar still have measurable children, but none of them may paint into the
-   terminal row owned by the sibling panel. isolate creates a local stacking
-   context so React Flow z-index values cannot escape into adjacent grid rows. */
+   terminal row owned by the sibling panel. */
 .center-stage {
   grid-column: 2;
   grid-row: 2;
   position: relative;
   z-index: 0;
   isolation: isolate;
-  /* The topology owns an independent paint boundary. overflow alone clips
-     ordinary descendants, but React Flow promotes transformed layers during
-     pan and zoom. paint containment and the inset clip keep those compositor
-     layers inside this grid row even while the row collapses to zero. */
   contain: layout paint;
   clip-path: inset(0);
   container-name: center-stage;
@@ -197,198 +254,204 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border-bottom: 1px solid var(--line);
 }
 
-/* React Flow fills only the center cell. Operational colors arrive as classes
-   from validated runtime projections. */
 /* React Flow validates a positive parent rectangle. One clipped layout pixel
    keeps its ResizeObserver contract valid at the terminal maximum without
    making any toolbar, node or canvas content visible in the collapsed row. */
-.topology { position: absolute; inset: 0; min-width: 0; min-height: 1px; overflow: hidden; background: #0d1c25; }
-.topology:fullscreen { background: #0d1c25; }
-.topology::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at center, transparent 20%, rgba(3, 10, 14, .25) 100%); }
+.topology { position: absolute; inset: 0; min-width: 0; min-height: 1px; overflow: hidden; background:
+    radial-gradient(1000px 620px at 50% 42%, #17121d, transparent 70%),
+    var(--bg); }
+.topology:fullscreen { background: var(--bg); }
+.topology::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at center, transparent 30%, rgba(0, 0, 0, .38) 100%); }
 .react-flow__pane { cursor: default; }
 .react-flow__controls { display: none; }
-.react-flow__edge-path { stroke-width: 1.5; }
-.react-flow__edge.link-up .react-flow__edge-path { stroke: #69d8f1; filter: drop-shadow(0 0 4px #38ccec); }
-.react-flow__edge.link-down .react-flow__edge-path { stroke: #52636c; stroke-dasharray: 5 5; }
-.react-flow__edge-text { fill: #8be1f3; font: 10px "Cascadia Mono", monospace; }
-.react-flow__edge-textbg { fill: #061117; fill-opacity: .92; }
-.canvas-toolbar { position: absolute; z-index: 5; display: flex; top: 13px; left: 18px; height: 44px; border: 1px solid #253943; background: #0c1720; }
-.canvas-toolbar button { width: 45px; border: 0; border-right: 1px solid #253943; background: transparent; color: #aab8be; font-size: 18px; }
-.canvas-toolbar button:hover { background: #152630; color: #e4edf0; }
-.canvas-toolbar button.active { color: #e5f4f8; box-shadow: inset 0 0 0 1px #159ef0; }
+.react-flow__edge-path { stroke-width: 1.6; }
+.react-flow__edge.link-up .react-flow__edge-path { stroke: var(--cyan); filter: drop-shadow(0 0 5px rgba(208, 168, 255, .55)); }
+.react-flow__edge.link-down .react-flow__edge-path { stroke: #4a464f; stroke-dasharray: 5 5; }
+.react-flow__edge-text { fill: var(--cyan); font: 10px var(--font-mono); }
+.react-flow__edge-textbg { fill: #0b0a0d; fill-opacity: .95; }
 
-.device-node { position: relative; display: flex; align-items: center; gap: 10px; width: 150px; min-height: 76px; padding: 10px; border: 1px solid #65737b; border-radius: 42px; color: #e0e7e9; background: rgba(14, 24, 30, .88); }
-.device-node.selected { border-color: #159ff3; box-shadow: 0 0 0 2px rgba(21, 159, 243, .25), inset 0 0 16px rgba(21, 159, 243, .08); }
-.device-node strong { display: block; font-size: 13px; font-weight: 500; }
-.device-node span { display: block; color: #8f9da4; font: 9px "Cascadia Mono", monospace; }
-.device-icon { display: grid; place-items: center; flex: 0 0 54px; height: 54px; border: 1px solid #4a5961; border-radius: 50%; background: #111a1f; font: 15px "Cascadia Mono", monospace; }
-.router-node { width: 164px; min-height: 90px; border-radius: 50px; }
-.router-node .device-icon { width: 65px; height: 65px; }
-.rack-face { display: flex !important; align-items: stretch; gap: 2px; width: 37px; height: 47px; padding: 4px; border: 2px solid #879198; background: #252b2e; box-shadow: inset 0 0 0 2px #0a0e10; }
-.rack-face i { flex: 1; border: 1px solid #4e595e; background: repeating-linear-gradient(0deg, #777f7f 0 1px, #242a2d 1px 5px); }
-.react-flow__handle { width: 8px; height: 8px; border: 1px solid #9eefff; background: #d8f9ff; }
-.runtime-error { position: absolute; z-index: 10; top: 70px; left: 50%; transform: translateX(-50%); display: grid; grid-template-columns: 1fr auto; width: min(520px, 85%); padding: 12px 14px; border: 1px solid #73443e; background: #2a1717ee; color: #efaaa4; font-size: 11px; }
-.runtime-error strong, .runtime-error span { grid-column: 1; }
-.runtime-error button { grid-column: 2; grid-row: 1 / 3; border: 0; background: transparent; color: #efaaa4; font-size: 10px; }
+.canvas-toolbar { position: absolute; z-index: 5; display: flex; top: 16px; left: 18px; padding: 5px; gap: 3px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: rgba(17, 15, 20, .84); backdrop-filter: blur(10px); box-shadow: var(--shadow-2); }
+.canvas-toolbar button { display: grid; place-items: center; width: 38px; height: 34px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-mute); }
+.canvas-toolbar button:hover { background: var(--surface-hover); color: var(--text); }
+.canvas-toolbar button.active { color: var(--accent-bright); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-line); }
 
-/* Port selection appears only after a real React Flow connection gesture. It
+.device-node { position: relative; display: flex; align-items: center; gap: 12px; width: 168px; min-height: 74px; padding: 12px 14px; border: 1px solid var(--line-strong); border-radius: 14px; color: var(--text); background: linear-gradient(160deg, rgba(26, 24, 30, .95), rgba(15, 14, 17, .95)); box-shadow: var(--shadow-2); backdrop-filter: blur(3px); transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease; }
+.device-node:hover { border-color: #3c3844; transform: translateY(-1px); }
+.device-node.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 22px rgba(180, 124, 240, .28), var(--shadow-2); }
+.device-node strong { display: block; font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; }
+.device-node span { display: block; margin-top: 2px; color: var(--text-mute); font: 9.5px var(--font-mono); }
+.device-icon { display: grid; place-items: center; flex: 0 0 auto; width: 46px; height: 46px; border: 1px solid var(--line-strong); border-radius: 11px; color: var(--text-dim); background: linear-gradient(160deg, var(--surface-hover), var(--panel-2)); }
+.router-node { width: 182px; min-height: 84px; }
+.router-node .device-icon { width: 52px; height: 52px; color: var(--accent-bright); border-color: var(--accent-line); background: linear-gradient(160deg, rgba(180, 124, 240, .18), var(--panel-2)); }
+.react-flow__handle { width: 9px; height: 9px; border: 1px solid var(--cyan); background: #0d0b10; }
+.react-flow__handle:hover { background: var(--cyan); }
+
+.runtime-error { position: absolute; z-index: 10; top: 18px; left: 50%; transform: translateX(-50%); display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; width: min(540px, calc(100% - 36px)); padding: 13px 15px; border: 1px solid rgba(244, 122, 108, .4); border-radius: var(--radius); background: linear-gradient(180deg, rgba(58, 24, 24, .96), rgba(40, 18, 18, .96)); color: #f6b4ac; box-shadow: var(--shadow-pop); }
+.runtime-error strong { grid-column: 1; font-size: 12.5px; font-weight: 600; color: #ffcfc8; }
+.runtime-error span { grid-column: 1; font-size: 11.5px; }
+.runtime-error button { grid-column: 2; grid-row: 1 / 3; align-self: start; padding: 5px 10px; border: 1px solid rgba(244, 122, 108, .4); border-radius: var(--radius-sm); background: transparent; color: #f6b4ac; font-size: 11px; }
+.runtime-error button:hover { background: rgba(244, 122, 108, .14); }
+
+/* ── Modals ─────────────────────────────────────────────────────────────────
+   Port selection appears only after a real React Flow connection gesture. It
    reuses the established panel palette and never introduces a native white
    select or dialog surface while the runtime transaction is pending. */
-.modal-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 16px; background: rgba(2, 8, 12, .72); }
-.lab-dialog { width: min(390px, 100%); padding: 14px; border: 1px solid #30454f; background: #0a171f; box-shadow: 0 18px 48px rgba(0, 0, 0, .5); }
-.lab-dialog header { display: flex; align-items: center; justify-content: space-between; margin: -14px -14px 14px; padding: 0 14px; min-height: 43px; border-bottom: 1px solid #263841; }
-.lab-dialog header strong { color: #dce5e8; font-size: 12px; font-weight: 500; }
-.lab-dialog header button { border: 0; background: transparent; color: #93a2a9; font-size: 20px; }
-.lab-dialog label { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(150px, 2fr); align-items: center; gap: 10px; min-height: 46px; color: #87969d; font-size: 10px; }
-.lab-dialog input, .lab-dialog select, .hardware-slot select, .mda-editor select { min-width: 0; height: 32px; padding: 0 8px; border: 1px solid #344852; border-radius: 0; outline: 0; background: #08141b; color: #c5d0d4; font: 9px "Cascadia Mono", monospace; }
-.lab-dialog input:focus, .lab-dialog select:focus, .hardware-slot select:focus, .mda-editor select:focus { border-color: var(--blue); }
-.lab-dialog .dialog-kicker { margin-top: 10px; padding: 8px 0 0; border-top: 1px solid #25353d; }
-.lab-dialog .primary { width: 100%; min-height: 34px; margin-top: 12px; border: 1px solid #287fae; background: #143d54; color: #dceff6; font-size: 10px; }
-.lab-dialog .primary:disabled { opacity: .42; cursor: default; }
-.mda-editor { margin-top: 12px; padding-top: 11px; border-top: 1px solid #25353d; }
-.hardware-admin { display: grid; grid-template-columns: minmax(0, 1fr) minmax(88px, .7fr); align-items: center; gap: 10px; margin-top: 8px; color: #748894; font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
+.modal-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 16px; background: rgba(0, 0, 0, .66); backdrop-filter: blur(3px); animation: menu-in 120ms ease; }
+.lab-dialog { width: min(410px, 100%); padding: 18px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--panel-2); box-shadow: var(--shadow-pop); }
+.lab-dialog header { display: flex; align-items: center; justify-content: space-between; margin: -18px -18px 16px; padding: 0 16px; min-height: 50px; border-bottom: 1px solid var(--line); }
+.lab-dialog header strong { color: var(--text); font-size: 13.5px; font-weight: 600; }
+.lab-dialog header button { display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-mute); }
+.lab-dialog header button:hover { background: var(--surface-hover); color: var(--text); }
+.lab-dialog label { display: grid; grid-template-columns: minmax(84px, 1fr) minmax(150px, 2fr); align-items: center; gap: 12px; min-height: 44px; color: var(--text-dim); font-size: 11.5px; }
+.lab-dialog input, .lab-dialog select, .hardware-slot select, .mda-editor select { min-width: 0; height: 34px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); outline: 0; background: var(--bg); color: var(--text); font: 12px var(--font-mono); transition: border-color 130ms ease, box-shadow 130ms ease; }
+.lab-dialog input:focus, .lab-dialog select:focus, .hardware-slot select:focus, .mda-editor select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.lab-dialog .dialog-kicker { margin-top: 12px; padding: 12px 0 2px; border-top: 1px solid var(--line); }
+.lab-dialog .primary { width: 100%; min-height: 38px; margin-top: 9px; border: 1px solid transparent; border-radius: var(--radius-sm); background: linear-gradient(180deg, var(--accent-bright), var(--accent)); color: #fff; font-size: 12.5px; font-weight: 600; box-shadow: 0 4px 14px rgba(180, 124, 240, .32); }
+.lab-dialog .primary:hover:not(:disabled) { filter: brightness(1.06); }
+.lab-dialog .primary:disabled { opacity: .4; cursor: default; box-shadow: none; }
+
+.hardware-admin { display: grid; grid-template-columns: minmax(0, 1fr) minmax(92px, .7fr); align-items: center; gap: 10px; margin-top: 10px; color: var(--text-mute); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
 .hardware-admin select { width: 100%; }
 
-/* Inspector owns its scroll container across canvas and terminal rows. This
-   keeps every hardware control reachable on short screens. */
-.inspector { grid-column: 3; grid-row: 2 / 4; position: relative; overflow: auto; min-height: 0; background: linear-gradient(110deg, #0d1921, #0b1720); border-left: 1px solid var(--line); }
-.inspector-title { display: flex; justify-content: space-between; min-height: 68px; padding: 13px 15px 8px; }
-.inspector-title h2 { display: flex; align-items: center; gap: 9px; margin: 0; color: #f1f5f6; font-size: 18px; font-weight: 500; }
-.inspector-title p { margin: 3px 0 0; color: #8f9ca3; font-size: 10px; }
-.inspector-title button { align-self: flex-start; border: 0; background: transparent; color: #aab4b9; font-size: 25px; font-weight: 200; }
-.inspector-title button:hover { color: #f1f6f7; }
-.inspector-tabs { display: flex; height: 41px; padding-left: 8px; border-bottom: 1px solid #25343d; }
-.inspector-tabs button { position: relative; flex: 1; padding: 0 4px; border: 0; background: transparent; color: #98a4aa; font-size: 10px; }
-.inspector-tabs button.active { color: #e0e6e9; }
-.inspector-tabs button.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--blue); }
-.inspector-section-title { padding-top: 17px; }
-.spec-grid { display: grid; grid-template-columns: 120px 1fr; row-gap: 12px; padding: 0 16px 18px; border-bottom: 1px solid #26343d; font-size: 10px; }
-.spec-grid span { color: #8d9aa1; }
-.spec-grid strong { color: #bec8cc; font-weight: 400; }
+/* ── Inspector ──────────────────────────────────────────────────────────────
+   Inspector owns its scroll container across canvas and terminal rows so every
+   hardware control stays reachable on short screens. */
+.inspector { grid-column: 3; grid-row: 2 / 4; position: relative; overflow: auto; min-height: 0; background: var(--panel); border-left: 1px solid var(--line); }
+.inspector-title { display: flex; justify-content: space-between; align-items: flex-start; min-height: 64px; padding: 16px 16px 10px; border-bottom: 1px solid var(--line-soft); }
+.inspector-title h2 { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--text); font-size: 18px; font-weight: 600; letter-spacing: -.02em; }
+.inspector-title p { margin: 4px 0 0; color: var(--text-mute); font-size: 11px; }
+.inspector-title button { display: grid; place-items: center; width: 30px; height: 30px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-mute); }
+.inspector-title button:hover { background: var(--surface-hover); color: var(--text); }
+.inspector-tabs { display: flex; gap: 2px; padding: 8px 10px 0; border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 3; background: var(--panel); }
+.inspector-tabs button { position: relative; flex: 1; min-height: 34px; padding: 0 4px; border: 0; border-radius: var(--radius-sm) var(--radius-sm) 0 0; background: transparent; color: var(--text-mute); font-size: 11px; font-weight: 500; }
+.inspector-tabs button:hover { color: var(--text-dim); background: var(--surface-hover); }
+.inspector-tabs button.active { color: var(--text); }
+.inspector-tabs button.active::after { content: ""; position: absolute; left: 6px; right: 6px; bottom: -1px; height: 2px; border-radius: 2px 2px 0 0; background: var(--accent); }
+.inspector-section-title { padding-top: 18px; }
+.spec-grid { display: grid; grid-template-columns: 120px 1fr; row-gap: 13px; padding: 4px 16px 18px; border-bottom: 1px solid var(--line-soft); font-size: 12px; }
+.spec-grid span { color: var(--text-mute); }
+.spec-grid strong { color: var(--text); font-weight: 500; font-family: var(--font-mono); font-size: 11.5px; }
 .text-good { color: var(--green) !important; }
-.text-warning { color: #d8b65f !important; }
-.dot-good, .dot-muted { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 7px rgba(105, 211, 111, .7); }
-.dot-muted { background: #68777e; box-shadow: none; }
-.hardware-slot { padding: 14px 16px; border-bottom: 1px solid #26343d; }
-.slot-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; color: #85939a; font-size: 9px; letter-spacing: .07em; }
-.hardware-slot > strong { display: block; margin-bottom: 11px; color: #c8d1d4; font-size: 11px; font-weight: 500; }
-.hardware-slot button { min-height: 30px; border: 1px solid #3a4b55; background: #10212b; color: #b9c5ca; font-size: 9px; cursor: pointer; }
-.hardware-slot button:hover:not(:disabled) { border-color: #198fd1; color: #e4f1f5; }
+.text-warning { color: var(--amber) !important; }
+.dot-good, .dot-muted { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px rgba(70, 213, 133, .8); }
+.dot-muted { background: #5d5766; box-shadow: none; }
+
+.hardware-slot { padding: 16px; border-bottom: 1px solid var(--line-soft); }
+.slot-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 9px; color: var(--text-mute); font-size: 10px; font-weight: 600; letter-spacing: .07em; }
+.hardware-slot > strong { display: block; margin-bottom: 12px; color: var(--text); font-size: 12.5px; font-weight: 600; }
+.hardware-slot button { min-height: 34px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-dim); font-size: 11px; }
+.hardware-slot button:hover:not(:disabled) { border-color: var(--accent-line); color: var(--text); background: var(--surface-hover); }
 .hardware-slot button:disabled { opacity: .42; }
 .hardware-slot > button { width: 100%; }
-.button-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
-.state-pill { padding: 2px 6px; border: 1px solid #3d4b52; color: #8e9aa0; font-size: 8px; letter-spacing: .04em; }
-.state-pill.good { border-color: #326f45; color: #74d790; background: #102519; }
-.ports-summary { padding-top: 15px; }
-.ports-summary > div:not(.panel-kicker) { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 8px; padding: 8px 16px; color: #909da4; font-size: 10px; border-bottom: 1px solid #1e2a31; }
-.ports-summary span { display: flex; align-items: center; gap: 8px; }
-.ports-summary strong { color: #b6c1c5; font-weight: 400; }
-.ports-summary button { min-height: 26px; padding: 0 7px; border: 1px solid #344650; background: #10202a; color: #acbac0; font-size: 8px; }
-.chassis-slots { padding-top: 14px; }
-.chassis-slots > div:not(.panel-kicker) { display: grid; grid-template-columns: 32px 1fr auto; align-items: center; min-height: 34px; padding: 0 16px; border-bottom: 1px solid #1d2b33; color: #87969d; font-size: 9px; }
-.chassis-slots strong { color: #bcc7cb; font-weight: 400; }
-.host-form { padding-top: 16px; }
-/* Discard is intentionally a quiet secondary action beside the blue Apply
-   control. Without an explicit surface the native Windows button theme paints
-   an opaque white rectangle, which breaks both the dark inspector hierarchy
-   and the no-light-surface invariant used throughout the workspace. Scoping
-   the rule preserves the distinct hardware and modal button contracts. */
-.host-form .button-pair { gap: 8px; margin: 0 16px 12px; }
-.host-form .button-pair button:not(.inspector-action) { min-height: 34px; border: 1px solid #344650; background: #0d1d26; color: #aebbc1; font-size: 10px; }
-.host-form .button-pair button:not(.inspector-action):hover { border-color: #497080; background: #122832; color: #e1e8ea; }
-/* The general inspector action includes outer margins because it normally
-   occupies a row by itself. Inside the two-column edit bar those margins would
-   shrink Apply and shift it away from Discard, so the grid becomes the sole
-   spacing owner and both actions use the complete equal-width tracks. */
-.host-form .button-pair .inspector-action { width: 100%; min-height: 34px; margin: 0; }
-.host-form > .secondary-action { width: calc(100% - 32px); min-height: 34px; margin: 0 16px 14px; }
-.inspector-action { width: calc(100% - 32px); min-height: 34px; margin: 2px 16px 12px; border: 1px solid #39748e; background: #123044; color: #d7edf5; font-size: 10px; }
-.inspector-action:hover:not(:disabled) { background: #173d56; }
-.inspector-action:disabled { opacity: .45; }
-.operation-result { max-height: 230px; margin: 0 16px 20px; padding: 10px; overflow: auto; border: 1px solid #283a43; background: #071016; color: #b9c6cb; white-space: pre-wrap; font: 9px/1.5 "Cascadia Mono", monospace; }
-.operational-panel { padding-top: 16px; }
-.metric-strip.compact { margin: 0 16px 16px; }
-.metric-strip.compact > div { padding: 12px 10px; }
-.metric-strip.compact strong { font-size: 19px; }
-.operational-list { border-top: 1px solid #25343d; padding: 14px 16px; }
-.operational-list h3 { margin: 0 0 9px; color: #7f8f97; font-size: 9px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; }
-.operational-list > div { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px solid #1b2931; font-size: 9px; }
-.operational-list strong { color: #c0cbd0; font-weight: 400; }
-.operational-list span { color: #7d8c94; }
-.inspector-empty { margin: 12px 16px; }
-.inspector > .panel-kicker:first-child { padding-top: 17px; }
-.inspector > h2 { margin: 0 16px; color: #eef3f5; font-size: 18px; }
-.panel-subtitle { margin: 4px 16px 20px; color: #87959c; font-size: 10px; }
-.inspector label { display: block; margin: 0 16px 13px; color: #8b989f; font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
-.inspector input { width: 100%; height: 34px; margin-top: 6px; padding: 0 9px; border: 1px solid #33434c; outline: 0; color: #ccd5d8; background: #09151c; font: 11px "Cascadia Mono", monospace; }
-.inspector input:focus { border-color: var(--blue); }
+.button-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.state-pill { display: inline-flex; align-items: center; padding: 3px 9px; border: 1px solid var(--line-strong); border-radius: var(--radius-pill); color: var(--text-mute); font-size: 9.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+.state-pill.good { border-color: rgba(70, 213, 133, .38); color: var(--green); background: rgba(70, 213, 133, .1); }
 
-/* xterm receives a bounded flex rectangle and performs its own cell
+.ports-summary { padding-top: 16px; }
+.ports-summary > div:not(.panel-kicker) { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 10px; padding: 9px 16px; color: var(--text-dim); font-size: 12px; border-bottom: 1px solid var(--line-soft); }
+.ports-summary span { display: flex; align-items: center; gap: 9px; font-family: var(--font-mono); font-size: 11.5px; }
+.ports-summary strong { color: var(--text); font-weight: 500; font-family: var(--font-mono); font-size: 10.5px; }
+.ports-summary button { min-height: 28px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-dim); font-size: 10px; }
+.ports-summary button:hover { border-color: var(--accent-line); color: var(--text); }
+
+.chassis-slots { padding-top: 16px; }
+.chassis-slots > div:not(.panel-kicker) { display: grid; grid-template-columns: 30px 1fr auto; align-items: center; gap: 8px; min-height: 38px; padding: 0 16px; border-bottom: 1px solid var(--line-soft); color: var(--text-mute); font-size: 11px; font-family: var(--font-mono); }
+.chassis-slots strong { color: var(--text); font-weight: 500; font-size: 11px; }
+
+.host-form { padding-top: 18px; }
+/* Discard is intentionally a quiet secondary action beside the blue Apply
+   control. Scoping preserves the distinct hardware and modal button contracts. */
+.host-form .button-pair { gap: 8px; margin: 0 16px 12px; }
+.host-form .button-pair button:not(.inspector-action) { min-height: 36px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-dim); font-size: 12px; }
+.host-form .button-pair button:not(.inspector-action):hover { border-color: var(--line-strong); background: var(--surface-hover); color: var(--text); }
+.host-form .button-pair .inspector-action { width: 100%; min-height: 36px; margin: 0; }
+.host-form > .secondary-action { width: calc(100% - 32px); min-height: 36px; margin: 0 16px 14px; }
+
+.inspector-action { width: calc(100% - 32px); min-height: 36px; margin: 4px 16px 12px; border: 1px solid transparent; border-radius: var(--radius-sm); background: linear-gradient(180deg, var(--accent-bright), var(--accent)); color: #fff; font-size: 12px; font-weight: 600; box-shadow: 0 4px 14px rgba(180, 124, 240, .28); }
+.inspector-action:hover:not(:disabled) { filter: brightness(1.07); }
+.inspector-action:disabled { opacity: .45; box-shadow: none; }
+.secondary-action { border-radius: var(--radius-sm); }
+.host-form > .secondary-action, .operational-panel .secondary-action { border: 1px solid var(--line-strong); background: var(--surface); color: var(--text-dim); font-size: 12px; }
+.host-form > .secondary-action:hover, .operational-panel .secondary-action:hover { border-color: rgba(244, 122, 108, .4); color: #f2a79d; }
+
+.operation-result { max-height: 230px; margin: 0 16px 20px; padding: 12px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg); color: var(--text-dim); white-space: pre-wrap; font: 11px/1.55 var(--font-mono); }
+.operational-panel { padding-top: 16px; }
+.operational-panel .inspector-action, .operational-panel .secondary-action { width: calc(100% - 32px); min-height: 36px; margin: 4px 16px 12px; }
+.metric-strip.compact { margin: 0 16px 18px; border-radius: var(--radius); overflow: hidden; }
+.metric-strip.compact > div { padding: 14px 12px; }
+.metric-strip.compact strong { font-size: 20px; }
+.operational-list { border-top: 1px solid var(--line); padding: 16px; }
+.operational-list h3 { margin: 0 0 10px; color: var(--text-mute); font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+.operational-list > div { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--line-soft); font-size: 11px; font-family: var(--font-mono); }
+.operational-list strong { color: var(--text); font-weight: 500; }
+.operational-list span { color: var(--text-mute); }
+.inspector-empty { margin: 14px 16px; }
+.inspector > .panel-kicker:first-child { padding-top: 18px; }
+.inspector > h2 { margin: 0 16px; color: var(--text); font-size: 18px; font-weight: 600; }
+.panel-subtitle { margin: 4px 16px 20px; color: var(--text-mute); font-size: 11px; }
+.inspector label { display: block; margin: 0 16px 14px; color: var(--text-mute); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+.inspector input { width: 100%; height: 36px; margin-top: 7px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); outline: 0; color: var(--text); background: var(--bg); font: 12px var(--font-mono); font-weight: 400; letter-spacing: 0; text-transform: none; transition: border-color 130ms ease, box-shadow 130ms ease; }
+.inspector input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* ── Terminal ───────────────────────────────────────────────────────────────
+   xterm receives a bounded flex rectangle and performs its own cell
    measurement. The panel clips renderer helpers that xterm positions just
-   outside its screen, while the nested viewport remains the sole scroll owner.
-   Transforms never scale terminal pixels or change keyboard geometry. */
-.terminal-panel { grid-column: 2; grid-row: 3; position: relative; z-index: 2; isolation: isolate; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: #050d12; }
-.terminal-head { display: flex; align-items: center; height: 45px; flex: 0 0 45px; border-bottom: 1px solid #28353c; background: #071117; }
+   outside its screen, while the nested viewport remains the sole scroll owner. */
+.terminal-panel { grid-column: 2; grid-row: 3; position: relative; z-index: 2; isolation: isolate; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: #060507; }
+.terminal-head { display: flex; align-items: center; height: 46px; flex: 0 0 46px; border-bottom: 1px solid var(--line); background: var(--bg-header); }
 .terminal-tabs { display: flex; align-self: stretch; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .terminal-tabs::-webkit-scrollbar { display: none; }
-.terminal-tab { display: flex; flex: 0 0 auto; border-right: 1px solid #1c2b33; border-bottom: 2px solid transparent; }
-.terminal-tab.active { border-bottom-color: var(--blue); background: #0b1921; }
-.terminal-tab button, .terminal-new-tab { border: 0; background: transparent; color: #84939a; }
-.terminal-tab button:first-child { display: flex; align-items: center; gap: 8px; max-width: 190px; padding: 0 6px 0 14px; color: #c7d0d3; font-size: 11px; white-space: nowrap; }
-.terminal-tab button:last-child:not(:first-child) { width: 28px; color: #65767e; }
-.terminal-tab button:hover, .terminal-new-tab:hover { color: #edf3f5; background: #12212a; }
-.terminal-new-tab { flex: 0 0 35px; border-right: 1px solid #1c2b33; font-size: 15px; }
-.terminal-panel:fullscreen { background: #050d12; }
+.terminal-tab { display: flex; align-items: center; flex: 0 0 auto; border-right: 1px solid var(--line-soft); border-bottom: 2px solid transparent; }
+.terminal-tab.active { border-bottom-color: var(--accent); background: rgba(180, 124, 240, .08); }
+.terminal-tab button, .terminal-new-tab { border: 0; background: transparent; color: var(--text-mute); }
+.terminal-tab button:first-child { display: flex; align-items: center; gap: 9px; max-width: 200px; padding: 0 8px 0 15px; color: var(--text-dim); font-size: 12px; white-space: nowrap; }
+.terminal-tab.active button:first-child { color: var(--text); }
+.terminal-tab button:last-child:not(:first-child) { display: grid; place-items: center; width: 30px; height: 46px; color: var(--text-faint); }
+.terminal-tab button:hover, .terminal-new-tab:hover { color: var(--text); background: var(--surface-hover); }
+.terminal-new-tab { display: grid; place-items: center; flex: 0 0 38px; align-self: stretch; border-right: 1px solid var(--line-soft); color: var(--text-mute); }
+.terminal-panel:fullscreen { background: #060507; }
 .terminal-actions { display: flex; align-items: stretch; height: 100%; margin-left: auto; }
-.terminal-actions button { width: clamp(38px, 3.4vw, 43px); border: 0; border-left: 1px solid #1c2b33; background: transparent; color: #86959c; font-size: 15px; }
-.terminal-actions button:hover, .terminal-actions button.active { color: #e2eaed; background: #12212a; }
-.terminal-settings { flex: 0 0 auto; padding: 8px 14px; border-bottom: 1px solid #24333b; background: #0b171e; }
-.terminal-settings label { display: grid; grid-template-columns: auto minmax(120px, 220px) 42px; align-items: center; gap: 11px; color: #8f9ca3; font-size: 9px; text-transform: uppercase; letter-spacing: .05em; }
-.terminal-settings input { accent-color: var(--blue); }
-.terminal-settings span { color: #c1cbd0; font: 10px "Cascadia Mono", monospace; }
+.terminal-actions button { display: grid; place-items: center; width: clamp(40px, 3.4vw, 46px); border: 0; border-left: 1px solid var(--line-soft); background: transparent; color: var(--text-mute); }
+.terminal-actions button:hover, .terminal-actions button.active { color: var(--text); background: var(--surface-hover); }
+.terminal-actions button.active { color: var(--accent-bright); }
+.terminal-settings { flex: 0 0 auto; padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.terminal-settings label { display: grid; grid-template-columns: auto minmax(120px, 220px) 44px; align-items: center; gap: 12px; color: var(--text-mute); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; font-weight: 600; }
+.terminal-settings input { accent-color: var(--accent); }
+.terminal-settings span { color: var(--text-dim); font: 11px var(--font-mono); }
 .terminal-body { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }
-.terminal-host { position: absolute; inset: 0; padding: clamp(8px, 1.5dvh, 16px) clamp(10px, 1.55vw, 20px) 8px; overflow: hidden; }
+.terminal-host { position: absolute; inset: 0; padding: 0 16px; overflow: hidden; }
 .terminal-host > .xterm { width: 100%; height: 100%; }
-/* xterm keeps this textarea transparent and behind its renderer, but browsers
-   still assign a white native background. Declaring the real surface color
-   avoids a white insertion-frame flash if xterm moves the helper while fitting. */
 .terminal-host .xterm-helper-textarea { background: transparent !important; }
 
-/* xterm maps this element directly to its scrollback buffer. Keeping native
-   vertical scrolling enabled supports wheel, touchpad, scrollbar dragging and
-   touch panning without translating any of them into router input bytes.
+/* xterm maps this element directly to its scrollback buffer; native vertical
+   scrolling stays enabled for wheel, touchpad, scrollbar and touch panning.
    Contained overscroll prevents a terminal boundary from moving another panel. */
 .terminal-host .xterm-viewport {
   overflow-x: hidden !important;
   overflow-y: scroll !important;
   overscroll-behavior: contain;
   touch-action: pan-y;
-  scrollbar-color: #465963 #0a1115;
+  scrollbar-color: #48444f transparent;
   scrollbar-width: thin;
 }
 .terminal-host .xterm-viewport::-webkit-scrollbar { width: 10px; }
-.terminal-host .xterm-viewport::-webkit-scrollbar-track { background: #0a1115; }
-.terminal-host .xterm-viewport::-webkit-scrollbar-thumb { background: #465963; border: 2px solid #0a1115; }
+.terminal-host .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
+.terminal-host .xterm-viewport::-webkit-scrollbar-thumb { background: #48444f; border: 3px solid transparent; border-radius: 999px; background-clip: padding-box; }
 
-/* The complete transcript overlays the live canvas only while requested. Its
-   scroll track is a bounded coordinate system, while TerminalHistoryView maps
-   those coordinates to any number of disk-backed logical lines. Only viewport
-   rows and a small overscan are mounted, so DOM size stays constant. */
-.terminal-history { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #090b0c; color: #cdd4d2; }
-.terminal-history-viewport { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-color: #465963 #0a1115; scrollbar-width: thin; }
+/* The complete transcript overlays the live canvas only while requested. Only
+   viewport rows and a small overscan are mounted, so DOM size stays constant. */
+.terminal-history { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #060507; color: var(--text-dim); }
+.terminal-history-viewport { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-color: #48444f transparent; scrollbar-width: thin; }
 .terminal-history-track { width: 1px; pointer-events: none; }
-.terminal-history-lines { position: absolute; top: 0; left: 0; min-width: 100%; margin: 0; padding: 8px clamp(10px, 1.55vw, 20px); color: #cdd4d2; background: transparent; white-space: pre; pointer-events: auto; font-family: "Cascadia Mono", "IBM Plex Mono", monospace; font-weight: 400; }
+.terminal-history-lines { position: absolute; top: 0; left: 0; min-width: 100%; margin: 0; padding: 0 16px; color: var(--text-dim); background: transparent; white-space: pre; pointer-events: auto; font-family: var(--font-mono); font-weight: 400; }
 
-/* Resize boundaries occupy a generous transparent hit target but draw only a
-   one-pixel guide, preserving the approved flat panel separators. touch-action
+/* ── Resize boundaries ──────────────────────────────────────────────────────
+   Generous transparent hit target, one-pixel visible guide. touch-action
    disables browser panning only while the user is dragging a boundary. */
 .panel-resizer {
   position: absolute;
   z-index: 12;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  outline: 0;
+  margin: 0; padding: 0; border: 0; outline: 0;
   background: transparent !important;
   box-shadow: none;
   color: transparent;
@@ -396,9 +459,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
-.panel-resizer::after { content: ""; position: absolute; background: #40535e; opacity: 0; transition: opacity 120ms ease, background-color 120ms ease; }
-.panel-resizer:hover::after, .panel-resizer:focus-visible::after { opacity: 1; background: var(--blue); }
-.panel-resizer:focus-visible { outline: 1px solid #1b9df0; outline-offset: -3px; }
+.panel-resizer::after { content: ""; position: absolute; background: var(--line-strong); opacity: 0; transition: opacity 120ms ease, background-color 120ms ease; }
+.panel-resizer:hover::after, .panel-resizer:focus-visible::after { opacity: 1; background: var(--accent); }
+.panel-resizer:focus-visible { outline: 1px solid var(--accent); outline-offset: -3px; }
 .library-resizer, .inspector-resizer { top: 0; bottom: 0; width: 9px; cursor: col-resize; }
 .library-resizer { right: 0; }
 .inspector-resizer { left: 0; }
@@ -407,11 +470,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .terminal-resizer::after { top: 4px; right: 0; left: 0; height: 1px; }
 
 /* A collapsed topology still exists as a one-pixel ResizeObserver target, but
-   none of its controls can be operated or understood below the terminal head
-   height. Hiding only the contents at that physical boundary prevents an
-   absolutely positioned toolbar or error banner from sharing terminal space.
-   The row itself remains freely resizable down to zero and becomes visible
-   again as soon as it can contain its smallest 44px control. */
+   none of its controls can be operated below the terminal head height. */
 @container center-stage (max-height: 44px) {
   .topology,
   .runtime-error,
@@ -421,129 +480,128 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   }
 }
 
-@media (max-width: 1100px) {
-  /* Labels disappear before their icon buttons need to compress the center
-     navigation. The grid itself remains fluid through the track variables. */
+@media (max-width: 1180px) {
   .icon-action { padding: 0 10px; }
   .icon-action span { display: none; }
 }
 
 @media (max-width: 900px) {
-  /* At compact desktop and tablet widths the palette contributes less than
-     the live topology and inspector. Removing its grid track yields roughly
-     164 extra pixels without shrinking controls or scaling text below the
-     render's intended size. Device selection remains available on the canvas
-     and the Devices workspace, so no operation disappears with the palette. */
+  /* At compact widths the palette contributes less than the live topology and
+     inspector. Device selection remains available on the canvas and the Devices
+     workspace, so no operation disappears with the palette. */
   .app-shell {
     --library-track: 0px;
     --inspector-track: clamp(
       160px,
-      var(--inspector-preferred-width, 324px),
+      var(--inspector-preferred-width, 328px),
       calc(100vw - var(--workspace-min-track))
     );
   }
   .library { display: none; }
-  .topbar {
-    grid-template-columns: minmax(145px, 1fr) auto;
-  }
-  .top-nav { display: none; }
+  .topbar { grid-template-columns: minmax(145px, 1fr) auto; }
+  .top-context { display: none; }
 }
 
 @media (max-width: 680px) {
-  /* On a phone-sized viewport the inspector becomes a closeable drawer. It no
-     longer consumes a permanent grid column, so topology and terminal each use
-     the full width. The existing close button and node selection retain the
-     same interaction contract without adding a second mobile-only state. */
+  /* On a phone-sized viewport the inspector becomes a closeable drawer. */
   .app-shell { --inspector-track: 0px; }
   .inspector {
     position: fixed;
     z-index: 40;
     inset: var(--header-track) 0 0 auto;
-    width: min(calc(100vw - 16px), var(--inspector-preferred-width, 324px));
+    width: min(calc(100vw - 16px), var(--inspector-preferred-width, 328px));
     max-width: none;
-    box-shadow: -18px 0 36px rgba(2, 8, 12, .48);
+    box-shadow: -18px 0 46px rgba(0, 0, 0, .55);
   }
 }
 
 @media (max-height: 520px) {
-  /* Landscape phones save vertical space in chrome only. Panel ownership does
-     not change here: the user may still give either workspace row all space
-     below the header, and ResizeObserver recomputes xterm geometry afterward. */
-  .app-shell {
-    --header-track: 46px;
-  }
-  .terminal-head { height: 40px; flex-basis: 40px; }
+  .app-shell { --header-track: 48px; }
+  .terminal-head { height: 42px; flex-basis: 42px; }
 }
 
 @media (max-width: 480px) {
-  .brand { padding-inline: 11px; }
-  .brand-mark { transform: scale(.88); transform-origin: left center; }
-  .icon-action, .more-action { padding-inline: 9px; }
-  .inspector-tabs button { font-size: 9px; }
-  .spec-grid { grid-template-columns: minmax(82px, 42%) 1fr; padding-inline: 11px; }
-  .hardware-slot { padding-inline: 11px; }
-  .inspector { width: min(100vw, var(--inspector-preferred-width, 324px)); }
-  .terminal-tab button:first-child { max-width: 135px; padding-left: 10px; }
+  .brand { padding-inline: 12px; }
+  .inspector-tabs button { font-size: 10px; }
+  .spec-grid { grid-template-columns: minmax(82px, 42%) 1fr; padding-inline: 12px; }
+  .hardware-slot { padding-inline: 12px; }
+  .inspector { width: min(100vw, var(--inspector-preferred-width, 328px)); }
+  .terminal-tab button:first-child { max-width: 140px; padding-left: 12px; }
 }
 
-/* Secondary workspaces reuse the render's flat separators and restrained
-   typography. Each panel remains a projection of portable project data or a
-   typed runtime operation, so these styles never encode network state. */
-.workspace-page { position: absolute; inset: 0; min-width: 0; min-height: 0; overflow: auto; padding: 24px 28px 48px; background: #0d1c25; color: #bdc8cc; }
-.workspace-page-head { display: flex; align-items: flex-end; justify-content: space-between; min-height: 62px; padding-bottom: 16px; border-bottom: 1px solid #2a3942; }
-.workspace-page-head span { display: block; margin-bottom: 6px; color: #70818a; font-size: 9px; letter-spacing: .12em; }
-.workspace-page-head h1 { margin: 0; color: #eef3f5; font-size: 24px; font-weight: 400; }
-.workspace-page-head small { color: #7d8c94; font-size: 9px; }
-.workspace-page-head > button, .secondary-action { min-height: 34px; padding: 0 13px; border: 1px solid #3a4c56; background: #10212b; color: #c5d0d4; font-size: 10px; }
-.workspace-page h2 { margin: 28px 0 11px; color: #83929a; font-size: 10px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; }
-.metric-strip { display: grid; grid-template-columns: repeat(3, 1fr); border-left: 1px solid #293942; margin: 24px 0; }
-.metric-strip > div { min-height: 88px; padding: 17px 18px; border-top: 1px solid #293942; border-right: 1px solid #293942; border-bottom: 1px solid #293942; background: #0a171f; }
-.metric-strip small { display: block; color: #71818a; font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
-.metric-strip strong { display: block; margin-top: 8px; color: #d8e1e4; font: 26px "Cascadia Mono", monospace; font-weight: 400; }
-.workspace-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.workspace-actions button { min-height: 36px; padding: 0 14px; border: 1px solid #3a4b54; background: #10202a; color: #b9c6cb; font-size: 10px; }
-.workspace-actions button:hover { border-color: #2788b8; color: #edf5f7; }
-.workspace-actions button.primary { border-color: #247cac; background: #153c52; color: #dff3fa; }
-.status-live, .status-idle { color: #74db82; font-size: 10px; font-weight: 500; }
-.status-live::before, .status-idle::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 7px currentColor; }
-.status-idle { color: #78878e; }
+/* ── Secondary workspaces ───────────────────────────────────────────────────
+   Each panel remains a projection of portable project data or a typed runtime
+   operation, so these styles never encode network state. */
+.workspace-page { position: absolute; inset: 0; min-width: 0; min-height: 0; overflow: auto; padding: 28px 32px 52px; background:
+    radial-gradient(900px 500px at 90% -10%, rgba(180, 124, 240, .05), transparent 60%),
+    var(--bg); color: var(--text-dim); }
+.workspace-page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; min-height: 60px; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
+.workspace-page-head span { display: block; margin-bottom: 8px; color: var(--text-mute); font-size: 10px; font-weight: 600; letter-spacing: .13em; text-transform: uppercase; }
+.workspace-page-head h1 { margin: 0; color: var(--text); font-size: 26px; font-weight: 700; letter-spacing: -.02em; }
+.workspace-page-head small { color: var(--text-mute); font-size: 10px; font-family: var(--font-mono); }
+.workspace-page-head > button, .secondary-action { min-height: 36px; padding: 0 14px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-dim); font-size: 12px; }
+.workspace-page-head > button:hover { border-color: var(--line-strong); background: var(--surface-hover); color: var(--text); }
+.workspace-page h2 { margin: 30px 0 12px; color: var(--text-mute); font-size: 10.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+
+.metric-strip { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 24px 0; }
+.metric-strip > div { min-height: 88px; padding: 18px 20px; border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(160deg, var(--surface), var(--panel-2)); }
+.metric-strip small { display: block; color: var(--text-mute); font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; }
+.metric-strip strong { display: block; margin-top: 10px; color: var(--text); font: 28px var(--font-mono); font-weight: 500; letter-spacing: -.01em; }
+
+.workspace-actions { display: flex; flex-wrap: wrap; gap: 9px; }
+.workspace-actions button { min-height: 38px; padding: 0 16px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-dim); font-size: 12px; font-weight: 500; }
+.workspace-actions button:hover { border-color: var(--accent-line); color: var(--text); background: var(--surface-hover); }
+.workspace-actions button.primary { border-color: transparent; background: linear-gradient(180deg, var(--accent-bright), var(--accent)); color: #fff; font-weight: 600; box-shadow: 0 4px 14px rgba(180, 124, 240, .3); }
+.workspace-actions button.primary:hover { filter: brightness(1.06); }
+
+.status-live, .status-idle { display: inline-flex; align-items: center; color: var(--green); font-size: 11px; font-weight: 600; }
+.status-live::before, .status-idle::before { content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
+.status-idle { color: var(--text-mute); }
 .status-idle::before { box-shadow: none; }
-.observation-list { display: flex; flex-wrap: wrap; gap: 1px; margin-top: 23px; }
-.observation-list span { padding: 8px 10px; border: 1px solid #293942; color: #8d9ba2; background: #0a171f; font: 9px "Cascadia Mono", monospace; }
-.capture-tree { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 22px; }
+.observation-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 24px; }
+.observation-list span { padding: 8px 11px; border: 1px solid var(--line); border-radius: var(--radius-sm); color: var(--text-dim); background: var(--surface); font: 10px var(--font-mono); }
+
+.capture-tree { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin-top: 24px; }
 .capture-tree > section { min-width: 0; }
-.capture-group { padding: 12px; border: 1px solid #293942; border-bottom: 0; background: #0a171f; }
-.capture-group:last-child { border-bottom: 1px solid #293942; }
-.capture-group > strong { display: block; color: #d1dbde; font: 10px "Cascadia Mono", monospace; font-weight: 500; }
-.capture-group > small, .capture-port > small { display: block; margin: 5px 0 8px; color: #70818a; font: 8px "Cascadia Mono", monospace; }
-.capture-group > div, .capture-port > div { display: flex; flex-wrap: wrap; gap: 6px; }
-.capture-port { margin-top: 10px; padding-top: 9px; border-top: 1px solid #21313a; }
-.capture-point { display: flex; align-items: center; gap: 7px; min-height: 29px; padding: 0 9px; border: 1px solid #31444e; background: #0c1b23; color: #8d9ba2; font-size: 9px; }
-.capture-point i { width: 6px; height: 6px; border-radius: 50%; background: #52636b; }
-.capture-point span { color: #61727a; font-size: 8px; }
-.capture-point.selected { border-color: #287da7; background: #123044; color: #d8e9ef; }
-.capture-point.selected i { background: #70dd7d; box-shadow: 0 0 6px #70dd7d; }
-.capture-point.selected span { color: #70dd7d; }
+.capture-group { padding: 14px; border: 1px solid var(--line); border-bottom: 0; background: var(--surface); }
+.capture-group:first-child { border-radius: var(--radius) var(--radius) 0 0; }
+.capture-group:last-child { border-bottom: 1px solid var(--line); border-radius: 0 0 var(--radius) var(--radius); }
+.capture-group:only-child { border-radius: var(--radius); }
+.capture-group > strong { display: block; color: var(--text); font: 11.5px var(--font-mono); font-weight: 600; }
+.capture-group > small, .capture-port > small { display: block; margin: 6px 0 9px; color: var(--text-mute); font: 9.5px var(--font-mono); }
+.capture-group > div, .capture-port > div { display: flex; flex-wrap: wrap; gap: 7px; }
+.capture-port { margin-top: 11px; padding-top: 10px; border-top: 1px solid var(--line-soft); }
+.capture-point { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: var(--radius-pill); background: var(--panel-2); color: var(--text-mute); font-size: 10.5px; }
+.capture-point:hover { border-color: var(--line-strong); color: var(--text-dim); }
+.capture-point i { width: 7px; height: 7px; border-radius: 50%; background: #565059; }
+.capture-point span { color: var(--text-faint); font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+.capture-point.selected { border-color: var(--accent-line); background: var(--accent-soft); color: var(--text); }
+.capture-point.selected i { background: var(--green); box-shadow: 0 0 7px var(--green); }
+.capture-point.selected span { color: var(--green); }
 
 .devices-page { display: flex; flex-direction: column; overflow: hidden; }
-.device-table { position: relative; flex: 1 1 auto; min-height: 0; margin-top: 22px; overflow: auto; border-top: 1px solid #293942; overscroll-behavior: contain; }
+.device-table { position: relative; flex: 1 1 auto; min-height: 0; margin-top: 22px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); overscroll-behavior: contain; }
 .virtual-list-track { position: relative; min-width: 100%; }
 .virtual-list-row { position: absolute; top: 0; right: 0; left: 0; contain: layout paint; }
-.device-table .virtual-list-row > button { display: grid; grid-template-columns: 48px minmax(120px, 1.2fr) minmax(130px, 1fr) auto; align-items: center; width: 100%; height: 100%; padding: 0 15px; border: 0; border-bottom: 1px solid #293942; background: transparent; text-align: left; }
-.device-table .virtual-list-row > button:hover { background: #12242e; }
-.device-table strong { color: #d3dcdf; font-size: 12px; font-weight: 500; }
-.device-table small { color: #7e8d94; font: 9px "Cascadia Mono", monospace; }
-.device-table b { color: #6fd67b; font-size: 9px; font-weight: 400; }
-.device-table b.muted { color: #7c8a90; }
-.inventory-icon { display: grid; place-items: center; width: 31px; height: 31px; border: 1px solid #52636c; border-radius: 50%; color: #aab7bd; font: 10px "Cascadia Mono", monospace; }
-.inventory-icon.router { border-radius: 3px; }
+.device-table .virtual-list-row > button { display: grid; grid-template-columns: 46px minmax(120px, 1.2fr) minmax(130px, 1fr) auto; align-items: center; gap: 14px; width: 100%; height: 100%; padding: 0 16px; border: 0; border-bottom: 1px solid var(--line-soft); background: transparent; text-align: left; }
+.device-table .virtual-list-row:last-child > button { border-bottom: 0; }
+.device-table .virtual-list-row > button:hover { background: var(--surface-hover); }
+.device-table strong { color: var(--text); font-size: 13px; font-weight: 600; }
+.device-table small { color: var(--text-mute); font: 10px var(--font-mono); }
+.device-table b { display: inline-flex; align-items: center; gap: 6px; color: var(--green); font-size: 10px; font-weight: 600; }
+.device-table b::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 7px currentColor; }
+.device-table b.muted { color: var(--text-mute); }
+.device-table b.muted::before { box-shadow: none; }
+.inventory-icon { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--text-dim); background: linear-gradient(160deg, var(--surface-hover), var(--panel-2)); }
+.inventory-icon.router { color: var(--accent-bright); border-color: var(--accent-line); background: linear-gradient(160deg, rgba(180, 124, 240, .16), var(--panel-2)); }
 
-.field-row { display: grid; grid-template-columns: minmax(130px, 190px) minmax(160px, 420px) auto; align-items: center; gap: 12px; min-height: 49px; border-bottom: 1px solid #22313a; color: #89979e; font-size: 10px; }
-.field-row input, .config-page input, .config-page select { height: 33px; padding: 0 9px; border: 1px solid #334650; outline: 0; background: #09161d; color: #c6d0d4; font: 10px "Cascadia Mono", monospace; }
-.field-row input[type="range"] { padding: 0; border: 0; background: transparent; accent-color: var(--blue); }
-.field-row small { color: #819099; font: 9px "Cascadia Mono", monospace; }
-.config-grid { border-top: 1px solid #2a3942; }
-.config-grid > span { display: inline-block; padding: 8px 10px; color: #71818a; font-size: 8px; letter-spacing: .08em; text-transform: uppercase; }
+.field-row { display: grid; grid-template-columns: minmax(130px, 190px) minmax(160px, 420px) auto; align-items: center; gap: 14px; min-height: 50px; border-bottom: 1px solid var(--line-soft); color: var(--text-mute); font-size: 12px; }
+.field-row input, .config-page input, .config-page select { height: 35px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); outline: 0; background: var(--bg); color: var(--text); font: 11.5px var(--font-mono); transition: border-color 130ms ease, box-shadow 130ms ease; }
+.field-row input:focus, .config-page input:focus, .config-page select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.field-row input[type="range"] { padding: 0; border: 0; background: transparent; accent-color: var(--accent); }
+.field-row small { color: var(--text-dim); font: 10px var(--font-mono); }
+.config-grid { border: 1px solid var(--line); border-radius: var(--radius); margin-top: 4px; overflow: hidden; }
+.config-grid > span { display: inline-block; padding: 10px 12px; color: var(--text-mute); font-size: 9px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; background: var(--panel-2); }
 .config-grid-ports > span:nth-child(1) { width: 18%; }
 .config-grid-ports > span:nth-child(2) { width: 15%; }
 .config-grid-ports > span:nth-child(3) { width: 17%; }
@@ -552,36 +610,45 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .config-grid-interfaces > span:nth-child(2) { width: 15%; }
 .config-grid-interfaces > span:nth-child(3) { width: 17%; }
 .config-grid-interfaces > span:nth-child(4) { width: 48%; }
-.config-grid-row { display: grid; grid-template-columns: 18% 15% 17% 1fr; gap: 8px; align-items: center; min-height: 49px; padding: 7px 9px; border-top: 1px solid #213039; }
-.config-grid-row strong { color: #c0cbd0; font: 10px "Cascadia Mono", monospace; font-weight: 400; }
+.config-grid-row { display: grid; grid-template-columns: 18% 15% 17% 1fr; gap: 9px; align-items: center; min-height: 50px; padding: 8px 12px; border-top: 1px solid var(--line-soft); }
+.config-grid-row strong { color: var(--text); font: 11px var(--font-mono); font-weight: 500; }
 .config-interface-row { align-items: start; }
-.interface-address-fields { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(150px, 1fr) auto; gap: 7px; }
-.interface-address-fields button { min-height: 33px; padding: 0 9px; border: 1px solid #3b4c55; background: #10212a; color: #b9c5ca; font-size: 9px; }
-.compact-list { border-top: 1px solid #26363f; }
-.compact-list label { display: grid; grid-template-columns: minmax(170px, 1fr) 130px; align-items: center; min-height: 46px; padding: 0 10px; border-bottom: 1px solid #22313a; }
-.compact-list strong { color: #b9c5ca; font: 10px "Cascadia Mono", monospace; font-weight: 400; }
-.section-heading { display: flex; align-items: center; justify-content: space-between; margin-top: 26px; }
-.section-heading h2 { margin: 0; }
-.section-heading button, .route-list button { min-height: 31px; padding: 0 10px; border: 1px solid #3b4c55; background: #10212a; color: #b9c5ca; font-size: 9px; }
-.route-list { margin-top: 11px; border-top: 1px solid #26363f; }
-.route-list > div { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; padding: 7px 9px; border-bottom: 1px solid #22313a; }
-.empty-copy { color: #75858d; font-size: 10px; }
+.interface-address-fields { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(150px, 1fr) auto; gap: 8px; }
+.interface-address-fields button { min-height: 35px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-dim); font-size: 10.5px; }
+.interface-address-fields button:hover { border-color: rgba(244, 122, 108, .4); color: #f2a79d; }
 
-.snapshot-card { max-width: 620px; margin-top: 24px; padding: 20px; border: 1px solid #2d404a; background: #0a171f; }
-.snapshot-card > strong { color: #dbe3e6; font-size: 14px; font-weight: 500; }
-.snapshot-card p { max-width: 510px; margin: 8px 0 18px; color: #85949b; font-size: 10px; line-height: 1.6; }
-.notes-page textarea { width: 100%; min-height: calc(100% - 92px); margin-top: 20px; padding: 16px; resize: none; border: 1px solid #30434d; outline: 0; background: #09161d; color: #c5d0d4; font: 11px/1.65 "Cascadia Mono", monospace; }
-.notes-page textarea:focus { border-color: var(--blue); }
-.settings-page .secondary-action { margin-top: 22px; }
+.compact-list { border: 1px solid var(--line); border-radius: var(--radius); margin-top: 4px; overflow: hidden; }
+.compact-list label { display: grid; grid-template-columns: minmax(170px, 1fr) 130px; align-items: center; min-height: 47px; padding: 0 12px; border-bottom: 1px solid var(--line-soft); }
+.compact-list label:last-child { border-bottom: 0; }
+.compact-list strong { color: var(--text-dim); font: 11px var(--font-mono); font-weight: 500; }
+
+.section-heading { display: flex; align-items: center; justify-content: space-between; margin-top: 28px; }
+.section-heading h2 { margin: 0; }
+.section-heading button, .route-list button { min-height: 33px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); color: var(--text-dim); font-size: 10.5px; }
+.section-heading button:hover, .route-list button:hover { border-color: var(--accent-line); color: var(--text); }
+.route-list { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.route-list > div { display: grid; grid-template-columns: 1fr 1fr auto; gap: 9px; padding: 8px 10px; border-bottom: 1px solid var(--line-soft); }
+.route-list > div:last-child { border-bottom: 0; }
+.route-list button:hover { border-color: rgba(244, 122, 108, .4); color: #f2a79d; }
+.empty-copy { color: var(--text-mute); font-size: 12px; }
+
+.snapshot-card { max-width: 620px; margin-top: 24px; padding: 22px; border: 1px solid var(--line); border-radius: var(--radius); background: linear-gradient(160deg, var(--surface), var(--panel-2)); }
+.snapshot-card > strong { color: var(--text); font-size: 15px; font-weight: 600; }
+.snapshot-card p { max-width: 510px; margin: 9px 0 18px; color: var(--text-mute); font-size: 12px; line-height: 1.6; }
+
+.notes-page textarea { width: 100%; min-height: calc(100% - 92px); margin-top: 20px; padding: 18px; resize: none; border: 1px solid var(--line-strong); border-radius: var(--radius); outline: 0; background: var(--bg); color: var(--text); font: 12.5px/1.7 var(--font-mono); transition: border-color 130ms ease, box-shadow 130ms ease; }
+.notes-page textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.settings-page .secondary-action { margin-top: 24px; }
 
 @media (max-width: 650px) {
-  .workspace-page { padding-inline: 16px; }
+  .workspace-page { padding-inline: 18px; }
   .device-table .virtual-list-row > button { grid-template-columns: 42px 1fr auto; }
   .device-table small { display: none; }
-  .field-row { grid-template-columns: 1fr; gap: 6px; padding: 9px 0; }
+  .field-row { grid-template-columns: 1fr; gap: 7px; padding: 10px 0; }
   .config-grid-row { grid-template-columns: 1fr 1fr; }
   .interface-address-fields { grid-column: 1 / -1; grid-template-columns: 1fr; }
   .config-grid-ports > span, .config-grid-interfaces > span { display: none; }
   .route-list > div { grid-template-columns: 1fr; }
   .capture-tree { grid-template-columns: 1fr; }
+  .metric-strip { grid-template-columns: 1fr; }
 }

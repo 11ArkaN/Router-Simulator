@@ -7,6 +7,8 @@ import { Background, ConnectionMode, Controls, Handle, Position, ReactFlow,
   type ReactFlowInstance } from "@xyflow/react";
 import type { LabProjectV3, LabRuntimeSnapshotV5 } from "@router-simulator/contracts";
 import { useMemo, useRef } from "react";
+import { Cpu, Maximize2, Monitor, MousePointer2, Scan,
+  Router as RouterIcon } from "lucide-react";
 
 type DeviceData = { kind: "host" | "router"; title: string; subtitle: string };
 
@@ -17,7 +19,8 @@ function DeviceNode({ data, selected }: NodeProps<Node<DeviceData>>) {
   return <div className={`device-node ${router ? "router-node" : "host-node"} ${selected ? "selected" : ""}`}>
     <Handle type="source" position={Position.Left} id="left" />
     <div className="device-icon" aria-hidden>{router
-      ? <span className="rack-face"><i /><i /><i /><i /><i /></span> : "H"}</div>
+      ? <RouterIcon size={26} strokeWidth={1.6} />
+      : <Monitor size={24} strokeWidth={1.6} />}</div>
     <div><strong>{data.title}</strong><span>{data.subtitle}</span></div>
     <Handle type="source" position={Position.Right} id="right" />
   </div>;
@@ -128,10 +131,10 @@ export function Topology({ project, snapshot, selected, onSelect,
       }
     }}>
     <div className="canvas-toolbar" aria-label="Topology tools">
-      <button className={tool === "select" ? "active" : ""} title="Select and move devices" aria-label="Select and move devices" onClick={() => onToolChange("select")}>⌁</button>
-      <button title="Open router hardware" aria-label="Open router hardware" onClick={onOpenHardware}>⊞</button>
-      <button title="Fit topology" aria-label="Fit topology" onClick={() => void flowRef.current?.fitView({ padding: 0.22, duration: 260 })}>⌑</button>
-      <button title="Fullscreen topology" aria-label="Fullscreen topology" onClick={() => void (document.fullscreenElement ? document.exitFullscreen() : topologyRef.current?.requestFullscreen())}>⛶</button>
+      <button className={tool === "select" ? "active" : ""} title="Select and move devices" aria-label="Select and move devices" onClick={() => onToolChange("select")}><MousePointer2 size={17} /></button>
+      <button title="Open router hardware" aria-label="Open router hardware" onClick={onOpenHardware}><Cpu size={17} /></button>
+      <button title="Fit topology" aria-label="Fit topology" onClick={() => void flowRef.current?.fitView({ padding: 0.22, duration: 260 })}><Scan size={17} /></button>
+      <button title="Fullscreen topology" aria-label="Fullscreen topology" onClick={() => void (document.fullscreenElement ? document.exitFullscreen() : topologyRef.current?.requestFullscreen())}><Maximize2 size={16} /></button>
     </div>
     {/* React Flow enables edge-triggered camera movement by default. A large
         lab makes that default harmful: moving a node near the canvas border
@@ -156,7 +159,7 @@ export function Topology({ project, snapshot, selected, onSelect,
           onSelect(edge.id);
         }
       }} proOptions={{ hideAttribution: true }}>
-      <Background color="#252b2d" gap={22} size={1} />
+      <Background color="#2a2630" gap={22} size={1} />
       <Controls showInteractive={false} />
     </ReactFlow>
   </div>;

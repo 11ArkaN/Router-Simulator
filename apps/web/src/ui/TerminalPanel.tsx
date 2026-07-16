@@ -17,6 +17,7 @@ import type { TerminalHistoryRegion, TerminalPanelPresentation,
 import { PanelResizeHandle } from "./PanelResizeHandle";
 import { TerminalHistoryArchive, type TerminalHistoryStorage } from "./terminal-history";
 import { TerminalHistoryView } from "./TerminalHistoryView";
+import { Eraser, Maximize2, Plus, Settings2, X } from "lucide-react";
 
 interface Props {
   ready: boolean;
@@ -100,10 +101,10 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
       // must never accept keys during the one frame before effects settle.
       disableStdin: historyOpenRef.current,
       theme: {
-        background: "#090b0c",
-        foreground: "#cdd4d2",
-        cursor: "#9ef0ba",
-        selectionBackground: "#33594688",
+        background: "#060507",
+        foreground: "#d6d2dc",
+        cursor: "#cba6ff",
+        selectionBackground: "#4b2f7099",
         green: "#76d99a",
         brightGreen: "#9ef0ba",
         red: "#ef8b83"
@@ -474,12 +475,12 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
       <div className="terminal-head">
         <div className="terminal-tabs">{tabs?.length ? tabs.map((tab) => <div
           className={tab.id === activeTab ? "terminal-tab active" : "terminal-tab"}
-          key={tab.id}><button onClick={() => selectTab?.(tab.id)}><i className="dot-good" />{tab.label}</button><button aria-label={`Close ${tab.label}`} onClick={() => closeTab?.(tab.id)}>×</button></div>) : <div className="terminal-tab active"><button><i className="dot-good" />{systemName} console</button></div>}{newTab && <button className="terminal-new-tab" title="New router terminal" aria-label="New router terminal" onClick={newTab}>+</button>}</div>
+          key={tab.id}><button onClick={() => selectTab?.(tab.id)}><i className="dot-good" />{tab.label}</button><button aria-label={`Close ${tab.label}`} onClick={() => closeTab?.(tab.id)}><X size={14} /></button></div>) : <div className="terminal-tab active"><button><i className="dot-good" />{systemName} console</button></div>}{newTab && <button className="terminal-new-tab" title="New router terminal" aria-label="New router terminal" onClick={newTab}><Plus size={16} /></button>}</div>
         <div className="terminal-actions">
-          <button title="Clear visible terminal" aria-label="Clear visible terminal" onClick={() => terminalRef.current?.clear()}>♲</button>
-          <button title="Terminal settings" aria-label="Terminal settings" className={settingsOpen ? "active" : ""} onClick={() => setSettingsOpen((value) => !value)}>⚙</button>
-          <button title="Fullscreen console" aria-label="Fullscreen console" onClick={() => void (document.fullscreenElement ? document.exitFullscreen() : panelRef.current?.requestFullscreen())}>⛶</button>
-          <button title="Close console" aria-label="Close console" onClick={close}>×</button>
+          <button title="Clear visible terminal" aria-label="Clear visible terminal" onClick={() => terminalRef.current?.clear()}><Eraser size={16} /></button>
+          <button title="Terminal settings" aria-label="Terminal settings" className={settingsOpen ? "active" : ""} onClick={() => setSettingsOpen((value) => !value)}><Settings2 size={16} /></button>
+          <button title="Fullscreen console" aria-label="Fullscreen console" onClick={() => void (document.fullscreenElement ? document.exitFullscreen() : panelRef.current?.requestFullscreen())}><Maximize2 size={15} /></button>
+          <button title="Close console" aria-label="Close console" onClick={close}><X size={16} /></button>
         </div>
       </div>
       {settingsOpen && <div className="terminal-settings"><label>Font size<input type="range" min="10" max="18" value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} /><span>{fontSize}px</span></label></div>}

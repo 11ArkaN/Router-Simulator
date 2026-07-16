@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { PROFILE_CATALOG, type HostProjectV3, type LabProjectV3,
   type LabRuntimeSnapshotV5, type RouterProjectV3 } from "@router-simulator/contracts";
 import { PanelResizeHandle } from "./PanelResizeHandle";
+import { X } from "lucide-react";
 
 export type RouterTab = "chassis" | "cpm" | "cards" | "ports" | "operational";
 
@@ -70,7 +71,7 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
 
   if (link) {
     return <aside className="inspector">
-      <div className="inspector-title"><div><h2>{link.id}</h2><p>Point-to-point Ethernet</p></div><button aria-label="Close inspector" onClick={close}>×</button></div>
+      <div className="inspector-title"><div><h2>{link.id}</h2><p>Point-to-point Ethernet</p></div><button aria-label="Close inspector" onClick={close}><X size={18} /></button></div>
       <div className="host-form">
         <label>First endpoint<input readOnly value={`${link.endpoints[0].nodeId} / ${link.endpoints[0].portId}`} /></label>
         <label>Second endpoint<input readOnly value={`${link.endpoints[1].nodeId} / ${link.endpoints[1].portId}`} /></label>
@@ -93,7 +94,7 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
       finally { setPingBusy(false); }
     };
     return <aside className="inspector">
-      <div className="inspector-title"><div><h2>{host.name}</h2><p>External IPv4 host</p></div><button aria-label="Close inspector" onClick={close}>×</button></div>
+      <div className="inspector-title"><div><h2>{host.name}</h2><p>External IPv4 host</p></div><button aria-label="Close inspector" onClick={close}><X size={18} /></button></div>
       <div className="host-form">
         <label>Name<input value={editable.name} onChange={(event) => setHostDraft({ ...editable, name: event.target.value })} /></label>
         <label>IPv4 prefix<input value={editable.eth0.address} onChange={(event) => setHostDraft({ ...editable, eth0: { ...editable.eth0, address: event.target.value } })} /></label>
@@ -109,7 +110,7 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
   }
 
   if (!router || !profile) {
-    return <aside className="inspector"><div className="inspector-title"><div><h2>Inspector</h2><p>Select a device</p></div><button aria-label="Close inspector" onClick={close}>×</button></div>{resizeHandle}</aside>;
+    return <aside className="inspector"><div className="inspector-title"><div><h2>Inspector</h2><p>Select a device</p></div><button aria-label="Close inspector" onClick={close}><X size={18} /></button></div>{resizeHandle}</aside>;
   }
   const runtimeReady = Boolean(live);
   const hardwareReady = Boolean(live?.ports.length || profile.fixed);
@@ -140,7 +141,7 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
   };
 
   return <aside className="inspector">
-    <div className="inspector-title"><div><h2>{router.systemName}<i className={runtimeReady ? "dot-good" : "dot-muted"} /></h2><p>{runtimeReady ? "Running" : "Unavailable"}</p></div><button aria-label="Close inspector" onClick={close}>×</button></div>
+    <div className="inspector-title"><div><h2>{router.systemName}<i className={runtimeReady ? "dot-good" : "dot-muted"} /></h2><p>{runtimeReady ? "Running" : "Unavailable"}</p></div><button aria-label="Close inspector" onClick={close}><X size={18} /></button></div>
     <nav className="inspector-tabs">{(["chassis", "cpm", "cards", "ports", "operational"] as const).map((item) => <button key={item} className={tab === item ? "active" : ""} onClick={() => onTabChange(item)}>{item === "cpm" ? "CPM" : item[0].toUpperCase() + item.slice(1)}</button>)}</nav>
     {renderTab()}{resizeHandle}
   </aside>;
