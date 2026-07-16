@@ -3,13 +3,15 @@
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ChangeEvent } from "react";
 import { DEFAULT_PROJECT, GENERATED_PROFILE, parseProject, type HostConfig,
-  type LabProject, type ProjectHardware, type RuntimeSnapshot } from "@router-simulator/contracts";
+  type CliPresentationStateV1, type LabProject, type ProjectHardware,
+  type RuntimeSnapshot } from "@router-simulator/contracts";
 import { RuntimeClient, type HardwareAction, type TerminalState } from "../runtime/client";
 import { downloadBinary, exportCheckpoint, exportProject, importNetsim,
   IncompatibleCheckpointError, loadProject, saveBinary, saveProject } from "../persistence";
 import { Inspector, type RouterTab } from "./Inspector";
 import { PanelResizeHandle } from "./PanelResizeHandle";
 import { TerminalPanel } from "./TerminalPanel";
+import type { TerminalCheckpointProvider } from "./terminal-model";
 import { Topology } from "./Topology";
 import { CaptureWorkspace, ConfigWorkspace, DevicesWorkspace, NotesWorkspace,
   SettingsWorkspace, SnapshotWorkspace, type WorkspaceView } from "./WorkspaceViews";
@@ -76,6 +78,9 @@ export function App() {
   const [routerTab, setRouterTab] = useState<RouterTab>("chassis");
   const importRef = useRef<HTMLInputElement>(null);
   const checkpointRef = useRef<HTMLInputElement>(null);
+  const terminalCheckpointProviderRef = useRef<TerminalCheckpointProvider | undefined>(undefined);
+  const [terminalPresentation, setTerminalPresentation] = useState<CliPresentationStateV1>();
+  const [terminalGeneration, setTerminalGeneration] = useState(0);
   const appliedDomainsRef = useRef<AppliedProjectDomains | undefined>(undefined);
   // Imports replace the runtime instance. The mount cleanup must close the
   // latest owner rather than the instance captured by the initial effect,
@@ -398,6 +403,11 @@ export function App() {
       setRuntime(replacement);
       setSnapshot(restoredSnapshot);
       setProject(nextProject);
+      // A new router runtime receives exactly the terminal presentation stored
+      // beside its checkpoint. Incrementing the key also clears stale editor
+      // history for project-only imports without guessing inside TerminalPanel.
+      setTerminalPresentation(imported.terminalPresentation);
+      setTerminalGeneration((value) => value + 1);
       setProjectLoaded(true);
       setOperationError(undefined);
     } catch (cause) {
@@ -470,12 +480,13 @@ export function App() {
       const checkpoint = await runtime.exportCheckpoint();
       const capture = await runtime.exportCapture();
       await Promise.all([saveBinary("active.checkpoint", checkpoint), saveBinary("active.pcapng", capture)]);
-      exportCheckpoint(project, checkpoint, capture);
+      exportCheckpoint(project, checkpoint, capture,
+        terminalCheckpointProviderRef.current?.snapshot() ?? terminalPresentation);
       setOperationError(undefined);
     } catch (cause) {
       setOperationError(visibleFailure("operation", cause));
     }
-  }, [runtime, project]);
+  }, [runtime, project, terminalPresentation]);
 
   const persistNow = useCallback(async () => {
     // Manual Save bypasses debounce but uses the same versioned project store.
@@ -493,16 +504,17 @@ export function App() {
     }
   }, [project]);
 
-  const exportNow = useCallback(() => {
-    // Project export contains intent only. Runtime-owned timers and tables are
-    // available through the separate checkpoint action.
+  const exportNow = useCallback(async () => {
+    // A project remains intent-only, but may carry the current passive capture
+    // as diagnostics. ARP, timers and queued frames still require Checkpoint.
     try {
-      exportProject(project);
+      const capture = runtime ? await runtime.exportCapture() : undefined;
+      exportProject(project, capture);
       setOperationError(undefined);
     } catch (cause) {
       setOperationError(visibleFailure("operation", cause));
     }
-  }, [project]);
+  }, [project, runtime]);
 
   const resetProject = useCallback(() => {
     // Reset is explicit and keeps the current runtime owner. The normal project
@@ -513,6 +525,8 @@ export function App() {
     setView("topology");
     setInspectorOpen(true);
     setTerminalOpen(true);
+    setTerminalPresentation(undefined);
+    setTerminalGeneration((value) => value + 1);
     setConfirmNewProject(false);
     setProjectMenuOpen(false);
   }, []);
@@ -533,6 +547,21 @@ export function App() {
       ...current.layout,
       [field]: value
     } }));
+  }, []);
+
+  const registerTerminalCheckpointProvider = useCallback(
+    (provider: TerminalCheckpointProvider | undefined) => {
+      // The ref is intentionally non-reactive. Registering a presentation
+      // sampler must not recreate xterm or cause an application render.
+      terminalCheckpointProviderRef.current = provider;
+    }, []);
+
+  const closeTerminal = useCallback(() => {
+    // Closing a panel is a layout action, not a session reset. Sample its
+    // unsent line and pager before React unmounts the presentation owner.
+    const presentation = terminalCheckpointProviderRef.current?.snapshot();
+    if (presentation) setTerminalPresentation(presentation);
+    setTerminalOpen(false);
   }, []);
 
   const visibleError = runtimeError ?? operationError;
@@ -560,8 +589,8 @@ export function App() {
         <nav className="top-nav"><button className={view === "topology" ? "active" : ""} onClick={() => navigate("topology")}>Topology</button><button className={view === "devices" ? "active" : ""} onClick={() => navigate("devices")}>Devices</button><button className={view === "captures" ? "active" : ""} onClick={() => navigate("captures")}>Captures</button></nav>
         <div className="top-actions">
           <button className="icon-action" onClick={() => void persistNow()}>▣ <span>{saveState === "saving" ? "Saving" : saveState === "saved" ? "Saved" : "Save"}</span></button>
-          <button className="icon-action" onClick={exportNow}>⇧ <span>Export</span></button>
-          <div className="more-wrap"><button className="more-action" title="More project actions" aria-expanded={moreMenuOpen} onClick={() => setMoreMenuOpen((value) => !value)}>⋮</button>{moreMenuOpen && <div className="header-menu more-menu"><button onClick={() => importRef.current?.click()}>Import project</button><button onClick={() => void exportCheckpointNow()}>Export checkpoint</button><button onClick={() => navigate("settings")}>Project settings</button></div>}</div>
+          <button className="icon-action" onClick={() => void exportNow()}>⇧ <span>Export</span></button>
+          <div className="more-wrap"><button className="more-action" title="More project actions" aria-expanded={moreMenuOpen} onClick={() => setMoreMenuOpen((value) => !value)}>⋮</button>{moreMenuOpen && <div className="header-menu more-menu"><button onClick={() => { setMoreMenuOpen(false); importRef.current?.click(); }}>Import project</button><button onClick={() => { setMoreMenuOpen(false); void exportCheckpointNow(); }}>Export checkpoint</button><button onClick={() => navigate("settings")}>Project settings</button></div>}</div>
           <input ref={importRef} hidden type="file" accept=".netsim,application/json"
             onChange={(event) => { void importFile(event.target.files?.[0]); event.target.value = ""; }} />
         </div>
@@ -621,13 +650,16 @@ export function App() {
           onWidthChange={(value) => resizePanel("inspectorWidth", value)}
           openConsole={() => setTerminalOpen(true)} close={() => setInspectorOpen(false)} />}
       </div>
-      {terminalOpen && <TerminalPanel ready={Boolean(runtime && !runtimeError &&
+      {terminalOpen && <TerminalPanel key={terminalGeneration} ready={Boolean(runtime && !runtimeError &&
         projectReadSettled && ready)}
-        systemName={project.runningConfig.systemName} execute={execute}
+        systemName={project.runningConfig.systemName}
+        historyKey={`${project.profile}:${project.name}:router-console`} execute={execute}
         complete={complete} cancel={cancelTerminal} state={terminalState}
+        restorePresentation={terminalPresentation}
+        registerCheckpointProvider={registerTerminalCheckpointProvider}
         height={project.layout.terminalHeight}
         onHeightChange={(value) => resizePanel("terminalHeight", value)}
-        close={() => setTerminalOpen(false)} />}
+        close={closeTerminal} />}
     </main>
   );
 }

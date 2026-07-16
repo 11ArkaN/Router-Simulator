@@ -9,10 +9,99 @@ export const ABI_VERSION = GENERATED_PROFILE.abi.runtime_snapshot;
 export const PROJECT_VERSION = 2 as const;
 
 export type CliEngine = "md" | "classic";
+export type TerminalHistoryRegion = "md-operational" | "md-configuration" | "classic";
 export type RuntimeStatus = "booting" | "ready" | "blocked" | "stopped";
 export type OperState = "up" | "down" | "absent";
 export type EquipmentLifecycle = "absent" | "waiting-provisioning" |
   "waiting-parent" | "initializing" | "ready" | "mismatch";
+
+// Public types name the stable values exchanged between the browser and the
+// runtime. They deliberately contain no C++ addresses, packet-pool handles or
+// mutable containers, so changing an internal layout cannot change the ABI.
+export interface HardwarePath {
+  chassis: string;
+  cardSlot?: number;
+  mdaSlot?: number;
+  portId?: string;
+}
+
+export interface HardwareStatus {
+  path: HardwarePath;
+  lifecycle: EquipmentLifecycle;
+  compatible: boolean;
+  reason: string;
+}
+
+export interface NetworkInterfaceState {
+  name: string;
+  admin: "up" | "down";
+  oper: OperState;
+  port: string;
+  address: string;
+}
+
+export interface RouteRecord {
+  prefix: string;
+  nextHop: string;
+  port: string;
+  source: "local" | "static";
+}
+
+// Generations are monotonic within one runtime. They are JSON numbers because
+// the first-stage capacities keep them below Number.MAX_SAFE_INTEGER.
+export type FibGeneration = number;
+
+export interface ArpEntry {
+  address: string;
+  mac: string;
+  port: string;
+}
+
+export interface PacketDescriptor {
+  length: number;
+  ingressPort?: string;
+  egressPort?: string;
+  capturedAtNs?: number;
+}
+
+export type DropReason = "none" | "queue-full" | "route-miss" |
+  "adjacency-unresolved" | "mtu-exceeded" | "ttl-expired" | "timeout" |
+  "cancelled" | "malformed-packet";
+
+export interface RuntimeHealth {
+  status: RuntimeStatus;
+  workerCount: number;
+  controlThreadId: bigint;
+  forwardingThreadId: bigint;
+  maximumSchedulingLagNs?: number;
+}
+
+export interface TerminalLineEditorStateV1 {
+  buffer: string;
+  cursor: number;
+  history: string[];
+  historyIndex: number;
+}
+
+export interface TerminalPagerStateV1 {
+  output: string;
+  rows: number;
+  offset: number;
+}
+
+export interface CliPresentationStateV1 {
+  version: 1;
+  editors: Record<TerminalHistoryRegion, TerminalLineEditorStateV1>;
+  queuedInput: string[];
+  pager?: TerminalPagerStateV1;
+}
+
+export interface CliSessionState {
+  engine: CliEngine;
+  historyRegion: TerminalHistoryRegion;
+  banner: string;
+  prompt: string;
+}
 
 export interface HostConfig {
   id: string;
@@ -106,12 +195,12 @@ export interface RuntimeSnapshot {
   nowMs: number;
   hardware: HardwareState;
   ports: PortState[];
-  arp: Array<{ address: string; mac: string; port: string }>;
-  routes: Array<{ prefix: string; nextHop: string; port: string; source: "local" | "static" }>;
+  arp: ArpEntry[];
+  routes: RouteRecord[];
   captureCount: number;
   captureDropped: number;
   droppedPackets: number;
-  lastDropReason?: string;
+  lastDropReason?: DropReason;
   alarms: Array<{ id: string; severity: "minor" | "major" | "critical"; reason: string }>;
   runningConfig: RunningConfig;
 }
@@ -141,20 +230,29 @@ export interface LabProject {
 export interface ProjectManifestV1 {
   mode: "project" | "checkpoint";
   formatVersion: 1;
-  profileLock: {
-    id: typeof GENERATED_PROFILE.id;
-    release: typeof GENERATED_PROFILE.release;
-    profileHash: string;
-    buildHash: string;
-    checkpointAbi: number;
-  };
+  profileLock: CheckpointHeaderV1;
   project: LabProject;
   captureBase64?: string;
   checkpointBase64?: string;
+  // Presentation is stored only beside a structural checkpoint. It has no
+  // authority over router configuration and is ignored by project-only files.
+  terminalPresentation?: CliPresentationStateV1;
+}
+
+export interface CheckpointHeaderV1 {
+  id: typeof GENERATED_PROFILE.id;
+  release: typeof GENERATED_PROFILE.release;
+  profileHash: string;
+  buildHash: string;
+  checkpointAbi: number;
 }
 
 const lifecycleValues = new Set<EquipmentLifecycle>([
   "absent", "waiting-provisioning", "waiting-parent", "initializing", "ready", "mismatch"
+]);
+const dropReasons = new Set<DropReason>([
+  "none", "queue-full", "route-miss", "adjacency-unresolved",
+  "mtu-exceeded", "ttl-expired", "timeout", "cancelled", "malformed-packet"
 ]);
 const knownPorts = new Set<string>(GENERATED_PROFILE.ports.ids);
 const knownHosts = new Set<string>(GENERATED_PROFILE.hosts.map((host) => host.id));
@@ -162,6 +260,54 @@ const knownHosts = new Set<string>(GENERATED_PROFILE.hosts.map((host) => host.id
 // non-negative before arithmetic or display.
 const finiteCounter = (candidate: unknown): candidate is number =>
   typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0;
+
+// Terminal presentation enters through portable files and therefore receives
+// the same fail-closed treatment as runtime snapshots. Byte limits are taken
+// from the generated profile so a crafted manifest cannot allocate more text
+// than the corresponding CLI input and output mailboxes permit.
+export function parseCliPresentationState(input: unknown): CliPresentationStateV1 {
+  if (!input || typeof input !== "object") throw new Error("Terminal presentation must be an object");
+  const value = input as Partial<CliPresentationStateV1>;
+  const regions: TerminalHistoryRegion[] = ["md-operational", "md-configuration", "classic"];
+  const encoder = new TextEncoder();
+  let queuedBytes = 0;
+  const validEditor = (candidate: unknown): candidate is TerminalLineEditorStateV1 => {
+    if (!candidate || typeof candidate !== "object") return false;
+    const editor = candidate as Partial<TerminalLineEditorStateV1>;
+    return typeof editor.buffer === "string" &&
+      encoder.encode(editor.buffer).byteLength < GENERATED_PROFILE.resources.command_message_bytes &&
+      Number.isInteger(editor.cursor) && editor.cursor! >= 0 && editor.cursor! <= editor.buffer.length &&
+      Array.isArray(editor.history) &&
+      editor.history.length <= GENERATED_PROFILE.cliDefaults.history_entries &&
+      editor.history.every((line) => typeof line === "string" &&
+        encoder.encode(line).byteLength < GENERATED_PROFILE.resources.command_message_bytes) &&
+      Number.isInteger(editor.historyIndex) && editor.historyIndex! >= 0 &&
+      editor.historyIndex! <= editor.history.length;
+  };
+  if (value.version !== 1 || !value.editors ||
+      regions.some((region) => !validEditor(value.editors?.[region])) ||
+      !Array.isArray(value.queuedInput) ||
+      value.queuedInput.length > GENERATED_PROFILE.resources.cli_input_queue_bytes ||
+      value.queuedInput.some((chunk) => typeof chunk !== "string" ||
+        (queuedBytes += encoder.encode(chunk).byteLength) >
+          GENERATED_PROFILE.resources.cli_input_queue_bytes)) {
+    throw new Error("Terminal presentation has an incompatible shape");
+  }
+  if (value.pager !== undefined) {
+    const pager = value.pager as Partial<TerminalPagerStateV1>;
+    const lineCount = typeof pager.output === "string"
+      ? pager.output.replaceAll("\r", "").split("\n").length : 0;
+    const height = typeof pager.rows === "number" ? Math.max(1, pager.rows - 1) : 0;
+    const maximumOffset = Math.max(0, lineCount - height);
+    if (typeof pager.output !== "string" ||
+        encoder.encode(pager.output).byteLength > GENERATED_PROFILE.resources.cli_output_queue_bytes ||
+        !Number.isInteger(pager.rows) || pager.rows! < 2 || pager.rows! > 10000 ||
+        !Number.isInteger(pager.offset) || pager.offset! < 0 || pager.offset! > maximumOffset) {
+      throw new Error("Terminal pager state is invalid");
+    }
+  }
+  return structuredClone(value as CliPresentationStateV1);
+}
 
 // Validates one card or MDA record against generated slot identity and type
 // capabilities. Provisioning and equipped inventory intentionally use distinct
@@ -361,7 +507,7 @@ export function parseRuntimeSnapshot(input: unknown): RuntimeSnapshot {
       value.routes.some((route) => !route || typeof route.prefix !== "string" ||
         typeof route.nextHop !== "string" || !knownPorts.has(route.port) ||
         !["local", "static"].includes(route.source)) ||
-      (value.lastDropReason !== undefined && typeof value.lastDropReason !== "string")) {
+      (value.lastDropReason !== undefined && !dropReasons.has(value.lastDropReason))) {
     throw new Error("Runtime snapshot contains invalid operational data");
   }
   return value as RuntimeSnapshot;

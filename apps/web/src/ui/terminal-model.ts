@@ -1,7 +1,9 @@
 // DOM-independent terminal editor, pager and bounded byte queue. xterm renders
 // these values but does not own CLI session semantics or router prompts.
 
-import { GENERATED_PROFILE } from "@router-simulator/contracts";
+import { GENERATED_PROFILE, parseCliPresentationState,
+  type CliPresentationStateV1, type TerminalHistoryRegion,
+  type TerminalLineEditorStateV1, type TerminalPagerStateV1 } from "@router-simulator/contracts";
 
 export class TerminalLineEditor {
   // This model owns only local keystroke editing. Router session state, current
@@ -20,6 +22,24 @@ export class TerminalLineEditor {
 
   get value(): string { return this.buffer; }
   get cursor(): number { return this.cursorIndex; }
+
+  snapshot(): TerminalLineEditorStateV1 {
+    // Return copies because the editor remains mutable after a checkpoint
+    // request. A manifest must describe one instant, not a live history array.
+    return { buffer: this.buffer, cursor: this.cursorIndex,
+      history: [...this.history], historyIndex: this.historyIndex };
+  }
+
+  restore(state: TerminalLineEditorStateV1): void {
+    // Callers validate the enclosing versioned record first. Replacing every
+    // field together prevents history navigation from observing old indices
+    // paired with a newly restored command list.
+    this.buffer = state.buffer;
+    this.cursorIndex = state.cursor;
+    this.history.splice(0, this.history.length, ...state.history);
+    this.historyIndex = state.historyIndex;
+    this.endReverseSearch();
+  }
 
   insert(text: string): string {
     // xterm reports printable input as text chunks. Insert at the modeled
@@ -245,6 +265,18 @@ export class TerminalInputQueue {
 
   get length(): number { return this.chunks.length; }
   get byteLength(): number { return this.used; }
+
+  snapshot(): string[] { return this.chunks.map((chunk) => chunk.text); }
+
+  restore(chunks: string[]): void {
+    // Restore through push so UTF-8 accounting and the all-or-nothing capacity
+    // rule stay identical to live input admission.
+    this.chunks.splice(0);
+    this.used = 0;
+    for (const chunk of chunks) {
+      if (!this.push(chunk)) throw new Error("Restored terminal input exceeds its profile capacity");
+    }
+  }
 }
 
 export type PagerResult = "continue" | "complete" | "quit" | "unchanged";
@@ -260,6 +292,18 @@ export class TerminalPager {
   constructor(output: string, rows: number) {
     this.lines = output.replaceAll("\r", "").split("\n");
     this.height = Math.max(1, rows - 1);
+  }
+
+  static restore(state: TerminalPagerStateV1): TerminalPager {
+    const pager = new TerminalPager(state.output, state.rows);
+    pager.offset = state.offset;
+    return pager;
+  }
+
+  snapshot(): TerminalPagerStateV1 {
+    // Join with LF because pager parsing normalizes CR on construction. This
+    // canonical representation avoids platform line-ending drift in .netsim.
+    return { output: this.lines.join("\n"), rows: this.height + 1, offset: this.offset };
   }
 
   get active(): boolean { return this.lines.length > this.height && this.end < this.lines.length; }
@@ -298,4 +342,27 @@ export class TerminalPager {
   }
 
   private get end(): number { return Math.min(this.lines.length, this.offset + this.height); }
+}
+
+export interface TerminalCheckpointProvider {
+  // The provider borrows no renderer objects. Its return value is a detached,
+  // versioned snapshot safe to serialize after the function returns.
+  snapshot(): CliPresentationStateV1;
+}
+
+export function restoreTerminalPresentation(
+  input: CliPresentationStateV1 | undefined,
+  editors: Record<TerminalHistoryRegion, TerminalLineEditor>,
+  queue: TerminalInputQueue
+): TerminalPager | undefined {
+  // Undefined is the normal project-only path. A present value crosses the
+  // public parser even when it originated locally, keeping tests and imports
+  // on exactly the same validation boundary.
+  if (!input) return undefined;
+  const state = parseCliPresentationState(input);
+  for (const region of Object.keys(editors) as TerminalHistoryRegion[]) {
+    editors[region].restore(state.editors[region]);
+  }
+  queue.restore(state.queuedInput);
+  return state.pager ? TerminalPager.restore(state.pager) : undefined;
 }

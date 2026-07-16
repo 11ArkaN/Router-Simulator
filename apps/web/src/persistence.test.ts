@@ -50,7 +50,8 @@ describe("project file import", () => {
     expect(parseNetsim(JSON.stringify(manifest))).toEqual({
       project: DEFAULT_PROJECT,
       checkpoint: undefined,
-      capture: undefined
+      capture: undefined,
+      terminalPresentation: undefined
     });
   });
 
@@ -62,6 +63,27 @@ describe("project file import", () => {
     expect(restored.project).toEqual(DEFAULT_PROJECT);
     expect(restored.checkpoint).toEqual(checkpoint);
     expect(restored.capture).toEqual(capture);
+  });
+
+  it("round-trips the terminal presentation beside structural state", () => {
+    // Input buffers and pager position belong to the terminal renderer, so the
+    // portable wrapper carries them beside, not inside, the C++ checkpoint.
+    const emptyEditor = { buffer: "", cursor: 0, history: [], historyIndex: 0 };
+    const terminalPresentation = {
+      version: 1 as const,
+      editors: {
+        "md-operational": { buffer: "show por", cursor: 8,
+          history: ["show card"], historyIndex: 1 },
+        "md-configuration": emptyEditor,
+        classic: emptyEditor
+      },
+      queuedInput: ["t"],
+      pager: { output: "one\ntwo\nthree", rows: 3, offset: 1 }
+    };
+    const manifest = createCheckpointManifest(DEFAULT_PROJECT,
+      Uint8Array.of(1, 2), undefined, terminalPresentation);
+    expect(parseNetsim(JSON.stringify(manifest)).terminalPresentation)
+      .toEqual(terminalPresentation);
   });
 
   it("requires consent before dropping incompatible structural state", () => {

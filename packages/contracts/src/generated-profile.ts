@@ -23,5 +23,5 @@ export const GENERATED_PROFILE = {
   abi: {"runtime_snapshot":4,"telemetry":4,"runtime_messages":2,"checkpoint":4},
   uiDefaults: {"router_id":"r1","sidebar_width":194,"sidebar_width_min":96,"sidebar_width_max":4096,"inspector_width":324,"inspector_width_min":160,"inspector_width_max":4096,"terminal_height":360,"terminal_height_min":90,"terminal_height_max":4096,"nodes":{"host-a":{"x":72,"y":170},"r1":{"x":410,"y":170},"host-b":{"x":748,"y":170}}},
   profileHash: "b22da40eb8506cad",
-  buildHash: "4f8380f5543eb4a5"
+  buildHash: "a95bfa02f5101d29"
 } as const;

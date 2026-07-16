@@ -31,6 +31,9 @@ const std::uint8_t *checkpoint_export();
 std::size_t checkpoint_export_size();
 int checkpoint_import(const std::uint8_t *, std::size_t);
 int project_import(const char *);
+int cli_open_session();
+const char *cli_push_input(const char *);
+const char *cli_read_output();
 }
 
 std::string maximum_running_project_command() {
@@ -468,6 +471,17 @@ int main() {
 
     if (!rs_create())
       throw std::runtime_error("Wasm C ABI did not create runtime");
+    if (!cli_open_session())
+      throw std::runtime_error("Public CLI byte session did not open");
+    // The stable C ABI receives arbitrary terminal chunks, not preassembled
+    // commands. Backspace repairs the buffered keyword before CR submits it.
+    cli_push_input("show system informationx");
+    cli_push_input("\x7f\r");
+    if (std::string_view{cli_read_output()}.find("System Information") ==
+        std::string_view::npos) {
+      throw std::runtime_error(
+          "Public CLI input bypassed byte editing or failed to submit CR");
+    }
     const auto maximum_project = maximum_running_project_command();
     if (maximum_project.size() <= 1024U ||
         maximum_project.size() >= router::profile::command_message_bytes ||

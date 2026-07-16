@@ -1,44 +1,75 @@
 // xterm renderer and lossless byte-input adapter for one router CLI session.
 // Engine selection and candidate semantics remain in the C++ session owner.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import {
   TerminalInputQueue,
   TerminalLineEditor,
-  TerminalPager
+  TerminalPager,
+  restoreTerminalPresentation,
+  type TerminalCheckpointProvider
 } from "./terminal-model";
-import { GENERATED_PROFILE } from "@router-simulator/contracts";
+import { GENERATED_PROFILE, type CliPresentationStateV1,
+  type TerminalHistoryRegion } from "@router-simulator/contracts";
 import type { TerminalState } from "../runtime/client";
 import { PanelResizeHandle } from "./PanelResizeHandle";
+import { TerminalHistoryArchive, type TerminalHistoryStorage } from "./terminal-history";
+import { TerminalHistoryView } from "./TerminalHistoryView";
 
 interface Props {
   ready: boolean;
   systemName: string;
+  historyKey: string;
+  historyStorage?: TerminalHistoryStorage;
   execute(command: string): Promise<string>;
   complete(input: string, trigger: "tab" | "question" | "space"): Promise<string>;
   cancel(): void;
   state(): Promise<TerminalState>;
   height: number;
   onHeightChange(value: number): void;
+  restorePresentation?: CliPresentationStateV1;
+  registerCheckpointProvider?(provider: TerminalCheckpointProvider | undefined): void;
   close(): void;
 }
 
-export function TerminalPanel({ ready, systemName, execute, complete, cancel, state,
-  height, onHeightChange, close }: Props) {
+export function TerminalPanel({ ready, systemName, historyKey, historyStorage, execute, complete, cancel, state,
+  height, onHeightChange, restorePresentation, registerCheckpointProvider, close }: Props) {
   const panelRef = useRef<HTMLElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const [fontSize, setFontSize] = useState(12);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const historyOpenRef = useRef(false);
+  const archive = useMemo(() => new TerminalHistoryArchive(historyKey, historyStorage,
+    (cause) => console.error("Terminal history archival failed", cause)), [historyKey, historyStorage]);
   const executeRef = useRef(execute);
   const completeRef = useRef(complete);
   const stateRef = useRef(state);
   executeRef.current = execute;
   completeRef.current = complete;
   stateRef.current = state;
+
+  useEffect(() => () => { void archive.close(); }, [archive]);
+
+  useEffect(() => {
+    // History browsing is read-only. Disabling xterm input while its canvas is
+    // covered prevents invisible commands from reaching the router session.
+    historyOpenRef.current = historyOpen;
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    terminal.options.disableStdin = historyOpen;
+    if (historyOpen) terminal.blur();
+    else {
+      // History can open after the user reaches xterm's oldest hot row. Return
+      // to the current router prompt instead of leaving the live buffer at top.
+      terminal.scrollToBottom();
+      terminal.focus();
+    }
+  }, [historyOpen]);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -48,12 +79,15 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
       fontFamily: '"Cascadia Mono", "IBM Plex Mono", monospace',
       fontSize,
       lineHeight: 1.35,
-      // The buffer belongs to xterm presentation, not the router session. User
-      // input returns to the newest prompt, while wheel and touchpad movement
-      // can inspect up to 3000 previously rendered lines without emitting CLI
-      // bytes or asking the C++ owner to replay a command.
-      scrollback: 3000,
+      // xterm keeps only the recent interactive window. Its renderer paints
+      // viewport rows rather than one DOM node per historical line. The full
+      // transcript is independently chunked into OPFS below, so this bounded
+      // cache protects RAM without imposing a user-visible history limit.
+      scrollback: 8000,
       scrollOnUserInput: true,
+      // A terminal recreated while the disk history overlay is already open
+      // must never accept keys during the one frame before effects settle.
+      disableStdin: historyOpenRef.current,
       theme: {
         background: "#090b0c",
         foreground: "#cdd4d2",
@@ -76,7 +110,7 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
     // SR OS keeps separate MD operational, MD configuration and classic
     // histories. The active region still comes only from C++; the renderer
     // merely selects the corresponding bounded line-editing buffer.
-    const editors = {
+    const editors: Record<TerminalHistoryRegion, TerminalLineEditor> = {
       "md-operational": new TerminalLineEditor(),
       "md-configuration": new TerminalLineEditor(),
       classic: new TerminalLineEditor()
@@ -84,7 +118,24 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
     let busy = false;
     const queuedInput = new TerminalInputQueue(GENERATED_PROFILE.resources.cli_input_queue_bytes);
     let sessionState: TerminalState | undefined;
-    let pager: TerminalPager | undefined;
+    let pager = restoreTerminalPresentation(restorePresentation, editors, queuedInput);
+
+    // Checkpoint export samples the presentation owner only after the runtime
+    // returns its structural bytes. No mutable xterm object crosses this API,
+    // and all arrays are detached by the individual snapshot methods.
+    const checkpointProvider: TerminalCheckpointProvider = {
+      snapshot: () => ({
+        version: 1,
+        editors: {
+          "md-operational": editors["md-operational"].snapshot(),
+          "md-configuration": editors["md-configuration"].snapshot(),
+          classic: editors.classic.snapshot()
+        },
+        queuedInput: queuedInput.snapshot(),
+        ...(pager ? { pager: pager.snapshot() } : {})
+      })
+    };
+    registerCheckpointProvider?.(checkpointProvider);
 
     const editor = () => editors[sessionState?.historyRegion ?? "md-operational"];
     const prompt = () => sessionState?.prompt.replace(/^\n/, "") ?? "";
@@ -107,12 +158,14 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
         sessionState = next;
         terminal.writeln(next.banner);
         terminal.write(next.prompt.replaceAll("\n", "\r\n").replace(/^\r\n/, ""));
+        archive.append(next.banner);
       }).catch((cause) => console.error("Console session startup failed", cause));
     }
 
     const writePaged = (output: string) => {
       // Paging is a presentation boundary, not a CLI command retry. The full
       // response has already been produced exactly once by the session owner.
+      archive.append(output);
       const next = new TerminalPager(output, terminal.rows);
       terminal.write(next.page.join("\r\n"));
       if (next.active) {
@@ -142,6 +195,7 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
           redraw();
         } else {
           terminal.write(`\r\n${result.replaceAll("\n", "\r\n")}\r\n`);
+          archive.append(`${inputPrompt()}${active.value}\n${result}`);
           redraw();
         }
       } finally {
@@ -207,6 +261,7 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
           await completeEnterKeyword();
           terminal.write("\r\n");
           const submitted = editor().submit();
+          archive.append(`${inputPrompt()}${submitted}`);
           const output = await executeRef.current(submitted);
           // The backend may change engine, prompt markers or system name while
           // executing. Refreshing state prevents the renderer from predicting
@@ -218,9 +273,10 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
           // console must never expose Worker, Wasm or mailbox implementation.
           console.error("Console command transport failed", cause);
           terminal.write(`Console unavailable.\r\n${prompt()}`);
+          archive.append("Console unavailable.");
         } finally {
           busy = false;
-          terminal.options.disableStdin = false;
+          terminal.options.disableStdin = historyOpenRef.current;
         }
       } else if (data === "\u007f" || data === "\b") {
         editor().backspace();
@@ -297,6 +353,7 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
           await completeEnterKeyword();
           terminal.write("\r\n");
           const submitted = editor().submit();
+          archive.append(`${inputPrompt()}${submitted}`);
           let output = "";
           if (submitted) {
             output = await executeRef.current(submitted);
@@ -312,6 +369,7 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
         } catch (cause) {
           console.error("Console Ctrl-Z transport failed", cause);
           terminal.write(`Console unavailable.\r\n${prompt()}`);
+          archive.append("Console unavailable.");
         } finally {
           busy = false;
         }
@@ -338,6 +396,14 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
       }
     };
     const inputDisposable = terminal.onData((data) => { void processData(data); });
+    const scrollDisposable = terminal.onScroll((position) => {
+      // Once older disk rows exist, reaching the beginning of xterm's bounded
+      // cache continues into the virtual transcript instead of ending history.
+      // No React update occurs during ordinary scrolling inside the hot window.
+      if (position === 0 && archive.lineCount > terminal.buffer.active.length) {
+        setHistoryOpen(true);
+      }
+    });
     let rendererReady = false;
     let resizeFrame = window.requestAnimationFrame(() => {
       rendererReady = true;
@@ -356,11 +422,15 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
       window.cancelAnimationFrame(resizeFrame);
       resize.disconnect();
       inputDisposable.dispose();
+      scrollDisposable.dispose();
       terminal.dispose();
       terminalRef.current = null;
       fitRef.current = null;
+      // Unregister only this disposed owner. App keeps no borrowed closure that
+      // could later sample dead editor state after the panel is reopened.
+      registerCheckpointProvider?.(undefined);
     };
-  }, [ready, cancel]);
+  }, [ready, cancel, archive, restorePresentation, registerCheckpointProvider]);
 
   useEffect(() => {
     // Font size is a renderer preference, not session state. Updating the live
@@ -386,14 +456,21 @@ export function TerminalPanel({ ready, systemName, execute, complete, cancel, st
       <div className="terminal-head">
         <div><i className="dot-good" />{systemName} console</div>
         <div className="terminal-actions">
-          <button title="Clear terminal" aria-label="Clear terminal" onClick={() => terminalRef.current?.clear()}>♲</button>
+          <button title="Full terminal history" aria-label="Full terminal history"
+            className={historyOpen ? "active" : ""}
+            onClick={() => setHistoryOpen((value) => !value)}>≡</button>
+          <button title="Clear visible terminal" aria-label="Clear visible terminal" onClick={() => terminalRef.current?.clear()}>♲</button>
           <button title="Terminal settings" aria-label="Terminal settings" className={settingsOpen ? "active" : ""} onClick={() => setSettingsOpen((value) => !value)}>⚙</button>
           <button title="Fullscreen console" aria-label="Fullscreen console" onClick={() => void (document.fullscreenElement ? document.exitFullscreen() : panelRef.current?.requestFullscreen())}>⛶</button>
           <button title="Close console" aria-label="Close console" onClick={close}>×</button>
         </div>
       </div>
       {settingsOpen && <div className="terminal-settings"><label>Font size<input type="range" min="10" max="18" value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} /><span>{fontSize}px</span></label></div>}
-      <div className="terminal-host" ref={hostRef} />
+      <div className="terminal-body">
+        <div className="terminal-host" ref={hostRef} />
+        {historyOpen && <TerminalHistoryView archive={archive} fontSize={fontSize}
+          close={() => setHistoryOpen(false)} />}
+      </div>
     </section>
   );
 }

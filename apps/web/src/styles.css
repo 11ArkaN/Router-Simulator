@@ -269,7 +269,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .terminal-settings label { display: grid; grid-template-columns: auto minmax(120px, 220px) 42px; align-items: center; gap: 11px; color: #8f9ca3; font-size: 9px; text-transform: uppercase; letter-spacing: .05em; }
 .terminal-settings input { accent-color: var(--blue); }
 .terminal-settings span { color: #c1cbd0; font: 10px "Cascadia Mono", monospace; }
-.terminal-host { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; padding: clamp(8px, 1.5dvh, 16px) clamp(10px, 1.55vw, 20px) 8px; overflow: hidden; }
+.terminal-body { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }
+.terminal-host { position: absolute; inset: 0; padding: clamp(8px, 1.5dvh, 16px) clamp(10px, 1.55vw, 20px) 8px; overflow: hidden; }
 .terminal-host > .xterm { width: 100%; height: 100%; }
 
 /* xterm maps this element directly to its scrollback buffer. Keeping native
@@ -287,6 +288,18 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .terminal-host .xterm-viewport::-webkit-scrollbar { width: 10px; }
 .terminal-host .xterm-viewport::-webkit-scrollbar-track { background: #0a1115; }
 .terminal-host .xterm-viewport::-webkit-scrollbar-thumb { background: #465963; border: 2px solid #0a1115; }
+
+/* The complete transcript overlays the live canvas only while requested. Its
+   scroll track is a bounded coordinate system, while TerminalHistoryView maps
+   those coordinates to any number of disk-backed logical lines. Only viewport
+   rows and a small overscan are mounted, so DOM size stays constant. */
+.terminal-history { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #090b0c; color: #cdd4d2; }
+.terminal-history-bar { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex: 0 0 30px; padding: 0 10px; border-bottom: 1px solid #1c2b33; background: #071117; color: #7f8f97; font: 9px "Cascadia Mono", monospace; text-transform: uppercase; letter-spacing: .05em; }
+.terminal-history-bar button { min-height: 22px; padding: 0 9px; border: 1px solid #2a4655; background: #0d202b; color: #b8c8ce; font: 9px "Cascadia Mono", monospace; }
+.terminal-history-bar button:hover { border-color: #278bc2; color: #e2eaed; background: #123044; }
+.terminal-history-viewport { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-color: #465963 #0a1115; scrollbar-width: thin; }
+.terminal-history-track { width: 1px; pointer-events: none; }
+.terminal-history-lines { position: absolute; top: 0; left: 0; min-width: 100%; margin: 0; padding: 8px clamp(10px, 1.55vw, 20px); color: #cdd4d2; background: transparent; white-space: pre; pointer-events: auto; font-family: "Cascadia Mono", "IBM Plex Mono", monospace; font-weight: 400; }
 
 /* Resize boundaries occupy a generous transparent hit target but draw only a
    one-pixel guide, preserving the approved flat panel separators. touch-action

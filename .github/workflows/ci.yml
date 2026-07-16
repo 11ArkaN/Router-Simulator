@@ -24,7 +24,7 @@ jobs:
 
   build-and-test:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -41,3 +41,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm toolchain:bootstrap
       - run: pnpm verify
+      # Chrome and Edge are preinstalled on windows-latest. Firefox is pinned
+      # by Playwright so all three production browser contracts run in CI.
+      - run: pnpm test:e2e:install
+      - run: pnpm test:e2e

@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { GENERATED_PROFILE } from "@router-simulator/contracts";
 import {
+  restoreTerminalPresentation,
   TerminalInputQueue,
   TerminalLineEditor,
   TerminalPager
@@ -113,5 +114,48 @@ describe("terminal byte editing", () => {
     expect(queue.shift()).toBe("show");
     expect(queue.shift()).toBe(" ą");
     expect(queue.shift()).toBeUndefined();
+  });
+
+  it("round-trips all editor regions, queued bytes and pager position", () => {
+    // Structural checkpoints must preserve text that has not yet become a CLI
+    // command. The three histories remain distinct because switching with //
+    // returns to the same router session but a different history region.
+    const editors = {
+      "md-operational": new TerminalLineEditor(),
+      "md-configuration": new TerminalLineEditor(),
+      classic: new TerminalLineEditor()
+    };
+    editors["md-operational"].insert("show port");
+    editors["md-operational"].submit();
+    editors["md-configuration"].insert("card 1");
+    editors.classic.insert("configure");
+    editors.classic.left();
+    const queue = new TerminalInputQueue(GENERATED_PROFILE.resources.cli_input_queue_bytes);
+    queue.push("next");
+    const pager = new TerminalPager("one\ntwo\nthree\nfour\nfive", 4);
+    pager.handle("\r");
+    const state = {
+      version: 1 as const,
+      editors: {
+        "md-operational": editors["md-operational"].snapshot(),
+        "md-configuration": editors["md-configuration"].snapshot(),
+        classic: editors.classic.snapshot()
+      },
+      queuedInput: queue.snapshot(),
+      pager: pager.snapshot()
+    };
+
+    const restoredEditors = {
+      "md-operational": new TerminalLineEditor(),
+      "md-configuration": new TerminalLineEditor(),
+      classic: new TerminalLineEditor()
+    };
+    const restoredQueue = new TerminalInputQueue(GENERATED_PROFILE.resources.cli_input_queue_bytes);
+    const restoredPager = restoreTerminalPresentation(state, restoredEditors, restoredQueue);
+    expect(restoredEditors["md-operational"].previous()).toBe("show port");
+    expect(restoredEditors["md-configuration"].value).toBe("card 1");
+    expect(restoredEditors.classic.cursor).toBe("configure".length - 1);
+    expect(restoredQueue.shift()).toBe("next");
+    expect(restoredPager?.page).toEqual(["two", "three", "four"]);
   });
 });

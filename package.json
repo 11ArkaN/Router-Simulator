@@ -18,13 +18,19 @@
     "profiles:check": "node tools/generate-profile.mjs --check",
     "architecture:check": "node tools/check-dependencies.mjs",
     "test": "pnpm core:test && pnpm -r test",
+    "test:e2e:install": "playwright install firefox",
+    "test:e2e": "playwright test",
     "typecheck": "pnpm -r typecheck",
-    "verify": "pnpm sources:validate && pnpm profiles:check && pnpm architecture:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm core:structure-benchmark && pnpm core:runtime-benchmark && pnpm build"
+    "verify": "pnpm sources:validate && pnpm profiles:check && pnpm architecture:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm core:structure-benchmark && pnpm core:runtime-benchmark && pnpm build",
+    "verify:browser": "pnpm build && pnpm test:e2e"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "yaml": "^2.8.1"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["esbuild"]
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

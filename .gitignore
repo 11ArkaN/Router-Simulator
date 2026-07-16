@@ -8,6 +8,7 @@ playwright-report/
 .playwright-cli/
 .playwright-mcp/
 test-results/
+output/
 *.tsbuildinfo
 *.log
 *.pcapng

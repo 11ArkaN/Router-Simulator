@@ -80,8 +80,8 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-15
-    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli.cpp, core/src/cli_parser.cpp, core/src/cli_md.cpp, apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts]
-    tests: [core/tests/cli_test.cpp, apps/web/src/ui/terminal-model.test.ts]
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli.cpp, core/src/cli_parser.cpp, core/src/cli_md.cpp, apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts, apps/web/src/persistence.ts, packages/contracts/src/index.ts]
+    tests: [core/tests/cli_test.cpp, apps/web/src/ui/terminal-model.test.ts, apps/web/src/persistence.test.ts, e2e/first-milestone.spec.ts]
     status: partially-implemented
     notes: MD-CLI retains its working context and implements slash, closing-brace, back with an optional level count, exit, exit all, top, editing keys, separate operational and configuration histories, engine-switch messages and prompt markers for the exposed tree. Navigation above /configure exits implicit mode and dirty exits preserve context until confirmed.
   - id: nokia.sros.26_7.classic_cli.navigation
@@ -94,8 +94,8 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-15
-    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli.cpp, core/src/cli_parser.cpp, core/src/cli_classic.cpp, apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts]
-    tests: [core/tests/cli_test.cpp, apps/web/src/ui/terminal-model.test.ts]
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli.cpp, core/src/cli_parser.cpp, core/src/cli_classic.cpp, apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts, apps/web/src/persistence.ts, packages/contracts/src/index.ts]
+    tests: [core/tests/cli_test.cpp, apps/web/src/ui/terminal-model.test.ts, apps/web/src/persistence.test.ts, e2e/first-milestone.spec.ts]
     status: partially-implemented
     notes: The exposed classic tree implements hierarchical prompts, global navigation, slash and backslash absolute paths, abbreviations, help variants and documented line-editing keys.
   - id: nokia.sros.26_7.md_cli.configuration_workflow
@@ -263,7 +263,7 @@ records:
     yang_path: null
     last_verified_at: 2026-07-14
     implementation: [core/CMakeLists.txt, schemas/runtime/2.yaml, schemas/checkpoint/4.yaml, core/include/router/generated_runtime_protocol.hpp, core/src/checkpoint.cpp, core/src/runtime_checkpoint.cpp, core/src/runtime_projection.cpp, core/src/wasm_api.cpp, apps/web/src/runtime/runtime.worker.ts, apps/web/src/runtime/client.ts]
-    tests: [core/tests/checkpoint_test.cpp, core/tests/runtime_test.cpp]
+    tests: [core/tests/checkpoint_test.cpp, core/tests/runtime_test.cpp, apps/web/src/persistence.test.ts, apps/web/src/ui/terminal-model.test.ts, e2e/first-milestone.spec.ts]
     status: implemented
     notes: The active profile pre-creates clamp(hardwareConcurrency minus one, 2, 4) pthread workers with a fixed shared Wasm memory budget. There is no single-thread fallback, and JavaScript obtains telemetry offsets from the compiled C++ layout.
   - id: w3c.indexeddb.persistence
@@ -388,10 +388,24 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [apps/web/vite.config.ts, apps/web/src/runtime/runtime.worker.ts]
-    tests: [apps/web/src/runtime/client.ts]
+    implementation: [apps/web/vite.config.ts, apps/web/src/runtime/runtime.worker.ts, playwright.config.ts]
+    tests: [apps/web/src/runtime/client.ts, e2e/first-milestone.spec.ts]
     status: implemented
     notes: Local and preview servers publish isolation, CSP and Permissions Policy headers and reject runtime startup when the pthread smoke test fails.
+  - id: playwright.cross_browser.projects
+    kind: browser-testing
+    release: 1.61
+    platforms: [Chrome, Edge, Firefox]
+    source_type: playwright-official-doc
+    source_url: https://playwright.dev/docs/test-projects
+    section: Configure projects for multiple browsers
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-16
+    implementation: [playwright.config.ts, package.json]
+    tests: [e2e/first-milestone.spec.ts]
+    status: implemented
+    notes: The production preview is exercised serially in installed Chrome, Edge and Firefox with cross-origin isolation, the pthread startup gate, CLI provisioning, routed ping, carrier failure, project portability and reload restoration.
   - id: nokia.sros.26_7.port.ethernet_mtu
     kind: cli-default
     release: 26.7.R1

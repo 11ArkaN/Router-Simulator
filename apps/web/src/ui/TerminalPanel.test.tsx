@@ -8,6 +8,7 @@ import { cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TerminalPanel } from "./TerminalPanel";
 import type { TerminalState } from "../runtime/client";
+import type { TerminalHistoryStorage } from "./terminal-history";
 
 interface RecordedTerminal {
   writes: string[];
@@ -20,6 +21,15 @@ interface RecordedTerminal {
 // evaluated. Tests can therefore inject raw onData bytes without exposing a
 // test-only hook in the production component.
 const recorder = vi.hoisted(() => ({ current: undefined as RecordedTerminal | undefined }));
+
+// Component tests exercise terminal byte semantics, not browser persistence.
+// This no-I/O store preserves the production archive contract without requiring
+// jsdom to pretend that it implements Chromium OPFS handles.
+const historyStorage: TerminalHistoryStorage = {
+  async list() { return []; },
+  async write() {},
+  async read() { return ""; }
+};
 
 vi.mock("@xterm/xterm", () => ({
   Terminal: class implements RecordedTerminal {
@@ -40,7 +50,12 @@ vi.mock("@xterm/xterm", () => ({
       this.input = callback;
       return { dispose() {} };
     }
+    onScroll() { return { dispose() {} }; }
+    buffer = { active: { length: 24 } };
     emit(data: string) { this.input?.(data); }
+    blur() {}
+    focus() {}
+    scrollToBottom() {}
     clear() {}
     dispose() {}
   }
@@ -67,7 +82,8 @@ describe("terminal raw-key transcript", () => {
     const resize = globalThis.ResizeObserver;
     globalThis.ResizeObserver = TestResizeObserver;
     try {
-      render(<TerminalPanel ready systemName="R1" execute={vi.fn()}
+      render(<TerminalPanel ready systemName="R1" historyKey="test:r1"
+        historyStorage={historyStorage} execute={vi.fn()}
         complete={async (input) => input} cancel={vi.fn()} state={async () => ({
           engine: "md", historyRegion: "md-operational", banner: "SR OS 26.7.R1",
           prompt: "\n[/]\nA:admin@R1# "
@@ -112,7 +128,8 @@ describe("terminal raw-key transcript", () => {
     const resize = globalThis.ResizeObserver;
     globalThis.ResizeObserver = TestResizeObserver;
     try {
-      render(<TerminalPanel ready systemName="R1" execute={execute}
+      render(<TerminalPanel ready systemName="R1" historyKey="test:r1"
+        historyStorage={historyStorage} execute={execute}
         complete={complete} cancel={vi.fn()} state={async () => terminalState}
         height={360} onHeightChange={vi.fn()}
         close={vi.fn()} />);

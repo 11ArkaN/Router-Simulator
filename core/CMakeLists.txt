@@ -173,7 +173,7 @@ if(EMSCRIPTEN)
     "-sEXPORT_ES6=1"
     "-sEXPORT_NAME=createRouterRuntime"
     "-sENVIRONMENT=worker"
-    "-sEXPORTED_FUNCTIONS=['_malloc','_free','_rs_create','_rs_command','_rs_capture_prepare','_rs_capture_data','_rs_capture_size','_rs_shutdown','_runtime_initialize','_runtime_capabilities','_lab_open','_lab_close','_lab_submit_command','_cli_open_session','_cli_push_input','_cli_read_output','_telemetry_get_page','_telemetry_get_page_size','_telemetry_get_layout','_capture_start','_capture_stop','_capture_export_pcapng','_checkpoint_export','_checkpoint_export_size','_checkpoint_import','_project_export','_project_import']"
+    "-sEXPORTED_FUNCTIONS=['_malloc','_free','_rs_create','_rs_command','_rs_capture_prepare','_rs_capture_data','_rs_capture_size','_rs_shutdown','_runtime_initialize','_runtime_capabilities','_lab_open','_lab_close','_lab_submit_command','_cli_open_session','_cli_push_input','_cli_read_output','_telemetry_get_page','_telemetry_get_page_size','_telemetry_get_layout','_capture_start','_capture_stop','_capture_export_pcapng','_checkpoint_export','_checkpoint_export_size','_checkpoint_import','_project_import']"
     # HEAPU8 is an explicit Emscripten module API dependency. Newer optimized
     # builds keep the internal view lexical unless it is exported, so relying
     # on an accidental Module property makes browser startup version-sensitive.
@@ -228,7 +228,11 @@ if(ROUTER_BUILD_TESTS)
     target_link_libraries(capture_fixture PRIVATE router_core)
     set(CAPTURE_FIXTURE "${CMAKE_CURRENT_BINARY_DIR}/conformance.pcapng")
     add_test(NAME capture_fixture COMMAND capture_fixture "${CAPTURE_FIXTURE}")
-    find_program(TSHARK_EXECUTABLE tshark)
+    # Wireshark's Windows installer does not add its directory to PATH by
+    # default. The explicit official installation locations keep conformance
+    # enabled on native Windows without introducing WSL or a shell wrapper.
+    find_program(TSHARK_EXECUTABLE tshark HINTS
+      "$ENV{ProgramFiles}/Wireshark")
     if(TSHARK_EXECUTABLE)
       add_test(NAME tshark_pcapng
         COMMAND "${TSHARK_EXECUTABLE}" -n -r "${CAPTURE_FIXTURE}" -c 1)

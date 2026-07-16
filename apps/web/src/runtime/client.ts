@@ -2,7 +2,7 @@
 // the only browser module allowed to encode the versioned runtime protocol.
 
 import { GENERATED_PROFILE, RUNTIME_PROTOCOL, parseRuntimeSnapshot,
-  type HostConfig, type LinkConfig, type RunningConfig,
+  type CliSessionState, type HostConfig, type LinkConfig, type RunningConfig,
   type RuntimeSnapshot } from "@router-simulator/contracts";
 
 type Pending = { resolve(value: string): void; reject(error: Error): void };
@@ -13,12 +13,9 @@ interface TelemetryLayout {
   forwardingThreadId: number; capturedFrames: number; captureDropped: number;
   droppedPackets: number; cliCancelRequested: number;
 }
-export interface TerminalState {
-  engine: "md" | "classic";
-  historyRegion: "md-operational" | "md-configuration" | "classic";
-  banner: string;
-  prompt: string;
-}
+// Retain the browser-facing name while the versioned contract package owns
+// the actual shape used by the Worker, React and persistence layers.
+export type TerminalState = CliSessionState;
 export type HardwareAction =
   { kind: "insert-card"; slot: number; type: string } |
   { kind: "remove-card"; slot: number } |

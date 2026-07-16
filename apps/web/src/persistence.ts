@@ -1,7 +1,8 @@
 // IndexedDB project storage, OPFS binary storage and portable netsim manifests.
 // Every import crosses the shared versioned validation boundary before use.
 
-import { DEFAULT_PROJECT, GENERATED_PROFILE, parseProject, type LabProject, type ProjectManifestV1 } from "@router-simulator/contracts";
+import { DEFAULT_PROJECT, GENERATED_PROFILE, parseCliPresentationState, parseProject,
+  type CliPresentationStateV1, type LabProject, type ProjectManifestV1 } from "@router-simulator/contracts";
 
 const DB_NAME = "router-simulator";
 const STORE = "projects";
@@ -181,11 +182,11 @@ export function downloadBinary(name: string, bytes: Uint8Array, type: string): v
   URL.revokeObjectURL(url);
 }
 
-export function exportProject(project: LabProject): void {
+export function exportProject(project: LabProject, capture?: Uint8Array): void {
   // Export uses the same validation boundary as local persistence. This avoids
   // producing a file that the application itself would correctly refuse later.
   const validated = parseProject(project);
-  const manifest = createProjectManifest(validated);
+  const manifest = createProjectManifest(validated, capture);
   download(`${validated.name.replaceAll(" ", "-").toLowerCase()}.netsim`, manifest);
 }
 
@@ -202,28 +203,30 @@ function profileLock(): ProjectManifestV1["profileLock"] {
   };
 }
 
-export function createProjectManifest(project: LabProject): ProjectManifestV1 {
+export function createProjectManifest(project: LabProject, capture?: Uint8Array): ProjectManifestV1 {
   // Plain project export deliberately carries no forwarding state. Importing
   // it must start a new runtime with empty ARP, queues and protocol progress.
   return {
     mode: "project",
     formatVersion: 1,
     profileLock: profileLock(),
-    project: parseProject(project)
+    project: parseProject(project),
+    ...(capture?.length ? { captureBase64: base64(capture) } : {})
   };
 }
 
 export function exportCheckpoint(project: LabProject, checkpoint: Uint8Array,
-  capture?: Uint8Array): void {
+  capture?: Uint8Array, terminalPresentation?: CliPresentationStateV1): void {
   // Structural bytes and optional diagnostics share one profile-locked wrapper
   // so a user cannot pair a capture with another lab generation accidentally.
   const validated = parseProject(project);
-  const manifest = createCheckpointManifest(validated, checkpoint, capture);
+  const manifest = createCheckpointManifest(validated, checkpoint, capture, terminalPresentation);
   download(`${validated.name.replaceAll(" ", "-").toLowerCase()}-checkpoint.netsim`, manifest);
 }
 
 export function createCheckpointManifest(project: LabProject,
-  checkpoint: Uint8Array, capture?: Uint8Array): ProjectManifestV1 {
+  checkpoint: Uint8Array, capture?: Uint8Array,
+  terminalPresentation?: CliPresentationStateV1): ProjectManifestV1 {
   // An empty structural payload can never be a valid checkpoint and would make
   // fallback behavior ambiguous, so reject it before creating the manifest.
   if (!checkpoint.length) throw new Error("A checkpoint export cannot be empty");
@@ -233,7 +236,9 @@ export function createCheckpointManifest(project: LabProject,
     profileLock: profileLock(),
     project: parseProject(project),
     checkpointBase64: base64(checkpoint),
-    ...(capture?.length ? { captureBase64: base64(capture) } : {})
+    ...(capture?.length ? { captureBase64: base64(capture) } : {}),
+    ...(terminalPresentation
+      ? { terminalPresentation: parseCliPresentationState(terminalPresentation) } : {})
   };
 }
 
@@ -247,7 +252,8 @@ export class IncompatibleCheckpointError extends Error {
 }
 
 export function parseNetsim(text: string, allowProjectOnly = false):
-  { project: LabProject; checkpoint?: Uint8Array; capture?: Uint8Array } {
+  { project: LabProject; checkpoint?: Uint8Array; capture?: Uint8Array;
+    terminalPresentation?: CliPresentationStateV1 } {
   // Header, project schema and profile identity are validated before binary
   // decoding. No caller receives a partly trusted manifest on any failure.
   const decoded = JSON.parse(text) as Partial<ProjectManifestV1>;
@@ -270,19 +276,31 @@ export function parseNetsim(text: string, allowProjectOnly = false):
     throw new Error("The checkpoint manifest has no structural state");
   if (decoded.mode === "checkpoint" && !checkpointCompatible)
     return { project };
+  if (decoded.mode === "project" && decoded.terminalPresentation !== undefined)
+    throw new Error("A project-only manifest cannot contain terminal checkpoint state");
   return {
     project,
     checkpoint: typeof decoded.checkpointBase64 === "string" ? decodeBase64(decoded.checkpointBase64) : undefined,
-    capture: typeof decoded.captureBase64 === "string" ? decodeBase64(decoded.captureBase64) : undefined
+    capture: typeof decoded.captureBase64 === "string" ? decodeBase64(decoded.captureBase64) : undefined,
+    terminalPresentation: decoded.terminalPresentation === undefined
+      ? undefined : parseCliPresentationState(decoded.terminalPresentation)
   };
 }
 
 export async function importNetsim(file: File, allowProjectOnly = false):
-  Promise<{ project: LabProject; checkpoint?: Uint8Array; capture?: Uint8Array }> {
+  Promise<{ project: LabProject; checkpoint?: Uint8Array; capture?: Uint8Array;
+    terminalPresentation?: CliPresentationStateV1 }> {
   // File is read once to avoid a replacement race between header validation
   // and binary extraction on mutable host-backed File implementations.
   return parseNetsim(await file.text(), allowProjectOnly);
 }
+
+// These exact product-interface names mirror the implementation plan while
+// remaining in the application layer that owns layout, notes and browser file
+// delivery. The C++ core cannot truthfully export those fields and therefore
+// exposes only runtime configuration and structural checkpoint primitives.
+export const project_export = exportProject;
+export const project_import = importNetsim;
 
 export async function importProject(file: File): Promise<LabProject> {
   // Import never trusts the file extension or wrapper metadata. Only a project

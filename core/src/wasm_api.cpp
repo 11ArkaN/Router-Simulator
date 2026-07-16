@@ -4,10 +4,13 @@
 #include "router/generated_runtime_protocol.hpp"
 #include "router/runtime.hpp"
 
+#include <array>
 #include <cstddef>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -23,6 +26,60 @@ std::unique_ptr<router::Runtime> runtime;
 // Emscripten callers receive a borrowed pointer. Thread-local storage keeps the
 // previous command result valid until the next API call on the same worker.
 thread_local std::string response;
+
+struct CliStreamAdapter {
+  // The C ABI accepts terminal byte chunks, while Runtime owns command and
+  // configuration semantics. This adapter owns only an unsubmitted line and
+  // the three documented history regions. Each history is bounded by the
+  // generated SR OS default, and each line is bounded by the control message.
+  std::string line;
+  std::size_t cursor{};
+  std::array<std::vector<std::string>, 3> histories;
+  std::array<std::size_t, 3> history_indices{};
+  bool previous_was_cr{};
+};
+
+thread_local CliStreamAdapter cli_stream;
+
+std::size_t cli_history_region() {
+  // Runtime serializes engine and history-region as netstrings. Parsing only
+  // the second field keeps this ABI adapter independent from CLI prompts and
+  // does not duplicate workflow decisions from the control owner.
+  if (!runtime)
+    return 0U;
+  const auto encoded =
+      runtime->command(router::runtime_protocol::terminal_state);
+  std::string_view state = encoded;
+  for (unsigned field = 0; field < 2U; ++field) {
+    const auto colon = state.find(':');
+    if (colon == std::string_view::npos)
+      return 0U;
+    std::size_t length{};
+    for (const char digit : state.substr(0, colon)) {
+      if (digit < '0' || digit > '9')
+        return 0U;
+      length = length * 10U + static_cast<std::size_t>(digit - '0');
+    }
+    state.remove_prefix(colon + 1U);
+    if (length >= state.size() || state[length] != ',')
+      return 0U;
+    const auto value = state.substr(0, length);
+    state.remove_prefix(length + 1U);
+    if (field == 1U) {
+      if (value == "md-configuration")
+        return 1U;
+      if (value == "classic")
+        return 2U;
+    }
+  }
+  return 0U;
+}
+
+void reset_cli_stream() {
+  cli_stream = {};
+  for (auto &history : cli_stream.histories)
+    history.reserve(router::profile::cli_history_entries);
+}
 } // namespace
 
 extern "C" {
@@ -101,17 +158,93 @@ RS_EXPORT const char *lab_submit_command(const char *command) {
   return rs_command(command);
 }
 // The first milestone owns one persistent router CLI session inside Runtime.
-RS_EXPORT int cli_open_session() { return runtime ? 1 : 0; }
+RS_EXPORT int cli_open_session() {
+  // Opening resets presentation bytes only. The persistent router session and
+  // candidate datastore remain owned by Runtime and are not recreated here.
+  if (!runtime)
+    return 0;
+  reset_cli_stream();
+  response.clear();
+  return 1;
+}
 
 RS_EXPORT const char *cli_push_input(const char *input) {
-  // This compatibility call submits a complete line. Byte-level editing and
-  // history remain in the terminal adapter until the dedicated stream ABI
-  // lands.
-  response = runtime
-                 ? runtime->command(
-                       std::string{router::runtime_protocol::terminal_execute} +
-                       (input ? input : ""))
-                 : "ERROR: runtime is not initialized";
+  // Preconditions: cli_open_session succeeded and input points to a NUL
+  // terminated byte chunk. Postcondition: complete lines are submitted in byte
+  // order, incomplete input stays adapter-owned, and overflow changes nothing
+  // beyond a returned explicit error. The borrowed result lasts until the next
+  // C ABI call on this Worker.
+  if (!runtime) {
+    response = "ERROR: runtime is not initialized";
+    return response.c_str();
+  }
+  response.clear();
+  const std::string_view bytes = input ? std::string_view{input} : std::string_view{};
+  for (std::size_t offset = 0; offset < bytes.size();) {
+    const auto remaining = bytes.substr(offset);
+    if (remaining.starts_with("\x1b[A") || remaining.starts_with("\x1b[B")) {
+      const auto region = cli_history_region();
+      auto &history = cli_stream.histories[region];
+      auto &index = cli_stream.history_indices[region];
+      if (remaining[2] == 'A' && index > 0U)
+        --index;
+      else if (remaining[2] == 'B' && index < history.size())
+        ++index;
+      cli_stream.line = index < history.size() ? history[index] : std::string{};
+      cli_stream.cursor = cli_stream.line.size();
+      offset += 3U;
+      continue;
+    }
+    if (remaining.starts_with("\x1b[D") || remaining.starts_with("\x1b[C")) {
+      if (remaining[2] == 'D' && cli_stream.cursor > 0U)
+        --cli_stream.cursor;
+      else if (remaining[2] == 'C' && cli_stream.cursor < cli_stream.line.size())
+        ++cli_stream.cursor;
+      offset += 3U;
+      continue;
+    }
+    const auto byte = static_cast<unsigned char>(bytes[offset++]);
+    if (byte == '\n' && cli_stream.previous_was_cr) {
+      cli_stream.previous_was_cr = false;
+      continue;
+    }
+    cli_stream.previous_was_cr = byte == '\r';
+    if (byte == '\r' || byte == '\n') {
+      const auto region = cli_history_region();
+      auto &history = cli_stream.histories[region];
+      if (!cli_stream.line.empty() &&
+          (history.empty() || history.back() != cli_stream.line)) {
+        if (history.size() == router::profile::cli_history_entries)
+          history.erase(history.begin());
+        history.push_back(cli_stream.line);
+      }
+      cli_stream.history_indices[region] = history.size();
+      response += runtime->command(
+          std::string{router::runtime_protocol::terminal_execute} + cli_stream.line);
+      cli_stream.line.clear();
+      cli_stream.cursor = 0U;
+    } else if (byte == 0x7fU || byte == 0x08U) {
+      if (cli_stream.cursor > 0U) {
+        cli_stream.line.erase(--cli_stream.cursor, 1U);
+      }
+    } else if (byte == 0x01U) {
+      cli_stream.cursor = 0U;
+    } else if (byte == 0x05U) {
+      cli_stream.cursor = cli_stream.line.size();
+    } else if (byte == 0x02U) {
+      if (cli_stream.cursor > 0U)
+        --cli_stream.cursor;
+    } else if (byte == 0x06U) {
+      if (cli_stream.cursor < cli_stream.line.size())
+        ++cli_stream.cursor;
+    } else if (byte >= 0x20U) {
+      if (cli_stream.line.size() + 1U >= router::profile::command_message_bytes) {
+        response = "ERROR: CLI input line exceeds command capacity";
+        break;
+      }
+      cli_stream.line.insert(cli_stream.cursor++, 1U, static_cast<char>(byte));
+    }
+  }
   return response.c_str();
 }
 
@@ -192,13 +325,6 @@ RS_EXPORT std::size_t checkpoint_export_size() {
 RS_EXPORT int checkpoint_import(const std::uint8_t *bytes, std::size_t size) {
   // Input bytes are borrowed only until Runtime stages its private copy.
   return runtime && bytes && runtime->import_checkpoint({bytes, size}) ? 1 : 0;
-}
-
-RS_EXPORT const char *project_export() {
-  // Project export returns a validated operational snapshot, not shared memory.
-  response = runtime ? runtime->command(router::runtime_protocol::snapshot)
-                     : "ERROR: runtime is not initialized";
-  return response.c_str();
 }
 
 RS_EXPORT int project_import(const char *project_command) {
