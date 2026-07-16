@@ -2,34 +2,21 @@
 
 **Status: Work in progress. This is not a complete Nokia SR OS implementation.**
 
-Router Simulator is a local, real-time network device emulator that runs in a browser. It models modular router hardware, terminal management, packet forwarding, links and host traffic. The runtime processes encoded Ethernet, ARP, IPv4 and ICMP traffic instead of calculating connectivity from the topology graph.
+Router Simulator is a browser-based network emulator that runs in real time. You build a topology of modular routers and hosts, provision their hardware, and drive them from a CLI, while a packet engine underneath moves real Ethernet, ARP, IPv4 and ICMP frames across the links. A ping succeeds only when its packet is actually forwarded, queued and delivered.
 
 Router Simulator is an independent, unofficial educational project. It is not affiliated with, sponsored by, endorsed by or produced by Nokia. The application uses Nokia SR OS 26.7.R1 documentation as a behavior reference. It does not use the Nokia logo and does not claim full product compatibility.
 
 ## Implemented capabilities
 
-Implemented behavior includes:
+A lab holds up to 16 routers, 16 hosts and 64 physical links. Routers come from generated 7750 SR-1, SR-7 and SR-12 catalogs, and you provision their cards and MDAs from whatever combinations the catalog allows. Insertion, removal and type mismatches are all handled. Ports aren't fixed up front. They appear as you equip the chassis, card and MDA inventory, and the model keeps inventory, provisioning, running and operational state apart instead of merging them.
 
-- empty user-defined topologies with up to 16 routers, 16 hosts and 64 links
-- generated 7750 SR-1, SR-7 and SR-12 hardware catalogs
-- card and MDA provisioning for compatible catalog combinations
-- MDA provisioning, insertion, removal and mismatch handling
-- dynamic port creation from the selected chassis, card and MDA inventory
-- separate inventory, provisioning, running and operational state
-- MD-CLI and classic CLI engines in the same router terminal session
-- transactional MD-CLI configuration and immediate classic CLI configuration
-- prompts, context navigation, completion, line editing, three history regions and paging
-- a virtualized terminal window with the complete transcript archived in OPFS
-- Ethernet frame encoding, link serialization, propagation delay and bounded queues
-- ARP learning and expiry, connected routes, static routes, RIB selection and FIB generations
-- IPv4 forwarding, TTL handling, fragmentation, Path MTU behavior and ICMP errors
-- host and router ping through encoded packets
-- physical link failure and hardware removal cascades
-- live capture at link, ingress, egress and CPM observation points
-- PCAPNG export accepted by `tshark`
-- project export, structural checkpoints and profile-locked `.netsim` import
-- responsive topology, inspector, sidebar and terminal panels with user-controlled resizing
-- drag and drop router and host creation with physical-port link selection
+Every console runs the MD-CLI and classic CLI engines in one session. MD-CLI edits land as transactions, classic edits take effect immediately. The terminal carries prompts, context navigation, completion, line editing, three history regions and paging. Its visible window stays virtualized while the full transcript is archived to OPFS.
+
+The packet plane is the point of the whole thing. Frames are encoded, serialized onto links with propagation delay and bounded queues, and forwarded for real. ARP is learned and aged. Connected and static routes feed RIB selection and versioned FIB generations, and IPv4 forwarding covers TTL, fragmentation, Path MTU and ICMP errors. Host and router pings ride real packets, so failing a link or pulling a line card cascades through everything downstream.
+
+Live traffic can be captured at link, ingress, egress and CPM points and exported as PCAPNG that `tshark` opens cleanly. A project saves to `.netsim` as portable intent or as a full structural checkpoint, and import is locked to the matching profile.
+
+Routers and hosts are dragged onto the canvas, and a link picks its physical ports when you connect it. The topology, inspector, sidebar and terminal panels resize on desktop. Below 900px the sidebar folds into a drawer and the inspector into an overlay.
 
 ## Architecture
 
@@ -39,11 +26,12 @@ At startup, the generated CPU policy creates one, three or five pthreads in addi
 
 The runtime uses the host monotonic clock. It has no simulation timeline, global future-event heap, pause control, step control or speed multiplier. Protocol and hardware deadlines pass in real time.
 
-The main components are:
+Main components:
 
 - React, Vite and TanStack Router for the application shell
 - React Flow for topology rendering
 - xterm.js for terminal rendering
+- lucide-react for the interface icons
 - C++20 for hardware, configuration, CLI, routing, packet processing and capture
 - WebAssembly pthreads and `SharedArrayBuffer` for the runtime
 - IndexedDB for project metadata
@@ -53,18 +41,9 @@ The C++ core has no dependency on React, the DOM, xterm.js, IndexedDB or OPFS.
 
 ## Current scope
 
-The following boundaries apply to the current implementation:
+The hard ceilings are 16 routers, 16 hosts, 64 links and four terminal sessions per router. Hardware is whatever the active release catalog defines, down to its Ethernet card functions and port layouts, and the CLI exposes only the commands its capability matrix backs. The IPv4 and host stacks cover the functions above rather than the full RFC surface. The larger parts of SR OS, its routing protocols, services, MPLS, QoS, HA and management, aren't built yet. Card and MDA initialization times are emulator profile estimates, not measured hardware.
 
-- up to 16 routers, 16 hosts, 64 physical links and four terminal sessions per router
-- Ethernet card functions and port layouts covered by the active release catalog
-- MD-CLI and classic CLI expose only commands backed by the current capability matrix
-- the IPv4 and host stacks implement the documented functions listed above, not every RFC option
-- broader SR OS routing protocols, services, MPLS, QoS, HA and management protocols are not implemented
-- card and MDA initialization times are experimental emulator profile values
-- checkpoint import requires the matching profile, checkpoint ABI and build hash
-- there is no single-thread fallback when cross-origin isolation is unavailable
-
-Unsupported commands return an explicit error. They do not report success without changing router state.
+Checkpoint import only accepts a file whose profile, checkpoint ABI and build hash match the running build. Without cross-origin isolation the runtime refuses to start at all. A command it doesn't support returns an explicit error, and it reports success only after it has actually changed router state.
 
 ## Requirements
 
