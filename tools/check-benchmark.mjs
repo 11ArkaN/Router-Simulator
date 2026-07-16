@@ -46,16 +46,21 @@ const measurements = [
 ];
 const scale = median(measurements.map(([, observed, reference]) => observed / reference));
 const coherentLimit = 1 + baseline.coherentSlowdownLimitPercent / 100;
+const rawRatios = measurements.map(([, observed, reference]) => observed / reference);
+const independentlySlowerStages = rawRatios.filter((ratio) => ratio > limit).length;
 
 // CPU frequency changes scale all three independent paths together. Normalize
 // by their median scale so a relative regression in any one path still fails,
 // while a laptop power-state change does not create three false positives. A
-// symmetric lower bound catches the case where two paths regress together and
-// make the unchanged third path appear relatively faster. The separate 2x
-// coherent guard still rejects catastrophic compiler or runtime slowdowns.
+// lower normalized value is evidence of a two-stage regression only when at
+// least two raw stages are independently slower than the limit. Without that
+// guard, one genuinely faster stage is mislabeled as a regression merely
+// because the other two stayed at the baseline. The separate coherent guard
+// still rejects catastrophic compiler or runtime slowdowns.
 for (const [name, observed, reference] of measurements) {
   const normalized = (observed / reference) / scale;
-  if (normalized > limit || normalized < lowerLimit) failures.push(name);
+  if (normalized > limit ||
+      (independentlySlowerStages >= 2 && normalized < lowerLimit)) failures.push(name);
 }
 if (scale > coherentLimit) failures.push("coherent-runtime-slowdown");
 if (failures.length) {

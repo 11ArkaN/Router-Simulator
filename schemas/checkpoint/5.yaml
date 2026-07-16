@@ -1,0 +1,26 @@
+version: 5
+byte_order: little-endian
+fields:
+  - magic
+  - schema_hash
+  - release_catalog_hash
+  - device_registry_with_all_generations
+  - host_registry_with_all_generations
+  - topology_registry_with_all_generations_admin_carrier_speed_and_delay
+  - session_registry_with_all_generations
+  - session_cli_engine_workflow_contexts_confirmation_target_and_prompt_flags
+  - router_hardware_inventory
+  - router_port_configuration_compatibility
+  - control_rib_inputs_and_selected_rib
+  - session_workflow_candidates_and_revisions
+  - router_forwarding_ports_fib_adjacencies_and_pending_frames
+  - host_stack_identity_mtu_neighbor_pending_and_reassembly
+  - fabric_links_tx_in_flight_rx_and_relative_deadlines
+  - capture_points_records_and_bindings
+  - counters
+  - next_command_identity
+  - portable_router_port_interface_and_static_route_intent
+  - portable_global_and_private_candidate_values
+  - asynchronous_terminal_operation_and_relative_deadlines
+  - portable_host_identity_and_mtu_intent
+  - portable_capture_location_intent

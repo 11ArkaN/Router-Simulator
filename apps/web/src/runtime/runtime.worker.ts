@@ -3,25 +3,19 @@
 // Emscripten Worker owner, pthread smoke gate and binary ABI adapter. All Wasm
 // calls stay off the React thread and binary exports are copied before transfer.
 
-import { GENERATED_PROFILE, RUNTIME_PROTOCOL } from "@router-simulator/contracts";
-
-interface TelemetryLayout {
-  abi: number; size: number; sequence: number; abiVersion: number;
-  workerCount: number; portBitmap: number; controlThreadId: number;
-  forwardingThreadId: number; capturedFrames: number; captureDropped: number;
-  droppedPackets: number;
-}
+import { LAB_RUNTIME_PROTOCOL, PROFILE_CATALOG } from "@router-simulator/contracts";
+import type { TelemetryLayout } from "./telemetry-contract";
 
 interface WasmModule {
   // ccall owns UTF-8 marshalling for pointer-based C exports. Calling raw
   // _rs_command with a JavaScript string would pass an invalid numeric pointer.
-  _rs_create(): number;
-  _rs_shutdown(): void;
+  _runtime_initialize(): number;
+  _lab_close(): void;
   _telemetry_get_page(): number;
   _telemetry_get_page_size(): number;
-  _rs_capture_prepare(): number;
-  _rs_capture_data(): number;
-  _rs_capture_size(): number;
+  _telemetry_publish(): void;
+  _capture_export_pcapng(): number;
+  _capture_export_size(): number;
   _checkpoint_export(): number;
   _checkpoint_export_size(): number;
   _checkpoint_import(pointer: number, size: number): number;
@@ -37,6 +31,14 @@ type RuntimeRequest = { id: number; command?: string; action?: "capture-export" 
 type RuntimeResponse = { id: number; ok: boolean; value?: string; bytes?: ArrayBuffer; error?: string };
 
 let modulePromise: Promise<WasmModule> | undefined;
+let telemetryTimer: number | undefined;
+
+function netstrings(values: readonly string[]): string {
+  // Startup uses the same protocol encoder as ordinary client commands. Text
+  // byte length, not UTF-16 code units, defines each field on the C++ side.
+  const encoder = new TextEncoder();
+  return values.map((value) => `${encoder.encode(value).byteLength}:${value},`).join("");
+}
 
 async function loadRuntime(): Promise<WasmModule> {
   // Memoization guarantees one Emscripten module, one shared memory, and one C++
@@ -51,7 +53,7 @@ async function loadRuntime(): Promise<WasmModule> {
       .then(async (module: WasmModule) => {
         // C++ construction starts the fixed pthread domains before any command
         // is accepted by the UI bridge.
-        if (!module._rs_create()) throw new Error("Runtime instance already exists");
+        if (!module._runtime_initialize()) throw new Error("Multi-router runtime initialization failed");
         const buffer = module.HEAPU8.buffer;
         if (!(buffer instanceof SharedArrayBuffer)) {
           throw new Error("Emscripten runtime did not create shared WebAssembly memory");
@@ -61,30 +63,37 @@ async function loadRuntime(): Promise<WasmModule> {
         const layoutText = module.ccall("telemetry_get_layout", "string", [], []);
         if (typeof layoutText !== "string") throw new Error("Telemetry layout ABI is unavailable");
         const layout = JSON.parse(layoutText) as TelemetryLayout;
-        if (layout.abi !== GENERATED_PROFILE.abi.telemetry || layout.size !== size) {
+        if (layout.abi !== 5 || layout.size !== size) {
           throw new Error("Telemetry layout ABI does not match the active profile");
         }
         const health = new DataView(buffer, offset, size);
-        const controlOwner = new BigUint64Array(buffer, offset + layout.controlThreadId, 1);
-        const forwardingOwner = new BigUint64Array(buffer, offset + layout.forwardingThreadId, 1);
         // pthread creation is asynchronous in Emscripten. Polling the shared
         // health page for at most two seconds distinguishes a genuine startup
         // failure from the short interval before both C++ entry points publish
         // their owner IDs. Each snapshot asks the control owner to republish;
         // no packet state or device timer is advanced by this startup gate.
         let ownersReady = false;
-        for (let attempt = 0; attempt < GENERATED_PROFILE.timing.worker_startup_attempts; ++attempt) {
-          module.ccall("rs_command", "string", ["string"], [RUNTIME_PROTOCOL.snapshot]);
-          const control = Atomics.load(controlOwner, 0);
-          const forwarding = Atomics.load(forwardingOwner, 0);
-          if (health.getUint32(layout.workerCount, true) >=
-                GENERATED_PROFILE.resources.runtime_worker_count && control !== 0n &&
-              forwarding !== 0n && control !== forwarding) {
+        for (let attempt = 0; attempt < PROFILE_CATALOG.runtime.worker_startup_attempts; ++attempt) {
+          module.ccall("lab_submit_command", "string", ["string"],
+            [netstrings([LAB_RUNTIME_PROTOCOL.snapshot])]);
+          const workerCount = health.getUint32(layout.workerCount, true);
+          const ownerIds = new Set<bigint>();
+          let complete = workerCount >= 2 &&
+            workerCount <= PROFILE_CATALOG.runtime.maximum_worker_domains;
+          for (let index = 0; complete && index < workerCount; ++index) {
+            const record = offset + layout.workerDirectory + index * layout.workerBlockSize;
+            const running = new Uint8Array(buffer, record + layout.workerRunning, 1)[0];
+            const ownerId = Atomics.load(
+              new BigUint64Array(buffer, record + layout.workerThreadId, 1), 0);
+            complete = running === 1 && ownerId !== 0n && !ownerIds.has(ownerId);
+            ownerIds.add(ownerId);
+          }
+          if (complete) {
             ownersReady = true;
             break;
           }
           await new Promise((resolve) => setTimeout(
-            resolve, GENERATED_PROFILE.timing.worker_startup_poll_milliseconds));
+            resolve, PROFILE_CATALOG.runtime.worker_startup_poll_milliseconds));
         }
         // This smoke test executes before the lab is announced ready. It proves
         // that both worker domains published distinct owners into shared memory
@@ -93,6 +102,11 @@ async function loadRuntime(): Promise<WasmModule> {
           throw new Error("pthread smoke test did not observe distinct control and forwarding owners");
         }
         self.postMessage({ kind: "telemetry-page", buffer, offset, size, layout });
+        // The Worker event loop is the only LabRuntime caller. A bounded timer
+        // therefore preserves control affinity while refreshing shared data
+        // independently from UI commands and packet frequency.
+        telemetryTimer = self.setInterval(() => module._telemetry_publish(),
+          PROFILE_CATALOG.runtime.telemetry_publish_interval_milliseconds);
         return module;
       });
   }
@@ -107,15 +121,16 @@ self.onmessage = async ({ data }: MessageEvent<RuntimeRequest>) => {
       // Do not initialize Wasm merely to shut down a Worker that never finished
       // booting. If construction completed, rs_shutdown performs the required
       // pthread joins before the Worker closes its own event loop.
-      if (modulePromise) (await modulePromise)._rs_shutdown();
+      if (telemetryTimer !== undefined) self.clearInterval(telemetryTimer);
+      if (modulePromise) (await modulePromise)._lab_close();
       self.close();
       return;
     }
     const module = await loadRuntime();
     if (data.action === "capture-export") {
-      if (!module._rs_capture_prepare()) throw new Error("PCAPNG export failed");
-      const pointer = module._rs_capture_data();
-      const size = module._rs_capture_size();
+      const pointer = module._capture_export_pcapng();
+      const size = module._capture_export_size();
+      if (!pointer || !size) throw new Error("PCAPNG export failed");
       const bytes = module.HEAPU8.slice(pointer, pointer + size).buffer;
       self.postMessage({ id: data.id, ok: true, bytes } satisfies RuntimeResponse, [bytes]);
       return;
@@ -142,7 +157,7 @@ self.onmessage = async ({ data }: MessageEvent<RuntimeRequest>) => {
       self.postMessage({ id: data.id, ok: true, value: "checkpoint imported" } satisfies RuntimeResponse);
       return;
     }
-    const value = module.ccall("rs_command", "string", ["string"], [data.command ?? ""]);
+    const value = module.ccall("lab_submit_command", "string", ["string"], [data.command ?? ""]);
     if (typeof value !== "string") throw new Error("Runtime returned an invalid command response");
     self.postMessage({ id: data.id, ok: true, value } satisfies RuntimeResponse);
   } catch (cause) {

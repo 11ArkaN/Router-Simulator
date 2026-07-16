@@ -3,7 +3,7 @@
 // changing the established packet-codec baseline when new structures are added.
 
 #include "router/packet_pool.hpp"
-#include "router/routing.hpp"
+#include "router/multi_device_routing.hpp"
 #include "router/spsc_ring.hpp"
 #include "router/telemetry.hpp"
 
@@ -48,22 +48,22 @@ int main() {
 
   // Alternating two prefixes prevents a compiler from folding the lookup to a
   // single constant result while keeping branch distribution reproducible.
-  router::routing::FibProgram fib{.generation = 1, .count = 2};
-  fib.entries[0] = {0xc0000200U, 24, 0, 0};
-  fib.entries[1] = {0xc6336400U, 24, 1, 0};
+  router::lab::routing::FibProgram fib{.generation = 1, .routes = {}, .count = 2};
+  fib.routes[0] = {0xc0000200U, 0, 0, 24};
+  fib.routes[1] = {0xc6336400U, 0, 1, 24};
   const auto fib_started = std::chrono::steady_clock::now();
   for (std::uint32_t index = 0; index < iterations; ++index) {
-    std::uint8_t port{};
-    if (!router::routing::lookup(fib, index & 1U ? 0xc0000202U : 0xc6336402U,
-                                 port))
+    router::lab::routing::Route route;
+    if (!router::lab::routing::lookup(
+            fib, index & 1U ? 0xc0000202U : 0xc6336402U, route))
       return 4;
-    sink += port;
+    sink += route.port_ordinal;
   }
   const auto fib_elapsed = std::chrono::steady_clock::now() - fib_started;
 
   // Telemetry uses the same odd/even seqlock publication sequence as Runtime.
   // atomic_ref targets the ABI field without changing its plain-data layout.
-  router::TelemetryPageV1 page;
+  router::TelemetryPageV5 page;
   const auto telemetry_started = std::chrono::steady_clock::now();
   for (std::uint32_t index = 0; index < iterations; ++index) {
     std::atomic_ref<std::uint32_t> sequence(page.sequence);

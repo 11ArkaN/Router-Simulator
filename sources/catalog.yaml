@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: nokia.sros.26_7.srsim.supported_hardware
+    kind: hardware-capability
+    release: 26.7.R1
+    platforms: [7750 SR-1, 7750 SR-7, 7750 SR-12]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7x50-shared/srsim-installation-setup/appendices.html
+    section: 7750 SR-1, SR-7 and SR-12 supported hardware tables
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-16
+    implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, packages/contracts/src/generated-device-catalog.ts, core/include/router/generated_device_catalog.hpp, core/include/router/lab_registry.hpp, core/include/router/router_hardware_inventory.hpp, core/include/router/runtime_supervisor.hpp, core/src/lab_registry.cpp, core/src/router_hardware_inventory.cpp, core/src/runtime_supervisor.cpp]
+    tests: [packages/contracts/tests/multi-router-project.test.ts, core/tests/lab_registry_test.cpp, core/tests/router_hardware_inventory_test.cpp, core/tests/runtime_supervisor_test.cpp]
+    status: implemented
+    notes: The catalog records documented SR-SIM hardware identities and compatibility. Specialized non-Ethernet functions remain unsupported. Runtime memory limits are emulator resources and not vendor platform limits.
   - id: nokia.sros.26_7.sr7.supported_hardware
     kind: hardware-capability
     release: 26.7.R1
@@ -10,8 +24,8 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [profiles/7750-sr-7-iom4-e.yaml, tools/generate-profile.mjs, core/include/router/generated_profile.hpp, packages/contracts/src/generated-profile.ts, core/include/router/device.hpp, core/src/hardware.cpp]
-    tests: [core/tests/hardware_test.cpp, packages/contracts/tests/project.test.ts]
+    implementation: [profiles/7750-sr-7-iom4-e.yaml, profiles/catalog/26.7.R1.yaml, tools/generate-profile.mjs, tools/generate-device-catalog.mjs, core/include/router/generated_profile.hpp, packages/contracts/src/generated-device-catalog.ts, core/include/router/device.hpp, core/include/router/router_hardware_inventory.hpp, core/src/hardware.cpp, core/src/router_hardware_inventory.cpp]
+    tests: [core/tests/hardware_test.cpp, core/tests/router_hardware_inventory_test.cpp, packages/contracts/tests/multi-router-project.test.ts]
     status: implemented
     notes: Supported identities are sourced. Initialization delays remain explicitly experimental emulator profile values, not physical platform measurements.
   - id: nokia.sros.26_7.physical_port.provisioning
@@ -24,8 +38,8 @@ records:
     rfc_refs: []
     yang_path: /configure/card
     last_verified_at: 2026-07-15
-    implementation: [profiles/7750-sr-7-iom4-e.yaml, tools/generate-profile.mjs, packages/contracts/src/index.ts, core/include/router/device.hpp, core/src/runtime.cpp, core/src/hardware.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp]
-    tests: [core/tests/cli_test.cpp, core/tests/hardware_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp]
+    implementation: [profiles/7750-sr-7-iom4-e.yaml, profiles/catalog/26.7.R1.yaml, tools/generate-profile.mjs, tools/generate-device-catalog.mjs, packages/contracts/src/index.ts, core/include/router/device.hpp, core/include/router/router_hardware_inventory.hpp, core/src/hardware.cpp, core/src/router_hardware_inventory.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, core/src/lab_runtime.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/hardware_test.cpp, core/tests/router_hardware_inventory_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
     notes: A physical port is created by compatible equipped MDA inventory and requires matching provisioning plus completed lifecycle before it can become operational. New ports are administratively disabled; the saved starter lab explicitly enables only its two endpoint-facing ports.
   - id: ietf.arp.rfc826
@@ -38,8 +52,8 @@ records:
     rfc_refs: [RFC826]
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/src/packet.cpp, core/src/network.cpp, core/src/network_adjacency.cpp, core/src/network_endpoint.cpp]
-    tests: [core/tests/packet_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp]
+    implementation: [core/include/router/router_forwarder.hpp, core/src/packet.cpp, core/src/network_endpoint.cpp, core/src/router_forwarder.cpp, core/src/network_plane.cpp]
+    tests: [core/tests/packet_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/network_plane_test.cpp]
     status: implemented
     notes: Requests and replies cross TX, link propagation, RX and receiver parsing. Sender mappings gate pending IPv4 traffic.
   - id: ietf.host_requirements.rfc1122
@@ -52,8 +66,8 @@ records:
     rfc_refs: [RFC1122]
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/include/router/routing.hpp, core/src/network.cpp, core/src/network_endpoint.cpp, core/src/project_configuration.cpp, core/src/runtime.cpp, packages/contracts/src/index.ts]
-    tests: [core/tests/routing_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp, packages/contracts/tests/project.test.ts]
+    implementation: [core/include/router/routing.hpp, core/src/network_endpoint.cpp, core/src/multi_device_routing.cpp, core/src/lab_runtime.cpp, packages/contracts/src/lab-project-v3.ts]
+    tests: [core/tests/routing_test.cpp, core/tests/multi_device_routing_test.cpp, core/tests/lab_runtime_test.cpp, packages/contracts/tests/multi-router-project.test.ts]
     status: partially-implemented
     notes: The endpoint selects an on-link destination or configured gateway from its prefix before ARP. Full RFC 1122 host behavior is outside this milestone.
   - id: ietf.icmp.rfc792
@@ -66,8 +80,8 @@ records:
     rfc_refs: [RFC792, RFC791]
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/src/packet.cpp, core/src/network.cpp, core/src/runtime.cpp]
-    tests: [core/tests/packet_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp]
+    implementation: [core/src/packet.cpp, core/src/router_forwarder.cpp, core/src/network_endpoint.cpp, core/src/network_plane.cpp]
+    tests: [core/tests/packet_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/network_plane_test.cpp]
     status: implemented
     notes: Echo Reply is derived from received bytes and preserves ICMP identifier, sequence and 56 data octets.
   - id: nokia.sros.26_7.md_cli.navigation
@@ -81,7 +95,7 @@ records:
     yang_path: null
     last_verified_at: 2026-07-15
     implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli.cpp, core/src/cli_parser.cpp, core/src/cli_md.cpp, apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts, apps/web/src/persistence.ts, packages/contracts/src/index.ts]
-    tests: [core/tests/cli_test.cpp, apps/web/src/ui/terminal-model.test.ts, apps/web/src/persistence.test.ts, e2e/first-milestone.spec.ts]
+    tests: [core/tests/cli_test.cpp, core/tests/session_workflows_test.cpp, core/tests/lab_runtime_test.cpp, apps/web/src/ui/terminal-model.test.ts, apps/web/src/persistence-v3.test.ts, e2e/first-milestone.spec.ts]
     status: partially-implemented
     notes: MD-CLI retains its working context and implements slash, closing-brace, back with an optional level count, exit, exit all, top, editing keys, separate operational and configuration histories, engine-switch messages and prompt markers for the exposed tree. Navigation above /configure exits implicit mode and dirty exits preserve context until confirmed.
   - id: nokia.sros.26_7.classic_cli.navigation
@@ -95,7 +109,7 @@ records:
     yang_path: null
     last_verified_at: 2026-07-15
     implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli.cpp, core/src/cli_parser.cpp, core/src/cli_classic.cpp, apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts, apps/web/src/persistence.ts, packages/contracts/src/index.ts]
-    tests: [core/tests/cli_test.cpp, apps/web/src/ui/terminal-model.test.ts, apps/web/src/persistence.test.ts, e2e/first-milestone.spec.ts]
+    tests: [core/tests/cli_test.cpp, core/tests/session_workflows_test.cpp, core/tests/lab_runtime_test.cpp, apps/web/src/ui/terminal-model.test.ts, apps/web/src/persistence-v3.test.ts, e2e/first-milestone.spec.ts]
     status: partially-implemented
     notes: The exposed classic tree implements hierarchical prompts, global navigation, slash and backslash absolute paths, abbreviations, help variants and documented line-editing keys.
   - id: nokia.sros.26_7.md_cli.configuration_workflow
@@ -108,10 +122,10 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-15
-    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/src/cli.cpp, core/src/cli_md.cpp, core/src/checkpoint.cpp]
-    tests: [core/tests/cli_test.cpp, core/tests/checkpoint_test.cpp]
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/include/router/session_workflows.hpp, core/src/cli.cpp, core/src/cli_md.cpp, core/src/session_workflows.cpp, core/src/lab_checkpoint.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/session_workflows_test.cpp, core/tests/lab_runtime_test.cpp]
     status: partially-implemented
-    notes: Operational startup, exclusive implicit and explicit workflows, the one-way implicit-to-explicit transition, configuration-region confinement, silent successful edits, commit, discard and interactive dirty-exit confirmation are implemented. Private, global, read-only and confirmed commit remain unsupported.
+    notes: The multi-session datastore and terminal grammar implement global visibility, exclusive running locks, private baselines, read-only rejection, path-level merge conflicts, classic interaction with locks and dirty-exit policy.
   - id: nokia.sros.26_7.md_cli.command_completion
     kind: cli-behavior
     release: 26.7.R1
@@ -150,8 +164,8 @@ records:
     rfc_refs: [RFC792, RFC1191]
     yang_path: null
     last_verified_at: 2026-07-15
-    implementation: [schemas/cli/26.7.R1.yaml, core/src/cli.cpp, core/src/runtime.cpp, core/src/network.cpp, core/src/packet.cpp]
-    tests: [core/tests/cli_test.cpp, core/tests/packet_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp]
+    implementation: [schemas/cli/26.7.R1.yaml, core/src/cli.cpp, core/src/lab_runtime.cpp, core/src/network_plane.cpp, core/src/router_forwarder.cpp, core/src/packet.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/packet_test.cpp, core/tests/network_plane_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
     notes: Default count is five, count accepts 1 to 100000, data size defaults to 56 octets, the first untagged endpoint profile accepts 12 to 1472 octets, do-not-fragment controls DF, probes use one-second host-clock intervals, and Ctrl-C reaches both runtime shards through one atomic cancellation word.
   - id: ieee.802_3.ethernet_frame_timing
@@ -163,9 +177,9 @@ records:
     section: IEEE 802.3-2022 Clause 4 MAC parameters, minFrameSize and interPacketGap
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-07-14
-    implementation: [core/include/router/link_direction.hpp, core/src/network.cpp, core/src/project_configuration.cpp, packages/contracts/src/index.ts, profiles/7750-sr-7-iom4-e.yaml]
-    tests: [core/tests/network_test.cpp, core/tests/runtime_test.cpp]
+    last_verified_at: 2026-07-16
+    implementation: [core/include/router/link_direction.hpp, core/include/router/lab_registry.hpp, core/include/router/multi_device_fabric.hpp, core/src/lab_registry.cpp, core/src/lab_runtime.cpp, core/src/multi_device_fabric.cpp, core/src/network_plane.cpp, core/src/runtime_supervisor.cpp, packages/contracts/src/lab-project-v3.ts, packages/contracts/src/lab-runtime-v5.ts, apps/web/src/ui/Topology.tsx, profiles/7750-sr-7-iom4-e.yaml]
+    tests: [core/tests/multi_device_fabric_test.cpp, core/tests/network_plane_test.cpp, core/tests/lab_runtime_test.cpp, core/tests/runtime_supervisor_test.cpp]
     status: implemented
     notes: Serialization derives from port speed and includes preamble, SFD, FCS and IFG. Propagation is persisted per physical project link, affects delivery only, and never reduces transmitter throughput.
   - id: ietf.checksum.rfc1071
@@ -206,8 +220,8 @@ records:
     rfc_refs: [RFC1812]
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [core/src/network.cpp, core/src/network_adjacency.cpp, core/src/network_endpoint.cpp, core/src/network_link_fabric.cpp, core/src/packet.cpp, core/src/routing.cpp]
-    tests: [core/tests/packet_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp, core/tests/routing_test.cpp]
+    implementation: [core/include/router/multi_device_routing.hpp, core/include/router/network_plane.hpp, core/include/router/router_forwarder.hpp, core/src/multi_device_routing.cpp, core/src/network_endpoint.cpp, core/src/multi_device_fabric.cpp, core/src/network_plane.cpp, core/src/packet.cpp, core/src/router_forwarder.cpp, core/src/routing.cpp]
+    tests: [core/tests/multi_device_routing_test.cpp, core/tests/network_plane_test.cpp, core/tests/packet_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/routing_test.cpp]
     status: partially-implemented
     notes: Connected forwarding, bounded ARP pending queues, ICMP Time Exceeded, egress IP MTU enforcement, IPv4 fragmentation and DF rejection are implemented.
   - id: ietf.path_mtu.rfc1191
@@ -220,8 +234,8 @@ records:
     rfc_refs: [RFC1191]
     yang_path: null
     last_verified_at: 2026-07-15
-    implementation: [core/include/router/packet.hpp, core/src/packet.cpp, core/src/network.cpp, core/src/network_endpoint.cpp, core/src/project_configuration.cpp]
-    tests: [core/tests/packet_test.cpp, core/tests/network_test.cpp]
+    implementation: [core/include/router/packet.hpp, core/src/packet.cpp, core/src/router_forwarder.cpp, core/src/network_endpoint.cpp, packages/contracts/src/lab-project-v3.ts]
+    tests: [core/tests/packet_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/network_plane_test.cpp]
     status: implemented
     notes: Oversized DF datagrams return ICMP type 3 code 4 with the egress IP MTU after translating the SR OS Ethernet MTU unit. The error traverses the ingress link as encoded bytes.
   - id: ietf.pcapng.draft_ietf_opsawg_05
@@ -233,11 +247,11 @@ records:
     section: Section Header Block, Interface Description Block, Enhanced Packet Block
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-07-14
-    implementation: [core/src/capture_store.cpp, core/src/runtime.cpp, core/src/wasm_api.cpp]
-    tests: [core/tests/runtime_test.cpp]
-    status: implemented
-    notes: Export generates named Ethernet IDBs from the active profile for every link direction, router ingress, router egress and CPM punt point, with microsecond timestamps and explicit capture-drop accounting.
+    last_verified_at: 2026-07-16
+    implementation: [core/src/capture_store.cpp, core/src/lab_runtime.cpp, core/src/network_plane.cpp, core/src/wasm_api.cpp, core/tools/capture_fixture.cpp, scripts/core.ps1]
+    tests: [core/tests/capture_store_test.cpp, core/tests/network_plane_test.cpp, core/tests/lab_runtime_test.cpp, core/tools/capture_fixture.cpp]
+    status: partially-implemented
+    notes: Export generates named Ethernet IDBs containing stable node identity, current system name, port and direction for selected link, router ingress, router egress and CPM punt points. It maps sparse identities to compact PCAP interface IDs, retains records after point removal, accounts for bounded capture drops and is parsed independently by tshark.
   - id: iana.pcap.linktype_ethernet
     kind: capture-format
     release: current
@@ -249,7 +263,7 @@ records:
     yang_path: null
     last_verified_at: 2026-07-14
     implementation: [core/src/capture_store.cpp]
-    tests: [core/tests/runtime_test.cpp]
+    tests: [core/tests/capture_store_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
     notes: Every Interface Description Block uses registered link type 1 and snap length 1514.
   - id: emscripten.pthreads.shared_memory
@@ -261,11 +275,11 @@ records:
     section: Compiling with pthreads enabled
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-07-14
-    implementation: [core/CMakeLists.txt, schemas/runtime/2.yaml, schemas/checkpoint/4.yaml, core/include/router/generated_runtime_protocol.hpp, core/src/checkpoint.cpp, core/src/runtime_checkpoint.cpp, core/src/runtime_projection.cpp, core/src/wasm_api.cpp, apps/web/src/runtime/runtime.worker.ts, apps/web/src/runtime/client.ts]
-    tests: [core/tests/checkpoint_test.cpp, core/tests/runtime_test.cpp, apps/web/src/persistence.test.ts, apps/web/src/ui/terminal-model.test.ts, e2e/first-milestone.spec.ts]
+    last_verified_at: 2026-07-16
+    implementation: [core/CMakeLists.txt, profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, schemas/runtime/3.yaml, schemas/checkpoint/5.yaml, core/include/router/control_projection_worker.hpp, core/include/router/generated_lab_runtime_protocol.hpp, core/include/router/network_plane_messages.hpp, core/include/router/network_plane_worker.hpp, core/include/router/shard_policy.hpp, core/include/router/telemetry.hpp, core/src/control_projection_worker.cpp, core/src/lab_checkpoint.cpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/runtime_memory_budget.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp, core/src/wasm_api.cpp, apps/web/src/runtime/runtime.worker.ts, apps/web/src/runtime/multi-router-client.ts, apps/web/src/runtime/telemetry-contract.ts]
+    tests: [core/tests/control_projection_worker_test.cpp, core/tests/network_plane_worker_test.cpp, core/tests/runtime_supervisor_test.cpp, core/tests/shard_policy_test.cpp, core/tests/lab_runtime_test.cpp, core/tools/runtime_benchmark.cpp, apps/web/src/runtime/telemetry-contract.test.ts, apps/web/src/persistence-v3.test.ts, apps/web/src/ui/terminal-model.test.ts, e2e/first-milestone.spec.ts]
     status: implemented
-    notes: The active profile pre-creates clamp(hardwareConcurrency minus one, 2, 4) pthread workers with a fixed shared Wasm memory budget. There is no single-thread fallback, and JavaScript obtains telemetry offsets from the compiled C++ layout.
+    notes: The generated host policy uses 1, 3 or 5 pre-created pthreads in addition to the browser control Worker. High-CPU hosts run two control, three forwarding and one link owner. There is no single-thread fallback. Telemetry ABI 5 publishes the actual owner directory, per-device sequence locks, bounded port bitsets and per-session cancellation words at a generated 4 Hz display cadence.
   - id: w3c.indexeddb.persistence
     kind: browser-storage
     release: 3.0
@@ -277,7 +291,7 @@ records:
     yang_path: null
     last_verified_at: 2026-07-14
     implementation: [apps/web/src/persistence.ts, packages/contracts/src/index.ts]
-    tests: [packages/contracts/tests/project.test.ts]
+    tests: [apps/web/src/persistence-v3.test.ts, packages/contracts/tests/multi-router-project.test.ts]
     status: implemented
     notes: Structured project state is schema-validated on load and import before it is applied to the runtime.
   - id: ecma.number.max_safe_integer
@@ -290,8 +304,8 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [packages/contracts/src/index.ts, core/src/project_configuration.cpp, core/src/runtime_project.cpp]
-    tests: [packages/contracts/tests/project.test.ts, core/tests/runtime_test.cpp]
+    implementation: [packages/contracts/src/lab-project-v3.ts, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp]
+    tests: [packages/contracts/tests/multi-router-project.test.ts, core/tests/lab_runtime_test.cpp]
     status: implemented
     notes: Per-link nanosecond delays are limited only to non-negative integers that JavaScript can transport without rounding.
   - id: nokia.sros.26_7.port.configuration
@@ -304,8 +318,8 @@ records:
     rfc_refs: []
     yang_path: /configure/port
     last_verified_at: 2026-07-14
-    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli_parser.cpp, core/src/cli.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, core/src/device_routing.cpp, core/src/routing.cpp, core/src/network.cpp]
-    tests: [core/tests/cli_test.cpp, core/tests/project_configuration_test.cpp, core/tests/routing_test.cpp, core/tests/network_test.cpp, core/tests/runtime_test.cpp]
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli_parser.cpp, core/src/cli.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, core/src/device_routing.cpp, core/src/routing.cpp, core/src/router_hardware_inventory.cpp, core/src/lab_runtime.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/router_hardware_inventory_test.cpp, core/tests/routing_test.cpp, core/tests/lab_runtime_test.cpp]
     status: partially-implemented
     notes: The milestone implements port admin state, MTU and interface admin state.
   - id: nokia.sros.26_7.system.name
@@ -332,8 +346,8 @@ records:
     rfc_refs: [RFC1812]
     yang_path: /configure/router/interface
     last_verified_at: 2026-07-15
-    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/src/cli.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, core/src/project_configuration.cpp, packages/contracts/src/index.ts, apps/web/src/ui/WorkspaceViews.tsx]
-    tests: [core/tests/cli_test.cpp, core/tests/project_configuration_test.cpp, core/tests/runtime_test.cpp, packages/contracts/tests/project.test.ts, apps/web/src/ui/WorkspaceViews.test.tsx]
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/src/cli.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, core/src/lab_runtime.cpp, packages/contracts/src/lab-project-v3.ts, apps/web/src/ui/WorkspaceViews.tsx]
+    tests: [core/tests/cli_test.cpp, core/tests/lab_runtime_test.cpp, packages/contracts/tests/multi-router-project.test.ts, apps/web/src/ui/WorkspaceViews.test.tsx]
     status: implemented
     notes: The profile-owned Base router interface names support independent physical-port association, primary IPv4 prefix, administrative state, connected-route selection and atomic project persistence in both terminal engines.
   - id: nokia.sros.26_7.port.description
@@ -361,7 +375,7 @@ records:
     yang_path: /configure/router/static-routes/route
     last_verified_at: 2026-07-15
     implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/src/cli.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, core/src/device_routing.cpp]
-    tests: [core/tests/cli_test.cpp, core/tests/routing_test.cpp, core/tests/runtime_test.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/routing_test.cpp, core/tests/lab_runtime_test.cpp]
     status: partially-implemented
     notes: Directly resolved IPv4 unicast routes support creation and removal in both engines. Multiple next hops, indirect routes, IPv6 and optional route attributes remain unsupported.
   - id: whatwg.storage.opfs
@@ -374,10 +388,10 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [apps/web/src/persistence.ts]
-    tests: [apps/web/src/persistence.test.ts]
+    implementation: [apps/web/src/persistence.ts, apps/web/src/ui/terminal-history.ts, apps/web/src/ui/TerminalHistoryView.tsx, apps/web/src/ui/TerminalPanel.tsx]
+    tests: [apps/web/src/persistence-v3.test.ts, apps/web/src/ui/terminal-history.test.ts, apps/web/src/ui/TerminalPanel.test.tsx]
     status: implemented
-    notes: Binary capture and structural checkpoint data use OPFS while project metadata remains in IndexedDB.
+    notes: Binary capture and structural checkpoint data use project-scoped OPFS paths. Terminal transcripts use immutable OPFS chunks with bounded decoded-window caching while project metadata remains in IndexedDB.
   - id: w3c.webappsec.coop_coep_csp
     kind: runtime-platform
     release: current
@@ -389,7 +403,7 @@ records:
     yang_path: null
     last_verified_at: 2026-07-14
     implementation: [apps/web/vite.config.ts, apps/web/src/runtime/runtime.worker.ts, playwright.config.ts]
-    tests: [apps/web/src/runtime/client.ts, e2e/first-milestone.spec.ts]
+    tests: [apps/web/src/runtime/multi-router-client.ts, e2e/first-milestone.spec.ts]
     status: implemented
     notes: Local and preview servers publish isolation, CSP and Permissions Policy headers and reject runtime startup when the pthread smoke test fails.
   - id: playwright.cross_browser.projects
@@ -416,8 +430,8 @@ records:
     rfc_refs: []
     yang_path: /configure/port/ethernet/mtu
     last_verified_at: 2026-07-15
-    implementation: [profiles/7750-sr-7-iom4-e.yaml, core/src/cli_md.cpp, core/src/cli_classic.cpp, core/src/project_configuration.cpp, core/src/network.cpp]
-    tests: [core/tests/cli_test.cpp, core/tests/network_test.cpp, core/tests/packet_test.cpp]
+    implementation: [profiles/7750-sr-7-iom4-e.yaml, core/src/cli_md.cpp, core/src/cli_classic.cpp, core/src/lab_runtime.cpp, core/src/router_forwarder.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/packet_test.cpp]
     status: implemented
     notes: Modeled 10 Gb/s network Ethernet ports use default 9212 and configured range 512 to 9212. The SR OS value includes the untagged Ethernet header, so forwarding subtracts 14 octets before comparing IPv4 total length or reporting next-hop IP MTU.
   - id: nokia.sros.26_7.arp.aging
@@ -430,8 +444,8 @@ records:
     rfc_refs: [RFC826]
     yang_path: /configure/router/interface/arp-timeout
     last_verified_at: 2026-07-15
-    implementation: [profiles/7750-sr-7-iom4-e.yaml, tools/generate-profile.mjs, core/src/network_adjacency.hpp, core/src/network_adjacency.cpp, core/include/router/device.hpp, core/src/runtime.cpp, core/src/runtime_checkpoint.cpp, core/src/checkpoint.cpp, core/src/cli.cpp]
-    tests: [core/tests/network_test.cpp, core/tests/runtime_test.cpp]
+    implementation: [profiles/7750-sr-7-iom4-e.yaml, tools/generate-profile.mjs, core/include/router/router_forwarder.hpp, core/include/router/device.hpp, core/src/router_forwarder.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp, core/src/cli.cpp]
+    tests: [core/tests/router_forwarder_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
     notes: Dynamic router-interface ARP entries use the four-hour default, refresh on learning, expire against steady clock and preserve their remaining lifetime through checkpoints.
   - id: nokia.sros.26_7.show.system_information
@@ -528,8 +542,8 @@ records:
     rfc_refs: [RFC2863]
     yang_path: null
     last_verified_at: 2026-07-15
-    implementation: [core/src/cli.cpp, core/src/runtime_projection.cpp, packages/contracts/src/index.ts]
-    tests: [core/tests/cli_test.cpp, core/tests/runtime_test.cpp, packages/contracts/tests/project.test.ts]
+    implementation: [core/src/cli.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp, packages/contracts/src/lab-runtime-v5.ts]
+    tests: [core/tests/cli_test.cpp, core/tests/runtime_supervisor_test.cpp, core/tests/lab_runtime_test.cpp, packages/contracts/tests/multi-router-project.test.ts]
     status: partially-implemented
     notes: Summary and runtime projection distinguish administrative state, Physical Link presence, operational state and MTU.
   - id: nokia.sros.26_7.show.router_interface
@@ -556,8 +570,8 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-15
-    implementation: [core/include/router/device.hpp, core/src/runtime.cpp, core/src/checkpoint.cpp, core/src/cli.cpp]
-    tests: [core/tests/cli_test.cpp, core/tests/checkpoint_test.cpp, core/tests/runtime_test.cpp]
+    implementation: [core/include/router/device.hpp, core/src/multi_device_routing.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp, core/src/cli.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/multi_device_routing_test.cpp, core/tests/lab_runtime_test.cpp]
     status: partially-implemented
     notes: Connected and active static IPv4 routes are displayed from local RIB prerequisites with monotonic selection age preserved by checkpoints.
   - id: nokia.sros.26_7.show.fib
@@ -584,8 +598,8 @@ records:
     rfc_refs: [RFC826]
     yang_path: null
     last_verified_at: 2026-07-15
-    implementation: [core/include/router/device.hpp, core/src/network_adjacency.cpp, core/src/runtime.cpp, core/src/runtime_checkpoint.cpp, core/src/checkpoint.cpp, core/src/cli.cpp]
-    tests: [core/tests/cli_test.cpp, core/tests/network_test.cpp, core/tests/checkpoint_test.cpp, core/tests/runtime_test.cpp]
+    implementation: [core/include/router/device.hpp, core/include/router/router_forwarder.hpp, core/src/router_forwarder.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp, core/src/cli.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/lab_runtime_test.cpp]
     status: partially-implemented
     notes: Learned IPv4 adjacencies, MAC addresses, dynamic type, interface and live expiry countdown are displayed from forwarding-owned adjacency state.
   - id: internal.runtime_protocol.netstrings
@@ -598,7 +612,7 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-15
-    implementation: [apps/web/src/runtime/client.ts, core/src/project_configuration.cpp]
-    tests: [core/tests/project_configuration_test.cpp]
+    implementation: [apps/web/src/runtime/multi-router-client.ts, core/src/lab_runtime.cpp]
+    tests: [core/tests/lab_runtime_test.cpp]
     status: implemented
     notes: Atomic running configuration fields use canonical decimal byte length, colon, payload and comma framing. Missing terminators and excess fields are rejected before mutation.

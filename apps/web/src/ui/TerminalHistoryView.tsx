@@ -7,13 +7,14 @@ import { TerminalHistoryArchive, type TerminalHistorySnapshot } from "./terminal
 interface Props {
   archive: TerminalHistoryArchive;
   fontSize: number;
+  liveRows: number;
   close(): void;
 }
 
 const OVERSCAN_ROWS = 12;
 const MAX_SCROLL_TRACK_PX = 4_000_000;
 
-export function TerminalHistoryView({ archive, fontSize, close }: Props) {
+export function TerminalHistoryView({ archive, fontSize, liveRows, close }: Props) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const requestGeneration = useRef(0);
   const [snapshot, setSnapshot] = useState<TerminalHistorySnapshot>();
@@ -22,7 +23,10 @@ export function TerminalHistoryView({ archive, fontSize, close }: Props) {
   const [viewportHeight, setViewportHeight] = useState(0);
   const lineHeight = Math.ceil(fontSize * 1.35);
   const visibleRows = Math.max(1, Math.ceil(viewportHeight / lineHeight));
-  const totalLines = snapshot?.totalLines ?? 0;
+  // xterm owns the newest bounded window. The virtual reader exposes only the
+  // older prefix, so moving forward from its last row returns to the same
+  // continuous transcript without rendering duplicate lines.
+  const totalLines = Math.max(0, (snapshot?.totalLines ?? 0) - liveRows);
   const logicalMaximum = Math.max(0, totalLines - visibleRows);
   // Browser scroll coordinates have implementation limits. A fixed maximum
   // track maps an arbitrarily long transcript to a stable scrollbar while
@@ -43,15 +47,19 @@ export function TerminalHistoryView({ archive, fontSize, close }: Props) {
     let cancelled = false;
     void archive.snapshot().then((value) => {
       if (cancelled) return;
+      if (value.totalLines <= liveRows) {
+        close();
+        return;
+      }
       setSnapshot(value);
-      setFirstLine(Math.max(0, value.totalLines - visibleRows));
+      setFirstLine(Math.max(0, value.totalLines - liveRows - visibleRows));
       requestAnimationFrame(() => {
         const viewport = viewportRef.current;
         if (viewport) viewport.scrollTop = viewport.scrollHeight;
       });
     }).catch((cause) => console.error("Terminal history could not be opened", cause));
     return () => { cancelled = true; };
-  }, [archive, visibleRows]);
+  }, [archive, close, liveRows, visibleRows]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -70,24 +78,29 @@ export function TerminalHistoryView({ archive, fontSize, close }: Props) {
     const generation = ++requestGeneration.current;
     const start = Math.max(0, firstLine - OVERSCAN_ROWS);
     const count = visibleRows + OVERSCAN_ROWS * 2;
-    void archive.readRange(snapshot, start, count).then((value) => {
+    void archive.readRange(snapshot, start, Math.min(count,
+      Math.max(0, totalLines - start))).then((value) => {
       // A slow OPFS read must not replace a newer viewport after rapid wheel or
       // scrollbar movement. The generation check makes the latest read owner.
       if (generation === requestGeneration.current) setLines(value);
     }).catch((cause) => console.error("Terminal history range could not be read", cause));
-  }, [archive, firstLine, snapshot, visibleRows]);
+  }, [archive, firstLine, snapshot, totalLines, visibleRows]);
 
   const start = Math.max(0, firstLine - OVERSCAN_ROWS);
   const physicalTop = scrollFromLine(start);
 
   return <div className="terminal-history">
-    <div className="terminal-history-bar">
-      <span>{totalLines.toLocaleString()} lines</span>
-      <button onClick={close}>Live console</button>
-    </div>
     <div className="terminal-history-viewport" ref={viewportRef}
       onScroll={(event) => setFirstLine(lineFromScroll(event.currentTarget.scrollTop))}
       onWheel={(event) => {
+        // The virtual prefix and xterm hot window are one logical scrollback.
+        // Scrolling forward from the newest archived row therefore returns to
+        // the live renderer without a button or a separate history mode.
+        if (event.deltaY > 0 && firstLine >= logicalMaximum) {
+          event.preventDefault();
+          close();
+          return;
+        }
         // When the physical track is compressed, native pixel scrolling can
         // skip thousands of logical rows. Map wheel input to exact row steps.
         if (totalLines * lineHeight <= MAX_SCROLL_TRACK_PX) return;

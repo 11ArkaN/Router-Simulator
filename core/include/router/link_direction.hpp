@@ -5,7 +5,7 @@
 #pragma once
 
 #include "router/bounded_queue.hpp"
-#include "router/generated_profile.hpp"
+#include "router/generated_device_catalog.hpp"
 #include "router/packet.hpp"
 
 #include <algorithm>
@@ -40,7 +40,7 @@ public:
 
   struct State {
     std::uint64_t transmitter_remaining_ns{};
-    std::array<StoredTransmission, profile::link_inflight_capacity> in_flight{};
+    std::array<StoredTransmission, device_catalog::link_queue_capacity> in_flight{};
     std::size_t count{};
   };
 
@@ -55,6 +55,13 @@ public:
     // in-flight entries retain the delivery deadlines calculated at admission,
     // just as changing a circuit profile cannot move bits already in transit.
     propagation_ = propagation;
+  }
+
+  void set_bits_per_second(std::uint64_t bits_per_second) noexcept {
+    // Speed negotiation is completed by the topology owner before admission.
+    // A later carrier transition drains the direction before changing speed,
+    // so already serialized bits never acquire a second transmission rate.
+    bits_per_second_ = bits_per_second;
   }
 
   [[nodiscard]] std::optional<Admission>
@@ -174,7 +181,7 @@ private:
   // would limit a 10 Gb/s link to roughly one frame per millisecond.
   std::chrono::nanoseconds propagation_;
   std::chrono::steady_clock::time_point transmitter_available_{};
-  BoundedQueue<InFlight, profile::link_inflight_capacity> in_flight_;
+  BoundedQueue<InFlight, device_catalog::link_queue_capacity> in_flight_;
 };
 
 } // namespace router

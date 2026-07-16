@@ -27,7 +27,13 @@ enum class CommandId : std::uint16_t {
   navigate_classic_root,
   md_quit_config,
   md_configure_exclusive,
+  md_configure_global,
+  md_configure_private,
+  md_configure_read_only,
   md_edit_config_exclusive,
+  md_edit_config_global,
+  md_edit_config_private,
+  md_edit_config_read_only,
   show_system_information,
   show_system_alarms,
   show_card,
@@ -123,11 +129,11 @@ struct CommandSpec {
   std::string_view source_id{};
 };
 
-inline constexpr std::array<CommandSpec, 74> commands{{
+inline constexpr std::array<CommandSpec, 80> commands{{
     {CommandId::switch_engine, 3, 1, {{{TokenKind::literal, "//", "Switch to the other CLI engine"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.md_cli.navigation"},
     {CommandId::help, 2, 1, {{{TokenKind::literal, "help", "Display help for the classic CLI"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.classic_cli.navigation"},
     {CommandId::help_edit, 2, 2, {{{TokenKind::literal, "help", "Display help for the classic CLI"}, {TokenKind::literal, "edit", "Display help for line-editing keys"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.classic_cli.navigation"},
-    {CommandId::help_global, 2, 2, {{{TokenKind::literal, "help", "Display help for the classic CLI"}, {TokenKind::literal, "global", "Display help for global commands"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.classic_cli.navigation"},
+    {CommandId::help_global, 2, 2, {{{TokenKind::literal, "help", "Display help for the classic CLI"}, {TokenKind::literal, "global", "Enter global configuration mode"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.classic_cli.navigation"},
     {CommandId::help_globals, 2, 2, {{{TokenKind::literal, "help", "Display help for the classic CLI"}, {TokenKind::literal, "globals", "Display help for global commands"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.classic_cli.navigation"},
     {CommandId::help_special_characters, 2, 2, {{{TokenKind::literal, "help", "Display help for the classic CLI"}, {TokenKind::literal, "special-characters", "Display help for special CLI characters"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.classic_cli.navigation"},
     {CommandId::navigate_back, 3, 1, {{{TokenKind::literal, "back", "Navigate to a parent context"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.md_cli.navigation"},
@@ -140,7 +146,13 @@ inline constexpr std::array<CommandSpec, 74> commands{{
     {CommandId::navigate_classic_root, 2, 1, {{{TokenKind::literal, "\\", "Navigate to the classic operational root"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.classic_cli.navigation"},
     {CommandId::md_quit_config, 1, 1, {{{TokenKind::literal, "quit-config", "Exit explicit candidate configuration mode"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.md_cli.configuration_workflow"},
     {CommandId::md_configure_exclusive, 1, 2, {{{TokenKind::literal, "configure", "Enter or address the configuration branch"}, {TokenKind::literal, "exclusive", "Use exclusive candidate configuration mode"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.md_cli.configuration_workflow"},
+    {CommandId::md_configure_global, 1, 2, {{{TokenKind::literal, "configure", "Enter or address the configuration branch"}, {TokenKind::literal, "global", "Enter global configuration mode"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.md_cli.configuration_workflow"},
+    {CommandId::md_configure_private, 1, 2, {{{TokenKind::literal, "configure", "Enter or address the configuration branch"}, {TokenKind::literal, "private", "Enter private configuration mode"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.md_cli.configuration_workflow"},
+    {CommandId::md_configure_read_only, 1, 2, {{{TokenKind::literal, "configure", "Enter or address the configuration branch"}, {TokenKind::literal, "read-only", "Enter read-only configuration mode"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.md_cli.configuration_workflow"},
     {CommandId::md_edit_config_exclusive, 1, 2, {{{TokenKind::literal, "edit-config", "Enter the explicit configuration workflow"}, {TokenKind::literal, "exclusive", "Use exclusive candidate configuration mode"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.md_cli.configuration_workflow"},
+    {CommandId::md_edit_config_global, 1, 2, {{{TokenKind::literal, "edit-config", "Enter the explicit configuration workflow"}, {TokenKind::literal, "global", "Enter global configuration mode"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.md_cli.configuration_workflow"},
+    {CommandId::md_edit_config_private, 1, 2, {{{TokenKind::literal, "edit-config", "Enter the explicit configuration workflow"}, {TokenKind::literal, "private", "Enter private configuration mode"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.md_cli.configuration_workflow"},
+    {CommandId::md_edit_config_read_only, 1, 2, {{{TokenKind::literal, "edit-config", "Enter the explicit configuration workflow"}, {TokenKind::literal, "read-only", "Enter read-only configuration mode"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.md_cli.configuration_workflow"},
     {CommandId::show_system_information, 3, 3, {{{TokenKind::literal, "show", "Display operational information"}, {TokenKind::literal, "system", "Configure or display system information"}, {TokenKind::literal, "information", "Display system information"}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.show.system_information"},
     {CommandId::show_system_alarms, 3, 3, {{{TokenKind::literal, "show", "Display operational information"}, {TokenKind::literal, "system", "Configure or display system information"}, {TokenKind::literal, "alarms", "Display facility alarms"}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.show.system_alarms"},
     {CommandId::show_card, 3, 2, {{{TokenKind::literal, "show", "Display operational information"}, {TokenKind::literal, "card", "Configure or display card information"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.show.card"},

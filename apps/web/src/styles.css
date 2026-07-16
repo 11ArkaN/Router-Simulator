@@ -16,9 +16,21 @@
   --green: #69d36f;
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+  /* Every scroll owner belongs to the same dark application surface. Keeping
+     the platform scrollbar in that palette prevents a system-white control
+     from appearing when a short viewport makes an inspector or form overflow. */
+  scrollbar-color: #34454e #081117;
+  scrollbar-width: thin;
+}
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-track { background: #081117; }
+*::-webkit-scrollbar-thumb { border: 2px solid #081117; background: #34454e; }
+*::-webkit-scrollbar-thumb:hover { background: #475b65; }
 html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
 button, input { font: inherit; }
+select { font: inherit; color-scheme: dark; }
 button { color: inherit; }
 button { cursor: pointer; transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease, transform 120ms ease; }
 button:active:not(:disabled) { transform: translateY(1px); }
@@ -31,20 +43,20 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
    also give open and closed states one source of truth across breakpoints. */
 .app-shell {
   --header-track: 52px;
-  --topology-min-track: 120px;
-  --workspace-min-track: 240px;
+  --topology-min-track: 0px;
+  --workspace-min-track: 64px;
   --inspector-track: clamp(
-    160px,
+    64px,
     var(--inspector-preferred-width, 324px),
-    calc(100vw - var(--workspace-min-track) - 96px)
+    calc(100vw - var(--workspace-min-track) - 64px)
   );
   --library-track: clamp(
-    96px,
+    64px,
     var(--library-preferred-width, 194px),
     calc(100vw - var(--workspace-min-track) - var(--inspector-track))
   );
   --terminal-track: clamp(
-    90px,
+    64px,
     var(--terminal-preferred-height, 360px),
     calc(100dvh - var(--header-track) - var(--topology-min-track))
   );
@@ -159,13 +171,38 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .account-menu button { min-height: 30px; border: 0; background: transparent; text-align: left; color: #aebac0; font-size: 10px; }
 .account-menu button:hover { background: #172730; }
 
-/* Zero intrinsic minima prevent topology content from pushing the inspector
-   beyond the viewport edge. */
-.center-stage { grid-column: 2; grid-row: 2; position: relative; min-width: 0; min-height: 0; border-bottom: 1px solid var(--line); }
+/* Zero intrinsic minima let the user collapse the canvas completely when the
+   terminal needs the full workspace. The clipping boundary is essential at
+   that exact zero-height state: React Flow and its absolutely positioned
+   toolbar still have measurable children, but none of them may paint into the
+   terminal row owned by the sibling panel. isolate creates a local stacking
+   context so React Flow z-index values cannot escape into adjacent grid rows. */
+.center-stage {
+  grid-column: 2;
+  grid-row: 2;
+  position: relative;
+  z-index: 0;
+  isolation: isolate;
+  /* The topology owns an independent paint boundary. overflow alone clips
+     ordinary descendants, but React Flow promotes transformed layers during
+     pan and zoom. paint containment and the inset clip keep those compositor
+     layers inside this grid row even while the row collapses to zero. */
+  contain: layout paint;
+  clip-path: inset(0);
+  container-name: center-stage;
+  container-type: size;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--line);
+}
 
 /* React Flow fills only the center cell. Operational colors arrive as classes
    from validated runtime projections. */
-.topology { position: absolute; inset: 0; background: #0d1c25; }
+/* React Flow validates a positive parent rectangle. One clipped layout pixel
+   keeps its ResizeObserver contract valid at the terminal maximum without
+   making any toolbar, node or canvas content visible in the collapsed row. */
+.topology { position: absolute; inset: 0; min-width: 0; min-height: 1px; overflow: hidden; background: #0d1c25; }
 .topology:fullscreen { background: #0d1c25; }
 .topology::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(circle at center, transparent 20%, rgba(3, 10, 14, .25) 100%); }
 .react-flow__pane { cursor: default; }
@@ -193,6 +230,24 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .runtime-error { position: absolute; z-index: 10; top: 70px; left: 50%; transform: translateX(-50%); display: grid; grid-template-columns: 1fr auto; width: min(520px, 85%); padding: 12px 14px; border: 1px solid #73443e; background: #2a1717ee; color: #efaaa4; font-size: 11px; }
 .runtime-error strong, .runtime-error span { grid-column: 1; }
 .runtime-error button { grid-column: 2; grid-row: 1 / 3; border: 0; background: transparent; color: #efaaa4; font-size: 10px; }
+
+/* Port selection appears only after a real React Flow connection gesture. It
+   reuses the established panel palette and never introduces a native white
+   select or dialog surface while the runtime transaction is pending. */
+.modal-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 16px; background: rgba(2, 8, 12, .72); }
+.lab-dialog { width: min(390px, 100%); padding: 14px; border: 1px solid #30454f; background: #0a171f; box-shadow: 0 18px 48px rgba(0, 0, 0, .5); }
+.lab-dialog header { display: flex; align-items: center; justify-content: space-between; margin: -14px -14px 14px; padding: 0 14px; min-height: 43px; border-bottom: 1px solid #263841; }
+.lab-dialog header strong { color: #dce5e8; font-size: 12px; font-weight: 500; }
+.lab-dialog header button { border: 0; background: transparent; color: #93a2a9; font-size: 20px; }
+.lab-dialog label { display: grid; grid-template-columns: minmax(80px, 1fr) minmax(150px, 2fr); align-items: center; gap: 10px; min-height: 46px; color: #87969d; font-size: 10px; }
+.lab-dialog input, .lab-dialog select, .hardware-slot select, .mda-editor select { min-width: 0; height: 32px; padding: 0 8px; border: 1px solid #344852; border-radius: 0; outline: 0; background: #08141b; color: #c5d0d4; font: 9px "Cascadia Mono", monospace; }
+.lab-dialog input:focus, .lab-dialog select:focus, .hardware-slot select:focus, .mda-editor select:focus { border-color: var(--blue); }
+.lab-dialog .dialog-kicker { margin-top: 10px; padding: 8px 0 0; border-top: 1px solid #25353d; }
+.lab-dialog .primary { width: 100%; min-height: 34px; margin-top: 12px; border: 1px solid #287fae; background: #143d54; color: #dceff6; font-size: 10px; }
+.lab-dialog .primary:disabled { opacity: .42; cursor: default; }
+.mda-editor { margin-top: 12px; padding-top: 11px; border-top: 1px solid #25353d; }
+.hardware-admin { display: grid; grid-template-columns: minmax(0, 1fr) minmax(88px, .7fr); align-items: center; gap: 10px; margin-top: 8px; color: #748894; font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
+.hardware-admin select { width: 100%; }
 
 /* Inspector owns its scroll container across canvas and terminal rows. This
    keeps every hardware control reachable on short screens. */
@@ -233,6 +288,20 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .chassis-slots > div:not(.panel-kicker) { display: grid; grid-template-columns: 32px 1fr auto; align-items: center; min-height: 34px; padding: 0 16px; border-bottom: 1px solid #1d2b33; color: #87969d; font-size: 9px; }
 .chassis-slots strong { color: #bcc7cb; font-weight: 400; }
 .host-form { padding-top: 16px; }
+/* Discard is intentionally a quiet secondary action beside the blue Apply
+   control. Without an explicit surface the native Windows button theme paints
+   an opaque white rectangle, which breaks both the dark inspector hierarchy
+   and the no-light-surface invariant used throughout the workspace. Scoping
+   the rule preserves the distinct hardware and modal button contracts. */
+.host-form .button-pair { gap: 8px; margin: 0 16px 12px; }
+.host-form .button-pair button:not(.inspector-action) { min-height: 34px; border: 1px solid #344650; background: #0d1d26; color: #aebbc1; font-size: 10px; }
+.host-form .button-pair button:not(.inspector-action):hover { border-color: #497080; background: #122832; color: #e1e8ea; }
+/* The general inspector action includes outer margins because it normally
+   occupies a row by itself. Inside the two-column edit bar those margins would
+   shrink Apply and shift it away from Discard, so the grid becomes the sole
+   spacing owner and both actions use the complete equal-width tracks. */
+.host-form .button-pair .inspector-action { width: 100%; min-height: 34px; margin: 0; }
+.host-form > .secondary-action { width: calc(100% - 32px); min-height: 34px; margin: 0 16px 14px; }
 .inspector-action { width: calc(100% - 32px); min-height: 34px; margin: 2px 16px 12px; border: 1px solid #39748e; background: #123044; color: #d7edf5; font-size: 10px; }
 .inspector-action:hover:not(:disabled) { background: #173d56; }
 .inspector-action:disabled { opacity: .45; }
@@ -258,9 +327,17 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
    measurement. The panel clips renderer helpers that xterm positions just
    outside its screen, while the nested viewport remains the sole scroll owner.
    Transforms never scale terminal pixels or change keyboard geometry. */
-.terminal-panel { grid-column: 2; grid-row: 3; position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: #050d12; }
+.terminal-panel { grid-column: 2; grid-row: 3; position: relative; z-index: 2; isolation: isolate; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; background: #050d12; }
 .terminal-head { display: flex; align-items: center; height: 45px; flex: 0 0 45px; border-bottom: 1px solid #28353c; background: #071117; }
-.terminal-head > div:first-child { display: flex; align-items: center; gap: 8px; align-self: stretch; min-width: 0; padding: 0 15px; overflow: hidden; border-bottom: 2px solid var(--blue); color: #e0e6e8; font-size: 13px; white-space: nowrap; }
+.terminal-tabs { display: flex; align-self: stretch; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.terminal-tabs::-webkit-scrollbar { display: none; }
+.terminal-tab { display: flex; flex: 0 0 auto; border-right: 1px solid #1c2b33; border-bottom: 2px solid transparent; }
+.terminal-tab.active { border-bottom-color: var(--blue); background: #0b1921; }
+.terminal-tab button, .terminal-new-tab { border: 0; background: transparent; color: #84939a; }
+.terminal-tab button:first-child { display: flex; align-items: center; gap: 8px; max-width: 190px; padding: 0 6px 0 14px; color: #c7d0d3; font-size: 11px; white-space: nowrap; }
+.terminal-tab button:last-child:not(:first-child) { width: 28px; color: #65767e; }
+.terminal-tab button:hover, .terminal-new-tab:hover { color: #edf3f5; background: #12212a; }
+.terminal-new-tab { flex: 0 0 35px; border-right: 1px solid #1c2b33; font-size: 15px; }
 .terminal-panel:fullscreen { background: #050d12; }
 .terminal-actions { display: flex; align-items: stretch; height: 100%; margin-left: auto; }
 .terminal-actions button { width: clamp(38px, 3.4vw, 43px); border: 0; border-left: 1px solid #1c2b33; background: transparent; color: #86959c; font-size: 15px; }
@@ -272,6 +349,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .terminal-body { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: hidden; }
 .terminal-host { position: absolute; inset: 0; padding: clamp(8px, 1.5dvh, 16px) clamp(10px, 1.55vw, 20px) 8px; overflow: hidden; }
 .terminal-host > .xterm { width: 100%; height: 100%; }
+/* xterm keeps this textarea transparent and behind its renderer, but browsers
+   still assign a white native background. Declaring the real surface color
+   avoids a white insertion-frame flash if xterm moves the helper while fitting. */
+.terminal-host .xterm-helper-textarea { background: transparent !important; }
 
 /* xterm maps this element directly to its scrollback buffer. Keeping native
    vertical scrolling enabled supports wheel, touchpad, scrollbar dragging and
@@ -294,9 +375,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
    those coordinates to any number of disk-backed logical lines. Only viewport
    rows and a small overscan are mounted, so DOM size stays constant. */
 .terminal-history { position: absolute; inset: 0; z-index: 3; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #090b0c; color: #cdd4d2; }
-.terminal-history-bar { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex: 0 0 30px; padding: 0 10px; border-bottom: 1px solid #1c2b33; background: #071117; color: #7f8f97; font: 9px "Cascadia Mono", monospace; text-transform: uppercase; letter-spacing: .05em; }
-.terminal-history-bar button { min-height: 22px; padding: 0 9px; border: 1px solid #2a4655; background: #0d202b; color: #b8c8ce; font: 9px "Cascadia Mono", monospace; }
-.terminal-history-bar button:hover { border-color: #278bc2; color: #e2eaed; background: #123044; }
 .terminal-history-viewport { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-color: #465963 #0a1115; scrollbar-width: thin; }
 .terminal-history-track { width: 1px; pointer-events: none; }
 .terminal-history-lines { position: absolute; top: 0; left: 0; min-width: 100%; margin: 0; padding: 8px clamp(10px, 1.55vw, 20px); color: #cdd4d2; background: transparent; white-space: pre; pointer-events: auto; font-family: "Cascadia Mono", "IBM Plex Mono", monospace; font-weight: 400; }
@@ -327,6 +405,21 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .library-resizer::after, .inspector-resizer::after { top: 0; bottom: 0; left: 4px; width: 1px; }
 .terminal-resizer { top: 0; right: 0; left: 0; height: 9px; cursor: row-resize; }
 .terminal-resizer::after { top: 4px; right: 0; left: 0; height: 1px; }
+
+/* A collapsed topology still exists as a one-pixel ResizeObserver target, but
+   none of its controls can be operated or understood below the terminal head
+   height. Hiding only the contents at that physical boundary prevents an
+   absolutely positioned toolbar or error banner from sharing terminal space.
+   The row itself remains freely resizable down to zero and becomes visible
+   again as soon as it can contain its smallest 44px control. */
+@container center-stage (max-height: 44px) {
+  .topology,
+  .runtime-error,
+  .workspace-page {
+    visibility: hidden;
+    pointer-events: none;
+  }
+}
 
 @media (max-width: 1100px) {
   /* Labels disappear before their icon buttons need to compress the center
@@ -373,12 +466,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 
 @media (max-height: 520px) {
-  /* Landscape phones need a smaller but still interactive console. Its xterm
-     rows are recomputed by ResizeObserver after this track changes. */
+  /* Landscape phones save vertical space in chrome only. Panel ownership does
+     not change here: the user may still give either workspace row all space
+     below the header, and ResizeObserver recomputes xterm geometry afterward. */
   .app-shell {
     --header-track: 46px;
-    --topology-min-track: 80px;
-    --workspace-min-track: 180px;
   }
   .terminal-head { height: 40px; flex-basis: 40px; }
 }
@@ -391,7 +483,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   .spec-grid { grid-template-columns: minmax(82px, 42%) 1fr; padding-inline: 11px; }
   .hardware-slot { padding-inline: 11px; }
   .inspector { width: min(100vw, var(--inspector-preferred-width, 324px)); }
-  .terminal-head > div:first-child { padding-inline: 10px; font-size: 11px; }
+  .terminal-tab button:first-child { max-width: 135px; padding-left: 10px; }
 }
 
 /* Secondary workspaces reuse the render's flat separators and restrained
@@ -418,10 +510,27 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .status-idle::before { box-shadow: none; }
 .observation-list { display: flex; flex-wrap: wrap; gap: 1px; margin-top: 23px; }
 .observation-list span { padding: 8px 10px; border: 1px solid #293942; color: #8d9ba2; background: #0a171f; font: 9px "Cascadia Mono", monospace; }
+.capture-tree { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 22px; }
+.capture-tree > section { min-width: 0; }
+.capture-group { padding: 12px; border: 1px solid #293942; border-bottom: 0; background: #0a171f; }
+.capture-group:last-child { border-bottom: 1px solid #293942; }
+.capture-group > strong { display: block; color: #d1dbde; font: 10px "Cascadia Mono", monospace; font-weight: 500; }
+.capture-group > small, .capture-port > small { display: block; margin: 5px 0 8px; color: #70818a; font: 8px "Cascadia Mono", monospace; }
+.capture-group > div, .capture-port > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.capture-port { margin-top: 10px; padding-top: 9px; border-top: 1px solid #21313a; }
+.capture-point { display: flex; align-items: center; gap: 7px; min-height: 29px; padding: 0 9px; border: 1px solid #31444e; background: #0c1b23; color: #8d9ba2; font-size: 9px; }
+.capture-point i { width: 6px; height: 6px; border-radius: 50%; background: #52636b; }
+.capture-point span { color: #61727a; font-size: 8px; }
+.capture-point.selected { border-color: #287da7; background: #123044; color: #d8e9ef; }
+.capture-point.selected i { background: #70dd7d; box-shadow: 0 0 6px #70dd7d; }
+.capture-point.selected span { color: #70dd7d; }
 
-.device-table { margin-top: 22px; border-top: 1px solid #293942; }
-.device-table > div > button { display: grid; grid-template-columns: 48px minmax(120px, 1.2fr) minmax(130px, 1fr) auto; align-items: center; width: 100%; min-height: 63px; padding: 0 15px; border: 0; border-bottom: 1px solid #293942; background: transparent; text-align: left; }
-.device-table > div > button:hover { background: #12242e; }
+.devices-page { display: flex; flex-direction: column; overflow: hidden; }
+.device-table { position: relative; flex: 1 1 auto; min-height: 0; margin-top: 22px; overflow: auto; border-top: 1px solid #293942; overscroll-behavior: contain; }
+.virtual-list-track { position: relative; min-width: 100%; }
+.virtual-list-row { position: absolute; top: 0; right: 0; left: 0; contain: layout paint; }
+.device-table .virtual-list-row > button { display: grid; grid-template-columns: 48px minmax(120px, 1.2fr) minmax(130px, 1fr) auto; align-items: center; width: 100%; height: 100%; padding: 0 15px; border: 0; border-bottom: 1px solid #293942; background: transparent; text-align: left; }
+.device-table .virtual-list-row > button:hover { background: #12242e; }
 .device-table strong { color: #d3dcdf; font-size: 12px; font-weight: 500; }
 .device-table small { color: #7e8d94; font: 9px "Cascadia Mono", monospace; }
 .device-table b { color: #6fd67b; font-size: 9px; font-weight: 400; }
@@ -445,6 +554,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .config-grid-interfaces > span:nth-child(4) { width: 48%; }
 .config-grid-row { display: grid; grid-template-columns: 18% 15% 17% 1fr; gap: 8px; align-items: center; min-height: 49px; padding: 7px 9px; border-top: 1px solid #213039; }
 .config-grid-row strong { color: #c0cbd0; font: 10px "Cascadia Mono", monospace; font-weight: 400; }
+.config-interface-row { align-items: start; }
+.interface-address-fields { display: grid; grid-template-columns: minmax(120px, 1fr) minmax(150px, 1fr) auto; gap: 7px; }
+.interface-address-fields button { min-height: 33px; padding: 0 9px; border: 1px solid #3b4c55; background: #10212a; color: #b9c5ca; font-size: 9px; }
 .compact-list { border-top: 1px solid #26363f; }
 .compact-list label { display: grid; grid-template-columns: minmax(170px, 1fr) 130px; align-items: center; min-height: 46px; padding: 0 10px; border-bottom: 1px solid #22313a; }
 .compact-list strong { color: #b9c5ca; font: 10px "Cascadia Mono", monospace; font-weight: 400; }
@@ -464,10 +576,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 @media (max-width: 650px) {
   .workspace-page { padding-inline: 16px; }
-  .device-table > div > button { grid-template-columns: 42px 1fr auto; }
+  .device-table .virtual-list-row > button { grid-template-columns: 42px 1fr auto; }
   .device-table small { display: none; }
   .field-row { grid-template-columns: 1fr; gap: 6px; padding: 9px 0; }
   .config-grid-row { grid-template-columns: 1fr 1fr; }
+  .interface-address-fields { grid-column: 1 / -1; grid-template-columns: 1fr; }
   .config-grid-ports > span, .config-grid-interfaces > span { display: none; }
   .route-list > div { grid-template-columns: 1fr; }
+  .capture-tree { grid-template-columns: 1fr; }
 }

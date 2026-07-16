@@ -2,7 +2,7 @@
 // This keeps editor, pager and bounded-queue semantics deterministic.
 
 import { describe, expect, it } from "vitest";
-import { GENERATED_PROFILE } from "@router-simulator/contracts";
+import { PROFILE_CATALOG } from "@router-simulator/contracts";
 import {
   restoreTerminalPresentation,
   TerminalInputQueue,
@@ -46,11 +46,11 @@ describe("terminal byte editing", () => {
     // Insert one more line than the documented limit and walk to the oldest
     // retained entry. Further navigation must remain clamped at that entry.
     const editor = new TerminalLineEditor();
-    for (let index = 0; index < GENERATED_PROFILE.cliDefaults.history_entries + 1; ++index) {
+    for (let index = 0; index < 51; ++index) {
       editor.insert(`show command ${index}`);
       editor.submit();
     }
-    for (let index = 0; index < GENERATED_PROFILE.cliDefaults.history_entries; ++index) editor.previous();
+    for (let index = 0; index < 50; ++index) editor.previous();
     expect(editor.value).toBe("show command 1");
     expect(editor.previous()).toBe("show command 1");
   });
@@ -130,7 +130,7 @@ describe("terminal byte editing", () => {
     editors["md-configuration"].insert("card 1");
     editors.classic.insert("configure");
     editors.classic.left();
-    const queue = new TerminalInputQueue(GENERATED_PROFILE.resources.cli_input_queue_bytes);
+    const queue = new TerminalInputQueue(PROFILE_CATALOG.runtime.terminal_result_bytes);
     queue.push("next");
     const pager = new TerminalPager("one\ntwo\nthree\nfour\nfive", 4);
     pager.handle("\r");
@@ -150,7 +150,7 @@ describe("terminal byte editing", () => {
       "md-configuration": new TerminalLineEditor(),
       classic: new TerminalLineEditor()
     };
-    const restoredQueue = new TerminalInputQueue(GENERATED_PROFILE.resources.cli_input_queue_bytes);
+    const restoredQueue = new TerminalInputQueue(PROFILE_CATALOG.runtime.terminal_result_bytes);
     const restoredPager = restoreTerminalPresentation(state, restoredEditors, restoredQueue);
     expect(restoredEditors["md-operational"].previous()).toBe("show port");
     expect(restoredEditors["md-configuration"].value).toBe("card 1");

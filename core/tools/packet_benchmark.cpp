@@ -12,13 +12,19 @@ int main() {
   constexpr Mac target{0x02, 0, 0, 0, 0, 0x0b};
   constexpr Ipv4 source_ip{198, 51, 100, 1};
   constexpr Ipv4 target_ip{198, 51, 100, 2};
-  constexpr std::uint32_t iterations = 200000;
-  constexpr std::uint32_t link_iterations = 5000000;
+  // Each timed window is deliberately long enough to amortize Windows timer
+  // quantization, short scheduler interruptions and V8's last tiering work.
+  // The former 200k-frame window completed in only a few milliseconds, which
+  // made unrelated desktop activity large enough to move one stage by more
+  // than the strict 10 percent regression limit. More samples improve the
+  // measurement only; they do not change the packet path being exercised.
+  constexpr std::uint32_t iterations = 1000000;
+  constexpr std::uint32_t link_iterations = 10000000;
   // Ten thousand calls were insufficient to make V8 tiering deterministic on
   // a busy desktop. A warmup equal to the measured packet sample ensures all
   // three paths have reached stable optimized Wasm code before the clock
   // starts.
-  constexpr std::uint32_t warmup_iterations = iterations;
+  constexpr std::uint32_t warmup_iterations = 200000;
   std::uint64_t sink = 0;
 
   // Exercise each Wasm function before measurement so Node tiering and first
@@ -26,12 +32,17 @@ int main() {
   // Warmup results remain observable through sink, preventing elimination.
   const auto warmup_ingress =
       icmp_echo(source, target, source_ip, target_ip, false, 1);
+  Frame warmup_arp;
+  Frame warmup_echo;
+  Frame warmup_routed;
   for (std::uint32_t index = 0; index < warmup_iterations; ++index) {
-    const auto arp = arp_request(source, source_ip, target_ip);
-    const auto echo = icmp_echo(source, target, source_ip, target_ip, false,
-                                static_cast<std::uint16_t>(index));
-    const auto routed = route_ipv4(warmup_ingress, target, source);
-    sink += arp.size() + echo.size() + (routed ? (*routed)[22] : 0U);
+    arp_request_into(warmup_arp, source, source_ip, target_ip);
+    icmp_echo_into(warmup_echo, source, target, source_ip, target_ip, false,
+                   static_cast<std::uint16_t>(index));
+    const auto routed =
+        route_ipv4_into(warmup_routed, warmup_ingress, target, source);
+    sink += warmup_arp.size() + warmup_echo.size() +
+            (routed ? warmup_routed[22] : 0U);
   }
   {
     auto warmup_link = std::make_unique<router::LinkDirection>(
@@ -52,11 +63,13 @@ int main() {
   // and normal 56-octet ICMP probes. Printing sink keeps all packet bytes
   // observable to the optimizer without adding volatile stores to the loop.
   const auto encode_started = std::chrono::steady_clock::now();
+  Frame encoded_arp;
+  Frame encoded_echo;
   for (std::uint32_t index = 0; index < iterations; ++index) {
-    const auto arp = arp_request(source, source_ip, target_ip);
-    const auto echo = icmp_echo(source, target, source_ip, target_ip, false,
-                                static_cast<std::uint16_t>(index));
-    sink += arp.size() + echo.size() + echo[34];
+    arp_request_into(encoded_arp, source, source_ip, target_ip);
+    icmp_echo_into(encoded_echo, source, target, source_ip, target_ip, false,
+                   static_cast<std::uint16_t>(index));
+    sink += encoded_arp.size() + encoded_echo.size() + encoded_echo[34];
   }
   const auto encode_elapsed =
       std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -68,10 +81,10 @@ int main() {
   const auto ingress =
       icmp_echo(source, target, source_ip, target_ip, false, 1);
   const auto forward_started = std::chrono::steady_clock::now();
+  Frame forwarded;
   for (std::uint32_t index = 0; index < iterations; ++index) {
-    const auto egress = route_ipv4(ingress, target, source);
-    if (egress)
-      sink += (*egress)[22] + (*egress)[34];
+    if (route_ipv4_into(forwarded, ingress, target, source))
+      sink += forwarded[22] + forwarded[34];
   }
   const auto forward_elapsed =
       std::chrono::duration_cast<std::chrono::nanoseconds>(

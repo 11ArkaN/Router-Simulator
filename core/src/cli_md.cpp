@@ -90,7 +90,13 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
 
   switch (command.spec->id) {
   case md_configure_exclusive:
+  case md_configure_global:
+  case md_configure_private:
+  case md_configure_read_only:
   case md_edit_config_exclusive:
+  case md_edit_config_global:
+  case md_edit_config_private:
+  case md_edit_config_read_only:
     // Workflow entry is handled before the configuration engine receives a
     // candidate command. Retaining these IDs keeps the switch exhaustive.
     return {};

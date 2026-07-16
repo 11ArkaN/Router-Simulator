@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include "router/network.hpp"
+#include "router/endpoint_protocol.hpp"
 
 #include <array>
 #include <optional>
@@ -12,10 +12,17 @@
 namespace router::network_detail {
 
 struct EndpointFrames {
-  // Two frames cover an ARP reply plus release of one pending datagram. Storage
-  // is inline and bounded, so endpoint processing never allocates on packet
-  // path.
-  std::array<packet::Frame, 2> frames{};
+  // The current host operation emits the generated default Echo size. At the
+  // minimum legal IPv4 MTU it becomes two fragments. One additional slot lets
+  // an incoming ARP request be answered before both pending fragments release.
+  static constexpr std::size_t minimum_fragment_payload =
+      ((device_catalog::minimum_host_ipv4_mtu - 20U) / 8U) * 8U;
+  static constexpr std::size_t default_echo_ip_payload =
+      8U + device_catalog::default_ping_payload_octets;
+  static constexpr std::size_t maximum_pending_fragments =
+      (default_echo_ip_payload + minimum_fragment_payload - 1U) /
+      minimum_fragment_payload;
+  std::array<packet::Frame, maximum_pending_fragments + 1U> frames{};
   std::uint8_t count{};
   bool start_echo_clock{};
   bool echo_reply{};
@@ -33,7 +40,7 @@ public:
   [[nodiscard]] EndpointFrames begin_echo(packet::Ipv4 destination,
                                           std::uint16_t sequence,
                                           std::size_t payload_octets =
-                                              profile::default_ping_payload_octets,
+                                              device_catalog::default_ping_payload_octets,
                                           bool dont_fragment = false) noexcept;
   // receive parses encoded Ethernet. Malformed or unrelated packets produce an
   // empty result and cannot mutate another endpoint or the router adjacency.
@@ -46,14 +53,17 @@ public:
   void restore_router_neighbor(packet::Ipv4 address, packet::Mac mac) noexcept;
   // Structural checkpoint methods run only on forwarding. They persist local
   // protocol values and encoded frames, never references into another owner.
-  void checkpoint(NetworkCheckpointState &state,
-                  std::uint8_t endpoint) const;
-  [[nodiscard]] bool restore(const NetworkCheckpointState &state,
-                             std::uint8_t endpoint) noexcept;
+  void checkpoint(NetworkCheckpointState &state) const;
+  [[nodiscard]] bool restore(const NetworkCheckpointState &state) noexcept;
 
   // Identity accessors expose immutable values copied during configure.
   [[nodiscard]] packet::Ipv4 address() const noexcept { return address_; }
   [[nodiscard]] packet::Mac mac() const noexcept { return mac_; }
+  [[nodiscard]] std::uint8_t prefix_length() const noexcept {
+    return prefix_length_;
+  }
+  [[nodiscard]] packet::Ipv4 gateway() const noexcept { return gateway_; }
+  [[nodiscard]] std::uint16_t mtu() const noexcept { return mtu_; }
 
 private:
   packet::Mac mac_{};
@@ -63,9 +73,12 @@ private:
   // appear valid and couple the reusable stack to the first sample topology.
   std::uint8_t prefix_length_{};
   packet::Ipv4 gateway_{};
+  std::uint16_t mtu_{device_catalog::default_host_ipv4_mtu};
   std::optional<packet::Ipv4> neighbor_address_;
   std::optional<packet::Mac> neighbor_mac_;
-  std::optional<packet::Frame> pending_;
+  std::array<packet::Frame, EndpointFrames::maximum_pending_fragments>
+      pending_frames_{};
+  std::uint8_t pending_count_{};
   std::optional<packet::Ipv4> pending_next_hop_;
   struct Reassembly {
     // LinkDirection preserves order, so one bounded contiguous accumulator is

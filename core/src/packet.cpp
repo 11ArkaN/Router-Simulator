@@ -11,8 +11,9 @@ namespace {
 
 class Builder {
 public:
+  explicit Builder(Frame &frame) noexcept : frame_(frame) {}
   // Builder owns one fixed Frame and is intentionally bounds-check free in the
-  // hot path. Every encoder below has a compile-time maximum below 1514 bytes.
+  // hot path. Every encoder clamps its payload to the generated frame bound.
   void put(std::uint8_t value) noexcept { frame_.bytes[position_++] = value; }
   void put16(std::uint16_t value) noexcept {
     put(static_cast<std::uint8_t>(value >> 8));
@@ -33,30 +34,30 @@ public:
   span(std::size_t offset, std::size_t length) const noexcept {
     return {frame_.bytes.data() + offset, length};
   }
-  Frame finish() noexcept {
+  void finish() noexcept {
     // Ethernet payloads shorter than 46 octets are padded before transmission.
     // The FCS belongs to link hardware and is not included in captured bytes.
     while (position_ < 60)
       put(0);
     frame_.length = static_cast<std::uint16_t>(position_);
-    return frame_;
   }
 
 private:
   // Deliberate default-initialization leaves bytes beyond the eventual length
   // untouched. finish() writes padding through byte 59 and every encoder writes
   // its complete payload, so no uninitialized byte can enter view() or capture.
-  Frame frame_;
+  Frame &frame_;
   std::size_t position_{};
 };
 
 // IEEE 802.3 fixes destination before source on the wire. Keeping that order in
 // the helper makes a byte-by-byte comparison with the header direct.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-Builder ethernet(Mac destination, Mac source, std::uint16_t ether_type) {
+Builder ethernet(Frame &frame, Mac destination, Mac source,
+                 std::uint16_t ether_type) {
   // Centralizing the L2 envelope prevents ARP and IPv4 encoders from diverging
   // in destination, source, and EtherType order.
-  Builder out;
+  Builder out{frame};
   out.append(destination);
   out.append(source);
   out.put16(ether_type);
@@ -83,12 +84,21 @@ std::uint16_t checksum(std::span<const std::uint8_t> bytes) noexcept {
 // RFC 826 names the sender tuple before the target tuple. The same order at the
 // API boundary makes the encoder's append sequence auditable against the RFC.
 // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
-Frame arp_request(Mac source_mac, Ipv4 source_ip, Ipv4 target_ip) {
+void copy_frame(Frame &destination, const Frame &source) noexcept {
+  // length is validated by every decoder before bytes are consumed. Copying
+  // only the live prefix retains a trivial shared-memory Frame layout while
+  // avoiding 9 KiB traffic for the common 60 to 98 byte packet.
+  std::copy_n(source.bytes.begin(), source.length, destination.bytes.begin());
+  destination.length = source.length;
+}
+
+void arp_request_into(Frame &result, Mac source_mac, Ipv4 source_ip,
+                      Ipv4 target_ip) noexcept {
   // RFC 826 places the unknown target hardware address in the payload while the
   // Ethernet destination itself is broadcast.
   constexpr Mac broadcast{0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
   constexpr Mac unknown{};
-  auto out = ethernet(broadcast, source_mac, 0x0806);
+  auto out = ethernet(result, broadcast, source_mac, 0x0806);
   out.put16(1);      // Ethernet
   out.put16(0x0800); // IPv4
   out.put(6);
@@ -98,14 +108,20 @@ Frame arp_request(Mac source_mac, Ipv4 source_ip, Ipv4 target_ip) {
   out.append(source_ip);
   out.append(unknown);
   out.append(target_ip);
-  return out.finish();
+  out.finish();
 }
 
-Frame arp_reply(Mac source_mac, Ipv4 source_ip, Mac target_mac,
-                Ipv4 target_ip) {
+Frame arp_request(Mac source_mac, Ipv4 source_ip, Ipv4 target_ip) {
+  Frame result;
+  arp_request_into(result, source_mac, source_ip, target_ip);
+  return result;
+}
+
+void arp_reply_into(Frame &result, Mac source_mac, Ipv4 source_ip,
+                    Mac target_mac, Ipv4 target_ip) noexcept {
   // A reply is unicast to the requester and carries the same address tuple in
   // the ARP payload, allowing the receiver to learn from parsed wire bytes.
-  auto out = ethernet(target_mac, source_mac, 0x0806);
+  auto out = ethernet(result, target_mac, source_mac, 0x0806);
   out.put16(1);
   out.put16(0x0800);
   out.put(6);
@@ -115,15 +131,23 @@ Frame arp_reply(Mac source_mac, Ipv4 source_ip, Mac target_mac,
   out.append(source_ip);
   out.append(target_mac);
   out.append(target_ip);
-  return out.finish();
+  out.finish();
+}
+
+Frame arp_reply(Mac source_mac, Ipv4 source_ip, Mac target_mac,
+                Ipv4 target_ip) {
+  Frame result;
+  arp_reply_into(result, source_mac, source_ip, target_mac, target_ip);
+  return result;
 }
 
 // Source and destination fields intentionally follow packet traversal order.
 // sequence then TTL mirrors the varying ICMP field before the IP hop limit.
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
-Frame icmp_echo(Mac source_mac, Mac target_mac, Ipv4 source_ip, Ipv4 target_ip,
-                bool reply, std::uint16_t sequence, std::uint8_t ttl,
-                std::size_t payload_octets, bool dont_fragment) {
+void icmp_echo_into(Frame &result, Mac source_mac, Mac target_mac,
+                    Ipv4 source_ip, Ipv4 target_ip, bool reply,
+                    std::uint16_t sequence, std::uint8_t ttl,
+                    std::size_t payload_octets, bool dont_fragment) noexcept {
   // Source: ietf.icmp.rfc792 and nokia.sros.26_7.ping. A normal SR OS ping
   // reports 56 data bytes, so the encoded Echo payload has that exact length.
   constexpr std::array<std::uint8_t, 56> pattern{
@@ -133,7 +157,7 @@ Frame icmp_echo(Mac source_mac, Mac target_mac, Ipv4 source_ip, Ipv4 target_ip,
       0x45, 0x52, 0x2d, 0x53, 0x52, 0x4f, 0x55, 0x54, 0x45, 0x52, 0x2d, 0x53,
       0x52, 0x4f, 0x55, 0x54, 0x45, 0x52, 0x2d, 0x53};
   payload_octets = std::min(payload_octets, maximum_frame_octets - 42U);
-  auto out = ethernet(target_mac, source_mac, 0x0800);
+  auto out = ethernet(result, target_mac, source_mac, 0x0800);
   const auto ip_start = out.position();
   out.put(0x45);
   out.put(0);
@@ -162,7 +186,16 @@ Frame icmp_echo(Mac source_mac, Mac target_mac, Ipv4 source_ip, Ipv4 target_ip,
     out.put(pattern[index % pattern.size()]);
   const auto icmp_checksum = checksum(out.span(icmp_start, 8U + payload_octets));
   out.patch16(icmp_start + 2, icmp_checksum);
-  return out.finish();
+  out.finish();
+}
+
+Frame icmp_echo(Mac source_mac, Mac target_mac, Ipv4 source_ip, Ipv4 target_ip,
+                bool reply, std::uint16_t sequence, std::uint8_t ttl,
+                std::size_t payload_octets, bool dont_fragment) {
+  Frame result;
+  icmp_echo_into(result, source_mac, target_mac, source_ip, target_ip, reply,
+                 sequence, ttl, payload_octets, dont_fragment);
+  return result;
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
@@ -278,7 +311,8 @@ std::optional<Frame> icmp_echo_reply(const Frame &request, Mac source_mac,
   const auto icmp = parse_icmp(request);
   if (!ip || !icmp || icmp->type != 8 || icmp->code != 0)
     return std::nullopt;
-  Frame reply = request;
+  Frame reply;
+  copy_frame(reply, request);
   rewrite_ethernet(reply, source_mac, destination_mac);
   std::copy(ip->destination.begin(), ip->destination.end(),
             reply.bytes.begin() + 26);
@@ -322,7 +356,8 @@ std::optional<Frame> icmp_time_exceeded(const Frame &original, Mac source_mac,
       static_cast<std::size_t>(original[14] & 0x0fU) * 4U;
   const auto quoted =
       std::min<std::size_t>(original_ip->total_length, original_header + 8U);
-  auto out = ethernet(destination_mac, source_mac, 0x0800);
+  Frame result;
+  auto out = ethernet(result, destination_mac, source_mac, 0x0800);
   const auto ip_start = out.position();
   out.put(0x45);
   out.put(0);
@@ -344,7 +379,8 @@ std::optional<Frame> icmp_time_exceeded(const Frame &original, Mac source_mac,
   for (std::size_t i = 0; i < quoted; ++i)
     out.put(original[14 + i]);
   out.patch16(icmp_start + 2, checksum(out.span(icmp_start, 8U + quoted)));
-  return out.finish();
+  out.finish();
+  return result;
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
@@ -361,7 +397,8 @@ icmp_fragmentation_needed(const Frame &original, Mac source_mac,
   const auto quoted = std::min<std::size_t>(
       original_ip->total_length,
       static_cast<std::size_t>(original_ip->header_length) + 8U);
-  auto out = ethernet(destination_mac, source_mac, 0x0800);
+  Frame result;
+  auto out = ethernet(result, destination_mac, source_mac, 0x0800);
   const auto ip_start = out.position();
   out.put(0x45);
   out.put(0);
@@ -383,28 +420,38 @@ icmp_fragmentation_needed(const Frame &original, Mac source_mac,
   for (std::size_t index = 0; index < quoted; ++index)
     out.put(original[14U + index]);
   out.patch16(icmp_start + 2, checksum(out.span(icmp_start, 8U + quoted)));
-  return out.finish();
+  out.finish();
+  return result;
 }
 
-std::optional<Frame> route_ipv4(const Frame &ingress, Mac source_mac,
-                                Mac destination_mac) noexcept {
+bool route_ipv4_into(Frame &egress, const Frame &ingress, Mac source_mac,
+                     Mac destination_mac) noexcept {
   // Source: ietf.ipv4.router_requirements.rfc1812. The forwarding caller must
   // turn ttl <= 1 into ICMP Time Exceeded before invoking this rewrite.
   const auto parsed = parse_ipv4(ingress);
   if (!parsed || parsed->ttl <= 1)
-    return std::nullopt;
+    return false;
   // Preserve the original IP packet and payload. A router changes only the
   // Ethernet adjacency and IPv4 hop fields for this basic forwarding path.
-  Frame egress = ingress;
+  copy_frame(egress, ingress);
   rewrite_ethernet(egress, source_mac, destination_mac);
-  const auto header_length = static_cast<std::size_t>(egress[14] & 0x0fU) * 4U;
+  const auto header_length =
+      static_cast<std::size_t>(egress[14] & 0x0fU) * 4U;
   --egress.bytes[22];
   egress.bytes[24] = 0;
   egress.bytes[25] = 0;
   const auto updated = checksum(egress.view().subspan(14, header_length));
   egress.bytes[24] = static_cast<std::uint8_t>(updated >> 8);
   egress.bytes[25] = static_cast<std::uint8_t>(updated);
-  return egress;
+  return true;
+}
+
+std::optional<Frame> route_ipv4(const Frame &ingress, Mac source_mac,
+                                Mac destination_mac) noexcept {
+  std::optional<Frame> result{std::in_place};
+  if (!route_ipv4_into(*result, ingress, source_mac, destination_mac))
+    return std::nullopt;
+  return result;
 }
 
 std::optional<FragmentBatch> fragment_ipv4(const Frame &routed,

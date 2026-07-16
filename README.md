@@ -8,24 +8,13 @@ Router Simulator is an independent, unofficial educational project. It is not af
 
 ## Implemented capabilities
 
-The default regression topology provides this routed path:
-
-```text
-Host A
-  -> R1 port 1/1/1
-  -> R1 interface to-host-a
-  -> R1 RIB and FIB
-  -> R1 interface to-host-b
-  -> R1 port 1/1/2
-  -> Host B
-```
-
 Implemented behavior includes:
 
-- a five-slot 7750 SR-7 chassis view with an active CPM profile
-- slot 1 provisioning and inventory for `iom4-e`
+- empty user-defined topologies with up to 16 routers, 16 hosts and 64 links
+- generated 7750 SR-1, SR-7 and SR-12 hardware catalogs
+- card and MDA provisioning for compatible catalog combinations
 - MDA provisioning, insertion, removal and mismatch handling
-- dynamic creation of ten ports after compatible card and MDA initialization
+- dynamic port creation from the selected chassis, card and MDA inventory
 - separate inventory, provisioning, running and operational state
 - MD-CLI and classic CLI engines in the same router terminal session
 - transactional MD-CLI configuration and immediate classic CLI configuration
@@ -40,12 +29,13 @@ Implemented behavior includes:
 - PCAPNG export accepted by `tshark`
 - project export, structural checkpoints and profile-locked `.netsim` import
 - responsive topology, inspector, sidebar and terminal panels with user-controlled resizing
+- drag and drop router and host creation with physical-port link selection
 
 ## Architecture
 
 The packet runtime is written in C++20 and compiled with Emscripten to WebAssembly. It runs outside the React thread and requires pthreads with shared WebAssembly memory.
 
-At startup, Emscripten creates `clamp(hardwareConcurrency - 1, 2, 4)` pthread workers. The current runtime has separate owners for the control plane and the forwarding plus link domain. Shared packet state does not cross the browser boundary through per-packet `postMessage` calls.
+At startup, the generated CPU policy creates one, three or five pthreads in addition to the browser control Worker. Hosts with up to four logical CPUs use one control owner and one combined forwarding and link owner. Hosts with five to eight logical CPUs use one control, two forwarding and one link owner. Larger hosts use two control, three forwarding and one link owner. Stable device handles select owner shards and live devices do not migrate. Shared packet state does not cross the browser boundary through per-packet `postMessage` calls.
 
 The runtime uses the host monotonic clock. It has no simulation timeline, global future-event heap, pause control, step control or speed multiplier. Protocol and hardware deadlines pass in real time.
 
@@ -65,8 +55,8 @@ The C++ core has no dependency on React, the DOM, xterm.js, IndexedDB or OPFS.
 
 The following boundaries apply to the current implementation:
 
-- only the modeled slot 1 line card is active; the other chassis slots are exposed but unsupported
-- the default laboratory contains one router and two hosts
+- up to 16 routers, 16 hosts, 64 physical links and four terminal sessions per router
+- Ethernet card functions and port layouts covered by the active release catalog
 - MD-CLI and classic CLI expose only commands backed by the current capability matrix
 - the IPv4 and host stacks implement the documented functions listed above, not every RFC option
 - broader SR OS routing protocols, services, MPLS, QoS, HA and management protocols are not implemented
@@ -110,7 +100,7 @@ pnpm core:publish
 pnpm dev
 ```
 
-Open `http://127.0.0.1:5173/`. The Vite server sends the COOP and COEP headers required by WebAssembly threads. Startup stops with an error if the page is not cross-origin isolated or the two runtime owners do not start.
+Open `http://127.0.0.1:5173/`. The Vite server sends the COOP and COEP headers required by WebAssembly threads. Startup stops with an error if the page is not cross-origin isolated or any owner selected by the generated shard policy does not start.
 
 ## Build and verification
 
@@ -133,7 +123,7 @@ pnpm test:e2e:install
 pnpm verify:browser
 ```
 
-The browser scenario verifies cross-origin isolation, the pthread startup gate, CLI provisioning, physical insertion, hardware initialization, routed ping, carrier failure, project import, checkpoint import, unsent terminal input restoration and reload recovery.
+The browser scenario verifies cross-origin isolation, every selected pthread owner, multi-router topology editing, CLI provisioning, physical insertion, routed traffic, carrier failure, project import, checkpoint import, terminal restoration and reload recovery.
 
 Individual core commands are also available:
 

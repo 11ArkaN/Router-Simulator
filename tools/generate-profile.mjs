@@ -31,10 +31,7 @@ const cliSourcePath = resolve(root, "schemas/cli", `${profile.release}.yaml`);
 const cliSchema = parse(readFileSync(cliSourcePath, "utf8"));
 const headerPath = resolve(root, "core/include/router/generated_profile.hpp");
 const cliHeaderPath = resolve(root, "core/include/router/generated_cli_schema.hpp");
-const typescriptPath = resolve(root, "packages/contracts/src/generated-profile.ts");
 const cmakePath = resolve(root, "core/generated-profile.cmake");
-const runtimeHeaderPath = resolve(root, "core/include/router/generated_runtime_protocol.hpp");
-const runtimeTypescriptPath = resolve(root, "packages/contracts/src/generated-runtime-protocol.ts");
 
 // These small converters normalize YAML text into language-specific literals.
 // They perform no profile selection and are deterministic for identical input.
@@ -457,73 +454,10 @@ ${cliRows}
 }  // namespace router::cli_schema
 `;
 
-const typescript = `// Generated browser projection of the active release profile. UI, storage
-// and Worker code consume these values instead of reconstructing hardware.
-
-export const GENERATED_PROFILE = {
-  id: ${JSON.stringify(profile.id)},
-  release: ${JSON.stringify(profile.release)},
-  chassis: ${JSON.stringify(profile.chassis)},
-  chassisSlots: ${profile.chassis_slots},
-  defaultSystemName: ${JSON.stringify(profile.system.default_name)},
-  control: ${JSON.stringify(profile.control)},
-  lineCard: ${JSON.stringify({
-    slot: profile.line_card.slot,
-    type: profile.line_card.type,
-    initializationMs: profile.line_card.initialization_milliseconds,
-    timingStatus: profile.line_card.timing_status
-  })},
-  mda: ${JSON.stringify({
-    slot: profile.mda.slot,
-    slotsPerCard: profile.mda.slots_per_card,
-    modeledType: profile.mda.modeled_type,
-    supportedTypes: profile.mda.supported,
-    initializationMs: profile.mda.initialization_milliseconds,
-    timingStatus: profile.mda.timing_status
-  })},
-  ports: ${JSON.stringify({
-    ids: portIds,
-    count: profile.ports.count,
-    initiallyEnabled: profile.ports.initially_enabled,
-    speedMbps: profile.ports.speed_mbps,
-    defaultMtu: profile.ports.default_mtu,
-    minimumMtu: profile.ports.minimum_mtu,
-    maximumMtu: profile.ports.maximum_mtu
-  })},
-  defaultPropagationDelayNs: ${profile.link_defaults.propagation_delay_nanoseconds},
-  routerInterfaces: ${JSON.stringify(profile.router_interfaces)},
-  hosts: ${JSON.stringify(profile.hosts)},
-  links: ${JSON.stringify(links)},
-  captureInterfaces: ${JSON.stringify(profile.capture_interfaces)},
-  resources: ${JSON.stringify(profile.resources)},
-  timing: ${JSON.stringify(profile.timing)},
-  limits: ${JSON.stringify(profile.limits)},
-  cliDefaults: ${JSON.stringify(profile.cli_defaults)},
-  abi: ${JSON.stringify(profile.abi)},
-  uiDefaults: ${JSON.stringify(profile.ui_defaults)},
-  profileHash: ${JSON.stringify(profileHash)},
-  buildHash: ${JSON.stringify(buildCompatibilityHash)}
-} as const;
-`;
-
 const cmake = `# Generated from ${basename(sourcePath)}. Do not edit.\nset(ROUTER_WASM_INITIAL_MEMORY ${profile.resources.wasm_initial_memory_bytes})\nset(ROUTER_RUNTIME_WORKERS ${profile.resources.runtime_worker_count})\nset(ROUTER_PTHREAD_POOL_MIN ${profile.resources.pthread_pool_min})\nset(ROUTER_PTHREAD_POOL_MAX ${profile.resources.pthread_pool_max})\n`;
-const runtimeHeader = `#pragma once
-
-// Generated runtime management protocol. Browser and C++ consume names from
-// the same versioned schema instead of duplicating command prefixes.
-
-namespace router::runtime_protocol {
-inline constexpr unsigned version = ${runtimeSchema.version};
-${Object.entries(runtimeSchema.operations).map(([key, value]) => `inline constexpr char ${key}[] = ${cppString(value)};`).join("\n")}
-}  // namespace router::runtime_protocol
-`;
-const runtimeTypescript = `// Generated runtime management protocol shared by the browser bridge.\nexport const RUNTIME_PROTOCOL = ${JSON.stringify({ version: runtimeSchema.version, ...runtimeSchema.operations }, null, 2)} as const;\n`;
 const outputs = [
   [headerPath, header],
   [cliHeaderPath, cliHeader],
-  [typescriptPath, typescript],
-  [runtimeHeaderPath, runtimeHeader],
-  [runtimeTypescriptPath, runtimeTypescript],
   [cmakePath, cmake]
 ];
 if (process.argv.includes("--check")) {

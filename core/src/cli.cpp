@@ -1027,6 +1027,9 @@ bool global_action(cli_schema::CommandId id, CliEngine engine) noexcept {
     return true;
   case navigate_top:
   case md_edit_config_exclusive:
+  case md_edit_config_global:
+  case md_edit_config_private:
+  case md_edit_config_read_only:
   case md_compare:
   case md_commit:
   case md_discard:
@@ -1114,8 +1117,119 @@ std::string md_context_marker(const CliSession &session) {
     return std::string{stale} + changed + "[ex:" + location + "]";
   case MdCliWorkflow::explicit_exclusive:
     return std::string{stale} + changed + "(ex)[" + location + "]";
+  case MdCliWorkflow::implicit_global:
+    return std::string{stale} + changed + "[gl:" + location + "]";
+  case MdCliWorkflow::explicit_global:
+    return std::string{stale} + changed + "(gl)[" + location + "]";
+  case MdCliWorkflow::implicit_private:
+    return std::string{stale} + changed + "[pr:" + location + "]";
+  case MdCliWorkflow::explicit_private:
+    return std::string{stale} + changed + "(pr)[" + location + "]";
+  case MdCliWorkflow::implicit_read_only:
+    return std::string{stale} + changed + "[ro:" + location + "]";
+  case MdCliWorkflow::explicit_read_only:
+    return std::string{stale} + changed + "(ro)[" + location + "]";
   }
   return "[" + location + "]";
+}
+
+// Workflow helpers keep prompt, entry and exit semantics synchronized. The
+// abbreviations are the documented MD-CLI prompt regions and are not router
+// identity or application modes.
+bool implicit_workflow(MdCliWorkflow workflow) noexcept {
+  return workflow == MdCliWorkflow::implicit_exclusive ||
+         workflow == MdCliWorkflow::implicit_global ||
+         workflow == MdCliWorkflow::implicit_private ||
+         workflow == MdCliWorkflow::implicit_read_only;
+}
+
+std::string_view workflow_name(MdCliWorkflow workflow) noexcept {
+  switch (workflow) {
+  case MdCliWorkflow::implicit_exclusive:
+  case MdCliWorkflow::explicit_exclusive:
+    return "exclusive";
+  case MdCliWorkflow::implicit_global:
+  case MdCliWorkflow::explicit_global:
+    return "global";
+  case MdCliWorkflow::implicit_private:
+  case MdCliWorkflow::explicit_private:
+    return "private";
+  case MdCliWorkflow::implicit_read_only:
+  case MdCliWorkflow::explicit_read_only:
+    return "read-only";
+  case MdCliWorkflow::operational:
+    return "operational";
+  }
+  return "operational";
+}
+
+bool private_workflow(MdCliWorkflow workflow) noexcept {
+  return workflow == MdCliWorkflow::implicit_private ||
+         workflow == MdCliWorkflow::explicit_private;
+}
+
+bool exclusive_workflow(MdCliWorkflow workflow) noexcept {
+  return workflow == MdCliWorkflow::implicit_exclusive ||
+         workflow == MdCliWorkflow::explicit_exclusive;
+}
+
+bool global_workflow(MdCliWorkflow workflow) noexcept {
+  return workflow == MdCliWorkflow::implicit_global ||
+         workflow == MdCliWorkflow::explicit_global;
+}
+
+std::string entry_message(MdCliWorkflow workflow) {
+  if (global_workflow(workflow))
+    return "INFO: CLI #2054: Entering global configuration mode";
+  if (private_workflow(workflow))
+    return "INFO: CLI #2070: Entering private configuration mode\n"
+           "INFO: CLI #2061: Uncommitted changes are discarded on "
+           "configuration mode exit";
+  if (workflow == MdCliWorkflow::implicit_read_only ||
+      workflow == MdCliWorkflow::explicit_read_only)
+    return "INFO: CLI #2066: Entering read-only configuration mode";
+  return "INFO: CLI #2060: Entering exclusive configuration mode\n"
+         "INFO: CLI #2061: Uncommitted changes are discarded on "
+         "configuration mode exit";
+}
+
+std::string exit_message(MdCliWorkflow workflow, bool dirty) {
+  if (global_workflow(workflow)) {
+    auto output = std::string{"INFO: CLI #2056: Exiting global configuration mode"};
+    if (dirty)
+      output += "\nINFO: CLI #2057: Uncommitted changes are kept in the "
+                "candidate configuration";
+    return output;
+  }
+  if (private_workflow(workflow))
+    return "INFO: CLI #2074: Exiting private configuration mode";
+  if (workflow == MdCliWorkflow::implicit_read_only ||
+      workflow == MdCliWorkflow::explicit_read_only)
+    return "INFO: CLI #2067: Exiting read-only configuration mode";
+  return "INFO: CLI #2064: Exiting exclusive configuration mode";
+}
+
+std::string discard_prompt(MdCliWorkflow workflow) {
+  const auto private_mode = private_workflow(workflow);
+  return std::string{"INFO: CLI #"} + (private_mode ? "2071" : "2063") +
+         ": Uncommitted changes are present in the candidate configuration.\n"
+         "Exiting " + std::string{workflow_name(workflow)} +
+         " configuration mode will discard those changes.\n\n"
+         "Discard uncommitted changes? [y,n]";
+}
+
+std::string discard_canceled(MdCliWorkflow workflow) {
+  return private_workflow(workflow)
+             ? "INFO: CLI #2072: Exit private configuration mode canceled"
+             : "INFO: CLI #2065: Exit exclusive configuration mode canceled";
+}
+
+std::string discard_confirmed(MdCliWorkflow workflow) {
+  return private_workflow(workflow)
+             ? "WARNING: CLI #2073: Exiting private configuration mode - "
+               "uncommitted changes are discarded"
+             : "WARNING: CLI #2062: Exiting exclusive configuration mode - "
+               "uncommitted changes are discarded";
 }
 
 std::string classic_context_marker(std::string_view path) {
@@ -1147,6 +1261,14 @@ std::string classic_context_marker(std::string_view path) {
 }
 
 } // namespace
+
+std::string resolve_session_input(const CliSession &session,
+                                  std::string_view input) {
+  // effective_input is deliberately kept private because it assumes the
+  // fixed-size, NUL-terminated path invariant owned by CliSession. This
+  // wrapper exposes only the resulting value and cannot leak path storage.
+  return effective_input(session, input);
+}
 
 void synchronize_candidate(ConfigurationState &configuration,
                            CliSession &session, bool running_changed) noexcept {
@@ -1205,20 +1327,25 @@ std::string execute_cli(DeviceState &state, CliSession &session,
   // pending answer belongs to the router session so switching renderers cannot
   // lose or auto-accept a destructive confirmation.
   if (session.md_exit_confirmation) {
+    const auto source = session.md_workflow;
+    const auto target = session.md_confirmation_target;
     session.md_exit_confirmation = false;
+    session.md_confirmation_target = MdCliWorkflow::operational;
     if (input == "n" || input == "N") {
-      output = "INFO: CLI #2065: Exit exclusive configuration mode canceled";
+      output = cli_detail::discard_canceled(source);
     } else if (input == "y" || input == "Y") {
       state.configuration.candidate = state.configuration.running;
       session.candidate_dirty = false;
       session.candidate_outdated = false;
-      session.md_workflow = MdCliWorkflow::operational;
-      cli_detail::set_session_path(session, CliEngine::md, {});
-      output = "WARNING: CLI #2062: Exiting exclusive configuration mode - "
-               "uncommitted changes are discarded\n"
-               "INFO: CLI #2064: Exiting exclusive configuration mode";
+      session.md_workflow = target;
+      output = cli_detail::discard_confirmed(source);
+      if (target == MdCliWorkflow::operational)
+        cli_detail::set_session_path(session, CliEngine::md, {});
+      else
+        output += '\n' + cli_detail::entry_message(target);
     } else {
       session.md_exit_confirmation = true;
+      session.md_confirmation_target = target;
       output = "Discard uncommitted changes? [y,n]";
     }
     return output + cli_detail::prompt(state.configuration.running, session);
@@ -1288,7 +1415,7 @@ std::string execute_cli(DeviceState &state, CliSession &session,
         cli_detail::canonical_command_prefix(session, effective);
     if (!canonical.empty()) {
       if (session.engine == CliEngine::md &&
-          session.md_workflow == MdCliWorkflow::implicit_exclusive &&
+          cli_detail::implicit_workflow(session.md_workflow) &&
           canonical != "configure" &&
           !std::string_view{canonical}.starts_with("configure ")) {
         // Implicit workflow is confined to the configuration region. An
@@ -1361,20 +1488,20 @@ std::string execute_cli(DeviceState &state, CliSession &session,
            !cli_detail::session_path(session, session.engine).empty())
       cli_detail::parent_context(session);
     if (session.engine == CliEngine::md &&
-        session.md_workflow == MdCliWorkflow::implicit_exclusive &&
+        cli_detail::implicit_workflow(session.md_workflow) &&
         cli_detail::session_path(session, CliEngine::md).empty()) {
-      if (session.candidate_dirty) {
+      if (session.candidate_dirty &&
+          !cli_detail::global_workflow(session.md_workflow)) {
         // The navigation is not committed until the destructive confirmation
         // succeeds. Answering 'n' therefore leaves the exact prior context.
         cli_detail::set_session_path(session, CliEngine::md, original_path);
         session.md_exit_confirmation = true;
-        output = "INFO: CLI #2063: Uncommitted changes are present in the "
-                 "candidate configuration.\n"
-                 "Exiting exclusive configuration mode will discard those "
-                 "changes.\n\nDiscard uncommitted changes? [y,n]";
+        session.md_confirmation_target = MdCliWorkflow::operational;
+        output = cli_detail::discard_prompt(session.md_workflow);
       } else {
+        const auto leaving = session.md_workflow;
         session.md_workflow = MdCliWorkflow::operational;
-        output = "INFO: CLI #2064: Exiting exclusive configuration mode";
+        output = cli_detail::exit_message(leaving, false);
       }
     }
   } else if (command->spec->id == cli_schema::CommandId::navigate_top) {
@@ -1388,7 +1515,7 @@ std::string execute_cli(DeviceState &state, CliSession &session,
   } else if (command->spec->id == cli_schema::CommandId::navigate_exit) {
     const bool leave_implicit =
         session.engine == CliEngine::md &&
-        session.md_workflow == MdCliWorkflow::implicit_exclusive &&
+        cli_detail::implicit_workflow(session.md_workflow) &&
         cli_detail::session_path(session, CliEngine::md) == "configure";
     if (session.engine == CliEngine::classic) {
       // Classic exit and back both move to the next higher command context.
@@ -1396,16 +1523,17 @@ std::string execute_cli(DeviceState &state, CliSession &session,
       cli_detail::parent_context(session);
     } else if (!leave_implicit) {
       cli_detail::previous_context(session);
-    } else if (session.candidate_dirty) {
+    } else if (session.candidate_dirty &&
+               !cli_detail::global_workflow(session.md_workflow)) {
       session.md_exit_confirmation = true;
-      output = "INFO: CLI #2063: Uncommitted changes are present in the "
-               "candidate configuration.\n"
-               "Exiting exclusive configuration mode will discard those "
-               "changes.\n\nDiscard uncommitted changes? [y,n]";
+      session.md_confirmation_target = MdCliWorkflow::operational;
+      output = cli_detail::discard_prompt(session.md_workflow);
     } else {
+      const auto leaving = session.md_workflow;
+      const auto dirty = session.candidate_dirty;
       session.md_workflow = MdCliWorkflow::operational;
       cli_detail::set_session_path(session, CliEngine::md, {});
-      output = "INFO: CLI #2064: Exiting exclusive configuration mode";
+      output = cli_detail::exit_message(leaving, dirty);
     }
   } else if (command->spec->id == cli_schema::CommandId::navigate_exit_all ||
              command->spec->id == cli_schema::CommandId::navigate_root ||
@@ -1413,31 +1541,33 @@ std::string execute_cli(DeviceState &state, CliSession &session,
                  cli_schema::CommandId::navigate_classic_root) {
     const bool leave_implicit =
         session.engine == CliEngine::md &&
-        session.md_workflow == MdCliWorkflow::implicit_exclusive;
-    if (leave_implicit && session.candidate_dirty) {
+        cli_detail::implicit_workflow(session.md_workflow);
+    if (leave_implicit && session.candidate_dirty &&
+        !cli_detail::global_workflow(session.md_workflow)) {
       session.md_exit_confirmation = true;
-      output = "INFO: CLI #2063: Uncommitted changes are present in the "
-               "candidate configuration.\n"
-               "Exiting exclusive configuration mode will discard those "
-               "changes.\n\nDiscard uncommitted changes? [y,n]";
+      session.md_confirmation_target = MdCliWorkflow::operational;
+      output = cli_detail::discard_prompt(session.md_workflow);
     } else {
       cli_detail::move_session_path(session, {});
       if (leave_implicit) {
+        const auto leaving = session.md_workflow;
+        const auto dirty = session.candidate_dirty;
         session.md_workflow = MdCliWorkflow::operational;
-        output = "INFO: CLI #2064: Exiting exclusive configuration mode";
+        output = cli_detail::exit_message(leaving, dirty);
       }
     }
   } else if (command->spec->id == cli_schema::CommandId::md_quit_config) {
-    if (session.candidate_dirty) {
+    if (session.candidate_dirty &&
+        !cli_detail::global_workflow(session.md_workflow)) {
       session.md_exit_confirmation = true;
-      output = "INFO: CLI #2063: Uncommitted changes are present in the "
-               "candidate configuration.\n"
-               "Exiting exclusive configuration mode will discard those "
-               "changes.\n\nDiscard uncommitted changes? [y,n]";
+      session.md_confirmation_target = MdCliWorkflow::operational;
+      output = cli_detail::discard_prompt(session.md_workflow);
     } else {
+      const auto leaving = session.md_workflow;
+      const auto dirty = session.candidate_dirty;
       session.md_workflow = MdCliWorkflow::operational;
       cli_detail::move_session_path(session, {});
-      output = "INFO: CLI #2064: Exiting exclusive configuration mode";
+      output = cli_detail::exit_message(leaving, dirty);
     }
   } else if (command->spec->id == cli_schema::CommandId::switch_engine) {
     session.engine =
@@ -1445,34 +1575,77 @@ std::string execute_cli(DeviceState &state, CliSession &session,
     output = session.engine == CliEngine::md
                  ? "INFO: CLI #2052: Switching to the MD-CLI engine"
                  : "INFO: CLI #2051: Switching to the classic CLI engine";
-  } else if (command->spec->id ==
-                 cli_schema::CommandId::md_configure_exclusive ||
-             command->spec->id ==
-                 cli_schema::CommandId::md_edit_config_exclusive) {
+  } else if ([&] {
+               using enum cli_schema::CommandId;
+               const auto id = command->spec->id;
+               return id == md_configure_exclusive ||
+                      id == md_configure_global ||
+                      id == md_configure_private ||
+                      id == md_configure_read_only ||
+                      id == md_edit_config_exclusive ||
+                      id == md_edit_config_global ||
+                      id == md_edit_config_private ||
+                      id == md_edit_config_read_only;
+             }()) {
+    using enum cli_schema::CommandId;
+    const auto id = command->spec->id;
+    const bool implicit = id == md_configure_exclusive ||
+                          id == md_configure_global ||
+                          id == md_configure_private ||
+                          id == md_configure_read_only;
     const bool implicit_to_explicit =
-        command->spec->id == cli_schema::CommandId::md_edit_config_exclusive &&
-        session.md_workflow == MdCliWorkflow::implicit_exclusive;
-    if (implicit_to_explicit) {
-      // Nokia permits this one-way workflow transition. The same exclusive
-      // datastore lock remains held, so candidate changes and context survive
-      // and no fresh-entry information messages are printed.
-      session.md_workflow = MdCliWorkflow::explicit_exclusive;
-    } else {
-      // Both fresh workflows use the same exclusive candidate. Implicit mode
-      // enters /configure; explicit mode preserves the operational context.
-      session.md_workflow =
-          command->spec->id == cli_schema::CommandId::md_configure_exclusive
-              ? MdCliWorkflow::implicit_exclusive
-              : MdCliWorkflow::explicit_exclusive;
-      if (session.md_workflow == MdCliWorkflow::implicit_exclusive)
-        cli_detail::set_session_path(session, CliEngine::md, "configure");
-      state.configuration.candidate = state.configuration.running;
-      session.candidate_dirty = false;
-      session.candidate_outdated = false;
-      output = "INFO: CLI #2060: Entering exclusive configuration mode\n"
-               "INFO: CLI #2061: Uncommitted changes are discarded on "
-               "configuration mode exit";
+        (session.md_workflow == MdCliWorkflow::implicit_exclusive &&
+         id == md_edit_config_exclusive) ||
+        (session.md_workflow == MdCliWorkflow::implicit_global &&
+         id == md_edit_config_global) ||
+        (session.md_workflow == MdCliWorkflow::implicit_private &&
+         id == md_edit_config_private) ||
+        (session.md_workflow == MdCliWorkflow::implicit_read_only &&
+         id == md_edit_config_read_only);
+    MdCliWorkflow target{};
+    if (id == md_configure_exclusive || id == md_edit_config_exclusive)
+      target = implicit ? MdCliWorkflow::implicit_exclusive
+                        : MdCliWorkflow::explicit_exclusive;
+    else if (id == md_configure_global || id == md_edit_config_global)
+      target = implicit ? MdCliWorkflow::implicit_global
+                        : MdCliWorkflow::explicit_global;
+    else if (id == md_configure_private || id == md_edit_config_private)
+      target = implicit ? MdCliWorkflow::implicit_private
+                        : MdCliWorkflow::explicit_private;
+    else
+      target = implicit ? MdCliWorkflow::implicit_read_only
+                        : MdCliWorkflow::explicit_read_only;
+    if (implicit_to_explicit)
+      session.md_workflow = target;
+    if (implicit_to_explicit)
+      return cli_detail::prompt(state.configuration.running, session);
+    if (session.md_workflow != MdCliWorkflow::operational) {
+      const auto source = session.md_workflow;
+      // Nokia permits in-place transitions only among exclusive, global and
+      // read-only global-candidate modes. Private candidate identity cannot be
+      // converted, and configure is an entry workflow rather than transition.
+      if (implicit || cli_detail::private_workflow(source) ||
+          cli_detail::private_workflow(target)) {
+        output = "MINOR: CLI #2069: Operation not allowed";
+      } else if (cli_detail::exclusive_workflow(source) &&
+                 session.candidate_dirty) {
+        session.md_exit_confirmation = true;
+        session.md_confirmation_target = target;
+        output = cli_detail::discard_prompt(source);
+      } else {
+        session.md_workflow = target;
+        output = cli_detail::exit_message(source, session.candidate_dirty) +
+                 '\n' + cli_detail::entry_message(target);
+      }
+      return output + cli_detail::prompt(state.configuration.running, session);
     }
+    session.md_workflow = target;
+    if (implicit)
+      cli_detail::set_session_path(session, CliEngine::md, "configure");
+    state.configuration.candidate = state.configuration.running;
+    session.candidate_dirty = false;
+    session.candidate_outdated = false;
+    output = cli_detail::entry_message(session.md_workflow);
   } else if (command->spec->id == cli_schema::CommandId::help ||
              command->spec->id == cli_schema::CommandId::help_edit ||
              command->spec->id == cli_schema::CommandId::help_global ||

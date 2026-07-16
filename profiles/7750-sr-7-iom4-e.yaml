@@ -162,13 +162,15 @@ cli_defaults:
   history_entries: 50
 abi:
   # Version 4 exposes physical-link presence separately from ifOperStatus.
-  # Nokia show port documents that Physical Link and Oper State are distinct.
+  # Snapshot version 5 is activated with the multi-device JSON bridge.
   runtime_snapshot: 4
-  telemetry: 4
+  # Version 5 adds a telemetry directory with per-device sequence locks and
+  # variable-size port bitset offsets.
+  telemetry: 5
   # Version 2 adds the router-owned terminal history region to terminal:state.
   runtime_messages: 2
-  # Version 4 adds structural forwarding queues, encoded frames, relative link
-  # deadlines, ARP request suppression and endpoint protocol progress.
+  # Version 4 remains active until checkpoint 5 can encode the complete lab
+  # graph atomically. Merely changing the number would claim unsupported data.
   checkpoint: 4
 link_defaults:
   # Propagation belongs to the cable or circuit, not to the Nokia port. The

@@ -146,12 +146,33 @@ bool available(const cli_schema::CommandSpec &spec,
   const bool configuring = session.md_workflow != MdCliWorkflow::operational;
   if (configuration_only(spec.id))
     return configuring;
-  if (spec.id == cli_schema::CommandId::md_configure_exclusive)
+  const auto is_implicit_entry = [](cli_schema::CommandId id) {
+    using enum cli_schema::CommandId;
+    return id == md_configure_exclusive || id == md_configure_global ||
+           id == md_configure_private || id == md_configure_read_only;
+  };
+  if (is_implicit_entry(spec.id))
     return !configuring;
-  if (spec.id == cli_schema::CommandId::md_edit_config_exclusive)
-    return session.md_workflow != MdCliWorkflow::explicit_exclusive;
+  using enum cli_schema::CommandId;
+  if (spec.id == md_edit_config_exclusive ||
+      spec.id == md_edit_config_global ||
+      spec.id == md_edit_config_private ||
+      spec.id == md_edit_config_read_only) {
+    if (!configuring)
+      return true;
+    // Private candidate identity cannot transition. Exclusive, global and
+    // read-only share the global candidate and Nokia permits transitions among
+    // them, including an implicit session becoming explicit at the same time.
+    if (session.md_workflow == MdCliWorkflow::implicit_private ||
+        session.md_workflow == MdCliWorkflow::explicit_private)
+      return spec.id == md_edit_config_private;
+    return spec.id != md_edit_config_private;
+  }
   if (spec.id == cli_schema::CommandId::md_quit_config)
-    return session.md_workflow == MdCliWorkflow::explicit_exclusive;
+    return session.md_workflow == MdCliWorkflow::explicit_exclusive ||
+           session.md_workflow == MdCliWorkflow::explicit_global ||
+           session.md_workflow == MdCliWorkflow::explicit_private ||
+           session.md_workflow == MdCliWorkflow::explicit_read_only;
   return true;
 }
 
@@ -283,6 +304,15 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
 std::optional<ParsedCommand> parse_command(const DeviceState &,
                                            const CliSession &session,
                                            std::string_view input) {
+  return parse_command(session.engine, session.md_workflow, input);
+}
+
+std::optional<ParsedCommand> parse_command(CliEngine engine,
+                                           MdCliWorkflow workflow,
+                                           std::string_view input) {
+  CliSession session;
+  session.engine = engine;
+  session.md_workflow = workflow;
   const auto line = tokenize(trim_view(input), false);
   if (!line.valid || !line.count)
     return std::nullopt;

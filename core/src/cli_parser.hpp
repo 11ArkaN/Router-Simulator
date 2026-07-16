@@ -24,6 +24,13 @@ struct ParsedCommand {
 parse_command(const DeviceState &state, const CliSession &session,
               std::string_view input);
 
+// Multi-router execution supplies only session semantics to syntax parsing.
+// Dynamic device values are resolved by the selected router facade after a
+// schema row has been identified.
+[[nodiscard]] std::optional<ParsedCommand>
+parse_command(CliEngine engine, MdCliWorkflow workflow,
+              std::string_view input);
+
 [[nodiscard]] std::optional<std::string_view>
 argument(const ParsedCommand &command, cli_schema::TokenKind kind) noexcept;
 

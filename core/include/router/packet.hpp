@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "router/generated_device_catalog.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -12,11 +14,12 @@
 
 namespace router::packet {
 
-// Untagged Ethernet carries a 1500-octet IP packet behind a 14-octet header.
-// FCS is modeled by the link serializer and is not stored in captured Frame
-// bytes. Capture and encoders share this bound to prevent snaplen drift.
-inline constexpr std::size_t maximum_frame_octets = 1514;
 inline constexpr std::uint16_t ethernet_header_octets = 14;
+// The fixed envelope must admit every network MTU exposed by the release
+// catalog. FCS is serialized by the link and omitted from the stored bytes.
+// This keeps jumbo forwarding, capture and checkpoint storage on one bound.
+inline constexpr std::size_t maximum_frame_octets =
+    ethernet_header_octets + device_catalog::maximum_network_mtu;
 
 using Mac = std::array<std::uint8_t, 6>;
 using Ipv4 = std::array<std::uint8_t, 4>;
@@ -24,11 +27,11 @@ using Ipv4 = std::array<std::uint8_t, 4>;
 struct Frame {
   // The fixed Ethernet envelope avoids one heap allocation per frame. length
   // is the only portion placed on the wire and excludes the Ethernet FCS.
-  // The first milestone supports untagged Ethernet. 1514 captured octets equal
-  // the IEEE 1518 octet frame after excluding the four octet FCS.
+  // The first implementation supports untagged Ethernet including jumbo
+  // payloads admitted by the selected SR OS port profile.
   // Encoders write every byte below length, including Ethernet padding. The
   // remainder is intentionally not zero-initialized in stack Builders because
-  // clearing 1514 bytes for a 60 or 98 byte packet would dominate encoding.
+  // clearing a jumbo envelope for a 60 or 98 byte packet would dominate encoding.
   // Consumers are contractually restricted to view(), size() and indices below
   // length. PacketPool copies fixed slots for stable ownership after encoding.
   std::array<std::uint8_t, maximum_frame_octets> bytes;
@@ -69,10 +72,17 @@ struct Ipv4View {
 };
 
 struct FragmentBatch {
-  // With the profile's minimum 512-byte MTU, a maximum untagged IPv4 packet
-  // produces at most four fragments. Fixed storage prevents MTU handling from
-  // allocating or hiding an overflow path in forwarding.
-  std::array<Frame, 4> frames{};
+  // RFC 791 requires every non-final payload to end on an eight-octet boundary.
+  // Compute the worst case from the generated MTU limits so expanding jumbo
+  // support cannot silently retain an obsolete four-fragment ceiling.
+  static constexpr std::size_t ipv4_header_octets = 20;
+  static constexpr std::size_t minimum_fragment_payload =
+      ((device_catalog::minimum_network_mtu - ipv4_header_octets) / 8U) * 8U;
+  static constexpr std::size_t maximum_fragment_count =
+      (device_catalog::maximum_network_mtu - ipv4_header_octets +
+       minimum_fragment_payload - 1U) /
+      minimum_fragment_payload;
+  std::array<Frame, maximum_fragment_count> frames{};
   std::uint8_t count{};
 };
 
@@ -99,6 +109,22 @@ Frame icmp_echo(Mac source_mac, Mac target_mac, Ipv4 source_ip, Ipv4 target_ip,
                 bool reply, std::uint16_t sequence, std::uint8_t ttl = 64,
                 std::size_t payload_octets = 56,
                 bool dont_fragment = false);
+// Owner-provided encoders avoid returning a 9 KiB jumbo-capable value through
+// an intermediate object for ordinary 60 to 98 byte control packets. They
+// write exactly result.length bytes and perform no allocation.
+void arp_request_into(Frame &result, Mac source_mac, Ipv4 source_ip,
+                      Ipv4 target_ip) noexcept;
+void arp_reply_into(Frame &result, Mac source_mac, Ipv4 source_ip,
+                    Mac target_mac, Ipv4 target_ip) noexcept;
+void icmp_echo_into(Frame &result, Mac source_mac, Mac target_mac,
+                    Ipv4 source_ip, Ipv4 target_ip, bool reply,
+                    std::uint16_t sequence, std::uint8_t ttl = 64,
+                    std::size_t payload_octets = 56,
+                    bool dont_fragment = false) noexcept;
+// Frame stays trivially copyable for shared SPSC storage. Hot owners must use
+// this bounded copy when the source length is known, avoiding an unnecessary
+// copy of the unused jumbo tail.
+void copy_frame(Frame &destination, const Frame &source) noexcept;
 std::optional<Frame> icmp_echo_reply(const Frame &request, Mac source_mac,
                                      Mac destination_mac) noexcept;
 std::optional<Frame> icmp_time_exceeded(const Frame &original, Mac source_mac,
@@ -121,6 +147,9 @@ void rewrite_ethernet(Frame &frame, Mac source_mac,
 // decrements TTL, and recalculates the IPv4 header checksum.
 std::optional<Frame> route_ipv4(const Frame &ingress, Mac source_mac,
                                 Mac destination_mac) noexcept;
+[[nodiscard]] bool route_ipv4_into(Frame &egress, const Frame &ingress,
+                                   Mac source_mac,
+                                   Mac destination_mac) noexcept;
 std::optional<FragmentBatch> fragment_ipv4(const Frame &routed,
                                            std::uint16_t mtu) noexcept;
 

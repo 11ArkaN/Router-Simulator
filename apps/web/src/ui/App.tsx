@@ -1,74 +1,160 @@
-// Router Lab application composition. React owns views and project drafts while
-// C++ remains the sole owner of live operational and protocol state.
+// Existing Router Lab composition connected to the multi-device runtime. The
+// DOM hierarchy and CSS classes remain the approved UI contract. React owns
+// portable format 3 intent while C++ owns every operational state transition.
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ChangeEvent } from "react";
-import { DEFAULT_PROJECT, GENERATED_PROFILE, parseProject, type HostConfig,
-  type CliPresentationStateV1, type LabProject, type ProjectHardware,
-  type RuntimeSnapshot } from "@router-simulator/contracts";
-import { RuntimeClient, type HardwareAction, type TerminalState } from "../runtime/client";
-import { downloadBinary, exportCheckpoint, exportProject, importNetsim,
-  IncompatibleCheckpointError, loadProject, saveBinary, saveProject } from "../persistence";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { createEmptyProjectV3, createRouterProjectV3, equippedRouterPorts,
+  parseLabProjectV3, PROFILE_CATALOG, type DeviceProfileId,
+  type HostProjectV3, type LabProjectV3, type LabRuntimeSnapshotV5,
+  type LinkProjectV3, type RouterProjectV3, type RuntimeRouterV5,
+  type TerminalPresentationV2 } from "@router-simulator/contracts";
+import { MultiRouterRuntimeClient, type RouterTerminalState } from "../runtime/multi-router-client";
+import { createCheckpointManifestV2, downloadBinary, exportProjectV3,
+  importNetsimV2, loadActiveProjectV3, loadProjectBinaryV3,
+  loadProjectPresentation, projectCheckpointNameV3, saveLabProjectV3, saveProjectBinaryV3,
+  saveProjectPresentation } from "../persistence";
 import { Inspector, type RouterTab } from "./Inspector";
 import { PanelResizeHandle } from "./PanelResizeHandle";
 import { TerminalPanel } from "./TerminalPanel";
 import type { TerminalCheckpointProvider } from "./terminal-model";
+import type { TerminalPanelPresentation } from "./terminal-contract";
 import { Topology } from "./Topology";
+import { automaticTopologyLayout } from "./topology-layout";
 import { CaptureWorkspace, ConfigWorkspace, DevicesWorkspace, NotesWorkspace,
   SettingsWorkspace, SnapshotWorkspace, type WorkspaceView } from "./WorkspaceViews";
-import { changedProjectDomains, type AppliedProjectDomains } from "./project-domains";
 
-function projectHardware(current: ProjectHardware,
-  runtime: RuntimeSnapshot["hardware"]): ProjectHardware {
-  // Copy only portable intent from the live projection. If all values already
-  // match, preserve object identity so React does not replay hardware restore
-  // after an unrelated terminal command or counter refresh.
-  let changed = false;
-  const cards = runtime.cards.map((card, cardIndex) => {
-    const previous = current.cards[cardIndex];
-    const mdas = card.mdas.map((mda, mdaIndex) => {
-      const before = previous?.mdas[mdaIndex];
-      if (!before || before.slot !== mda.slot || before.provisionedType !== mda.provisionedType ||
-          before.equippedType !== mda.equippedType) changed = true;
-      return { slot: mda.slot, provisionedType: mda.provisionedType,
-        equippedType: mda.equippedType };
-    });
-    if (!previous || previous.slot !== card.slot || previous.provisionedType !== card.provisionedType ||
-        previous.equippedType !== card.equippedType || previous.mdas.length !== mdas.length) changed = true;
-    return { slot: card.slot, provisionedType: card.provisionedType,
-      equippedType: card.equippedType, mdas };
-  });
-  if (current.cards.length !== cards.length) changed = true;
-  return changed ? { cards } : current;
+type CaptureKind = "link-direction" | "router-ingress" | "router-egress" |
+  "cpm-punt";
+type CaptureSelection = { key: string; kind: CaptureKind; objectId: string;
+  portId: string; direction: 0 | 1 };
+
+function captureKey(kind: CaptureKind, objectId: string, portId: string,
+  direction: 0 | 1): string {
+  // Delimited keys are local React identity only. The runtime still receives
+  // separate typed fields and resolves generation-bearing handles itself.
+  return `${kind}:${objectId}:${portId}:${direction}`;
+}
+
+function captureSelectionsFromSnapshot(snapshot: LabRuntimeSnapshotV5):
+  CaptureSelection[] {
+  // Runtime numeric IDs remain an internal capture-store concern. React keys
+  // are reconstructed from portable locations so a restored selection binds
+  // to the same visible checkbox without exposing handle generations.
+  return snapshot.capturePoints.map((point) => ({
+    key: captureKey(point.kind, point.objectId, point.portId, point.direction),
+    kind: point.kind, objectId: point.objectId, portId: point.portId,
+    direction: point.direction
+  }));
 }
 
 function visibleFailure(area: "startup" | "operation", cause: unknown): string {
-  // Detailed transport and core failures remain available to developers while
-  // the product surface exposes only a stable, actionable message.
   console.error(`Lab ${area} failure`, cause);
-  return area === "startup"
-    ? "The lab could not start. Reload the page and try again."
-    : "The operation could not be completed. No changes were applied.";
+  return cause instanceof Error ? cause.message : area === "startup"
+    ? "The lab could not start." : "The operation could not be completed.";
+}
+
+function freeId(prefix: string, values: readonly string[]): string {
+  const used = new Set(values);
+  for (let index = 1; ; ++index) {
+    const id = `${prefix}${index}`;
+    if (!used.has(id)) return id;
+  }
+}
+
+function downloadManifest(name: string, value: unknown): void {
+  const bytes = new TextEncoder().encode(JSON.stringify(value, null, 2));
+  downloadBinary(name, bytes, "application/json");
+}
+
+function mergeRuntimeRouter(project: LabProjectV3,
+  runtimeRouter: RuntimeRouterV5): LabProjectV3 {
+  const before = project.routers.find((router) => router.id === runtimeRouter.id);
+  if (!before) return project;
+  const livePorts = new Map(runtimeRouter.ports.map((port) => [port.id, port]));
+  const retained = before.running.ports.filter((port) => !livePorts.has(port.id));
+  const router: RouterProjectV3 = {
+    ...before,
+    systemName: runtimeRouter.systemName,
+    hardware: { cards: runtimeRouter.cards.map((card) => ({
+      slot: card.slot, admin: card.admin ? "up" : "down",
+      provisionedType: card.provisionedType,
+      equippedType: card.equippedType,
+      mdas: card.mdas.map((mda) => ({ slot: mda.slot,
+        admin: mda.admin ? "up" : "down",
+        provisionedType: mda.provisionedType,
+        equippedType: mda.equippedType }))
+    })) },
+    running: {
+      systemName: runtimeRouter.systemName,
+      ports: [...retained, ...runtimeRouter.ports.map((port) => ({
+        id: port.id, admin: port.admin ? "up" as const : "down" as const,
+        mtu: port.mtu, speedMbps: port.speedMbps,
+        description: port.description
+      }))],
+      interfaces: runtimeRouter.interfaces.map((item) => ({
+        name: item.name, portId: item.portId, address: item.address,
+        admin: item.admin ? "up" as const : "down" as const
+      })),
+      staticRoutes: runtimeRouter.staticRoutes.map((route) => ({ ...route }))
+    }
+  };
+  return { ...project, routers: project.routers.map((item) =>
+    item.id === router.id ? router : item) };
+}
+
+function snapshotMatchesProject(project: LabProjectV3,
+  snapshot: LabRuntimeSnapshotV5): boolean {
+  // A recovery checkpoint is accepted only for the exact portable object
+  // graph. This prevents an older, still ABI-compatible lab from replacing a
+  // newer project merely because both were saved under the same browser key.
+  const routerKeys = project.routers.map((item) =>
+    `${item.id}:${item.profileId}`).sort();
+  const liveRouterKeys = snapshot.routers.map((item) =>
+    `${item.id}:${item.profileId}`).sort();
+  const hostKeys = project.hosts.map((item) => item.id).sort();
+  const liveHostKeys = snapshot.hosts.map((item) => item.id).sort();
+  const linkKeys = project.links.map((item) => item.id).sort();
+  const liveLinkKeys = snapshot.links.map((item) => item.id).sort();
+  return JSON.stringify([routerKeys, hostKeys, linkKeys]) ===
+    JSON.stringify([liveRouterKeys, liveHostKeys, liveLinkKeys]);
+}
+
+function mergeRuntimeProject(project: LabProjectV3,
+  snapshot: LabRuntimeSnapshotV5): LabProjectV3 {
+  let merged = project;
+  for (const router of snapshot.routers)
+    merged = mergeRuntimeRouter(merged, router);
+  merged = {
+    ...merged,
+    hosts: merged.hosts.map((host) => {
+      const live = snapshot.hosts.find((item) => item.id === host.id);
+      return live ? { ...host, name: live.name, eth0: { ...host.eth0,
+        mac: live.mac, address: live.address, gateway: live.gateway,
+        mtu: live.mtu } } : host;
+    }),
+    links: merged.links.map((link) => {
+      const live = snapshot.links.find((item) => item.id === link.id);
+      return live ? { ...link, admin: live.admin ? "up" as const : "down" as const,
+        propagationDelayNs: live.propagationDelayNs,
+        endpoints: live.endpoints } : link;
+    })
+  };
+  return parseLabProjectV3(merged);
 }
 
 export function App() {
-  // App owns portable drafts and view state only. RuntimeSnapshot values are
-  // immutable acknowledgements from C++; no setter below fabricates a route,
-  // adjacency, hardware lifecycle, port status or packet counter.
-  const [project, setProject] = useState<LabProject>(DEFAULT_PROJECT);
-  const [snapshot, setSnapshot] = useState<RuntimeSnapshot>();
-  const [selected, setSelected] = useState<string>(GENERATED_PROFILE.uiDefaults.router_id);
-  // Runtime failures and project-operation failures have different lifetimes.
-  // A rejected import must not disable a healthy terminal or claim that the
-  // two C++ ownership domains stopped running.
+  const [project, setProject] = useState<LabProjectV3>(() => createEmptyProjectV3());
+  const [snapshot, setSnapshot] = useState<LabRuntimeSnapshotV5>();
+  const [telemetrySnapshot, setTelemetrySnapshot] = useState<LabRuntimeSnapshotV5>();
+  const [selected, setSelected] = useState<string>();
   const [runtimeError, setRuntimeError] = useState<string>();
   const [operationError, setOperationError] = useState<string>();
-  const [runtime, setRuntime] = useState<RuntimeClient>();
+  const [runtime, setRuntime] = useState<MultiRouterRuntimeClient>();
   const [projectLoaded, setProjectLoaded] = useState(false);
-  const [projectReadSettled, setProjectReadSettled] = useState(false);
   const [view, setView] = useState<WorkspaceView>("topology");
-  const [captureActive, setCaptureActive] = useState(true);
+  const [captureSelections, setCaptureSelections] = useState<CaptureSelection[]>([]);
   const [inspectorOpen, setInspectorOpen] = useState(true);
-  const [terminalOpen, setTerminalOpen] = useState(true);
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
@@ -76,590 +162,662 @@ export function App() {
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const [topologyTool, setTopologyTool] = useState<"select" | "link">("select");
   const [routerTab, setRouterTab] = useState<RouterTab>("chassis");
+  const [terminalPresentations, setTerminalPresentations] = useState<
+    Record<string, TerminalPanelPresentation>>({});
+  const [terminalGeneration, setTerminalGeneration] = useState(0);
+  const [activeSession, setActiveSession] = useState<string>();
+  const [pendingRouterPosition, setPendingRouterPosition] = useState<
+    { x: number; y: number; systemName: string } | undefined>();
+  const [pendingHost, setPendingHost] = useState<{
+    id: string; position: { x: number; y: number }; name: string; mac: string;
+    address: string; gateway: string; mtu: string;
+  }>();
+  const [linkNodes, setLinkNodes] = useState<readonly [string, string]>();
+  const [linkPorts, setLinkPorts] = useState<readonly [string, string]>(["", ""]);
   const importRef = useRef<HTMLInputElement>(null);
   const checkpointRef = useRef<HTMLInputElement>(null);
   const terminalCheckpointProviderRef = useRef<TerminalCheckpointProvider | undefined>(undefined);
-  const [terminalPresentation, setTerminalPresentation] = useState<CliPresentationStateV1>();
-  const [terminalGeneration, setTerminalGeneration] = useState(0);
-  const appliedDomainsRef = useRef<AppliedProjectDomains | undefined>(undefined);
-  // Imports replace the runtime instance. The mount cleanup must close the
-  // latest owner rather than the instance captured by the initial effect,
-  // otherwise an imported pthread pool survives after React unmounts.
-  const runtimeRef = useRef<RuntimeClient | undefined>(undefined);
+  const runtimeRef = useRef<MultiRouterRuntimeClient | undefined>(undefined);
   runtimeRef.current = runtime;
-  const ready = snapshot?.status === "ready";
 
   useEffect(() => {
-    // Persistence and runtime boot begin independently, but the domain bridge
-    // remains gated by projectLoaded. This prevents DEFAULT_PROJECT from
-    // reaching C++ while IndexedDB still holds the user's actual laboratory.
-    let client: RuntimeClient | undefined;
     let cancelled = false;
-    void loadProject()
-      .then((value) => {
-        if (!cancelled) {
-          setProject(value);
-          setProjectLoaded(true);
-          setProjectReadSettled(true);
+    let client: MultiRouterRuntimeClient | undefined;
+    void (async () => {
+      const stored = await loadActiveProjectV3();
+      const recoveryName = await projectCheckpointNameV3(stored);
+      const [checkpoint, presentation] = await Promise.all([
+        loadProjectBinaryV3(stored.projectId, recoveryName),
+        loadProjectPresentation(stored.projectId)
+      ]);
+      client = new MultiRouterRuntimeClient();
+      let live = await client.applyProject(stored);
+      if (checkpoint) {
+        try {
+          await client.importCheckpoint(checkpoint);
+          const recovered = await client.snapshot();
+          if (snapshotMatchesProject(stored, recovered)) live = recovered;
+          else throw new Error("Recovery checkpoint object graph is stale");
+        } catch {
+          client.close();
+          client = new MultiRouterRuntimeClient();
+          live = await client.applyProject(stored);
         }
-      })
-      .catch((cause) => {
-        if (!cancelled) {
-          // A rejected persisted project must not leave the independent C++
-          // console disabled. DEFAULT_PROJECT stays only in memory and is not
-          // autosaved because projectLoaded remains false, preserving the bad
-          // record for explicit user recovery or replacement.
-          setProjectReadSettled(true);
-          setOperationError(visibleFailure("operation", cause));
-        }
-      });
-    try {
-      client = new RuntimeClient();
+      }
+      if (cancelled) return client.close();
+      const recoveredProject = mergeRuntimeProject(stored, live);
+      setProject(recoveredProject);
+      setSnapshot(live);
+      setCaptureSelections(captureSelectionsFromSnapshot(live));
       setRuntime(client);
-      void client.snapshot()
-        .then((value) => !cancelled && setSnapshot(value))
-        .catch((cause) => !cancelled && setRuntimeError(visibleFailure("startup", cause)));
-    } catch (cause) {
-      setRuntimeError(visibleFailure("startup", cause));
-    }
+      setSelected(presentation?.selectedNodeId ?? recoveredProject.routers[0]?.id ??
+        recoveredProject.hosts[0]?.id);
+      if (presentation?.terminal) {
+        const restored = Object.fromEntries(presentation.terminal.sessions.map(
+          (item) => [item.sessionId, { editors: item.editors,
+            queuedInput: item.queuedInput, ...(item.pager ? { pager: item.pager } : {}) }]
+        ));
+        setTerminalPresentations(restored);
+        const restoredActive = presentation.terminal.activeSessionId;
+        if (restoredActive && live.sessions.some((item) => item.id === restoredActive)) {
+          setActiveSession(restoredActive);
+          setTerminalOpen(true);
+        }
+      }
+      setProjectLoaded(true);
+    })().catch((cause) => !cancelled && setRuntimeError(visibleFailure("startup", cause)));
     return () => {
       cancelled = true;
       runtimeRef.current?.close();
+      if (!runtimeRef.current) client?.close();
     };
   }, []);
 
   useEffect(() => {
-    // Never let the temporary DEFAULT_PROJECT value race an IndexedDB read and
-    // overwrite the active project. A failed read remains untouched until the
-    // user explicitly saves a recovery project or imports a valid file.
     if (!projectLoaded) return;
-    // Form fields are controlled inputs, so an address is temporarily invalid
-    // while a user replaces it. Keep the last valid IndexedDB value until the
-    // complete project passes the same schema used by import and restoration.
-    try {
-      parseProject(project);
-    } catch {
-      return;
-    }
+    try { parseLabProjectV3(project); } catch { return; }
     const timer = window.setTimeout(() => {
-      void saveProject({ ...project, updatedAt: new Date().toISOString() })
-        .then(() => setOperationError(undefined))
-        .catch((cause) => setOperationError(visibleFailure("operation", cause)));
-    }, GENERATED_PROFILE.timing.autosave_debounce_milliseconds);
-    return () => window.clearTimeout(timer);
-  }, [project, projectLoaded]);
+      const save = async () => {
+        const client = runtimeRef.current;
+        const active = terminalCheckpointProviderRef.current?.snapshot();
+        const presentations = { ...terminalPresentations,
+          ...(activeSession && active ? { [activeSession]: active } : {}) };
+        const terminal: TerminalPresentationV2 = { version: 2,
+          ...(activeSession && presentations[activeSession]
+            ? { activeSessionId: activeSession } : {}),
+          sessions: (snapshot?.sessions ?? []).flatMap((session) => {
+            const value = presentations[session.id];
+            return value ? [{ sessionId: session.id, routerId: session.routerId,
+              engine: session.engine, editors: value.editors,
+              queuedInput: value.queuedInput,
+              ...(value.pager ? { pager: value.pager } : {}) }] : [];
+          }) };
+        // The checkpoint is written before the project head. A crash can leave
+        // an older project, but startup verifies the recovered object graph
+        // before making it visible.
+        if (client) {
+          const checkpoint = await client.exportCheckpoint();
+          const recoveryName = await projectCheckpointNameV3(project);
+          await saveProjectBinaryV3(project.projectId,
+            recoveryName, checkpoint);
+        }
+        await saveLabProjectV3({ ...project, updatedAt: new Date().toISOString() });
+        await saveProjectPresentation(project.projectId,
+          { projectId: project.projectId, selectedNodeId: selected, terminal });
+      };
+      void save().catch((cause) =>
+        setOperationError(visibleFailure("operation", cause)));
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [activeSession, project, projectLoaded, selected, snapshot,
+    terminalPresentations]);
 
   useEffect(() => {
-    if (!runtime || !projectLoaded) return;
-    // Project restore follows the same dependency order as the hardware model:
-    // provisioning, parent equipment, child equipment, then endpoint values.
-    // Every operation is acknowledged before the next one is submitted.
-    let cancelled = false;
-    try {
-      parseProject(project);
-    } catch {
-      // Invalid intermediate form text is UI draft state. It must not mutate
-      // the live forwarding owner or convert a healthy runtime into blocked.
-      return;
-    }
-    const changes = changedProjectDomains(appliedDomainsRef.current, project);
-    const hardwareChanged = changes.hardware;
-    const configChanged = changes.runningConfig;
-    const linksChanged = changes.links;
-    const hostsChanged = changes.hosts;
-    if (!hardwareChanged && !configChanged && !linksChanged && !hostsChanged) return;
-    void (async () => {
-      try {
-        const card = project.hardware.cards[GENERATED_PROFILE.lineCard.slot - 1];
-        const mda = card?.mdas[GENERATED_PROFILE.mda.slot - 1];
-        if (hardwareChanged) {
-          await runtime.configureProvisioning(card?.provisionedType ?? null,
-            mda?.provisionedType ?? null);
-          await runtime.changeHardware(card?.equippedType
-            ? { kind: "insert-card", slot: card.slot, type: card.equippedType }
-            : { kind: "remove-card", slot: GENERATED_PROFILE.lineCard.slot });
-          if (card?.equippedType) {
-            await runtime.changeHardware(mda?.equippedType
-              ? { kind: "insert-mda", cardSlot: card.slot, mdaSlot: mda.slot,
-                  type: mda.equippedType }
-              : { kind: "remove-mda", cardSlot: card.slot,
-                  mdaSlot: GENERATED_PROFILE.mda.slot });
-          }
-          appliedDomainsRef.current = { ...(appliedDomainsRef.current ?? {
-            runningConfig: project.runningConfig, links: project.links, hosts: project.hosts
-          }), hardware: project.hardware };
-        }
-        if (configChanged) {
-          await runtime.configureRunning(project.runningConfig);
-          appliedDomainsRef.current = { ...(appliedDomainsRef.current ?? {
-            hardware: project.hardware, links: project.links, hosts: project.hosts
-          }), runningConfig: project.runningConfig };
-        }
-        // Medium timing is installed before endpoint state. Both link values
-        // cross as one forwarding job, so a terminal command cannot observe a
-        // half-updated pair even if a project changes while the app is open.
-        if (linksChanged) {
-          await runtime.configureLinks(project.links);
-          appliedDomainsRef.current = { ...(appliedDomainsRef.current ?? {
-            hardware: project.hardware, runningConfig: project.runningConfig,
-            hosts: project.hosts
-          }), links: project.links };
-        }
-        const next = hostsChanged ? await runtime.configureHosts(project.hosts) : undefined;
-        if (hostsChanged) {
-          appliedDomainsRef.current = { ...(appliedDomainsRef.current ?? {
-            hardware: project.hardware, runningConfig: project.runningConfig,
-            links: project.links
-          }), hosts: project.hosts };
-        }
-        if (!cancelled && next) setSnapshot(next);
-      } catch (cause) {
-        if (!cancelled) setOperationError(visibleFailure("operation", cause));
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [runtime, project.hosts, project.links, project.hardware, project.runningConfig, projectLoaded]);
-
-  useEffect(() => {
-    if (!runtime || !ready) return;
-    // Fast-changing counters and port bits are copied from the seqlock-protected
-    // SharedArrayBuffer page. No Worker request, JSON parse or packet event is
-    // needed for this sampling path.
-    const timer = window.setInterval(() => {
-      setSnapshot((current) => current ? runtime.telemetry(current) : current);
-    }, GENERATED_PROFILE.timing.telemetry_interval_milliseconds);
-    return () => window.clearInterval(timer);
-  }, [runtime, ready]);
-
-  useEffect(() => {
+    // Slow snapshots continue to drive persistence and structural operations.
+    // This separate projection updates only visible counters and port state,
+    // avoiding a checkpoint write every time the display samples telemetry.
+    setTelemetrySnapshot(snapshot);
     if (!runtime || !snapshot) return;
-    const transitioning = snapshot.hardware.cards.some((card) =>
-      card.lifecycle === "initializing" || card.mdas.some((mda) =>
-        mda.lifecycle === "initializing" || mda.lifecycle === "waiting-parent"));
-    if (!transitioning) return;
-    // Equipment deadlines are slow control-plane changes and are intentionally
-    // absent from the high-frequency telemetry page. One profile-paced read
-    // while a transition is active makes the final lifecycle and alarm state
-    // visible without turning JSON snapshots into packet telemetry polling.
-    let cancelled = false;
-    const timer = window.setTimeout(() => {
-      void runtime.snapshot()
-        .then((next) => { if (!cancelled) setSnapshot(next); })
-        .catch((cause) => { if (!cancelled) setOperationError(visibleFailure("operation", cause)); });
-    }, GENERATED_PROFILE.timing.equipment_poll_milliseconds);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [runtime, snapshot?.hardware.cards]);
+    const timer = window.setInterval(() => {
+      setTelemetrySnapshot((current) => runtime.telemetrySnapshot(
+        current ?? snapshot));
+    }, PROFILE_CATALOG.runtime.telemetry_publish_interval_milliseconds);
+    return () => clearInterval(timer);
+  }, [runtime, snapshot]);
 
-  const execute = useCallback(async (command: string) => {
-    if (!runtime) throw new Error("Runtime is not ready");
-    const output = await runtime.executeTerminal(command);
-    const next = await runtime.snapshot();
-    setSnapshot(next);
-    setProject((current) => {
-      // Terminal commands have already committed these domains inside C++.
-      // Marking their exact portable projection as acknowledged prevents the
-      // React restoration bridge from applying the same command a second time.
-      const nextHardware = projectHardware(current.hardware, next.hardware);
-      appliedDomainsRef.current = { ...(appliedDomainsRef.current ?? {
-        links: current.links, hosts: current.hosts
-      }), runningConfig: next.runningConfig, hardware: nextHardware };
-      return { ...current, runningConfig: next.runningConfig, hardware: nextHardware };
-    });
-    return output;
-  }, [runtime]);
-
-  const complete = useCallback(async (
-    input: string, trigger: "tab" | "question" | "space"
-  ) => {
-    // Completion stays read-only and session-owned. React forwards the current
-    // line and trigger without maintaining a duplicate command grammar.
-    if (!runtime) return "";
-    return runtime.completeTerminal(input, trigger);
-  }, [runtime]);
-
-  const cancelTerminal = useCallback(() => {
-    // Cancellation is intentionally synchronous. It sets the shared signal
-    // while the command promise remains pending and requires no UI state guess.
-    runtime?.cancelTerminal();
-  }, [runtime]);
-
-  const terminalState = useCallback(async (): Promise<TerminalState> => {
-    // Prompt, engine and history region are fetched as one router-owned value
-    // so a terminal redraw cannot combine fields from different CLI contexts.
-    if (!runtime) throw new Error("Runtime is not ready");
-    return runtime.terminalState();
-  }, [runtime]);
-
-  const hardware = useCallback(async (action: HardwareAction) => {
-    if (!runtime || !projectLoaded) return;
+  const mutate = useCallback(async (next: LabProjectV3,
+    operation: (client: MultiRouterRuntimeClient) => Promise<LabRuntimeSnapshotV5>) => {
+    const client = runtimeRef.current;
+    if (!client) throw new Error("Runtime is not ready");
     try {
-      // Chassis controls represent physical handling only. They never edit the
-      // router datastore: an unprovisioned insertion remains waiting for CLI
-      // provisioning, and a mismatched insertion remains offline until the
-      // user corrects either inventory or configuration. Removal intentionally
-      // preserves provisioning, matching a physical pull on SR OS.
-      const next = await runtime.changeHardware(action);
-      setSnapshot(next);
-      // Physical changes initiated in the inspector become portable project
-      // state immediately, rather than waiting for a sampled UI projection.
-      setProject((current) => {
-        const nextHardware = projectHardware(current.hardware, next.hardware);
-        appliedDomainsRef.current = { ...(appliedDomainsRef.current ?? {
-          runningConfig: current.runningConfig, links: current.links, hosts: current.hosts
-        }), hardware: nextHardware };
-        return { ...current, hardware: nextHardware };
-      });
+      // Structural validation and runtime mutation share one visible failure
+      // path. Invalid form input therefore cannot become an unhandled promise
+      // rejection or a generic browser console error.
+      const validated = parseLabProjectV3(next);
+      const live = await operation(client);
+      setProject(validated);
+      setSnapshot(live);
+      setOperationError(undefined);
+      return live;
     } catch (cause) {
       setOperationError(visibleFailure("operation", cause));
+      throw cause;
     }
-  }, [runtime, projectLoaded]);
-
-  const updateHost = useCallback((host: HostConfig) => {
-    // Host text remains a portable draft until parseProject accepts the whole
-    // endpoint set. The restoration bridge then submits both hosts atomically.
-    setProject((current) => ({
-      ...current,
-      hosts: current.hosts.map((item) => item.id === host.id ? host : item)
-    }));
   }, []);
 
+  const addRouter = useCallback((profileId: DeviceProfileId) => {
+    const nodeIds = [...project.routers, ...project.hosts].map((item) => item.id);
+    const id = freeId("r", nodeIds);
+    const systemName = pendingRouterPosition?.systemName.trim() ?? "";
+    if (!systemName) return;
+    const router = createRouterProjectV3(id, profileId, systemName);
+    const next = { ...project, routers: [...project.routers, router], layout: {
+      ...project.layout, nodes: { ...project.layout.nodes,
+        [id]: pendingRouterPosition ? { x: pendingRouterPosition.x,
+          y: pendingRouterPosition.y } : {
+          x: 330 + project.routers.length * 45, y: 220
+        } } } };
+    // The node appears only after the C++ owner accepts the generated profile.
+    // This avoids a canvas-only router when catalog capacity or validation
+    // rejects the operation and keeps project intent aligned with live state.
+    void mutate(next, (client) => client.createRouter(id, profileId, router.systemName))
+      .then(() => { setSelected(id); setPendingRouterPosition(undefined); })
+      .catch(() => undefined);
+  }, [mutate, pendingRouterPosition, project]);
+
+  const addDevice = useCallback((kind: "router" | "host", position?: { x: number; y: number }) => {
+    if (kind === "router") {
+      // A chassis profile changes slot inventory and resource bounds, so a
+      // generic drag cannot silently select one. The drop coordinate is kept
+      // until the user confirms a generated catalog entry in the dialog.
+      const nodeIds = [...project.routers, ...project.hosts].map((item) => item.id);
+      const suggested = freeId("r", nodeIds).toUpperCase();
+      const target = position ?? { x: 330 + project.routers.length * 45, y: 220 };
+      // The first free R1..R16 name is a convenience only. It stays editable
+      // because system-name is router configuration and cannot be derived from
+      // a registry slot or canvas order.
+      setPendingRouterPosition({ ...target, systemName: suggested });
+    } else {
+      const nodeIds = [...project.routers, ...project.hosts].map((item) => item.id);
+      const id = freeId("h", nodeIds);
+      // Addressing and MAC identity are network configuration, not canvas
+      // decoration. The host is therefore not created until the user supplies
+      // a complete interface record and project validation accepts it.
+      setPendingHost({ id, position: position ?? {
+        x: 90, y: 150 + project.hosts.length * 120
+      }, name: id.toUpperCase(), mac: "", address: "", gateway: "", mtu: "" });
+    }
+  }, [project]);
+
+  const addHost = useCallback(() => {
+    if (!pendingHost) return;
+    const mtu = Number(pendingHost.mtu);
+    const host: HostProjectV3 = { id: pendingHost.id, kind: "host",
+      name: pendingHost.name, eth0: { mac: pendingHost.mac,
+        address: pendingHost.address, gateway: pendingHost.gateway, mtu,
+        mode: "ethernet" } };
+    const next = { ...project, hosts: [...project.hosts, host], layout: {
+      ...project.layout, nodes: { ...project.layout.nodes,
+        [host.id]: pendingHost.position } } };
+    void mutate(next, (client) => client.createConfiguredHost(host.id,
+      host.name, host.eth0.mac, host.eth0.address, host.eth0.gateway,
+      host.eth0.mtu)).then(() => { setSelected(host.id); setPendingHost(undefined); })
+      .catch(() => undefined);
+  }, [mutate, pendingHost, project]);
+
   const updateLayout = useCallback((id: string, position: { x: number; y: number }) => {
-    // React Flow reports a final finite canvas coordinate. Persisting only the
-    // drag end avoids autosaving every animation frame while retaining the
-    // exact user-authored topology in the portable project.
     if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
     setProject((current) => ({ ...current, layout: { ...current.layout,
       nodes: { ...current.layout.nodes, [id]: position } } }));
   }, []);
 
   const selectDevice = useCallback((id: string) => {
-    // Selection is navigation only. Opening an inspector never changes device
-    // presence, configuration or operational state.
     setSelected(id);
     setInspectorOpen(true);
   }, []);
 
-  const setLink = useCallback(async (portId: string, up: boolean) => {
-    // Carrier changes cross the typed client and return a fresh snapshot. The
-    // topology edge itself cannot set ifOperStatus or clear adjacency state.
-    if (!runtime) return;
-    try {
-      const next = await runtime.setLink(portId, up);
-      setSnapshot(next);
-      setOperationError(undefined);
-    } catch (cause) {
-      setOperationError(visibleFailure("operation", cause));
-    }
-  }, [runtime]);
-
-  const ping = useCallback(async (sourceId: string, destinationId: string) => {
-    if (!runtime) throw new Error("Runtime is not ready");
-    // The runtime resolves the two profile endpoint IDs and sends encoded ARP
-    // and ICMP frames through the real forwarding and link shards.
-    const output = await runtime.hostPing(sourceId, destinationId);
-    setSnapshot(await runtime.snapshot());
-    return output;
-  }, [runtime]);
-
-  const importFile = useCallback(async (file?: File) => {
-    // Import is transactional at the runtime-instance boundary. The active
-    // instance remains alive until the replacement validates and opens.
-    if (!file) return;
-    try {
-      let imported: Awaited<ReturnType<typeof importNetsim>>;
-      try {
-        imported = await importNetsim(file);
-      } catch (cause) {
-        if (!(cause instanceof IncompatibleCheckpointError) ||
-            !window.confirm("This checkpoint was created by an incompatible build. Import only the project and start with fresh operational state?"))
-          throw cause;
-        // Consent is explicit and scoped to this file. No checkpoint, ARP,
-        // capture or queued packet is retained in the project-only fallback.
-        imported = await importNetsim(file, true);
-      }
-      const replacement = new RuntimeClient();
-      await replacement.snapshot();
-      if (imported.checkpoint) {
-        await replacement.importCheckpoint(imported.checkpoint);
-        await saveBinary("active.checkpoint", imported.checkpoint);
-      }
-      if (imported.capture) await saveBinary("active.pcapng", imported.capture);
-      const restoredSnapshot = await replacement.snapshot();
-      runtime?.close();
-      // A checkpoint already contains every runtime domain. A plain project
-      // starts from the replacement runtime defaults and must be applied in
-      // full by the restoration effect.
-      const nextProject = { ...imported.project,
-        runningConfig: restoredSnapshot.runningConfig };
-      appliedDomainsRef.current = imported.checkpoint ? {
-        hardware: nextProject.hardware,
-        runningConfig: nextProject.runningConfig,
-        links: nextProject.links,
-        hosts: nextProject.hosts
-      } : undefined;
-      setRuntime(replacement);
-      setSnapshot(restoredSnapshot);
-      setProject(nextProject);
-      // A new router runtime receives exactly the terminal presentation stored
-      // beside its checkpoint. Incrementing the key also clears stale editor
-      // history for project-only imports without guessing inside TerminalPanel.
-      setTerminalPresentation(imported.terminalPresentation);
-      setTerminalGeneration((value) => value + 1);
-      setProjectLoaded(true);
-      setOperationError(undefined);
-    } catch (cause) {
-      setOperationError(visibleFailure("operation", cause));
-    }
-  }, [runtime]);
-
-  const toggleCapture = useCallback(async () => {
-    // UI state flips only after C++ acknowledges the observation-store command.
-    // Capture does not pause or alter forwarding.
-    if (!runtime) return;
-    try {
-      const next = !captureActive;
-      const response = await runtime.setCapture(next);
-      if (response.startsWith("ERROR")) throw new Error(response);
-      setCaptureActive(next);
-      setOperationError(undefined);
-    } catch (cause) {
-      setOperationError(visibleFailure("operation", cause));
-    }
-  }, [runtime, captureActive]);
-
-  const importCheckpointFile = useCallback(async (event: ChangeEvent<HTMLInputElement>) => {
-    // Reading bytes is browser-owned, while checkpoint structure, ABI and
-    // release compatibility are validated by the current C++ runtime owner.
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file || !runtime) return;
-    try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      await runtime.importCheckpoint(bytes);
-      const next = await runtime.snapshot();
-      await saveBinary("active.checkpoint", bytes);
-      setSnapshot(next);
-      setProject((current) => {
-        // Import restored the C++ owner first. Synchronize portable intent and
-        // mark it acknowledged so no card lifecycle deadline is restarted.
-        const nextHardware = projectHardware(current.hardware, next.hardware);
-        appliedDomainsRef.current = { ...(appliedDomainsRef.current ?? {
-          links: current.links, hosts: current.hosts
-        }), runningConfig: next.runningConfig, hardware: nextHardware };
-        return { ...current, runningConfig: next.runningConfig,
-          hardware: nextHardware };
-      });
-      setOperationError(undefined);
-    } catch (cause) {
-      setOperationError(visibleFailure("operation", cause));
-    }
-  }, [runtime]);
-
-  const exportCaptureNow = useCallback(async () => {
-    // Export serializes the bounded C++ capture store. React receives one
-    // immutable byte array and never reconstructs packets from counters.
-    if (!runtime) return;
-    try {
-      const bytes = await runtime.exportCapture();
-      await saveBinary("active.pcapng", bytes);
-      downloadBinary("router-lab.pcapng", bytes, "application/vnd.tcpdump.pcap");
-      setOperationError(undefined);
-    } catch (cause) {
-      setOperationError(visibleFailure("operation", cause));
-    }
-  }, [runtime]);
-
-  const exportCheckpointNow = useCallback(async () => {
-    // Checkpoint and capture are sampled through their dedicated binary ABI and
-    // persisted together before a portable archive is offered to the user.
-    if (!runtime) return;
-    try {
-      const checkpoint = await runtime.exportCheckpoint();
-      const capture = await runtime.exportCapture();
-      await Promise.all([saveBinary("active.checkpoint", checkpoint), saveBinary("active.pcapng", capture)]);
-      exportCheckpoint(project, checkpoint, capture,
-        terminalCheckpointProviderRef.current?.snapshot() ?? terminalPresentation);
-      setOperationError(undefined);
-    } catch (cause) {
-      setOperationError(visibleFailure("operation", cause));
-    }
-  }, [runtime, project, terminalPresentation]);
-
-  const persistNow = useCallback(async () => {
-    // Manual Save bypasses debounce but uses the same versioned project store.
-    // The short Saved indication is presentation state, not storage truth.
-    try {
-      setSaveState("saving");
-      await saveProject({ ...project, updatedAt: new Date().toISOString() });
-      setProjectLoaded(true);
-      setOperationError(undefined);
-      setSaveState("saved");
-      window.setTimeout(() => setSaveState("idle"), 1400);
-    } catch (cause) {
-      setSaveState("idle");
-      setOperationError(visibleFailure("operation", cause));
-    }
-  }, [project]);
-
-  const exportNow = useCallback(async () => {
-    // A project remains intent-only, but may carry the current passive capture
-    // as diagnostics. ARP, timers and queued frames still require Checkpoint.
-    try {
-      const capture = runtime ? await runtime.exportCapture() : undefined;
-      exportProject(project, capture);
-      setOperationError(undefined);
-    } catch (cause) {
-      setOperationError(visibleFailure("operation", cause));
-    }
-  }, [project, runtime]);
-
-  const resetProject = useCallback(() => {
-    // Reset is explicit and keeps the current runtime owner. The normal project
-    // restoration effect applies default provisioning, endpoints and links in
-    // dependency order without recreating workers behind the user's back.
-    setProject(structuredClone(DEFAULT_PROJECT));
-    setSelected(GENERATED_PROFILE.uiDefaults.router_id);
-    setView("topology");
-    setInspectorOpen(true);
-    setTerminalOpen(true);
-    setTerminalPresentation(undefined);
-    setTerminalGeneration((value) => value + 1);
-    setConfirmNewProject(false);
-    setProjectMenuOpen(false);
-  }, []);
-
-  const resetLayout = useCallback(() => {
-    // Reset affects canvas coordinates only. It must not replace router or
-    // physical-link objects that happen to share the project container.
-    setProject((current) => ({ ...current, layout: { ...current.layout,
-      nodes: structuredClone(GENERATED_PROFILE.uiDefaults.nodes) } }));
-  }, []);
-
-  const resizePanel = useCallback((field: "sidebarWidth" | "inspectorWidth" |
-    "terminalHeight", value: number) => {
-    // The portable project owns preferred panel dimensions. ResizeHandle has
-    // already bounded and frame-coalesced the value, so this update changes one
-    // layout leaf without touching topology coordinates or runtime state.
-    setProject((current) => ({ ...current, layout: {
-      ...current.layout,
-      [field]: value
-    } }));
-  }, []);
-
-  const registerTerminalCheckpointProvider = useCallback(
-    (provider: TerminalCheckpointProvider | undefined) => {
-      // The ref is intentionally non-reactive. Registering a presentation
-      // sampler must not recreate xterm or cause an application render.
-      terminalCheckpointProviderRef.current = provider;
-    }, []);
-
-  const closeTerminal = useCallback(() => {
-    // Closing a panel is a layout action, not a session reset. Sample its
-    // unsent line and pager before React unmounts the presentation owner.
-    const presentation = terminalCheckpointProviderRef.current?.snapshot();
-    if (presentation) setTerminalPresentation(presentation);
-    setTerminalOpen(false);
-  }, []);
-
-  const visibleError = runtimeError ?? operationError;
-  const navigate = (next: WorkspaceView) => {
-    // Navigation closes transient menus so an invisible overlay cannot retain
-    // pointer ownership over the newly selected workspace.
-    setView(next);
-    setProjectMenuOpen(false);
-    setAccountMenuOpen(false);
-    setMoreMenuOpen(false);
+  const availablePorts = (nodeId: string) => {
+    const router = project.routers.find((item) => item.id === nodeId);
+    const ports = router ? equippedRouterPorts(router).map((item) => item.id) : ["eth0"];
+    const used = new Set(project.links.flatMap((link) => link.endpoints
+      .filter((endpoint) => endpoint.nodeId === nodeId).map((endpoint) => endpoint.portId)));
+    return ports.filter((port) => !used.has(port));
   };
-  // Persisted dimensions describe the user's preferred desktop proportions.
-  // CSS constrains them against the live viewport, so importing a project made
-  // on a large monitor cannot clip panels on a laptop or phone-sized window.
-  const shellStyle = {
-    "--library-preferred-width": `${project.layout.sidebarWidth}px`,
+
+  const createLink = () => {
+    if (!linkNodes || !linkPorts[0] || !linkPorts[1]) return;
+    const id = freeId("link", project.links.map((item) => item.id));
+    const link: LinkProjectV3 = { id, endpoints: [
+      { nodeId: linkNodes[0], portId: linkPorts[0] },
+      { nodeId: linkNodes[1], portId: linkPorts[1] }
+    ], admin: "up", propagationDelayNs: 0 };
+    void mutate({ ...project, links: [...project.links, link] }, (client) =>
+      client.createLink(id, linkNodes[0], linkPorts[0], linkNodes[1], linkPorts[1], 0, true))
+      .then(() => setLinkNodes(undefined)).catch(() => undefined);
+  };
+
+  const setLink = useCallback((linkId: string, up: boolean) => {
+    const next = { ...project, links: project.links.map((link) =>
+      link.id === linkId ? { ...link, admin: up ? "up" as const : "down" as const } : link) };
+    return mutate(next, (client) => client.setLinkAdmin(linkId, up))
+      .catch(() => undefined);
+  }, [mutate, project]);
+
+  const updateLink = useCallback((linkId: string, up: boolean,
+    propagationDelayNs: number) => {
+    const next = { ...project, links: project.links.map((link) => link.id === linkId
+      ? { ...link, admin: up ? "up" as const : "down" as const,
+        propagationDelayNs } : link) };
+    void mutate(next, (client) => client.setLinkProperties(linkId, up,
+      propagationDelayNs)).catch(() => undefined);
+  }, [mutate, project]);
+
+  const deleteLink = useCallback((linkId: string) => {
+    const next = { ...project, links: project.links.filter((link) => link.id !== linkId) };
+    void mutate(next, (client) => client.deleteLink(linkId)).then(() => {
+      setSelected((current) => current === linkId ? undefined : current);
+      setCaptureSelections((current) => current.filter((item) =>
+        !(item.kind === "link-direction" && item.objectId === linkId)));
+    }).catch(() => undefined);
+  }, [mutate, project]);
+
+  const deleteNode = useCallback((nodeId: string) => {
+    const router = project.routers.find((item) => item.id === nodeId);
+    const host = project.hosts.find((item) => item.id === nodeId);
+    if (!router && !host) return;
+    const nodes = { ...project.layout.nodes };
+    delete nodes[nodeId];
+    const next = { ...project,
+      routers: project.routers.filter((item) => item.id !== nodeId),
+      hosts: project.hosts.filter((item) => item.id !== nodeId),
+      links: project.links.filter((link) => !link.endpoints.some(
+        (endpoint) => endpoint.nodeId === nodeId)),
+      layout: { ...project.layout, nodes } };
+    void mutate(next, (client) => router ? client.deleteRouter(nodeId)
+      : client.deleteHost(nodeId)).then(() => {
+        setSelected((current) => current === nodeId ? undefined : current);
+        // Router deletion closes every runtime-owned session for that router.
+        // Remove matching renderer snapshots too, otherwise a later session
+        // reusing an ID could inherit an unrelated edit buffer or pager.
+        const removedSessions = snapshot?.sessions.filter((item) =>
+          item.routerId === nodeId).map((item) => item.id) ?? [];
+        if (removedSessions.includes(activeSession ?? "")) {
+          setActiveSession(undefined);
+          setTerminalOpen(false);
+        }
+        setTerminalPresentations((current) => Object.fromEntries(
+          Object.entries(current).filter(([id]) => !removedSessions.includes(id))));
+        setCaptureSelections((current) => current.filter((item) =>
+          item.objectId !== nodeId));
+      }).catch(() => undefined);
+  }, [activeSession, mutate, project, snapshot]);
+
+  const updateHost = useCallback((host: HostProjectV3) => {
+    const previous = project.hosts.find((item) => item.id === host.id);
+    if (!previous) return;
+    const next = { ...project, hosts: project.hosts.map((item) => item.id === host.id ? host : item) };
+    if (JSON.stringify(previous) === JSON.stringify(host)) return;
+    void mutate(next, (client) => client.updateHost(host.id, host.name,
+      host.eth0.mac, host.eth0.address, host.eth0.gateway, host.eth0.mtu))
+      .catch(() => undefined);
+  }, [mutate, project]);
+
+  const updateRouter = useCallback((router: RouterProjectV3) => {
+    const previous = project.routers.find((item) => item.id === router.id);
+    if (!previous) return;
+    const next = { ...project, routers: project.routers.map((item) => item.id === router.id ? router : item) };
+    // One runtime operation stages and validates the complete datastore. The
+    // project is published only after the control owner commits every change.
+    void mutate(next, (client) => client.replaceRouterConfiguration(router))
+      .catch(() => undefined);
+  }, [mutate, project]);
+
+  const setCard = (routerId: string, slot: number, provisioned: string | null,
+    equipped: string | null) => {
+    const router = project.routers.find((item) => item.id === routerId);
+    if (!router) return;
+    const next = { ...project, routers: project.routers.map((item) => item.id === routerId
+      ? { ...item, hardware: { cards: item.hardware.cards.map((card) => card.slot === slot
+        ? { ...card, admin: provisioned ? card.admin : "down" as const,
+          provisionedType: provisioned, equippedType: equipped } : card) } } : item) };
+    void mutate(next, (client) => client.setCard(routerId, slot, provisioned, equipped))
+      .catch(() => undefined);
+  };
+
+  const setMda = (routerId: string, cardSlot: number, mdaSlot: number,
+    provisioned: string | null, equipped: string | null) => {
+    const next = { ...project, routers: project.routers.map((item) => item.id === routerId
+      ? { ...item, hardware: { cards: item.hardware.cards.map((card) => card.slot === cardSlot
+        ? { ...card, mdas: card.mdas.map((mda) => mda.slot === mdaSlot
+          ? { ...mda, admin: provisioned ? mda.admin : "down" as const,
+            provisionedType: provisioned, equippedType: equipped } : mda) } : card) } } : item) };
+    void mutate(next, (client) => client.setMda(routerId, cardSlot, mdaSlot, provisioned, equipped))
+      .catch(() => undefined);
+  };
+
+  const setCardAdmin = (routerId: string, slot: number, enabled: boolean) => {
+    const next = { ...project, routers: project.routers.map((item) =>
+      item.id === routerId ? { ...item, hardware: { cards: item.hardware.cards.map(
+        (card) => card.slot === slot ? { ...card, admin: enabled ? "up" as const
+          : "down" as const } : card) } } : item) };
+    void mutate(next, (client) => client.setCardAdmin(routerId, slot, enabled))
+      .catch(() => undefined);
+  };
+
+  const setMdaAdmin = (routerId: string, cardSlot: number, mdaSlot: number,
+    enabled: boolean) => {
+    const next = { ...project, routers: project.routers.map((item) =>
+      item.id === routerId ? { ...item, hardware: { cards: item.hardware.cards.map(
+        (card) => card.slot === cardSlot ? { ...card, mdas: card.mdas.map((mda) =>
+          mda.slot === mdaSlot ? { ...mda, admin: enabled ? "up" as const
+            : "down" as const } : mda) } : card) } } : item) };
+    void mutate(next, (client) => client.setMdaAdmin(routerId, cardSlot,
+      mdaSlot, enabled)).catch(() => undefined);
+  };
+
+  const preserveActiveTerminal = useCallback(() => {
+    // The checkpoint provider is borrowed from the currently mounted xterm.
+    // Sample it synchronously before changing the key, because unmount clears
+    // the provider and deliberately destroys the renderer-owned objects.
+    const presentation = terminalCheckpointProviderRef.current?.snapshot();
+    if (activeSession && presentation) {
+      setTerminalPresentations((current) => ({ ...current,
+        [activeSession]: presentation }));
+    }
+  }, [activeSession]);
+
+  const selectTerminalSession = useCallback((sessionId: string) => {
+    if (sessionId === activeSession) return;
+    preserveActiveTerminal();
+    setActiveSession(sessionId);
+    setTerminalGeneration((value) => value + 1);
+    setTerminalOpen(true);
+  }, [activeSession, preserveActiveTerminal]);
+
+  const createConsole = useCallback((routerId: string) => {
+    const client = runtimeRef.current;
+    if (!client) return;
+    const liveSessions = snapshot?.sessions ?? [];
+    const routerSessionCount = liveSessions.filter((item) =>
+      item.routerId === routerId).length;
+    if (routerSessionCount >= PROFILE_CATALOG.limits.sessions_per_router) {
+      setOperationError(`Router ${routerId} has reached its terminal session limit.`);
+      return;
+    }
+    // Compact global session IDs stay within the protocol identifier bound
+    // even when a user chooses the longest legal router ID.
+    const sessionId = freeId("s", liveSessions.map((item) => item.id));
+    void client.createSession(sessionId, routerId).then((live) => {
+      preserveActiveTerminal();
+      setSnapshot(live);
+      setSelected(routerId);
+      setActiveSession(sessionId);
+      setTerminalGeneration((value) => value + 1);
+      setTerminalOpen(true);
+      setOperationError(undefined);
+    }).catch((cause) => setOperationError(visibleFailure("operation", cause)));
+  }, [preserveActiveTerminal, snapshot]);
+
+  const openConsole = useCallback((routerId: string) => {
+    const existing = snapshot?.sessions.find((item) => item.routerId === routerId);
+    if (existing) {
+      setSelected(routerId);
+      selectTerminalSession(existing.id);
+      return;
+    }
+    createConsole(routerId);
+  }, [createConsole, selectTerminalSession, snapshot]);
+
+  const closeTerminalSession = useCallback((sessionId: string) => {
+    const client = runtimeRef.current;
+    if (!client) return;
+    if (sessionId === activeSession) preserveActiveTerminal();
+    void client.closeSession(sessionId).then((live) => {
+      const remaining = live.sessions;
+      setSnapshot(live);
+      setTerminalPresentations((current) => Object.fromEntries(
+        Object.entries(current).filter(([id]) => id !== sessionId)));
+      if (sessionId === activeSession) {
+        const next = remaining[0]?.id;
+        setActiveSession(next);
+        setTerminalOpen(Boolean(next));
+        setTerminalGeneration((value) => value + 1);
+      }
+      setOperationError(undefined);
+    }).catch((cause) => setOperationError(visibleFailure("operation", cause)));
+  }, [activeSession, preserveActiveTerminal]);
+
+  const terminalState = async (): Promise<RouterTerminalState> => {
+    if (!runtime || !activeSession) throw new Error("No router console is selected");
+    return runtime.terminalState(activeSession);
+  };
+  const execute = async (command: string) => {
+    if (!runtime || !activeSession) throw new Error("No router console is selected");
+    const routerId = snapshot?.sessions.find((item) =>
+      item.id === activeSession)?.routerId;
+    const output = await runtime.terminalExecute(activeSession, command);
+    // Candidate navigation has no running-state effect, while classic writes
+    // and MD commits can change the project. Always read the owner projection
+    // after completion so autosave cannot later replay stale React intent.
+    const live = await runtime.snapshot();
+    setSnapshot(live);
+    const changedRouter = live.routers.find((item) => item.id === routerId);
+    if (changedRouter) setProject((current) =>
+      parseLabProjectV3(mergeRuntimeRouter(current, changedRouter)));
+    return output;
+  };
+  const complete = async (input: string, trigger: "tab" | "question" | "space") => {
+    if (!runtime || !activeSession) throw new Error("No router console is selected");
+    return runtime.completeSession(activeSession, input, trigger);
+  };
+  const cancelTerminal = () => {
+    if (runtime && activeSession) void runtime.cancelSession(activeSession)
+      .catch((cause) => setOperationError(visibleFailure("operation", cause)));
+  };
+
+  const ping = async (sourceId: string, destination: string) => {
+    if (!runtime) throw new Error("Runtime is not ready");
+    const sequence = Date.now() & 0x7fffffff;
+    await runtime.startHostPing(sourceId, destination, sequence);
+    return runtime.hostPingStatus(sourceId, sequence);
+  };
+
+  const persistNow = async () => {
+    setSaveState("saving");
+    try { await saveLabProjectV3({ ...project, updatedAt: new Date().toISOString() }); setSaveState("saved"); }
+    catch (cause) { setSaveState("idle"); setOperationError(visibleFailure("operation", cause)); }
+  };
+  const exportCaptureNow = async () => {
+    if (!runtime) return;
+    const bytes = await runtime.exportCapture();
+    await saveProjectBinaryV3(project.projectId, "capture.pcapng", bytes);
+    downloadBinary(`${project.name}.pcapng`, bytes, "application/vnd.tcpdump.pcap");
+  };
+  const setCaptureSelection = async (kind: CaptureKind, objectId: string,
+    portId: string, direction: 0 | 1, selected: boolean) => {
+    if (!runtime) return;
+    const key = captureKey(kind, objectId, portId, direction);
+    try {
+      const live = await runtime.setCapturePoint(kind, objectId, portId,
+        direction, selected);
+      setSnapshot(live);
+      setCaptureSelections((current) => selected
+        ? current.some((item) => item.key === key) ? current
+          : [...current, { key, kind, objectId, portId, direction }]
+        : current.filter((item) => item.key !== key));
+      setOperationError(undefined);
+    } catch (cause) {
+      setOperationError(visibleFailure("operation", cause));
+    }
+  };
+  const toggleCapture = async () => {
+    if (!runtime) return;
+    if (!project.links.length) {
+      setOperationError("Add a physical link before starting packet capture.");
+      return;
+    }
+    const selected = captureSelections.length === 0;
+    try {
+      // The initial capture surface represents both wire directions of every
+      // physical link. The runtime applies the complete set atomically while
+      // later hierarchy controls can still toggle one location independently.
+      const targets: CaptureSelection[] = selected
+        ? project.links.flatMap((link) => ([0, 1] as const).map((direction) => ({
+          key: captureKey("link-direction", link.id, "", direction),
+          kind: "link-direction" as const, objectId: link.id, portId: "",
+          direction
+        }))) : captureSelections;
+      const live = await runtime.replaceCaptureSelection(selected ? targets : []);
+      setSnapshot(live);
+      setCaptureSelections(captureSelectionsFromSnapshot(live));
+      setOperationError(undefined);
+    } catch (cause) {
+      // The C++ replacement transaction leaves both the previous selection and
+      // retained records untouched when any requested location is invalid.
+      setOperationError(visibleFailure("operation", cause));
+    }
+  };
+  const exportCheckpointNow = async () => {
+    if (!runtime) return;
+    const [checkpoint, capture] = await Promise.all([runtime.exportCheckpoint(), runtime.exportCapture()]);
+    const active = terminalCheckpointProviderRef.current?.snapshot();
+    const presentations = { ...terminalPresentations,
+      ...(activeSession && active ? { [activeSession]: active } : {}) };
+    const terminal: TerminalPresentationV2 = { version: 2,
+      ...(activeSession && presentations[activeSession]
+        ? { activeSessionId: activeSession } : {}),
+      sessions: (snapshot?.sessions ?? []).flatMap((session) => {
+        const value = presentations[session.id];
+        return value ? [{ sessionId: session.id, routerId: session.routerId,
+          engine: session.engine, editors: value.editors,
+          queuedInput: value.queuedInput,
+          ...(value.pager ? { pager: value.pager } : {}) }] : [];
+      }) };
+    const recoveryName = await projectCheckpointNameV3(project);
+    await saveProjectBinaryV3(project.projectId, recoveryName, checkpoint);
+    downloadManifest(`${project.name}.checkpoint.netsim`, createCheckpointManifestV2(
+      project, checkpoint, capture, terminal));
+  };
+  const importFile = async (file?: File) => {
+    if (!file) return;
+    let replacement: MultiRouterRuntimeClient | undefined;
+    try {
+      const decoded = await importNetsimV2(file);
+      replacement = new MultiRouterRuntimeClient();
+      let live = await replacement.applyProject(decoded.project);
+      if (decoded.checkpoint) { await replacement.importCheckpoint(decoded.checkpoint); live = await replacement.snapshot(); }
+      const previous = runtimeRef.current;
+      setRuntime(replacement); runtimeRef.current = replacement;
+      setProject(decoded.project); setSnapshot(live); setSelected(decoded.project.routers[0]?.id ?? decoded.project.hosts[0]?.id);
+      const importedPresentations = decoded.terminalPresentation
+        ? Object.fromEntries(decoded.terminalPresentation.sessions.map((item) =>
+          [item.sessionId, { editors: item.editors, queuedInput: item.queuedInput,
+            ...(item.pager ? { pager: item.pager } : {}) }])) : {};
+      const importedActive = decoded.terminalPresentation?.activeSessionId;
+      setTerminalPresentations(importedPresentations);
+      setActiveSession(importedActive && live.sessions.some((item) =>
+        item.id === importedActive) ? importedActive : undefined);
+      setTerminalOpen(Boolean(importedActive && live.sessions.some((item) =>
+        item.id === importedActive)));
+      setCaptureSelections(captureSelectionsFromSnapshot(live));
+      previous?.close(); replacement = undefined;
+    } catch (cause) { replacement?.close(); setOperationError(visibleFailure("operation", cause)); }
+  };
+  const importCheckpointFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]; event.target.value = "";
+    if (!file || !runtime) return;
+    let replacement: MultiRouterRuntimeClient | undefined;
+    try {
+      replacement = new MultiRouterRuntimeClient();
+      await replacement.applyProject(project);
+      await replacement.importCheckpoint(new Uint8Array(await file.arrayBuffer()));
+      const live = await replacement.snapshot();
+      if (!snapshotMatchesProject(project, live))
+        throw new Error("Checkpoint belongs to a different laboratory topology");
+      const previous = runtimeRef.current;
+      runtimeRef.current = replacement;
+      setRuntime(replacement);
+      replacement = undefined;
+      setSnapshot(live);
+      setProject(mergeRuntimeProject(project, live));
+      setCaptureSelections(captureSelectionsFromSnapshot(live));
+      previous?.close();
+    }
+    catch (cause) {
+      replacement?.close();
+      setOperationError(visibleFailure("operation", cause));
+    }
+  };
+
+  const resetProject = () => {
+    const empty = createEmptyProjectV3();
+    const replacement = new MultiRouterRuntimeClient();
+    void replacement.snapshot().then((live) => {
+      runtimeRef.current?.close(); runtimeRef.current = replacement; setRuntime(replacement);
+      setProject(empty); setSnapshot(live); setSelected(undefined); setActiveSession(undefined);
+      setTerminalOpen(false); setTerminalPresentations({}); setCaptureSelections([]);
+      setConfirmNewProject(false);
+      setProjectMenuOpen(false);
+    }).catch((cause) => { replacement.close(); setOperationError(visibleFailure("operation", cause)); });
+  };
+  const resetLayout = () => setProject((current) => ({ ...current, layout: {
+    ...current.layout,
+    // Reset means a useful deterministic arrangement, not deletion of every
+    // coordinate followed by the renderer's overlapping fallback positions.
+    nodes: automaticTopologyLayout(current.routers.map((item) => item.id),
+      current.hosts.map((item) => item.id))
+  } }));
+  const resizePanel = (field: "sidebarWidth" | "inspectorWidth" | "terminalHeight", value: number) =>
+    setProject((current) => ({ ...current, layout: { ...current.layout, [field]: value } }));
+  const registerTerminalCheckpointProvider = (provider: TerminalCheckpointProvider | undefined) => {
+    terminalCheckpointProviderRef.current = provider;
+  };
+  const closeTerminal = () => {
+    preserveActiveTerminal();
+    setTerminalOpen(false);
+  };
+  const navigate = (next: WorkspaceView) => {
+    setView(next); setProjectMenuOpen(false); setAccountMenuOpen(false); setMoreMenuOpen(false);
+  };
+  const selectedRouter = project.routers.find((item) => item.id === selected);
+  const terminalTabs = (snapshot?.sessions ?? []).map((session) => ({
+    id: session.id,
+    label: `${project.routers.find((router) => router.id === session.routerId)
+      ?.systemName ?? session.routerId} console`
+  }));
+  const activeTerminalSession = snapshot?.sessions.find((item) =>
+    item.id === activeSession);
+  const activeTerminalRouter = project.routers.find((item) =>
+    item.id === activeTerminalSession?.routerId);
+  const visibleError = runtimeError ?? operationError;
+  const displaySnapshot = telemetrySnapshot ?? snapshot;
+  const shellStyle = { "--library-preferred-width": `${project.layout.sidebarWidth}px`,
     "--inspector-preferred-width": `${project.layout.inspectorWidth}px`,
-    "--terminal-preferred-height": `${project.layout.terminalHeight}px`
-  } as CSSProperties;
+    "--terminal-preferred-height": `${project.layout.terminalHeight}px` } as CSSProperties;
 
-  return (
-    <main className={`app-shell ${inspectorOpen ? "" : "inspector-closed"} ${terminalOpen ? "" : "terminal-closed"}`} style={shellStyle}>
-      <header className="topbar">
-        <div className="brand-area"><button className="brand" aria-expanded={projectMenuOpen} onClick={() => setProjectMenuOpen((value) => !value)}><span className="brand-mark"><i /><i /><i /></span><strong>Router Lab</strong><span className="chevron">⌄</span></button>{projectMenuOpen && <div className="header-menu project-menu"><strong>{project.name}</strong><small>SR OS {GENERATED_PROFILE.release}</small>{confirmNewProject ? <div className="confirm-row"><span>Reset this lab?</span><button onClick={resetProject}>Reset</button><button onClick={() => setConfirmNewProject(false)}>Cancel</button></div> : <button onClick={() => setConfirmNewProject(true)}>New default lab</button>}<button onClick={() => importRef.current?.click()}>Import project</button></div>}</div>
-        <nav className="top-nav"><button className={view === "topology" ? "active" : ""} onClick={() => navigate("topology")}>Topology</button><button className={view === "devices" ? "active" : ""} onClick={() => navigate("devices")}>Devices</button><button className={view === "captures" ? "active" : ""} onClick={() => navigate("captures")}>Captures</button></nav>
-        <div className="top-actions">
-          <button className="icon-action" onClick={() => void persistNow()}>▣ <span>{saveState === "saving" ? "Saving" : saveState === "saved" ? "Saved" : "Save"}</span></button>
-          <button className="icon-action" onClick={() => void exportNow()}>⇧ <span>Export</span></button>
-          <div className="more-wrap"><button className="more-action" title="More project actions" aria-expanded={moreMenuOpen} onClick={() => setMoreMenuOpen((value) => !value)}>⋮</button>{moreMenuOpen && <div className="header-menu more-menu"><button onClick={() => { setMoreMenuOpen(false); importRef.current?.click(); }}>Import project</button><button onClick={() => { setMoreMenuOpen(false); void exportCheckpointNow(); }}>Export checkpoint</button><button onClick={() => navigate("settings")}>Project settings</button></div>}</div>
-          <input ref={importRef} hidden type="file" accept=".netsim,application/json"
-            onChange={(event) => { void importFile(event.target.files?.[0]); event.target.value = ""; }} />
-        </div>
-      </header>
-
-      <div className="workspace">
-        <aside className="library">
-          <div className="panel-kicker">TOPOLOGY</div>
-          <nav className="side-nav">
-            <button className={view === "topology" ? "active" : ""} onClick={() => navigate("topology")}><span>⌘</span>Topology</button>
-            <button className={view === "devices" ? "active" : ""} onClick={() => navigate("devices")}><span>⊞</span>Devices</button>
-            <button className={view === "captures" ? "active" : ""} onClick={() => navigate("captures")}><span>⌁</span>Captures</button>
-          </nav>
-          <div className="side-divider" />
-          <div className="panel-kicker">DEVICE PALETTE</div>
-          <section><h3>ENDPOINTS</h3><button className="library-item" onClick={() => { navigate("topology"); selectDevice(project.hosts[0].id); }}><span className="mini-icon">H</span><span><strong>IP Host</strong><small>{project.hosts.length} configured</small></span></button></section>
-          <section><h3>ROUTERS</h3><button className="library-item active" onClick={() => { navigate("topology"); selectDevice(GENERATED_PROFILE.uiDefaults.router_id); }}><span className="mini-icon router">R</span><span><strong>{GENERATED_PROFILE.chassis}</strong><small>SR OS {GENERATED_PROFILE.release}</small></span></button></section>
-          <section><h3>MEDIA</h3><button className={`library-item ${topologyTool === "link" ? "active" : ""}`} onClick={() => { navigate("topology"); setTopologyTool("link"); }}><span className="mini-icon link">↔</span><span><strong>Physical link</strong><small>Click a link to toggle carrier</small></span></button></section>
-          <div className="side-divider" />
-          <div className="panel-kicker">PROJECT</div>
-          <nav className="project-nav"><button className={view === "topology" ? "active" : ""} onClick={() => navigate("topology")}>□ <span>Lab topology</span></button><button className={view === "configs" ? "active" : ""} onClick={() => navigate("configs")}>▤ <span>Configs</span></button><button className={view === "captures" ? "active" : ""} onClick={() => navigate("captures")}>▧ <span>Captures</span></button><button className={view === "snapshots" ? "active" : ""} onClick={() => navigate("snapshots")}>▣ <span>Snapshots</span></button><button className={view === "notes" ? "active" : ""} onClick={() => navigate("notes")}>▱ <span>Notes</span></button></nav>
-          <div className="side-footer"><button className={view === "settings" ? "active" : ""} onClick={() => navigate("settings")}>⚙ <span>Settings</span></button><div className="account-wrap"><button aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((value) => !value)}>♙ <span>admin</span><b>⌄</b></button>{accountMenuOpen && <div className="account-menu"><strong>Local administrator</strong><small>Browser-only session</small><button onClick={() => void persistNow()}>Save session</button><button onClick={() => setAccountMenuOpen(false)}>Close</button></div>}</div></div>
-          <PanelResizeHandle axis="x" className="library-resizer"
-            defaultValue={GENERATED_PROFILE.uiDefaults.sidebar_width} direction={1}
-            label="Resize sidebar" min={GENERATED_PROFILE.uiDefaults.sidebar_width_min}
-            max={GENERATED_PROFILE.uiDefaults.sidebar_width_max}
-            value={project.layout.sidebarWidth}
-            onChange={(value) => resizePanel("sidebarWidth", value)} />
-        </aside>
-
-        <section className="center-stage">
-          {visibleError && <div className="runtime-error"><strong>{runtimeError ? "Lab unavailable" : "Operation failed"}</strong><span>{visibleError}</span>{!runtimeError && <button onClick={() => setOperationError(undefined)}>Dismiss</button>}</div>}
-          {view === "topology" ? <Topology hosts={project.hosts} links={project.links}
-            layout={project.layout} systemName={project.runningConfig.systemName}
-            snapshot={snapshot} selected={selected} onSelect={selectDevice}
-            onLayoutChange={updateLayout} onLinkToggle={(port, up) => void setLink(port, up)}
-            onOpenHardware={() => {
-              // The toolbar hardware action opens the actual Cards surface,
-              // including provisioned and equipped lifecycle controls.
-              selectDevice(GENERATED_PROFILE.uiDefaults.router_id);
-              setRouterTab("cards");
-            }}
-            tool={topologyTool} onToolChange={setTopologyTool} /> : view === "devices" ?
-            <DevicesWorkspace project={project} snapshot={snapshot} onInspect={selectDevice} onConsole={() => setTerminalOpen(true)} /> : view === "captures" ?
-            <CaptureWorkspace snapshot={snapshot} active={captureActive} onToggle={() => void toggleCapture()} onExport={() => void exportCaptureNow()} onCheckpoint={() => void exportCheckpointNow()} /> : view === "configs" ?
-            <ConfigWorkspace config={project.runningConfig} onChange={(runningConfig) => setProject((current) => ({ ...current, runningConfig }))} /> : view === "snapshots" ?
-            <SnapshotWorkspace checkpointInput={checkpointRef} onExport={() => void exportCheckpointNow()} onImport={(event) => void importCheckpointFile(event)} /> : view === "notes" ?
-            <NotesWorkspace value={project.notes} onChange={(notes) => setProject((current) => ({ ...current, notes }))} /> :
-            <SettingsWorkspace project={project} onChange={setProject} onResetLayout={resetLayout} />}
-        </section>
-
-        {inspectorOpen && <Inspector selected={selected} tab={routerTab}
-          onTabChange={setRouterTab} hosts={project.hosts} snapshot={snapshot}
-          systemName={project.runningConfig.systemName} updateHost={updateHost} hardware={hardware}
-          setLink={(port, up) => void setLink(port, up)} ping={ping}
-          width={project.layout.inspectorWidth}
-          onWidthChange={(value) => resizePanel("inspectorWidth", value)}
-          openConsole={() => setTerminalOpen(true)} close={() => setInspectorOpen(false)} />}
-      </div>
-      {terminalOpen && <TerminalPanel key={terminalGeneration} ready={Boolean(runtime && !runtimeError &&
-        projectReadSettled && ready)}
-        systemName={project.runningConfig.systemName}
-        historyKey={`${project.profile}:${project.name}:router-console`} execute={execute}
-        complete={complete} cancel={cancelTerminal} state={terminalState}
-        restorePresentation={terminalPresentation}
-        registerCheckpointProvider={registerTerminalCheckpointProvider}
-        height={project.layout.terminalHeight}
-        onHeightChange={(value) => resizePanel("terminalHeight", value)}
-        close={closeTerminal} />}
-    </main>
-  );
+  return <main className={`app-shell ${inspectorOpen ? "" : "inspector-closed"} ${terminalOpen ? "" : "terminal-closed"}`} style={shellStyle}>
+    <header className="topbar"><div className="brand-area"><button className="brand" aria-expanded={projectMenuOpen} onClick={() => setProjectMenuOpen((value) => !value)}><span className="brand-mark"><i /><i /><i /></span><strong>Router Lab</strong><span className="chevron">⌄</span></button>{projectMenuOpen && <div className="header-menu project-menu"><strong>{project.name}</strong><small>SR OS {PROFILE_CATALOG.release}</small>{confirmNewProject ? <div className="confirm-row"><span>Reset this lab?</span><button onClick={resetProject}>Reset</button><button onClick={() => setConfirmNewProject(false)}>Cancel</button></div> : <button onClick={() => setConfirmNewProject(true)}>New lab</button>}<button onClick={() => importRef.current?.click()}>Import project</button></div>}</div>
+      <nav className="top-nav"><button className={view === "topology" ? "active" : ""} onClick={() => navigate("topology")}>Topology</button><button className={view === "devices" ? "active" : ""} onClick={() => navigate("devices")}>Devices</button><button className={view === "captures" ? "active" : ""} onClick={() => navigate("captures")}>Captures</button></nav>
+      <div className="top-actions"><button className="icon-action" onClick={() => void persistNow()}>▣ <span>{saveState === "saving" ? "Saving" : saveState === "saved" ? "Saved" : "Save"}</span></button><button className="icon-action" onClick={() => exportProjectV3(project)}>⇧ <span>Export</span></button><div className="more-wrap"><button className="more-action" title="More project actions" aria-expanded={moreMenuOpen} onClick={() => setMoreMenuOpen((value) => !value)}>⋮</button>{moreMenuOpen && <div className="header-menu more-menu"><button onClick={() => { setMoreMenuOpen(false); importRef.current?.click(); }}>Import project</button><button onClick={() => { setMoreMenuOpen(false); void exportCheckpointNow(); }}>Export checkpoint</button><button onClick={() => navigate("settings")}>Project settings</button></div>}</div><input ref={importRef} hidden type="file" accept=".netsim,application/json" onChange={(event) => { void importFile(event.target.files?.[0]); event.target.value = ""; }} /></div>
+    </header>
+    <div className="workspace"><aside className="library"><div className="panel-kicker">TOPOLOGY</div><nav className="side-nav"><button className={view === "topology" ? "active" : ""} onClick={() => navigate("topology")}><span>⌘</span>Topology</button><button className={view === "devices" ? "active" : ""} onClick={() => navigate("devices")}><span>⊞</span>Devices</button><button className={view === "captures" ? "active" : ""} onClick={() => navigate("captures")}><span>⌁</span>Captures</button></nav><div className="side-divider" /><div className="panel-kicker">DEVICE PALETTE</div>
+      <section><h3>ENDPOINTS</h3><button className="library-item" draggable onDragStart={(event) => { event.dataTransfer.setData("application/x-router-lab-device", "host"); event.dataTransfer.effectAllowed = "copy"; }} onClick={() => addDevice("host")}><span className="mini-icon">H</span><span><strong>IP Host</strong><small>{project.hosts.length} configured</small></span></button></section>
+      <section><h3>ROUTERS</h3><button className="library-item active" draggable onDragStart={(event) => { event.dataTransfer.setData("application/x-router-lab-device", "router"); event.dataTransfer.effectAllowed = "copy"; }} onClick={() => addDevice("router")}><span className="mini-icon router">R</span><span><strong>7750 SR</strong><small>SR OS {PROFILE_CATALOG.release}</small></span></button></section>
+      <section><h3>MEDIA</h3><button className={`library-item ${topologyTool === "link" ? "active" : ""}`} onClick={() => { navigate("topology"); setTopologyTool("link"); }}><span className="mini-icon link">↔</span><span><strong>Physical link</strong><small>Connect free physical ports</small></span></button></section><div className="side-divider" /><div className="panel-kicker">PROJECT</div><nav className="project-nav"><button className={view === "topology" ? "active" : ""} onClick={() => navigate("topology")}>□ <span>Lab topology</span></button><button className={view === "configs" ? "active" : ""} onClick={() => navigate("configs")}>▤ <span>Configs</span></button><button className={view === "captures" ? "active" : ""} onClick={() => navigate("captures")}>▧ <span>Captures</span></button><button className={view === "snapshots" ? "active" : ""} onClick={() => navigate("snapshots")}>▣ <span>Snapshots</span></button><button className={view === "notes" ? "active" : ""} onClick={() => navigate("notes")}>▱ <span>Notes</span></button></nav><div className="side-footer"><button className={view === "settings" ? "active" : ""} onClick={() => navigate("settings")}>⚙ <span>Settings</span></button><div className="account-wrap"><button aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((value) => !value)}>♙ <span>admin</span><b>⌄</b></button>{accountMenuOpen && <div className="account-menu"><strong>Local administrator</strong><small>Browser-only session</small><button onClick={() => void persistNow()}>Save session</button><button onClick={() => setAccountMenuOpen(false)}>Close</button></div>}</div></div><PanelResizeHandle axis="x" className="library-resizer" defaultValue={194} direction={1} label="Resize sidebar" min={64} max={Math.max(64, window.innerWidth - 64)} value={project.layout.sidebarWidth} onChange={(value) => resizePanel("sidebarWidth", value)} /></aside>
+      <section className="center-stage">{visibleError && <div className="runtime-error"><strong>{runtimeError ? "Lab unavailable" : "Operation failed"}</strong><span>{visibleError}</span>{!runtimeError && <button onClick={() => setOperationError(undefined)}>Dismiss</button>}</div>}
+        {view === "topology" ? <Topology project={project} snapshot={displaySnapshot} selected={selected} onSelect={selectDevice} onLayoutChange={updateLayout} onLinkToggle={(id, up) => void setLink(id, up)} onConnect={(first, second) => { setLinkNodes([first, second]); setLinkPorts(["", ""]); }} onDropDevice={(kind, position) => addDevice(kind, position)} onOpenHardware={() => { if (selectedRouter) setRouterTab("cards"); }} tool={topologyTool} onToolChange={setTopologyTool} /> : view === "devices" ? <DevicesWorkspace project={project} snapshot={displaySnapshot} onInspect={selectDevice} onConsole={openConsole} /> : view === "captures" ? <CaptureWorkspace project={project} snapshot={displaySnapshot} selections={captureSelections.map((item) => item.key)} onSelection={(kind, objectId, portId, direction, value) => void setCaptureSelection(kind, objectId, portId, direction, value)} onToggle={() => void toggleCapture()} onExport={() => void exportCaptureNow()} onCheckpoint={() => void exportCheckpointNow()} /> : view === "configs" ? <ConfigWorkspace router={selectedRouter} onChange={updateRouter} /> : view === "snapshots" ? <SnapshotWorkspace checkpointInput={checkpointRef} onExport={() => void exportCheckpointNow()} onImport={(event) => void importCheckpointFile(event)} /> : view === "notes" ? <NotesWorkspace value={project.notes} onChange={(notes) => setProject((current) => ({ ...current, notes }))} /> : <SettingsWorkspace project={project} onChange={setProject} onResetLayout={resetLayout} />}
+      </section>
+      {inspectorOpen && <Inspector selected={selected} tab={routerTab} onTabChange={setRouterTab} project={project} snapshot={displaySnapshot} updateHost={updateHost} updateRouter={updateRouter} setCard={setCard} setMda={setMda} setCardAdmin={setCardAdmin} setMdaAdmin={setMdaAdmin} setLink={(id, up) => void setLink(id, up)} updateLink={updateLink} deleteLink={deleteLink} deleteNode={deleteNode} ping={ping} width={project.layout.inspectorWidth} onWidthChange={(value) => resizePanel("inspectorWidth", value)} openConsole={openConsole} close={() => setInspectorOpen(false)} />}
+    </div>
+    {terminalOpen && activeSession && <TerminalPanel key={terminalGeneration} ready={Boolean(runtime && !runtimeError)} systemName={activeTerminalRouter?.systemName ?? "Router"} historyKey={`${project.projectId}:${activeTerminalSession?.routerId ?? "unknown"}:${activeSession}`} execute={execute} complete={complete} cancel={cancelTerminal} state={terminalState} restorePresentation={terminalPresentations[activeSession]} registerCheckpointProvider={registerTerminalCheckpointProvider} tabs={terminalTabs} activeTab={activeSession} selectTab={selectTerminalSession} newTab={() => { if (activeTerminalSession) createConsole(activeTerminalSession.routerId); }} closeTab={closeTerminalSession} height={project.layout.terminalHeight} onHeightChange={(value) => resizePanel("terminalHeight", value)} close={closeTerminal} />}
+    {pendingRouterPosition && <div className="modal-backdrop"><div className="lab-dialog"><header><strong>Configure router</strong><button onClick={() => setPendingRouterPosition(undefined)}>×</button></header><label>System name<input value={pendingRouterPosition.systemName} maxLength={32} onChange={(event) => setPendingRouterPosition({ ...pendingRouterPosition, systemName: event.target.value })} /></label><div className="panel-kicker dialog-kicker">CHASSIS PROFILE</div>{PROFILE_CATALOG.profiles.map((profile) => <button key={profile.id} className="primary" disabled={!pendingRouterPosition.systemName.trim()} onClick={() => addRouter(profile.id as DeviceProfileId)}>{profile.chassis}</button>)}</div></div>}
+    {pendingHost && <div className="modal-backdrop"><div className="lab-dialog"><header><strong>Configure host interface</strong><button onClick={() => setPendingHost(undefined)}>×</button></header>
+      <label>Name<input value={pendingHost.name} onChange={(event) => setPendingHost({ ...pendingHost, name: event.target.value })} /></label>
+      <label>MAC address<input placeholder="xx:xx:xx:xx:xx:xx" value={pendingHost.mac} onChange={(event) => setPendingHost({ ...pendingHost, mac: event.target.value })} /></label>
+      <label>IPv4 prefix<input placeholder="address/prefix-length" value={pendingHost.address} onChange={(event) => setPendingHost({ ...pendingHost, address: event.target.value })} /></label>
+      <label>Default gateway<input placeholder="IPv4 address" value={pendingHost.gateway} onChange={(event) => setPendingHost({ ...pendingHost, gateway: event.target.value })} /></label>
+      <label>Interface MTU<input inputMode="numeric" placeholder="bytes" value={pendingHost.mtu} onChange={(event) => setPendingHost({ ...pendingHost, mtu: event.target.value })} /></label>
+      <button className="primary" onClick={addHost}>Add host</button></div></div>}
+    {linkNodes && <div className="modal-backdrop"><div className="lab-dialog"><header><strong>Connect physical ports</strong><button onClick={() => setLinkNodes(undefined)}>×</button></header>{linkNodes.map((node, index) => <label key={node}>{node}<select value={linkPorts[index]} onChange={(event) => setLinkPorts(index === 0 ? [event.target.value, linkPorts[1]] : [linkPorts[0], event.target.value])}><option value="">Select a free port</option>{availablePorts(node).map((port) => <option key={port}>{port}</option>)}</select></label>)}<button className="primary" disabled={!linkPorts[0] || !linkPorts[1]} onClick={createLink}>Connect</button></div></div>}
+  </main>;
 }

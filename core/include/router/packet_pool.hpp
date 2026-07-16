@@ -1,6 +1,6 @@
 #pragma once
 
-#include "router/generated_profile.hpp"
+#include "router/generated_device_catalog.hpp"
 #include "router/packet.hpp"
 
 #include <cassert>
@@ -19,10 +19,14 @@ public:
   // the initial ABI. Exhaustion is reported as packet admission failure.
   // The size_t first operand also keeps larger future profiles from performing
   // the multiplication in 32 bits before widening the result.
-  static constexpr std::size_t bytes = profile::packet_pool_bytes;
+  static constexpr std::size_t bytes = device_catalog::packet_pool_bytes;
+  // Every pool slot can be in exactly one stage: a device queue, a link queue,
+  // the physical medium or a receiver queue. Shared stage metadata therefore
+  // never needs more entries than this exact frame capacity.
+  static constexpr std::size_t capacity = bytes / sizeof(packet::Frame);
 
   PacketPool()
-      : slots_(bytes / sizeof(packet::Frame)), free_(slots_.size()),
+      : slots_(capacity), free_(slots_.size()),
         free_count_(slots_.size()) {
     // The free-list vector is sized, not merely reserved. Allocation and
     // release therefore mutate an index and never call the heap on the packet
@@ -39,7 +43,7 @@ public:
     if (free_count_ == 0)
       return std::nullopt;
     const auto handle = free_[--free_count_];
-    slots_[handle] = frame;
+    packet::copy_frame(slots_[handle], frame);
     return handle;
   }
 

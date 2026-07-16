@@ -74,12 +74,12 @@ inline constexpr std::uint16_t minimum_ping_payload_octets = 12U;
 inline constexpr std::uint16_t maximum_ping_payload_octets = 1472U;
 inline constexpr std::size_t cli_history_entries = 50;
 inline constexpr std::uint32_t runtime_snapshot_abi = 4;
-inline constexpr std::uint32_t telemetry_abi = 4;
+inline constexpr std::uint32_t telemetry_abi = 5;
 inline constexpr std::uint32_t runtime_message_abi = 2;
 inline constexpr std::uint32_t checkpoint_abi = 4;
-inline constexpr std::uint64_t profile_hash = 0xb22da40eb8506cadULL;
+inline constexpr std::uint64_t profile_hash = 0x7cfdcf266d2ce49aULL;
 inline constexpr std::uint64_t checkpoint_schema_hash = 0xf57d6de68b39429cULL;
-inline constexpr std::uint64_t build_hash = 0xa95bfa02f5101d29ULL;
+inline constexpr std::uint64_t build_hash = 0xbe25e3fcd4bc18a7ULL;
 
 // Hardware initialization values are experimental emulator timing profiles,
 // not claims about physical platform boot guarantees.

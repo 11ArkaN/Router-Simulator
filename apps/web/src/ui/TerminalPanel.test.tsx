@@ -4,23 +4,27 @@
 
 // @vitest-environment jsdom
 
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TerminalPanel } from "./TerminalPanel";
-import type { TerminalState } from "../runtime/client";
+import type { TerminalState } from "./terminal-contract";
 import type { TerminalHistoryStorage } from "./terminal-history";
 
 interface RecordedTerminal {
   writes: string[];
   options: Record<string, unknown>;
   rows: number;
+  scrolls: number;
   emit(data: string): void;
 }
 
 // vi.hoisted creates the shared recorder before the static xterm import is
 // evaluated. Tests can therefore inject raw onData bytes without exposing a
 // test-only hook in the production component.
-const recorder = vi.hoisted(() => ({ current: undefined as RecordedTerminal | undefined }));
+const recorder = vi.hoisted(() => ({
+  current: undefined as RecordedTerminal | undefined,
+  instances: 0
+}));
 
 // Component tests exercise terminal byte semantics, not browser persistence.
 // This no-I/O store preserves the production archive contract without requiring
@@ -36,15 +40,20 @@ vi.mock("@xterm/xterm", () => ({
     writes: string[] = [];
     options: Record<string, unknown>;
     rows = 24;
+    scrolls = 0;
     private input: ((data: string) => void) | undefined;
 
     constructor(options: Record<string, unknown>) {
       this.options = options;
       recorder.current = this;
+      ++recorder.instances;
     }
     loadAddon() {}
     open() {}
-    write(value: string) { this.writes.push(value); }
+    write(value: string, callback?: () => void) {
+      this.writes.push(value);
+      callback?.();
+    }
     writeln(value: string) { this.writes.push(`${value}\r\n`); }
     onData(callback: (data: string) => void) {
       this.input = callback;
@@ -55,7 +64,7 @@ vi.mock("@xterm/xterm", () => ({
     emit(data: string) { this.input?.(data); }
     blur() {}
     focus() {}
-    scrollToBottom() {}
+    scrollToBottom() { ++this.scrolls; }
     clear() {}
     dispose() {}
   }
@@ -74,6 +83,7 @@ class TestResizeObserver implements ResizeObserver {
 afterEach(() => {
   cleanup();
   recorder.current = undefined;
+  recorder.instances = 0;
   vi.restoreAllMocks();
 });
 
@@ -128,7 +138,7 @@ describe("terminal raw-key transcript", () => {
     const resize = globalThis.ResizeObserver;
     globalThis.ResizeObserver = TestResizeObserver;
     try {
-      render(<TerminalPanel ready systemName="R1" historyKey="test:r1"
+      const view = render(<TerminalPanel ready systemName="R1" historyKey="test:r1"
         historyStorage={historyStorage} execute={execute}
         complete={complete} cancel={vi.fn()} state={async () => terminalState}
         height={360} onHeightChange={vi.fn()}
@@ -149,6 +159,23 @@ describe("terminal raw-key transcript", () => {
       recorder.current!.emit("show");
       recorder.current!.emit("\r");
       await waitFor(() => expect(execute).toHaveBeenCalledTimes(3));
+
+      // Full history is reached by ordinary scrolling. There is no parallel
+      // view toggle, and each completed output write returns the hot viewport
+      // to the newest prompt only after xterm has parsed the response.
+      expect(screen.queryByRole("button", { name: "Full terminal history" }))
+        .toBeNull();
+      expect(recorder.current!.scrolls).toBe(3);
+
+      // App publishes a new snapshot and therefore new callback identities
+      // after every command. Those callbacks must update through refs without
+      // recreating the terminal or erasing the command that was just written.
+      view.rerender(<TerminalPanel ready systemName="R1" historyKey="test:r1"
+        historyStorage={historyStorage} execute={execute}
+        complete={complete} cancel={vi.fn()} state={async () => terminalState}
+        registerCheckpointProvider={vi.fn()} height={360}
+        onHeightChange={vi.fn()} close={vi.fn()} />);
+      expect(recorder.instances).toBe(1);
 
       // The golden array preserves cursor erasure and CRLF bytes without a
       // snapshot serializer normalizing control characters. A renderer change

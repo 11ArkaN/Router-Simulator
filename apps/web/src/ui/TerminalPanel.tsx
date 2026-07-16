@@ -11,9 +11,9 @@ import {
   restoreTerminalPresentation,
   type TerminalCheckpointProvider
 } from "./terminal-model";
-import { GENERATED_PROFILE, type CliPresentationStateV1,
-  type TerminalHistoryRegion } from "@router-simulator/contracts";
-import type { TerminalState } from "../runtime/client";
+import { PROFILE_CATALOG } from "@router-simulator/contracts";
+import type { TerminalHistoryRegion, TerminalPanelPresentation,
+  TerminalState } from "./terminal-contract";
 import { PanelResizeHandle } from "./PanelResizeHandle";
 import { TerminalHistoryArchive, type TerminalHistoryStorage } from "./terminal-history";
 import { TerminalHistoryView } from "./TerminalHistoryView";
@@ -29,13 +29,19 @@ interface Props {
   state(): Promise<TerminalState>;
   height: number;
   onHeightChange(value: number): void;
-  restorePresentation?: CliPresentationStateV1;
+  restorePresentation?: TerminalPanelPresentation;
   registerCheckpointProvider?(provider: TerminalCheckpointProvider | undefined): void;
+  tabs?: readonly { id: string; label: string }[];
+  activeTab?: string;
+  selectTab?(id: string): void;
+  newTab?(): void;
+  closeTab?(id: string): void;
   close(): void;
 }
 
 export function TerminalPanel({ ready, systemName, historyKey, historyStorage, execute, complete, cancel, state,
-  height, onHeightChange, restorePresentation, registerCheckpointProvider, close }: Props) {
+  height, onHeightChange, restorePresentation, registerCheckpointProvider,
+  tabs, activeTab, selectTab, newTab, closeTab, close }: Props) {
   const panelRef = useRef<HTMLElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -43,15 +49,20 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
   const [fontSize, setFontSize] = useState(12);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyBoundaryRows, setHistoryBoundaryRows] = useState(0);
   const historyOpenRef = useRef(false);
   const archive = useMemo(() => new TerminalHistoryArchive(historyKey, historyStorage,
     (cause) => console.error("Terminal history archival failed", cause)), [historyKey, historyStorage]);
   const executeRef = useRef(execute);
   const completeRef = useRef(complete);
   const stateRef = useRef(state);
+  const cancelRef = useRef(cancel);
+  const checkpointRegistrationRef = useRef(registerCheckpointProvider);
   executeRef.current = execute;
   completeRef.current = complete;
   stateRef.current = state;
+  cancelRef.current = cancel;
+  checkpointRegistrationRef.current = registerCheckpointProvider;
 
   useEffect(() => () => { void archive.close(); }, [archive]);
 
@@ -116,7 +127,7 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
       classic: new TerminalLineEditor()
     };
     let busy = false;
-    const queuedInput = new TerminalInputQueue(GENERATED_PROFILE.resources.cli_input_queue_bytes);
+    const queuedInput = new TerminalInputQueue(PROFILE_CATALOG.runtime.terminal_result_bytes);
     let sessionState: TerminalState | undefined;
     let pager = restoreTerminalPresentation(restorePresentation, editors, queuedInput);
 
@@ -125,7 +136,6 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
     // and all arrays are detached by the individual snapshot methods.
     const checkpointProvider: TerminalCheckpointProvider = {
       snapshot: () => ({
-        version: 1,
         editors: {
           "md-operational": editors["md-operational"].snapshot(),
           "md-configuration": editors["md-configuration"].snapshot(),
@@ -135,7 +145,7 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
         ...(pager ? { pager: pager.snapshot() } : {})
       })
     };
-    registerCheckpointProvider?.(checkpointProvider);
+    checkpointRegistrationRef.current?.(checkpointProvider);
 
     const editor = () => editors[sessionState?.historyRegion ?? "md-operational"];
     const prompt = () => sessionState?.prompt.replace(/^\n/, "") ?? "";
@@ -167,13 +177,17 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
       // response has already been produced exactly once by the session owner.
       archive.append(output);
       const next = new TerminalPager(output, terminal.rows);
-      terminal.write(next.page.join("\r\n"));
+      let rendered = next.page.join("\r\n");
       if (next.active) {
         pager = next;
-        terminal.write(`\r\n${next.status}`);
+        rendered += `\r\n${next.status}`;
       } else {
         pager = undefined;
       }
+      // A command may emit more rows than the visible console. Finish the
+      // complete xterm write before moving the viewport, otherwise a later
+      // parser frame can leave the user above the new prompt.
+      terminal.write(rendered, () => terminal.scrollToBottom());
     };
 
     const showCompletion = async (trigger: "tab" | "question" | "space") => {
@@ -241,7 +255,7 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
           // Ctrl-C is an out-of-band terminal signal. It must not wait behind
           // the active command in the byte queue or the ping could never be
           // interrupted until after its final probe.
-          cancel();
+          cancelRef.current();
           terminal.write("^C");
           return;
         }
@@ -401,6 +415,7 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
       // cache continues into the virtual transcript instead of ending history.
       // No React update occurs during ordinary scrolling inside the hot window.
       if (position === 0 && archive.lineCount > terminal.buffer.active.length) {
+        setHistoryBoundaryRows(terminal.buffer.active.length);
         setHistoryOpen(true);
       }
     });
@@ -428,9 +443,12 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
       fitRef.current = null;
       // Unregister only this disposed owner. App keeps no borrowed closure that
       // could later sample dead editor state after the panel is reopened.
-      registerCheckpointProvider?.(undefined);
+      checkpointRegistrationRef.current?.(undefined);
     };
-  }, [ready, cancel, archive, restorePresentation, registerCheckpointProvider]);
+  // Callback identities change when App publishes a fresh runtime snapshot.
+  // Refs above keep those operations current without destroying xterm, its
+  // visible command line or its hot scrollback after every router command.
+  }, [ready, archive, restorePresentation]);
 
   useEffect(() => {
     // Font size is a renderer preference, not session state. Updating the live
@@ -449,16 +467,15 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
   return (
     <section className="terminal-panel" ref={panelRef}>
       <PanelResizeHandle axis="y" className="terminal-resizer"
-        defaultValue={GENERATED_PROFILE.uiDefaults.terminal_height} direction={-1}
-        label="Resize console" min={GENERATED_PROFILE.uiDefaults.terminal_height_min}
-        max={GENERATED_PROFILE.uiDefaults.terminal_height_max} value={height}
+        defaultValue={360} direction={-1}
+        label="Resize console" min={64}
+        max={Math.max(64, window.innerHeight - 53)} value={height}
         onChange={onHeightChange} />
       <div className="terminal-head">
-        <div><i className="dot-good" />{systemName} console</div>
+        <div className="terminal-tabs">{tabs?.length ? tabs.map((tab) => <div
+          className={tab.id === activeTab ? "terminal-tab active" : "terminal-tab"}
+          key={tab.id}><button onClick={() => selectTab?.(tab.id)}><i className="dot-good" />{tab.label}</button><button aria-label={`Close ${tab.label}`} onClick={() => closeTab?.(tab.id)}>×</button></div>) : <div className="terminal-tab active"><button><i className="dot-good" />{systemName} console</button></div>}{newTab && <button className="terminal-new-tab" title="New router terminal" aria-label="New router terminal" onClick={newTab}>+</button>}</div>
         <div className="terminal-actions">
-          <button title="Full terminal history" aria-label="Full terminal history"
-            className={historyOpen ? "active" : ""}
-            onClick={() => setHistoryOpen((value) => !value)}>≡</button>
           <button title="Clear visible terminal" aria-label="Clear visible terminal" onClick={() => terminalRef.current?.clear()}>♲</button>
           <button title="Terminal settings" aria-label="Terminal settings" className={settingsOpen ? "active" : ""} onClick={() => setSettingsOpen((value) => !value)}>⚙</button>
           <button title="Fullscreen console" aria-label="Fullscreen console" onClick={() => void (document.fullscreenElement ? document.exitFullscreen() : panelRef.current?.requestFullscreen())}>⛶</button>
@@ -469,6 +486,7 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
       <div className="terminal-body">
         <div className="terminal-host" ref={hostRef} />
         {historyOpen && <TerminalHistoryView archive={archive} fontSize={fontSize}
+          liveRows={historyBoundaryRows}
           close={() => setHistoryOpen(false)} />}
       </div>
     </section>

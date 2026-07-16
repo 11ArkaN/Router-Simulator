@@ -1,9 +1,10 @@
 // DOM-independent terminal editor, pager and bounded byte queue. xterm renders
 // these values but does not own CLI session semantics or router prompts.
 
-import { GENERATED_PROFILE, parseCliPresentationState,
-  type CliPresentationStateV1, type TerminalHistoryRegion,
-  type TerminalLineEditorStateV1, type TerminalPagerStateV1 } from "@router-simulator/contracts";
+import { parseTerminalPanelPresentation, type TerminalHistoryRegion,
+  type TerminalLineEditorState as TerminalLineEditorStateV1,
+  type TerminalPagerState as TerminalPagerStateV1,
+  type TerminalPanelPresentation } from "./terminal-contract";
 
 export class TerminalLineEditor {
   // This model owns only local keystroke editing. Router session state, current
@@ -18,7 +19,7 @@ export class TerminalLineEditor {
   // Source: nokia.sros.26_7.md_cli.navigation. The default MD-CLI per-session
   // history size is 50. Bounding the local keystroke projection also prevents
   // an indefinitely open browser tab from retaining every submitted line.
-  private static readonly historyLimit = GENERATED_PROFILE.cliDefaults.history_entries;
+  private static readonly historyLimit = 50;
 
   get value(): string { return this.buffer; }
   get cursor(): number { return this.cursorIndex; }
@@ -347,11 +348,11 @@ export class TerminalPager {
 export interface TerminalCheckpointProvider {
   // The provider borrows no renderer objects. Its return value is a detached,
   // versioned snapshot safe to serialize after the function returns.
-  snapshot(): CliPresentationStateV1;
+  snapshot(): TerminalPanelPresentation;
 }
 
 export function restoreTerminalPresentation(
-  input: CliPresentationStateV1 | undefined,
+  input: TerminalPanelPresentation | undefined,
   editors: Record<TerminalHistoryRegion, TerminalLineEditor>,
   queue: TerminalInputQueue
 ): TerminalPager | undefined {
@@ -359,7 +360,7 @@ export function restoreTerminalPresentation(
   // public parser even when it originated locally, keeping tests and imports
   // on exactly the same validation boundary.
   if (!input) return undefined;
-  const state = parseCliPresentationState(input);
+  const state = parseTerminalPanelPresentation(input);
   for (const region of Object.keys(editors) as TerminalHistoryRegion[]) {
     editors[region].restore(state.editors[region]);
   }

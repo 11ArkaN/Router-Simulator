@@ -137,6 +137,24 @@ void packet_tests() {
         expected_offset + (view->total_length - view->header_length) / 8U);
   }
 
+  // The generated 9212-byte network MTU is a real codec bound, not only a CLI
+  // validation value. At the minimum modeled MTU its payload requires 19
+  // RFC 791 fragments, proving that the former four-fragment ceiling is gone.
+  constexpr auto jumbo_payload =
+      router::device_catalog::maximum_network_mtu - 20U - 8U;
+  const auto jumbo = icmp_echo(source, target, source_ip, target_ip, false, 13,
+                               64, jumbo_payload, false);
+  const auto routed_jumbo = route_ipv4(jumbo, target, source);
+  const auto jumbo_fragments =
+      routed_jumbo ? fragment_ipv4(*routed_jumbo,
+                                   router::device_catalog::minimum_network_mtu)
+                   : std::nullopt;
+  if (jumbo.size() != maximum_frame_octets || !jumbo_fragments ||
+      jumbo_fragments->count != FragmentBatch::maximum_fragment_count) {
+    throw std::runtime_error(
+        "Jumbo IPv4 datagram was truncated or hit a stale fragment limit");
+  }
+
   // Deterministic mutation fuzzing covers every legal frame length and random
   // byte patterns under ASAN and UBSAN in CI. Parsers may reject a candidate,
   // but no rejected length or header may read outside Frame::view or allocate

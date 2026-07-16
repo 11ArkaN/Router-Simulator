@@ -1,32 +1,84 @@
-// IndexedDB project storage, OPFS binary storage and portable netsim manifests.
-// Every import crosses the shared versioned validation boundary before use.
+// Persistent storage for the only supported project and manifest formats.
+// IndexedDB owns structured project intent. OPFS owns large binary artifacts.
+// No compatibility reader exists, so old single-router data can never become
+// live state by normalization, migration or a hidden default topology.
 
-import { DEFAULT_PROJECT, GENERATED_PROFILE, parseCliPresentationState, parseProject,
-  type CliPresentationStateV1, type LabProject, type ProjectManifestV1 } from "@router-simulator/contracts";
+import {
+  createEmptyProjectV3,
+  parseLabProjectV3,
+  parseTerminalPresentationV2,
+  type HostProjectV3,
+  type LabProjectV3,
+  type LinkProjectV3,
+  type ProjectManifestV2,
+  type RouterProjectV3,
+  type TerminalPresentationV2
+} from "@router-simulator/contracts";
 
-const DB_NAME = "router-simulator";
-const STORE = "projects";
+const DATABASE_NAME = "router-simulator-v3";
+const DATABASE_VERSION = 1;
+const HEADS = "project-heads";
+const ROUTERS = "project-routers";
+const HOSTS = "project-hosts";
+const LINKS = "project-links";
+const PRESENTATION = "project-presentation";
+const ACTIVE = "active-project";
 let databasePromise: Promise<IDBDatabase> | undefined;
+let saveTail = Promise.resolve();
+
+interface ProjectHead {
+  projectId: string;
+  name: string;
+  notes: string;
+  layout: LabProjectV3["layout"];
+  updatedAt: string;
+  routers: string[];
+  hosts: string[];
+  links: string[];
+}
+
+interface StoredObject<T> {
+  projectId: string;
+  objectId: string;
+  revision: number;
+  fingerprint: string;
+  value: T;
+}
+
+export interface PersistedPresentation {
+  projectId: string;
+  selectedNodeId?: string;
+  terminal?: TerminalPresentationV2;
+}
+
+export interface ProjectRevisionSummary {
+  routersWritten: number;
+  hostsWritten: number;
+  linksWritten: number;
+}
+
+type ProjectObject = RouterProjectV3 | HostProjectV3 | LinkProjectV3;
 
 function database(): Promise<IDBDatabase> {
-  // IndexedDB stores small structured project metadata. Large captures and
-  // binary snapshots belong in OPFS when their persistence path is implemented.
-  // One connection is shared by autosave transactions. Opening a new connection
-  // for every keystroke would retain database handles until browser collection
-  // and could block a future schema upgrade in another tab.
+  // One long-lived connection avoids accumulating handles during autosave.
+  // A version change closes it promptly so a later application build can
+  // upgrade without another tab blocking the browser transaction.
   if (databasePromise) return databasePromise;
   databasePromise = new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(STORE);
+    const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
+    request.onupgradeneeded = () => {
+      for (const store of [HEADS, ROUTERS, HOSTS, LINKS, PRESENTATION, ACTIVE]) {
+        if (!request.result.objectStoreNames.contains(store)) {
+          request.result.createObjectStore(store);
+        }
+      }
+    };
     request.onsuccess = () => {
-      const db = request.result;
-      db.onversionchange = () => {
-        // Closing promptly lets a newer application version upgrade the schema.
-        // The next operation lazily opens a connection to the new version.
-        db.close();
+      request.result.onversionchange = () => {
+        request.result.close();
         databasePromise = undefined;
       };
-      resolve(db);
+      resolve(request.result);
     };
     request.onerror = () => {
       databasePromise = undefined;
@@ -36,92 +88,201 @@ function database(): Promise<IDBDatabase> {
   return databasePromise;
 }
 
-export function decodeStoredProject(value: unknown): {
-  project: LabProject;
-  rejected: boolean;
-  recovery?: unknown;
-} {
-  // An absent record is a normal first run. An incompatible record is returned
-  // separately for quarantine and never gains legitimacy through normalization.
-  // The valid replacement is cloned so UI edits cannot mutate DEFAULT_PROJECT.
-  if (value === undefined) {
-    return { project: structuredClone(DEFAULT_PROJECT), rejected: false };
-  }
-  try {
-    return { project: parseProject(value), rejected: false };
-  } catch {
-    return { project: structuredClone(DEFAULT_PROJECT), rejected: true, recovery: value };
-  }
-}
-
-async function quarantineProject(db: IDBDatabase, recovery: unknown,
-  replacement: LabProject): Promise<void> {
-  // One atomic transaction preserves the rejected bytes before replacing the
-  // active key. A crash cannot leave the user with neither the old record nor
-  // a bootable project, and the stable recovery key avoids unbounded storage
-  // growth after repeated startup attempts.
-  await new Promise<void>((resolve, reject) => {
-    const transaction = db.transaction(STORE, "readwrite");
-    const store = transaction.objectStore(STORE);
-    store.put({ recoveredAt: new Date().toISOString(), value: recovery }, "recovery:active");
-    store.put(replacement, "active");
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
-    transaction.onabort = () => reject(transaction.error ??
-      new Error("Project recovery transaction was aborted"));
-  });
-}
-
-export async function loadProject(): Promise<LabProject> {
-  // Stored data crosses the same strict parser as file imports. A rejected old
-  // schema is quarantined once, allowing later starts to use the replacement
-  // without repeatedly surfacing the same non-actionable error banner.
-  const db = await database();
-  const value = await new Promise<unknown>((resolve, reject) => {
-    const request = db.transaction(STORE).objectStore(STORE).get("active");
+function requestValue<T>(request: IDBRequest<T>): Promise<T> {
+  // IndexedDB requests are event based. Converting that boundary once keeps
+  // every caller waiting for the real browser result instead of observing a
+  // transaction that is still pending.
+  return new Promise((resolve, reject) => {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
-  const decoded = decodeStoredProject(value);
-  if (!decoded.rejected) return decoded.project;
-  const replacement = { ...decoded.project, updatedAt: new Date().toISOString() };
-  await quarantineProject(db, decoded.recovery, replacement);
-  console.warn("Stored project was preserved under recovery:active and replaced with the current default profile");
-  return replacement;
 }
 
-export async function saveProject(project: LabProject): Promise<void> {
-  // The active project is replaced atomically within one read-write transaction.
-  // Validation also protects direct calls such as the toolbar Save action. A
-  // partially typed address must never replace the last restorable project.
-  const validated = parseProject(project);
-  const db = await database();
-  await new Promise<void>((resolve, reject) => {
-    const transaction = db.transaction(STORE, "readwrite");
-    transaction.objectStore(STORE).put(validated, "active");
-    // A request success only means that its operation ran. Durability becomes
-    // observable after the containing transaction completes, so Save resolves
-    // on oncomplete and reports both error and explicit abort paths.
+function committed(transaction: IDBTransaction): Promise<void> {
+  // Request success is not durability. A later request may abort the entire
+  // transaction, therefore save operations resolve only on oncomplete.
+  return new Promise((resolve, reject) => {
     transaction.oncomplete = () => resolve();
     transaction.onerror = () => reject(transaction.error);
-    transaction.onabort = () => reject(transaction.error ?? new Error("Project save was aborted"));
+    transaction.onabort = () => reject(transaction.error ??
+      new Error("Project transaction was aborted"));
   });
 }
 
-function download(name: string, value: unknown): void {
-  // Blob URLs avoid routing project contents through a server or external API.
-  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: "application/json" }));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  URL.revokeObjectURL(url);
+function key(projectId: string, objectId: string): string {
+  // Contract identifiers cannot contain NUL, making this composite key
+  // unambiguous without allocating nested object stores per project.
+  return `${projectId}\u0000${objectId}`;
+}
+
+function head(project: LabProjectV3): ProjectHead {
+  return {
+    projectId: project.projectId,
+    name: project.name,
+    notes: project.notes,
+    layout: project.layout,
+    updatedAt: project.updatedAt,
+    routers: project.routers.map((item) => item.id),
+    hosts: project.hosts.map((item) => item.id),
+    links: project.links.map((item) => item.id)
+  };
+}
+
+async function currentRecords<T extends ProjectObject>(db: IDBDatabase,
+  storeName: string, projectId: string, values: readonly T[]):
+  Promise<Map<string, StoredObject<T>>> {
+  // Read only records referenced by the incoming project. Removed identities
+  // are obtained from the previous head during the atomic write below.
+  const transaction = db.transaction(storeName, "readonly");
+  const store = transaction.objectStore(storeName);
+  const records = await Promise.all(values.map(async (value) => [value.id,
+    await requestValue(store.get(key(projectId, value.id))) as
+      StoredObject<T> | undefined] as const));
+  await committed(transaction);
+  return new Map(records.filter((entry): entry is readonly [string, StoredObject<T>] =>
+    entry[1] !== undefined));
+}
+
+async function saveNow(input: LabProjectV3): Promise<ProjectRevisionSummary> {
+  // Full validation precedes the first write. Invalid form drafts therefore
+  // leave every previously durable entity and the active-project pointer intact.
+  const project = parseLabProjectV3(input);
+  const db = await database();
+  const previousHead = await requestValue(db.transaction(HEADS).objectStore(HEADS)
+    .get(project.projectId)) as ProjectHead | undefined;
+  const [routerRecords, hostRecords, linkRecords] = await Promise.all([
+    currentRecords(db, ROUTERS, project.projectId, project.routers),
+    currentRecords(db, HOSTS, project.projectId, project.hosts),
+    currentRecords(db, LINKS, project.projectId, project.links)
+  ]);
+  const transaction = db.transaction([HEADS, ROUTERS, HOSTS, LINKS, ACTIVE], "readwrite");
+  const summary: ProjectRevisionSummary = {
+    routersWritten: 0,
+    hostsWritten: 0,
+    linksWritten: 0
+  };
+
+  const write = <T extends ProjectObject>(storeName: string, values: readonly T[],
+    previous: Map<string, StoredObject<T>>, counter: keyof ProjectRevisionSummary) => {
+    const store = transaction.objectStore(storeName);
+    for (const value of values) {
+      const fingerprint = JSON.stringify(value);
+      const before = previous.get(value.id);
+      if (before?.fingerprint === fingerprint) continue;
+      store.put({ projectId: project.projectId, objectId: value.id,
+        revision: (before?.revision ?? 0) + 1, fingerprint, value } satisfies StoredObject<T>,
+      key(project.projectId, value.id));
+      summary[counter] += 1;
+    }
+  };
+  write(ROUTERS, project.routers, routerRecords, "routersWritten");
+  write(HOSTS, project.hosts, hostRecords, "hostsWritten");
+  write(LINKS, project.links, linkRecords, "linksWritten");
+
+  const removeMissing = (storeName: string, before: readonly string[] | undefined,
+    after: readonly string[]) => {
+    const live = new Set(after);
+    const store = transaction.objectStore(storeName);
+    for (const id of before ?? []) {
+      if (!live.has(id)) store.delete(key(project.projectId, id));
+    }
+  };
+  removeMissing(ROUTERS, previousHead?.routers, project.routers.map((item) => item.id));
+  removeMissing(HOSTS, previousHead?.hosts, project.hosts.map((item) => item.id));
+  removeMissing(LINKS, previousHead?.links, project.links.map((item) => item.id));
+  transaction.objectStore(HEADS).put(head(project), project.projectId);
+  transaction.objectStore(ACTIVE).put(project.projectId, "id");
+  await committed(transaction);
+  return summary;
+}
+
+export function saveLabProjectV3(project: LabProjectV3): Promise<ProjectRevisionSummary> {
+  // Serializing autosaves prevents a slower older transaction from landing
+  // after a newer edit and resurrecting a removed router or link.
+  const operation = saveTail.then(() => saveNow(project));
+  saveTail = operation.then(() => undefined, () => undefined);
+  return operation;
+}
+
+export async function loadLabProjectV3(projectId: string): Promise<LabProjectV3 | undefined> {
+  const db = await database();
+  const projectHead = await requestValue(db.transaction(HEADS).objectStore(HEADS)
+    .get(projectId)) as ProjectHead | undefined;
+  if (!projectHead) return undefined;
+  const read = async <T extends ProjectObject>(storeName: string,
+    ids: readonly string[]): Promise<T[]> => {
+    const transaction = db.transaction(storeName, "readonly");
+    const store = transaction.objectStore(storeName);
+    const records = await Promise.all(ids.map((id) => requestValue(
+      store.get(key(projectId, id))) as Promise<StoredObject<T> | undefined>));
+    await committed(transaction);
+    if (records.some((record) => record === undefined)) {
+      throw new Error("Stored project is missing an object revision");
+    }
+    return records.map((record) => record!.value);
+  };
+  const [routers, hosts, links] = await Promise.all([
+    read<RouterProjectV3>(ROUTERS, projectHead.routers),
+    read<HostProjectV3>(HOSTS, projectHead.hosts),
+    read<LinkProjectV3>(LINKS, projectHead.links)
+  ]);
+  return parseLabProjectV3({
+    format: "router-simulator-project",
+    version: 3,
+    projectId: projectHead.projectId,
+    name: projectHead.name,
+    notes: projectHead.notes,
+    layout: projectHead.layout,
+    updatedAt: projectHead.updatedAt,
+    routers,
+    hosts,
+    links
+  });
+}
+
+export async function loadActiveProjectV3(): Promise<LabProjectV3> {
+  // Absence is the only fresh-start case. The returned project has no router,
+  // host or link because topology creation belongs exclusively to the user.
+  const db = await database();
+  const id = await requestValue(db.transaction(ACTIVE).objectStore(ACTIVE).get("id"));
+  if (typeof id !== "string") return createEmptyProjectV3();
+  return await loadLabProjectV3(id) ?? createEmptyProjectV3();
+}
+
+export async function saveProjectPresentation(projectId: string,
+  input: PersistedPresentation): Promise<void> {
+  if (input.projectId !== projectId) {
+    throw new Error("Presentation project identity does not match");
+  }
+  const value: PersistedPresentation = {
+    projectId,
+    ...(input.selectedNodeId ? { selectedNodeId: input.selectedNodeId } : {}),
+    ...(input.terminal
+      ? { terminal: parseTerminalPresentationV2(input.terminal) } : {})
+  };
+  const db = await database();
+  const transaction = db.transaction(PRESENTATION, "readwrite");
+  transaction.objectStore(PRESENTATION).put(value, projectId);
+  await committed(transaction);
+}
+
+export async function loadProjectPresentation(projectId: string):
+  Promise<PersistedPresentation | undefined> {
+  const db = await database();
+  const value = await requestValue(db.transaction(PRESENTATION)
+    .objectStore(PRESENTATION).get(projectId)) as PersistedPresentation | undefined;
+  if (!value) return undefined;
+  return {
+    projectId,
+    ...(typeof value.selectedNodeId === "string"
+      ? { selectedNodeId: value.selectedNodeId } : {}),
+    ...(value.terminal
+      ? { terminal: parseTerminalPresentationV2(value.terminal) } : {})
+  };
 }
 
 function base64(bytes: Uint8Array): string {
-  // Chunking avoids spreading a multi-megabyte capture into one JavaScript call
-  // stack. Base64 is used only for portable .netsim JSON. OPFS keeps the same
-  // data binary and therefore pays no expansion during autosave.
+  // Chunking avoids one enormous JavaScript argument list for large captures.
   let binary = "";
   for (let offset = 0; offset < bytes.length; offset += 0x8000) {
     binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
@@ -129,28 +290,142 @@ function base64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-export function decodeBase64(value: string): Uint8Array {
-  // atob rejects malformed alphabet or padding before any bytes reach the
-  // checkpoint decoder. Uint8Array then preserves all values including NUL.
+function strictBase64(value: unknown, field: string): Uint8Array | undefined {
+  // atob accepts noncanonical padding in some engines. Portable manifests use
+  // one representation so truncation and hand-edited whitespace fail closed.
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.length || value.length % 4 !== 0 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    throw new Error(`${field} is not canonical base64`);
+  }
   const binary = atob(value);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
-async function opfsRoot(): Promise<FileSystemDirectoryHandle> {
-  // OPFS is mandatory only for binary persistence actions. Project editing can
-  // still use IndexedDB until the user requests a capture or checkpoint write.
-  if (!navigator.storage?.getDirectory) throw new Error("OPFS is not available in this browser");
-  return navigator.storage.getDirectory();
+export function createProjectManifestV2(project: LabProjectV3,
+  capture?: Uint8Array): ProjectManifestV2 {
+  return {
+    mode: "project",
+    formatVersion: 2,
+    checkpointAbi: 5,
+    project: parseLabProjectV3(project),
+    ...(capture?.length ? { captureBase64: base64(capture) } : {})
+  };
 }
 
-export async function saveBinary(name: "active.pcapng" | "active.checkpoint", bytes: Uint8Array): Promise<void> {
-  // createWritable commits on close and discards an aborted temporary file.
-  // Copying severs ownership from a transferable runtime buffer before await.
-  const handle = await (await opfsRoot()).getFileHandle(name, { create: true });
+export function createCheckpointManifestV2(project: LabProjectV3,
+  checkpoint: Uint8Array, capture?: Uint8Array,
+  terminalPresentation?: TerminalPresentationV2): ProjectManifestV2 {
+  if (!checkpoint.length) throw new Error("A checkpoint export cannot be empty");
+  return {
+    mode: "checkpoint",
+    formatVersion: 2,
+    checkpointAbi: 5,
+    project: parseLabProjectV3(project),
+    checkpointBase64: base64(checkpoint),
+    ...(capture?.length ? { captureBase64: base64(capture) } : {}),
+    ...(terminalPresentation
+      ? { terminalPresentation: parseTerminalPresentationV2(terminalPresentation) } : {})
+  };
+}
+
+export function parseNetsimV2(text: string): {
+  project: LabProjectV3;
+  checkpoint?: Uint8Array;
+  capture?: Uint8Array;
+  terminalPresentation?: TerminalPresentationV2;
+} {
+  // No raw-project or previous-manifest branch exists. Unsupported bytes stop
+  // before project replay, leaving the active Worker and project untouched.
+  const decoded = JSON.parse(text) as Partial<ProjectManifestV2>;
+  if (!decoded || typeof decoded !== "object" || decoded.formatVersion !== 2 ||
+      decoded.checkpointAbi !== 5 ||
+      (decoded.mode !== "project" && decoded.mode !== "checkpoint")) {
+    throw new Error("The .netsim manifest format is not supported");
+  }
+  if (decoded.mode === "checkpoint" && decoded.checkpointBase64 === undefined) {
+    throw new Error("The checkpoint manifest has no structural state");
+  }
+  if (decoded.mode === "project" &&
+      (decoded.checkpointBase64 !== undefined || decoded.terminalPresentation !== undefined)) {
+    throw new Error("A project manifest contains checkpoint-only state");
+  }
+  return {
+    project: parseLabProjectV3(decoded.project),
+    ...(decoded.checkpointBase64 !== undefined
+      ? { checkpoint: strictBase64(decoded.checkpointBase64, "Checkpoint") } : {}),
+    ...(decoded.captureBase64 !== undefined
+      ? { capture: strictBase64(decoded.captureBase64, "Capture") } : {}),
+    ...(decoded.terminalPresentation !== undefined
+      ? { terminalPresentation: parseTerminalPresentationV2(decoded.terminalPresentation) } : {})
+  };
+}
+
+function download(name: string, value: unknown): void {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)],
+    { type: "application/json" }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = name;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+export function exportProjectV3(project: LabProjectV3, capture?: Uint8Array): void {
+  const validated = parseLabProjectV3(project);
+  download(`${validated.name.replaceAll(" ", "-").toLowerCase()}.netsim`,
+    createProjectManifestV2(validated, capture));
+}
+
+export async function importNetsimV2(file: File) {
+  return parseNetsimV2(await file.text());
+}
+
+function validateStorageIdentity(value: string): void {
+  if (!/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/i.test(value)) {
+    throw new Error("Storage identity is invalid");
+  }
+}
+
+async function projectDirectory(projectId: string): Promise<FileSystemDirectoryHandle> {
+  validateStorageIdentity(projectId);
+  if (!navigator.storage?.getDirectory) throw new Error("OPFS is not available");
+  const root = await navigator.storage.getDirectory();
+  const projects = await root.getDirectoryHandle("projects", { create: true });
+  return projects.getDirectoryHandle(projectId, { create: true });
+}
+
+export async function projectCheckpointNameV3(project: LabProjectV3):
+  Promise<`checkpoint-v5-${string}.bin`> {
+  // Recovery identity covers every portable project field except updatedAt.
+  // That timestamp changes after the checkpoint has already been written and
+  // therefore cannot participate in the name used on the next application
+  // start. Keeping layout in the digest is intentional: a checkpoint saved
+  // before a topology edit must never be mistaken for the current project.
+  const { updatedAt: _volatileTimestamp, ...stableProject } = parseLabProjectV3(project);
+  const bytes = new TextEncoder().encode(JSON.stringify(stableProject));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  const hexadecimal = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `checkpoint-v5-${hexadecimal}.bin`;
+}
+
+type ProjectBinaryName = "capture.pcapng" | `checkpoint-v5-${string}.bin`;
+
+export async function saveProjectBinaryV3(projectId: string,
+  name: ProjectBinaryName, bytes: Uint8Array): Promise<void> {
+  // Project identity has already been validated by projectDirectory. Binary
+  // names are checked separately because an imported project must not escape
+  // its OPFS directory through a crafted recovery filename.
+  if (name !== "capture.pcapng" &&
+      !/^checkpoint-v5-[0-9a-f]{64}\.bin$/.test(name)) {
+    throw new Error("Project binary name is invalid");
+  }
+  // createWritable commits atomically on close. A private copy severs the
+  // transferred Wasm buffer before the first asynchronous write.
+  const handle = await (await projectDirectory(projectId)).getFileHandle(name, { create: true });
   const writer = await handle.createWritable();
   try {
-    const copy = new ArrayBuffer(bytes.byteLength);
-    new Uint8Array(copy).set(bytes);
+    const copy = bytes.slice().buffer;
     await writer.write(copy);
     await writer.close();
   } catch (cause) {
@@ -159,11 +434,15 @@ export async function saveBinary(name: "active.pcapng" | "active.checkpoint", by
   }
 }
 
-export async function loadBinary(name: "active.pcapng" | "active.checkpoint"): Promise<Uint8Array | undefined> {
-  // Absence is a normal fresh-lab state. Any permission, quota or I/O error is
-  // propagated because treating it as absence would hide lost persistence.
+export async function loadProjectBinaryV3(projectId: string,
+  name: ProjectBinaryName): Promise<Uint8Array | undefined> {
+  if (name !== "capture.pcapng" &&
+      !/^checkpoint-v5-[0-9a-f]{64}\.bin$/.test(name)) {
+    throw new Error("Project binary name is invalid");
+  }
   try {
-    const file = await (await opfsRoot()).getFileHandle(name).then((handle) => handle.getFile());
+    const file = await (await projectDirectory(projectId)).getFileHandle(name)
+      .then((handle) => handle.getFile());
     return new Uint8Array(await file.arrayBuffer());
   } catch (cause) {
     if (cause instanceof DOMException && cause.name === "NotFoundError") return undefined;
@@ -172,143 +451,10 @@ export async function loadBinary(name: "active.pcapng" | "active.checkpoint"): P
 }
 
 export function downloadBinary(name: string, bytes: Uint8Array, type: string): void {
-  // A Blob copy creates a browser-owned immutable download source. The URL is
-  // revoked after click because the download subsystem already holds it.
   const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }));
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = name;
   anchor.click();
   URL.revokeObjectURL(url);
-}
-
-export function exportProject(project: LabProject, capture?: Uint8Array): void {
-  // Export uses the same validation boundary as local persistence. This avoids
-  // producing a file that the application itself would correctly refuse later.
-  const validated = parseProject(project);
-  const manifest = createProjectManifest(validated, capture);
-  download(`${validated.name.replaceAll(" ", "-").toLowerCase()}.netsim`, manifest);
-}
-
-function profileLock(): ProjectManifestV1["profileLock"] {
-  // Project identity and checkpoint executable compatibility travel together.
-  // Plain projects ignore buildHash on import, while structural state requires
-  // every field to match before any runtime is created.
-  return {
-    id: GENERATED_PROFILE.id,
-    release: GENERATED_PROFILE.release,
-    profileHash: GENERATED_PROFILE.profileHash,
-    buildHash: GENERATED_PROFILE.buildHash,
-    checkpointAbi: GENERATED_PROFILE.abi.checkpoint
-  };
-}
-
-export function createProjectManifest(project: LabProject, capture?: Uint8Array): ProjectManifestV1 {
-  // Plain project export deliberately carries no forwarding state. Importing
-  // it must start a new runtime with empty ARP, queues and protocol progress.
-  return {
-    mode: "project",
-    formatVersion: 1,
-    profileLock: profileLock(),
-    project: parseProject(project),
-    ...(capture?.length ? { captureBase64: base64(capture) } : {})
-  };
-}
-
-export function exportCheckpoint(project: LabProject, checkpoint: Uint8Array,
-  capture?: Uint8Array, terminalPresentation?: CliPresentationStateV1): void {
-  // Structural bytes and optional diagnostics share one profile-locked wrapper
-  // so a user cannot pair a capture with another lab generation accidentally.
-  const validated = parseProject(project);
-  const manifest = createCheckpointManifest(validated, checkpoint, capture, terminalPresentation);
-  download(`${validated.name.replaceAll(" ", "-").toLowerCase()}-checkpoint.netsim`, manifest);
-}
-
-export function createCheckpointManifest(project: LabProject,
-  checkpoint: Uint8Array, capture?: Uint8Array,
-  terminalPresentation?: CliPresentationStateV1): ProjectManifestV1 {
-  // An empty structural payload can never be a valid checkpoint and would make
-  // fallback behavior ambiguous, so reject it before creating the manifest.
-  if (!checkpoint.length) throw new Error("A checkpoint export cannot be empty");
-  return {
-    mode: "checkpoint",
-    formatVersion: 1,
-    profileLock: profileLock(),
-    project: parseProject(project),
-    checkpointBase64: base64(checkpoint),
-    ...(capture?.length ? { captureBase64: base64(capture) } : {}),
-    ...(terminalPresentation
-      ? { terminalPresentation: parseCliPresentationState(terminalPresentation) } : {})
-  };
-}
-
-export class IncompatibleCheckpointError extends Error {
-  constructor() {
-    // A dedicated type lets App request explicit project-only consent without
-    // matching text or exposing checkpoint ABI details in the router console.
-    super("The checkpoint ABI or build is incompatible; the project can be imported without live state");
-    this.name = "IncompatibleCheckpointError";
-  }
-}
-
-export function parseNetsim(text: string, allowProjectOnly = false):
-  { project: LabProject; checkpoint?: Uint8Array; capture?: Uint8Array;
-    terminalPresentation?: CliPresentationStateV1 } {
-  // Header, project schema and profile identity are validated before binary
-  // decoding. No caller receives a partly trusted manifest on any failure.
-  const decoded = JSON.parse(text) as Partial<ProjectManifestV1>;
-  if (!decoded || typeof decoded !== "object" || decoded.formatVersion !== 1 ||
-      (decoded.mode !== "project" && decoded.mode !== "checkpoint"))
-    throw new Error("The .netsim manifest header is invalid");
-  const project = parseProject(decoded && typeof decoded === "object" && "project" in decoded
-    ? decoded.project : decoded);
-  if (!decoded.profileLock || decoded.profileLock.id !== GENERATED_PROFILE.id ||
-      decoded.profileLock.release !== GENERATED_PROFILE.release ||
-      decoded.profileLock.profileHash !== GENERATED_PROFILE.profileHash) {
-    throw new Error("The .netsim profile lock is incompatible");
-  }
-  const checkpointCompatible = decoded.profileLock.buildHash === GENERATED_PROFILE.buildHash &&
-    decoded.profileLock.checkpointAbi === GENERATED_PROFILE.abi.checkpoint;
-  if (decoded.mode === "checkpoint" && !checkpointCompatible && !allowProjectOnly)
-    throw new IncompatibleCheckpointError();
-  if (decoded.mode === "checkpoint" &&
-      typeof decoded.checkpointBase64 !== "string")
-    throw new Error("The checkpoint manifest has no structural state");
-  if (decoded.mode === "checkpoint" && !checkpointCompatible)
-    return { project };
-  if (decoded.mode === "project" && decoded.terminalPresentation !== undefined)
-    throw new Error("A project-only manifest cannot contain terminal checkpoint state");
-  return {
-    project,
-    checkpoint: typeof decoded.checkpointBase64 === "string" ? decodeBase64(decoded.checkpointBase64) : undefined,
-    capture: typeof decoded.captureBase64 === "string" ? decodeBase64(decoded.captureBase64) : undefined,
-    terminalPresentation: decoded.terminalPresentation === undefined
-      ? undefined : parseCliPresentationState(decoded.terminalPresentation)
-  };
-}
-
-export async function importNetsim(file: File, allowProjectOnly = false):
-  Promise<{ project: LabProject; checkpoint?: Uint8Array; capture?: Uint8Array;
-    terminalPresentation?: CliPresentationStateV1 }> {
-  // File is read once to avoid a replacement race between header validation
-  // and binary extraction on mutable host-backed File implementations.
-  return parseNetsim(await file.text(), allowProjectOnly);
-}
-
-// These exact product-interface names mirror the implementation plan while
-// remaining in the application layer that owns layout, notes and browser file
-// delivery. The C++ core cannot truthfully export those fields and therefore
-// exposes only runtime configuration and structural checkpoint primitives.
-export const project_export = exportProject;
-export const project_import = importNetsim;
-
-export async function importProject(file: File): Promise<LabProject> {
-  // Import never trusts the file extension or wrapper metadata. Only a project
-  // that passes the same versioned schema used for IndexedDB can replace the
-  // active lab, preventing partial state from reaching the runtime.
-  const decoded = JSON.parse(await file.text()) as unknown;
-  const wrapped = decoded && typeof decoded === "object" && "project" in decoded
-    ? (decoded as { project: unknown }).project
-    : decoded;
-  return parseProject(wrapped);
 }

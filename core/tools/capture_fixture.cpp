@@ -1,61 +1,105 @@
-// Native PCAPNG conformance fixture. It exercises the same threaded Runtime as
-// the browser, writes the immutable capture projection, and leaves structural
-// and dissector validation to tshark rather than duplicating its parser.
+// Native PCAPNG conformance fixture for protocol 3. The fixture configures two
+// independent routers through the same LabRuntime facade used by WebAssembly,
+// selects a physical wire direction, and writes only captured packet bytes.
 
-#include "router/generated_runtime_protocol.hpp"
-#include "router/runtime.hpp"
+#include "router/lab_runtime.hpp"
+#include "router/generated_lab_runtime_protocol.hpp"
 
 #include <chrono>
 #include <fstream>
-#include <memory>
+#include <initializer_list>
+#include <iostream>
+#include <string>
+#include <string_view>
 #include <thread>
 
+namespace {
+
+std::string message(std::initializer_list<std::string_view> fields) {
+  // Netstring byte counts equal string_view sizes here because every fixture
+  // value is ASCII. Production JavaScript performs the corresponding UTF-8
+  // byte count for user-authored Unicode names.
+  std::string result;
+  for (const auto field : fields) {
+    result.append(std::to_string(field.size()));
+    result.push_back(':');
+    result.append(field);
+    result.push_back(',');
+  }
+  return result;
+}
+
+bool submit(router::lab::LabRuntime &runtime,
+            std::initializer_list<std::string_view> fields) {
+  const auto response = runtime.command(message(fields));
+  if (!response.starts_with("ERROR:"))
+    return true;
+  // A conformance fixture must identify the rejected public operation. This
+  // diagnostic does not expose implementation addresses or bypass the facade;
+  // it prints only the protocol operation and its ordinary error response.
+  std::cerr << "capture fixture operation '" << *fields.begin()
+            << "' failed: " << response << '\n';
+  return false;
+}
+
+} // namespace
+
 int main(int argc, char **argv) {
-  // A single explicit output path keeps the fixture deterministic for CTest
-  // and prevents it from writing outside the caller-selected build directory.
   if (argc != 2)
     return 2;
+  router::lab::LabRuntime runtime;
+  using namespace router::lab_runtime_protocol;
 
-  // Use production Runtime instead of calling packet encoders directly. This
-  // proves capture observes frames that crossed the threaded forwarding path.
-  auto runtime = std::make_unique<router::Runtime>();
-
-  // Provisioning and physical insertion are separate operations by design.
-  // Ports become operational only after both models agree and timers expire.
-  runtime->command(std::string{router::runtime_protocol::project_provisioning} +
-                   router::profile::line_card_type + "|" +
-                   router::profile::modeled_mda_type);
-  runtime->command(std::string{router::runtime_protocol::hardware_insert_card} +
-                   std::to_string(router::profile::line_card_slot) + ":" +
-                   router::profile::line_card_type);
-  runtime->command(std::string{router::runtime_protocol::hardware_insert_mda} +
-                   std::to_string(router::profile::line_card_slot) + ":" +
-                   std::to_string(router::profile::mda_slot) + ":" +
-                   router::profile::modeled_mda_type);
-  std::this_thread::sleep_for(router::profile::card_initialization +
-                              router::profile::mda_initialization +
-                              router::profile::equipment_poll_interval);
-
-  // A successful ping is the evidence that the capture contains a real packet
-  // exchange rather than an empty but structurally valid PCAPNG container.
-  const auto ping = std::string{router::runtime_protocol::host_ping} +
-                    router::profile::host_ids.front() + ":" +
-                    router::profile::host_ids.back();
-  if (runtime->command(ping).find("1 packet received") == std::string::npos) {
+  // SR-1 fixed hardware publishes its default MDAs at creation. Running port
+  // and interface intent are still explicit. Interface MAC addresses come
+  // from the hardware inventory, matching the same facade used by the UI.
+  if (!submit(runtime, {router_create, "r1", "7750-sr-1", "R1"}) ||
+      !submit(runtime, {router_create, "r2", "7750-sr-1", "R2"}) ||
+      !submit(runtime, {port_configure, "r1", "1/1/1", "1", "1500",
+                        "100000", "R1 to R2"}) ||
+      !submit(runtime, {port_configure, "r2", "1/1/1", "1", "1500",
+                        "100000", "R2 to R1"}) ||
+      !submit(runtime, {interface_configure, "r1", "to-r2", "1/1/1",
+                        "10.0.0.1/30", "1"}) ||
+      !submit(runtime, {interface_configure, "r2", "to-r1", "1/1/1",
+                        "10.0.0.2/30", "1"}) ||
+      !submit(runtime, {link_create, "r1-r2", "r1", "1/1/1", "r2",
+                        "1/1/1", "100", "1"}) ||
+      !submit(runtime, {capture_point_set, "link-direction", "r1-r2", "",
+                        "0", "1"}) ||
+      !submit(runtime, {router_ping_start, "r1", "10.0.0.2", "7"}))
     return 3;
-  }
 
-  // Capture preparation freezes a projection owned by Runtime. The returned
-  // bytes remain stable while the control and forwarding workers continue.
-  if (runtime->command(router::runtime_protocol::capture_prepare)
-          .rfind("capture ready:", 0) != 0)
+  // Ping is asynchronous. Polling observes the real forwarding worker instead
+  // of advancing a test clock or reaching directly into the destination RIB.
+  bool replied{};
+  for (std::size_t attempt = 0; attempt < 500 && !replied; ++attempt) {
+    const auto response = runtime.command(
+        message({router_ping_status, "r1", "7"}));
+    replied = response.find("reply") != std::string_view::npos;
+    if (!replied)
+      std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  }
+  if (!replied)
     return 4;
 
-  // Binary mode is required on Windows because text translation would corrupt
-  // PCAPNG block lengths and packet octets before tshark reads the fixture.
-  const auto capture = runtime->prepared_capture();
+  // Reapplying the same selected location is the public operation used to
+  // refresh its descriptive name after a device rename. It must retain the
+  // numeric interface identity and already captured records.
+  if (!submit(runtime, {capture_point_set, "link-direction", "r1-r2", "",
+                        "0", "1"}))
+    return 7;
+
+  const auto capture = runtime.prepare_capture();
+  if (capture.empty()) {
+    // The snapshot distinguishes an empty record set from a failed selected
+    // location refresh without reaching into CaptureStore internals.
+    std::cerr << "capture export returned no bytes after: "
+              << runtime.command(message({snapshot})) << '\n';
+    return 5;
+  }
   std::ofstream output(argv[1], std::ios::binary | std::ios::trunc);
   output.write(reinterpret_cast<const char *>(capture.data()),
                static_cast<std::streamsize>(capture.size()));
-  return output ? 0 : 5;
+  return output ? 0 : 6;
 }

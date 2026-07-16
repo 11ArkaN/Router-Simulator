@@ -4,12 +4,14 @@
 
 #include "network_endpoint.hpp"
 
-#include "router/routing.hpp"
+#include "router/multi_device_routing.hpp"
 
 #include <algorithm>
 
 namespace router::network_detail {
 namespace {
+
+namespace routing = router::lab::routing;
 
 constexpr packet::Mac no_mac{};
 
@@ -35,8 +37,10 @@ bool is_zero(packet::Mac value) noexcept {
 // Appends into the bounded response batch. Encoders never allocate a hidden
 // overflow vector when one received frame produces multiple replies.
 void append(EndpointFrames &result, const packet::Frame &frame) noexcept {
-  if (result.count < result.frames.size())
-    result.frames[result.count++] = frame;
+  if (result.count < result.frames.size()) {
+    packet::copy_frame(result.frames[result.count], frame);
+    ++result.count;
+  }
 }
 
 } // namespace
@@ -49,6 +53,7 @@ void EndpointStack::configure(
   address_ = configuration.endpoint_address;
   prefix_length_ = configuration.endpoint_prefix_length;
   gateway_ = configuration.endpoint_gateway;
+  mtu_ = configuration.endpoint_mtu;
   clear_neighbor();
 }
 
@@ -62,20 +67,44 @@ EndpointFrames EndpointStack::begin_echo(packet::Ipv4 destination,
   auto request =
       packet::icmp_echo(mac_, no_mac, address_, destination, false, sequence,
                         64, payload_octets, dont_fragment);
+  std::array<packet::Frame, EndpointFrames::maximum_pending_fragments> packets{};
+  std::size_t packet_count = 1U;
+  packet::copy_frame(packets[0], request);
+  const auto ip = packet::parse_ipv4(request);
+  if (!ip)
+    return result;
+  if (ip->total_length > mtu_) {
+    if (dont_fragment) {
+      result.mtu_exceeded = true;
+      return result;
+    }
+    const auto fragments = packet::fragment_ipv4(request, mtu_);
+    if (!fragments || fragments->count > packets.size()) {
+      result.mtu_exceeded = true;
+      return result;
+    }
+    packet_count = fragments->count;
+    for (std::size_t index = 0; index < packet_count; ++index)
+      packet::copy_frame(packets[index], fragments->frames[index]);
+  }
   const auto next_hop =
       to_ipv4(routing::host_next_hop({.source = to_u32(address_),
                                       .prefix_length = prefix_length_,
                                       .destination = to_u32(destination),
                                       .gateway = to_u32(gateway_)}));
   if (neighbor_address_ == next_hop && neighbor_mac_) {
-    packet::rewrite_ethernet(request, mac_, *neighbor_mac_);
-    append(result, request);
+    for (std::size_t index = 0; index < packet_count; ++index) {
+      packet::rewrite_ethernet(packets[index], mac_, *neighbor_mac_);
+      append(result, packets[index]);
+    }
     result.start_echo_clock = true;
     return result;
   }
   neighbor_address_.reset();
   neighbor_mac_.reset();
-  pending_ = request;
+  for (std::size_t index = 0; index < packet_count; ++index)
+    packet::copy_frame(pending_frames_[index], packets[index]);
+  pending_count_ = static_cast<std::uint8_t>(packet_count);
   pending_next_hop_ = next_hop;
   append(result, packet::arp_request(mac_, address_, next_hop));
   return result;
@@ -121,7 +150,8 @@ EndpointStack::reassemble(const packet::Frame &fragment,
   if (ip.more_fragments)
     return std::nullopt;
 
-  auto complete = reassembly_.frame;
+  packet::Frame complete;
+  packet::copy_frame(complete, reassembly_.frame);
   const auto total = static_cast<std::uint16_t>(
       ip.header_length + reassembly_.payload_octets);
   complete.bytes[16] = static_cast<std::uint8_t>(total >> 8);
@@ -164,12 +194,16 @@ EndpointFrames EndpointStack::receive(const packet::Frame &frame,
       append(result, packet::arp_reply(mac_, address_, arp->sender_mac,
                                        arp->sender_ip));
     }
-    if (pending_ && pending_next_hop_ == arp->sender_ip) {
-      auto pending = *pending_;
-      pending_.reset();
+    if (pending_count_ && pending_next_hop_ == arp->sender_ip) {
+      const auto count = pending_count_;
+      pending_count_ = 0;
       pending_next_hop_.reset();
-      packet::rewrite_ethernet(pending, mac_, arp->sender_mac);
-      append(result, pending);
+      for (std::size_t index = 0; index < count; ++index) {
+        packet::Frame pending;
+        packet::copy_frame(pending, pending_frames_[index]);
+        packet::rewrite_ethernet(pending, mac_, arp->sender_mac);
+        append(result, pending);
+      }
       result.start_echo_clock = true;
     }
     return result;
@@ -214,7 +248,7 @@ void EndpointStack::clear_neighbor() noexcept {
   // address or link generation and cannot be forwarded safely later.
   neighbor_address_.reset();
   neighbor_mac_.reset();
-  pending_.reset();
+  pending_count_ = 0;
   pending_next_hop_.reset();
   reassembly_ = {};
 }
@@ -228,24 +262,22 @@ void EndpointStack::restore_router_neighbor(packet::Ipv4 address,
   neighbor_mac_ = mac;
 }
 
-void EndpointStack::checkpoint(NetworkCheckpointState &state,
-                               std::uint8_t endpoint) const {
-  if (endpoint >= state.endpoints.size())
-    return;
-  auto &output = state.endpoints[endpoint];
+void EndpointStack::checkpoint(NetworkCheckpointState &state) const {
+  auto &output = state.endpoint;
   output.neighbor_valid = neighbor_address_.has_value() && neighbor_mac_.has_value();
   if (output.neighbor_valid) {
     output.neighbor_address = *neighbor_address_;
     output.neighbor_mac = *neighbor_mac_;
   }
   output.pending_next_hop_valid =
-      pending_.has_value() && pending_next_hop_.has_value();
+      pending_count_ && pending_next_hop_.has_value();
   if (output.pending_next_hop_valid) {
     output.pending_next_hop = *pending_next_hop_;
-    state.frames.push_back({.stage = NetworkFrameStage::endpoint_pending,
-                            .direction = endpoint,
-                            .next_hop = *pending_next_hop_,
-                            .frame = *pending_});
+    for (std::size_t index = 0; index < pending_count_; ++index)
+      state.frames.push_back({.stage = NetworkFrameStage::endpoint_pending,
+                              .direction = 0,
+                              .next_hop = *pending_next_hop_,
+                              .frame = pending_frames_[index]});
   }
   output.reassembly_active = reassembly_.active;
   if (reassembly_.active) {
@@ -254,36 +286,38 @@ void EndpointStack::checkpoint(NetworkCheckpointState &state,
     output.reassembly_identification = reassembly_.identification;
     output.reassembly_payload_octets = reassembly_.payload_octets;
     state.frames.push_back({.stage = NetworkFrameStage::endpoint_reassembly,
-                            .direction = endpoint,
+                            .direction = 0,
                             .frame = reassembly_.frame});
   }
 }
 
-bool EndpointStack::restore(const NetworkCheckpointState &state,
-                            std::uint8_t endpoint) noexcept {
-  if (endpoint >= state.endpoints.size())
-    return false;
-  const auto &input = state.endpoints[endpoint];
-  const NetworkStoredFrame *pending_frame{};
+bool EndpointStack::restore(const NetworkCheckpointState &state) noexcept {
+  const auto &input = state.endpoint;
+  std::array<const NetworkStoredFrame *,
+             EndpointFrames::maximum_pending_fragments> pending_frames{};
+  std::size_t pending_count{};
   const NetworkStoredFrame *reassembly_frame{};
   for (const auto &stored : state.frames) {
-    if (stored.direction != endpoint)
+    if (stored.direction != 0)
       continue;
     if (stored.stage == NetworkFrameStage::endpoint_pending) {
-      if (pending_frame)
+      if (pending_count == pending_frames.size())
         return false;
-      pending_frame = &stored;
+      pending_frames[pending_count++] = &stored;
     } else if (stored.stage == NetworkFrameStage::endpoint_reassembly) {
       if (reassembly_frame)
         return false;
       reassembly_frame = &stored;
     }
   }
-  if (input.pending_next_hop_valid != (pending_frame != nullptr) ||
+  if (input.pending_next_hop_valid != (pending_count != 0U) ||
       input.reassembly_active != (reassembly_frame != nullptr) ||
-      (pending_frame && (!pending_frame->frame.length ||
-                         pending_frame->frame.length >
-                             pending_frame->frame.bytes.size())) ||
+      std::any_of(pending_frames.begin(),
+                  pending_frames.begin() + pending_count,
+                  [](const auto *frame) {
+                    return !frame->frame.length ||
+                           frame->frame.length > frame->frame.bytes.size();
+                  }) ||
       (reassembly_frame &&
        (reassembly_frame->frame.length < 34U ||
         reassembly_frame->frame.length > reassembly_frame->frame.bytes.size() ||
@@ -298,8 +332,10 @@ bool EndpointStack::restore(const NetworkCheckpointState &state,
     neighbor_address_ = input.neighbor_address;
     neighbor_mac_ = input.neighbor_mac;
   }
-  if (pending_frame) {
-    pending_ = pending_frame->frame;
+  if (pending_count) {
+    for (std::size_t index = 0; index < pending_count; ++index)
+      pending_frames_[index] = pending_frames[index]->frame;
+    pending_count_ = static_cast<std::uint8_t>(pending_count);
     pending_next_hop_ = input.pending_next_hop;
   }
   if (reassembly_frame) {

@@ -47,6 +47,22 @@ switch ($Task) {
   "test" {
     node (Join-Path $Build "module_tests.js")
     if ($LASTEXITCODE -eq 0) { node (Join-Path $Build "core_tests.js") }
+    if ($LASTEXITCODE -eq 0) {
+      $Capture = Join-Path $Build "conformance.pcapng"
+      # The Wasm fixture exercises the production LabRuntime and shared-memory
+      # build. tshark then independently parses its Section, Interface and
+      # Enhanced Packet Blocks instead of trusting our own decoder twice.
+      Push-Location $Build
+      try { node (Join-Path $Build "capture_fixture.js") $Capture }
+      finally { Pop-Location }
+      if ($LASTEXITCODE -eq 0) {
+        $Tshark = Join-Path $env:ProgramFiles "Wireshark/tshark.exe"
+        if (-not (Test-Path $Tshark)) {
+          throw "Wireshark tshark is required for PCAPNG conformance testing."
+        }
+        & $Tshark -n -r $Capture -c 1 | Out-Null
+      }
+    }
   }
   "manual" { node (Join-Path $Build "manual_session.js") }
   "benchmark" { node (Join-Path $Build "packet_benchmark.js") }

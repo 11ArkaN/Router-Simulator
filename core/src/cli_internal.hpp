@@ -49,6 +49,13 @@ parse_interface_address(std::string_view address,
 [[nodiscard]] std::string_view unquote(std::string_view value) noexcept;
 [[nodiscard]] bool valid_cli_string(std::string_view value) noexcept;
 
+// Resolves a line against the active engine's working context without parsing
+// or mutating router configuration. The multi-router facade uses this narrow
+// helper so relative commands retain the exact same MD-CLI and classic CLI
+// path semantics as the fully tested terminal engine.
+[[nodiscard]] std::string resolve_session_input(const CliSession &session,
+                                                std::string_view input);
+
 template <std::size_t N>
 bool copy_config_text(std::array<char, N> &destination,
                       std::string_view value) {

@@ -1,123 +1,130 @@
-// Interaction tests for secondary workspaces. The suite verifies that visible
-// controls emit typed project or runtime intent instead of mutating a hidden
-// UI-only model. jsdom is sufficient because packet and hardware execution is
-// covered below the RuntimeClient boundary by native and Wasm tests.
+// Interaction tests for format 3 workspaces. Controls must emit typed project
+// or runtime intent for the selected stable router instead of mutating hidden
+// singleton state in the browser.
 
 // @vitest-environment jsdom
 
-import { createDefaultProject, type LabProject, type RunningConfig } from
-  "@router-simulator/contracts";
-import { cleanup, render, screen } from "@testing-library/react";
+import { createEmptyProjectV3, createRouterProjectV3,
+  type LabProjectV3, type RouterProjectV3 } from "@router-simulator/contracts";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CaptureWorkspace, ConfigWorkspace, DevicesWorkspace, NotesWorkspace,
   SettingsWorkspace, SnapshotWorkspace } from "./WorkspaceViews";
 
-// Vitest does not install the Jest cleanup hook automatically. Explicit
-// teardown prevents one workspace's controls from polluting later role queries.
 afterEach(cleanup);
 
+function projectWithRouter(): LabProjectV3 {
+  const project = createEmptyProjectV3();
+  return { ...project, routers: [createRouterProjectV3(
+    "r1", "7750-sr-1", "R1")] };
+}
+
 function ConfigHarness({ initial, observed }: {
-  initial: RunningConfig;
-  observed(config: RunningConfig): void;
+  initial: RouterProjectV3;
+  observed(router: RouterProjectV3): void;
 }) {
-  // The production component is controlled by App. Keeping the same ownership
-  // pattern here proves that a sequence of edits is based on the latest draft
-  // rather than a stale value captured by the first render.
-  const [config, setConfig] = useState(initial);
-  return <ConfigWorkspace config={config} onChange={(next) => {
-    setConfig(next);
+  // Production App owns the draft. Mirroring that controlled flow catches
+  // callbacks that accidentally base a second edit on an obsolete render.
+  const [router, setRouter] = useState(initial);
+  return <ConfigWorkspace router={router} onChange={(next) => {
+    setRouter(next);
     observed(next);
   }} />;
 }
 
-function SettingsHarness({ initial, observed }: {
-  initial: LabProject;
-  observed(project: LabProject): void;
-}) {
-  const [project, setProject] = useState(initial);
-  return <SettingsWorkspace project={project} onChange={(next) => {
-    setProject(next);
-    observed(next);
-  }} onResetLayout={vi.fn()} />;
-}
-
-describe("workspace controls", () => {
-  it("opens real inventory targets and the shared console", async () => {
+describe("multi-router workspace controls", () => {
+  it("addresses the selected stable router for inventory and console actions", async () => {
     const user = userEvent.setup();
     const inspect = vi.fn();
     const consoleOpen = vi.fn();
-    render(<DevicesWorkspace project={createDefaultProject()} onInspect={inspect}
+    render(<DevicesWorkspace project={projectWithRouter()} onInspect={inspect}
       onConsole={consoleOpen} />);
 
-    await user.click(screen.getAllByRole("listitem")[0].querySelector("button")!);
-    await user.click(screen.getByRole("button", { name: "Open console" }));
-
+    const router = screen.getByRole("listitem").querySelector("button")!;
+    await user.click(router);
+    await user.dblClick(router);
     expect(inspect).toHaveBeenCalledWith("r1");
-    expect(consoleOpen).toHaveBeenCalledOnce();
+    expect(consoleOpen).toHaveBeenCalledWith("r1");
   });
 
-  it("routes capture actions to their runtime callbacks", async () => {
+  it("keeps the device DOM bounded while every router remains reachable", () => {
+    const project = createEmptyProjectV3();
+    project.routers = Array.from({ length: 16 }, (_, index) =>
+      createRouterProjectV3(`r${index + 1}`, "7750-sr-1", `R${index + 1}`));
+    const { container } = render(<DevicesWorkspace project={project}
+      onInspect={vi.fn()} onConsole={vi.fn()} />);
+    const list = screen.getByRole("list");
+
+    // jsdom has no layout engine, so the component uses its documented
+    // one-row minimum viewport. Overscan still proves DOM size is independent
+    // from the full sixteen-router collection.
+    expect(screen.getAllByRole("listitem").length).toBeLessThan(16);
+    Object.defineProperty(list, "scrollTop", { configurable: true, value: 15 * 63 });
+    fireEvent.scroll(list);
+    expect(container.textContent).toContain("R16");
+    expect(screen.getAllByRole("listitem").length).toBeLessThan(16);
+  });
+
+  it("routes capture controls to runtime callbacks", async () => {
     const user = userEvent.setup();
     const toggle = vi.fn();
     const exportCapture = vi.fn();
     const checkpoint = vi.fn();
-    render(<CaptureWorkspace active={false} onToggle={toggle}
+    const selection = vi.fn();
+    render(<CaptureWorkspace project={projectWithRouter()} selections={[]}
+      onSelection={selection} onToggle={toggle}
       onExport={exportCapture} onCheckpoint={checkpoint} />);
 
     await user.click(screen.getByRole("button", { name: "Start capture" }));
     await user.click(screen.getByRole("button", { name: "Export PCAPNG" }));
     await user.click(screen.getByRole("button", { name: "Export checkpoint" }));
-
+    await user.click(screen.getByRole("button", { name: /CPM punt/ }));
     expect(toggle).toHaveBeenCalledOnce();
     expect(exportCapture).toHaveBeenCalledOnce();
     expect(checkpoint).toHaveBeenCalledOnce();
+    expect(selection).toHaveBeenCalledWith("cpm-punt", "r1", "", 0, true);
   });
 
   it("creates an empty route draft without inventing network values", async () => {
     const user = userEvent.setup();
     const observed = vi.fn();
-    const initial = createDefaultProject().runningConfig;
-    render(<ConfigHarness initial={initial} observed={observed} />);
+    render(<ConfigHarness initial={projectWithRouter().routers[0]}
+      observed={observed} />);
 
     await user.click(screen.getByRole("button", { name: "Add route" }));
-
-    const latest = observed.mock.calls.at(-1)?.[0] as RunningConfig;
-    expect(latest.staticRoutes.at(-1)).toEqual({ prefix: "", nextHop: "" });
-    expect(screen.getAllByLabelText("Route prefix")).toHaveLength(1);
+    expect(observed).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+    const latest = observed.mock.calls.at(-1)?.[0] as RouterProjectV3;
+    expect(latest.running.staticRoutes.at(-1)).toEqual({ prefix: "", nextHop: "" });
   });
 
-  it("keeps notes and physical delay edits in portable project data", async () => {
+  it("keeps notes and project settings in format 3 intent", async () => {
     const user = userEvent.setup();
     const notes = vi.fn();
-    const observed = vi.fn();
-    const project = createDefaultProject();
+    const project = projectWithRouter();
     const { unmount } = render(<NotesWorkspace value="" onChange={notes} />);
-
     await user.type(screen.getByPlaceholderText(
-      "Document addressing, test intent and expected results."), "ARP check");
-    expect(notes).toHaveBeenLastCalledWith("k");
+      "Document addressing, test intent and expected results."), "ARP");
+    expect(notes).toHaveBeenLastCalledWith("P");
     unmount();
 
-    render(<SettingsHarness initial={project} observed={observed} />);
-    const delay = screen.getAllByRole("spinbutton")[0];
-    await user.clear(delay);
-    await user.type(delay, "250");
-    const latest = observed.mock.calls.at(-1)?.[0] as LabProject;
-    expect(latest.links[0].propagationDelayNs).toBe(250);
+    const changed = vi.fn();
+    render(<SettingsWorkspace project={project} onChange={changed}
+      onResetLayout={vi.fn()} />);
+    await user.clear(screen.getByDisplayValue(project.name));
+    await user.type(screen.getByRole("textbox"), "Backbone");
+    expect(changed).toHaveBeenCalled();
   });
 
-  it("opens checkpoint import through the hidden binary input", async () => {
+  it("opens checkpoint import through the owned binary input", async () => {
     const user = userEvent.setup();
     const input = createRef<HTMLInputElement>();
-    const exportCheckpoint = vi.fn();
-    const importCheckpoint = vi.fn();
-    render(<SnapshotWorkspace checkpointInput={input} onExport={exportCheckpoint}
-      onImport={importCheckpoint} />);
-
-    const inputClick = vi.spyOn(input.current!, "click");
+    render(<SnapshotWorkspace checkpointInput={input} onExport={vi.fn()}
+      onImport={vi.fn()} />);
+    const click = vi.spyOn(input.current!, "click");
     await user.click(screen.getByRole("button", { name: "Import checkpoint" }));
-    expect(inputClick).toHaveBeenCalledOnce();
+    expect(click).toHaveBeenCalledOnce();
   });
 });

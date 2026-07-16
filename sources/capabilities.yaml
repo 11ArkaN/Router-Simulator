@@ -1,6 +1,18 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  hardware.release_catalog:
+    status: implemented
+    source_ids: [nokia.sros.26_7.srsim.supported_hardware]
+  runtime.multi_device_fabric:
+    status: implemented
+    source_ids: [ieee.802_3.ethernet_frame_timing]
+  runtime.dynamic_shards:
+    status: implemented
+    source_ids: [emscripten.pthreads.shared_memory]
+  runtime.sixteen_router_scale:
+    status: implemented
+    source_ids: [emscripten.pthreads.shared_memory, ieee.802_3.ethernet_frame_timing]
   hardware.card_iom4_e:
     status: implemented
     source_ids: [nokia.sros.26_7.sr7.supported_hardware, nokia.sros.26_7.physical_port.provisioning]
@@ -41,7 +53,7 @@ features:
     status: partially-implemented
     source_ids: [nokia.sros.26_7.show.system_information, nokia.sros.26_7.show.system_alarms, nokia.sros.26_7.facility_alarms, nokia.sros.26_7.hardware_alarm_events, nokia.sros.26_7.show.card, nokia.sros.26_7.show.mda, nokia.sros.26_7.show.port, nokia.sros.26_7.show.router_interface, nokia.sros.26_7.show.route_table, nokia.sros.26_7.show.fib, nokia.sros.26_7.show.arp]
   capture.pcapng:
-    status: implemented
+    status: partially-implemented
     source_ids: [ietf.pcapng.draft_ietf_opsawg_05, iana.pcap.linktype_ethernet]
   persistence.project:
     status: implemented
@@ -49,6 +61,9 @@ features:
   persistence.checkpoint:
     status: implemented
     source_ids: [whatwg.storage.opfs, emscripten.pthreads.shared_memory]
+  persistence.terminal_transcript:
+    status: implemented
+    source_ids: [whatwg.storage.opfs]
   runtime.shared_telemetry:
     status: implemented
     source_ids: [emscripten.pthreads.shared_memory]

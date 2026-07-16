@@ -4,6 +4,7 @@ project(router_simulator_core LANGUAGES CXX)
 # The active profile owns the fixed Wasm memory budget. Keeping the generated
 # value in CMake prevents the linker and runtime model from drifting apart.
 include(${CMAKE_CURRENT_SOURCE_DIR}/generated-profile.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/generated-device-catalog.cmake)
 
 option(ROUTER_BUILD_TESTS "Build core conformance tests" ON)
 option(ROUTER_BUILD_MANUAL "Build the manual runtime session" ON)
@@ -42,35 +43,39 @@ target_link_libraries(router_primitives PUBLIC router_build_options)
 add_library(router_device STATIC
   src/device_routing.cpp
   src/hardware.cpp
+  src/lab_registry.cpp
+  src/multi_device_routing.cpp
   src/routing.cpp
+  src/router_hardware_inventory.cpp
 )
 target_link_libraries(router_device PUBLIC router_primitives router_build_options)
 
 add_library(router_network STATIC
-  src/network.cpp
-  src/network_adjacency.cpp
+  src/capture_store.cpp
+  src/multi_device_fabric.cpp
+  src/network_plane.cpp
   src/network_endpoint.cpp
-  src/network_link_fabric.cpp
+  src/router_forwarder.cpp
 )
 target_link_libraries(router_network PUBLIC router_device router_primitives router_build_options)
 
 add_library(router_management STATIC
-  src/capture_store.cpp
-  src/checkpoint.cpp
   src/cli.cpp
   src/cli_classic.cpp
   src/cli_md.cpp
   src/cli_parser.cpp
-  src/project_configuration.cpp
+  src/session_workflows.cpp
 )
 target_link_libraries(router_management PUBLIC
   router_network router_device router_primitives router_build_options)
 
 add_library(router_runtime STATIC
-  src/runtime.cpp
-  src/runtime_checkpoint.cpp
-  src/runtime_project.cpp
-  src/runtime_projection.cpp
+  src/control_projection_worker.cpp
+  src/lab_runtime.cpp
+  src/lab_checkpoint.cpp
+  src/network_plane_worker.cpp
+  src/runtime_memory_budget.cpp
+  src/runtime_supervisor.cpp
 )
 target_link_libraries(router_runtime PUBLIC
   router_management router_network router_device router_primitives router_build_options)
@@ -111,12 +116,13 @@ if(EMSCRIPTEN)
   # consumer, including the browser runtime, use the same production code.
   target_compile_options(router_build_options INTERFACE -pthread -O3)
   # Source: Emscripten pthreads documentation. The JavaScript expression is
-  # evaluated during module startup and pre-creates clamp(hardwareConcurrency
-  # minus one, 2, 4) workers. Two become control and forwarding owners; spare
-  # workers remain available for later profile shards without blocking spawn.
+  # evaluated before C++ startup and reserves exactly the pthread count needed
+  # by the generated host-CPU shard policy. The browser Worker itself owns the
+  # primary control shard and is therefore not part of this pool.
   set(ROUTER_PTHREAD_POOL_OPTION
-      "-sPTHREAD_POOL_SIZE=Math.min(${ROUTER_PTHREAD_POOL_MAX},Math.max(${ROUTER_PTHREAD_POOL_MIN},navigator.hardwareConcurrency-1))")
+      "-sPTHREAD_POOL_SIZE=(navigator.hardwareConcurrency<=${ROUTER_LOGICAL_CPU_LOW_MAX}?${ROUTER_PTHREAD_POOL_LOW}:(navigator.hardwareConcurrency<=${ROUTER_LOGICAL_CPU_MEDIUM_MAX}?${ROUTER_PTHREAD_POOL_MEDIUM}:${ROUTER_PTHREAD_POOL_HIGH}))")
   set(ROUTER_MEMORY_OPTION "-sINITIAL_MEMORY=${ROUTER_WASM_INITIAL_MEMORY}")
+  set(ROUTER_STACK_OPTION "-sSTACK_SIZE=${ROUTER_WASM_STACK_BYTES}")
 endif()
 
 if(ROUTER_BUILD_BENCHMARKS)
@@ -125,7 +131,8 @@ if(ROUTER_BUILD_BENCHMARKS)
   if(EMSCRIPTEN)
     target_compile_options(packet_benchmark PRIVATE -O3 -pthread)
     target_link_options(packet_benchmark PRIVATE -O3 -pthread
-      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}")
+      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}" "${ROUTER_STACK_OPTION}"
+      "-sEXIT_RUNTIME=1")
     set_target_properties(packet_benchmark PROPERTIES SUFFIX ".js")
   endif()
   add_executable(structure_benchmark tools/structure_benchmark.cpp)
@@ -133,8 +140,8 @@ if(ROUTER_BUILD_BENCHMARKS)
   if(EMSCRIPTEN)
     target_compile_options(structure_benchmark PRIVATE -O3 -pthread)
     target_link_options(structure_benchmark PRIVATE -O3 -pthread
-      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}"
-      "-sALLOW_MEMORY_GROWTH=0")
+      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}" "${ROUTER_STACK_OPTION}"
+      "-sALLOW_MEMORY_GROWTH=0" "-sEXIT_RUNTIME=1")
     set_target_properties(structure_benchmark PROPERTIES SUFFIX ".js")
   endif()
   add_executable(runtime_benchmark tools/runtime_benchmark.cpp)
@@ -142,8 +149,9 @@ if(ROUTER_BUILD_BENCHMARKS)
   if(EMSCRIPTEN)
     target_compile_options(runtime_benchmark PRIVATE -O3 -pthread)
     target_link_options(runtime_benchmark PRIVATE -O3 -pthread
-      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}"
-      "-sALLOW_MEMORY_GROWTH=0")
+      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}" "${ROUTER_STACK_OPTION}"
+      "-sALLOW_MEMORY_GROWTH=0" "-sNO_DISABLE_EXCEPTION_CATCHING"
+      "-sEXIT_RUNTIME=1")
     set_target_properties(runtime_benchmark PROPERTIES SUFFIX ".js")
   endif()
 endif()
@@ -154,7 +162,8 @@ if(ROUTER_BUILD_MANUAL)
   if(EMSCRIPTEN)
     target_compile_options(manual_session PRIVATE -pthread)
     target_link_options(manual_session PRIVATE -pthread
-      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}")
+      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}" "${ROUTER_STACK_OPTION}"
+      "-sEXIT_RUNTIME=1")
     set_target_properties(manual_session PROPERTIES SUFFIX ".js")
   endif()
 endif()
@@ -168,12 +177,13 @@ if(EMSCRIPTEN)
     -O3
     "${ROUTER_PTHREAD_POOL_OPTION}"
     "${ROUTER_MEMORY_OPTION}"
+    "${ROUTER_STACK_OPTION}"
     "-sALLOW_MEMORY_GROWTH=0"
     "-sMODULARIZE=1"
     "-sEXPORT_ES6=1"
     "-sEXPORT_NAME=createRouterRuntime"
     "-sENVIRONMENT=worker"
-    "-sEXPORTED_FUNCTIONS=['_malloc','_free','_rs_create','_rs_command','_rs_capture_prepare','_rs_capture_data','_rs_capture_size','_rs_shutdown','_runtime_initialize','_runtime_capabilities','_lab_open','_lab_close','_lab_submit_command','_cli_open_session','_cli_push_input','_cli_read_output','_telemetry_get_page','_telemetry_get_page_size','_telemetry_get_layout','_capture_start','_capture_stop','_capture_export_pcapng','_checkpoint_export','_checkpoint_export_size','_checkpoint_import','_project_import']"
+    "-sEXPORTED_FUNCTIONS=['_malloc','_free','_runtime_initialize','_runtime_capabilities','_lab_close','_lab_submit_command','_telemetry_get_page','_telemetry_get_page_size','_telemetry_publish','_telemetry_get_layout','_capture_export_pcapng','_capture_export_size','_checkpoint_export','_checkpoint_export_size','_checkpoint_import']"
     # HEAPU8 is an explicit Emscripten module API dependency. Newer optimized
     # builds keep the internal view lexical unless it is exported, so relying
     # on an accidental Module property makes browser startup version-sensitive.
@@ -186,17 +196,35 @@ if(ROUTER_BUILD_TESTS)
   enable_testing()
   add_executable(core_tests
     src/wasm_api.cpp
+    tests/core_test_main.cpp
     tests/cli_test.cpp
+    tests/control_projection_worker_test.cpp
+    tests/lab_runtime_test.cpp
     tests/packet_test.cpp
-    tests/routing_test.cpp
-    tests/runtime_test.cpp
+    tests/runtime_supervisor_test.cpp
+    tests/network_plane_worker_test.cpp
   )
   target_link_libraries(core_tests PRIVATE router_core)
   if(EMSCRIPTEN)
     target_compile_options(core_tests PRIVATE -pthread)
+    # Checkpoint integration deliberately keeps the source and restored
+    # LabRuntime alive together inside one Node Wasm instance. Production swaps
+    # two browser Workers, each with its own 256 MiB memory, so the test target
+    # needs two production budgets without changing the simulator contract.
+    set(ROUTER_TEST_MEMORY_OPTION "-sINITIAL_MEMORY=536870912")
+    # The checkpoint replacement test intentionally overlaps two complete
+    # high-CPU runtimes. Each runtime owns five pthreads in addition to its
+    # calling Worker, so the test pool must contain ten actual workers. Using
+    # the production expression here makes Emscripten recycle a terminated
+    # owner and print late-command diagnostics after otherwise passing tests.
+    set(ROUTER_TEST_PTHREAD_POOL_OPTION "-sPTHREAD_POOL_SIZE=10")
     target_link_options(core_tests PRIVATE -pthread
-      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}"
-      "-sNO_DISABLE_EXCEPTION_CATCHING")
+      "${ROUTER_TEST_PTHREAD_POOL_OPTION}" "${ROUTER_TEST_MEMORY_OPTION}" "${ROUTER_STACK_OPTION}"
+      "-sNO_DISABLE_EXCEPTION_CATCHING"
+      # Test executables are short-lived Node programs. Explicit runtime exit
+      # joins the pre-created pthread pool after main returns; without it Node
+      # keeps idle Worker objects alive and a passing suite appears to hang.
+      "-sEXIT_RUNTIME=1")
     set_target_properties(core_tests PROPERTIES SUFFIX ".js")
   endif()
   add_test(NAME core_tests COMMAND core_tests)
@@ -205,27 +233,45 @@ if(ROUTER_BUILD_TESTS)
   # grows an orchestration dependency fails here even if the integration target
   # would otherwise provide the missing symbol transitively.
   add_executable(module_tests
-    tests/checkpoint_test.cpp
+    tests/capture_store_test.cpp
     tests/hardware_test.cpp
+    tests/lab_registry_test.cpp
+    tests/multi_device_fabric_test.cpp
+    tests/multi_device_routing_test.cpp
     tests/module_test_main.cpp
-    tests/network_test.cpp
-    tests/project_configuration_test.cpp
+    tests/network_plane_test.cpp
+    tests/routing_test.cpp
+    tests/router_hardware_inventory_test.cpp
+    tests/shard_policy_test.cpp
+    tests/router_forwarder_test.cpp
+    tests/session_workflows_test.cpp
   )
   target_link_libraries(module_tests PRIVATE router_management)
   if(EMSCRIPTEN)
     target_compile_options(module_tests PRIVATE -pthread)
     target_link_options(module_tests PRIVATE -pthread
-      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}"
+      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}" "${ROUTER_STACK_OPTION}"
       # Module suites deliberately throw on a failed invariant so the runner
       # can print the violated contract. Without Wasm exception catching the
       # first failure becomes an opaque __cxa_throw assertion instead.
-      "-sNO_DISABLE_EXCEPTION_CATCHING")
+      "-sNO_DISABLE_EXCEPTION_CATCHING"
+      "-sEXIT_RUNTIME=1")
     set_target_properties(module_tests PROPERTIES SUFFIX ".js")
   endif()
   add_test(NAME module_tests COMMAND module_tests)
-  if(NOT EMSCRIPTEN)
-    add_executable(capture_fixture tools/capture_fixture.cpp)
-    target_link_libraries(capture_fixture PRIVATE router_core)
+  add_executable(capture_fixture tools/capture_fixture.cpp)
+  target_link_libraries(capture_fixture PRIVATE router_core)
+  if(EMSCRIPTEN)
+    target_compile_options(capture_fixture PRIVATE -pthread)
+    target_link_options(capture_fixture PRIVATE -pthread
+      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}" "${ROUTER_STACK_OPTION}"
+      # NODERAWFS maps the process working directory directly, allowing the
+      # same PCAP fixture writer to produce a file for the native tshark binary.
+      # Source: https://emscripten.org/docs/tools_reference/settings_reference.html
+      # setting NODERAWFS.
+      "-sNODERAWFS=1" "-sNO_DISABLE_EXCEPTION_CATCHING" "-sEXIT_RUNTIME=1")
+    set_target_properties(capture_fixture PROPERTIES SUFFIX ".js")
+  else()
     set(CAPTURE_FIXTURE "${CMAKE_CURRENT_BINARY_DIR}/conformance.pcapng")
     add_test(NAME capture_fixture COMMAND capture_fixture "${CAPTURE_FIXTURE}")
     # Wireshark's Windows installer does not add its directory to PATH by

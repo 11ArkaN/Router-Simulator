@@ -52,9 +52,11 @@ literals:
   enable: "Set the administrative state to enabled"
   ethernet: "Configure Ethernet parameters"
   exclusive: "Use exclusive candidate configuration mode"
+  private: "Enter private configuration mode"
+  read-only: "Enter read-only configuration mode"
   exit: "Return to a previous or parent context"
   fib: "Display forwarding information base entries"
-  global: "Display help for global commands"
+  global: "Enter global configuration mode"
   globals: "Display help for global commands"
   help: "Display help for the classic CLI"
   information: "Display system information"
@@ -156,10 +158,34 @@ commands:
     engines: [md]
     source_id: nokia.sros.26_7.md_cli.configuration_workflow
     tokens: [configure, exclusive]
+  - id: md_configure_global
+    engines: [md]
+    source_id: nokia.sros.26_7.md_cli.configuration_workflow
+    tokens: [configure, global]
+  - id: md_configure_private
+    engines: [md]
+    source_id: nokia.sros.26_7.md_cli.configuration_workflow
+    tokens: [configure, private]
+  - id: md_configure_read_only
+    engines: [md]
+    source_id: nokia.sros.26_7.md_cli.configuration_workflow
+    tokens: [configure, read-only]
   - id: md_edit_config_exclusive
     engines: [md]
     source_id: nokia.sros.26_7.md_cli.configuration_workflow
     tokens: [edit-config, exclusive]
+  - id: md_edit_config_global
+    engines: [md]
+    source_id: nokia.sros.26_7.md_cli.configuration_workflow
+    tokens: [edit-config, global]
+  - id: md_edit_config_private
+    engines: [md]
+    source_id: nokia.sros.26_7.md_cli.configuration_workflow
+    tokens: [edit-config, private]
+  - id: md_edit_config_read_only
+    engines: [md]
+    source_id: nokia.sros.26_7.md_cli.configuration_workflow
+    tokens: [edit-config, read-only]
   - id: show_system_information
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.system_information

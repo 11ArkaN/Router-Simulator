@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "router/cli_session.hpp"
 #include "router/generated_profile.hpp"
 
 #include <algorithm>
@@ -15,18 +16,6 @@
 
 namespace router {
 
-enum class CliEngine : std::uint8_t { md, classic };
-enum class CliCompletionTrigger : std::uint8_t { tab, question, space };
-
-// MD-CLI starts in operational mode. Configuration requires an explicit
-// workflow choice, and the marker in the prompt depends on that choice.
-// The first milestone implements the exclusive variants because they provide
-// one unambiguous owner for the candidate datastore.
-enum class MdCliWorkflow : std::uint8_t {
-  operational,
-  implicit_exclusive,
-  explicit_exclusive
-};
 enum class EquipmentLifecycle : std::uint8_t {
   absent,
   waiting_for_provisioning,
@@ -359,34 +348,6 @@ struct DeviceState {
     }
     return true;
   }
-};
-
-struct CliSession {
-  // MD and classic are engines in one router terminal session. Switching does
-  // not create another device or a global application mode.
-  CliEngine engine{CliEngine::md};
-  MdCliWorkflow md_workflow{MdCliWorkflow::operational};
-  // Each engine retains its own present working context across // switches.
-  // Paths contain canonical space-separated CLI tokens without a leading '/'.
-  // Fixed storage keeps checkpoint and cross-shard ownership bounded.
-  std::array<char, 160> md_path{};
-  std::array<char, 160> classic_path{};
-  // exit returns to the working context that preceded the latest navigation,
-  // while back walks to the structural parent. Keeping both values prevents
-  // an absolute multi-level jump from making these commands indistinguishable.
-  std::array<char, 160> md_previous_path{};
-  std::array<char, 160> classic_previous_path{};
-  // Exclusive mode asks before discarding dirty candidate data. Keeping the
-  // pending question in the router session makes the following y/n byte a real
-  // CLI interaction instead of a browser-side guess.
-  bool md_exit_confirmation{};
-  bool candidate_dirty{};
-  // Classic writes may advance running while an MD candidate is dirty. The
-  // flag rejects a stale commit rather than silently rebasing or discarding it.
-  bool candidate_outdated{};
-  // Classic changes take effect immediately but remain unsaved. The real
-  // prompt exposes that persistent-configuration state with a leading '*'.
-  bool classic_unsaved{};
 };
 
 } // namespace router
