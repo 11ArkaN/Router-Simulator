@@ -430,9 +430,14 @@ bool encode_section(std::span<std::uint8_t> output, std::size_t &offset,
       required += encoded_owner_octets(records[index], question) + 10U +
                   records[index].rdata.size();
     }
+    // Integer promotion turns uint16_t subtraction into signed int on GCC.
+    // Convert the non-negative remaining count to the container size type so
+    // the limit check is warning-free without weakening -Werror or changing
+    // the DNS header's normative 16-bit section-count bound.
+    const auto remaining_count = static_cast<std::size_t>(
+        std::numeric_limits<std::uint16_t>::max() - encoded_count);
     if (required > output.size() - offset ||
-        end - begin >
-            std::numeric_limits<std::uint16_t>::max() - encoded_count) {
+        end - begin > remaining_count) {
       truncated = true;
       return true;
     }

@@ -30,6 +30,22 @@ function Convert-ToMsysPath([string]$Path) {
   return "/$drive/" + $resolved.Substring(3).Replace("\", "/")
 }
 
+function Get-Sha256Hex([string]$Path) {
+  # GitHub's Windows Server image can launch Windows PowerShell without the
+  # Microsoft.PowerShell.Utility module that owns Get-FileHash. Computing the
+  # digest through the base class library keeps archive verification available
+  # in both Windows PowerShell 5.1 and PowerShell 7 without profile assumptions.
+  $stream = [System.IO.File]::OpenRead($Path)
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $digest = $sha256.ComputeHash($stream)
+    return -join ($digest | ForEach-Object { $_.ToString("x2") })
+  } finally {
+    $sha256.Dispose()
+    $stream.Dispose()
+  }
+}
+
 $OpenSslReady = (Test-Path (Join-Path $Install "lib/libcrypto.a")) -and
                 (Test-Path (Join-Path $Install "lib/libssl.a"))
 $Http2Ready = Test-Path (Join-Path $Nghttp2Install "lib/libnghttp2.a")
@@ -68,7 +84,7 @@ if (-not $OpenSslReady) {
   if (-not (Test-Path $Archive)) {
     Invoke-WebRequest -UseBasicParsing -Uri $Url -OutFile $Archive
   }
-  $ActualSha256 = (Get-FileHash -Algorithm SHA256 $Archive).Hash.ToLowerInvariant()
+  $ActualSha256 = Get-Sha256Hex $Archive
   if ($ActualSha256 -ne $ExpectedSha256) {
     throw "OpenSSL archive SHA-256 mismatch: $ActualSha256"
   }
@@ -125,7 +141,7 @@ function Get-VerifiedRelease(
   if (-not (Test-Path $archive)) {
     Invoke-WebRequest -UseBasicParsing -Uri $ReleaseUrl -OutFile $archive
   }
-  $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+  $actual = Get-Sha256Hex $archive
   if ($actual -ne $ReleaseSha256) {
     throw "$Name archive SHA-256 mismatch: $actual"
   }
