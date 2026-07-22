@@ -16,13 +16,22 @@ const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const result = spawnSync(pnpm, ["licenses", "list", "--prod", "--json"], {
   cwd: root,
   encoding: "utf8",
-  // Windows resolves pnpm through pnpm.cmd. Node needs the command shell for
-  // that shim, while Unix systems execute the pnpm binary directly.
-  shell: process.platform === "win32",
+  // pnpm can be a cmd shim on Windows or a build-platform-managed shell shim
+  // on hosted Linux environments such as Vercel. Asking the platform shell to
+  // resolve this fixed command preserves the same package-manager operation on
+  // both hosts without depending on an implementation-specific shim path.
+  shell: true,
+  // License reports contain package paths and may grow with the production
+  // graph. An explicit bound avoids Node-version-dependent spawnSync defaults;
+  // the parsed records remain independently bounded by the installed graph.
+  maxBuffer: 16 * 1024 * 1024,
 });
 
 if (result.status !== 0) {
-  const detail = result.stderr?.trim() || result.error?.message || "unknown process error";
+  // A terminating signal can leave both stderr and result.error empty. Include
+  // status and signal so a hosted build never hides the actionable failure.
+  const detail = result.stderr?.trim() || result.error?.message ||
+    `status=${String(result.status)} signal=${String(result.signal)}`;
   throw new Error(`Unable to inspect production licenses: ${detail}`);
 }
 
