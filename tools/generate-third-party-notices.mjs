@@ -6,12 +6,13 @@
  * static notice document that travels with every production build.
  */
 
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const checkOnly = process.argv.includes("--check");
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
 const licenseArguments = ["licenses", "list", "--prod", "--json"];
 const lifecycleEntrypoint = process.env.npm_execpath;
@@ -100,22 +101,32 @@ const output = [
   "",
 ].join("\n");
 
-const distributionDirectory = resolve(root, "apps/web/dist");
-writeFileSync(resolve(distributionDirectory, "THIRD_PARTY_NOTICES.txt"), output, "utf8");
+const publicDirectory = resolve(root, "apps/web/public");
+const artifacts = new Map([
+  ["THIRD_PARTY_NOTICES.txt", output],
+  // A static deployment distributes the project's compiled object form. Keep
+  // the project license, required NOTICE attribution and trademark disclaimer
+  // beside the bundle instead of relying on access to the source repository.
+  ["LICENSE.txt", readFileSync(resolve(root, "LICENSE"), "utf8")],
+  ["NOTICE.txt", readFileSync(resolve(root, "NOTICE"), "utf8")],
+  ["TRADEMARKS.txt", readFileSync(resolve(root, "TRADEMARKS.md"), "utf8")],
+]);
 
-// A static deployment distributes the project's compiled object form. Keep the
-// project license, required NOTICE attribution and trademark disclaimer beside
-// the bundle instead of relying on access to the source repository.
-for (const [source, destination] of [
-  ["LICENSE", "LICENSE.txt"],
-  ["NOTICE", "NOTICE.txt"],
-  ["TRADEMARKS.md", "TRADEMARKS.txt"],
-]) {
-  writeFileSync(
-    resolve(distributionDirectory, destination),
-    readFileSync(resolve(root, source), "utf8"),
-    "utf8",
-  );
+for (const [destination, expected] of artifacts) {
+  const destinationPath = resolve(publicDirectory, destination);
+  if (checkOnly) {
+    // Hosted builders are allowed to consume only the committed result. pnpm's
+    // license command depends on installation-store index files that Vercel may
+    // legally omit from its cache even though every package required by Vite is
+    // present. Local verification still recomputes the complete dependency
+    // closure and rejects a stale notice before a commit can be accepted.
+    if (!existsSync(destinationPath) || readFileSync(destinationPath, "utf8") !== expected) {
+      throw new Error(`${destination} is stale; run pnpm notices:generate`);
+    }
+    continue;
+  }
+  writeFileSync(destinationPath, expected, "utf8");
 }
 
-console.log(`Generated notices for ${dependencies.length} production dependency installations.`);
+const operation = checkOnly ? "Verified" : "Generated";
+console.log(`${operation} notices for ${dependencies.length} production dependency installations.`);

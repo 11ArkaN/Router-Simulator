@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "preview": "vite preview",
-    "build": "tsc -b && vite build && node ../../tools/generate-third-party-notices.mjs",
+    "build": "tsc -b && vite build",
     "test": "vitest run --passWithNoTests",
     "typecheck": "tsc -b --pretty false"
   },
