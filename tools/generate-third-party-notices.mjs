@@ -13,14 +13,23 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
-const result = spawnSync(pnpm, ["licenses", "list", "--prod", "--json"], {
+const licenseArguments = ["licenses", "list", "--prod", "--json"];
+const lifecycleEntrypoint = process.env.npm_execpath;
+// A pnpm lifecycle exposes the exact JavaScript entrypoint that launched this
+// build. Executing it with the current Node binary avoids PATH and shell-shim
+// differences on hosted builders while guaranteeing the lockfile-selected
+// package-manager version performs the license inspection.
+const command = lifecycleEntrypoint ? process.execPath : pnpm;
+const commandArguments = lifecycleEntrypoint
+  ? [lifecycleEntrypoint, ...licenseArguments]
+  : licenseArguments;
+const result = spawnSync(command, commandArguments, {
   cwd: root,
   encoding: "utf8",
-  // pnpm can be a cmd shim on Windows or a build-platform-managed shell shim
-  // on hosted Linux environments such as Vercel. Asking the platform shell to
-  // resolve this fixed command preserves the same package-manager operation on
-  // both hosts without depending on an implementation-specific shim path.
-  shell: true,
+  // Direct development invocations do not have lifecycle metadata. Only that
+  // fallback needs a shell on Windows to resolve pnpm.cmd; Unix pnpm binaries
+  // remain directly executable. Lifecycle builds never invoke a shell.
+  shell: !lifecycleEntrypoint && process.platform === "win32",
   // License reports contain package paths and may grow with the production
   // graph. An explicit bound avoids Node-version-dependent spawnSync defaults;
   // the parsed records remain independently bounded by the installed graph.
@@ -30,7 +39,8 @@ const result = spawnSync(pnpm, ["licenses", "list", "--prod", "--json"], {
 if (result.status !== 0) {
   // A terminating signal can leave both stderr and result.error empty. Include
   // status and signal so a hosted build never hides the actionable failure.
-  const detail = result.stderr?.trim() || result.error?.message ||
+  const detail = result.stderr?.trim() || result.stdout?.trim() ||
+    result.error?.message ||
     `status=${String(result.status)} signal=${String(result.signal)}`;
   throw new Error(`Unable to inspect production licenses: ${detail}`);
 }
