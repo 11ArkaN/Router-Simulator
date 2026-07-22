@@ -1,6 +1,9 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  runtime.cross_origin_isolated_hosting:
+    status: implemented
+    source_ids: [w3c.webappsec.coop_coep_csp, vercel.static.headers_and_rewrites]
   dependencies.http2_quic_http3:
     status: implemented
     source_ids: [nghttp2.http2.1_69_0, ngtcp2.quic.1_24_0, nghttp3.http3.1_17_0, openssl.crypto.3_5_7]

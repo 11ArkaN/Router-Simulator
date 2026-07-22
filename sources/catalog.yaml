@@ -851,10 +851,24 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [apps/web/vite.config.ts, apps/web/src/runtime/runtime.worker.ts]
-    tests: [apps/web/src/runtime/multi-router-client.ts]
+    implementation: [apps/web/vite.config.ts, apps/web/vercel.json, apps/web/src/runtime/runtime.worker.ts]
+    tests: [apps/web/src/vercel-config.test.ts, apps/web/src/runtime/multi-router-client.ts]
     status: implemented
-    notes: Local and preview servers publish isolation, CSP and Permissions Policy headers and reject runtime startup when the pthread smoke test fails.
+    notes: Development, preview and Vercel production responses publish isolation, CSP and Permissions Policy headers and reject runtime startup when the pthread smoke test fails.
+  - id: vercel.static.headers_and_rewrites
+    kind: hosting-platform
+    release: current
+    platforms: [Chrome, Edge, Firefox]
+    source_type: vercel-official-doc
+    source_url: https://vercel.com/docs/project-configuration/vercel-json
+    section: headers and rewrites
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-22
+    implementation: [apps/web/vercel.json]
+    tests: [apps/web/src/vercel-config.test.ts]
+    status: implemented
+    notes: The configuration lives in the Vercel project root at apps/web, applies cross-origin isolation and security headers to every response, and preserves SPA navigation without changing existing static assets.
   - id: nokia.sros.26_7.port.ethernet_mtu
     kind: cli-default
     release: 26.7.R1
