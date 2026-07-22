@@ -4,29 +4,60 @@
 // Free-form text annotations share the same canvas but never reach the runtime:
 // they are browser presentation intent, like node coordinates and panel sizes.
 
-import { Background, ConnectionMode, Controls, Handle, NodeResizeControl,
-  Position, ReactFlow, ResizeControlVariant, type Connection, type Edge,
-  type Node, type NodeProps, type ReactFlowInstance } from "@xyflow/react";
+import { Background, BaseEdge, ConnectionMode, Controls, EdgeLabelRenderer,
+  Handle, NodeResizeControl, Position, ReactFlow, ResizeControlVariant,
+  getStraightPath, useUpdateNodeInternals,
+  type Connection, type Edge,
+  type EdgeProps, type Node, type NodeProps,
+  type ReactFlowInstance } from "@xyflow/react";
 import { ANNOTATION_LIMITS, type LabProjectV4, type LabRuntimeSnapshotV6,
   type TopologyAnnotationV4 } from "@router-simulator/contracts";
 import { useCallback, useEffect, useMemo, useRef, useState,
   type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
-import { Cpu, Maximize2, Monitor, MousePointer2, Scan,
-  Router as RouterIcon, Type } from "lucide-react";
+import { Cpu, Maximize2, Scan, Type } from "lucide-react";
+import { edgePortLabelPoints, radialHandleSide, radialLinkAnchors,
+  type RadialLinkAnchor } from "./topology-anchors";
 
-type DeviceData = { kind: "host" | "router"; title: string; subtitle: string };
+type DeviceData = { kind: "host" | "router"; title: string; subtitle: string;
+  diameter: number; anchors: readonly RadialLinkAnchor[] };
 
-function DeviceNode({ data, selected }: NodeProps<Node<DeviceData>>) {
-  // The renderer stays identical for any number of nodes. Handles identify a
-  // visual attachment side only; the port chooser owns physical binding.
+const HANDLE_POSITION = {
+  top: Position.Top,
+  right: Position.Right,
+  bottom: Position.Bottom,
+  left: Position.Left,
+} as const;
+
+function DeviceNode({ id, data, selected }: NodeProps<Node<DeviceData>>) {
+  const updateNodeInternals = useUpdateNodeInternals();
+  useEffect(() => {
+    // React Flow caches handle coordinates. Re-measure after a node moves or a
+    // link is added so its straight path terminates at the newly rotated point
+    // rather than the previous side of the circle.
+    updateNodeInternals(id);
+  }, [data.anchors, id, updateNodeInternals]);
   const router = data.kind === "router";
-  return <div className={`device-node ${router ? "router-node" : "host-node"} ${selected ? "selected" : ""}`}>
-    <Handle type="source" position={Position.Left} id="left" />
-    <div className="device-icon" aria-hidden>{router
-      ? <RouterIcon size={26} strokeWidth={1.6} />
-      : <Monitor size={24} strokeWidth={1.6} />}</div>
-    <div><strong>{data.title}</strong><span>{data.subtitle}</span></div>
-    <Handle type="source" position={Position.Right} id="right" />
+  return <div className={`device-node ${router ? "router-node" : "host-node"} ${selected ? "selected" : ""}`}
+    style={{ width: data.diameter, height: data.diameter }}>
+    {/* Link creation owns one small rim target instead of covering the symbol.
+        This separation lets the symbol drag the device while the target starts
+        a connection, with no global interaction mode or pointer ambiguity. */}
+    <Handle type="source" position={Position.Right} id="connect"
+      className="device-connect-handle" title="Drag to connect" />
+    {data.anchors.map((anchor) => <Handle key={anchor.linkId} type="source"
+      position={HANDLE_POSITION[radialHandleSide(anchor.angleDegrees)]}
+      id={`edge-${anchor.linkId}`}
+      className="device-link-handle" style={{
+        left: `${anchor.leftPercent}%`, top: `${anchor.topPercent}%`,
+        right: "auto", bottom: "auto",
+        transform: `translate(-50%, -50%) rotate(${anchor.angleDegrees}deg)`,
+      }} />)}
+    {/* These project-owned, vendor-neutral diagram symbols intentionally live
+        below the attachment handles. A new device class can select another
+        asset without changing edge routing or the physical-port model. */}
+    <img className="device-icon" aria-hidden alt="" draggable={false}
+      src={router ? "/assets/topology/router-diagram.png" : "/assets/topology/host-diagram.png"} />
+    <div className="device-copy"><strong>{data.title}</strong><span>{data.subtitle}</span></div>
   </div>;
 }
 
@@ -95,7 +126,38 @@ function AnnotationNode({ id, data, selected }:
 
 const nodeTypes = { device: DeviceNode, annotation: AnnotationNode };
 
+type PhysicalLinkData = { sourcePort: string; targetPort: string };
+
+function PhysicalLinkEdge({ id, sourceX, sourceY, targetX, targetY,
+  markerEnd, style, data }: EdgeProps<Edge<PhysicalLinkData>>) {
+  const [path] = getStraightPath({ sourceX, sourceY, targetX, targetY });
+  const [sourceLabel, targetLabel] = edgePortLabelPoints(
+    { x: sourceX, y: sourceY }, { x: targetX, y: targetY });
+  const label = (portId: string, point: { x: number; y: number }, side: string) =>
+    <span className={`edge-port-label ${side}`} style={{
+      transform: `translate(-50%, -50%) translate(${point.x}px, ${point.y}px)`
+    }}>{portId}</span>;
+
+  return <>
+    <BaseEdge id={id} path={path} markerEnd={markerEnd} style={style} />
+    <EdgeLabelRenderer>
+      {label(data?.sourcePort ?? "", sourceLabel, "source")}
+      {label(data?.targetPort ?? "", targetLabel, "target")}
+    </EdgeLabelRenderer>
+  </>;
+}
+
+const edgeTypes = { physical: PhysicalLinkEdge };
+
 export type TopologyTool = "select" | "link" | "text";
+
+const DEVICE_DIAMETER = { host: 98, router: 112 } as const;
+const DEVICE_ANCHOR_RADIUS = {
+  // The values follow the non-transparent alpha bounds of the generated PNGs,
+  // with a small outward allowance so the solid port marker stays readable.
+  host: { xPercent: 40, yPercent: 37 },
+  router: { xPercent: 43, yPercent: 30 },
+} as const;
 
 interface Props {
   project: LabProjectV4;
@@ -103,7 +165,6 @@ interface Props {
   selected?: string;
   onSelect(id: string): void;
   onLayoutChange(id: string, position: { x: number; y: number }): void;
-  onLinkToggle(linkId: string, up: boolean): void;
   onConnect(firstNodeId: string, secondNodeId: string): void;
   onDropDevice(kind: "router" | "host", position: { x: number; y: number }): void;
   onOpenHardware(): void;
@@ -116,23 +177,8 @@ interface Props {
   onToolChange(tool: TopologyTool): void;
 }
 
-function speedLabel(speedMbps: number): string {
-  return speedMbps % 1000 === 0 ? `${speedMbps / 1000}G` : `${speedMbps}M`;
-}
-
-function delayLabel(nanoseconds: number): string {
-  // Preserve exact configured time whenever division would lose information.
-  // The label is presentation only; the runtime continues to own the integer
-  // nanosecond value used by each directional propagation deadline.
-  if (nanoseconds >= 1_000_000 && nanoseconds % 1_000_000 === 0)
-    return `${nanoseconds / 1_000_000} ms`;
-  if (nanoseconds >= 1_000 && nanoseconds % 1_000 === 0)
-    return `${nanoseconds / 1_000} us`;
-  return `${nanoseconds} ns`;
-}
-
 export function Topology({ project, snapshot, selected, onSelect,
-  onLayoutChange, onLinkToggle, onConnect, onDropDevice, onOpenHardware,
+  onLayoutChange, onConnect, onDropDevice, onOpenHardware,
   onAnnotationCreate, onAnnotationMove, onAnnotationResize,
   onAnnotationCommitText, onAnnotationDelete, tool, onToolChange }: Props) {
   const topologyRef = useRef<HTMLDivElement>(null);
@@ -143,6 +189,17 @@ export function Topology({ project, snapshot, selected, onSelect,
   const [editingId, setEditingId] = useState<string>();
   const annotationsRef = useRef(project.annotations);
   annotationsRef.current = project.annotations;
+
+  useEffect(() => {
+    // Link and text placement are one-shot operations, not global canvas
+    // modes. Escape always restores the normal drag-and-pan interaction.
+    if (tool === "select") return;
+    const cancelTransientTool = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onToolChange("select");
+    };
+    window.addEventListener("keydown", cancelTransientTool);
+    return () => window.removeEventListener("keydown", cancelTransientTool);
+  }, [tool, onToolChange]);
 
   const commitText = useCallback((id: string, text: string) => {
     // A label emptied by the user is a request to remove it. Non-blank text is
@@ -160,32 +217,54 @@ export function Topology({ project, snapshot, selected, onSelect,
     setEditingId((current) => current === id ? undefined : current);
   }, [onAnnotationDelete]);
 
+  const devicePositions = useMemo(() => Object.fromEntries([
+    ...project.hosts.map((host, index) => [host.id,
+      project.layout.nodes[host.id] ?? { x: 100, y: 160 + index * 130 }] as const),
+    ...project.routers.map((router, index) => [router.id,
+      project.layout.nodes[router.id] ?? { x: 340 + index * 210, y: 240 }] as const),
+  ]), [project.hosts, project.routers, project.layout.nodes]);
+  const deviceCenters = useMemo(() => Object.fromEntries([
+    ...project.hosts.map((host) => [host.id, {
+      x: devicePositions[host.id].x + DEVICE_DIAMETER.host / 2,
+      y: devicePositions[host.id].y + DEVICE_DIAMETER.host / 2,
+    }] as const),
+    ...project.routers.map((router) => [router.id, {
+      x: devicePositions[router.id].x + DEVICE_DIAMETER.router / 2,
+      y: devicePositions[router.id].y + DEVICE_DIAMETER.router / 2,
+    }] as const),
+  ]), [project.hosts, project.routers, devicePositions]);
+
   const nodes = useMemo<Node[]>(() => [
-    ...project.hosts.map((host, index) => ({
+    ...project.hosts.map((host) => ({
       id: host.id,
       type: "device",
-      position: project.layout.nodes[host.id] ?? { x: 100, y: 160 + index * 130 },
+      position: devicePositions[host.id],
       selected: selected === host.id,
-      data: { kind: "host" as const, title: host.name, subtitle: host.eth0.address }
+      data: { kind: "host" as const, title: host.name, subtitle: host.eth0.address,
+        diameter: DEVICE_DIAMETER.host,
+        anchors: radialLinkAnchors(host.id, deviceCenters, project.links,
+          DEVICE_ANCHOR_RADIUS.host) }
     })),
-    ...project.routers.map((router, index) => ({
+    ...project.routers.map((router) => ({
       id: router.id,
       type: "device",
-      position: project.layout.nodes[router.id] ?? { x: 340 + index * 210, y: 240 },
+      position: devicePositions[router.id],
       selected: selected === router.id,
       data: { kind: "router" as const, title: router.systemName,
-        subtitle: snapshot?.routers.find((item) => item.id === router.id)?.chassis ?? router.profileId }
+        subtitle: snapshot?.routers.find((item) => item.id === router.id)?.chassis ?? router.profileId,
+        diameter: DEVICE_DIAMETER.router,
+        anchors: radialLinkAnchors(router.id, deviceCenters, project.links,
+          DEVICE_ANCHOR_RADIUS.router) }
     })),
     // Annotations render on top of devices so a label stays readable. They are
-    // never connectable and, unlike devices, remain draggable outside the
-    // select tool so a label can be repositioned while placing more of them.
+    // never connectable. Editing temporarily owns pointer input; otherwise a
+    // label remains draggable under the same always-on canvas interaction.
     ...project.annotations.map((annotation) => ({
       id: annotation.id,
       type: "annotation",
       position: { x: annotation.x, y: annotation.y },
       selected: selected === annotation.id,
-      draggable: tool !== "link" &&
-        !(editingId === annotation.id || annotation.text === ""),
+      draggable: !(editingId === annotation.id || annotation.text === ""),
       connectable: false,
       data: {
         annotation,
@@ -193,7 +272,8 @@ export function Topology({ project, snapshot, selected, onSelect,
         onCommit: commitText, onCancel: cancelEdit, onResize: onAnnotationResize
       } satisfies AnnotationData
     }))
-  ], [project.hosts, project.routers, project.annotations, project.layout.nodes,
+  ], [project.hosts, project.routers, project.annotations, project.links,
+    devicePositions, deviceCenters,
     selected, snapshot?.routers, tool, editingId, commitText, cancelEdit,
     onAnnotationResize]);
 
@@ -203,21 +283,19 @@ export function Topology({ project, snapshot, selected, onSelect,
     // combine two observations from different supervisor turns.
     const live = snapshot?.links.find((item) => item.id === link.id);
     const up = Boolean(live?.carrier);
-    const first = project.layout.nodes[link.endpoints[0].nodeId];
-    const second = project.layout.nodes[link.endpoints[1].nodeId];
-    const leftToRight = !first || !second || first.x <= second.x;
     return {
       id: link.id,
       source: link.endpoints[0].nodeId,
       target: link.endpoints[1].nodeId,
-      sourceHandle: leftToRight ? "right" : "left",
-      targetHandle: leftToRight ? "left" : "right",
+      sourceHandle: `edge-${link.id}`,
+      targetHandle: `edge-${link.id}`,
+      type: "physical",
       className: up ? "link-up" : "link-down",
       selected: selected === link.id,
-      label: `${link.endpoints[0].portId} · ${link.endpoints[1].portId}` +
-        `${live?.speedMbps ? ` · ${speedLabel(live.speedMbps)}` : ""}` +
-        ` · ${delayLabel(link.propagationDelayNs)}`,
-      data: { up: live?.admin ?? link.admin === "up" }
+      data: {
+        sourcePort: link.endpoints[0].portId,
+        targetPort: link.endpoints[1].portId,
+      }
     };
   }), [project.links, project.layout.nodes, snapshot?.links, selected]);
 
@@ -240,7 +318,7 @@ export function Topology({ project, snapshot, selected, onSelect,
     onToolChange("select");
   };
 
-  return <div className={`topology ${tool === "text" ? "tool-text" : ""}`} ref={topologyRef}
+  return <div className={`topology ${tool === "text" ? "tool-text" : ""} ${tool === "link" ? "tool-link" : ""}`} ref={topologyRef}
     onDragOver={(event) => {
       if (event.dataTransfer.types.includes("application/x-router-lab-device")) {
         event.preventDefault();
@@ -259,7 +337,6 @@ export function Topology({ project, snapshot, selected, onSelect,
       }
     }}>
     <div className="canvas-toolbar" aria-label="Topology tools">
-      <button className={tool === "select" ? "active" : ""} title="Select and move devices" aria-label="Select and move devices" onClick={() => onToolChange("select")}><MousePointer2 size={17} /></button>
       <button className={tool === "text" ? "active" : ""} title="Add a text annotation" aria-label="Add a text annotation" onClick={() => onToolChange(tool === "text" ? "select" : "text")}><Type size={17} /></button>
       <button title="Open router hardware" aria-label="Open router hardware" onClick={onOpenHardware}><Cpu size={17} /></button>
       <button title="Fit topology" aria-label="Fit topology" onClick={() => void flowRef.current?.fitView({ padding: 0.22, duration: 260 })}><Scan size={17} /></button>
@@ -271,12 +348,15 @@ export function Topology({ project, snapshot, selected, onSelect,
         changes the coordinate transform underneath the pointer and shifts
         every later placement. Keep the camera under explicit pan/zoom control
         so a drag has one stable screen-to-flow transform from start to stop. */}
-    <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView
+    <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+      edgeTypes={edgeTypes} fitView
       connectionMode={ConnectionMode.Loose} minZoom={0.35} maxZoom={1.8}
-      autoPanOnNodeDrag={false}
-      nodesDraggable={tool === "select"} nodesConnectable={tool === "link"}
+      autoPanOnNodeDrag={false} panOnDrag nodesDraggable
+      nodesConnectable={tool === "link"}
       onInit={(instance) => { flowRef.current = instance; }} onConnect={connect}
       onPaneClick={placeAnnotation}
+      onMoveStart={() => { if (tool === "text") onToolChange("select"); }}
+      onNodeDragStart={() => onToolChange("select")}
       onNodeDragStop={(_, node) => node.type === "annotation"
         ? onAnnotationMove(node.id, node.position)
         : onLayoutChange(node.id, node.position)}
@@ -285,15 +365,10 @@ export function Topology({ project, snapshot, selected, onSelect,
         if (node.type === "annotation") setEditingId(node.id);
       }}
       onEdgeClick={(_, edge) => {
-        if (tool === "link") {
-          const data = edge.data as { up?: boolean } | undefined;
-          onLinkToggle(edge.id, !data?.up);
-        } else {
-          // Link selection opens its property inspector. Administrative
-          // toggling remains an explicit link-tool action and cannot occur from
-          // an ordinary selection click.
-          onSelect(edge.id);
-        }
+        // Edge clicks only select. Link administration remains an explicit
+        // inspector operation, preventing an attempted canvas pan from
+        // silently changing carrier state.
+        onSelect(edge.id);
       }} proOptions={{ hideAttribution: true }}>
       <Background color="#2a2630" gap={22} size={1} />
       <Controls showInteractive={false} />

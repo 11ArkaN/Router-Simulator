@@ -224,6 +224,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .library-item small { color: var(--text-mute); font-size: 11px; }
 .mini-icon { display: grid; place-items: center; flex: 0 0 auto; width: 40px; height: 40px; border: 1px solid var(--line-strong); border-radius: 10px; color: var(--text-dim); background: linear-gradient(160deg, var(--surface-hover), var(--panel-2)); box-shadow: var(--shadow-1); }
 .mini-icon.router { color: var(--accent-bright); border-color: var(--accent-line); background: linear-gradient(160deg, rgba(180, 124, 240, .16), var(--panel-2)); }
+.mini-icon.device-symbol { width: 42px; height: 42px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.mini-icon.device-symbol img { display: block; width: 39px; height: 39px; object-fit: contain; pointer-events: none; }
+.mini-icon.device-symbol.router { border: 0; background: transparent; }
 .mini-icon.link { color: var(--cyan); border-color: rgba(208, 168, 255, .34); background: linear-gradient(160deg, rgba(208, 168, 255, .12), var(--panel-2)); }
 .project-nav button { min-height: 35px; }
 .project-nav button > .lucide { margin-left: 2px; }
@@ -274,24 +277,26 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .react-flow__edge-path { stroke-width: 1.6; }
 .react-flow__edge.link-up .react-flow__edge-path { stroke: var(--cyan); filter: drop-shadow(0 0 5px rgba(208, 168, 255, .55)); }
 .react-flow__edge.link-down .react-flow__edge-path { stroke: #4a464f; stroke-dasharray: 5 5; }
-.react-flow__edge-text { fill: var(--cyan); font: 10px var(--font-mono); }
-.react-flow__edge-textbg { fill: #0b0a0d; fill-opacity: .95; }
+.edge-port-label { position: absolute; z-index: 4; display: block; padding: 2px 5px; border-radius: 3px; pointer-events: none; color: var(--accent-bright); background: rgba(10, 9, 12, .9); box-shadow: 0 1px 5px rgba(0, 0, 0, .65); font: 9px var(--font-mono); line-height: 1.2; white-space: nowrap; }
 
 .canvas-toolbar { position: absolute; z-index: 5; display: flex; top: 16px; left: 18px; padding: 5px; gap: 3px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: rgba(17, 15, 20, .84); backdrop-filter: blur(10px); box-shadow: var(--shadow-2); }
 .canvas-toolbar button { display: grid; place-items: center; width: 38px; height: 34px; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-mute); }
 .canvas-toolbar button:hover { background: var(--surface-hover); color: var(--text); }
 .canvas-toolbar button.active { color: var(--accent-bright); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-line); }
 
-.device-node { position: relative; display: flex; align-items: center; gap: 12px; width: 168px; min-height: 74px; padding: 12px 14px; border: 1px solid var(--line-strong); border-radius: 14px; color: var(--text); background: linear-gradient(160deg, rgba(26, 24, 30, .95), rgba(15, 14, 17, .95)); box-shadow: var(--shadow-2); backdrop-filter: blur(3px); transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease; }
-.device-node:hover { border-color: #3c3844; transform: translateY(-1px); }
-.device-node.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 22px rgba(180, 124, 240, .28), var(--shadow-2); }
+.device-node { position: relative; display: grid; place-items: center; box-sizing: border-box; color: var(--text); text-align: center; transition: transform 140ms ease, filter 140ms ease; }
+.device-node:hover { transform: translateY(-1px); filter: brightness(1.08); }
+.device-node.selected { filter: drop-shadow(0 0 2px var(--accent)) drop-shadow(0 0 13px rgba(180, 124, 240, .46)); }
 .device-node strong { display: block; font-size: 13.5px; font-weight: 600; letter-spacing: -.01em; }
-.device-node span { display: block; margin-top: 2px; color: var(--text-mute); font: 9.5px var(--font-mono); }
-.device-icon { display: grid; place-items: center; flex: 0 0 auto; width: 46px; height: 46px; border: 1px solid var(--line-strong); border-radius: 11px; color: var(--text-dim); background: linear-gradient(160deg, var(--surface-hover), var(--panel-2)); }
-.router-node { width: 182px; min-height: 84px; }
-.router-node .device-icon { width: 52px; height: 52px; color: var(--accent-bright); border-color: var(--accent-line); background: linear-gradient(160deg, rgba(180, 124, 240, .18), var(--panel-2)); }
-.react-flow__handle { width: 9px; height: 9px; border: 1px solid var(--cyan); background: #0d0b10; }
-.react-flow__handle:hover { background: var(--cyan); }
+.device-node span { display: block; max-width: 132px; margin-top: 2px; overflow: hidden; color: var(--text-mute); font: 9px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.device-node > .device-copy { position: absolute; z-index: 5; top: calc(100% + 9px); left: 50%; min-width: 96px; max-width: 142px; transform: translateX(-50%); pointer-events: none; text-align: center; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, .9)); }
+.device-icon { position: relative; z-index: 2; display: block; width: 78px; height: 78px; object-fit: contain; pointer-events: none; user-select: none; }
+.router-node .device-icon { width: 102px; height: 102px; }
+.react-flow__handle.device-connect-handle { z-index: 5; width: 13px; height: 13px; border: 1px solid var(--cyan); border-radius: 50%; pointer-events: none; opacity: 0; background: #0d0b10; box-shadow: 0 0 0 3px rgba(10, 9, 12, .72); transition: opacity 120ms ease, background 120ms ease, box-shadow 120ms ease; }
+.topology.tool-link .react-flow__handle.device-connect-handle { pointer-events: auto; opacity: .62; }
+.topology.tool-link .device-node:hover .device-connect-handle, .topology.tool-link .react-flow__handle.device-connect-handle:hover { opacity: 1; background: var(--cyan); box-shadow: 0 0 0 3px rgba(10, 9, 12, .82), 0 0 10px rgba(208, 168, 255, .52); }
+.react-flow__handle.device-link-handle { z-index: 4; width: 12px; height: 12px; border: 1px solid var(--cyan); border-radius: 50%; background: #0d0b10; box-shadow: 0 0 0 3px rgba(10, 9, 12, .78), 0 0 8px rgba(208, 168, 255, .28); transition: background 120ms ease, box-shadow 120ms ease; }
+.react-flow__handle.device-link-handle:hover { background: var(--cyan); box-shadow: 0 0 0 3px rgba(10, 9, 12, .82), 0 0 12px rgba(208, 168, 255, .58); }
 
 .runtime-error { position: absolute; z-index: 10; top: 18px; left: 50%; transform: translateX(-50%); display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; width: min(540px, calc(100% - 36px)); padding: 13px 15px; border: 1px solid rgba(244, 122, 108, .4); border-radius: var(--radius); background: linear-gradient(180deg, rgba(58, 24, 24, .96), rgba(40, 18, 18, .96)); color: #f6b4ac; box-shadow: var(--shadow-pop); }
 .runtime-error strong { grid-column: 1; font-size: 12.5px; font-weight: 600; color: #ffcfc8; }
