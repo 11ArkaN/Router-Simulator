@@ -41,27 +41,20 @@ if ($OpenSslReady -and $Http2Ready -and $Http3Ready -and $QuicReady) {
   exit 0
 }
 
-# OpenSSL's build generator needs a Unix-path Perl and GNU Make. Git for
-# Windows supplies the former. Pinned winget packages supply missing pure-Perl
-# modules and Make without introducing WSL into the build.
+# OpenSSL's build generator needs a Unix-path Perl, several pure-Perl modules
+# and GNU Make. Git for Windows supplies the Unix-compatible Perl executable,
+# while the pinned Strawberry Perl package supplies the modules and gmake.
+# Reusing that package avoids a second mutable binary download and also works
+# on GitHub's Windows images, where winget itself is not guaranteed to exist.
 if (-not $OpenSslReady -and
     -not (Test-Path "C:\Strawberry\perl\lib\Locale\Maketext\Simple.pm")) {
   winget install --id StrawberryPerl.StrawberryPerl --version 5.42.2.1 --exact `
     --silent --accept-package-agreements --accept-source-agreements
   if ($LASTEXITCODE -ne 0) { throw "Strawberry Perl installation failed" }
 }
-$Make = Get-ChildItem (Join-Path $env:LOCALAPPDATA "Microsoft/WinGet/Packages") `
-  -Recurse -Filter make.exe -ErrorAction SilentlyContinue |
-  Where-Object FullName -Like "*ezwinports.make*" |
-  Select-Object -First 1 -ExpandProperty FullName
-if (-not $OpenSslReady -and -not $Make) {
-  winget install --id ezwinports.make --version 4.4.1 --exact --silent `
-    --accept-package-agreements --accept-source-agreements
-  if ($LASTEXITCODE -ne 0) { throw "GNU Make installation failed" }
-  $Make = Get-ChildItem (Join-Path $env:LOCALAPPDATA "Microsoft/WinGet/Packages") `
-    -Recurse -Filter make.exe -ErrorAction Stop |
-    Where-Object FullName -Like "*ezwinports.make*" |
-    Select-Object -First 1 -ExpandProperty FullName
+$Make = "C:\Strawberry\c\bin\gmake.exe"
+if (-not $OpenSslReady -and -not (Test-Path $Make)) {
+  throw "GNU Make supplied by the pinned Strawberry Perl package is required"
 }
 if (-not $OpenSslReady -and -not (Test-Path $Perl)) {
   throw "Git for Windows Perl is required"

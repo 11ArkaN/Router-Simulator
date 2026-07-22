@@ -1,0 +1,7 @@
+# Linux bootstrap scripts are executed directly by GitHub-hosted runners and
+# must retain LF even when the repository is edited from Windows.
+*.sh text eol=lf
+
+# Workflow files are consumed by a Linux-hosted service before any job selects
+# its operating system. A stable line ending keeps generated diffs portable.
+.github/workflows/*.yml text eol=lf
