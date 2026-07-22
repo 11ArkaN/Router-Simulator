@@ -728,7 +728,9 @@ private:
   // SR OS preference than dynamically populated DHCP routes.
   [[nodiscard]] bool lookup_ipv6_route(const packet::Ipv6 &destination,
                                        routing::Ipv6Route &selected,
-                                       bool &blackhole) const noexcept;
+                                       bool &blackhole,
+                                       std::uint64_t flow_hash = 0U) const
+      noexcept;
   [[nodiscard]] bool emit_ipv6_interface(std::uint64_t interface_id,
                                          std::uint16_t port_ordinal,
                                          const packet::Frame &frame,

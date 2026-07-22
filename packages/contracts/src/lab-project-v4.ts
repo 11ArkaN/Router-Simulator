@@ -52,13 +52,17 @@ export interface RouterIpv6AddressIntent {
 
 export interface RouterRunningIntent {
   systemName: string;
+  // One is the documented disabled ECMP state. Higher values cap the number
+  // of equal protocol, preference and metric paths installed per prefix.
+  maximumEcmpPaths: number;
   ports: RouterPortIntent[];
   interfaces: RouterInterfaceIntent[];
-  staticRoutes: Array<{ prefix: string; nextHop: string }>;
+  staticRoutes: Array<{ prefix: string; nextHop: string; indirect: boolean }>;
   ipv6StaticRoutes: Array<{
     prefix: string;
     nextHop: string;
     outgoingPortId: string;
+    indirect: boolean;
   }>;
 }
 
@@ -782,7 +786,7 @@ export function createRouterProjectV4(id: NodeId, profileId: DeviceProfileId,
   const router: RouterProjectV4 = {
     id, kind: "router", profileId, release: LAB_RELEASE, systemName,
     hardware: emptyHardware(profile),
-    running: { systemName, ports: [], interfaces: [], staticRoutes: [],
+    running: { systemName, maximumEcmpPaths: 1, ports: [], interfaces: [], staticRoutes: [],
       ipv6StaticRoutes: [] }
   };
   // Fixed platforms receive their real derived inventory now. Modular routers
@@ -996,27 +1000,40 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
       }
       interfaceNames.add(item.name);
     }
-    const routePrefixes = new Set<string>();
+    assert(Number.isSafeInteger(router.running.maximumEcmpPaths) &&
+      router.running.maximumEcmpPaths >= 1 &&
+      router.running.maximumEcmpPaths <= PROFILE_CATALOG.runtime.maximum_ecmp_paths,
+    `${router.id} maximumEcmpPaths is invalid`);
+    const routeKeys = new Set<string>();
     for (const route of router.running.staticRoutes) {
-      // Duplicate prefixes would make restore order select a winner. Rejecting
-      // them preserves one unambiguous route candidate per project key.
+      // A static candidate is keyed by prefix, next hop and resolution kind.
+      // Repeating only the prefix is intentional and forms an ECMP candidate
+      // set when the router-wide maximum permits more than one member.
+      const key = `${route.prefix}|${route.nextHop}|${route.indirect}`;
       assert(canonicalPrefix(route.prefix) && parseIpv4(route.nextHop) !== undefined &&
-        !routePrefixes.has(route.prefix), `${router.id} static route is invalid`);
-      routePrefixes.add(route.prefix);
+        typeof route.indirect === "boolean",
+      `${router.id} static route is invalid`);
+      assert(!routeKeys.has(key), `${router.id} duplicate static route`);
+      routeKeys.add(key);
     }
-    const ipv6RoutePrefixes = new Set<string>();
+    const ipv6RouteKeys = new Set<string>();
     for (const route of router.running.ipv6StaticRoutes) {
       const nextHop = parseIpv6(route.nextHop);
       const linkLocal = nextHop !== undefined &&
         nextHop >> 118n === 0x3fan;
       assert(parseIpv6Prefix(route.prefix) && nextHop !== undefined &&
         nextHop !== 0n && nextHop >> 120n !== 0xffn &&
-        !ipv6RoutePrefixes.has(route.prefix) &&
+        typeof route.indirect === "boolean" &&
         (route.outgoingPortId === "" ||
           isPossibleRouterPort(router.profileId, route.outgoingPortId)) &&
-        (!linkLocal || route.outgoingPortId !== ""),
+        (route.indirect
+          ? !linkLocal && route.outgoingPortId === ""
+          : !linkLocal || route.outgoingPortId !== ""),
       `${router.id} IPv6 static route is invalid`);
-      ipv6RoutePrefixes.add(route.prefix);
+      assert(!ipv6RouteKeys.has(
+        `${route.prefix}|${route.nextHop}|${route.indirect}`),
+      `${router.id} duplicate IPv6 static route`);
+      ipv6RouteKeys.add(`${route.prefix}|${route.nextHop}|${route.indirect}`);
     }
     nodes.set(router.id, "router");
   }

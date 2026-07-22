@@ -8,7 +8,9 @@
 namespace router::lab::routing {
 
 bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
-                         std::span<const StaticInput> statics) noexcept {
+                         std::span<const StaticInput> statics,
+                         std::span<const DynamicInput> dynamic,
+                         std::uint16_t maximum_ecmp_paths) noexcept {
   std::array<Route, device_catalog::maximum_fib_routes_per_router> next{};
   std::size_t next_count{};
 
@@ -28,6 +30,18 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
       last_rebuild_valid_ = false;
       return false;
     }
+  if (maximum_ecmp_paths == 0U ||
+      maximum_ecmp_paths > device_catalog::maximum_ecmp_paths) {
+    last_rebuild_valid_ = false;
+    return false;
+  }
+  for (const auto &entry : dynamic)
+    if (entry.configured &&
+        (entry.prefix_length > 32U ||
+         entry.port_ordinal >= device_catalog::maximum_ports_per_router)) {
+      last_rebuild_valid_ = false;
+      return false;
+    }
 
   for (const auto &entry : connected) {
     // Connected reachability appears only after every local operational gate.
@@ -43,29 +57,17 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
         .next_hop = 0,
         .port_ordinal = entry.port_ordinal,
         .prefix_length = entry.prefix_length,
+        .preference = 0U,
+        .metric = 0U,
+        .source = Route::Source::connected,
         .local_system = entry.local_system};
   }
 
-  for (const auto &entry : statics) {
-    if (!entry.configured)
-      continue;
-    const ConnectedInput *resolution{};
-    for (const auto &candidate : connected) {
-      if (!candidate.configured || !candidate.operational ||
-          candidate.local_system)
-        continue;
-      const auto mask = prefix_mask(candidate.prefix_length);
-      if ((entry.next_hop & mask) != (candidate.network & mask))
-        continue;
-      // Overlapping connected interfaces resolve through the longest prefix,
-      // matching the same specificity rule used for destination lookup.
-      if (!resolution ||
-          candidate.prefix_length > resolution->prefix_length)
-        resolution = &candidate;
-    }
-    // An unresolved static route remains configured but inactive. It is not
-    // programmed with a guessed port or resolved through another router's RIB.
-    if (!resolution)
+  // Dynamic candidates are already resolved to a physical adjacency by their
+  // protocol owner. Keeping that publication separate from static intent is
+  // what lets indirect resolution exclude static-to-static recursion.
+  for (const auto &entry : dynamic) {
+    if (!entry.configured || !entry.operational)
       continue;
     if (next_count == next.size()) {
       last_rebuild_valid_ = false;
@@ -74,10 +76,139 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
     next[next_count++] = {
         .network = entry.network & prefix_mask(entry.prefix_length),
         .next_hop = entry.next_hop,
-        .port_ordinal = resolution->port_ordinal,
+        .port_ordinal = entry.port_ordinal,
         .prefix_length = entry.prefix_length,
+        .preference = entry.preference,
+        .metric = entry.metric,
+        .source = Route::Source::dynamic,
         .local_system = false};
   }
+
+  for (const auto &entry : statics) {
+    if (!entry.configured)
+      continue;
+    if (!entry.indirect) {
+      const ConnectedInput *resolution{};
+      for (const auto &candidate : connected) {
+        if (!candidate.configured || !candidate.operational ||
+            candidate.local_system)
+          continue;
+        const auto mask = prefix_mask(candidate.prefix_length);
+        if ((entry.next_hop & mask) != (candidate.network & mask))
+          continue;
+        // Direct static resolution follows the longest matching operational
+        // connected interface. A system /32 cannot manufacture an adjacency.
+        if (!resolution ||
+            candidate.prefix_length > resolution->prefix_length)
+          resolution = &candidate;
+      }
+      if (!resolution)
+        continue;
+      if (next_count == next.size()) {
+        last_rebuild_valid_ = false;
+        return false;
+      }
+      next[next_count++] = {
+          .network = entry.network & prefix_mask(entry.prefix_length),
+          .next_hop = entry.next_hop,
+          .port_ordinal = resolution->port_ordinal,
+          .prefix_length = entry.prefix_length,
+          .preference = 5U,
+          .metric = 1U,
+          .source = Route::Source::static_route,
+          .local_system = false};
+      continue;
+    }
+
+    // Find the best dynamic route covering the indirect address. Prefix
+    // length wins first, then protocol preference and metric. Every equal
+    // resolved path is expanded into the static route's own ECMP candidates.
+    const DynamicInput *best{};
+    for (const auto &candidate : dynamic) {
+      if (!candidate.configured || !candidate.operational)
+        continue;
+      const auto mask = prefix_mask(candidate.prefix_length);
+      if ((entry.next_hop & mask) != (candidate.network & mask))
+        continue;
+      if (!best || candidate.prefix_length > best->prefix_length ||
+          (candidate.prefix_length == best->prefix_length &&
+           (candidate.preference < best->preference ||
+            (candidate.preference == best->preference &&
+             candidate.metric < best->metric))))
+        best = &candidate;
+    }
+    if (!best)
+      continue;
+    for (const auto &candidate : dynamic) {
+      if (!candidate.configured || !candidate.operational ||
+          candidate.prefix_length != best->prefix_length ||
+          candidate.preference != best->preference ||
+          candidate.metric != best->metric)
+        continue;
+      const auto mask = prefix_mask(candidate.prefix_length);
+      if ((entry.next_hop & mask) != (candidate.network & mask))
+        continue;
+      if (next_count == next.size()) {
+        last_rebuild_valid_ = false;
+        return false;
+      }
+      next[next_count++] = {
+          .network = entry.network & prefix_mask(entry.prefix_length),
+          .next_hop = candidate.next_hop,
+          .port_ordinal = candidate.port_ordinal,
+          .prefix_length = entry.prefix_length,
+          .preference = 5U,
+          .metric = 1U,
+          .source = Route::Source::static_route,
+          .local_system = false};
+    }
+  }
+
+  // Sorting implements the documented lowest-next-hop fallback when ECMP is
+  // disabled. It also makes flow-to-path mapping independent of CLI insertion
+  // order. Only candidates with the winning protocol, preference and metric
+  // survive for each prefix, capped by the router-wide ECMP setting.
+  std::sort(next.begin(), next.begin() + next_count,
+            [](const Route &left, const Route &right) {
+              if (left.network != right.network)
+                return left.network < right.network;
+              if (left.prefix_length != right.prefix_length)
+                return left.prefix_length > right.prefix_length;
+              if (left.preference != right.preference)
+                return left.preference < right.preference;
+              if (left.metric != right.metric)
+                return left.metric < right.metric;
+              if (left.source != right.source)
+                return left.source < right.source;
+              if (left.next_hop != right.next_hop)
+                return left.next_hop < right.next_hop;
+              return left.port_ordinal < right.port_ordinal;
+            });
+  // Compact the sorted candidate array in place. A second maximum-sized array
+  // would double the control-shard stack cost for no ownership benefit. The
+  // write cursor never overtakes the read cursor, so unread candidates remain
+  // intact while losing paths are discarded.
+  std::size_t selected_count{};
+  for (std::size_t begin{}; begin < next_count;) {
+    std::size_t end = begin + 1U;
+    while (end < next_count && next[end].network == next[begin].network &&
+           next[end].prefix_length == next[begin].prefix_length)
+      ++end;
+    const auto &winner = next[begin];
+    std::uint16_t paths{};
+    for (std::size_t index = begin;
+         index < end && paths < maximum_ecmp_paths; ++index) {
+      const auto &candidate = next[index];
+      if (candidate.preference != winner.preference ||
+          candidate.metric != winner.metric ||
+          candidate.source != winner.source)
+        break;
+      next[selected_count++] = candidate;
+      ++paths;
+    }
+    begin = end;
+  }
+  next_count = selected_count;
 
   const bool changed =
       next_count != count_ ||
@@ -87,6 +218,9 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
                            left.next_hop == right.next_hop &&
                            left.port_ordinal == right.port_ordinal &&
                            left.prefix_length == right.prefix_length &&
+                           left.preference == right.preference &&
+                           left.metric == right.metric &&
+                           left.source == right.source &&
                            left.local_system == right.local_system;
                   });
   if (changed) {
@@ -107,27 +241,41 @@ FibProgram RouteTable::compile(std::uint64_t generation) const noexcept {
   return result;
 }
 
-bool lookup(const FibProgram &fib, std::uint32_t destination,
-            Route &selected) noexcept {
+bool lookup(const FibProgram &fib, std::uint32_t destination, Route &selected,
+            std::uint64_t flow_hash) noexcept {
   const Route *best{};
+  std::array<const Route *, device_catalog::maximum_ecmp_paths> equal{};
+  std::size_t equal_count{};
   for (std::size_t index = 0; index < fib.count; ++index) {
     const auto &candidate = fib.routes[index];
     if ((destination & prefix_mask(candidate.prefix_length)) !=
         candidate.network)
       continue;
-    if (!best || candidate.prefix_length > best->prefix_length)
+    if (!best || candidate.prefix_length > best->prefix_length) {
       best = &candidate;
+      equal[0] = best;
+      equal_count = 1U;
+    } else if (candidate.prefix_length == best->prefix_length &&
+               candidate.network == best->network &&
+               candidate.preference == best->preference &&
+               candidate.metric == best->metric &&
+               candidate.source == best->source &&
+               equal_count < equal.size()) {
+      equal[equal_count++] = &candidate;
+    }
   }
   if (!best)
     return false;
-  selected = *best;
+  selected = *equal[flow_hash % equal_count];
   return true;
 }
 
 bool Ipv6RouteTable::rebuild(
     std::span<const Ipv6ConnectedInput> connected,
     std::span<const Ipv6StaticInput> statics,
-    std::span<const Ipv6ConnectedInput> additional_connected) noexcept {
+    std::span<const Ipv6ConnectedInput> additional_connected,
+    std::span<const Ipv6DynamicInput> dynamic,
+    std::uint16_t maximum_ecmp_paths) noexcept {
   std::array<Ipv6Route,
              device_catalog::maximum_fib_routes_per_router> next{};
   std::size_t next_count{};
@@ -145,8 +293,9 @@ bool Ipv6RouteTable::rebuild(
               ip::mask(entry.network, entry.prefix_length) == entry.network);
     });
   };
-  if (!connected_valid(connected) ||
-      !connected_valid(additional_connected)) {
+  if (!connected_valid(connected) || !connected_valid(additional_connected) ||
+      maximum_ecmp_paths == 0U ||
+      maximum_ecmp_paths > device_catalog::maximum_ecmp_paths) {
     last_rebuild_valid_ = false;
     return false;
   }
@@ -155,9 +304,25 @@ bool Ipv6RouteTable::rebuild(
         (entry.prefix_length > ip::ipv6_address_bits ||
          ip::is_unspecified(entry.next_hop) ||
          ip::mask(entry.network, entry.prefix_length) != entry.network ||
-         (ip::is_link_local(entry.next_hop) &&
+         (entry.indirect &&
+          (ip::is_link_local(entry.next_hop) ||
+           entry.outgoing_interface_set)) ||
+         (!entry.indirect && ip::is_link_local(entry.next_hop) &&
           (!entry.outgoing_interface_set ||
            entry.outgoing_interface_id == 0U)))) {
+      last_rebuild_valid_ = false;
+      return false;
+    }
+  }
+  for (const auto &entry : dynamic) {
+    if (entry.configured &&
+        (entry.interface_id == 0U ||
+         entry.physical_port_ordinal >=
+             device_catalog::maximum_ports_per_router ||
+         entry.prefix_length > ip::ipv6_address_bits ||
+         ip::mask(entry.network, entry.prefix_length) != entry.network ||
+         ip::is_unspecified(entry.next_hop) ||
+         ip::is_multicast(entry.next_hop))) {
       last_rebuild_valid_ = false;
       return false;
     }
@@ -173,7 +338,10 @@ bool Ipv6RouteTable::rebuild(
                                      .interface_id = entry.interface_id,
                                      .physical_port_ordinal =
                                          entry.physical_port_ordinal,
-                                     .prefix_length = entry.prefix_length};
+                                     .prefix_length = entry.prefix_length,
+                                     .preference = 0U,
+                                     .metric = 0U,
+                                     .source = Route::Source::connected};
     }
     return true;
   };
@@ -181,6 +349,24 @@ bool Ipv6RouteTable::rebuild(
       !append_connected(additional_connected)) {
     last_rebuild_valid_ = false;
     return false;
+  }
+
+  for (const auto &entry : dynamic) {
+    if (!entry.configured || !entry.operational)
+      continue;
+    if (next_count == next.size()) {
+      last_rebuild_valid_ = false;
+      return false;
+    }
+    next[next_count++] = Ipv6Route{
+        .network = entry.network,
+        .next_hop = entry.next_hop,
+        .interface_id = entry.interface_id,
+        .physical_port_ordinal = entry.physical_port_ordinal,
+        .prefix_length = entry.prefix_length,
+        .preference = entry.preference,
+        .metric = entry.metric,
+        .source = Route::Source::dynamic};
   }
 
   for (const auto &entry : statics) {
@@ -210,24 +396,126 @@ bool Ipv6RouteTable::rebuild(
       }
       return false;
     };
-    const bool exact_scope = consider_resolution(connected);
-    if (!exact_scope)
-      static_cast<void>(consider_resolution(additional_connected));
-    // Configured but unresolved routes remain absent from the FIB. No global
-    // topology lookup is allowed to invent reachability from another router.
-    if (!resolution)
+    if (!entry.indirect) {
+      const bool exact_scope = consider_resolution(connected);
+      if (!exact_scope)
+        static_cast<void>(consider_resolution(additional_connected));
+      // Configured but unresolved routes remain absent from the FIB. No global
+      // topology lookup is allowed to invent reachability from another router.
+      if (!resolution)
+        continue;
+      if (next_count == next.size()) {
+        last_rebuild_valid_ = false;
+        return false;
+      }
+      next[next_count++] = Ipv6Route{
+          .network = entry.network,
+          .next_hop = entry.next_hop,
+          .interface_id = resolution->interface_id,
+          .physical_port_ordinal = resolution->physical_port_ordinal,
+          .prefix_length = entry.prefix_length,
+          .preference = 5U,
+          .metric = 1U,
+          .source = Route::Source::static_route};
       continue;
-    if (next_count == next.size()) {
-      last_rebuild_valid_ = false;
-      return false;
     }
-    next[next_count++] = Ipv6Route{
-        .network = entry.network,
-        .next_hop = entry.next_hop,
-        .interface_id = resolution->interface_id,
-        .physical_port_ordinal = resolution->physical_port_ordinal,
-        .prefix_length = entry.prefix_length};
+
+    // Link-local indirect addresses are not meaningful without a scoped
+    // protocol resolver. The configured zone is used to constrain dynamic
+    // candidates exactly as it constrains direct Neighbor Discovery.
+    const Ipv6DynamicInput *best{};
+    for (const auto &candidate : dynamic) {
+      if (!candidate.configured || !candidate.operational)
+        continue;
+      if (ip::is_link_local(entry.next_hop) &&
+          candidate.interface_id != entry.outgoing_interface_id)
+        continue;
+      const ip::Ipv6Prefix candidate_prefix{candidate.network,
+                                             candidate.prefix_length};
+      if (!ip::contains(candidate_prefix, entry.next_hop))
+        continue;
+      if (!best || candidate.prefix_length > best->prefix_length ||
+          (candidate.prefix_length == best->prefix_length &&
+           (candidate.preference < best->preference ||
+            (candidate.preference == best->preference &&
+             candidate.metric < best->metric))))
+        best = &candidate;
+    }
+    if (!best)
+      continue;
+    for (const auto &candidate : dynamic) {
+      if (!candidate.configured || !candidate.operational ||
+          candidate.prefix_length != best->prefix_length ||
+          candidate.preference != best->preference ||
+          candidate.metric != best->metric ||
+          (ip::is_link_local(entry.next_hop) &&
+           candidate.interface_id != entry.outgoing_interface_id))
+        continue;
+      const ip::Ipv6Prefix candidate_prefix{candidate.network,
+                                             candidate.prefix_length};
+      if (!ip::contains(candidate_prefix, entry.next_hop))
+        continue;
+      if (next_count == next.size()) {
+        last_rebuild_valid_ = false;
+        return false;
+      }
+      next[next_count++] = Ipv6Route{
+          .network = entry.network,
+          .next_hop = candidate.next_hop,
+          .interface_id = candidate.interface_id,
+          .physical_port_ordinal = candidate.physical_port_ordinal,
+          .prefix_length = entry.prefix_length,
+          .preference = 5U,
+          .metric = 1U,
+          .source = Route::Source::static_route};
+    }
   }
+
+  const auto address_less = [](const ip::Ipv6 &left,
+                               const ip::Ipv6 &right) noexcept {
+    return std::lexicographical_compare(left.begin(), left.end(), right.begin(),
+                                        right.end());
+  };
+  std::sort(next.begin(), next.begin() + next_count,
+            [&](const Ipv6Route &left, const Ipv6Route &right) {
+              if (left.network != right.network)
+                return address_less(left.network, right.network);
+              if (left.prefix_length != right.prefix_length)
+                return left.prefix_length > right.prefix_length;
+              if (left.preference != right.preference)
+                return left.preference < right.preference;
+              if (left.metric != right.metric)
+                return left.metric < right.metric;
+              if (left.source != right.source)
+                return left.source < right.source;
+              if (left.next_hop != right.next_hop)
+                return address_less(left.next_hop, right.next_hop);
+              return left.interface_id < right.interface_id;
+            });
+  // IPv6 routes are larger values than IPv4 routes. In-place compaction keeps
+  // a rebuild bounded to one scratch array and avoids stack growth as hardware
+  // profiles expose more physical ports.
+  std::size_t selected_count{};
+  for (std::size_t begin{}; begin < next_count;) {
+    std::size_t end = begin + 1U;
+    while (end < next_count && next[end].network == next[begin].network &&
+           next[end].prefix_length == next[begin].prefix_length)
+      ++end;
+    const auto &winner = next[begin];
+    std::uint16_t paths{};
+    for (std::size_t index = begin;
+         index < end && paths < maximum_ecmp_paths; ++index) {
+      const auto &candidate = next[index];
+      if (candidate.preference != winner.preference ||
+          candidate.metric != winner.metric ||
+          candidate.source != winner.source)
+        break;
+      next[selected_count++] = candidate;
+      ++paths;
+    }
+    begin = end;
+  }
+  next_count = selected_count;
 
   const bool changed =
       next_count != count_ ||
@@ -238,7 +526,10 @@ bool Ipv6RouteTable::rebuild(
                            left.interface_id == right.interface_id &&
                            left.physical_port_ordinal ==
                                right.physical_port_ordinal &&
-                           left.prefix_length == right.prefix_length;
+                           left.prefix_length == right.prefix_length &&
+                           left.preference == right.preference &&
+                           left.metric == right.metric &&
+                           left.source == right.source;
                   });
   if (changed) {
     routes_ = next;
@@ -255,20 +546,32 @@ Ipv6FibProgram Ipv6RouteTable::compile(std::uint64_t generation) const noexcept 
 }
 
 bool lookup(const Ipv6FibProgram &fib, const ip::Ipv6 &destination,
-            Ipv6Route &selected) noexcept {
+            Ipv6Route &selected, std::uint64_t flow_hash) noexcept {
   const Ipv6Route *best{};
+  std::array<const Ipv6Route *, device_catalog::maximum_ecmp_paths> equal{};
+  std::size_t equal_count{};
   for (std::size_t index = 0; index < fib.count; ++index) {
     const auto &candidate = fib.routes[index];
     const ip::Ipv6Prefix prefix{.network = candidate.network,
                                 .length = candidate.prefix_length};
     if (!ip::contains(prefix, destination))
       continue;
-    if (!best || candidate.prefix_length > best->prefix_length)
+    if (!best || candidate.prefix_length > best->prefix_length) {
       best = &candidate;
+      equal[0] = best;
+      equal_count = 1U;
+    } else if (candidate.prefix_length == best->prefix_length &&
+               candidate.network == best->network &&
+               candidate.preference == best->preference &&
+               candidate.metric == best->metric &&
+               candidate.source == best->source &&
+               equal_count < equal.size()) {
+      equal[equal_count++] = &candidate;
+    }
   }
   if (!best)
     return false;
-  selected = *best;
+  selected = *equal[flow_hash % equal_count];
   return true;
 }
 

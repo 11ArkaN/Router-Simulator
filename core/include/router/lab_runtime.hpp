@@ -261,6 +261,7 @@ private:
     std::uint32_t network{};
     std::uint32_t next_hop{};
     std::uint8_t prefix_length{};
+    bool indirect{};
     bool operator==(const StaticRouteIntent &) const = default;
   };
 
@@ -269,6 +270,7 @@ private:
     packet::Ipv6 next_hop{};
     std::string outgoing_port_id;
     std::uint8_t prefix_length{};
+    bool indirect{};
     bool operator==(const Ipv6StaticRouteIntent &) const = default;
   };
 
@@ -292,6 +294,7 @@ private:
   // those are operational state and must never be replaced by a CLI commit.
   struct ConfigurationIntent {
     std::string system_name;
+    std::uint16_t maximum_ecmp_paths{1U};
     MldGlobalIntent mld;
     std::vector<MldPolicyPrefixListIntent> mld_prefix_lists;
     std::vector<MldNamedImportPolicyIntent> mld_import_policies;
@@ -325,6 +328,7 @@ private:
     std::string node_id;
     std::string system_name;
     std::string profile_id;
+    std::uint16_t maximum_ecmp_paths{1U};
     std::vector<PortIntent> ports;
     std::vector<InterfaceIntent> interfaces;
     std::vector<StaticRouteIntent> routes;

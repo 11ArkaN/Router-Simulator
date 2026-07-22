@@ -174,6 +174,7 @@ struct MldNamedImportPolicyIntent {
 
 struct RouterControlCheckpoint {
   DeviceHandle device{};
+  std::uint16_t maximum_ecmp_paths{1U};
   std::array<routing::ConnectedInput, routing::maximum_ipv4_connected_inputs>
       connected{};
   std::array<routing::StaticInput,
@@ -374,6 +375,7 @@ struct PortableStaticRouteIntentCheckpoint {
   std::uint32_t network{};
   std::uint32_t next_hop{};
   std::uint8_t prefix_length{};
+  bool indirect{};
 };
 
 struct PortableIpv6StaticRouteIntentCheckpoint {
@@ -384,6 +386,7 @@ struct PortableIpv6StaticRouteIntentCheckpoint {
   packet::Ipv6 next_hop{};
   std::string outgoing_port_id;
   std::uint8_t prefix_length{};
+  bool indirect{};
 };
 
 struct PortableMdaConfigurationCheckpoint {
@@ -401,6 +404,7 @@ struct PortableCardConfigurationCheckpoint {
 
 struct PortableConfigurationCheckpoint {
   std::string system_name;
+  std::uint16_t maximum_ecmp_paths{1U};
   MldGlobalIntent mld;
   std::vector<MldPolicyPrefixListIntent> mld_prefix_lists;
   std::vector<MldNamedImportPolicyIntent> mld_import_policies;
@@ -433,6 +437,7 @@ struct PortableConfigurationCheckpoint {
 
 struct PortableRouterIntentCheckpoint {
   DeviceHandle device{};
+  std::uint16_t maximum_ecmp_paths{1U};
   std::vector<PortablePortIntentCheckpoint> ports;
   std::vector<PortableInterfaceIntentCheckpoint> interfaces;
   std::vector<PortableStaticRouteIntentCheckpoint> routes;
@@ -730,18 +735,28 @@ public:
   [[nodiscard]] bool add_static_route(DeviceHandle device,
                                       std::uint32_t network,
                                       std::uint8_t prefix_length,
-                                      std::uint32_t next_hop) noexcept;
+                                      std::uint32_t next_hop,
+                                      bool indirect = false) noexcept;
   [[nodiscard]] bool remove_static_route(DeviceHandle device,
                                          std::uint32_t network,
-                                         std::uint8_t prefix_length) noexcept;
+                                         std::uint8_t prefix_length,
+                                         std::optional<std::uint32_t> next_hop =
+                                             std::nullopt,
+                                         std::optional<bool> indirect =
+                                             std::nullopt) noexcept;
+  [[nodiscard]] bool configure_ecmp(DeviceHandle device,
+                                    std::uint16_t maximum_paths) noexcept;
   [[nodiscard]] bool
   add_ipv6_static_route(DeviceHandle device, const packet::Ipv6 &network,
                         std::uint8_t prefix_length,
                         const packet::Ipv6 &next_hop,
-                        std::string_view outgoing_port_id = {}) noexcept;
+                        std::string_view outgoing_port_id = {},
+                        bool indirect = false) noexcept;
   [[nodiscard]] bool
   remove_ipv6_static_route(DeviceHandle device, const packet::Ipv6 &network,
-                           std::uint8_t prefix_length) noexcept;
+                           std::uint8_t prefix_length,
+                           std::optional<packet::Ipv6> next_hop = std::nullopt,
+                           std::optional<bool> indirect = std::nullopt) noexcept;
   // Static neighbor edits resolve the stable hardware port key before crossing
   // the shared command ring. The forwarding shard remains the sole owner of
   // operational NUD state and configured adjacency lookup.

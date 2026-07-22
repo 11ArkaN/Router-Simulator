@@ -582,8 +582,13 @@ if(ROUTER_BUILD_TESTS)
   target_link_libraries(module_tests PRIVATE router_management)
   if(EMSCRIPTEN)
     target_compile_options(module_tests PRIVATE -pthread)
+    # The aggregate module runner invokes independent maximum-capacity
+    # fixtures in one executable. Its diagnostic call frames are not part of
+    # the production worker path, so reserve a separate 2 MiB test stack rather
+    # than inflating every live pthread in the browser runtime.
+    set(ROUTER_MODULE_TEST_STACK_OPTION "-sSTACK_SIZE=2097152")
     target_link_options(module_tests PRIVATE -pthread
-      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}" "${ROUTER_STACK_OPTION}"
+      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}" "${ROUTER_MODULE_TEST_STACK_OPTION}"
       # NetworkPlane module tests construct several independent full-capacity
       # owners in one process. Use the same generated growth ceiling as the
       # browser runtime so additional protocol state cannot make the test

@@ -41,15 +41,16 @@ export interface RuntimeRouterV6 {
   profileId: string;
   chassis: string;
   systemName: string;
+  maximumEcmpPaths: number;
   handle: RuntimeHandleV6;
   cards: RuntimeCardV6[];
   ports: RuntimePortV6[];
   interfaces: Array<{ name: string; portId: string; address: string;
     arpTimeoutSeconds: number | null; arpRetryTimerDeciseconds: number | null;
     ipv6Addresses: RouterIpv6AddressIntent[]; admin: boolean }>;
-  staticRoutes: Array<{ prefix: string; nextHop: string }>;
+  staticRoutes: Array<{ prefix: string; nextHop: string; indirect: boolean }>;
   ipv6StaticRoutes: Array<{ prefix: string; nextHop: string;
-    outgoingPortId: string }>;
+    outgoingPortId: string; indirect: boolean }>;
 }
 
 export interface RuntimeHostV6 {
@@ -155,6 +156,9 @@ export function parseLabRuntimeSnapshotV6(input: unknown): LabRuntimeSnapshotV6 
     const profile = PROFILE_CATALOG.profiles.find((item) => item.id === router?.profileId);
     assert(router && identifier.test(router.id) && !nodes.has(router.id) && profile &&
       router.chassis === profile.chassis && typeof router.systemName === "string" &&
+      Number.isSafeInteger(router.maximumEcmpPaths) &&
+      router.maximumEcmpPaths >= 1 &&
+      router.maximumEcmpPaths <= PROFILE_CATALOG.runtime.maximum_ecmp_paths &&
       validHandle(router.handle) && Array.isArray(router.cards) &&
       Array.isArray(router.ports) && router.ports.length <=
         PROFILE_CATALOG_COMPILED.maximumPortsPerRouter &&
@@ -217,10 +221,12 @@ export function parseLabRuntimeSnapshotV6(input: unknown): LabRuntimeSnapshotV6 
           (Number.isSafeInteger(address.tag) && address.tag >= 0 &&
            address.tag <= 0xffffffff))) &&
       typeof item.admin === "boolean") &&
-      router.staticRoutes.every((item) => item && prefix.test(item.prefix) && ipv4.test(item.nextHop)) &&
+      router.staticRoutes.every((item) => item && prefix.test(item.prefix) &&
+        ipv4.test(item.nextHop) && typeof item.indirect === "boolean") &&
       router.ipv6StaticRoutes.every((item) => item &&
         isCanonicalIpv6PrefixText(item.prefix) &&
         isIpv6AddressText(item.nextHop) &&
+        typeof item.indirect === "boolean" &&
         (item.outgoingPortId === "" || portId.test(item.outgoingPortId))),
     "Runtime routing projection is invalid");
   }

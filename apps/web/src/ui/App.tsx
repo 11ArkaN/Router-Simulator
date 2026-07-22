@@ -93,6 +93,7 @@ function mergeRuntimeRouter(project: LabProjectV4,
     })) },
     running: {
       systemName: runtimeRouter.systemName,
+      maximumEcmpPaths: runtimeRouter.maximumEcmpPaths,
       ports: [...retained, ...runtimeRouter.ports.map((port) => ({
         id: port.id, admin: port.admin ? "up" as const : "down" as const,
         mtu: port.mtu, speedMbps: port.speedMbps,

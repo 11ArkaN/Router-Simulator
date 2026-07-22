@@ -52,7 +52,8 @@ function configureRouter(router: RouterProjectV4,
   router.running.interfaces = interfaces.map((item) => ({ ...item,
     arpTimeoutSeconds: null, arpRetryTimerDeciseconds: null,
     ipv6Addresses: [], admin: "up" }));
-  router.running.staticRoutes = staticRoutes.map((route) => ({ ...route }));
+  router.running.staticRoutes = staticRoutes.map((route) => ({ ...route,
+    indirect: false }));
   router.running.ipv6StaticRoutes = [];
 }
 

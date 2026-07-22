@@ -62,6 +62,7 @@ Make implementation decisions in this order:
 ## Change Verification
 
 - A functional change must include a test at the appropriate level.
+- A change that alters user-facing behavior, capabilities, requirements, setup steps, commands or repository layout must update `README.md` in the same change. The README must stay current with the code and must not lag behind it.
 - Every commit must be preceded by local verification of the exact staged tree. Do not use a remote workflow as a substitute for a local result.
 - Before committing, bootstrap the pinned toolchain and production dependencies with `pnpm toolchain:bootstrap` and `pnpm dependencies:bootstrap` when their lock inputs or local installations changed.
 - Before every commit, run `pnpm verify`. This mandatory gate covers source records, generated-file drift, dependency boundaries, public-release policy, TypeScript checks, C++ and TypeScript tests, packet and 16-router runtime benchmarks, and the production build.

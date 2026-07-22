@@ -20,10 +20,10 @@ struct TlsAlgorithmName {
 // One release owns this entire generated catalog. Runtime capability output
 // consumes this value instead of repeating the release pin in hand-written C++.
 inline constexpr std::string_view release{"26.7.R1"};
-inline constexpr std::uint64_t catalog_hash = 0x01daa898ad67b5b7ULL;
-inline constexpr std::uint64_t checkpoint_schema_hash = 0xa9c6c92af60ac429ULL;
+inline constexpr std::uint64_t catalog_hash = 0xf7cb337f8e395967ULL;
+inline constexpr std::uint64_t checkpoint_schema_hash = 0xc14824cbb3c71b17ULL;
 inline constexpr std::uint64_t runtime_protocol_hash = 0x0e4f799b5b5d2714ULL;
-inline constexpr std::uint64_t build_hash = 0xe13c92da55c396f9ULL;
+inline constexpr std::uint64_t build_hash = 0xf68b9126e5f05201ULL;
 
 inline constexpr std::size_t maximum_routers = 16;
 inline constexpr std::size_t maximum_hosts = 16;
@@ -34,6 +34,7 @@ inline constexpr std::size_t maximum_card_slots = 10;
 inline constexpr std::size_t maximum_mda_slots_per_card = 2;
 inline constexpr std::size_t maximum_ports_per_mda = 40;
 inline constexpr std::size_t maximum_static_routes_per_router = 64;
+inline constexpr std::uint16_t maximum_ecmp_paths = 128;
 inline constexpr std::size_t maximum_fib_routes_per_router =
     maximum_ports_per_router + maximum_static_routes_per_router;
 inline constexpr std::size_t wasm_initial_memory_bytes = 335544320U;

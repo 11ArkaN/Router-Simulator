@@ -43,6 +43,7 @@ export const PROFILE_CATALOG = {
     "fabric_work_budget_frames": 64,
     "immediate_link_deadline_nanoseconds": 74000,
     "static_routes_per_router": 64,
+    "maximum_ecmp_paths": 128,
     "arp_entries_per_router": 4096,
     "static_arp_entries_per_router": 1000,
     "pending_ipv4_frames_per_router": 512,
@@ -1034,5 +1035,5 @@ export const PROFILE_CATALOG_COMPILED = {
   "maximumMdaSlotsPerCard": 2,
   "maximumPortsPerMda": 40
 } as const;
-export const PROFILE_CATALOG_HASH = "01daa898ad67b5b7" as const;
-export const LAB_BUILD_HASH = "e13c92da55c396f9" as const;
+export const PROFILE_CATALOG_HASH = "f7cb337f8e395967" as const;
+export const LAB_BUILD_HASH = "f68b9126e5f05201" as const;

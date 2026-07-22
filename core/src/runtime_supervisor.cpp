@@ -33,6 +33,9 @@ struct RuntimeSupervisor::RouterNetworkState {
   std::array<routing::Ipv6StaticInput,
              device_catalog::maximum_static_routes_per_router>
       ipv6_statics{};
+  // One is the SR OS default and represents disabled path sharing. Control is
+  // the sole owner; forwarding receives only the resulting immutable groups.
+  std::uint16_t maximum_ecmp_paths{1U};
   std::array<ForwardPort, device_catalog::maximum_ports_per_router> ports{};
   std::array<bool, device_catalog::maximum_ports_per_router> interface_admin{};
   std::array<bool, device_catalog::maximum_ports_per_router> ies_port_owned{};
@@ -2248,7 +2251,8 @@ bool RuntimeSupervisor::remove_interface(DeviceHandle device,
 bool RuntimeSupervisor::add_static_route(DeviceHandle device,
                                          std::uint32_t network,
                                          std::uint8_t prefix_length,
-                                         std::uint32_t next_hop) noexcept {
+                                         std::uint32_t next_hop,
+                                         bool indirect) noexcept {
   if (!devices_.get(device) || device.index >= router_network_.size() ||
       !router_network_[device.index] || prefix_length > 32U || !next_hop)
     return false;
@@ -2257,7 +2261,8 @@ bool RuntimeSupervisor::add_static_route(DeviceHandle device,
   const auto canonical = network & routing::prefix_mask(prefix_length);
   for (auto &entry : state.statics) {
     if (entry.configured && entry.network == canonical &&
-        entry.prefix_length == prefix_length) {
+        entry.prefix_length == prefix_length &&
+        entry.next_hop == next_hop && entry.indirect == indirect) {
       target = &entry;
       break;
     }
@@ -2271,27 +2276,47 @@ bool RuntimeSupervisor::add_static_route(DeviceHandle device,
   *target = {.configured = true,
              .network = canonical,
              .next_hop = next_hop,
-             .prefix_length = prefix_length};
+             .prefix_length = prefix_length,
+             .indirect = indirect};
   rebuild_routes(device);
   return true;
 }
 
 bool RuntimeSupervisor::remove_static_route(
     DeviceHandle device, std::uint32_t network,
-    std::uint8_t prefix_length) noexcept {
+    std::uint8_t prefix_length, std::optional<std::uint32_t> next_hop,
+    std::optional<bool> indirect) noexcept {
   if (!devices_.get(device) || device.index >= router_network_.size() ||
       !router_network_[device.index] || prefix_length > 32U)
     return false;
   auto &state = *router_network_[device.index];
   const auto canonical = network & routing::prefix_mask(prefix_length);
-  const auto found = std::find_if(
-      state.statics.begin(), state.statics.end(), [&](const auto &entry) {
-        return entry.configured && entry.network == canonical &&
-               entry.prefix_length == prefix_length;
-      });
-  if (found == state.statics.end())
+  bool removed{};
+  for (auto &entry : state.statics) {
+    if (!entry.configured || entry.network != canonical ||
+        entry.prefix_length != prefix_length ||
+        (next_hop && entry.next_hop != *next_hop) ||
+        (indirect && entry.indirect != *indirect))
+      continue;
+    entry = {};
+    removed = true;
+  }
+  if (!removed)
     return false;
-  *found = {};
+  rebuild_routes(device);
+  return true;
+}
+
+bool RuntimeSupervisor::configure_ecmp(DeviceHandle device,
+                                       std::uint16_t maximum_paths) noexcept {
+  if (!devices_.get(device) || device.index >= router_network_.size() ||
+      !router_network_[device.index] || maximum_paths == 0U ||
+      maximum_paths > device_catalog::maximum_ecmp_paths)
+    return false;
+  auto &state = *router_network_[device.index];
+  if (state.maximum_ecmp_paths == maximum_paths)
+    return true;
+  state.maximum_ecmp_paths = maximum_paths;
   rebuild_routes(device);
   return true;
 }
@@ -2299,7 +2324,7 @@ bool RuntimeSupervisor::remove_static_route(
 bool RuntimeSupervisor::add_ipv6_static_route(
     DeviceHandle device, const packet::Ipv6 &network,
     std::uint8_t prefix_length, const packet::Ipv6 &next_hop,
-    std::string_view outgoing_port_id) noexcept {
+    std::string_view outgoing_port_id, bool indirect) noexcept {
   if (!devices_.get(device) || device.index >= router_network_.size() ||
       !router_network_[device.index] || prefix_length > ip::ipv6_address_bits ||
       ip::is_unspecified(next_hop) || ip::is_multicast(next_hop))
@@ -2315,13 +2340,18 @@ bool RuntimeSupervisor::add_ipv6_static_route(
     if (!outgoing_port)
       return false;
   }
-  if (ip::is_link_local(next_hop) && !outgoing_port)
+  // An indirect address is a routing-table key, not a scoped adjacency. A
+  // link-local address cannot be resolved without a zone, while attaching a
+  // physical port would turn the command into direct next-hop semantics.
+  if ((indirect && (ip::is_link_local(next_hop) || outgoing_port)) ||
+      (!indirect && ip::is_link_local(next_hop) && !outgoing_port))
     return false;
 
   routing::Ipv6StaticInput *target{};
   for (auto &entry : state.ipv6_statics) {
     if (entry.configured && entry.network == canonical &&
-        entry.prefix_length == prefix_length) {
+        entry.prefix_length == prefix_length && entry.next_hop == next_hop &&
+        entry.indirect == indirect) {
       target = &entry;
       break;
     }
@@ -2331,6 +2361,7 @@ bool RuntimeSupervisor::add_ipv6_static_route(
   if (!target)
     return false;
   *target = {.configured = true,
+             .indirect = indirect,
              .outgoing_interface_set = outgoing_port.has_value(),
              .network = canonical,
              .next_hop = next_hop,
@@ -2343,21 +2374,25 @@ bool RuntimeSupervisor::add_ipv6_static_route(
 
 bool RuntimeSupervisor::remove_ipv6_static_route(
     DeviceHandle device, const packet::Ipv6 &network,
-    std::uint8_t prefix_length) noexcept {
+    std::uint8_t prefix_length, std::optional<packet::Ipv6> next_hop,
+    std::optional<bool> indirect) noexcept {
   if (!devices_.get(device) || device.index >= router_network_.size() ||
       !router_network_[device.index] || prefix_length > ip::ipv6_address_bits)
     return false;
   auto &state = *router_network_[device.index];
   const auto canonical = ip::mask(network, prefix_length);
-  const auto found =
-      std::find_if(state.ipv6_statics.begin(), state.ipv6_statics.end(),
-                   [&](const auto &entry) {
-                     return entry.configured && entry.network == canonical &&
-                            entry.prefix_length == prefix_length;
-                   });
-  if (found == state.ipv6_statics.end())
+  bool removed{};
+  for (auto &entry : state.ipv6_statics) {
+    if (!entry.configured || entry.network != canonical ||
+        entry.prefix_length != prefix_length ||
+        (next_hop && entry.next_hop != *next_hop) ||
+        (indirect && entry.indirect != *indirect))
+      continue;
+    entry = {};
+    removed = true;
+  }
+  if (!removed)
     return false;
-  *found = {};
   rebuild_routes(device);
   return true;
 }
@@ -2653,7 +2688,8 @@ void RuntimeSupervisor::rebuild_routes(DeviceHandle device) noexcept {
   if (device.index >= router_network_.size() || !router_network_[device.index])
     return;
   auto &state = *router_network_[device.index];
-  const bool changed = state.rib.rebuild(state.connected, state.statics);
+  const bool changed = state.rib.rebuild(state.connected, state.statics, {},
+                                         state.maximum_ecmp_paths);
   if (!state.rib.last_rebuild_valid())
     return;
   if (changed || !state.fib_generation) {
@@ -2667,7 +2703,8 @@ void RuntimeSupervisor::rebuild_routes(DeviceHandle device) noexcept {
   }
   const bool ipv6_changed =
       state.ipv6_rib.rebuild(state.native_ipv6_connected, state.ipv6_statics,
-                             state.ies_ipv6_connected);
+                             state.ies_ipv6_connected, {},
+                             state.maximum_ecmp_paths);
   if (!state.ipv6_rib.last_rebuild_valid())
     return;
   if (ipv6_changed || !state.ipv6_fib_generation) {
@@ -3405,6 +3442,7 @@ std::unique_ptr<RuntimeSupervisorCheckpoint> RuntimeSupervisor::checkpoint() {
       state->control.emplace_back();
       auto &router = state->control.back();
       router.device = device.handle;
+      router.maximum_ecmp_paths = control->maximum_ecmp_paths;
       router.connected = control->connected;
       router.statics = control->statics;
       router.ipv6_connected = control->ipv6_connected;
@@ -3489,6 +3527,9 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
                                  a.next_hop == b.next_hop &&
                                  a.port_ordinal == b.port_ordinal &&
                                  a.prefix_length == b.prefix_length &&
+                                 a.preference == b.preference &&
+                                 a.metric == b.metric &&
+                                 a.source == b.source &&
                                  a.local_system == b.local_system;
                         });
     };
@@ -3502,7 +3543,10 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
                                  a.interface_id == b.interface_id &&
                                  a.physical_port_ordinal ==
                                      b.physical_port_ordinal &&
-                                 a.prefix_length == b.prefix_length;
+                                 a.prefix_length == b.prefix_length &&
+                                 a.preference == b.preference &&
+                                 a.metric == b.metric &&
+                                 a.source == b.source;
                         });
     };
     for (const auto &source : state.control) {
@@ -3513,7 +3557,9 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
           source.selected_rib.count > source.selected_rib.routes.size() ||
           source.selected_ipv6_rib.generation != source.ipv6_fib_generation ||
           source.selected_ipv6_rib.count >
-              source.selected_ipv6_rib.routes.size())
+              source.selected_ipv6_rib.routes.size() ||
+          source.maximum_ecmp_paths == 0U ||
+          source.maximum_ecmp_paths > device_catalog::maximum_ecmp_paths)
         return false;
       auto restored = std::make_unique<RouterNetworkState>();
       restored->connected = source.connected;
@@ -3522,6 +3568,7 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
       restored->native_ipv6_addresses = source.native_ipv6_addresses;
       restored->native_ipv6_connected = source.native_ipv6_connected;
       restored->ipv6_statics = source.ipv6_statics;
+      restored->maximum_ecmp_paths = source.maximum_ecmp_paths;
       restored->ports = source.ports;
       restored->interface_admin = source.interface_admin;
       restored->ies_port_owned = source.ies_port_owned;
@@ -3623,14 +3670,16 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
       if (!relay_validation.restore(relay_validation_values))
         return false;
       static_cast<void>(
-          restored->rib.rebuild(restored->connected, restored->statics));
+          restored->rib.rebuild(restored->connected, restored->statics, {},
+                                restored->maximum_ecmp_paths));
       if (!restored->rib.last_rebuild_valid() ||
           !same_fib(restored->rib.compile(source.fib_generation),
                     source.selected_rib))
         return false;
       static_cast<void>(restored->ipv6_rib.rebuild(
           restored->native_ipv6_connected, restored->ipv6_statics,
-          restored->ies_ipv6_connected));
+          restored->ies_ipv6_connected, {},
+          restored->maximum_ecmp_paths));
       if (!restored->ipv6_rib.last_rebuild_valid() ||
           !same_ipv6_fib(restored->ipv6_rib.compile(source.ipv6_fib_generation),
                          source.selected_ipv6_rib))

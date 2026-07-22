@@ -35,6 +35,33 @@ packet::Ipv4 to_ipv4(std::uint32_t address) noexcept {
           static_cast<std::uint8_t>(address)};
 }
 
+std::uint64_t ecmp_hash_bytes(std::span<const std::uint8_t> bytes,
+                              std::uint64_t seed) noexcept {
+  // Nokia documents the default unicast hash inputs as both IP addresses and
+  // the path index as hash modulo ECMP width, but does not publish the ASIC
+  // mixing function. FNV-1a is the release-profiled deterministic mixer here.
+  // It gives stable per-flow behavior without pretending to reproduce an
+  // undocumented forwarding-chip bucket assignment.
+  constexpr std::uint64_t prime{1099511628211ULL};
+  for (const auto byte : bytes) {
+    seed ^= byte;
+    seed *= prime;
+  }
+  return seed;
+}
+
+std::uint64_t ipv4_ecmp_hash(const packet::Ipv4View &packet) noexcept {
+  constexpr std::uint64_t offset{14695981039346656037ULL};
+  return ecmp_hash_bytes(packet.destination,
+                         ecmp_hash_bytes(packet.source, offset));
+}
+
+std::uint64_t ipv6_ecmp_hash(const packet::Ipv6View &packet) noexcept {
+  constexpr std::uint64_t offset{14695981039346656037ULL};
+  return ecmp_hash_bytes(packet.destination,
+                         ecmp_hash_bytes(packet.source, offset));
+}
+
 bool usable_sender_mac(packet::Mac mac) noexcept {
   // Reject group, broadcast and all-zero addresses before ARP learning. The
   // local-admin bit is valid and therefore intentionally not rejected.
@@ -2617,6 +2644,9 @@ bool RouterForwarder::program_fib(const routing::FibProgram &program) noexcept {
                              left.next_hop == right.next_hop &&
                              left.port_ordinal == right.port_ordinal &&
                              left.prefix_length == right.prefix_length &&
+                             left.preference == right.preference &&
+                             left.metric == right.metric &&
+                             left.source == right.source &&
                              left.local_system == right.local_system;
                     }))
       return false;
@@ -2641,7 +2671,10 @@ bool RouterForwarder::program_ipv6_fib(
                      left.interface_id == right.interface_id &&
                      left.physical_port_ordinal ==
                          right.physical_port_ordinal &&
-                     left.prefix_length == right.prefix_length;
+                     left.prefix_length == right.prefix_length &&
+                     left.preference == right.preference &&
+                     left.metric == right.metric &&
+                     left.source == right.source;
             }))
       return false;
     return true;
@@ -3227,11 +3260,12 @@ bool RouterForwarder::emit(std::uint16_t port_ordinal,
 
 bool RouterForwarder::lookup_ipv6_route(const packet::Ipv6 &destination,
                                         routing::Ipv6Route &selected,
-                                        bool &blackhole) const noexcept {
+                                        bool &blackhole,
+                                        std::uint64_t flow_hash) const noexcept {
   routing::Ipv6Route configured;
   dhcpv6::RelayRoute populated;
   const bool have_configured =
-      routing::lookup(ipv6_fib_, destination, configured);
+      routing::lookup(ipv6_fib_, destination, configured, flow_hash);
   const bool have_populated =
       dhcpv6_relay_routes_.lookup(destination, populated);
   if (!have_configured && !have_populated)
@@ -3482,7 +3516,9 @@ bool RouterForwarder::send_ipv6(packet::Frame frame,
                                 std::uint32_t local_source_mtu) noexcept {
   routing::Ipv6Route route;
   bool blackhole{};
-  if (!lookup_ipv6_route(destination, route, blackhole)) {
+  const auto parsed_for_hash = packet::parse_ipv6(frame);
+  const auto flow_hash = parsed_for_hash ? ipv6_ecmp_hash(*parsed_for_hash) : 0U;
+  if (!lookup_ipv6_route(destination, route, blackhole, flow_hash)) {
     drop(ForwardDrop::no_route);
     return false;
   }
@@ -3553,7 +3589,9 @@ void RouterForwarder::send(packet::Frame frame, std::uint32_t destination,
                            bool transit, void *context, EgressSink sink,
                            Clock::time_point now) noexcept {
   routing::Route route;
-  if (!routing::lookup(fib_, destination, route)) {
+  const auto parsed_for_hash = packet::parse_ipv4(frame);
+  const auto flow_hash = parsed_for_hash ? ipv4_ecmp_hash(*parsed_for_hash) : 0U;
+  if (!routing::lookup(fib_, destination, route, flow_hash)) {
     // A transit failure is observable on the wire. Locally originated traffic
     // reports failure to its local caller and must not recursively send an
     // ICMP error to itself.

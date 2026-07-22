@@ -265,7 +265,9 @@ export class MultiRouterRuntimeClient {
     // The nested payload is one outer protocol field. Its own netstrings make
     // every description and interface name unambiguous while C++ stages the
     // complete value before changing hardware, RIB or FIB owners.
-    const values: string[] = [router.systemName, String(router.running.ports.length)];
+    const values: string[] = [router.systemName,
+      String(router.running.maximumEcmpPaths),
+      String(router.running.ports.length)];
     for (const port of router.running.ports) {
       values.push(port.id, boolean(port.admin === "up"), String(port.mtu),
         String(port.speedMbps), port.description);
@@ -286,10 +288,11 @@ export class MultiRouterRuntimeClient {
     }
     values.push(String(router.running.staticRoutes.length));
     for (const route of router.running.staticRoutes)
-      values.push(route.prefix, route.nextHop);
+      values.push(route.prefix, route.nextHop, boolean(route.indirect));
     values.push(String(router.running.ipv6StaticRoutes.length));
     for (const route of router.running.ipv6StaticRoutes)
-      values.push(route.prefix, route.nextHop, route.outgoingPortId);
+      values.push(route.prefix, route.nextHop, route.outgoingPortId,
+        boolean(route.indirect));
     return this.mutation(LAB_RUNTIME_PROTOCOL.router_configuration_replace,
       [router.id, protocolMessage(values[0], values.slice(1))]);
   }
@@ -647,18 +650,10 @@ export class MultiRouterRuntimeClient {
               card.admin === "up");
         }
       }
-      for (const port of router.running.ports) {
-        // Running port intent is independent from physical presence. The core
-        // validates that the coordinate and speed are possible for the chassis
-        // and withholds carrier if later equipment is incompatible.
-        snapshot = await this.configurePort(router.id, port);
-      }
-      for (const item of router.running.interfaces) {
-        snapshot = await this.configureInterface(router.id, item);
-      }
-      for (const route of router.running.staticRoutes) {
-        snapshot = await this.addStaticRoute(router.id, route.prefix, route.nextHop);
-      }
+      // Publish one validated configuration transaction after inventory is
+      // present. Replaying leaves one at a time would temporarily compile a
+      // different RIB and could lose ECMP siblings with the same prefix.
+      snapshot = await this.replaceRouterConfiguration(router);
     }
     for (const host of project.hosts) {
       snapshot = await this.createConfiguredHost(host.id, host.name,

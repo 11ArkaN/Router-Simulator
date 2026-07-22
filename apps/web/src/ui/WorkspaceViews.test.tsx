@@ -97,7 +97,9 @@ describe("multi-router workspace controls", () => {
     expect(observed).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Apply" }));
     const latest = observed.mock.calls.at(-1)?.[0] as RouterProjectV4;
-    expect(latest.running.staticRoutes.at(-1)).toEqual({ prefix: "", nextHop: "" });
+    expect(latest.running.staticRoutes.at(-1)).toEqual({
+      prefix: "", nextHop: "", indirect: false
+    });
   });
 
   it("keeps notes and project settings in format 4 intent", async () => {

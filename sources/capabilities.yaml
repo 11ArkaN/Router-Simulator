@@ -228,7 +228,13 @@ features:
     source_ids: [nokia.sros.26_7.ipv6.neighbor_operational, nokia.sros.26_7.ipv6.neighbor_reset, ietf.nd.rfc4861]
   cli.ipv6_static_routes:
     status: implemented
-    source_ids: [nokia.sros.26_7.static_route.configuration, ietf.ipv6.rfc8200]
+    source_ids: [nokia.sros.26_7.static_route.configuration, nokia.sros.26_7.static_route.indirect, nokia.sros.26_7.ecmp.configuration, ietf.ipv6.rfc8200]
+  routing.static_indirect:
+    status: implemented
+    source_ids: [nokia.sros.26_7.static_route.indirect]
+  routing.static_ecmp:
+    status: implemented
+    source_ids: [nokia.sros.26_7.static_route.configuration, nokia.sros.26_7.ecmp.configuration]
   ipv6.duplicate_address_detection:
     status: implemented
     source_ids: [ietf.ipv6.dad.rfc4862]

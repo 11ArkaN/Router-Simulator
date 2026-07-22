@@ -75,6 +75,10 @@ runtime:
   # deadline; this is a host scheduling policy, not simulated time.
   immediate_link_deadline_nanoseconds: 74000
   static_routes_per_router: 64
+  # SR OS 26.7 accepts configure router ecmp values from 1 through 128. The
+  # configured ceiling may exceed this emulator's current static-route arena;
+  # it still remains the correct routing-instance value for future protocols.
+  maximum_ecmp_paths: 128
   # These are bounded forwarding resources. They are not advertised as exact
   # ASIC or SR OS platform scaling values.
   arp_entries_per_router: 4096

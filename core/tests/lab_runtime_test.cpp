@@ -335,6 +335,7 @@ void lab_runtime_tests() {
 
   const auto replacement = nested({"R1",
                                    "1",
+                                   "1",
                                    "1/1/1",
                                    "1",
                                    "9212",
@@ -368,6 +369,7 @@ void lab_runtime_tests() {
   const std::string before_invalid{
       runtime.command(message(lab_runtime_protocol::snapshot))};
   const auto duplicate_interface = nested({"R1",
+                                           "1",
                                            "1",
                                            "1/1/1",
                                            "1",
@@ -614,6 +616,26 @@ void lab_runtime_tests() {
           "valid IPv6 MD command failed: " + std::string{command} +
           " output=" + std::string{result});
   }
+  // Route siblings share one destination key but retain independent next-hop
+  // children. Indirect intent is accepted even while inactive because no
+  // dynamic protocol has published a resolver for it in this fixture.
+  for (const auto command : {
+           "router \"Base\" ecmp 2",
+           "router \"Base\" static-routes route 203.0.113.0/24 route-type "
+           "unicast next-hop \"192.0.2.2\"",
+           "router \"Base\" static-routes route 203.0.113.0/24 route-type "
+           "unicast next-hop \"192.0.2.3\"",
+           "router \"Base\" static-routes route 198.51.100.0/24 route-type "
+           "unicast indirect \"10.0.0.1\"",
+           "router \"Base\" static-routes route 2001:db8:dead::/64 "
+           "route-type unicast indirect \"2001:db8:ffff::1\""}) {
+    const auto result = runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}));
+    if (result.find("MINOR:") != std::string_view::npos)
+      throw std::runtime_error("valid MD ECMP or indirect edit failed: " +
+                               std::string{command} + " output=" +
+                               std::string{result});
+  }
   // Configure the complete referential chain exposed by the IPsec release
   // grammar through terminal bytes. Transform objects must exist before IKE
   // policy and profile leafrefs, while traffic-selector entries remain normal
@@ -820,6 +842,20 @@ void lab_runtime_tests() {
                         "\"duplicateAddressDetection\":true,"
                         "\"eui64\":true") != std::string_view::npos,
           "MD EUI-64 leaf did not survive committed runtime projection");
+  const std::string multipath_snapshot{
+      runtime.command(message(lab_runtime_protocol::snapshot))};
+  require(multipath_snapshot.find("\"maximumEcmpPaths\":2") !=
+              std::string_view::npos &&
+              multipath_snapshot.find("\"nextHop\":\"192.0.2.2\","
+                                      "\"indirect\":false") !=
+                  std::string_view::npos &&
+              multipath_snapshot.find("\"nextHop\":\"192.0.2.3\","
+                                      "\"indirect\":false") !=
+                  std::string_view::npos &&
+              multipath_snapshot.find("\"nextHop\":\"10.0.0.1\","
+                                      "\"indirect\":true") !=
+                  std::string_view::npos,
+          "MD commit lost ECMP width, route siblings or indirect intent");
 
   require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1", "exit all"}))
@@ -1391,7 +1427,7 @@ void lab_runtime_tests() {
                                   {"r1-console-1", "show router static-arp"}))
                   .find("192.0.2.2") != std::string_view::npos,
       "classic ARP filtering, report columns or owner clear failed");
-  const std::array<std::string_view, 20> classic_ipv6_commands{
+  const std::array<std::string_view, 27> classic_ipv6_commands{
       "configure router interface edge ipv6 address 2001:db8:1::1/64",
       "configure router interface edge ipv6 address 2001:db8:3::1/64 "
       "dad-disable primary-preference 30 tag 900",
@@ -1423,7 +1459,19 @@ void lab_runtime_tests() {
       "400",
       "configure router static-route-entry 2001:db8:aaaa::/64 next-hop "
       "2001:db8:1::2",
-      "configure router no static-route-entry 2001:db8:aaaa::/64"};
+      "configure router no static-route-entry 2001:db8:aaaa::/64",
+      "configure router no ecmp",
+      "configure router ecmp 2",
+      "configure router static-route-entry 203.0.114.0/24 next-hop "
+      "192.0.2.2",
+      "configure router static-route-entry 203.0.114.0/24 next-hop "
+      "192.0.2.3",
+      "configure router static-route-entry 198.51.101.0/24 indirect "
+      "10.0.0.1",
+      "configure router static-route-entry 203.0.114.0/24 no next-hop "
+      "192.0.2.3",
+      "configure router static-route-entry 198.51.101.0/24 no indirect "
+      "10.0.0.1"};
   for (const auto command : classic_ipv6_commands) {
     const std::string result{runtime.command(message(
         lab_runtime_protocol::session_execute, {"r1-console-1", command}))};

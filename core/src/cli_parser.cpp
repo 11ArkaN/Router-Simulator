@@ -143,8 +143,16 @@ bool configuration_only(cli_schema::CommandId id) noexcept {
   case md_delete_interface_ipv6_address_dad:
   case md_delete_interface_ipv6_address_primary_preference:
   case md_static_route:
+  case md_indirect_static_route:
   case md_static_route_ipv6:
+  case md_indirect_static_route_ipv6:
+  case md_ecmp:
+  case md_delete_ecmp:
+  case md_delete_static_next_hop:
+  case md_delete_static_indirect:
   case md_delete_static_route_ipv6:
+  case md_delete_static_next_hop_ipv6:
+  case md_delete_static_indirect_ipv6:
   case md_ra_enable:
   case md_ra_disable:
   case md_ra_current_hop_limit:
@@ -698,6 +706,7 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case prefix_length:
   case arp_timeout_seconds:
   case arp_retry_deciseconds:
+  case ecmp_paths:
   case count:
   case size:
   case mtu:

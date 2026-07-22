@@ -41,11 +41,35 @@ describe("multi-router project format", () => {
     const project = createEmptyProjectV4();
     const router = createRouterProjectV4("r1", "7750-sr-1", "R1");
     router.running.staticRoutes.push({ prefix: "192.0.2.4/30",
-      nextHop: "192.0.2.1" });
+      nextHop: "192.0.2.1", indirect: false });
     project.routers.push(router);
     project.layout.nodes.r1 = { x: 0, y: 0 };
     expect(parseLabProjectV4(project).routers[0].running.staticRoutes)
       .toEqual(router.running.staticRoutes);
+  });
+
+  it("retains ECMP siblings and rejects only an identical route child", () => {
+    const project = createEmptyProjectV4();
+    const router = createRouterProjectV4("r1", "7750-sr-1", "R1");
+    router.running.maximumEcmpPaths = 2;
+    router.running.staticRoutes.push(
+      { prefix: "203.0.113.0/24", nextHop: "192.0.2.1", indirect: false },
+      { prefix: "203.0.113.0/24", nextHop: "192.0.2.2", indirect: false },
+      { prefix: "198.51.100.0/24", nextHop: "10.0.0.1", indirect: true }
+    );
+    project.routers.push(router);
+    project.layout.nodes.r1 = { x: 0, y: 0 };
+    expect(parseLabProjectV4(project).routers[0].running.staticRoutes)
+      .toEqual(router.running.staticRoutes);
+
+    const duplicate = structuredClone(project);
+    duplicate.routers[0].running.staticRoutes.push(
+      { prefix: "203.0.113.0/24", nextHop: "192.0.2.1", indirect: false });
+    expect(() => parseLabProjectV4(duplicate)).toThrow("duplicate static route");
+    const excessive = structuredClone(project);
+    excessive.routers[0].running.maximumEcmpPaths =
+      PROFILE_CATALOG.runtime.maximum_ecmp_paths + 1;
+    expect(() => parseLabProjectV4(excessive)).toThrow("maximumEcmpPaths");
   });
 
   it("persists the reserved IPv4 system interface without a physical port", () => {
@@ -93,7 +117,7 @@ describe("multi-router project format", () => {
         primaryPreference: 30, tag: null
       }] });
     router.running.ipv6StaticRoutes.push({ prefix: "2001:db8:2::/64",
-      nextHop: "fe80::2", outgoingPortId: "1/1/1" });
+      nextHop: "fe80::2", outgoingPortId: "1/1/1", indirect: false });
     project.routers.push(router);
     project.layout.nodes.r1 = { x: 0, y: 0 };
     const restored = parseLabProjectV4(project).routers[0].running;

@@ -305,12 +305,18 @@ void route(Writer &out, const routing::Route &value) {
   out.integer(value.next_hop);
   out.integer(value.port_ordinal);
   out.integer(value.prefix_length);
+  out.integer(value.preference);
+  out.integer(value.metric);
+  out.integer(value.source);
   out.boolean(value.local_system);
 }
 
 bool route(Reader &in, routing::Route &value) noexcept {
   return in.integer(value.network) && in.integer(value.next_hop) &&
          in.integer(value.port_ordinal) && in.integer(value.prefix_length) &&
+         in.integer(value.preference) && in.integer(value.metric) &&
+         in.integer(value.source) &&
+         value.source <= routing::Route::Source::dynamic &&
          in.boolean(value.local_system);
 }
 
@@ -337,13 +343,18 @@ void ipv6_route(Writer &out, const routing::Ipv6Route &value) {
   out.integer(value.interface_id);
   out.integer(value.physical_port_ordinal);
   out.integer(value.prefix_length);
+  out.integer(value.preference);
+  out.integer(value.metric);
+  out.integer(value.source);
 }
 
 bool ipv6_route(Reader &in, routing::Ipv6Route &value) noexcept {
   return ipv6(in, value.network) && ipv6(in, value.next_hop) &&
          in.integer(value.interface_id) &&
          in.integer(value.physical_port_ordinal) &&
-         in.integer(value.prefix_length);
+         in.integer(value.prefix_length) && in.integer(value.preference) &&
+         in.integer(value.metric) && in.integer(value.source) &&
+         value.source <= routing::Route::Source::dynamic;
 }
 
 void ipv6_fib(Writer &out, const routing::Ipv6FibProgram &value) {
@@ -644,6 +655,7 @@ void static_route(Writer &out, const routing::StaticInput &value) {
   out.integer(value.network);
   out.integer(value.next_hop);
   out.integer(value.prefix_length);
+  out.boolean(value.indirect);
 }
 
 void ipv6_connected(Writer &out, const routing::Ipv6ConnectedInput &value) {
@@ -669,18 +681,20 @@ void ipv6_static_route(Writer &out, const routing::Ipv6StaticInput &value) {
   ipv6(out, value.next_hop);
   out.integer(value.outgoing_interface_id);
   out.integer(value.prefix_length);
+  out.boolean(value.indirect);
 }
 
 bool ipv6_static_route(Reader &in, routing::Ipv6StaticInput &value) noexcept {
   return in.boolean(value.configured) &&
          in.boolean(value.outgoing_interface_set) && ipv6(in, value.network) &&
          ipv6(in, value.next_hop) && in.integer(value.outgoing_interface_id) &&
-         in.integer(value.prefix_length);
+         in.integer(value.prefix_length) && in.boolean(value.indirect);
 }
 
 bool static_route(Reader &in, routing::StaticInput &value) noexcept {
   return in.boolean(value.configured) && in.integer(value.network) &&
-         in.integer(value.next_hop) && in.integer(value.prefix_length);
+         in.integer(value.next_hop) && in.integer(value.prefix_length) &&
+         in.boolean(value.indirect);
 }
 
 void rdnss_information(Writer &out, const packet::nd::RdnssInformation &rdnss) {
@@ -1172,6 +1186,9 @@ bool ies_configuration(Reader &in, service::Configuration &value,
 
 void control_state(Writer &out, const RouterControlCheckpoint &state) {
   handle(out, state.device);
+  // ECMP width is control-owned policy. Persist it before route inputs so the
+  // restored RIB uses the same path cap as the live router.
+  out.integer(state.maximum_ecmp_paths);
   for (const auto &value : state.connected)
     connected(out, value);
   for (const auto &value : state.statics)
@@ -1241,7 +1258,10 @@ void control_state(Writer &out, const RouterControlCheckpoint &state) {
 }
 
 bool control_state(Reader &in, RouterControlCheckpoint &state) noexcept {
-  if (!handle(in, state.device))
+  if (!handle(in, state.device) ||
+      !in.integer(state.maximum_ecmp_paths) ||
+      state.maximum_ecmp_paths == 0U ||
+      state.maximum_ecmp_paths > device_catalog::maximum_ecmp_paths)
     return false;
   for (auto &value : state.connected)
     if (!connected(in, value))
@@ -5297,13 +5317,14 @@ void portable_ipv6_route(Writer &out,
   ipv6(out, route.next_hop);
   out.string(route.outgoing_port_id);
   out.integer(route.prefix_length);
+  out.boolean(route.indirect);
 }
 
 bool portable_ipv6_route(Reader &in,
                          PortableIpv6StaticRouteIntentCheckpoint &route) {
   if (!ipv6(in, route.network) || !ipv6(in, route.next_hop) ||
       !in.string(route.outgoing_port_id, 32) ||
-      !in.integer(route.prefix_length) ||
+      !in.integer(route.prefix_length) || !in.boolean(route.indirect) ||
       route.prefix_length > ip::ipv6_address_bits ||
       ip::is_unspecified(route.next_hop) || ip::is_multicast(route.next_hop) ||
       route.network != ip::mask(route.network, route.prefix_length))
@@ -6148,6 +6169,7 @@ void portable_router(Writer &out, const PortableRouterIntentCheckpoint &state) {
   // written after forwarding state so restoring a bare checkpoint never has
   // to guess them from a currently open project in the browser.
   handle(out, state.device);
+  out.integer(state.maximum_ecmp_paths);
   mld_global_intent(out, state.mld);
   mld_policy_prefix_lists(out, state.mld_prefix_lists);
   named_mld_import_policies(out, state.mld_import_policies);
@@ -6177,6 +6199,7 @@ void portable_router(Writer &out, const PortableRouterIntentCheckpoint &state) {
     out.integer(route.network);
     out.integer(route.next_hop);
     out.integer(route.prefix_length);
+    out.boolean(route.indirect);
   }
   count(out, state.ipv6_routes);
   for (const auto &route : state.ipv6_routes)
@@ -6188,7 +6211,11 @@ void portable_router(Writer &out, const PortableRouterIntentCheckpoint &state) {
 
 bool portable_router(Reader &in, PortableRouterIntentCheckpoint &state) {
   std::uint32_t size{};
-  if (!handle(in, state.device) || !mld_global_intent(in, state.mld) ||
+  if (!handle(in, state.device) ||
+      !in.integer(state.maximum_ecmp_paths) ||
+      state.maximum_ecmp_paths == 0U ||
+      state.maximum_ecmp_paths > device_catalog::maximum_ecmp_paths ||
+      !mld_global_intent(in, state.mld) ||
       !mld_policy_prefix_lists(in, state.mld_prefix_lists) ||
       !named_mld_import_policies(in, state.mld_import_policies) ||
       !rdnss_information(in, state.router_advertisement_rdnss) ||
@@ -6245,6 +6272,7 @@ bool portable_router(Reader &in, PortableRouterIntentCheckpoint &state) {
   for (auto &route : state.routes) {
     if (!in.integer(route.network) || !in.integer(route.next_hop) ||
         !route.next_hop || !in.integer(route.prefix_length) ||
+        !in.boolean(route.indirect) ||
         route.prefix_length > 32U ||
         route.network !=
             (route.network & routing::prefix_mask(route.prefix_length)))
@@ -6267,6 +6295,7 @@ bool portable_router(Reader &in, PortableRouterIntentCheckpoint &state) {
 void portable_configuration(Writer &out,
                             const PortableConfigurationCheckpoint &state) {
   out.string(state.system_name);
+  out.integer(state.maximum_ecmp_paths);
   mld_global_intent(out, state.mld);
   mld_policy_prefix_lists(out, state.mld_prefix_lists);
   named_mld_import_policies(out, state.mld_import_policies);
@@ -6304,6 +6333,7 @@ void portable_configuration(Writer &out,
     out.integer(route.network);
     out.integer(route.next_hop);
     out.integer(route.prefix_length);
+    out.boolean(route.indirect);
   }
   count(out, state.ipv6_routes);
   for (const auto &route : state.ipv6_routes)
@@ -6313,6 +6343,9 @@ void portable_configuration(Writer &out,
 bool portable_configuration(Reader &in,
                             PortableConfigurationCheckpoint &state) {
   if (!in.string(state.system_name, 64) || state.system_name.empty() ||
+      !in.integer(state.maximum_ecmp_paths) ||
+      state.maximum_ecmp_paths == 0U ||
+      state.maximum_ecmp_paths > device_catalog::maximum_ecmp_paths ||
       !mld_global_intent(in, state.mld) ||
       !mld_policy_prefix_lists(in, state.mld_prefix_lists) ||
       !named_mld_import_policies(in, state.mld_import_policies) ||
@@ -6378,6 +6411,7 @@ bool portable_configuration(Reader &in,
   for (auto &route : state.routes)
     if (!in.integer(route.network) || !in.integer(route.next_hop) ||
         !route.next_hop || !in.integer(route.prefix_length) ||
+        !in.boolean(route.indirect) ||
         route.prefix_length > 32U ||
         route.network !=
             (route.network & routing::prefix_mask(route.prefix_length)))

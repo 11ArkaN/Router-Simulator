@@ -826,7 +826,35 @@ records:
     implementation: [schemas/cli/26.7.R1.yaml, core/include/router/ip_address.hpp, core/include/router/lab_runtime.hpp, core/include/router/multi_device_routing.hpp, core/src/cli_parser.cpp, core/src/ip_address.cpp, core/src/lab_runtime.cpp, core/src/multi_device_routing.cpp, core/src/runtime_supervisor.cpp]
     tests: [core/tests/cli_test.cpp, core/tests/routing_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
-    notes: This record covers directly resolved unicast static routes. IPv4 and IPv6 routes support creation, replacement and removal in both engines, and IPv6 link-local next hops require an interface zone. Multipath, indirect and optional-attribute forms are outside this advertised command contract and are rejected explicitly.
+    notes: IPv4 and IPv6 unicast routes retain independently keyed direct next hops, support selective or whole-prefix removal in both engines, and require an interface zone for IPv6 link-local next hops. Equal direct candidates participate in the router-wide ECMP selection. Optional attributes not listed by the capability matrix remain unsupported and are rejected explicitly.
+  - id: nokia.sros.26_7.static_route.indirect
+    kind: routing-behavior
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-i-commands-indi-2.html
+    section: configure router static-route-entry indirect
+    rfc_refs: [RFC 1812]
+    yang_path: /configure/router/static-routes/route/indirect
+    last_verified_at: 2026-07-22
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/multi_device_routing.hpp, core/src/multi_device_routing.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp]
+    tests: [core/tests/multi_device_routing_test.cpp, core/tests/lab_runtime_test.cpp]
+    status: implemented
+    notes: An indirect next-hop is resolved only by the longest active dynamic-protocol route. Another static route is never eligible. Equal dynamic resolvers with the same preference and metric expand into the resulting static route ECMP group. Without a dynamic route the configuration remains present and operationally inactive.
+  - id: nokia.sros.26_7.ecmp.configuration
+    kind: routing-behavior
+    release: 26.7.R1
+    platforms: [7750 SR-7]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-e-commands-e-co-1.html
+    section: configure router ecmp
+    rfc_refs: []
+    yang_path: /configure/router/ecmp
+    last_verified_at: 2026-07-22
+    implementation: [profiles/catalog/26.7.R1.yaml, schemas/cli/26.7.R1.yaml, core/include/router/multi_device_routing.hpp, core/src/multi_device_routing.cpp, core/src/router_forwarder.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp]
+    tests: [core/tests/multi_device_routing_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/lab_runtime_test.cpp]
+    status: implemented
+    notes: The Base router default is no ECMP, represented by a maximum of one path. Values 1 through 128 are accepted. Only routes with the same source protocol, preference and metric share traffic. Excess candidates are selected in deterministic lowest-next-hop order. Unicast forwarding hashes both source and destination IP addresses per flow and selects hash modulo group width. The proprietary ASIC mixer is not published, so the exact bucket mapping is a documented deterministic profile approximation.
   - id: whatwg.storage.opfs
     kind: browser-storage
     release: current

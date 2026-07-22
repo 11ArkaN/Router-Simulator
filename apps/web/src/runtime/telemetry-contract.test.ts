@@ -23,7 +23,8 @@ const layout: TelemetryLayout = {
 function snapshot(): LabRuntimeSnapshotV6 {
   return { abiVersion: 6, protocolVersion: 4, status: "ready",
     routers: [{ id: "r1", profileId: "7750-sr-1", chassis: "7750 SR-1",
-      systemName: "R1", handle: { index: 0, generation: 1 }, cards: [],
+      systemName: "R1", maximumEcmpPaths: 1,
+      handle: { index: 0, generation: 1 }, cards: [],
       ports: [{ id: "1/1/1", admin: true, carrier: false, oper: false,
         mtu: 9212, speedMbps: 100000, description: "" }], interfaces: [],
       staticRoutes: [], ipv6StaticRoutes: [] }], hosts: [], links: [], sessions: [], capturePoints: [],

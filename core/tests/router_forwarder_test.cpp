@@ -606,6 +606,34 @@ void router_forwarder_tests() {
       packet::arp_request(host_a, {10, 0, 0, 2}, {10, 0, 0, 1});
   forwarder->receive(0, reverse_arp, &emitted, collect);
 
+  // Program two equal static children and prove selection on encoded transit
+  // frames, after both real ARP adjacencies have been learned. Varying only
+  // the destination address exercises the default SR OS address hash inputs;
+  // every packet of one source/destination flow must stay on one member.
+  const std::array ecmp_statics{
+      StaticInput{true, 0xcb007100U, 0x0a000002U, 24},
+      StaticInput{true, 0xcb007100U, 0x0a000102U, 24}};
+  require(rib.rebuild(connected, ecmp_statics, {}, 2U) &&
+              forwarder->program_fib(rib.compile(2U)),
+          "forwarder rejected a two-member static ECMP FIB");
+  first_port.icmp_redirects_enabled = false;
+  require(forwarder->configure_port(first_port),
+          "ECMP fixture could not disable same-interface redirects");
+  std::array<bool, 2U> selected_ports{};
+  for (std::uint16_t host = 1U;
+       host < 255U && !(selected_ports[0] && selected_ports[1]); ++host) {
+    emitted.clear();
+    const auto frame = packet::icmp_echo(
+        host_a, router_a, {10, 0, 0, 2},
+        {203, 0, 113, static_cast<std::uint8_t>(host)}, false, host);
+    forwarder->receive(0U, frame, &emitted, collect);
+    require(emitted.size() == 1U && emitted.front().port < 2U,
+            "ECMP transit flow did not use a resolved member");
+    selected_ports[emitted.front().port] = true;
+  }
+  require(selected_ports[0] && selected_ports[1],
+          "address hashing did not distribute flows across ECMP members");
+
   const std::array with_system{ConnectedInput{true, true, 0x0a000000U, 0, 24},
                                ConnectedInput{true, true, 0x0a000100U, 1, 24},
                                ConnectedInput{.configured = true,
@@ -614,7 +642,7 @@ void router_forwarder_tests() {
                                               .prefix_length = 32U,
                                               .local_system = true}};
   require(rib.rebuild(with_system, std::span<const StaticInput>{}) &&
-              forwarder->program_fib(rib.compile(2U)),
+              forwarder->program_fib(rib.compile(3U)),
           "forwarder rejected system-interface local FIB route");
   emitted.clear();
   const auto system_echo = packet::icmp_echo(host_a, router_a, {10, 0, 0, 2},

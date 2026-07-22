@@ -73,7 +73,7 @@ for (const name of ["wasm_initial_memory_bytes", "wasm_maximum_memory_bytes",
   "runtime_control_reserve_bytes",
   "recovery_checkpoint_interval_milliseconds",
   "continuity_loss_threshold_milliseconds",
-  "link_queue_frames", "fabric_work_budget_frames", "static_routes_per_router", "arp_entries_per_router",
+  "link_queue_frames", "fabric_work_budget_frames", "static_routes_per_router", "maximum_ecmp_paths", "arp_entries_per_router",
   "static_arp_entries_per_router",
   "pending_ipv4_frames_per_router", "ipv6_neighbor_entries_per_router",
   "ipv6_destination_entries_per_endpoint",
@@ -531,6 +531,7 @@ inline constexpr std::size_t maximum_card_slots = ${maximumCardSlots};
 inline constexpr std::size_t maximum_mda_slots_per_card = ${maximumMdaSlotsPerCard};
 inline constexpr std::size_t maximum_ports_per_mda = ${maximumPortsPerMda};
 inline constexpr std::size_t maximum_static_routes_per_router = ${catalog.runtime.static_routes_per_router};
+inline constexpr std::uint16_t maximum_ecmp_paths = ${catalog.runtime.maximum_ecmp_paths};
 inline constexpr std::size_t maximum_fib_routes_per_router =
     maximum_ports_per_router + maximum_static_routes_per_router;
 inline constexpr std::size_t wasm_initial_memory_bytes = ${catalog.runtime.wasm_initial_memory_bytes}U;

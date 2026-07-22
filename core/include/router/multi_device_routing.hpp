@@ -37,6 +37,12 @@ struct Route {
   std::uint32_t next_hop{};
   std::uint16_t port_ordinal{};
   std::uint8_t prefix_length{};
+  // Preference and metric make equal-cost membership explicit at the
+  // control-to-forwarding boundary. Forwarding never reconstructs route
+  // selection policy from insertion order.
+  std::uint16_t preference{};
+  std::uint32_t metric{};
+  enum class Source : std::uint8_t { connected, static_route, dynamic } source{};
   // The Base router system interface is a local /32 and has no physical
   // egress. This bit prevents its route from borrowing ordinal zero and being
   // forwarded or used to resolve a static next hop through unrelated hardware.
@@ -61,6 +67,23 @@ struct StaticInput {
   std::uint32_t network{};
   std::uint32_t next_hop{};
   std::uint8_t prefix_length{};
+  // SR OS treats a directly connected next hop and an indirect next hop as
+  // separate children. An indirect address may be resolved only by a dynamic
+  // route, never by another static route.
+  bool indirect{};
+};
+
+struct DynamicInput {
+  // Protocol daemons publish selected adjacency-resolved candidates through
+  // this boundary. The protocol remains owner of its database and timers.
+  bool configured{};
+  bool operational{};
+  std::uint32_t network{};
+  std::uint32_t next_hop{};
+  std::uint16_t port_ordinal{};
+  std::uint16_t preference{};
+  std::uint32_t metric{};
+  std::uint8_t prefix_length{};
 };
 
 struct FibProgram {
@@ -76,7 +99,9 @@ public:
   // false means the selected RIB is byte-for-byte unchanged. Invalid prefix
   // lengths and capacity overflow reject the entire rebuild without mutation.
   [[nodiscard]] bool rebuild(std::span<const ConnectedInput> connected,
-                             std::span<const StaticInput> statics) noexcept;
+                             std::span<const StaticInput> statics,
+                             std::span<const DynamicInput> dynamic = {},
+                             std::uint16_t maximum_ecmp_paths = 1U) noexcept;
   [[nodiscard]] FibProgram compile(std::uint64_t generation) const noexcept;
   [[nodiscard]] std::span<const Route> routes() const noexcept {
     return {routes_.data(), count_};
@@ -116,7 +141,8 @@ host_next_hop(HostNextHopInput input) noexcept {
 }
 
 [[nodiscard]] bool lookup(const FibProgram &fib, std::uint32_t destination,
-                          Route &selected) noexcept;
+                          Route &selected,
+                          std::uint64_t flow_hash = 0U) noexcept;
 
 struct Ipv6Route {
   // The logical interface scopes RFC 4007 state. The physical ordinal selects
@@ -127,6 +153,9 @@ struct Ipv6Route {
   std::uint64_t interface_id{};
   std::uint16_t physical_port_ordinal{};
   std::uint8_t prefix_length{};
+  std::uint16_t preference{};
+  std::uint32_t metric{};
+  Route::Source source{};
 };
 
 struct Ipv6ConnectedInput {
@@ -145,10 +174,23 @@ struct Ipv6StaticInput {
   // records that zone as an outgoing physical port after resolving the stable
   // interface identity inside the router's own configuration owner.
   bool configured{};
+  bool indirect{};
   bool outgoing_interface_set{};
   ip::Ipv6 network{};
   ip::Ipv6 next_hop{};
   std::uint64_t outgoing_interface_id{};
+  std::uint8_t prefix_length{};
+};
+
+struct Ipv6DynamicInput {
+  bool configured{};
+  bool operational{};
+  ip::Ipv6 network{};
+  ip::Ipv6 next_hop{};
+  std::uint64_t interface_id{};
+  std::uint16_t physical_port_ordinal{};
+  std::uint16_t preference{};
+  std::uint32_t metric{};
   std::uint8_t prefix_length{};
 };
 
@@ -167,7 +209,9 @@ public:
   [[nodiscard]] bool
   rebuild(std::span<const Ipv6ConnectedInput> connected,
           std::span<const Ipv6StaticInput> statics,
-          std::span<const Ipv6ConnectedInput> additional_connected = {})
+          std::span<const Ipv6ConnectedInput> additional_connected = {},
+          std::span<const Ipv6DynamicInput> dynamic = {},
+          std::uint16_t maximum_ecmp_paths = 1U)
       noexcept;
   [[nodiscard]] Ipv6FibProgram compile(std::uint64_t generation) const noexcept;
   [[nodiscard]] std::span<const Ipv6Route> routes() const noexcept {
@@ -186,6 +230,7 @@ private:
 
 [[nodiscard]] bool lookup(const Ipv6FibProgram &fib,
                           const ip::Ipv6 &destination,
-                          Ipv6Route &selected) noexcept;
+                          Ipv6Route &selected,
+                          std::uint64_t flow_hash = 0U) noexcept;
 
 } // namespace router::lab::routing

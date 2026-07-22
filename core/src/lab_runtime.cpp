@@ -1661,9 +1661,17 @@ bool classic_configuration_command(cli_schema::CommandId id) noexcept {
   case classic_icmp_redirects_rate:
   case classic_icmp_no_redirects:
   case classic_static_route:
+  case classic_indirect_static_route:
   case classic_remove_static_route:
+  case classic_remove_static_next_hop:
+  case classic_remove_static_indirect:
   case classic_static_route_ipv6:
+  case classic_indirect_static_route_ipv6:
   case classic_remove_static_route_ipv6:
+  case classic_remove_static_next_hop_ipv6:
+  case classic_remove_static_indirect_ipv6:
+  case classic_ecmp:
+  case classic_no_ecmp:
   case classic_ra_shutdown:
   case classic_ra_no_shutdown:
   case classic_ra_current_hop_limit:
@@ -1809,12 +1817,20 @@ bool md_configuration_command(cli_schema::CommandId id) noexcept {
   case md_delete_icmp_redirect_number:
   case md_delete_icmp_redirect_seconds:
   case md_static_route:
+  case md_indirect_static_route:
   case md_static_route_ipv6:
+  case md_indirect_static_route_ipv6:
+  case md_ecmp:
+  case md_delete_ecmp:
   case md_delete_card:
   case md_delete_mda:
   case md_delete_port_description:
   case md_delete_static_route:
+  case md_delete_static_next_hop:
+  case md_delete_static_indirect:
   case md_delete_static_route_ipv6:
+  case md_delete_static_next_hop_ipv6:
+  case md_delete_static_indirect_ipv6:
   case md_ra_enable:
   case md_ra_disable:
   case md_ra_current_hop_limit:
@@ -2038,6 +2054,7 @@ LabRuntime::ConfigurationIntent
 LabRuntime::running_configuration(const RouterIntent &router_intent) const {
   ConfigurationIntent value;
   value.system_name = router_intent.system_name;
+  value.maximum_ecmp_paths = router_intent.maximum_ecmp_paths;
   value.mld = router_intent.mld;
   value.mld_prefix_lists = router_intent.mld_prefix_lists;
   value.mld_import_policies = router_intent.mld_import_policies;
@@ -2104,6 +2121,7 @@ PortableConfigurationCheckpoint
 LabRuntime::portable_configuration(const ConfigurationIntent &source) const {
   PortableConfigurationCheckpoint target;
   target.system_name = source.system_name;
+  target.maximum_ecmp_paths = source.maximum_ecmp_paths;
   target.mld = source.mld;
   target.mld_prefix_lists = source.mld_prefix_lists;
   target.mld_import_policies = source.mld_import_policies;
@@ -2278,10 +2296,11 @@ LabRuntime::portable_configuration(const ConfigurationIntent &source) const {
   }
   for (const auto &route : source.routes)
     target.routes.push_back(
-        {route.network, route.next_hop, route.prefix_length});
+        {route.network, route.next_hop, route.prefix_length, route.indirect});
   for (const auto &route : source.ipv6_routes)
     target.ipv6_routes.push_back({route.network, route.next_hop,
-                                  route.outgoing_port_id, route.prefix_length});
+                                  route.outgoing_port_id, route.prefix_length,
+                                  route.indirect});
   return target;
 }
 
@@ -2911,12 +2930,22 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
     if (applied && std::find(value.routes.begin(), value.routes.end(), route) ==
                        value.routes.end())
       applied = supervisor_.remove_static_route(
-          router_intent.handle, route.network, route.prefix_length);
+          router_intent.handle, route.network, route.prefix_length,
+          route.next_hop, route.indirect);
   for (const auto &route : router_intent.ipv6_routes)
     if (applied && std::find(value.ipv6_routes.begin(), value.ipv6_routes.end(),
                              route) == value.ipv6_routes.end())
       applied = supervisor_.remove_ipv6_static_route(
-          router_intent.handle, route.network, route.prefix_length);
+          router_intent.handle, route.network, route.prefix_length,
+          route.next_hop, route.indirect);
+
+  // ECMP is a routing-instance selector and must be published before route
+  // additions so the first resulting FIB generation already has the intended
+  // width. One preserves the SR OS disabled state.
+  if (applied && router_intent.maximum_ecmp_paths !=
+                     value.maximum_ecmp_paths)
+    applied = supervisor_.configure_ecmp(router_intent.handle,
+                                         value.maximum_ecmp_paths);
 
   for (const auto &interface : value.interfaces) {
     if (!applied)
@@ -3321,14 +3350,15 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
                   route) == router_intent.routes.end())
       applied =
           supervisor_.add_static_route(router_intent.handle, route.network,
-                                       route.prefix_length, route.next_hop);
+                                       route.prefix_length, route.next_hop,
+                                       route.indirect);
   for (const auto &route : value.ipv6_routes)
     if (applied && std::find(router_intent.ipv6_routes.begin(),
                              router_intent.ipv6_routes.end(),
                              route) == router_intent.ipv6_routes.end())
       applied = supervisor_.add_ipv6_static_route(
           router_intent.handle, route.network, route.prefix_length,
-          route.next_hop, route.outgoing_port_id);
+          route.next_hop, route.outgoing_port_id, route.indirect);
   if (applied && router_intent.ies != value.ies) {
     // IES is published after physical port and native-interface edits because
     // its SAP generation validates both hardware coordinates and carrier
@@ -3342,6 +3372,7 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
     return false;
   }
   router_intent.system_name = value.system_name;
+  router_intent.maximum_ecmp_paths = value.maximum_ecmp_paths;
   router_intent.ports = value.ports;
   router_intent.interfaces = value.interfaces;
   for (auto &interface : router_intent.interfaces) {
@@ -3408,6 +3439,7 @@ bool LabRuntime::create_router(std::span<const std::string_view> fields) {
                         .node_id = std::string{fields[0]},
                         .system_name = std::string{fields[2]},
                         .profile_id = std::string{fields[1]},
+                        .maximum_ecmp_paths = 1U,
                         .ports = {},
                         .interfaces = {},
                         .routes = {},
@@ -3463,6 +3495,13 @@ bool LabRuntime::replace_router_configuration(
   next.system_name.assign(value);
 
   std::size_t count{};
+  unsigned maximum_ecmp_paths{};
+  if (!next_netstring(payload, value) ||
+      !decimal(value, maximum_ecmp_paths) || maximum_ecmp_paths == 0U ||
+      maximum_ecmp_paths > device_catalog::maximum_ecmp_paths)
+    return false;
+  next.maximum_ecmp_paths =
+      static_cast<std::uint16_t>(maximum_ecmp_paths);
   if (!next_netstring(payload, value) || !decimal(value, count) ||
       count > device_catalog::maximum_ports_per_router)
     return false;
@@ -3639,8 +3678,12 @@ bool LabRuntime::replace_router_configuration(
   for (std::size_t index = 0; index < count; ++index) {
     std::string_view prefix_text;
     std::string_view next_hop_text;
+    std::string_view indirect_text;
+    bool indirect{};
     if (!next_netstring(payload, prefix_text) ||
-        !next_netstring(payload, next_hop_text))
+        !next_netstring(payload, next_hop_text) ||
+        !next_netstring(payload, indirect_text) ||
+        !boolean(indirect_text, indirect))
       return false;
     const auto destination = prefix(prefix_text);
     const auto next_hop = ipv4(next_hop_text);
@@ -3650,11 +3693,13 @@ bool LabRuntime::replace_router_configuration(
         std::any_of(next.routes.begin(), next.routes.end(),
                     [&](const auto &item) {
                       return item.network == destination->address &&
-                             item.prefix_length == destination->length;
+                             item.prefix_length == destination->length &&
+                             item.next_hop == *next_hop &&
+                             item.indirect == indirect;
                     }))
       return false;
     next.routes.push_back(
-        {destination->address, *next_hop, destination->length});
+        {destination->address, *next_hop, destination->length, indirect});
   }
   if (!next_netstring(payload, value) || !decimal(value, count) ||
       count > device_catalog::maximum_static_routes_per_router)
@@ -3664,9 +3709,13 @@ bool LabRuntime::replace_router_configuration(
     std::string_view prefix_text;
     std::string_view next_hop_text;
     std::string_view outgoing_port_id;
+    std::string_view indirect_text;
+    bool indirect{};
     if (!next_netstring(payload, prefix_text) ||
         !next_netstring(payload, next_hop_text) ||
-        !next_netstring(payload, outgoing_port_id))
+        !next_netstring(payload, outgoing_port_id) ||
+        !next_netstring(payload, indirect_text) ||
+        !boolean(indirect_text, indirect))
       return false;
     const auto destination = ip::parse_ipv6_prefix(prefix_text);
     const auto next_hop = ip::parse_ipv6(next_hop_text);
@@ -3674,16 +3723,21 @@ bool LabRuntime::replace_router_configuration(
         ip::is_multicast(*next_hop) ||
         (!outgoing_port_id.empty() &&
          !inventory->coordinate_ordinal(outgoing_port_id)) ||
-        (ip::is_link_local(*next_hop) && outgoing_port_id.empty()) ||
+        (indirect &&
+         (ip::is_link_local(*next_hop) || !outgoing_port_id.empty())) ||
+        (!indirect && ip::is_link_local(*next_hop) &&
+         outgoing_port_id.empty()) ||
         std::any_of(next.ipv6_routes.begin(), next.ipv6_routes.end(),
                     [&](const auto &item) {
                       return item.network == destination->network &&
-                             item.prefix_length == destination->length;
+                             item.prefix_length == destination->length &&
+                             item.next_hop == *next_hop &&
+                             item.indirect == indirect;
                     }))
       return false;
     next.ipv6_routes.push_back({destination->network, *next_hop,
                                 std::string{outgoing_port_id},
-                                destination->length});
+                                destination->length, indirect});
   }
   // Exact exhaustion rejects appended fields from a newer or corrupted
   // payload instead of silently applying only the prefix understood here.
@@ -3861,11 +3915,14 @@ bool LabRuntime::add_static_route(std::span<const std::string_view> fields) {
       !supervisor_.add_static_route(device->handle, destination->address,
                                     destination->length, *next_hop))
     return false;
-  StaticRouteIntent value{destination->address, *next_hop, destination->length};
+  StaticRouteIntent value{destination->address, *next_hop,
+                          destination->length, false};
   auto found = std::find_if(device->routes.begin(), device->routes.end(),
                             [&](const auto &item) {
                               return item.network == value.network &&
-                                     item.prefix_length == value.prefix_length;
+                                     item.prefix_length == value.prefix_length &&
+                                     item.next_hop == value.next_hop &&
+                                     !item.indirect;
                             });
   if (found == device->routes.end())
     device->routes.push_back(value);
@@ -5986,18 +6043,24 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         comparison << "~ ipsec\n";
       if (candidate->ies != running.ies)
         comparison << "~ service\n";
+      if (candidate->maximum_ecmp_paths != running.maximum_ecmp_paths)
+        comparison << "~ router \"Base\" ecmp\n";
       for (const auto &route : candidate->routes)
         if (std::find(running.routes.begin(), running.routes.end(), route) ==
             running.routes.end())
           comparison << "+ router \"Base\" static-routes route "
                      << ipv4_text(route.network) << '/'
-                     << static_cast<unsigned>(route.prefix_length) << "\n";
+                     << static_cast<unsigned>(route.prefix_length) << ' '
+                     << (route.indirect ? "indirect " : "next-hop ")
+                     << ipv4_text(route.next_hop) << "\n";
       for (const auto &route : candidate->ipv6_routes)
         if (std::find(running.ipv6_routes.begin(), running.ipv6_routes.end(),
                       route) == running.ipv6_routes.end())
           comparison << "+ router \"Base\" static-routes route "
                      << ip::format_ipv6(route.network) << '/'
-                     << static_cast<unsigned>(route.prefix_length) << "\n";
+                     << static_cast<unsigned>(route.prefix_length) << ' '
+                     << (route.indirect ? "indirect " : "next-hop ")
+                     << ip::format_ipv6(route.next_hop) << "\n";
       output = comparison.str();
     } else {
       const auto before = *candidate;
@@ -6013,6 +6076,27 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           instance.push_back('/');
           instance.append(*value);
         }
+      // Next-hop children are independent list entries below one destination
+      // prefix. Include their key in datastore revision tracking so concurrent
+      // edits to separate ECMP siblings do not conflict as if they were one
+      // scalar leaf.
+      if (id == md_static_route || id == md_indirect_static_route ||
+          id == md_delete_static_next_hop ||
+          id == md_delete_static_indirect || id == md_static_route_ipv6 ||
+          id == md_indirect_static_route_ipv6 ||
+          id == md_delete_static_next_hop_ipv6 ||
+          id == md_delete_static_indirect_ipv6) {
+        const auto next_hop = argument(
+            id == md_static_route || id == md_indirect_static_route ||
+                    id == md_delete_static_next_hop ||
+                    id == md_delete_static_indirect
+                ? cli_schema::TokenKind::ipv4_key
+                : cli_schema::TokenKind::ipv6_key);
+        if (next_hop) {
+          instance.push_back('/');
+          instance.append(*next_hop);
+        }
+      }
 
       IpsecVaultSink vault_sink{secret_vault_ ? &*secret_vault_ : nullptr};
       const auto ipsec_edit = ipsec_cli::edit(candidate->ipsec, *parsed,
@@ -6480,39 +6564,36 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           }
         }
       } else if (id == md_static_route_ipv6 ||
-                 id == md_delete_static_route_ipv6) {
+                 id == md_indirect_static_route_ipv6 ||
+                 id == md_delete_static_route_ipv6 ||
+                 id == md_delete_static_next_hop_ipv6 ||
+                 id == md_delete_static_indirect_ipv6) {
         const auto destination = argument(cli_schema::TokenKind::ipv6_prefix);
         const auto parsed_destination =
             destination ? ip::parse_ipv6_prefix(*destination)
                         : std::optional<ip::Ipv6Prefix>{};
         valid = parsed_destination.has_value();
-        auto current =
-            valid ? std::find_if(candidate->ipv6_routes.begin(),
-                                 candidate->ipv6_routes.end(),
-                                 [&](const auto &route) {
-                                   return route.network ==
-                                              parsed_destination->network &&
-                                          route.prefix_length ==
-                                              parsed_destination->length;
-                                 })
-                  : candidate->ipv6_routes.end();
-        if (valid && id == md_delete_static_route_ipv6) {
-          valid = current != candidate->ipv6_routes.end();
-          if (valid)
-            candidate->ipv6_routes.erase(current);
-        } else if (valid) {
-          const auto raw_next_hop = argument(cli_schema::TokenKind::ipv6_key);
+        const bool deleting_prefix = id == md_delete_static_route_ipv6;
+        const bool indirect = id == md_indirect_static_route_ipv6 ||
+                              id == md_delete_static_indirect_ipv6;
+        const bool deleting_path = id == md_delete_static_next_hop_ipv6 ||
+                                   id == md_delete_static_indirect_ipv6;
+        auto current = candidate->ipv6_routes.end();
+        std::optional<packet::Ipv6> next_hop;
+        std::string outgoing_port;
+
+        if (valid && !deleting_prefix) {
+          const auto raw_next_hop =
+              argument(cli_schema::TokenKind::ipv6_key);
           const auto next_hop_text = raw_next_hop
                                          ? cli_detail::unquote(*raw_next_hop)
                                          : std::string_view{};
-          auto next_hop = ip::parse_ipv6(next_hop_text);
-          std::string outgoing_port;
+          next_hop = ip::parse_ipv6(next_hop_text);
 
-          // RFC 4007 requires a zone for link-local next hops. SR OS spells
-          // that zone as an interface suffix. Interface names may themselves
-          // contain hyphens, so match configured names as complete suffixes
-          // instead of splitting on the first punctuation character.
-          if (!next_hop) {
+          // RFC 4007 requires a zone for a directly connected link-local next
+          // hop. An indirect next hop is resolved by the routing table and is
+          // therefore never bound to a physical interface in configuration.
+          if (!next_hop && !indirect) {
             for (const auto &interface : candidate->interfaces) {
               const auto suffix = std::string{"-"} + interface.name;
               if (!next_hop_text.ends_with(suffix))
@@ -6529,15 +6610,38 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           }
           valid = next_hop && !ip::is_unspecified(*next_hop) &&
                   !ip::is_multicast(*next_hop) &&
-                  (ip::is_link_local(*next_hop) == !outgoing_port.empty());
-          if (valid && current == candidate->ipv6_routes.end())
-            candidate->ipv6_routes.push_back(
-                {parsed_destination->network, *next_hop,
-                 std::move(outgoing_port), parsed_destination->length});
-          else if (valid) {
-            current->next_hop = *next_hop;
-            current->outgoing_port_id = std::move(outgoing_port);
-          }
+                  (indirect
+                       ? !ip::is_link_local(*next_hop)
+                       : ip::is_link_local(*next_hop) ==
+                             !outgoing_port.empty());
+        }
+
+        if (valid && !deleting_prefix) {
+          current = std::find_if(
+              candidate->ipv6_routes.begin(), candidate->ipv6_routes.end(),
+              [&](const auto &route) {
+                return route.network == parsed_destination->network &&
+                       route.prefix_length == parsed_destination->length &&
+                       route.next_hop == *next_hop &&
+                       route.indirect == indirect;
+              });
+        }
+        if (valid && id == md_delete_static_route_ipv6) {
+          const auto old_size = candidate->ipv6_routes.size();
+          std::erase_if(candidate->ipv6_routes, [&](const auto &route) {
+            return route.network == parsed_destination->network &&
+                   route.prefix_length == parsed_destination->length;
+          });
+          valid = candidate->ipv6_routes.size() != old_size;
+        } else if (valid && deleting_path) {
+          valid = current != candidate->ipv6_routes.end();
+          if (valid)
+            candidate->ipv6_routes.erase(current);
+        } else if (valid && current == candidate->ipv6_routes.end()) {
+          candidate->ipv6_routes.push_back(
+              {parsed_destination->network, *next_hop,
+               std::move(outgoing_port), parsed_destination->length,
+               indirect});
         }
       } else if (id == md_icmp6_redirect_admin_enable ||
                  id == md_icmp6_redirect_admin_disable ||
@@ -7428,35 +7532,64 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           }
         }
         valid = valid && valid_mld_candidate(*candidate);
-      } else if (id == md_static_route || id == md_delete_static_route) {
+      } else if (id == md_ecmp || id == md_delete_ecmp) {
+        if (id == md_delete_ecmp) {
+          valid = candidate->maximum_ecmp_paths != 1U;
+          candidate->maximum_ecmp_paths = 1U;
+        } else {
+          unsigned paths{};
+          const auto text = argument(cli_schema::TokenKind::ecmp_paths);
+          valid = text && decimal(*text, paths) && paths >= 1U &&
+                  paths <= device_catalog::maximum_ecmp_paths;
+          if (valid)
+            candidate->maximum_ecmp_paths =
+                static_cast<std::uint16_t>(paths);
+        }
+      } else if (id == md_static_route ||
+                 id == md_indirect_static_route ||
+                 id == md_delete_static_route ||
+                 id == md_delete_static_next_hop ||
+                 id == md_delete_static_indirect) {
         const auto destination = argument(cli_schema::TokenKind::ipv4_prefix);
         const auto parsed_destination =
             destination ? prefix(*destination) : std::optional<Prefix>{};
         valid = parsed_destination.has_value();
-        auto current =
-            valid ? std::find_if(
-                        candidate->routes.begin(), candidate->routes.end(),
-                        [&](const auto &route) {
-                          return route.network == parsed_destination->address &&
-                                 route.prefix_length ==
-                                     parsed_destination->length;
-                        })
-                  : candidate->routes.end();
+        const bool deleting_prefix = id == md_delete_static_route;
+        const bool indirect = id == md_indirect_static_route ||
+                              id == md_delete_static_indirect;
+        const bool deleting_path = id == md_delete_static_next_hop ||
+                                   id == md_delete_static_indirect;
+        const auto next_hop_text = deleting_prefix
+                                       ? std::optional<std::string_view>{}
+                                       : argument(cli_schema::TokenKind::ipv4_key);
+        const auto next_hop = next_hop_text
+                                  ? ipv4(cli_detail::unquote(*next_hop_text))
+                                  : std::optional<std::uint32_t>{};
+        valid = valid && (deleting_prefix || next_hop.has_value());
+        auto current = candidate->routes.end();
+        if (valid && !deleting_prefix)
+          current = std::find_if(
+              candidate->routes.begin(), candidate->routes.end(),
+              [&](const auto &route) {
+                return route.network == parsed_destination->address &&
+                       route.prefix_length == parsed_destination->length &&
+                       route.next_hop == *next_hop &&
+                       route.indirect == indirect;
+              });
         if (valid && id == md_delete_static_route) {
+          const auto old_size = candidate->routes.size();
+          std::erase_if(candidate->routes, [&](const auto &route) {
+            return route.network == parsed_destination->address &&
+                   route.prefix_length == parsed_destination->length;
+          });
+          valid = candidate->routes.size() != old_size;
+        } else if (valid && deleting_path) {
           valid = current != candidate->routes.end();
           if (valid)
             candidate->routes.erase(current);
-        } else if (valid) {
-          const auto next_hop_text = argument(cli_schema::TokenKind::ipv4_key);
-          const auto next_hop = next_hop_text
-                                    ? ipv4(cli_detail::unquote(*next_hop_text))
-                                    : std::optional<std::uint32_t>{};
-          valid = next_hop.has_value();
-          if (valid && current == candidate->routes.end())
-            candidate->routes.push_back({parsed_destination->address, *next_hop,
-                                         parsed_destination->length});
-          else if (valid)
-            current->next_hop = *next_hop;
+        } else if (valid && current == candidate->routes.end()) {
+          candidate->routes.push_back({parsed_destination->address, *next_hop,
+                                       parsed_destination->length, indirect});
         }
       } else {
         valid = false;
@@ -7577,6 +7710,26 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         if (const auto value = argument(kind)) {
           instance.push_back('/');
           instance.append(*value);
+        }
+      }
+      if (id == classic_static_route ||
+          id == classic_indirect_static_route ||
+          id == classic_remove_static_next_hop ||
+          id == classic_remove_static_indirect ||
+          id == classic_static_route_ipv6 ||
+          id == classic_indirect_static_route_ipv6 ||
+          id == classic_remove_static_next_hop_ipv6 ||
+          id == classic_remove_static_indirect_ipv6) {
+        const auto next_hop = argument(
+            id == classic_static_route ||
+                    id == classic_indirect_static_route ||
+                    id == classic_remove_static_next_hop ||
+                    id == classic_remove_static_indirect
+                ? cli_schema::TokenKind::ipv4
+                : cli_schema::TokenKind::ipv6);
+        if (next_hop) {
+          instance.push_back('/');
+          instance.append(*next_hop);
         }
       }
       auto backup = supervisor_.checkpoint();
@@ -8086,34 +8239,31 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         applied = edit_static_ipv4_neighbor(next, id);
         if (applied)
           applied = apply_configuration(*intent, next);
-      } else if (applied && (id == classic_static_route_ipv6 ||
-                             id == classic_remove_static_route_ipv6)) {
+      } else if (applied &&
+                 (id == classic_static_route_ipv6 ||
+                  id == classic_indirect_static_route_ipv6 ||
+                  id == classic_remove_static_route_ipv6 ||
+                  id == classic_remove_static_next_hop_ipv6 ||
+                  id == classic_remove_static_indirect_ipv6)) {
         auto next = before_running;
         const auto destination = argument(cli_schema::TokenKind::ipv6_prefix);
         const auto parsed_destination =
             destination ? ip::parse_ipv6_prefix(*destination)
                         : std::optional<ip::Ipv6Prefix>{};
-        auto route =
-            parsed_destination
-                ? std::find_if(next.ipv6_routes.begin(), next.ipv6_routes.end(),
-                               [&](const auto &entry) {
-                                 return entry.network ==
-                                            parsed_destination->network &&
-                                        entry.prefix_length ==
-                                            parsed_destination->length;
-                               })
-                : next.ipv6_routes.end();
         applied = parsed_destination.has_value();
-        if (applied && id == classic_remove_static_route_ipv6) {
-          applied = route != next.ipv6_routes.end();
-          if (applied)
-            next.ipv6_routes.erase(route);
-        } else if (applied) {
+        const bool deleting_prefix = id == classic_remove_static_route_ipv6;
+        const bool indirect = id == classic_indirect_static_route_ipv6 ||
+                              id == classic_remove_static_indirect_ipv6;
+        const bool deleting_path =
+            id == classic_remove_static_next_hop_ipv6 ||
+            id == classic_remove_static_indirect_ipv6;
+        std::optional<packet::Ipv6> next_hop;
+        std::string outgoing_port;
+        if (applied && !deleting_prefix) {
           const auto raw_next_hop = argument(cli_schema::TokenKind::ipv6);
           const auto next_hop_text = raw_next_hop.value_or(std::string_view{});
-          auto next_hop = ip::parse_ipv6(next_hop_text);
-          std::string outgoing_port;
-          if (!next_hop) {
+          next_hop = ip::parse_ipv6(next_hop_text);
+          if (!next_hop && !indirect) {
             for (const auto &interface : next.interfaces) {
               const auto suffix = std::string{"-"} + interface.name;
               if (!next_hop_text.ends_with(suffix))
@@ -8130,15 +8280,38 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           }
           applied = next_hop && !ip::is_unspecified(*next_hop) &&
                     !ip::is_multicast(*next_hop) &&
-                    (ip::is_link_local(*next_hop) == !outgoing_port.empty());
-          if (applied && route == next.ipv6_routes.end())
-            next.ipv6_routes.push_back({parsed_destination->network, *next_hop,
-                                        std::move(outgoing_port),
-                                        parsed_destination->length});
-          else if (applied) {
-            route->next_hop = *next_hop;
-            route->outgoing_port_id = std::move(outgoing_port);
-          }
+                    (indirect
+                         ? !ip::is_link_local(*next_hop)
+                         : ip::is_link_local(*next_hop) ==
+                               !outgoing_port.empty());
+        }
+
+        auto route = next.ipv6_routes.end();
+        if (applied && !deleting_prefix)
+          route = std::find_if(
+              next.ipv6_routes.begin(), next.ipv6_routes.end(),
+              [&](const auto &entry) {
+                return entry.network == parsed_destination->network &&
+                       entry.prefix_length == parsed_destination->length &&
+                       entry.next_hop == *next_hop &&
+                       entry.indirect == indirect;
+              });
+        if (applied && id == classic_remove_static_route_ipv6) {
+          const auto old_size = next.ipv6_routes.size();
+          std::erase_if(next.ipv6_routes, [&](const auto &entry) {
+            return entry.network == parsed_destination->network &&
+                   entry.prefix_length == parsed_destination->length;
+          });
+          applied = next.ipv6_routes.size() != old_size;
+        } else if (applied && deleting_path) {
+          applied = route != next.ipv6_routes.end();
+          if (applied)
+            next.ipv6_routes.erase(route);
+        } else if (applied && route == next.ipv6_routes.end()) {
+          next.ipv6_routes.push_back(
+              {parsed_destination->network, *next_hop,
+               std::move(outgoing_port), parsed_destination->length,
+               indirect});
         }
         if (applied)
           applied = apply_configuration(*intent, next);
@@ -8917,18 +9090,70 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         applied = applied && valid_mld_candidate(next);
         if (applied)
           applied = apply_configuration(*intent, next);
-      } else if (applied && id == classic_static_route) {
+      } else if (applied && (id == classic_ecmp || id == classic_no_ecmp)) {
+        auto next = before_running;
+        if (id == classic_no_ecmp) {
+          // SR OS `no ecmp` disables multipath installation and returns to a
+          // single deterministic path. The static routes remain configured.
+          next.maximum_ecmp_paths = 1U;
+        } else {
+          unsigned paths{};
+          const auto text = argument(cli_schema::TokenKind::ecmp_paths);
+          applied = text && decimal(*text, paths) && paths >= 1U &&
+                    paths <= device_catalog::maximum_ecmp_paths;
+          if (applied)
+            next.maximum_ecmp_paths = static_cast<std::uint16_t>(paths);
+        }
+        if (applied)
+          applied = apply_configuration(*intent, next);
+      } else if (applied &&
+                 (id == classic_static_route ||
+                  id == classic_indirect_static_route ||
+                  id == classic_remove_static_route ||
+                  id == classic_remove_static_next_hop ||
+                  id == classic_remove_static_indirect)) {
+        auto next = before_running;
         const auto destination = argument(cli_schema::TokenKind::ipv4_prefix);
-        const auto next_hop = argument(cli_schema::TokenKind::ipv4);
-        const std::array<std::string_view, 3> values{
-            intent->node_id, destination.value_or(std::string_view{}),
-            next_hop.value_or(std::string_view{})};
-        applied = add_static_route(values);
-      } else if (applied && id == classic_remove_static_route) {
-        const auto destination = argument(cli_schema::TokenKind::ipv4_prefix);
-        const std::array<std::string_view, 2> values{
-            intent->node_id, destination.value_or(std::string_view{})};
-        applied = delete_static_route(values);
+        const auto parsed_destination =
+            destination ? prefix(*destination) : std::optional<Prefix>{};
+        applied = parsed_destination.has_value();
+        const bool deleting_prefix = id == classic_remove_static_route;
+        const bool indirect = id == classic_indirect_static_route ||
+                              id == classic_remove_static_indirect;
+        const bool deleting_path = id == classic_remove_static_next_hop ||
+                                   id == classic_remove_static_indirect;
+        const auto next_hop_text = deleting_prefix
+                                       ? std::optional<std::string_view>{}
+                                       : argument(cli_schema::TokenKind::ipv4);
+        const auto next_hop = next_hop_text ? ipv4(*next_hop_text)
+                                            : std::optional<std::uint32_t>{};
+        applied = applied && (deleting_prefix || next_hop.has_value());
+        auto route = next.routes.end();
+        if (applied && !deleting_prefix)
+          route = std::find_if(
+              next.routes.begin(), next.routes.end(), [&](const auto &entry) {
+                return entry.network == parsed_destination->address &&
+                       entry.prefix_length == parsed_destination->length &&
+                       entry.next_hop == *next_hop &&
+                       entry.indirect == indirect;
+              });
+        if (applied && deleting_prefix) {
+          const auto old_size = next.routes.size();
+          std::erase_if(next.routes, [&](const auto &entry) {
+            return entry.network == parsed_destination->address &&
+                   entry.prefix_length == parsed_destination->length;
+          });
+          applied = next.routes.size() != old_size;
+        } else if (applied && deleting_path) {
+          applied = route != next.routes.end();
+          if (applied)
+            next.routes.erase(route);
+        } else if (applied && route == next.routes.end()) {
+          next.routes.push_back({parsed_destination->address, *next_hop,
+                                 parsed_destination->length, indirect});
+        }
+        if (applied)
+          applied = apply_configuration(*intent, next);
       }
 
       bool changed{};
@@ -11614,22 +11839,34 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           for (std::size_t index = 0; index < operational->ipv6_fib.count;
                ++index) {
             const auto &route = operational->ipv6_fib.routes[index];
-            const bool remote = !ip::is_unspecified(route.next_hop);
+            const bool connected =
+                route.source == routing::Route::Source::connected;
+            const auto protocol =
+                route.source == routing::Route::Source::static_route
+                    ? "Static"
+                    : connected ? "Local" : "Dynamic";
             out << '\n'
                 << std::left << std::setw(47)
                 << (ip::format_ipv6(route.network) + '/' +
                     std::to_string(route.prefix_length))
-                << std::setw(8) << (remote ? "Remote" : "Local")
-                << std::setw(10) << (remote ? "Static" : "Local")
-                << (remote ? 5 : 0) << "\n      " << std::setw(55)
-                << (remote ? ip::format_ipv6(route.next_hop)
-                           : routed_interface_name(route.interface_id,
-                                                   route.physical_port_ordinal))
-                << (remote ? 1 : 0);
+                << std::setw(8) << (connected ? "Local" : "Remote")
+                << std::setw(10) << protocol << route.preference
+                << "\n      " << std::setw(55)
+                << (!connected
+                        ? ip::format_ipv6(route.next_hop)
+                        : routed_interface_name(route.interface_id,
+                                                route.physical_port_ordinal))
+                << route.metric;
           }
         } else {
           for (std::size_t index = 0; index < operational->fib.count; ++index) {
             const auto &route = operational->fib.routes[index];
+            const bool connected =
+                route.source == routing::Route::Source::connected;
+            const auto protocol =
+                route.source == routing::Route::Source::static_route
+                    ? "Static"
+                    : connected ? "Local" : "Dynamic";
             const auto *interface = route.local_system
                                         ? system_interface
                                         : interface_for(route.port_ordinal);
@@ -11637,14 +11874,14 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 << std::left << std::setw(47)
                 << (ipv4_text(route.network) + '/' +
                     std::to_string(route.prefix_length))
-                << std::setw(8) << (route.next_hop ? "Remote" : "Local")
-                << std::setw(10) << (route.next_hop ? "Static" : "Local")
-                << (route.next_hop ? 5 : 0) << "\n      " << std::setw(55)
-                << (route.next_hop       ? ipv4_text(route.next_hop)
+                << std::setw(8) << (connected ? "Local" : "Remote")
+                << std::setw(10) << protocol << route.preference
+                << "\n      " << std::setw(55)
+                << (!connected           ? ipv4_text(route.next_hop)
                     : route.local_system ? std::string{system_interface_name}
                     : interface          ? interface->name
                                          : "")
-                << (route.next_hop ? 1 : 0);
+                << route.metric;
           }
         }
         out << '\n'
@@ -12104,7 +12341,15 @@ std::string LabRuntime::complete_session(std::string_view session_id,
     case md_delete_icmp_redirect_number:
     case md_delete_icmp_redirect_seconds:
     case md_static_route:
+    case md_indirect_static_route:
     case md_static_route_ipv6:
+    case md_indirect_static_route_ipv6:
+    case md_ecmp:
+    case md_delete_ecmp:
+    case md_delete_static_next_hop:
+    case md_delete_static_indirect:
+    case md_delete_static_next_hop_ipv6:
+    case md_delete_static_indirect_ipv6:
     case md_delete_card:
     case md_delete_mda:
     case md_delete_port_description:
@@ -12669,6 +12914,8 @@ std::string LabRuntime::snapshot() {
                          : std::string_view{});
     out << ",\"systemName\":";
     json_string(out, entry.system_name);
+    out << ",\"maximumEcmpPaths\":"
+        << (intent ? intent->maximum_ecmp_paths : 1U);
     out << ",\"handle\":{" << "\"index\":" << entry.handle.index
         << ",\"generation\":" << entry.handle.generation << "},\"cards\":[";
     const auto card_count =
@@ -12814,6 +13061,7 @@ std::string LabRuntime::snapshot() {
                              std::to_string(route.prefix_length));
         out << ",\"nextHop\":";
         json_string(out, ipv4_text(route.next_hop));
+        out << ",\"indirect\":" << (route.indirect ? "true" : "false");
         out << '}';
       }
     }
@@ -12830,6 +13078,7 @@ std::string LabRuntime::snapshot() {
         json_string(out, ip::format_ipv6(route.next_hop));
         out << ",\"outgoingPortId\":";
         json_string(out, route.outgoing_port_id);
+        out << ",\"indirect\":" << (route.indirect ? "true" : "false");
         out << '}';
       }
     }
@@ -13493,6 +13742,7 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
     for (const auto &router : routers_) {
       PortableRouterIntentCheckpoint value;
       value.device = router.handle;
+      value.maximum_ecmp_paths = router.maximum_ecmp_paths;
       value.mld = router.mld;
       value.mld_prefix_lists = router.mld_prefix_lists;
       value.mld_import_policies = router.mld_import_policies;
@@ -13667,12 +13917,13 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
       value.routes.reserve(router.routes.size());
       for (const auto &route : router.routes)
         value.routes.push_back(
-            {route.network, route.next_hop, route.prefix_length});
+            {route.network, route.next_hop, route.prefix_length,
+             route.indirect});
       value.ipv6_routes.reserve(router.ipv6_routes.size());
       for (const auto &route : router.ipv6_routes)
         value.ipv6_routes.push_back({route.network, route.next_hop,
                                      route.outgoing_port_id,
-                                     route.prefix_length});
+                                     route.prefix_length, route.indirect});
       value.global_candidate_initialized = router.global_candidate_initialized;
       if (router.global_candidate_initialized)
         value.global_candidate =
@@ -13758,6 +14009,7 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
                                              &source) {
       ConfigurationIntent target;
       target.system_name = source.system_name;
+      target.maximum_ecmp_paths = source.maximum_ecmp_paths;
       target.mld = source.mld;
       target.mld_prefix_lists = source.mld_prefix_lists;
       target.mld_import_policies = source.mld_import_policies;
@@ -13940,11 +14192,12 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
       }
       for (const auto &route : source.routes)
         target.routes.push_back(
-            {route.network, route.next_hop, route.prefix_length});
+            {route.network, route.next_hop, route.prefix_length,
+             route.indirect});
       for (const auto &route : source.ipv6_routes)
         target.ipv6_routes.push_back({route.network, route.next_hop,
                                       route.outgoing_port_id,
-                                      route.prefix_length});
+                                      route.prefix_length, route.indirect});
       return target;
     };
     // Stage the entire portable graph before the supervisor commits owner
@@ -13976,6 +14229,7 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
           .node_id = device.node_id,
           .system_name = device.system_name,
           .profile_id = device.profile_id,
+          .maximum_ecmp_paths = portable->maximum_ecmp_paths,
           .ports = {},
           .interfaces = {},
           .routes = {},
@@ -14157,12 +14411,13 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
       value.routes.reserve(portable->routes.size());
       for (const auto &route : portable->routes)
         value.routes.push_back(
-            {route.network, route.next_hop, route.prefix_length});
+            {route.network, route.next_hop, route.prefix_length,
+             route.indirect});
       value.ipv6_routes.reserve(portable->ipv6_routes.size());
       for (const auto &route : portable->ipv6_routes)
         value.ipv6_routes.push_back({route.network, route.next_hop,
                                      route.outgoing_port_id,
-                                     route.prefix_length});
+                                     route.prefix_length, route.indirect});
       value.global_candidate_initialized =
           portable->global_candidate_initialized;
       if (value.global_candidate_initialized)
