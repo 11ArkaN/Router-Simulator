@@ -9,6 +9,7 @@ import { createEmptyProjectV4, createRouterProjectV4, equippedRouterPorts,
   type LinkProjectV4, type RouterProjectV4, type RuntimeRouterV6,
   type TerminalPresentationV2 } from "@router-simulator/contracts";
 import { MultiRouterRuntimeClient, type RouterTerminalState } from "../runtime/multi-router-client";
+import { waitForHostPing } from "../runtime/host-ping";
 import { materializeStableIidSecret,
   secureRandomSecretHex } from "../runtime/secure-random";
 import { createCheckpointManifestV3, downloadBinary, exportProjectV4,
@@ -712,9 +713,15 @@ export function App() {
 
   const ping = async (sourceId: string, destination: string) => {
     if (!runtime) throw new Error("Runtime is not ready");
-    const sequence = Date.now() & 0x7fffffff;
+    // ICMP Echo carries a 16-bit sequence number. The previous 31-bit mask was
+    // rejected by the C++ protocol boundary before any frame reached the host.
+    // Browser cryptographic randomness avoids coupling packet identity to wall
+    // clock changes and remains inside the exact wire field width.
+    const sequence = crypto.getRandomValues(new Uint16Array(1))[0]!;
     await runtime.startHostPing(sourceId, destination, sequence);
-    return runtime.hostPingStatus(sourceId, sequence);
+    return await waitForHostPing(runtime, sourceId, sequence)
+      ? `Reply received from ${destination}.`
+      : `Request to ${destination} timed out.`;
   };
 
   const persistNow = async () => {
