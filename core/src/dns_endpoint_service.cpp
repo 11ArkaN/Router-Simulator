@@ -17,11 +17,6 @@ constexpr std::uint16_t dns_port = packet::dns::server_port;
 constexpr std::size_t maximum_dns_message_octets =
     packet::dns::maximum_message_octets;
 
-#ifdef __EMSCRIPTEN__
-// The production DNSSEC provider exists only in the WebAssembly build. Native
-// conformance tests inject deterministic clocks directly into the resolver, so
-// compiling this ambient host-clock adapter natively would create dead code
-// and could accidentally make a test depend on the machine's wall clock.
 std::uint64_t dnssec_wall_clock_unix_seconds() noexcept {
   const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(
                            std::chrono::system_clock::now().time_since_epoch())
@@ -32,6 +27,11 @@ std::uint64_t dnssec_wall_clock_unix_seconds() noexcept {
   return seconds < 0 ? 0U : static_cast<std::uint64_t>(seconds);
 }
 
+#ifdef __EMSCRIPTEN__
+// Only the Wasm crypto provider consumes the type-erased callback. Native
+// restore validation still needs the 64-bit helper above to validate saved
+// signing deadlines, but native resolver tests inject their own callback and
+// must never acquire this ambient adapter by accident.
 std::uint32_t dnssec_wall_clock_seconds(void *) noexcept {
   // DNSSEC uses serial arithmetic over the low 32 bits of POSIX time. The
   // callback is separate from steady-clock retransmission deadlines so a host

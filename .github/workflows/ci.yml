@@ -82,6 +82,15 @@ jobs:
             windows-x64-emscripten-6.0.3-cmake-4.4.0-ninja-1.13.0-
       - run: pnpm install --frozen-lockfile
       - run: pnpm toolchain:bootstrap
+      - name: Install pinned PCAPNG validation tool
+        shell: pwsh
+        run: |
+          # core.ps1 validates captures with tshark instead of accepting only
+          # the project's own decoder. Pinning the Chocolatey package keeps the
+          # independent parser reproducible, while disabling Npcap avoids a
+          # kernel-driver install that offline fixture validation does not use.
+          choco install wireshark --version=4.6.7 --yes --no-progress --params="'/NdisCapNo'"
+          "C:\Program Files\Wireshark" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       # The production Wasm link requires these pinned static libraries. A
       # successful toolchain bootstrap alone cannot satisfy that contract.
       - run: pnpm dependencies:bootstrap
