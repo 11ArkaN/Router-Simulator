@@ -404,6 +404,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .inspector label { display: block; margin: 0 16px 14px; color: var(--text-mute); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
 .inspector input { width: 100%; height: 36px; margin-top: 7px; padding: 0 11px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); outline: 0; color: var(--text); background: var(--bg); font: 12px var(--font-mono); font-weight: 400; letter-spacing: 0; text-transform: none; transition: border-color 130ms ease, box-shadow 130ms ease; }
 .inspector input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+/* Host and link selectors use the same control geometry as their neighboring
+   inputs. The two painted diagonals replace the platform-dependent arrow so
+   Chromium, Firefox and Safari retain one dark visual contract. */
+.host-form > label > select { appearance: none; width: 100%; height: 36px; margin-top: 7px; padding: 0 34px 0 11px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); outline: 0; color: var(--text); background-color: var(--bg); background-image: linear-gradient(45deg, transparent 50%, var(--text-mute) 50%), linear-gradient(135deg, var(--text-mute) 50%, transparent 50%); background-position: calc(100% - 15px) 15px, calc(100% - 10px) 15px; background-repeat: no-repeat; background-size: 5px 5px; font: 12px var(--font-mono); font-weight: 400; letter-spacing: 0; text-transform: none; transition: border-color 130ms ease, box-shadow 130ms ease, background-color 130ms ease; }
+.host-form > label > select:hover { border-color: var(--accent-line); background-color: var(--surface); }
+.host-form > label > select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.host-form > label > select option { color: var(--text); background: var(--bg); }
 
 /* ── Terminal ───────────────────────────────────────────────────────────────
    xterm receives a bounded flex rectangle and performs its own cell
