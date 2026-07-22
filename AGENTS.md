@@ -62,5 +62,9 @@ Make implementation decisions in this order:
 ## Change Verification
 
 - A functional change must include a test at the appropriate level.
-- Before finishing, run formatting, static analysis, relevant tests and benchmarks, and the production build.
-- For UI changes, verify behavior in a real browser with cross-origin isolation active.
+- Every commit must be preceded by local verification of the exact staged tree. Do not use a remote workflow as a substitute for a local result.
+- Before committing, bootstrap the pinned toolchain and production dependencies with `pnpm toolchain:bootstrap` and `pnpm dependencies:bootstrap` when their lock inputs or local installations changed.
+- Before every commit, run `pnpm verify`. This mandatory gate covers source records, generated-file drift, dependency boundaries, public-release policy, TypeScript checks, C++ and TypeScript tests, packet and 16-router runtime benchmarks, and the production build.
+- Before every commit, run `git diff --check` and inspect `git status --short` so whitespace defects, generated build products, secrets and unrelated files are not committed.
+- A failed mandatory check blocks the commit. Fix the cause and repeat the complete affected gate. Do not weaken warnings, tests, sanitizer settings, benchmark thresholds or conformance checks to obtain a passing result.
+- For UI or browser-runtime changes, verify the current product manually through Browser Use with cross-origin isolation active. Build a representative user-owned topology through product controls, exercise the affected CLI and UI paths, inspect browser errors, and verify persistence or recovery when the change can affect them. Do not use stale scripted browser scenarios as evidence.

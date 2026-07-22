@@ -4,10 +4,8 @@ build/
 .tools/
 .vite/
 coverage/
-playwright-report/
 .playwright-cli/
 .playwright-mcp/
-test-results/
 output/
 *.tsbuildinfo
 *.log

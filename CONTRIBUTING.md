@@ -18,5 +18,6 @@ Run the complete local gate before submitting a change:
 
 ```powershell
 pnpm verify
-pnpm verify:browser
 ```
+
+Changes to the UI or browser runtime also require manual verification against the production build with cross-origin isolation active.

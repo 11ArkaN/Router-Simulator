@@ -95,14 +95,7 @@ Run source validation, generated-profile checks, dependency checks, type checkin
 pnpm verify
 ```
 
-Install the Playwright-managed Firefox build and run the production browser scenario in Chrome, Edge and Firefox:
-
-```powershell
-pnpm test:e2e:install
-pnpm verify:browser
-```
-
-The browser scenario verifies cross-origin isolation, every selected pthread owner, multi-router topology editing, CLI provisioning, physical insertion, routed traffic, carrier failure, project import, checkpoint import, terminal restoration and reload recovery.
+Changes to the UI or browser runtime must also be checked manually against the production build with cross-origin isolation active. Create the topology through product controls and exercise the affected terminal, persistence and recovery paths.
 
 Individual core commands are also available:
 
