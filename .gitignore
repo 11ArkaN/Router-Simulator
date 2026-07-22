@@ -11,6 +11,3 @@ output/
 *.log
 *.pcapng
 *.netsim
-apps/web/public/wasm/simulator.js
-apps/web/public/wasm/simulator.wasm
-apps/web/public/wasm/simulator.worker.js
