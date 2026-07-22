@@ -1,7 +1,6 @@
-# Linux bootstrap scripts are executed directly by GitHub-hosted runners and
-# must retain LF even when the repository is edited from Windows.
-*.sh text eol=lf
-
-# Workflow files are consumed by a Linux-hosted service before any job selects
-# its operating system. A stable line ending keeps generated diffs portable.
-.github/workflows/*.yml text eol=lf
+# Repository generators hash and compare source bytes so a checkout must expose
+# the same text on Windows, Linux and macOS. Git still detects binary files and
+# leaves their bytes untouched, while every detected text file uses canonical
+# LF in both the index and working tree. This also keeps shell scripts directly
+# executable by Linux runners without maintaining a fragile extension list.
+* text=auto eol=lf
