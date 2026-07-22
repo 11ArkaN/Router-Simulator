@@ -130,11 +130,16 @@ bool LeaseRepository::configure(
         pool.t1_seconds <= pool.t2_seconds &&
         pool.t2_seconds <= pool.valid_lifetime_seconds &&
         pool.valid_lifetime_seconds != 0U;
+    // Both lengths are one-octet wire values, but integer promotion makes
+    // their subtraction signed. Keeping the bounded difference explicitly
+    // signed matches that language rule and avoids comparing it with an
+    // unsigned literal under GCC's mandatory warning set.
+    const auto delegated_span = static_cast<int>(pool.delegated_length) -
+                                static_cast<int>(pool.prefix.length);
     const bool shape = prefix
                            ? pool.delegated_length >= pool.prefix.length &&
                                  pool.delegated_length <= 128U &&
-                                 pool.delegated_length - pool.prefix.length <=
-                                     64U
+                                 delegated_span <= 64
                            : pool.delegated_length == 0U;
     return canonical && lifetimes && shape &&
            nonzero(pool.allocation_secret);

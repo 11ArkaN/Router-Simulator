@@ -13,6 +13,7 @@ $Install = Join-Path $Tools "dependencies/wasm/openssl-$Version"
 $ExpectedSha256 = "a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8"
 $Url = "https://github.com/openssl/openssl/releases/download/openssl-$Version/$ArchiveName"
 $Perl = Join-Path $env:ProgramFiles "Git/usr/bin/perl.exe"
+$Tar = Join-Path $env:SystemRoot "System32/tar.exe"
 $Emsdk = Join-Path $Tools "emsdk"
 $Nghttp2Version = "1.69.0"
 $Nghttp3Version = "1.17.0"
@@ -75,6 +76,9 @@ if (-not $OpenSslReady -and -not (Test-Path $Make)) {
 if (-not $OpenSslReady -and -not (Test-Path $Perl)) {
   throw "Git for Windows Perl is required"
 }
+if (-not (Test-Path $Tar)) {
+  throw "Windows system tar is required"
+}
 if (-not (Test-Path (Join-Path $Emsdk "emsdk_env.ps1"))) {
   throw "Run scripts/bootstrap-toolchain.ps1 before dependencies"
 }
@@ -89,7 +93,10 @@ if (-not $OpenSslReady) {
     throw "OpenSSL archive SHA-256 mismatch: $ActualSha256"
   }
   if (-not (Test-Path $Source)) {
-    tar -xzf $Archive -C (Split-Path $Source)
+    # Emscripten activation can place MSYS tar before System32. MSYS treats a
+    # native drive prefix such as D: as a remote host, so use the Windows
+    # archive implementation explicitly for every native path.
+    & $Tar -xzf $Archive -C (Split-Path $Source)
     if ($LASTEXITCODE -ne 0) { throw "OpenSSL extraction failed" }
   }
 
@@ -146,7 +153,7 @@ function Get-VerifiedRelease(
     throw "$Name archive SHA-256 mismatch: $actual"
   }
   if (-not (Test-Path $source)) {
-    tar -xzf $archive -C (Split-Path $source)
+    & $Tar -xzf $archive -C (Split-Path $source)
     if ($LASTEXITCODE -ne 0) { throw "$Name extraction failed" }
   }
   return $source

@@ -636,7 +636,11 @@ bool IterativeResolver::start_nameserver_address_lookup(
                                     : packet::dns::type_a,
       .record_class = resume.original.record_class};
   transaction.plan = build_minimisation_plan(target, policy_);
-  transaction.visited_aliases = {target};
+  // Reuse the transaction-owned allocation and copy one complete Name object
+  // directly. GCC 13 lowers initializer-list assignment to a one-past
+  // memmove and reports a false array-bounds diagnostic under -O2 -Werror.
+  transaction.visited_aliases.clear();
+  transaction.visited_aliases.push_back(target);
   transaction.stage = 0U;
   if (!reset_to_roots(transaction))
     return false;
