@@ -1,12 +1,12 @@
 #pragma once
 
-// Generated protocol 3 operation identities. Payload fields use netstrings;
+// Generated protocol 4 operation identities. Payload fields use netstrings;
 // packet bytes and mutable runtime addresses never cross this text boundary.
 
 #include <string_view>
 
 namespace router::lab_runtime_protocol {
-inline constexpr unsigned version = 3;
+inline constexpr unsigned version = 4;
 inline constexpr std::string_view snapshot{"snapshot"};
 inline constexpr std::string_view router_create{"router-create"};
 inline constexpr std::string_view router_delete{"router-delete"};
@@ -31,6 +31,8 @@ inline constexpr std::string_view link_delete{"link-delete"};
 inline constexpr std::string_view link_admin_set{"link-admin-set"};
 inline constexpr std::string_view link_properties_set{"link-properties-set"};
 inline constexpr std::string_view host_configure{"host-configure"};
+inline constexpr std::string_view host_dhcpv6_replace{"host-dhcpv6-replace"};
+inline constexpr std::string_view host_dns_replace{"host-dns-replace"};
 inline constexpr std::string_view router_ping_start{"router-ping-start"};
 inline constexpr std::string_view router_ping_status{"router-ping-status"};
 inline constexpr std::string_view host_ping_start{"host-ping-start"};

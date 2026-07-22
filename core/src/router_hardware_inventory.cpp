@@ -295,6 +295,16 @@ RouterHardwareInventory::physical_mac(std::string_view port_id) const noexcept {
                      static_cast<std::uint8_t>(*value)};
 }
 
+packet::Mac RouterHardwareInventory::chassis_base_mac() const noexcept {
+  // The generation-bearing registry identity prevents reuse after deletion.
+  // Final coordinate bytes are zero because this is chassis identity rather
+  // than a physical port. U/L remains set so no vendor OUI is claimed.
+  return packet::Mac{0x02U,
+                     static_cast<std::uint8_t>(device_.index),
+                     static_cast<std::uint8_t>(device_.generation >> 8U),
+                     static_cast<std::uint8_t>(device_.generation), 0U, 0U};
+}
+
 bool RouterHardwareInventory::set_link_signal(PortHandle handle,
                                               bool present) noexcept {
   // Validate device identity, coordinate and hardware generation. A delayed

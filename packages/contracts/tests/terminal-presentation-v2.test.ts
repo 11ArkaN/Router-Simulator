@@ -31,4 +31,36 @@ describe("terminal presentation format 2", () => {
       { sessionId: "same", routerId: "r2", engine: "md", ...state }
     ] })).toThrow("duplicated");
   });
+
+  it("round-trips bounded interactive pager state", () => {
+    const editor = { buffer: "", cursor: 0, history: [], historyIndex: 0 };
+    const value = { version: 2 as const, activeSessionId: "s1", sessions: [{
+      sessionId: "s1", routerId: "r1", engine: "md" as const,
+      editors: { "md-operational": editor, "md-configuration": editor,
+        classic: editor },
+      queuedInput: [], pager: {
+        output: "one\ntwo\nthree\nfour", rows: 3, offset: 1,
+        searchDirection: "forward" as const, searchBuffer: "thr",
+        lastSearchPattern: "two", lastSearchDirection: "backward" as const,
+        matchLine: 1, searchHighlightVisible: true, helpVisible: false
+      }
+    }] };
+    expect(parseTerminalPresentationV2(value)).toEqual(value);
+  });
+
+  it("rejects pager positions and interaction fields outside their bounds", () => {
+    const editor = { buffer: "", cursor: 0, history: [], historyIndex: 0 };
+    const base = { version: 2 as const, sessions: [{
+      sessionId: "s1", routerId: "r1", engine: "md" as const,
+      editors: { "md-operational": editor, "md-configuration": editor,
+        classic: editor }, queuedInput: []
+    }] };
+    expect(() => parseTerminalPresentationV2({ ...base, sessions: [{
+      ...base.sessions[0], pager: { output: "one\ntwo", rows: 3, offset: 1 }
+    }] })).toThrow("pager");
+    expect(() => parseTerminalPresentationV2({ ...base, sessions: [{
+      ...base.sessions[0], pager: { output: "one\ntwo", rows: 2, offset: 0,
+        numericPrefix: "1234567890" }
+    }] })).toThrow("pager");
+  });
 });

@@ -3,7 +3,7 @@
 // enter this contract. The browser persistence layer is the state owner.
 
 import { PROFILE_CATALOG } from "./generated-device-catalog";
-import type { NodeId, SessionId } from "./lab-project-v3";
+import type { NodeId, SessionId } from "./lab-project-v4";
 
 export const TERMINAL_PRESENTATION_VERSION = 2 as const;
 
@@ -21,7 +21,17 @@ export interface TerminalSessionPresentationV2 {
   editors: Record<"md-operational" | "md-configuration" | "classic",
     TerminalEditorPresentationV2>;
   queuedInput: string[];
-  pager?: { output: string; rows: number; offset: number };
+  pager?: {
+    output: string; rows: number; offset: number;
+    numericPrefix?: string;
+    searchDirection?: "forward" | "backward";
+    searchBuffer?: string;
+    lastSearchPattern?: string;
+    lastSearchDirection?: "forward" | "backward";
+    matchLine?: number;
+    searchHighlightVisible?: boolean;
+    helpVisible?: boolean;
+  };
 }
 
 export interface TerminalPresentationV2 {
@@ -81,8 +91,31 @@ export function parseTerminalPresentationV2(input: unknown): TerminalPresentatio
       assert(typeof session.pager.output === "string" &&
         encoder.encode(session.pager.output).length <=
           PROFILE_CATALOG.runtime.terminal_result_bytes &&
-        Number.isSafeInteger(session.pager.rows) && session.pager.rows > 0 &&
-        Number.isSafeInteger(session.pager.offset) && session.pager.offset >= 0,
+        Number.isSafeInteger(session.pager.rows) && session.pager.rows >= 2 &&
+        Number.isSafeInteger(session.pager.offset) && session.pager.offset >= 0 &&
+        session.pager.offset <= Math.max(0,
+          session.pager.output.replaceAll("\r", "").split("\n").length -
+          (session.pager.rows - 1)) &&
+        (session.pager.numericPrefix === undefined ||
+          /^\d{1,9}$/.test(session.pager.numericPrefix)) &&
+        (session.pager.searchDirection === undefined ||
+          session.pager.searchDirection === "forward" ||
+          session.pager.searchDirection === "backward") &&
+        (session.pager.searchBuffer === undefined ||
+          typeof session.pager.searchBuffer === "string") &&
+        (session.pager.lastSearchPattern === undefined ||
+          typeof session.pager.lastSearchPattern === "string") &&
+        (session.pager.lastSearchDirection === undefined ||
+          session.pager.lastSearchDirection === "forward" ||
+          session.pager.lastSearchDirection === "backward") &&
+        (session.pager.matchLine === undefined ||
+          Number.isSafeInteger(session.pager.matchLine) &&
+          session.pager.matchLine >= 0 && session.pager.matchLine <
+            session.pager.output.replaceAll("\r", "").split("\n").length) &&
+        (session.pager.helpVisible === undefined ||
+          typeof session.pager.helpVisible === "boolean") &&
+        (session.pager.searchHighlightVisible === undefined ||
+          typeof session.pager.searchHighlightVisible === "boolean"),
       "Terminal pager presentation is invalid");
     }
     sessionIds.add(session.sessionId);

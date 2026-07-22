@@ -1,10 +1,10 @@
-// Inspector for the selected format 3 device. It retains the approved panel,
+// Inspector for the selected format 4 device. It retains the approved panel,
 // tab and control styling while all inventory choices come from the generated
-// release catalog and all operational values come from runtime snapshot ABI 5.
+// release catalog and all operational values come from runtime snapshot ABI 6.
 
 import { useEffect, useMemo, useState } from "react";
-import { PROFILE_CATALOG, type HostProjectV3, type LabProjectV3,
-  type LabRuntimeSnapshotV5, type RouterProjectV3 } from "@router-simulator/contracts";
+import { PROFILE_CATALOG, type HostProjectV4, type LabProjectV4,
+  type LabRuntimeSnapshotV6, type RouterProjectV4 } from "@router-simulator/contracts";
 import { PanelResizeHandle } from "./PanelResizeHandle";
 import { X } from "lucide-react";
 
@@ -14,10 +14,10 @@ interface Props {
   selected?: string;
   tab: RouterTab;
   onTabChange(tab: RouterTab): void;
-  project: LabProjectV3;
-  snapshot?: LabRuntimeSnapshotV5;
-  updateHost(host: HostProjectV3): void;
-  updateRouter(router: RouterProjectV3): void;
+  project: LabProjectV4;
+  snapshot?: LabRuntimeSnapshotV6;
+  updateHost(host: HostProjectV4): void;
+  updateRouter(router: RouterProjectV4): void;
   setCard(routerId: string, slot: number, provisioned: string | null,
     equipped: string | null): void;
   setMda(routerId: string, cardSlot: number, mdaSlot: number,
@@ -26,7 +26,8 @@ interface Props {
   setMdaAdmin(routerId: string, cardSlot: number, mdaSlot: number,
     enabled: boolean): void;
   setLink(linkId: string, up: boolean): void;
-  updateLink(linkId: string, up: boolean, propagationDelayNs: number): void;
+  updateLink(linkId: string, up: boolean, propagationDelayNs: number,
+    configuredSpeedMbps: number | null): void;
   deleteLink(linkId: string): void;
   deleteNode(nodeId: string): void;
   ping(sourceId: string, destination: string): Promise<string>;
@@ -57,7 +58,7 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
   const profile = useMemo(() => router
     ? PROFILE_CATALOG.profiles.find((item) => item.id === router.profileId)
     : undefined, [router]);
-  const [hostDraft, setHostDraft] = useState<HostProjectV3>();
+  const [hostDraft, setHostDraft] = useState<HostProjectV4>();
   useEffect(() => {
     // Host addressing is validated as one record. Keeping edits local permits
     // a user to replace a prefix, gateway or MAC without submitting every
@@ -70,13 +71,16 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
     onChange={onWidthChange} />;
 
   if (link) {
+    const hostOnly = link.endpoints.every((endpoint) =>
+      project.hosts.some((host) => host.id === endpoint.nodeId));
     return <aside className="inspector">
       <div className="inspector-title"><div><h2>{link.id}</h2><p>Point-to-point Ethernet</p></div><button aria-label="Close inspector" onClick={close}><X size={18} /></button></div>
       <div className="host-form">
         <label>First endpoint<input readOnly value={`${link.endpoints[0].nodeId} / ${link.endpoints[0].portId}`} /></label>
         <label>Second endpoint<input readOnly value={`${link.endpoints[1].nodeId} / ${link.endpoints[1].portId}`} /></label>
-        <label>Administrative state<select value={link.admin} onChange={(event) => updateLink(link.id, event.target.value === "up", link.propagationDelayNs)}><option value="up">up</option><option value="down">down</option></select></label>
-        <label>Propagation delay in ns<input type="number" min={0} step={1} value={link.propagationDelayNs} onChange={(event) => { const value = Number(event.target.value); if (Number.isSafeInteger(value) && value >= 0) updateLink(link.id, link.admin === "up", value); }} /></label>
+        <label>Administrative state<select value={link.admin} onChange={(event) => updateLink(link.id, event.target.value === "up", link.propagationDelayNs, link.configuredSpeedMbps)}><option value="up">up</option><option value="down">down</option></select></label>
+        {hostOnly && <label>Medium speed in Mb/s<input type="number" min={1} step={1} value={link.configuredSpeedMbps ?? ""} onChange={(event) => { const value = Number(event.target.value); if (Number.isSafeInteger(value) && value > 0) updateLink(link.id, link.admin === "up", link.propagationDelayNs, value); }} /></label>}
+        <label>Propagation delay in ns<input type="number" min={0} step={1} value={link.propagationDelayNs} onChange={(event) => { const value = Number(event.target.value); if (Number.isSafeInteger(value) && value >= 0) updateLink(link.id, link.admin === "up", value, link.configuredSpeedMbps); }} /></label>
         <button className="inspector-action" onClick={() => setLink(link.id, link.admin !== "up")}>{link.admin === "up" ? "Disconnect" : "Connect"}</button>
         <button className="secondary-action" onClick={() => deleteLink(link.id)}>Delete link</button>
       </div>{resizeHandle}
@@ -101,6 +105,9 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
         <label>Default gateway<input value={editable.eth0.gateway} onChange={(event) => setHostDraft({ ...editable, eth0: { ...editable.eth0, gateway: event.target.value } })} /></label>
         <label>MAC address<input value={editable.eth0.mac} onChange={(event) => setHostDraft({ ...editable, eth0: { ...editable.eth0, mac: event.target.value } })} /></label>
         <label>Interface MTU<input type="number" min={PROFILE_CATALOG.ethernet.minimum_host_ipv4_mtu} max={PROFILE_CATALOG.ethernet.maximum_network_mtu} value={editable.eth0.mtu} onChange={(event) => setHostDraft({ ...editable, eth0: { ...editable.eth0, mtu: Number(event.target.value) } })} /></label>
+        <label>IPv6 autoconfiguration<select value={editable.eth0.ipv6.autoconfiguration ? "enabled" : "disabled"} onChange={(event) => setHostDraft({ ...editable, eth0: { ...editable.eth0, ipv6: { ...editable.eth0.ipv6, autoconfiguration: event.target.value === "enabled" } } })}><option value="enabled">enabled</option><option value="disabled">disabled</option></select></label>
+        <label>IPv6 interface identifier<select value={editable.eth0.ipv6.interfaceIdentifierMode} onChange={(event) => { const mode = event.target.value as "modified-eui64" | "stable-opaque"; setHostDraft({ ...editable, eth0: { ...editable.eth0, ipv6: { ...editable.eth0.ipv6, interfaceIdentifierMode: mode, stableIidSecret: mode === "modified-eui64" ? null : editable.eth0.ipv6.stableIidSecret } } }); }}><option value="modified-eui64">modified EUI-64</option><option value="stable-opaque">stable opaque</option></select></label>
+        {editable.eth0.ipv6.interfaceIdentifierMode === "stable-opaque" && <label>IPv6 network identity<input value={editable.eth0.ipv6.networkId} maxLength={PROFILE_CATALOG.runtime.ipv6_stable_iid_network_id_octets} onChange={(event) => setHostDraft({ ...editable, eth0: { ...editable.eth0, ipv6: { ...editable.eth0.ipv6, networkId: event.target.value } } })} /></label>}
         <div className="button-pair"><button onClick={() => setHostDraft(structuredClone(host))}>Discard</button><button className="inspector-action" onClick={() => updateHost(editable)}>Apply</button></div>
         <button className="inspector-action" disabled={!peer || pingBusy} onClick={() => void runPing()}>{pingBusy ? "Pinging" : `Ping ${peer?.name ?? "peer"}`}</button>
         <button className="secondary-action" onClick={() => deleteNode(host.id)}>Delete host</button>

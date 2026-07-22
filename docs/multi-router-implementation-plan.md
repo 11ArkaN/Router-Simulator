@@ -113,7 +113,7 @@ SPSC rings connect known producer and consumer pairs. A matrix of SPSC rings is 
 
 ### Memory
 
-WebAssembly initial memory remains fixed at 256 MiB. The laboratory shares:
+WebAssembly initial memory is 320 MiB. The laboratory shares:
 
 - one 64 MiB packet pool
 - one 32 MiB capture store
@@ -273,6 +273,6 @@ Persistence tests cover project and checkpoint round trips, rejection of 17 rout
 
 Capture tests verify selected observation points, stable IDs across rename and deletion, and PCAPNG decoding with `tshark`.
 
-Performance verification keeps the existing 10 percent packet primitive regression gate and adds 1-router, 4-router and 16-router scenarios. The 16-router case exercises 64 links, 64 terminal sessions, telemetry and checkpoint export within 256 MiB. Idle runtime tests reject busy loops and fairness tests reject shard starvation.
+Performance verification keeps the existing 10 percent packet primitive regression gate and adds 1-router, 4-router and 16-router scenarios. The 16-router case exercises 64 links, 64 terminal sessions, telemetry and checkpoint export within the generated memory envelope. Idle runtime tests reject busy loops and fairness tests reject shard starvation.
 
 Browser acceptance runs with cross-origin isolation in Chrome, Edge and Firefox. It covers an empty project, adding all router models, hardware changes, link creation, multi-hop traffic, multiple sessions, capture selection, failures, deletion, checkpoint restore, reload, panel resizing and UI responsiveness.

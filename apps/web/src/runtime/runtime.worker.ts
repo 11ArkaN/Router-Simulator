@@ -5,11 +5,16 @@
 
 import { LAB_RUNTIME_PROTOCOL, PROFILE_CATALOG } from "@router-simulator/contracts";
 import type { TelemetryLayout } from "./telemetry-contract";
+import { RuntimeContinuityGuard,
+  RuntimeRecoveryController } from "./runtime-continuity";
 
 interface WasmModule {
   // ccall owns UTF-8 marshalling for pointer-based C exports. Calling raw
   // _rs_command with a JavaScript string would pass an invalid numeric pointer.
   _runtime_initialize(): number;
+  _memory_epoch(): number;
+  _memory_size(): number;
+  _memory_reserve(minimumTotalSize: number): number;
   _lab_close(): void;
   _telemetry_get_page(): number;
   _telemetry_get_page_size(): number;
@@ -19,19 +24,146 @@ interface WasmModule {
   _checkpoint_export(): number;
   _checkpoint_export_size(): number;
   _checkpoint_import(pointer: number, size: number): number;
+  _secret_vault_initialize(keyPointer: number, keySize: number,
+    contextPointer: number, contextSize: number): number;
   _malloc(size: number): number;
   _free(pointer: number): void;
   HEAPU8: Uint8Array;
+  wasmMemory: WebAssembly.Memory;
   ccall(name: string, returnType: "number" | "string" | null,
         argumentTypes: Array<"string">, arguments_: string[]): number | string | null;
 }
 
-type RuntimeRequest = { id: number; command?: string; action?: "capture-export" | "checkpoint-export" | "checkpoint-import";
+type RuntimeRequest = { id: number; command?: string; action?: "capture-export" | "checkpoint-export" | "checkpoint-import" | "secret-vault-initialize";
   bytes?: ArrayBuffer; shutdown?: true };
 type RuntimeResponse = { id: number; ok: boolean; value?: string; bytes?: ArrayBuffer; error?: string };
+type RuntimeContinuityNotice = { kind: "continuity-recovered" |
+  "continuity-unrecoverable"; elapsedMilliseconds: number;
+  checkpointAgeMilliseconds: number; error?: string };
 
 let modulePromise: Promise<WasmModule> | undefined;
 let telemetryTimer: number | undefined;
+let observedMemoryBuffer: SharedArrayBuffer | undefined;
+let observedMemoryEpoch = 0;
+let telemetryProjection: { offset: number; size: number;
+  layout: TelemetryLayout } | undefined;
+let continuityRecovery: RuntimeRecoveryController | undefined;
+let continuityBridgeUnavailable = false;
+const continuity = new RuntimeContinuityGuard(
+  PROFILE_CATALOG.runtime.recovery_checkpoint_interval_milliseconds,
+  PROFILE_CATALOG.runtime.continuity_loss_threshold_milliseconds,
+  performance.now());
+
+function refreshMemoryViews(module: WasmModule): {
+  buffer: SharedArrayBuffer; epoch: number; changed: boolean
+} {
+  // Emscripten keeps Wasm-internal views current, but external Module.HEAPU8
+  // and telemetry DataViews can retain the old extent after pthread growth.
+  // Comparing both the allocator epoch and buffer identity also handles hosts
+  // that implement growable SharedArrayBuffer without replacing the object.
+  const epoch = module._memory_epoch();
+  // TypeScript's WebAssembly lib still declares Memory.buffer as ArrayBuffer
+  // even when the memory descriptor is shared. Widen before the runtime gate.
+  const rawBuffer = module.wasmMemory.buffer as ArrayBufferLike;
+  if (!(rawBuffer instanceof SharedArrayBuffer)) {
+    throw new Error("Emscripten runtime did not create shared WebAssembly memory");
+  }
+  const buffer: SharedArrayBuffer = rawBuffer;
+  const changed = epoch !== observedMemoryEpoch ||
+    buffer !== observedMemoryBuffer;
+  const heapBuffer = module.HEAPU8.buffer as ArrayBufferLike;
+  if (heapBuffer !== buffer ||
+      module.HEAPU8.byteLength !== buffer.byteLength) {
+    module.HEAPU8 = new Uint8Array(buffer);
+  }
+  observedMemoryBuffer = buffer;
+  observedMemoryEpoch = epoch;
+  return { buffer, epoch, changed };
+}
+
+function publishTelemetryMemory(module: WasmModule, force = false): void {
+  const memory = refreshMemoryViews(module);
+  if (!telemetryProjection || (!force && !memory.changed)) return;
+  self.postMessage({ kind: "telemetry-page", buffer: memory.buffer,
+    offset: telemetryProjection.offset, size: telemetryProjection.size,
+    layout: telemetryProjection.layout, memoryEpoch: memory.epoch });
+}
+
+function exportRecoveryCheckpoint(module: WasmModule): Uint8Array | undefined {
+  // checkpoint_export prepares one immutable runtime-owned generation. Copying
+  // it immediately is essential because the next ABI call may reuse the C++
+  // vector and because a later memory grow may replace external typed views.
+  const pointer = module._checkpoint_export();
+  const size = module._checkpoint_export_size();
+  if (!pointer || !size) return undefined;
+  refreshMemoryViews(module);
+  return module.HEAPU8.slice(pointer, pointer + size);
+}
+
+function importCheckpointBytes(module: WasmModule,
+  bytes: Uint8Array): void {
+  // Reserve through the Worker-affine allocator owner before malloc. The
+  // conservative extent includes the entire incoming image, so allocation
+  // cannot initiate memory.grow from a forwarding pthread or publish a prefix.
+  const requiredExtent = module._memory_size() + bytes.byteLength;
+  if (!Number.isSafeInteger(requiredExtent) ||
+      requiredExtent > PROFILE_CATALOG.runtime.wasm_maximum_memory_bytes ||
+      !module._memory_reserve(requiredExtent)) {
+    throw new Error("Checkpoint allocation exceeded the 1 GiB memory limit");
+  }
+  refreshMemoryViews(module);
+  const pointer = module._malloc(bytes.byteLength);
+  try {
+    if (!pointer)
+      throw new Error("Checkpoint allocation exceeded the 1 GiB memory limit");
+    refreshMemoryViews(module);
+    module.HEAPU8.set(bytes, pointer);
+    if (!module._checkpoint_import(pointer, bytes.byteLength))
+      throw new Error("Checkpoint ABI, build or profile is incompatible");
+  } finally {
+    if (pointer) module._free(pointer);
+  }
+}
+
+function maintainRuntimeContinuity(module: WasmModule): boolean {
+  if (!continuityRecovery || continuityBridgeUnavailable) return false;
+  const result = continuityRecovery.maintain(performance.now());
+  if (result.state === "stable" || result.state === "checkpointed") return true;
+  if (result.state === "unrecoverable") {
+    continuityBridgeUnavailable = true;
+    self.postMessage({ kind: "continuity-unrecoverable",
+      elapsedMilliseconds: result.elapsedMilliseconds,
+      checkpointAgeMilliseconds: result.checkpointAgeMilliseconds,
+      error: result.error } satisfies RuntimeContinuityNotice);
+    return false;
+  }
+  try {
+    // Import is a transactional replacement inside the existing LabRuntime.
+    // The project vault remains initialized, every pthread owner receives the
+    // restored state through its normal checkpoint boundary, and no absolute
+    // steady-clock value from before suspension crosses the operation.
+    const offset = module._telemetry_get_page();
+    const size = module._telemetry_get_page_size();
+    if (!telemetryProjection || !offset || size !== telemetryProjection.size)
+      throw new Error("Recovered telemetry layout is incompatible");
+    telemetryProjection = { ...telemetryProjection, offset, size };
+    module._telemetry_publish();
+    publishTelemetryMemory(module, true);
+    self.postMessage({ kind: "continuity-recovered",
+      elapsedMilliseconds: result.elapsedMilliseconds,
+      checkpointAgeMilliseconds: result.checkpointAgeMilliseconds
+    } satisfies RuntimeContinuityNotice);
+  } catch (cause) {
+    continuityBridgeUnavailable = true;
+    self.postMessage({ kind: "continuity-unrecoverable",
+      elapsedMilliseconds: result.elapsedMilliseconds,
+      checkpointAgeMilliseconds: result.checkpointAgeMilliseconds,
+      error: cause instanceof Error ? cause.message : String(cause)
+    } satisfies RuntimeContinuityNotice);
+    return false;
+  }
+  return true;
+}
 
 function netstrings(values: readonly string[]): string {
   // Startup uses the same protocol encoder as ordinary client commands. Text
@@ -54,19 +186,20 @@ async function loadRuntime(): Promise<WasmModule> {
         // C++ construction starts the fixed pthread domains before any command
         // is accepted by the UI bridge.
         if (!module._runtime_initialize()) throw new Error("Multi-router runtime initialization failed");
-        const buffer = module.HEAPU8.buffer;
-        if (!(buffer instanceof SharedArrayBuffer)) {
-          throw new Error("Emscripten runtime did not create shared WebAssembly memory");
-        }
+        const initialMemory = refreshMemoryViews(module);
         const offset = module._telemetry_get_page();
         const size = module._telemetry_get_page_size();
         const layoutText = module.ccall("telemetry_get_layout", "string", [], []);
         if (typeof layoutText !== "string") throw new Error("Telemetry layout ABI is unavailable");
         const layout = JSON.parse(layoutText) as TelemetryLayout;
-        if (layout.abi !== 5 || layout.size !== size) {
+        // The telemetry page intentionally shares the snapshot ABI revision.
+        // Reading the generated contract prevents a C++ ABI bump from leaving
+        // this startup gate on a stale literal and rejecting every valid lab.
+        if (layout.abi !== LAB_RUNTIME_PROTOCOL.snapshotAbi ||
+            layout.size !== size) {
           throw new Error("Telemetry layout ABI does not match the active profile");
         }
-        const health = new DataView(buffer, offset, size);
+        telemetryProjection = { offset, size, layout };
         // pthread creation is asynchronous in Emscripten. Polling the shared
         // health page for at most two seconds distinguishes a genuine startup
         // failure from the short interval before both C++ entry points publish
@@ -76,15 +209,19 @@ async function loadRuntime(): Promise<WasmModule> {
         for (let attempt = 0; attempt < PROFILE_CATALOG.runtime.worker_startup_attempts; ++attempt) {
           module.ccall("lab_submit_command", "string", ["string"],
             [netstrings([LAB_RUNTIME_PROTOCOL.snapshot])]);
+          const memory = refreshMemoryViews(module);
+          const health = new DataView(memory.buffer, offset, size);
           const workerCount = health.getUint32(layout.workerCount, true);
           const ownerIds = new Set<bigint>();
           let complete = workerCount >= 2 &&
             workerCount <= PROFILE_CATALOG.runtime.maximum_worker_domains;
           for (let index = 0; complete && index < workerCount; ++index) {
             const record = offset + layout.workerDirectory + index * layout.workerBlockSize;
-            const running = new Uint8Array(buffer, record + layout.workerRunning, 1)[0];
+            const running = new Uint8Array(memory.buffer,
+              record + layout.workerRunning, 1)[0];
             const ownerId = Atomics.load(
-              new BigUint64Array(buffer, record + layout.workerThreadId, 1), 0);
+              new BigUint64Array(memory.buffer,
+                record + layout.workerThreadId, 1), 0);
             complete = running === 1 && ownerId !== 0n && !ownerIds.has(ownerId);
             ownerIds.add(ownerId);
           }
@@ -101,12 +238,29 @@ async function loadRuntime(): Promise<WasmModule> {
         if (!ownersReady) {
           throw new Error("pthread smoke test did not observe distinct control and forwarding owners");
         }
-        self.postMessage({ kind: "telemetry-page", buffer, offset, size, layout });
+        // initialMemory is intentionally observed before startup allocations;
+        // the forced publish below always sends the latest memory generation.
+        void initialMemory;
+        publishTelemetryMemory(module, true);
+        // Dependency download, Wasm compilation and pthread startup happen
+        // before the live laboratory is announced. Establish the first
+        // continuity baseline only after those one-time costs have completed.
+        const runtimeReadyNow = performance.now();
+        continuityRecovery = new RuntimeRecoveryController(continuity, {
+          exportCheckpoint: () => exportRecoveryCheckpoint(module),
+          importCheckpoint: (bytes) => importCheckpointBytes(module, bytes)
+        });
+        if (!continuityRecovery.initialize(runtimeReadyNow))
+          throw new Error("Initial runtime recovery checkpoint failed");
         // The Worker event loop is the only LabRuntime caller. A bounded timer
-        // therefore preserves control affinity while refreshing shared data
+        // therefore preserves control affinity while refreshing shared data,
+        // supervising browser continuity and preparing bounded recovery images
         // independently from UI commands and packet frequency.
-        telemetryTimer = self.setInterval(() => module._telemetry_publish(),
-          PROFILE_CATALOG.runtime.telemetry_publish_interval_milliseconds);
+        telemetryTimer = self.setInterval(() => {
+          if (!maintainRuntimeContinuity(module)) return;
+          module._telemetry_publish();
+          publishTelemetryMemory(module);
+        }, PROFILE_CATALOG.runtime.telemetry_publish_interval_milliseconds);
         return module;
       });
   }
@@ -127,10 +281,14 @@ self.onmessage = async ({ data }: MessageEvent<RuntimeRequest>) => {
       return;
     }
     const module = await loadRuntime();
+    if (!maintainRuntimeContinuity(module))
+      throw new Error("Runtime continuity recovery failed");
+    refreshMemoryViews(module);
     if (data.action === "capture-export") {
       const pointer = module._capture_export_pcapng();
       const size = module._capture_export_size();
       if (!pointer || !size) throw new Error("PCAPNG export failed");
+      refreshMemoryViews(module);
       const bytes = module.HEAPU8.slice(pointer, pointer + size).buffer;
       self.postMessage({ id: data.id, ok: true, bytes } satisfies RuntimeResponse, [bytes]);
       return;
@@ -139,25 +297,55 @@ self.onmessage = async ({ data }: MessageEvent<RuntimeRequest>) => {
       const pointer = module._checkpoint_export();
       const size = module._checkpoint_export_size();
       if (!pointer || !size) throw new Error("Checkpoint export failed");
+      refreshMemoryViews(module);
       const bytes = module.HEAPU8.slice(pointer, pointer + size).buffer;
       self.postMessage({ id: data.id, ok: true, bytes } satisfies RuntimeResponse, [bytes]);
       return;
     }
     if (data.action === "checkpoint-import") {
       if (!data.bytes?.byteLength) throw new Error("Checkpoint is empty");
-      const pointer = module._malloc(data.bytes.byteLength);
-      try {
-        module.HEAPU8.set(new Uint8Array(data.bytes), pointer);
-        if (!module._checkpoint_import(pointer, data.bytes.byteLength)) {
-          throw new Error("Checkpoint ABI, build or profile is incompatible");
-        }
-      } finally {
-        module._free(pointer);
-      }
+      importCheckpointBytes(module, new Uint8Array(data.bytes));
+      if (!continuityRecovery?.refreshRecoveryPoint(performance.now()))
+        throw new Error("Imported runtime could not publish a recovery point");
       self.postMessage({ id: data.id, ok: true, value: "checkpoint imported" } satisfies RuntimeResponse);
       return;
     }
+    if (data.action === "secret-vault-initialize") {
+      if (!data.bytes || data.bytes.byteLength !== 32 || !data.command)
+        throw new Error("Project vault material is invalid");
+      const key = new Uint8Array(data.bytes);
+      const context = new TextEncoder().encode(data.command);
+      const keyPointer = module._malloc(key.byteLength);
+      const contextPointer = module._malloc(context.byteLength);
+      try {
+        if (!keyPointer || !contextPointer)
+          throw new Error("Project vault initialization allocation failed");
+        refreshMemoryViews(module);
+        module.HEAPU8.set(key, keyPointer);
+        module.HEAPU8.set(context, contextPointer);
+        if (!module._secret_vault_initialize(keyPointer, key.byteLength,
+          contextPointer, context.byteLength))
+          throw new Error("Project vault initialization was rejected");
+      } finally {
+        // Key bytes are transient in both heaps. They are erased before either
+        // allocation is returned to a general-purpose allocator.
+        key.fill(0);
+        refreshMemoryViews(module);
+        if (keyPointer) module.HEAPU8.fill(0, keyPointer, keyPointer + 32);
+        if (contextPointer) module.HEAPU8.fill(
+          0, contextPointer, contextPointer + context.byteLength);
+        context.fill(0);
+        if (keyPointer) module._free(keyPointer);
+        if (contextPointer) module._free(contextPointer);
+      }
+      if (!continuityRecovery?.refreshRecoveryPoint(performance.now()))
+        throw new Error("Vault initialization recovery checkpoint failed");
+      self.postMessage({ id: data.id, ok: true,
+        value: "project vault initialized" } satisfies RuntimeResponse);
+      return;
+    }
     const value = module.ccall("lab_submit_command", "string", ["string"], [data.command ?? ""]);
+    publishTelemetryMemory(module);
     if (typeof value !== "string") throw new Error("Runtime returned an invalid command response");
     self.postMessage({ id: data.id, ok: true, value } satisfies RuntimeResponse);
   } catch (cause) {

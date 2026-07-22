@@ -135,6 +135,36 @@ void session_workflow_tests() {
   require(workflows.close_device(device) == 4 && sessions.size() == 0,
           "router teardown did not close every workflow-owned session");
 
+  // A clean private candidate still observes its creation generation. Another
+  // session may commit many distinct schema paths before that candidate edits
+  // one of them, so revision history cannot be discarded merely because the
+  // observer has not yet recorded a local change. The generated router arena
+  // is sized to retain this realistic long-lived workflow without the former
+  // permanent 256-path lockout.
+  SessionRegistry history_sessions;
+  SessionWorkflowController history{history_sessions};
+  const DeviceHandle history_device{1U, 1U};
+  const auto stale = history_sessions.create(history_device, "stale");
+  const auto writer = history_sessions.create(history_device, "writer");
+  require(stale && writer &&
+              history.enter(*stale, CandidateMode::private_candidate) ==
+                  SessionWorkflowResult::applied &&
+              history.enter(*writer, CandidateMode::private_candidate) ==
+                  SessionWorkflowResult::applied,
+          "revision-history fixture could not open private candidates");
+  constexpr std::uint64_t first_history_key = 1000U;
+  constexpr std::uint64_t history_commits = 512U;
+  for (std::uint64_t index = 0; index < history_commits; ++index)
+    require(history.record_edit(*writer, first_history_key + index) ==
+                    SessionWorkflowResult::applied &&
+                history.commit(*writer) == SessionWorkflowResult::applied,
+            "long-lived candidate exhausted router revision metadata");
+  require(history.record_edit(*stale,
+                              first_history_key + history_commits - 1U) ==
+                  SessionWorkflowResult::applied &&
+              history.commit(*stale) == SessionWorkflowResult::merge_conflict,
+          "long-lived private candidate lost a late same-path conflict");
+
   SessionRegistry full;
   for (std::uint16_t router = 0;
        router < router::device_catalog::maximum_routers; ++router)

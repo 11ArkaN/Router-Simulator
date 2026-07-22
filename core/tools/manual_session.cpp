@@ -1,4 +1,4 @@
-// Human-readable product smoke session. Every action uses protocol 3 and the
+// Human-readable product smoke session. Every action uses protocol 4 and the
 // same multi-device facade as the browser Worker.
 
 #include "router/generated_lab_runtime_protocol.hpp"

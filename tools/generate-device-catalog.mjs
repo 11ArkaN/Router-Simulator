@@ -11,8 +11,8 @@ const root = resolve(import.meta.dirname, "..");
 const sourcePath = resolve(root, "profiles/catalog/26.7.R1.yaml");
 const typescriptPath = resolve(root, "packages/contracts/src/generated-device-catalog.ts");
 const headerPath = resolve(root, "core/include/router/generated_device_catalog.hpp");
-const protocolSourcePath = resolve(root, "schemas/runtime/3.yaml");
-const checkpointSourcePath = resolve(root, "schemas/checkpoint/5.yaml");
+const protocolSourcePath = resolve(root, "schemas/runtime/4.yaml");
+const checkpointSourcePath = resolve(root, "schemas/checkpoint/6.yaml");
 const protocolHeaderPath = resolve(root, "core/include/router/generated_lab_runtime_protocol.hpp");
 const protocolTypescriptPath = resolve(root, "packages/contracts/src/generated-lab-runtime-protocol.ts");
 const cmakePath = resolve(root, "core/generated-device-catalog.cmake");
@@ -49,28 +49,86 @@ const exactInteger = (value, name, minimum = 0) => {
 // Catalog strings are embedded in a C++ header. Escape both characters that
 // could terminate or alter a generated string literal.
 const cppString = (value) => `"${String(value).replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+const cppBoolean = (value) => value ? "true" : "false";
 
 // Release pinning is deliberate. Mixing tables from multiple releases would
 // make hardware validation appear authoritative while accepting combinations
 // that never existed in one SR OS image.
 if (catalog.release !== "26.7.R1") fail("release must match the pinned baseline");
-if (protocol.version !== 3 || !protocol.operations || checkpoint.version !== 5)
-  fail("runtime protocol 3 and checkpoint schema 5 are required");
+if (protocol.version !== 4 || protocol.snapshot_abi !== 6 ||
+    !protocol.operations || checkpoint.version !== 6)
+  fail("runtime protocol 4, snapshot ABI 6 and checkpoint schema 6 are required");
 for (const [name, value] of Object.entries(catalog.limits ?? {})) exactInteger(value, `limits.${name}`, 1);
 if (catalog.limits.routers !== 16 || catalog.limits.hosts !== 16 ||
     catalog.limits.links !== 64 || catalog.limits.sessions_per_router !== 4) {
-  fail("laboratory limits do not match project format 3");
+  fail("laboratory limits do not match project format 4");
 }
 for (const [name, value] of Object.entries(catalog.runtime ?? {}))
   exactInteger(value, `runtime.${name}`, name === "low_link_shards" ? 0 : 1);
 // Missing fields must fail generation instead of becoming undefined in the
 // TypeScript catalog and malformed numeric tokens in the C++ projection.
-for (const name of ["wasm_initial_memory_bytes", "packet_pool_bytes",
+for (const name of ["wasm_initial_memory_bytes", "wasm_maximum_memory_bytes",
+  "wasm_growth_step_bytes", "packet_pool_bytes",
   "capture_store_bytes", "terminal_output_arena_bytes", "terminal_result_bytes",
   "runtime_control_reserve_bytes",
+  "recovery_checkpoint_interval_milliseconds",
+  "continuity_loss_threshold_milliseconds",
   "link_queue_frames", "fabric_work_budget_frames", "static_routes_per_router", "arp_entries_per_router",
-  "pending_ipv4_frames_per_router", "network_command_ring_entries",
-  "network_result_ring_entries", "forwarding_ring_frames",
+  "static_arp_entries_per_router",
+  "pending_ipv4_frames_per_router", "ipv6_neighbor_entries_per_router",
+  "ipv6_destination_entries_per_endpoint",
+  "icmp6_redirect_default_maximum",
+  "icmp6_redirect_default_interval_seconds",
+  "icmp6_redirect_minimum_maximum",
+  "icmp6_redirect_maximum_maximum",
+  "icmp6_redirect_minimum_interval_seconds",
+  "icmp6_redirect_maximum_interval_seconds",
+  "icmp_redirect_default_maximum",
+  "icmp_redirect_default_interval_seconds",
+  "icmp_redirect_minimum_maximum",
+  "icmp_redirect_maximum_maximum",
+  "icmp_redirect_minimum_interval_seconds",
+  "icmp_redirect_maximum_interval_seconds",
+  "ipv6_dad_entries_per_node",
+  "network_interface_ip_addresses",
+  "pending_ipv6_frames_per_router", "ipv4_reassembly_entries_per_endpoint",
+  "ipv4_reassembly_timeout_seconds", "ipv6_reassembly_entries_per_endpoint",
+  "ipv6_reassembly_timeout_seconds", "pending_l3_frames_per_router",
+  "ipv4_pmtu_entries_per_endpoint", "ipv4_pmtu_probe_interval_seconds",
+  "ipv4_pmtu_probe_retry_interval_seconds",
+  "ipv6_pmtu_entries_per_endpoint", "ipv6_pmtu_probe_interval_seconds",
+  "udp_queued_datagrams_per_endpoint",
+  "udp_datagrams_per_socket", "udp_receive_buffer_bytes_per_endpoint",
+  "udp_receive_block_bytes", "udp_ephemeral_port_first",
+  "udp_ephemeral_port_last", "tcp_send_buffer_default_bytes",
+  "tcp_receive_buffer_default_bytes", "tcp_transmission_records_default",
+  "tcp_sack_ranges_default", "tcp_listen_backlog_default",
+  "tcp_ephemeral_port_first", "tcp_ephemeral_port_last",
+  "dns_cache_default_bytes",
+  "dns_resolver_advertised_udp_payload_bytes",
+  "dns_resolver_retry_milliseconds",
+  "dns_resolver_attempts_per_server",
+  "dns_resolver_max_minimise_count",
+  "dns_resolver_minimise_one_label_count",
+  "dns_resolver_max_alias_hops",
+  "dhcpv6_address_pools_per_server", "dhcpv6_prefix_pools_per_server",
+  "dhcpv6_leases_per_server", "dhcpv6_relay_servers_per_interface",
+  "dhcpv6_zero_t1_percent_of_preferred",
+  "dhcpv6_zero_t2_percent_of_preferred", "dhcpv6_client_rate_limit_packets",
+  "dhcpv6_client_rate_limit_interval_seconds",
+  "ipv6_ra_prefixes_per_interface", "ipv6_rdnss_servers_per_interface",
+  "ipv6_default_routers_per_host_interface", "ipv6_on_link_prefixes_per_host_interface",
+  "ipv6_slaac_addresses_per_host_interface", "ipv6_rdnss_entries_per_host_interface",
+  "ipv6_stable_iid_network_id_octets",
+  "host_ipv6_work_budget_actions",
+  "mld_groups_per_interface", "mld_sources_per_group",
+  "mld_records_per_report", "mld_work_budget_actions",
+  "mld_router_groups_per_interface", "mld_router_sources_per_group",
+  "mld_router_group_sources_per_interface",
+  "nd_work_budget_actions", "network_command_ring_entries",
+  "network_result_ring_entries", "network_command_work_budget",
+  "immediate_link_deadline_nanoseconds",
+  "forwarding_ring_frames",
   "low_cpu_max", "medium_cpu_max", "low_control_shards",
   "medium_control_shards", "high_control_shards", "low_forwarding_shards",
   "medium_forwarding_shards", "high_forwarding_shards", "low_link_shards",
@@ -98,13 +156,228 @@ if (catalog.runtime.low_cpu_max >= catalog.runtime.medium_cpu_max ||
       catalog.runtime.high_link_shards) {
   fail("runtime shard counts and pthread pools are inconsistent");
 }
+if (catalog.runtime.recovery_checkpoint_interval_milliseconds <
+      catalog.runtime.telemetry_publish_interval_milliseconds ||
+    catalog.runtime.continuity_loss_threshold_milliseconds <=
+      catalog.runtime.recovery_checkpoint_interval_milliseconds) {
+  // A recovery image cannot be requested more frequently than the Worker
+  // supervision turn, and at least one complete image must be possible before
+  // an event-loop gap is classified as lost continuity.
+  fail("runtime continuity recovery intervals are inconsistent");
+}
+if (catalog.runtime.dhcpv6_zero_t1_percent_of_preferred >=
+      catalog.runtime.dhcpv6_zero_t2_percent_of_preferred ||
+    catalog.runtime.dhcpv6_zero_t2_percent_of_preferred > 100) {
+  fail("DHCPv6 zero T1/T2 policy must be ordered percentages at or below 100");
+}
+if (catalog.runtime.dhcpv6_client_rate_limit_packets < 1 ||
+    catalog.runtime.dhcpv6_client_rate_limit_interval_seconds < 1 ||
+    catalog.runtime.dhcpv6_client_rate_limit_packets > 65535 ||
+    catalog.runtime.dhcpv6_client_rate_limit_interval_seconds > 86400) {
+  fail("DHCPv6 client rate limit must fit the bounded per-interface token bucket");
+}
+if (catalog.runtime.ipv4_reassembly_entries_per_endpoint < 1 ||
+    catalog.runtime.ipv4_reassembly_timeout_seconds < 60 ||
+    catalog.runtime.ipv4_reassembly_timeout_seconds > 120) {
+  fail("IPv4 reassembly requires a positive table and the RFC 1122 timeout range");
+}
+if (catalog.runtime.icmp6_redirect_minimum_maximum >
+      catalog.runtime.icmp6_redirect_default_maximum ||
+    catalog.runtime.icmp6_redirect_default_maximum >
+      catalog.runtime.icmp6_redirect_maximum_maximum ||
+    catalog.runtime.icmp6_redirect_minimum_interval_seconds >
+      catalog.runtime.icmp6_redirect_default_interval_seconds ||
+    catalog.runtime.icmp6_redirect_default_interval_seconds >
+      catalog.runtime.icmp6_redirect_maximum_interval_seconds) {
+  fail("ICMPv6 Redirect defaults are outside the SR OS release command ranges");
+}
+if (catalog.runtime.icmp_redirect_minimum_maximum >
+      catalog.runtime.icmp_redirect_default_maximum ||
+    catalog.runtime.icmp_redirect_default_maximum >
+      catalog.runtime.icmp_redirect_maximum_maximum ||
+    catalog.runtime.icmp_redirect_minimum_interval_seconds >
+      catalog.runtime.icmp_redirect_default_interval_seconds ||
+    catalog.runtime.icmp_redirect_default_interval_seconds >
+      catalog.runtime.icmp_redirect_maximum_interval_seconds) {
+  fail("ICMP Redirect defaults are outside the SR OS release command ranges");
+}
+if (catalog.runtime.udp_receive_buffer_bytes_per_endpoint %
+      catalog.runtime.udp_receive_block_bytes !== 0 ||
+    catalog.runtime.udp_queued_datagrams_per_endpoint >
+      catalog.runtime.udp_receive_buffer_bytes_per_endpoint /
+        catalog.runtime.udp_receive_block_bytes ||
+    catalog.runtime.udp_datagrams_per_socket >
+      catalog.runtime.udp_queued_datagrams_per_endpoint ||
+    catalog.runtime.udp_ephemeral_port_first >
+      catalog.runtime.udp_ephemeral_port_last ||
+    catalog.runtime.udp_ephemeral_port_first === 0 ||
+    catalog.runtime.udp_ephemeral_port_last > 65535) {
+  fail("UDP receive pool and ephemeral port bounds are inconsistent");
+}
+if (catalog.runtime.tcp_send_buffer_default_bytes < 1 ||
+    catalog.runtime.tcp_send_buffer_default_bytes > 0x40000000 ||
+    catalog.runtime.tcp_receive_buffer_default_bytes < 1 ||
+    catalog.runtime.tcp_receive_buffer_default_bytes > 0x40000000 ||
+    catalog.runtime.tcp_transmission_records_default < 1 ||
+    catalog.runtime.tcp_sack_ranges_default < 1 ||
+    catalog.runtime.tcp_listen_backlog_default < 1 ||
+    catalog.runtime.tcp_ephemeral_port_first < 1 ||
+    catalog.runtime.tcp_ephemeral_port_first >
+      catalog.runtime.tcp_ephemeral_port_last ||
+    catalog.runtime.tcp_ephemeral_port_last > 65535) {
+  fail("TCP socket resource defaults and ephemeral ports are inconsistent");
+}
 for (const [name, value] of Object.entries(catalog.ethernet ?? {}))
   exactInteger(value, `ethernet.${name}`, 1);
 if (catalog.ethernet.minimum_network_mtu > catalog.ethernet.default_network_mtu ||
     catalog.ethernet.default_network_mtu > catalog.ethernet.maximum_network_mtu)
   fail("Ethernet MTU bounds do not contain the default");
-for (const [name, value] of Object.entries(catalog.protocol_defaults ?? {}))
-  exactInteger(value, `protocol_defaults.${name}`, 1);
+// TLS profile scale and algorithm names are vendor release data. Validating
+// the complete table before generation prevents a CLI token from reaching a
+// different OpenSSL spelling than the runtime profile resolver uses.
+for (const name of ["maximum_cert_profiles", "maximum_client_cipher_lists",
+  "maximum_client_group_lists", "maximum_client_signature_lists",
+  "maximum_client_tls_profiles", "maximum_server_cipher_lists",
+  "maximum_server_group_lists", "maximum_server_signature_lists",
+  "maximum_server_tls_profiles", "maximum_trust_anchor_profiles",
+  "maximum_cert_entries_per_profile", "maximum_trust_anchors_per_profile",
+  "profile_name_bytes", "certificate_file_name_bytes",
+  "algorithm_index_minimum", "algorithm_index_maximum"])
+  exactInteger(catalog.tls?.[name], `tls.${name}`, 1);
+if (catalog.tls.algorithm_index_minimum !== 1 ||
+    catalog.tls.algorithm_index_maximum !== 255 ||
+    catalog.tls.maximum_cert_entries_per_profile !== 8 ||
+    catalog.tls.maximum_trust_anchors_per_profile !== 8 ||
+    catalog.tls.profile_name_bytes !== 32 ||
+    catalog.tls.certificate_file_name_bytes !== 95) {
+  fail("TLS list keys and name dimensions do not match SR OS 26.7.R1");
+}
+for (const name of ["maximum_cert_profiles", "maximum_client_cipher_lists",
+  "maximum_client_group_lists", "maximum_client_signature_lists",
+  "maximum_client_tls_profiles", "maximum_server_cipher_lists",
+  "maximum_server_group_lists", "maximum_server_signature_lists",
+  "maximum_server_tls_profiles", "maximum_trust_anchor_profiles"])
+  if (catalog.tls[name] !== 16) fail(`tls.${name} must match the release limit`);
+const validateTlsAlgorithms = (items, name) => {
+  if (!Array.isArray(items) || !items.length) fail(`tls.${name} is empty`);
+  const sros = new Set();
+  const openssl = new Set();
+  for (const [index, item] of items.entries()) {
+    if (!item || typeof item.sros !== "string" || !item.sros.length ||
+        typeof item.openssl !== "string" || !item.openssl.length ||
+        typeof item.pqc !== "boolean")
+      fail(`tls.${name}[${index}] is malformed`);
+    if (sros.has(item.sros) || openssl.has(item.openssl))
+      fail(`tls.${name}[${index}] duplicates an algorithm`);
+    sros.add(item.sros);
+    openssl.add(item.openssl);
+  }
+};
+validateTlsAlgorithms(catalog.tls.tls13_ciphers, "tls13_ciphers");
+validateTlsAlgorithms(catalog.tls.tls13_groups, "tls13_groups");
+validateTlsAlgorithms(catalog.tls.tls13_signatures, "tls13_signatures");
+if (catalog.tls.default_admin_state !== "disable" ||
+    catalog.tls.default_protocol_version !== "tls-version-12" ||
+    catalog.tls.default_status_result !== "revoked" ||
+    catalog.tls.default_revocation_primary !== "crl" ||
+    catalog.tls.default_revocation_secondary !== "none")
+  fail("TLS defaults do not match SR OS 26.7.R1");
+for (const [name, value] of Object.entries(catalog.protocol_defaults ?? {})) {
+  // SR OS deliberately assigns zero to ARP timeout as the disable-aging
+  // value. Every other generated protocol scalar remains strictly positive.
+  const minimum = name === "arp_timeout_minimum_seconds" ? 0 : 1;
+  exactInteger(value, `protocol_defaults.${name}`, minimum);
+}
+if (catalog.protocol_defaults.arp_timeout_minimum_seconds !== 0 ||
+    catalog.protocol_defaults.dynamic_arp_timeout_seconds >
+      catalog.protocol_defaults.arp_timeout_maximum_seconds ||
+    catalog.protocol_defaults.dynamic_arp_retry_deciseconds <
+      catalog.protocol_defaults.arp_retry_minimum_deciseconds ||
+    catalog.protocol_defaults.dynamic_arp_retry_deciseconds >
+      catalog.protocol_defaults.arp_retry_maximum_deciseconds) {
+  fail("ARP defaults are outside the SR OS 26.7.R1 command ranges");
+}
+if (catalog.protocol_defaults.tcp_rto_initial_milliseconds <
+      catalog.protocol_defaults.tcp_rto_minimum_milliseconds ||
+    catalog.protocol_defaults.tcp_rto_initial_milliseconds >
+      catalog.protocol_defaults.tcp_rto_maximum_milliseconds ||
+    catalog.protocol_defaults.tcp_rto_minimum_milliseconds !== 1000 ||
+    catalog.protocol_defaults.tcp_rto_maximum_milliseconds < 60000 ||
+    catalog.protocol_defaults.tcp_rto_clock_granularity_milliseconds > 100 ||
+    catalog.protocol_defaults.tcp_rto_after_syn_retransmission_milliseconds <
+      3000) {
+  fail("TCP retransmission defaults violate RFC 6298 bounds");
+}
+if (catalog.protocol_defaults.tcp_delayed_ack_milliseconds >= 500 ||
+    catalog.protocol_defaults.tcp_sws_override_milliseconds < 100 ||
+    catalog.protocol_defaults.tcp_sws_override_milliseconds > 1000 ||
+    catalog.protocol_defaults.tcp_persist_maximum_milliseconds <
+      catalog.protocol_defaults.tcp_rto_initial_milliseconds) {
+  fail("TCP delayed ACK, SWS or persist defaults violate RFC 1122 bounds");
+}
+if (catalog.protocol_defaults.tcp_failure_r1_retransmissions < 3 ||
+    catalog.protocol_defaults.tcp_failure_data_r2_seconds < 100 ||
+    catalog.protocol_defaults.tcp_failure_syn_r2_seconds < 180) {
+  // These are the RFC 9293 SHLD-10, SHLD-11 and MUST-23 floors. Keeping the
+  // validation beside generation prevents C++, TypeScript and tests from
+  // silently consuming a profile that closes conforming connections early.
+  fail("TCP connection-failure policy violates RFC 9293 bounds");
+}
+if (catalog.protocol_defaults.nd_minimum_reachable_time_seconds >
+      catalog.protocol_defaults.nd_default_reachable_time_seconds ||
+    catalog.protocol_defaults.nd_default_reachable_time_seconds >
+      catalog.protocol_defaults.nd_maximum_reachable_time_seconds ||
+    catalog.protocol_defaults.nd_minimum_stale_time_seconds >
+      catalog.protocol_defaults.nd_default_stale_time_seconds ||
+    catalog.protocol_defaults.nd_default_stale_time_seconds >
+      catalog.protocol_defaults.nd_maximum_stale_time_seconds ||
+    catalog.protocol_defaults.nd_maximum_neighbor_limit !==
+      catalog.runtime.ipv6_neighbor_entries_per_router ||
+    !Number.isSafeInteger(
+      catalog.protocol_defaults.nd_reachable_time_recalculation_seconds) ||
+    catalog.protocol_defaults.nd_reachable_time_recalculation_seconds <= 0 ||
+    catalog.protocol_defaults.nd_default_neighbor_limit_threshold_percent < 1 ||
+    catalog.protocol_defaults.nd_default_neighbor_limit_threshold_percent > 100) {
+  // The forwarding arena must cover the largest documented limit on one
+  // interface. Otherwise CLI could accept a valid SR OS value and still fail
+  // early because of an unrelated emulator resource ceiling.
+  fail("Neighbor Discovery defaults, ranges or arena capacity are inconsistent");
+}
+if (catalog.protocol_defaults.mld_minimum_query_interval_seconds >
+      catalog.protocol_defaults.mld_query_interval_seconds ||
+    catalog.protocol_defaults.mld_query_interval_seconds >
+      catalog.protocol_defaults.mld_maximum_query_interval_seconds ||
+    catalog.protocol_defaults.mld_minimum_query_response_interval_seconds * 1000 >
+      catalog.protocol_defaults.mld_query_response_interval_milliseconds ||
+    catalog.protocol_defaults.mld_query_response_interval_milliseconds >
+      catalog.protocol_defaults.mld_maximum_query_response_interval_seconds * 1000 ||
+    catalog.protocol_defaults.mld_minimum_last_listener_query_interval_seconds * 1000 >
+      catalog.protocol_defaults.mld_last_listener_query_interval_milliseconds ||
+    catalog.protocol_defaults.mld_last_listener_query_interval_milliseconds >
+      catalog.protocol_defaults.mld_maximum_last_listener_query_interval_seconds * 1000 ||
+    catalog.protocol_defaults.mld_minimum_robustness_variable >
+      catalog.protocol_defaults.mld_robustness_variable ||
+    catalog.protocol_defaults.mld_robustness_variable >
+      catalog.protocol_defaults.mld_maximum_robustness_variable ||
+    catalog.protocol_defaults.mld_minimum_version >
+      catalog.protocol_defaults.mld_default_version ||
+    catalog.protocol_defaults.mld_default_version >
+      catalog.protocol_defaults.mld_maximum_version) {
+  fail("MLD defaults are outside the SR OS release command ranges");
+}
+if (catalog.runtime.mld_router_groups_per_interface <
+      catalog.protocol_defaults.mld_maximum_number_groups ||
+    catalog.runtime.mld_router_sources_per_group <
+      catalog.protocol_defaults.mld_maximum_number_sources ||
+    catalog.runtime.mld_router_group_sources_per_interface <
+      catalog.protocol_defaults.mld_maximum_number_group_sources ||
+    catalog.runtime.mld_router_group_sources_per_interface <
+      catalog.runtime.mld_router_sources_per_group) {
+  // The generated release grammar must never advertise a value that the
+  // corresponding state owner cannot represent. This assertion prevents a
+  // future profile edit from silently restoring parser-only compatibility.
+  fail("MLD router resource ceilings do not cover configurable release ranges");
+}
 
 const mdaEntries = Object.entries(catalog.mdas ?? {});
 // Flattened indexes replace string lookup on the runtime packet and hardware
@@ -235,6 +508,12 @@ const header = `#pragma once
 
 namespace router::device_catalog {
 
+struct TlsAlgorithmName {
+  std::string_view sros;
+  std::string_view openssl;
+  bool pqc{};
+};
+
 // One release owns this entire generated catalog. Runtime capability output
 // consumes this value instead of repeating the release pin in hand-written C++.
 inline constexpr std::string_view release{${cppString(catalog.release)}};
@@ -255,6 +534,8 @@ inline constexpr std::size_t maximum_static_routes_per_router = ${catalog.runtim
 inline constexpr std::size_t maximum_fib_routes_per_router =
     maximum_ports_per_router + maximum_static_routes_per_router;
 inline constexpr std::size_t wasm_initial_memory_bytes = ${catalog.runtime.wasm_initial_memory_bytes}U;
+inline constexpr std::size_t wasm_maximum_memory_bytes = ${catalog.runtime.wasm_maximum_memory_bytes}U;
+inline constexpr std::size_t wasm_growth_step_bytes = ${catalog.runtime.wasm_growth_step_bytes}U;
 inline constexpr std::size_t wasm_stack_bytes = ${catalog.runtime.wasm_stack_bytes}U;
 inline constexpr std::size_t packet_pool_bytes = ${catalog.runtime.packet_pool_bytes}U;
 inline constexpr std::size_t capture_store_bytes = ${catalog.runtime.capture_store_bytes}U;
@@ -278,12 +559,91 @@ inline constexpr std::chrono::milliseconds worker_startup_poll{
     ${catalog.runtime.worker_startup_poll_milliseconds}};
 inline constexpr std::chrono::milliseconds telemetry_publish_interval{
     ${catalog.runtime.telemetry_publish_interval_milliseconds}};
+inline constexpr std::chrono::milliseconds recovery_checkpoint_interval{
+    ${catalog.runtime.recovery_checkpoint_interval_milliseconds}};
+inline constexpr std::chrono::milliseconds continuity_loss_threshold{
+    ${catalog.runtime.continuity_loss_threshold_milliseconds}};
 inline constexpr std::size_t link_queue_capacity = ${catalog.runtime.link_queue_frames};
 inline constexpr std::size_t fabric_work_budget_frames = ${catalog.runtime.fabric_work_budget_frames};
+inline constexpr std::chrono::nanoseconds immediate_link_deadline{
+    ${catalog.runtime.immediate_link_deadline_nanoseconds}};
 inline constexpr std::size_t arp_entries_per_router = ${catalog.runtime.arp_entries_per_router};
+inline constexpr std::size_t static_arp_entries_per_router = ${catalog.runtime.static_arp_entries_per_router};
 inline constexpr std::size_t pending_ipv4_frames_per_router = ${catalog.runtime.pending_ipv4_frames_per_router};
+inline constexpr std::size_t ipv6_neighbor_entries_per_router = ${catalog.runtime.ipv6_neighbor_entries_per_router};
+inline constexpr std::size_t ipv6_destination_entries_per_endpoint = ${catalog.runtime.ipv6_destination_entries_per_endpoint};
+inline constexpr std::uint16_t icmp6_redirect_default_maximum = ${catalog.runtime.icmp6_redirect_default_maximum};
+inline constexpr std::chrono::seconds icmp6_redirect_default_interval{${catalog.runtime.icmp6_redirect_default_interval_seconds}};
+inline constexpr std::uint16_t icmp6_redirect_minimum_maximum = ${catalog.runtime.icmp6_redirect_minimum_maximum};
+inline constexpr std::uint16_t icmp6_redirect_maximum_maximum = ${catalog.runtime.icmp6_redirect_maximum_maximum};
+inline constexpr std::chrono::seconds icmp6_redirect_minimum_interval{${catalog.runtime.icmp6_redirect_minimum_interval_seconds}};
+inline constexpr std::chrono::seconds icmp6_redirect_maximum_interval{${catalog.runtime.icmp6_redirect_maximum_interval_seconds}};
+inline constexpr std::uint16_t icmp_redirect_default_maximum = ${catalog.runtime.icmp_redirect_default_maximum};
+inline constexpr std::chrono::seconds icmp_redirect_default_interval{${catalog.runtime.icmp_redirect_default_interval_seconds}};
+inline constexpr std::uint16_t icmp_redirect_minimum_maximum = ${catalog.runtime.icmp_redirect_minimum_maximum};
+inline constexpr std::uint16_t icmp_redirect_maximum_maximum = ${catalog.runtime.icmp_redirect_maximum_maximum};
+inline constexpr std::chrono::seconds icmp_redirect_minimum_interval{${catalog.runtime.icmp_redirect_minimum_interval_seconds}};
+inline constexpr std::chrono::seconds icmp_redirect_maximum_interval{${catalog.runtime.icmp_redirect_maximum_interval_seconds}};
+inline constexpr std::size_t ipv6_dad_entries_per_node = ${catalog.runtime.ipv6_dad_entries_per_node};
+inline constexpr std::size_t network_interface_ip_addresses = ${catalog.runtime.network_interface_ip_addresses};
+inline constexpr std::size_t pending_ipv6_frames_per_router = ${catalog.runtime.pending_ipv6_frames_per_router};
+inline constexpr std::size_t ipv4_reassembly_entries_per_endpoint = ${catalog.runtime.ipv4_reassembly_entries_per_endpoint};
+inline constexpr std::chrono::seconds ipv4_reassembly_timeout{${catalog.runtime.ipv4_reassembly_timeout_seconds}};
+inline constexpr std::size_t ipv6_reassembly_entries_per_endpoint = ${catalog.runtime.ipv6_reassembly_entries_per_endpoint};
+inline constexpr std::chrono::seconds ipv6_reassembly_timeout{${catalog.runtime.ipv6_reassembly_timeout_seconds}};
+inline constexpr std::size_t ipv4_pmtu_entries_per_endpoint = ${catalog.runtime.ipv4_pmtu_entries_per_endpoint};
+inline constexpr std::chrono::seconds ipv4_pmtu_probe_interval{${catalog.runtime.ipv4_pmtu_probe_interval_seconds}};
+inline constexpr std::chrono::seconds ipv4_pmtu_probe_retry_interval{${catalog.runtime.ipv4_pmtu_probe_retry_interval_seconds}};
+inline constexpr std::size_t ipv6_pmtu_entries_per_endpoint = ${catalog.runtime.ipv6_pmtu_entries_per_endpoint};
+inline constexpr std::chrono::seconds ipv6_pmtu_probe_interval{${catalog.runtime.ipv6_pmtu_probe_interval_seconds}};
+inline constexpr std::size_t udp_queued_datagrams_per_endpoint = ${catalog.runtime.udp_queued_datagrams_per_endpoint};
+inline constexpr std::size_t udp_datagrams_per_socket = ${catalog.runtime.udp_datagrams_per_socket};
+inline constexpr std::size_t udp_receive_buffer_bytes_per_endpoint = ${catalog.runtime.udp_receive_buffer_bytes_per_endpoint};
+inline constexpr std::size_t udp_receive_block_bytes = ${catalog.runtime.udp_receive_block_bytes};
+inline constexpr std::uint16_t udp_ephemeral_port_first = ${catalog.runtime.udp_ephemeral_port_first};
+inline constexpr std::uint16_t udp_ephemeral_port_last = ${catalog.runtime.udp_ephemeral_port_last};
+inline constexpr std::size_t tcp_send_buffer_default_bytes = ${catalog.runtime.tcp_send_buffer_default_bytes};
+inline constexpr std::size_t tcp_receive_buffer_default_bytes = ${catalog.runtime.tcp_receive_buffer_default_bytes};
+inline constexpr std::size_t tcp_transmission_records_default = ${catalog.runtime.tcp_transmission_records_default};
+inline constexpr std::size_t tcp_sack_ranges_default = ${catalog.runtime.tcp_sack_ranges_default};
+inline constexpr std::size_t tcp_listen_backlog_default = ${catalog.runtime.tcp_listen_backlog_default};
+inline constexpr std::uint16_t tcp_ephemeral_port_first = ${catalog.runtime.tcp_ephemeral_port_first};
+inline constexpr std::uint16_t tcp_ephemeral_port_last = ${catalog.runtime.tcp_ephemeral_port_last};
+inline constexpr std::size_t dns_cache_default_bytes = ${catalog.runtime.dns_cache_default_bytes};
+inline constexpr std::uint16_t dns_resolver_advertised_udp_payload_bytes = ${catalog.runtime.dns_resolver_advertised_udp_payload_bytes};
+inline constexpr std::uint32_t dns_resolver_retry_milliseconds = ${catalog.runtime.dns_resolver_retry_milliseconds};
+inline constexpr std::uint32_t dns_resolver_attempts_per_server = ${catalog.runtime.dns_resolver_attempts_per_server};
+inline constexpr std::uint32_t dns_resolver_max_minimise_count = ${catalog.runtime.dns_resolver_max_minimise_count};
+inline constexpr std::uint32_t dns_resolver_minimise_one_label_count = ${catalog.runtime.dns_resolver_minimise_one_label_count};
+inline constexpr std::uint32_t dns_resolver_max_alias_hops = ${catalog.runtime.dns_resolver_max_alias_hops};
+inline constexpr std::size_t dhcpv6_address_pools_per_server = ${catalog.runtime.dhcpv6_address_pools_per_server};
+inline constexpr std::size_t dhcpv6_prefix_pools_per_server = ${catalog.runtime.dhcpv6_prefix_pools_per_server};
+inline constexpr std::size_t dhcpv6_leases_per_server = ${catalog.runtime.dhcpv6_leases_per_server};
+inline constexpr std::size_t dhcpv6_relay_servers_per_interface = ${catalog.runtime.dhcpv6_relay_servers_per_interface};
+inline constexpr std::uint32_t dhcpv6_zero_t1_percent_of_preferred = ${catalog.runtime.dhcpv6_zero_t1_percent_of_preferred};
+inline constexpr std::uint32_t dhcpv6_zero_t2_percent_of_preferred = ${catalog.runtime.dhcpv6_zero_t2_percent_of_preferred};
+inline constexpr std::uint32_t dhcpv6_client_rate_limit_packets = ${catalog.runtime.dhcpv6_client_rate_limit_packets};
+inline constexpr std::uint32_t dhcpv6_client_rate_limit_interval_seconds = ${catalog.runtime.dhcpv6_client_rate_limit_interval_seconds};
+inline constexpr std::size_t pending_l3_frames_per_router = ${catalog.runtime.pending_l3_frames_per_router};
+inline constexpr std::size_t nd_work_budget_actions = ${catalog.runtime.nd_work_budget_actions};
+inline constexpr std::size_t ipv6_ra_prefixes_per_interface = ${catalog.runtime.ipv6_ra_prefixes_per_interface};
+inline constexpr std::size_t ipv6_rdnss_servers_per_interface = ${catalog.runtime.ipv6_rdnss_servers_per_interface};
+inline constexpr std::size_t ipv6_default_routers_per_host_interface = ${catalog.runtime.ipv6_default_routers_per_host_interface};
+inline constexpr std::size_t ipv6_on_link_prefixes_per_host_interface = ${catalog.runtime.ipv6_on_link_prefixes_per_host_interface};
+inline constexpr std::size_t ipv6_slaac_addresses_per_host_interface = ${catalog.runtime.ipv6_slaac_addresses_per_host_interface};
+inline constexpr std::size_t ipv6_rdnss_entries_per_host_interface = ${catalog.runtime.ipv6_rdnss_entries_per_host_interface};
+inline constexpr std::size_t ipv6_stable_iid_network_id_octets = ${catalog.runtime.ipv6_stable_iid_network_id_octets};
+inline constexpr std::size_t host_ipv6_work_budget_actions = ${catalog.runtime.host_ipv6_work_budget_actions};
+inline constexpr std::size_t mld_groups_per_interface = ${catalog.runtime.mld_groups_per_interface};
+inline constexpr std::size_t mld_sources_per_group = ${catalog.runtime.mld_sources_per_group};
+inline constexpr std::size_t mld_records_per_report = ${catalog.runtime.mld_records_per_report};
+inline constexpr std::size_t mld_work_budget_actions = ${catalog.runtime.mld_work_budget_actions};
+inline constexpr std::size_t mld_router_groups_per_interface = ${catalog.runtime.mld_router_groups_per_interface};
+inline constexpr std::size_t mld_router_sources_per_group = ${catalog.runtime.mld_router_sources_per_group};
+inline constexpr std::size_t mld_router_group_sources_per_interface = ${catalog.runtime.mld_router_group_sources_per_interface};
 inline constexpr std::size_t network_command_ring_entries = ${catalog.runtime.network_command_ring_entries};
 inline constexpr std::size_t network_result_ring_entries = ${catalog.runtime.network_result_ring_entries};
+inline constexpr std::size_t network_command_work_budget = ${catalog.runtime.network_command_work_budget};
 inline constexpr std::size_t forwarding_ring_frames = ${catalog.runtime.forwarding_ring_frames};
 inline constexpr std::size_t candidate_keys_per_router = ${catalog.runtime.candidate_keys_per_router};
 inline constexpr std::size_t candidate_keys_per_session = ${catalog.runtime.candidate_keys_per_session};
@@ -293,9 +653,199 @@ inline constexpr std::uint16_t default_network_mtu = ${catalog.ethernet.default_
 inline constexpr std::uint16_t minimum_network_mtu = ${catalog.ethernet.minimum_network_mtu};
 inline constexpr std::uint16_t maximum_network_mtu = ${catalog.ethernet.maximum_network_mtu};
 inline constexpr std::uint16_t minimum_host_ipv4_mtu = ${catalog.ethernet.minimum_host_ipv4_mtu};
+inline constexpr std::uint16_t minimum_host_ipv6_mtu = ${catalog.ethernet.minimum_host_ipv6_mtu};
 inline constexpr std::uint16_t default_host_ipv4_mtu = ${catalog.ethernet.default_host_ipv4_mtu};
+inline constexpr std::size_t tls_maximum_cert_profiles = ${catalog.tls.maximum_cert_profiles};
+inline constexpr std::size_t tls_maximum_client_cipher_lists = ${catalog.tls.maximum_client_cipher_lists};
+inline constexpr std::size_t tls_maximum_client_group_lists = ${catalog.tls.maximum_client_group_lists};
+inline constexpr std::size_t tls_maximum_client_signature_lists = ${catalog.tls.maximum_client_signature_lists};
+inline constexpr std::size_t tls_maximum_client_profiles = ${catalog.tls.maximum_client_tls_profiles};
+inline constexpr std::size_t tls_maximum_server_cipher_lists = ${catalog.tls.maximum_server_cipher_lists};
+inline constexpr std::size_t tls_maximum_server_group_lists = ${catalog.tls.maximum_server_group_lists};
+inline constexpr std::size_t tls_maximum_server_signature_lists = ${catalog.tls.maximum_server_signature_lists};
+inline constexpr std::size_t tls_maximum_server_profiles = ${catalog.tls.maximum_server_tls_profiles};
+inline constexpr std::size_t tls_maximum_trust_anchor_profiles = ${catalog.tls.maximum_trust_anchor_profiles};
+inline constexpr std::size_t tls_maximum_cert_entries_per_profile = ${catalog.tls.maximum_cert_entries_per_profile};
+inline constexpr std::size_t tls_maximum_trust_anchors_per_profile = ${catalog.tls.maximum_trust_anchors_per_profile};
+inline constexpr std::size_t tls_profile_name_bytes = ${catalog.tls.profile_name_bytes};
+inline constexpr std::size_t tls_certificate_file_name_bytes = ${catalog.tls.certificate_file_name_bytes};
+inline constexpr std::uint8_t tls_algorithm_index_minimum = ${catalog.tls.algorithm_index_minimum};
+inline constexpr std::uint8_t tls_algorithm_index_maximum = ${catalog.tls.algorithm_index_maximum};
+inline constexpr std::array<TlsAlgorithmName, ${catalog.tls.tls13_ciphers.length}> tls13_ciphers{{
+${catalog.tls.tls13_ciphers.map((item) => `    {${cppString(item.sros)}, ${cppString(item.openssl)}, ${cppBoolean(item.pqc)}}`).join(",\n")}
+}};
+inline constexpr std::array<TlsAlgorithmName, ${catalog.tls.tls13_groups.length}> tls13_groups{{
+${catalog.tls.tls13_groups.map((item) => `    {${cppString(item.sros)}, ${cppString(item.openssl)}, ${cppBoolean(item.pqc)}}`).join(",\n")}
+}};
+inline constexpr std::array<TlsAlgorithmName, ${catalog.tls.tls13_signatures.length}> tls13_signatures{{
+${catalog.tls.tls13_signatures.map((item) => `    {${cppString(item.sros)}, ${cppString(item.openssl)}, ${cppBoolean(item.pqc)}}`).join(",\n")}
+}};
 inline constexpr std::chrono::seconds dynamic_arp_timeout{
     ${catalog.protocol_defaults.dynamic_arp_timeout_seconds}};
+inline constexpr std::uint32_t arp_timeout_minimum_seconds =
+    ${catalog.protocol_defaults.arp_timeout_minimum_seconds}U;
+inline constexpr std::uint32_t arp_timeout_maximum_seconds =
+    ${catalog.protocol_defaults.arp_timeout_maximum_seconds}U;
+inline constexpr std::chrono::milliseconds dynamic_arp_retry{
+    ${catalog.protocol_defaults.dynamic_arp_retry_deciseconds * 100}};
+inline constexpr std::uint16_t dynamic_arp_retry_deciseconds =
+    ${catalog.protocol_defaults.dynamic_arp_retry_deciseconds}U;
+inline constexpr std::uint16_t arp_retry_minimum_deciseconds =
+    ${catalog.protocol_defaults.arp_retry_minimum_deciseconds}U;
+inline constexpr std::uint16_t arp_retry_maximum_deciseconds =
+    ${catalog.protocol_defaults.arp_retry_maximum_deciseconds}U;
+inline constexpr std::chrono::milliseconds tcp_rto_initial{
+    ${catalog.protocol_defaults.tcp_rto_initial_milliseconds}};
+inline constexpr std::chrono::milliseconds tcp_rto_minimum{
+    ${catalog.protocol_defaults.tcp_rto_minimum_milliseconds}};
+inline constexpr std::chrono::milliseconds tcp_rto_maximum{
+    ${catalog.protocol_defaults.tcp_rto_maximum_milliseconds}};
+inline constexpr std::chrono::milliseconds tcp_rto_clock_granularity{
+    ${catalog.protocol_defaults.tcp_rto_clock_granularity_milliseconds}};
+inline constexpr std::chrono::milliseconds tcp_rto_after_syn_retransmission{
+    ${catalog.protocol_defaults.tcp_rto_after_syn_retransmission_milliseconds}};
+inline constexpr std::chrono::milliseconds tcp_delayed_ack{
+    ${catalog.protocol_defaults.tcp_delayed_ack_milliseconds}};
+inline constexpr std::chrono::milliseconds tcp_sws_override{
+    ${catalog.protocol_defaults.tcp_sws_override_milliseconds}};
+inline constexpr std::chrono::milliseconds tcp_persist_maximum{
+    ${catalog.protocol_defaults.tcp_persist_maximum_milliseconds}};
+inline constexpr std::uint32_t tcp_failure_r1_retransmissions =
+    ${catalog.protocol_defaults.tcp_failure_r1_retransmissions}U;
+inline constexpr std::chrono::seconds tcp_failure_data_r2{
+    ${catalog.protocol_defaults.tcp_failure_data_r2_seconds}};
+inline constexpr std::chrono::seconds tcp_failure_syn_r2{
+    ${catalog.protocol_defaults.tcp_failure_syn_r2_seconds}};
+inline constexpr std::chrono::seconds tcp_maximum_segment_lifetime{
+    ${catalog.protocol_defaults.tcp_maximum_segment_lifetime_seconds}};
+inline constexpr std::chrono::milliseconds nd_base_reachable_time{
+    ${catalog.protocol_defaults.nd_reachable_time_milliseconds}};
+inline constexpr std::uint32_t nd_default_reachable_time_seconds =
+    ${catalog.protocol_defaults.nd_default_reachable_time_seconds}U;
+inline constexpr std::uint32_t nd_minimum_reachable_time_seconds =
+    ${catalog.protocol_defaults.nd_minimum_reachable_time_seconds}U;
+inline constexpr std::uint32_t nd_maximum_reachable_time_seconds =
+    ${catalog.protocol_defaults.nd_maximum_reachable_time_seconds}U;
+inline constexpr std::uint32_t nd_default_stale_time_seconds =
+    ${catalog.protocol_defaults.nd_default_stale_time_seconds}U;
+inline constexpr std::uint32_t nd_minimum_stale_time_seconds =
+    ${catalog.protocol_defaults.nd_minimum_stale_time_seconds}U;
+inline constexpr std::uint32_t nd_maximum_stale_time_seconds =
+    ${catalog.protocol_defaults.nd_maximum_stale_time_seconds}U;
+inline constexpr std::uint32_t nd_maximum_neighbor_limit =
+    ${catalog.protocol_defaults.nd_maximum_neighbor_limit}U;
+inline constexpr std::uint8_t nd_default_neighbor_limit_threshold_percent =
+    ${catalog.protocol_defaults.nd_default_neighbor_limit_threshold_percent}U;
+inline constexpr std::chrono::seconds nd_reachable_time_recalculation{
+    ${catalog.protocol_defaults.nd_reachable_time_recalculation_seconds}};
+inline constexpr std::chrono::milliseconds nd_retrans_timer{
+    ${catalog.protocol_defaults.nd_retrans_timer_milliseconds}};
+inline constexpr std::chrono::milliseconds nd_delay_first_probe{
+    ${catalog.protocol_defaults.nd_delay_first_probe_milliseconds}};
+inline constexpr std::uint8_t nd_max_multicast_solicit =
+    ${catalog.protocol_defaults.nd_max_multicast_solicit};
+inline constexpr std::uint8_t nd_max_unicast_solicit =
+    ${catalog.protocol_defaults.nd_max_unicast_solicit};
+inline constexpr std::uint8_t ipv6_dad_transmits =
+    ${catalog.protocol_defaults.ipv6_dad_transmits};
+inline constexpr std::chrono::milliseconds ipv6_dad_max_initial_delay{
+    ${catalog.protocol_defaults.ipv6_dad_max_initial_delay_milliseconds}};
+inline constexpr std::uint8_t ipv6_stable_iid_dad_retries =
+    ${catalog.protocol_defaults.ipv6_stable_iid_dad_retries};
+inline constexpr std::chrono::milliseconds ipv6_stable_iid_dad_retry_delay{
+    ${catalog.protocol_defaults.ipv6_stable_iid_dad_retry_delay_milliseconds}};
+inline constexpr std::uint8_t ipv6_rs_max_solicitations =
+    ${catalog.protocol_defaults.ipv6_rs_max_solicitations};
+inline constexpr std::chrono::seconds ipv6_rs_interval{
+    ${catalog.protocol_defaults.ipv6_rs_interval_seconds}};
+inline constexpr std::chrono::milliseconds ipv6_rs_max_initial_delay{
+    ${catalog.protocol_defaults.ipv6_rs_max_initial_delay_milliseconds}};
+inline constexpr std::uint8_t mld_robustness_variable =
+    ${catalog.protocol_defaults.mld_robustness_variable};
+inline constexpr std::chrono::seconds mld_query_interval{
+    ${catalog.protocol_defaults.mld_query_interval_seconds}};
+inline constexpr std::chrono::milliseconds mld_query_response_interval{
+    ${catalog.protocol_defaults.mld_query_response_interval_milliseconds}};
+inline constexpr std::chrono::milliseconds mld_last_listener_query_interval{
+    ${catalog.protocol_defaults.mld_last_listener_query_interval_milliseconds}};
+inline constexpr std::chrono::milliseconds mld_unsolicited_report_interval{
+    ${catalog.protocol_defaults.mld_unsolicited_report_interval_milliseconds}};
+inline constexpr std::uint16_t mld_minimum_query_interval_seconds =
+    ${catalog.protocol_defaults.mld_minimum_query_interval_seconds};
+inline constexpr std::uint16_t mld_maximum_query_interval_seconds =
+    ${catalog.protocol_defaults.mld_maximum_query_interval_seconds};
+inline constexpr std::uint16_t mld_minimum_query_response_interval_seconds =
+    ${catalog.protocol_defaults.mld_minimum_query_response_interval_seconds};
+inline constexpr std::uint16_t mld_maximum_query_response_interval_seconds =
+    ${catalog.protocol_defaults.mld_maximum_query_response_interval_seconds};
+inline constexpr std::uint16_t
+    mld_minimum_last_listener_query_interval_seconds =
+        ${catalog.protocol_defaults.mld_minimum_last_listener_query_interval_seconds};
+inline constexpr std::uint16_t
+    mld_maximum_last_listener_query_interval_seconds =
+        ${catalog.protocol_defaults.mld_maximum_last_listener_query_interval_seconds};
+inline constexpr std::uint8_t mld_minimum_robustness_variable =
+    ${catalog.protocol_defaults.mld_minimum_robustness_variable};
+inline constexpr std::uint8_t mld_maximum_robustness_variable =
+    ${catalog.protocol_defaults.mld_maximum_robustness_variable};
+inline constexpr std::uint8_t mld_minimum_version =
+    ${catalog.protocol_defaults.mld_minimum_version};
+inline constexpr std::uint8_t mld_maximum_version =
+    ${catalog.protocol_defaults.mld_maximum_version};
+inline constexpr std::uint8_t mld_default_version =
+    ${catalog.protocol_defaults.mld_default_version};
+inline constexpr std::uint32_t mld_maximum_number_groups =
+    ${catalog.protocol_defaults.mld_maximum_number_groups};
+inline constexpr std::uint32_t mld_maximum_number_group_sources =
+    ${catalog.protocol_defaults.mld_maximum_number_group_sources};
+inline constexpr std::uint32_t mld_maximum_number_sources =
+    ${catalog.protocol_defaults.mld_maximum_number_sources};
+inline constexpr std::uint8_t default_ip_hop_limit =
+    ${catalog.protocol_defaults.default_ip_hop_limit};
+inline constexpr std::chrono::seconds ra_max_advertisement_interval{
+    ${catalog.protocol_defaults.ra_max_advertisement_interval_seconds}};
+inline constexpr std::chrono::seconds ra_min_advertisement_interval{
+    ${catalog.protocol_defaults.ra_min_advertisement_interval_seconds}};
+inline constexpr std::chrono::seconds ra_router_lifetime{
+    ${catalog.protocol_defaults.ra_router_lifetime_seconds}};
+inline constexpr std::chrono::seconds ra_minimum_max_advertisement_interval{
+    ${catalog.protocol_defaults.ra_minimum_max_advertisement_interval_seconds}};
+inline constexpr std::chrono::seconds ra_maximum_max_advertisement_interval{
+    ${catalog.protocol_defaults.ra_maximum_max_advertisement_interval_seconds}};
+inline constexpr std::chrono::seconds ra_minimum_min_advertisement_interval{
+    ${catalog.protocol_defaults.ra_minimum_min_advertisement_interval_seconds}};
+inline constexpr std::chrono::seconds ra_maximum_min_advertisement_interval{
+    ${catalog.protocol_defaults.ra_maximum_min_advertisement_interval_seconds}};
+inline constexpr std::chrono::seconds ra_minimum_nonzero_router_lifetime{
+    ${catalog.protocol_defaults.ra_minimum_nonzero_router_lifetime_seconds}};
+inline constexpr std::chrono::seconds ra_maximum_router_lifetime{
+    ${catalog.protocol_defaults.ra_maximum_router_lifetime_seconds}};
+inline constexpr std::chrono::milliseconds ra_maximum_reachable_time{
+    ${catalog.protocol_defaults.ra_maximum_reachable_time_milliseconds}};
+inline constexpr std::chrono::milliseconds ra_maximum_retransmit_time{
+    ${catalog.protocol_defaults.ra_maximum_retransmit_time_milliseconds}};
+inline constexpr std::uint16_t ra_minimum_advertised_mtu =
+    ${catalog.protocol_defaults.ra_minimum_advertised_mtu};
+inline constexpr std::uint16_t ra_maximum_advertised_mtu =
+    ${catalog.protocol_defaults.ra_maximum_advertised_mtu};
+inline constexpr std::uint32_t ra_default_prefix_preferred_lifetime =
+    ${catalog.protocol_defaults.ra_default_prefix_preferred_lifetime_seconds}U;
+inline constexpr std::uint32_t ra_default_prefix_valid_lifetime =
+    ${catalog.protocol_defaults.ra_default_prefix_valid_lifetime_seconds}U;
+inline constexpr std::uint32_t ra_minimum_rdnss_lifetime =
+    ${catalog.protocol_defaults.ra_minimum_rdnss_lifetime_seconds}U;
+inline constexpr std::uint32_t ra_maximum_rdnss_lifetime =
+    ${catalog.protocol_defaults.ra_maximum_rdnss_lifetime_seconds}U;
+inline constexpr std::uint32_t ra_infinite_lifetime =
+    ${catalog.protocol_defaults.ra_infinite_lifetime_seconds}U;
+inline constexpr std::chrono::milliseconds ra_max_response_delay{
+    ${catalog.protocol_defaults.ra_max_response_delay_milliseconds}};
+inline constexpr std::chrono::seconds ra_min_delay_between_advertisements{
+    ${catalog.protocol_defaults.ra_min_delay_between_advertisements_seconds}};
+inline constexpr std::chrono::seconds ra_max_initial_advertisement_interval{
+    ${catalog.protocol_defaults.ra_max_initial_advertisement_interval_seconds}};
+inline constexpr std::uint8_t ra_max_initial_advertisements =
+    ${catalog.protocol_defaults.ra_max_initial_advertisements};
 inline constexpr std::size_t default_ping_payload_octets =
     ${catalog.protocol_defaults.ping_payload_octets};
 inline constexpr std::size_t minimum_ping_payload_octets =
@@ -308,6 +858,8 @@ inline constexpr std::chrono::milliseconds ping_interval{
     ${catalog.protocol_defaults.ping_interval_milliseconds}};
 inline constexpr std::chrono::milliseconds ping_timeout{
     ${catalog.protocol_defaults.ping_timeout_milliseconds}};
+inline constexpr std::chrono::seconds checkpoint_max_relative_deadline{
+    ${catalog.protocol_defaults.checkpoint_max_relative_deadline_seconds}};
 
 struct PortGroup {
   std::uint8_t count{};
@@ -408,7 +960,7 @@ find_card(const DeviceProfile &profile, std::string_view type) noexcept {
 
 const protocolHeader = `#pragma once
 
-// Generated protocol 3 operation identities. Payload fields use netstrings;
+// Generated protocol 4 operation identities. Payload fields use netstrings;
 // packet bytes and mutable runtime addresses never cross this text boundary.
 
 #include <string_view>
@@ -419,9 +971,9 @@ ${Object.entries(protocol.operations).map(([name, value]) =>
   `inline constexpr std::string_view ${name}{${cppString(value)}};`).join("\n")}
 } // namespace router::lab_runtime_protocol
 `;
-const protocolTypescript = `// Generated browser names for runtime protocol 3.\n` +
+const protocolTypescript = `// Generated browser names for runtime protocol 4.\n` +
 `export const LAB_RUNTIME_PROTOCOL = ${JSON.stringify({ version: protocol.version,
-  snapshotAbi: checkpoint.version,
+  snapshotAbi: protocol.snapshot_abi,
   ...protocol.operations }, null, 2)} as const;\n`;
 const cmake = `# Generated from profiles/catalog/26.7.R1.yaml. Do not edit.\n` +
   `set(ROUTER_WASM_STACK_BYTES ${catalog.runtime.wasm_stack_bytes})\n` +

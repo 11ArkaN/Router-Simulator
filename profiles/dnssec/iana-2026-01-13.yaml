@@ -1,0 +1,28 @@
+registry_date: 2026-01-13
+algorithm_registry_url: https://www.iana.org/assignments/dns-sec-alg-numbers/dns-sec-alg-numbers.xhtml
+digest_registry_url: https://www.iana.org/assignments/ds-rr-types/ds-rr-types.xhtml
+algorithms:
+  - {number: 1, mnemonic: RSAMD5, use_signing: must-not, use_validation: must-not, implement_signing: must-not, implement_validation: must-not}
+  - {number: 3, mnemonic: DSA, use_signing: must-not, use_validation: must-not, implement_signing: must-not, implement_validation: must-not}
+  - {number: 5, mnemonic: RSASHA1, use_signing: not-recommended, use_validation: recommended, implement_signing: not-recommended, implement_validation: must}
+  - {number: 6, mnemonic: DSA-NSEC3-SHA1, use_signing: must-not, use_validation: must-not, implement_signing: must-not, implement_validation: must-not}
+  - {number: 7, mnemonic: RSASHA1-NSEC3-SHA1, use_signing: not-recommended, use_validation: recommended, implement_signing: not-recommended, implement_validation: must}
+  - {number: 8, mnemonic: RSASHA256, backend: rsa-sha256, use_signing: recommended, use_validation: recommended, implement_signing: must, implement_validation: must}
+  - {number: 10, mnemonic: RSASHA512, use_signing: not-recommended, use_validation: recommended, implement_signing: not-recommended, implement_validation: must}
+  - {number: 12, mnemonic: ECC-GOST, use_signing: must-not, use_validation: must-not, implement_signing: must-not, implement_validation: must-not}
+  - {number: 13, mnemonic: ECDSAP256SHA256, backend: ecdsa-p256-sha256, use_signing: recommended, use_validation: recommended, implement_signing: must, implement_validation: must}
+  - {number: 14, mnemonic: ECDSAP384SHA384, use_signing: may, use_validation: recommended, implement_signing: may, implement_validation: recommended}
+  - {number: 15, mnemonic: ED25519, backend: ed25519, use_signing: recommended, use_validation: recommended, implement_signing: recommended, implement_validation: recommended}
+  - {number: 16, mnemonic: ED448, use_signing: may, use_validation: recommended, implement_signing: may, implement_validation: recommended}
+  - {number: 17, mnemonic: SM2SM3, use_signing: may, use_validation: may, implement_signing: may, implement_validation: may}
+  - {number: 23, mnemonic: ECC-GOST12, use_signing: may, use_validation: may, implement_signing: may, implement_validation: may}
+  - {number: 253, mnemonic: PRIVATEDNS, use_signing: may, use_validation: may, implement_signing: may, implement_validation: may}
+  - {number: 254, mnemonic: PRIVATEOID, use_signing: may, use_validation: may, implement_signing: may, implement_validation: may}
+digests:
+  - {number: 0, name: Reserved, use_delegation: must-not, use_validation: must-not, implement_delegation: must-not, implement_validation: must-not}
+  - {number: 1, name: SHA-1, backend: sha1, use_delegation: must-not, use_validation: recommended, implement_delegation: must-not, implement_validation: must}
+  - {number: 2, name: SHA-256, backend: sha256, use_delegation: recommended, use_validation: recommended, implement_delegation: must, implement_validation: must}
+  - {number: 3, name: GOST-R-34.11-94, use_delegation: must-not, use_validation: must-not, implement_delegation: must-not, implement_validation: must-not}
+  - {number: 4, name: SHA-384, backend: sha384, use_delegation: may, use_validation: recommended, implement_delegation: may, implement_validation: recommended}
+  - {number: 5, name: GOST-R-34.11-2012, use_delegation: may, use_validation: may, implement_delegation: may, implement_validation: may}
+  - {number: 6, name: SM3, use_delegation: may, use_validation: may, implement_delegation: may, implement_validation: may}

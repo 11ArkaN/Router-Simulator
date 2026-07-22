@@ -443,13 +443,25 @@ void cli_tests() {
   const auto question =
       router::complete_cli(classic_state, completion_session, "show router ",
                            router::CliCompletionTrigger::question);
-  require(
+  const bool question_help_valid =
       contains(question, "arp") && contains(question, "fib") &&
           contains(question, "Display the ARP table") &&
           contains(question, "Display forwarding information base entries") &&
-          contains(question, "arp                   - ") &&
-          !contains(question, "show router arp"),
-      "Question-mark help lacked descriptions or leaked complete commands");
+          // `show router arp` remains executable, but its documented address,
+          // interface and type selectors also make it a navigable context.
+          // SR OS online help therefore marks this child with `+`. FIB also
+          // owns destination and interface selectors, so it is a context too.
+          // Interface is executable as a summary and now also owns the
+          // documented name and detail selectors, so it carries the same
+          // context marker.
+          contains(question, "arp                   + ") &&
+          contains(question, "fib                   + ") &&
+          contains(question, "interface             + ") &&
+          !contains(question, "show router arp");
+  if (!question_help_valid)
+    throw std::runtime_error(
+        "Question-mark help lacked descriptions or leaked complete commands:\n" +
+        question);
 
   const auto unknown =
       router::execute_cli(classic_state, classic_session, "jjj", no_ping);

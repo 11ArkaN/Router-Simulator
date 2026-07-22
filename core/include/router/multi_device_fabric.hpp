@@ -93,6 +93,12 @@ public:
   // The method copies bytes into the shared pool and never calls a peer device.
   [[nodiscard]] DropReason enqueue(LinkHandle link, std::uint8_t endpoint,
                                    const packet::Frame &frame) noexcept;
+  // The link owner may preflight all fragments from one source datagram. This
+  // does not reserve medium capacity for a remote thread. It is used only in
+  // combined owner mode, where no mutation can occur before the matching
+  // enqueue sequence completes.
+  [[nodiscard]] bool can_enqueue(LinkHandle link, std::uint8_t endpoint,
+                                 std::size_t frames) const noexcept;
   // These pump methods run only on the link owner. The explicit time argument
   // supports deterministic native unit tests; production passes steady_clock.
   void pump_transmit(Clock::time_point now = Clock::now()) noexcept;

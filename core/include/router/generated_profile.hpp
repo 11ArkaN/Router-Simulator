@@ -12,6 +12,49 @@
 
 namespace router::profile {
 
+enum class IpsecTransformType : std::uint8_t {
+  encryption = 1U,
+  prf = 2U,
+  integrity = 3U,
+  diffie_hellman = 4U,
+  extended_sequence_numbers = 5U
+};
+
+struct IpsecTransform {
+  IpsecTransformType type{};
+  std::uint16_t id{};
+  std::uint16_t key_bits{};
+  bool key_length_attribute_required{};
+  bool authenticated_encryption{};
+  bool implemented{};
+};
+
+inline constexpr std::array<IpsecTransform, 8> ipsec_transforms{{
+    {IpsecTransformType::encryption, 20U, 128U, true, true, true},
+    {IpsecTransformType::encryption, 20U, 192U, true, true, true},
+    {IpsecTransformType::encryption, 20U, 256U, true, true, true},
+    {IpsecTransformType::prf, 5U, 256U, false, false, true},
+    {IpsecTransformType::integrity, 12U, 256U, false, false, true},
+    {IpsecTransformType::diffie_hellman, 19U, 256U, false, false, true},
+    {IpsecTransformType::extended_sequence_numbers, 0U, 0U, false, false, true},
+    {IpsecTransformType::extended_sequence_numbers, 1U, 0U, false, false, true}
+}};
+inline constexpr std::size_t maximum_ike_policies = 2048U;
+inline constexpr std::size_t maximum_ike_transforms = 4096U;
+inline constexpr std::size_t maximum_ipsec_transforms = 2048U;
+inline constexpr std::size_t maximum_static_sas = 1000U;
+inline constexpr std::size_t maximum_tunnel_templates = 2048U;
+inline constexpr std::size_t maximum_traffic_selector_lists = 32768U;
+inline constexpr std::size_t maximum_traffic_selectors_per_list = 32U;
+inline constexpr std::size_t maximum_ppk_lists = 128U;
+inline constexpr std::size_t maximum_ppks_per_list = 128U;
+inline constexpr std::size_t maximum_ipsec_certificate_profiles = 10200U;
+inline constexpr std::size_t maximum_ipsec_certificate_entries_per_profile = 8U;
+inline constexpr std::size_t maximum_ipsec_trust_anchor_profiles = 10128U;
+inline constexpr std::size_t maximum_ipsec_trust_anchors_per_profile = 8U;
+inline constexpr std::size_t maximum_project_secret_records = 131072U;
+inline constexpr std::chrono::seconds ike_reassembly_timeout{2};
+
 inline constexpr char id[] = "7750-sr-7-iom4-e";
 inline constexpr char release[] = "26.7.R1";
 inline constexpr char chassis[] = "7750 SR-7";
@@ -73,13 +116,13 @@ inline constexpr std::uint16_t default_ping_payload_octets = 56U;
 inline constexpr std::uint16_t minimum_ping_payload_octets = 12U;
 inline constexpr std::uint16_t maximum_ping_payload_octets = 1472U;
 inline constexpr std::size_t cli_history_entries = 50;
-inline constexpr std::uint32_t runtime_snapshot_abi = 4;
-inline constexpr std::uint32_t telemetry_abi = 5;
-inline constexpr std::uint32_t runtime_message_abi = 2;
-inline constexpr std::uint32_t checkpoint_abi = 4;
-inline constexpr std::uint64_t profile_hash = 0x7cfdcf266d2ce49aULL;
-inline constexpr std::uint64_t checkpoint_schema_hash = 0xf57d6de68b39429cULL;
-inline constexpr std::uint64_t build_hash = 0xbe25e3fcd4bc18a7ULL;
+inline constexpr std::uint32_t runtime_snapshot_abi = 6;
+inline constexpr std::uint32_t telemetry_abi = 6;
+inline constexpr std::uint32_t runtime_message_abi = 4;
+inline constexpr std::uint32_t checkpoint_abi = 6;
+inline constexpr std::uint64_t profile_hash = 0x7fd29a3639d9fc84ULL;
+inline constexpr std::uint64_t checkpoint_schema_hash = 0xa9c6c92af60ac429ULL;
+inline constexpr std::uint64_t build_hash = 0x6656f057fb7f8da2ULL;
 
 // Hardware initialization values are experimental emulator timing profiles,
 // not claims about physical platform boot guarantees.

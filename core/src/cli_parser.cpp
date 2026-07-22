@@ -3,7 +3,11 @@
 
 #include "cli_parser.hpp"
 
+#include "router/mld_import_policy.hpp"
+
+#include "router/generated_device_catalog.hpp"
 #include "router/generated_profile.hpp"
+#include "router/ies_service.hpp"
 
 #include <algorithm>
 #include <array>
@@ -107,6 +111,13 @@ bool configuration_only(cli_schema::CommandId id) noexcept {
   // Classic uses the same configuration rows with immediate semantics and is
   // therefore unaffected by this MD-specific availability filter.
   using enum cli_schema::CommandId;
+  // The generator preserves schema order. IPsec and TLS rows each form one
+  // explicitly reviewed contiguous MD block, allowing availability to stay
+  // data-sized instead of duplicating every release command in another switch.
+  if (id >= md_ike_transform_dh19 && id <= md_delete_tunnel_template)
+    return true;
+  if (id >= md_tls_use_pqc_only && id <= md_delete_tls_server_secondary)
+    return true;
   switch (id) {
   case configure_card_type:
   case configure_mda_type:
@@ -123,7 +134,43 @@ bool configuration_only(cli_schema::CommandId id) noexcept {
   case md_interface_disable:
   case md_interface_port:
   case md_interface_ipv4_primary:
+  case md_delete_interface_port:
+  case md_delete_interface_ipv4_primary:
+  case md_interface_ipv6_address:
+  case md_interface_ipv6_address_dad:
+  case md_interface_ipv6_address_primary_preference:
+  case md_delete_interface_ipv6_address:
+  case md_delete_interface_ipv6_address_dad:
+  case md_delete_interface_ipv6_address_primary_preference:
   case md_static_route:
+  case md_static_route_ipv6:
+  case md_delete_static_route_ipv6:
+  case md_ra_enable:
+  case md_ra_disable:
+  case md_ra_current_hop_limit:
+  case md_ra_managed_configuration:
+  case md_ra_other_configuration:
+  case md_ra_max_interval:
+  case md_ra_min_interval:
+  case md_ra_mtu:
+  case md_ra_preference:
+  case md_ra_reachable_time:
+  case md_ra_retransmit_time:
+  case md_ra_router_lifetime:
+  case md_ra_prefix_autonomous:
+  case md_ra_prefix_on_link:
+  case md_ra_prefix_preferred_lifetime:
+  case md_ra_prefix_valid_lifetime:
+  case md_ra_rdnss_server:
+  case md_ra_rdnss_lifetime:
+  case md_ra_include_dns:
+  case md_ra_global_rdnss_server:
+  case md_ra_global_rdnss_lifetime:
+  case md_delete_ra_include_dns:
+  case md_delete_ra_rdnss_server:
+  case md_delete_ra_rdnss_lifetime:
+  case md_delete_ra_global_rdnss_server:
+  case md_delete_ra_global_rdnss_lifetime:
   case md_delete_card:
   case md_delete_mda:
   case md_delete_port_description:
@@ -154,8 +201,7 @@ bool available(const cli_schema::CommandSpec &spec,
   if (is_implicit_entry(spec.id))
     return !configuring;
   using enum cli_schema::CommandId;
-  if (spec.id == md_edit_config_exclusive ||
-      spec.id == md_edit_config_global ||
+  if (spec.id == md_edit_config_exclusive || spec.id == md_edit_config_global ||
       spec.id == md_edit_config_private ||
       spec.id == md_edit_config_read_only) {
     if (!configuring)
@@ -180,8 +226,342 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
   // Both SR OS engines accept an unambiguous keyword abbreviation. Quoted list
   // keys and symbolic commands are values rather than abbreviable keywords.
   // Ambiguity is rejected after all complete schema rows have been scanned.
-  if (token.kind != cli_schema::TokenKind::literal)
-    return !value.empty();
+  if (token.kind != cli_schema::TokenKind::literal) {
+    if (value.empty())
+      return false;
+    using enum cli_schema::TokenKind;
+    const auto decimal_text = [](std::string_view text) {
+      return !text.empty() &&
+             std::all_of(text.begin(), text.end(),
+                         [](char byte) { return byte >= '0' && byte <= '9'; });
+    };
+    const auto unquote_value = [](std::string_view text) {
+      return text.size() >= 2U && text.front() == '"' && text.back() == '"'
+                 ? text.substr(1U, text.size() - 2U)
+                 : std::string_view{};
+    };
+    const auto scalar_text = [&](std::string_view text) {
+      const auto unquoted = unquote_value(text);
+      return unquoted.empty() ? text : unquoted;
+    };
+    const auto bounded_name = [&](std::string_view text, std::size_t maximum) {
+      text = scalar_text(text);
+      return !text.empty() && text.size() <= maximum &&
+             std::any_of(text.begin(), text.end(),
+                         [](char byte) { return byte != ' ' && byte != '\t'; });
+    };
+    const auto generated_algorithm = [&](const auto &algorithms) {
+      return std::any_of(
+          algorithms.begin(), algorithms.end(),
+          [&](const auto &entry) { return entry.sros == value; });
+    };
+    const auto ipv4_text = [&](std::string_view text) {
+      std::uint32_t octet{};
+      std::size_t count{};
+      bool digit{};
+      for (const auto byte : text) {
+        if (byte == '.') {
+          if (!digit || octet > 255U || ++count > 3U)
+            return false;
+          octet = 0;
+          digit = false;
+        } else if (byte >= '0' && byte <= '9') {
+          digit = true;
+          octet = octet * 10U + static_cast<unsigned>(byte - '0');
+          if (octet > 255U)
+            return false;
+        } else {
+          return false;
+        }
+      }
+      return digit && octet <= 255U && count == 3U;
+    };
+    const auto ipv4_prefix_text = [&](std::string_view text) {
+      const auto slash = text.find('/');
+      if (slash == std::string_view::npos ||
+          !ipv4_text(text.substr(0, slash)) ||
+          !decimal_text(text.substr(slash + 1U)))
+        return false;
+      unsigned length{};
+      for (const auto byte : text.substr(slash + 1U))
+        length = length * 10U + static_cast<unsigned>(byte - '0');
+      return length <= 32U;
+    };
+    switch (token.kind) {
+    case ipv4:
+      return ipv4_text(value);
+    case ipv4_key:
+      return ipv4_text(unquote_value(value));
+    case ipv4_prefix:
+      return ipv4_prefix_text(value);
+    case ip_prefix:
+      return ipv4_prefix_text(value) ||
+             ip::parse_ipv6_prefix(value).has_value();
+    case ip_address:
+      return ipv4_text(value) || ip::parse_ipv6(value).has_value();
+    case ipsec_protocol_id: {
+      if (value == "icmp" || value == "tcp" || value == "udp" ||
+          value == "icmp6" || value == "sctp" || value == "mipv6")
+        return true;
+      if (!decimal_text(value))
+        return false;
+      unsigned protocol{};
+      for (const auto byte : value)
+        protocol = protocol * 10U + static_cast<unsigned>(byte - '0');
+      return protocol >= 1U && protocol <= 255U;
+    }
+    case selector_port_begin:
+    case selector_port_end: {
+      // Classic represents ICMP as type/code but TCP, UDP, SCTP and MIPv6 as
+      // one decimal value. Cross-field protocol limits are checked by the
+      // IPsec editor after the generated grammar has matched the command.
+      const auto slash = value.find('/');
+      const auto component = [&](std::string_view text, unsigned maximum) {
+        if (!decimal_text(text))
+          return false;
+        unsigned parsed{};
+        for (const auto byte : text)
+          parsed = parsed * 10U + static_cast<unsigned>(byte - '0');
+        return parsed <= maximum;
+      };
+      return slash == std::string_view::npos
+                 ? component(value, 65'535U)
+                 : component(value.substr(0U, slash), 255U) &&
+                       component(value.substr(slash + 1U), 255U);
+    }
+    case ipv6:
+    case ipv6_source:
+    case ipv6_range_start:
+    case ipv6_range_end:
+    case ipv6_range_step:
+      return ip::parse_ipv6(value).has_value();
+    case ipv6_with_zone: {
+      // SR OS renders a scoped server as address-interface. IPv6 syntax never
+      // contains a hyphen, so the first hyphen is an unambiguous zone boundary
+      // even when the interface name itself contains later hyphens.
+      const auto separator = value.find('-');
+      const auto address_text = value.substr(0U, separator);
+      const auto address = ip::parse_ipv6(address_text);
+      if (!address)
+        return false;
+      const bool has_zone = separator != std::string_view::npos;
+      const auto zone =
+          has_zone ? value.substr(separator + 1U) : std::string_view{};
+      return ip::is_link_local(*address)
+                 ? has_zone && bounded_name(
+                                   zone, service::maximum_interface_name_octets)
+                 : !has_zone;
+    }
+    case ipv6_key:
+      return ip::parse_ipv6(unquote_value(value)).has_value();
+    case ipv6_prefix:
+      return ip::parse_ipv6_prefix(value).has_value();
+    case ipv6_address_prefix: {
+      const auto slash = value.rfind('/');
+      if (slash == std::string_view::npos ||
+          !ip::parse_ipv6(value.substr(0, slash)) ||
+          !decimal_text(value.substr(slash + 1U)))
+        return false;
+      unsigned length{};
+      for (const auto byte : value.substr(slash + 1U))
+        length = length * 10U + static_cast<unsigned>(byte - '0');
+      return length >= 1U && length <= ip::ipv6_address_bits;
+    }
+    case customer_name:
+    case service_name:
+      return bounded_name(value, service::maximum_service_name_octets);
+    case service_interface_name:
+      return bounded_name(value, service::maximum_interface_name_octets);
+    case relay_interface_id_string:
+      return bounded_name(value, service::maximum_relay_interface_id_octets);
+    case ethernet_mode:
+      return value == "access" || value == "network" || value == "hybrid";
+    case ethernet_encapsulation:
+      return value == "null" || value == "dot1q" || value == "qinq";
+    case policy_name:
+    case prefix_list_name:
+      return bounded_name(value, mld::maximum_policy_name_octets);
+    case policy_entry_number:
+      return decimal_text(value) && value != "0";
+    case policy_action:
+      return value == "accept" || value == "drop" || value == "reject" ||
+             value == "next-entry" || value == "next-policy";
+    case sap_id:
+      // Exact coordinate, VLAN and live inventory checks belong to the IES
+      // editor because the release grammar alone cannot resolve a port.
+      return !value.empty() && value.size() <= 45U;
+    case prefix_length:
+    case ipv6_prefix_length:
+    case ipv6_primary_preference:
+    case ipv6_address_tag:
+    case customer_id:
+    case service_id:
+    case relay_lease_limit:
+    case count:
+    case size:
+    case mtu:
+    case levels:
+    case seconds:
+    case milliseconds:
+    case hop_limit:
+    case mld_version:
+    case robust_count:
+    case mld_limit:
+    case ike_policy_id:
+    case ike_transform_id:
+    case ike_transform_ref:
+    case ipsec_transform_id:
+    case ipsec_lifetime:
+    case ike_lifetime:
+    case ike_fragment_mtu:
+    case ike_reassembly_timeout:
+    case dpd_interval:
+    case dpd_retries:
+    case nat_keepalive_interval:
+    case ts_entry_id:
+    case protocol_id:
+    case port_begin:
+    case port_end:
+    case icmp_type_begin:
+    case icmp_type_end:
+    case icmp_code_begin:
+    case icmp_code_end:
+    case tunnel_template_id:
+    case replay_window:
+    case pmtu_aging:
+    case tunnel_mss:
+    case tunnel_rate_interval:
+    case tunnel_message_count:
+    case reverse_route_metric:
+    case reverse_route_preference:
+    case ipsec_certificate_entry_id:
+    case history_esp_records:
+    case history_ike_records:
+      return decimal_text(value);
+    case static_sa_spi: {
+      // RFC 4303 reserves ESP SPI values 0 through 255. SR OS further caps a
+      // manually configured SPI at 16383, so accepting a wider decimal here
+      // would make the generated grammar advertise a value the configuration
+      // owner must subsequently reject.
+      if (!decimal_text(value))
+        return false;
+      unsigned spi{};
+      for (const auto byte : value)
+        spi = spi * 10U + static_cast<unsigned>(byte - '0');
+      return spi >= 256U && spi <= 16'383U;
+    }
+    case tls_certificate_entry_index:
+    case tls_algorithm_index: {
+      if (!decimal_text(value))
+        return false;
+      unsigned index{};
+      for (const auto byte : value)
+        index = index * 10U + static_cast<unsigned>(byte - '0');
+      if (token.kind == tls_certificate_entry_index)
+        return index >= 1U &&
+               index <= device_catalog::tls_maximum_cert_entries_per_profile;
+      return index >= device_catalog::tls_algorithm_index_minimum &&
+             index <= device_catalog::tls_algorithm_index_maximum;
+    }
+    case tls_cipher_name:
+      return generated_algorithm(device_catalog::tls13_ciphers);
+    case tls_group_name:
+      return generated_algorithm(device_catalog::tls13_groups);
+    case tls_signature_name:
+      return generated_algorithm(device_catalog::tls13_signatures);
+    case tls_certificate_file:
+    case tls_key_file: {
+      const auto file = scalar_text(value);
+      return !file.empty() &&
+             file.size() <= device_catalog::tls_certificate_file_name_bytes &&
+             file.find_first_of(":/") == std::string_view::npos;
+    }
+    case pki_file_name: {
+      const auto file = scalar_text(value);
+      return !file.empty() && file.size() <= 95U &&
+             file.find_first_of(":/") == std::string_view::npos;
+    }
+    case tls_cert_profile_name:
+    case tls_trust_anchor_profile_name:
+    case tls_client_cipher_list_name:
+    case tls_client_group_list_name:
+    case tls_client_signature_list_name:
+    case tls_client_profile_name:
+    case tls_server_cipher_list_name:
+    case tls_server_group_list_name:
+    case tls_server_signature_list_name:
+    case tls_server_profile_name:
+    case tls_ca_profile_name:
+    case tls_common_name_list_name:
+      return bounded_name(value, device_catalog::tls_profile_name_bytes);
+    case ts_list_name:
+    case transport_profile_name:
+    case ipsec_cert_profile_name:
+    case ipsec_trust_anchor_profile_name:
+    case ppk_list_name:
+    case ca_profile_name:
+      // Both SR OS list keys have their own documented 1..32 contract. Keep
+      // them independent from TLS catalog constants even though the current
+      // maximum happens to be equal.
+      return bounded_name(value, 32U);
+    case static_sa_name:
+      // A static-SA name is a list key, not an arbitrary description. Nokia's
+      // 26.7 model permits 1..32 characters and the editor performs the same
+      // check before materializing the candidate list entry.
+      return bounded_name(value, 32U);
+    case static_sa_key: {
+      // The grammar deliberately treats the key as an opaque scalar. Clear
+      // ASCII, hexadecimal and imported protected spellings have different
+      // semantic checks in the IPsec owner, while all share the MD encrypted
+      // leaf's documented 1..110 character transport envelope.
+      const auto secret = scalar_text(value);
+      return !secret.empty() && secret.size() <= 110U;
+    }
+    case ppk_id:
+      return bounded_name(value, 64U);
+    case ppk_ascii_value:
+    case ipsec_pre_shared_key: {
+      // SR OS encrypted-leaf text may be clear input or an opaque protected
+      // spelling ending in hash, hash2, hash3 or custom. The parser enforces
+      // the documented wire-independent 1..166 character envelope. The secret
+      // owner decides whether a protected spelling can be imported by this
+      // release and never mistakes it for clear key bytes.
+      const auto secret = scalar_text(value);
+      return !secret.empty() && secret.size() <= 166U;
+    }
+    case ppk_hex_value: {
+      const auto secret = scalar_text(value);
+      if (secret.empty() || secret.size() > 166U)
+        return false;
+      const auto suffix = [](std::string_view text) {
+        return text.ends_with(" hash") || text.ends_with(" hash2") ||
+               text.ends_with(" hash3") || text.ends_with(" custom");
+      };
+      if (suffix(secret))
+        return true;
+      const auto digits = secret.starts_with("0x") ? secret.substr(2U) : secret;
+      return !digits.empty() && digits.size() <= 128U &&
+             digits.size() % 2U == 0U &&
+             std::all_of(digits.begin(), digits.end(), [](char byte) {
+               return (byte >= '0' && byte <= '9') ||
+                      (byte >= 'a' && byte <= 'f') ||
+                      (byte >= 'A' && byte <= 'F');
+             });
+    }
+    case ike_identity_fqdn:
+      return bounded_name(value, 255U);
+    case boolean:
+      return value == "true" || value == "false";
+    case router_preference:
+      return value == "low" || value == "medium" || value == "high";
+    case literal:
+      break;
+    default:
+      // Names, descriptions and hardware identifiers are validated by their
+      // state owner because validity depends on live inventory and quoting.
+      return true;
+    }
+  }
   if (token.display.starts_with('"') || token.display == "//")
     return value == token.display;
   return !value.empty() && token.display.starts_with(value);
@@ -286,15 +666,152 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
                   token.description, context);
     break;
   case ipv4_prefix:
+  case ip_address:
+  case ipv6:
+  case ipv6_with_zone:
+  case ipv6_source:
+  case ipv6_range_start:
+  case ipv6_range_end:
+  case ipv6_range_step:
+  case ipv6_key:
+  case ipv6_prefix:
+  case ipv6_address_prefix:
+  case ipv6_primary_preference:
+  case ipv6_address_tag:
+  case customer_name:
+  case customer_id:
+  case service_name:
+  case service_id:
+  case service_interface_name:
+  case sap_id:
+  case ethernet_mode:
+  case ethernet_encapsulation:
+  case ipv6_prefix_length:
+  case relay_interface_id_string:
+  case relay_lease_limit:
+  case mac_address:
+  case nd_scope:
+  case nd_reachable_seconds:
+  case nd_stale_seconds:
+  case nd_neighbor_limit:
+  case nd_threshold:
   case prefix_length:
+  case arp_timeout_seconds:
+  case arp_retry_deciseconds:
   case count:
   case size:
   case mtu:
   case levels:
   case system_name:
   case description:
+  case seconds:
+  case milliseconds:
+  case hop_limit:
+  case boolean:
+  case router_preference:
+  case mld_version:
+  case robust_count:
+  case mld_limit:
+  case policy_name:
+  case prefix_list_name:
+  case policy_entry_number:
+  case policy_action:
+  case redirect_number:
+  case redirect_seconds:
+  case ike_policy_id:
+  case ike_transform_id:
+  case ike_transform_ref:
+  case ipsec_transform_id:
+  case ipsec_lifetime:
+  case ike_lifetime:
+  case ike_fragment_mtu:
+  case ike_reassembly_timeout:
+  case dpd_interval:
+  case dpd_retries:
+  case nat_keepalive_interval:
+  case ts_list_name:
+  case ts_entry_id:
+  case ip_prefix:
+  case protocol_id:
+  case selector_port_begin:
+  case selector_port_end:
+  case port_begin:
+  case port_end:
+  case icmp_type_begin:
+  case icmp_type_end:
+  case icmp_code_begin:
+  case icmp_code_end:
+  case tunnel_template_id:
+  case transport_profile_name:
+  case replay_window:
+  case pmtu_aging:
+  case ppk_list_name:
+  case ppk_id:
+  case ppk_ascii_value:
+  case ppk_hex_value:
+  case static_sa_name:
+  case static_sa_key:
+  case static_sa_spi:
+  case ipsec_pre_shared_key:
+  case tunnel_mss:
+  case tunnel_rate_interval:
+  case tunnel_message_count:
+  case reverse_route_metric:
+  case reverse_route_preference:
+  case ipsec_cert_profile_name:
+  case ipsec_trust_anchor_profile_name:
+  case ipsec_certificate_entry_id:
+  case pki_file_name:
+  case ca_profile_name:
+  case ike_identity_fqdn:
+  case history_esp_records:
+  case history_ike_records:
+  case tls_cert_profile_name:
+  case tls_trust_anchor_profile_name:
+  case tls_client_cipher_list_name:
+  case tls_client_group_list_name:
+  case tls_client_signature_list_name:
+  case tls_client_profile_name:
+  case tls_server_cipher_list_name:
+  case tls_server_group_list_name:
+  case tls_server_signature_list_name:
+  case tls_server_profile_name:
+  case tls_ca_profile_name:
+  case tls_certificate_file:
+  case tls_key_file:
+  case tls_certificate_entry_index:
+  case tls_algorithm_index:
+  case tls_common_name_list_name:
+    // Redirect rate leaves are user supplied scalars. Their release-specific
+    // numeric ranges are enforced by the command handler because completion
+    // must not manufacture a preferred rate value that SR OS does not suggest.
     add_candidate(items, std::string{token.display}, false, false, partial,
                   token.description, context);
+    break;
+  case ipsec_protocol_id:
+    // Classic accepts either the documented names or a decimal protocol ID.
+    // Named values are real completion candidates while the numeric shape is
+    // shown only as a placeholder, matching SR OS context help semantics.
+    for (const auto name : {"icmp", "tcp", "udp", "icmp6", "sctp", "mipv6"})
+      add_candidate(items, name, true, false, partial, token.description,
+                    context);
+    add_candidate(items, std::string{token.display}, false, false, partial,
+                  token.description, context);
+    break;
+  case tls_cipher_name:
+    for (const auto &algorithm : device_catalog::tls13_ciphers)
+      add_candidate(items, std::string{algorithm.sros}, true, false, partial,
+                    token.description, context);
+    break;
+  case tls_group_name:
+    for (const auto &algorithm : device_catalog::tls13_groups)
+      add_candidate(items, std::string{algorithm.sros}, true, false, partial,
+                    token.description, context);
+    break;
+  case tls_signature_name:
+    for (const auto &algorithm : device_catalog::tls13_signatures)
+      add_candidate(items, std::string{algorithm.sros}, true, false, partial,
+                    token.description, context);
     break;
   }
 }
@@ -319,6 +836,10 @@ std::optional<ParsedCommand> parse_command(CliEngine engine,
   // Generated rows are the sole syntax catalog. Handlers receive a stable ID
   // only after every literal and parameter position has matched that catalog.
   const cli_schema::CommandSpec *match{};
+  std::uint8_t match_literal_count{};
+  std::uint8_t match_exact_literal_count{};
+  std::uint8_t match_address_parameter_count{};
+  bool ambiguous_at_best_specificity{};
   for (const auto &spec : cli_schema::commands) {
     if (!available(spec, session) || spec.token_count != line.count)
       continue;
@@ -329,17 +850,79 @@ std::optional<ParsedCommand> parse_command(CliEngine engine,
         break;
       }
     }
-    if (matched) {
-      // Two complete rows matched by the same abbreviation means the command
-      // is ambiguous. Never let schema order choose behavior on the user's
-      // behalf because SR OS asks for more input in this case.
-      if (match)
-        return std::nullopt;
+    if (!matched)
+      continue;
+
+    // A reserved keyword is more specific than a value accepted in the same
+    // position. For example, `show router neighbor static` is the documented
+    // filter, not an interface literally named "static". Literal count is the
+    // primary rank. An exact keyword then outranks a longer keyword for which
+    // the same input is merely an abbreviation. This is essential for sibling
+    // commands such as `icmp` and `icmp6`: the documented complete keyword
+    // `icmp` cannot become ambiguous just because another keyword begins with
+    // those bytes. Constrained address types break the remaining tie against
+    // generic list keys. Rows equal on every rank remain genuinely ambiguous,
+    // so schema order can never choose one silently.
+    const auto literal_count = static_cast<std::uint8_t>(std::count_if(
+        spec.tokens.begin(), spec.tokens.begin() + spec.token_count,
+        [](const auto &token) {
+          return token.kind == cli_schema::TokenKind::literal;
+        }));
+    const auto exact_literal_count = static_cast<std::uint8_t>(std::count_if(
+        spec.tokens.begin(), spec.tokens.begin() + spec.token_count,
+        [&](const auto &token) {
+          const auto index =
+              static_cast<std::size_t>(&token - spec.tokens.data());
+          return token.kind == cli_schema::TokenKind::literal &&
+                 token.display == line.tokens[index];
+        }));
+    const auto address_parameter_count =
+        static_cast<std::uint8_t>(std::count_if(
+            spec.tokens.begin(), spec.tokens.begin() + spec.token_count,
+            [](const auto &token) {
+              // A validated network scalar is narrower than a free-form list
+              // key. For a documented union such as `{ip-int-name |
+              // ip-address}`, dotted input therefore selects the address arm
+              // even though the same bytes could also form a legal name. This
+              // is a token-level grammar rule shared by every command.
+              using enum cli_schema::TokenKind;
+              switch (token.kind) {
+              case ipv4:
+              case ipv4_key:
+              case ipv4_prefix:
+              case ipv6:
+              case ipv6_with_zone:
+              case ipv6_key:
+              case ipv6_prefix:
+              case ipv6_address_prefix:
+              case ip_address:
+              case ip_prefix:
+              case mac_address:
+                return true;
+              default:
+                return false;
+              }
+            }));
+    if (!match || literal_count > match_literal_count ||
+        (literal_count == match_literal_count &&
+         exact_literal_count > match_exact_literal_count) ||
+        (literal_count == match_literal_count &&
+         exact_literal_count == match_exact_literal_count &&
+         address_parameter_count > match_address_parameter_count)) {
       match = &spec;
+      match_literal_count = literal_count;
+      match_exact_literal_count = exact_literal_count;
+      match_address_parameter_count = address_parameter_count;
+      ambiguous_at_best_specificity = false;
+    } else if (literal_count == match_literal_count &&
+               exact_literal_count == match_exact_literal_count &&
+               address_parameter_count == match_address_parameter_count) {
+      ambiguous_at_best_specificity = true;
     }
   }
-  return match ? std::optional{ParsedCommand{match, line.tokens, line.count}}
-               : std::nullopt;
+  return match && !ambiguous_at_best_specificity
+             ? std::optional{ParsedCommand{match, line.tokens, line.count}}
+             : std::nullopt;
 }
 
 std::optional<std::string_view> argument(const ParsedCommand &command,

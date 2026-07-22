@@ -132,6 +132,18 @@ MultiDeviceFabric::enqueue(LinkHandle link, std::uint8_t endpoint,
   return DropReason::none;
 }
 
+bool MultiDeviceFabric::can_enqueue(LinkHandle link, std::uint8_t endpoint,
+                                    std::size_t frames) const noexcept {
+  const auto *slot = find(link);
+  if (!slot || endpoint > 1U || !slot->carrier)
+    return false;
+  // Each queued fragment owns one packet-pool slot. Testing both resources
+  // avoids a partial datagram caused by either laboratory-wide byte pressure
+  // or this direction's modeled Ethernet TX queue.
+  return frames <= pool_.available() &&
+         frames <= slot->directions[endpoint].tx.available();
+}
+
 void MultiDeviceFabric::pump_transmit(Clock::time_point now) noexcept {
   // One frame per direction per visit prevents a saturated cable from filling
   // the global medium slab before another cable gets an admission opportunity.
@@ -182,7 +194,8 @@ void MultiDeviceFabric::pump_transmit(Clock::time_point now) noexcept {
   transmit_cursor_ = (transmit_cursor_ + 1U) % slots_.size();
 }
 
-void MultiDeviceFabric::pump_delivery(void *context, DeliveryObserver observer,
+void MultiDeviceFabric::pump_delivery(void *context,
+                                      DeliveryObserver observer,
                                       Clock::time_point now) noexcept {
   std::size_t budget = device_catalog::fabric_work_budget_frames;
   for (std::size_t visited = 0; visited < slots_.size() && budget; ++visited) {

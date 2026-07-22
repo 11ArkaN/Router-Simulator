@@ -166,7 +166,8 @@ HostRegistry::find(std::string_view node_id) const noexcept {
 std::optional<LinkHandle>
 TopologyRegistry::create(std::string_view link_id, const LinkEndpoint &first,
                          const LinkEndpoint &second,
-                         std::uint64_t propagation_ns) {
+                         std::uint64_t propagation_ns,
+                         std::uint32_t configured_speed_mbps) {
   // Validation is complete before any slot mutation. In particular, checking
   // both port bindings first prevents a failed second endpoint from leaving a
   // half-created cable attached to the first endpoint.
@@ -180,8 +181,8 @@ TopologyRegistry::create(std::string_view link_id, const LinkEndpoint &first,
     // project parser buffer survives this assignment.
     if (slot.occupied)
       continue;
-    slot.value = {std::string{link_id}, {first, second}, true, false, 0U,
-                  propagation_ns};
+    slot.value = {std::string{link_id}, {first, second}, true,
+                  configured_speed_mbps, false, 0U, propagation_ns};
     slot.occupied = true;
     ++size_;
     return LinkHandle{static_cast<std::uint16_t>(index), slot.generation};

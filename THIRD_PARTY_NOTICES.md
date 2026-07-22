@@ -1,6 +1,50 @@
 # Third-party notices
 
+## OpenSSL 3.5.7 LTS
+
+Copyright OpenSSL contributors.
+
+License: Apache License 2.0.
+
+Source: https://www.openssl-library.org/source/
+
+The source archive is verified by its published SHA-256 digest and compiled
+locally for WebAssembly. No prebuilt OpenSSL binary is distributed.
+
 Router Simulator does not redistribute Nokia firmware, software images, YANG modules, manuals, logos or other vendor-owned content. The source catalog contains links, short identifiers and project-authored compatibility metadata.
+
+## nghttp2 1.69.0
+
+Copyright nghttp2 contributors.
+
+License: MIT.
+
+Source: https://github.com/nghttp2/nghttp2/releases/tag/v1.69.0
+
+The official source archive is verified by its published SHA-256 digest and
+compiled locally as a static WebAssembly HTTP/2 library.
+
+## ngtcp2 1.24.0
+
+Copyright ngtcp2 contributors.
+
+License: MIT.
+
+Source: https://github.com/ngtcp2/ngtcp2/releases/tag/v1.24.0
+
+The official source archive is verified by its published SHA-256 digest and
+compiled locally as static WebAssembly QUIC and OpenSSL integration libraries.
+
+## nghttp3 1.17.0
+
+Copyright nghttp3 contributors.
+
+License: MIT.
+
+Source: https://github.com/ngtcp2/nghttp3/releases/tag/v1.17.0
+
+The official source archive is verified by its published SHA-256 digest and
+compiled locally as a static WebAssembly HTTP/3 library.
 
 The production browser bundle currently includes the following direct dependencies:
 

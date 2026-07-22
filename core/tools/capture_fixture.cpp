@@ -1,4 +1,4 @@
-// Native PCAPNG conformance fixture for protocol 3. The fixture configures two
+// Native PCAPNG conformance fixture for protocol 4. The fixture configures two
 // independent routers through the same LabRuntime facade used by WebAssembly,
 // selects a physical wire direction, and writes only captured packet bytes.
 
@@ -60,11 +60,11 @@ int main(int argc, char **argv) {
       !submit(runtime, {port_configure, "r2", "1/1/1", "1", "1500",
                         "100000", "R2 to R1"}) ||
       !submit(runtime, {interface_configure, "r1", "to-r2", "1/1/1",
-                        "10.0.0.1/30", "1"}) ||
+                        "10.0.0.1/30", "", "", "1"}) ||
       !submit(runtime, {interface_configure, "r2", "to-r1", "1/1/1",
-                        "10.0.0.2/30", "1"}) ||
+                        "10.0.0.2/30", "", "", "1"}) ||
       !submit(runtime, {link_create, "r1-r2", "r1", "1/1/1", "r2",
-                        "1/1/1", "100", "1"}) ||
+                        "1/1/1", "100", "1", "0"}) ||
       !submit(runtime, {capture_point_set, "link-direction", "r1-r2", "",
                         "0", "1"}) ||
       !submit(runtime, {router_ping_start, "r1", "10.0.0.2", "7"}))

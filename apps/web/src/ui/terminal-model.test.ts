@@ -42,6 +42,53 @@ describe("terminal byte editing", () => {
     expect(pager.handle("Q")).toBe("quit");
   });
 
+  it("applies numeric movement and bidirectional regular-expression search", () => {
+    // Nokia documents the numeric prefix as a modifier of the following
+    // movement key. Search owns its input until Enter, then n and N repeat in
+    // the same or opposite direction without re-running the router command.
+    const pager = new TerminalPager(
+      "zero\none\ntarget two\nthree\nfour\ntarget five\nsix\nseven", 4);
+    expect(pager.handle("2j")).toBe("continue");
+    expect(pager.page[0]).toBe("target two");
+    expect(pager.handle("5g")).toBe("continue");
+    expect(pager.page[0]).toBe("four");
+    expect(pager.handle("/target\r")).toBe("continue");
+    expect(pager.page[0]).toBe("target five");
+    expect(pager.renderedPage[0]).toContain("\x1b[7m\x1b[4mtarget\x1b[24m\x1b[27m");
+    expect(pager.handle("N")).toBe("continue");
+    expect(pager.page[0]).toBe("target two");
+    expect(pager.handle("\u001bU")).toBe("continue");
+    expect(pager.renderedPage[0]).toBe("target two");
+  });
+
+  it("shows pager help and underlines every visible search result", () => {
+    const pager = new TerminalPager(
+      "target one\ntarget target two\nthree\nfour\nfive", 4);
+    expect(pager.handle("H")).toBe("continue");
+    expect(pager.renderedPage[0]).toBe("Pager commands");
+    expect(pager.handle("/target\r")).toBe("continue");
+    expect(pager.renderedPage[0]).toContain("\x1b[7m\x1b[4mtarget");
+    expect(pager.renderedPage[1].match(/\x1b\[4m/g)).toHaveLength(2);
+    expect(pager.handle("n")).toBe("continue");
+    expect(pager.page[0]).toBe("target target two");
+  });
+
+  it("checkpoints an in-progress pager search and numeric prefix", () => {
+    const pager = new TerminalPager("one\ntwo\nthree\nfour\nfive", 3);
+    expect(pager.handle("12")).toBe("continue");
+    const restoredCount = TerminalPager.restore(pager.snapshot());
+    expect(restoredCount.status).toBe("12");
+    expect(restoredCount.handle("g")).toBe("complete");
+    expect(restoredCount.page).toEqual(["four", "five"]);
+
+    const searching = new TerminalPager("one\ntwo\nthree\nfour", 3);
+    expect(searching.handle("/thr")).toBe("continue");
+    const restoredSearch = TerminalPager.restore(searching.snapshot());
+    expect(restoredSearch.status).toBe("/thr");
+    expect(restoredSearch.handle("ee\r")).toBe("continue");
+    expect(restoredSearch.page[0]).toBe("three");
+  });
+
   it("bounds per-session history at the sourced default size", () => {
     // Insert one more line than the documented limit and walk to the oldest
     // retained entry. Further navigation must remain clamped at that entry.

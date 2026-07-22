@@ -1,11 +1,11 @@
 // React Flow projection of the user-owned project topology. The visual DOM and
 // CSS classes retain the approved interface while node, link and port identity
-// now come exclusively from project format 3 and runtime snapshot ABI 5.
+// now come exclusively from project format 4 and runtime snapshot ABI 6.
 
 import { Background, ConnectionMode, Controls, Handle, Position, ReactFlow,
   type Connection, type Edge, type Node, type NodeProps,
   type ReactFlowInstance } from "@xyflow/react";
-import type { LabProjectV3, LabRuntimeSnapshotV5 } from "@router-simulator/contracts";
+import type { LabProjectV4, LabRuntimeSnapshotV6 } from "@router-simulator/contracts";
 import { useMemo, useRef } from "react";
 import { Cpu, Maximize2, Monitor, MousePointer2, Scan,
   Router as RouterIcon } from "lucide-react";
@@ -29,8 +29,8 @@ function DeviceNode({ data, selected }: NodeProps<Node<DeviceData>>) {
 const nodeTypes = { device: DeviceNode };
 
 interface Props {
-  project: LabProjectV3;
-  snapshot?: LabRuntimeSnapshotV5;
+  project: LabProjectV4;
+  snapshot?: LabRuntimeSnapshotV6;
   selected?: string;
   onSelect(id: string): void;
   onLayoutChange(id: string, position: { x: number; y: number }): void;

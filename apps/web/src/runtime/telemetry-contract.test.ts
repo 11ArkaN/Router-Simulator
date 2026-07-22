@@ -2,13 +2,13 @@
 // offsets. They verify consistency and stale-generation rejection without
 // starting a second Wasm runtime inside the DOM test process.
 
-import type { LabRuntimeSnapshotV5 } from "@router-simulator/contracts";
+import type { LabRuntimeSnapshotV6 } from "@router-simulator/contracts";
 import { describe, expect, it } from "vitest";
 import { readTelemetrySnapshot, type TelemetryLayout,
   type TelemetryPage } from "./telemetry-contract";
 
 const layout: TelemetryLayout = {
-  abi: 5, size: 512, sequence: 0, abiVersion: 4,
+  abi: 6, size: 512, sequence: 0, abiVersion: 4,
   workerCount: 0, workerDirectory: 0, workerBlockSize: 0, workerRole: 0,
   workerRunning: 0, workerThreadId: 0, workerTurns: 0,
   capturedFrames: 8, captureDropped: 16, droppedPackets: 24,
@@ -20,13 +20,13 @@ const layout: TelemetryLayout = {
   portBitsets: 256, portBitsetBytes: 8
 };
 
-function snapshot(): LabRuntimeSnapshotV5 {
-  return { abiVersion: 5, protocolVersion: 3, status: "ready",
+function snapshot(): LabRuntimeSnapshotV6 {
+  return { abiVersion: 6, protocolVersion: 4, status: "ready",
     routers: [{ id: "r1", profileId: "7750-sr-1", chassis: "7750 SR-1",
       systemName: "R1", handle: { index: 0, generation: 1 }, cards: [],
       ports: [{ id: "1/1/1", admin: true, carrier: false, oper: false,
         mtu: 9212, speedMbps: 100000, description: "" }], interfaces: [],
-      staticRoutes: [] }], hosts: [], links: [], sessions: [], capturePoints: [],
+      staticRoutes: [], ipv6StaticRoutes: [] }], hosts: [], links: [], sessions: [], capturePoints: [],
     activeLinks: 0, capturedFrames: 0, captureDropped: 0, droppedPackets: 0 };
 }
 

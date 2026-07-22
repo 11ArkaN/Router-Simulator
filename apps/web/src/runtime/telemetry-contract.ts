@@ -2,8 +2,8 @@
 // through sequence locks. JavaScript performs bounded read-only observations
 // and returns an immutable React projection only when visible values changed.
 
-import { PROFILE_CATALOG_COMPILED, type LabRuntimeSnapshotV5,
-  type RuntimeRouterV5 } from "@router-simulator/contracts";
+import { PROFILE_CATALOG_COMPILED, type LabRuntimeSnapshotV6,
+  type RuntimeRouterV6 } from "@router-simulator/contracts";
 
 export interface TelemetryLayout {
   abi: number; size: number; sequence: number; abiVersion: number;
@@ -25,6 +25,9 @@ export interface TelemetryPage {
   offset: number;
   size: number;
   layout: TelemetryLayout;
+  // The worker replaces this generation whenever Wasm memory grows. Readers
+  // never retain a typed array outside one readTelemetrySnapshot invocation.
+  memoryEpoch?: number;
 }
 
 function safeCounter(value: bigint): number {
@@ -49,7 +52,7 @@ function portOrdinal(id: string): number | undefined {
 }
 
 export function readTelemetrySnapshot(page: TelemetryPage,
-  base: LabRuntimeSnapshotV5): LabRuntimeSnapshotV5 {
+  base: LabRuntimeSnapshotV6): LabRuntimeSnapshotV6 {
   const layout = page.layout;
   if (layout.abi !== base.abiVersion || layout.size !== page.size) return base;
   const globalSequence = new Uint32Array(page.buffer,
@@ -61,7 +64,7 @@ export function readTelemetrySnapshot(page: TelemetryPage,
   if (count > base.routers.length) return base;
 
   let routersChanged = false;
-  const routers = base.routers.map((router): RuntimeRouterV5 => {
+  const routers = base.routers.map((router): RuntimeRouterV6 => {
     const record = layout.deviceDirectory + router.handle.index *
       layout.deviceBlockSize;
     if (record + layout.deviceBlockSize > page.size) return router;

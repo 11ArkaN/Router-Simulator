@@ -27,6 +27,11 @@ const sourcePath = resolve(profileDirectory, selectedProfile);
 // schemas. Filenames are never duplicated in CMake, UI or runtime code.
 const profileText = readFileSync(sourcePath, "utf8");
 const profile = parse(profileText);
+const releaseCatalog = parse(readFileSync(
+  resolve(root, "profiles/catalog", `${profile.release}.yaml`), "utf8"));
+if (releaseCatalog.release !== profile.release) {
+  throw new Error("Release catalog does not match the selected hardware profile");
+}
 const cliSourcePath = resolve(root, "schemas/cli", `${profile.release}.yaml`);
 const cliSchema = parse(readFileSync(cliSourcePath, "utf8"));
 const headerPath = resolve(root, "core/include/router/generated_profile.hpp");
@@ -96,6 +101,30 @@ const buildHasher = createHash("sha256")
 for (const name of coreFiles)
   buildHasher.update(name).update(readFileSync(resolve(coreRoot, name)));
 const buildCompatibilityHash = buildHasher.digest("hex").slice(0, 16);
+
+const ipsecTransformType = new Map([
+  ["encryption", "encryption"],
+  ["prf", "prf"],
+  ["integrity", "integrity"],
+  ["diffie_hellman", "diffie_hellman"],
+  ["extended_sequence_numbers", "extended_sequence_numbers"]
+]);
+if (!releaseCatalog.ipsec || !Array.isArray(releaseCatalog.ipsec.transforms) ||
+    !releaseCatalog.ipsec.transforms.length) {
+  throw new Error("Release catalog requires a nonempty IPsec transform profile");
+}
+for (const transform of releaseCatalog.ipsec.transforms) {
+  if (!ipsecTransformType.has(transform.type) ||
+      !Number.isSafeInteger(transform.id) || transform.id < 0 || transform.id > 65535 ||
+      !Number.isSafeInteger(transform.key_bits) || transform.key_bits < 0 ||
+      typeof transform.key_length_attribute_required !== "boolean" ||
+      typeof transform.authenticated_encryption !== "boolean" ||
+      typeof transform.implemented !== "boolean") {
+    throw new Error("Invalid IPsec transform profile entry");
+  }
+}
+const ipsecTransformRows = cppRows(releaseCatalog.ipsec.transforms, (transform) =>
+  `{IpsecTransformType::${ipsecTransformType.get(transform.type)}, ${transform.id}U, ${transform.key_bits}U, ${transform.key_length_attribute_required}, ${transform.authenticated_encryption}, ${transform.implemented}}`);
 
 const endpointCount = profile.hosts?.length ?? 0;
 const interfaceCount = profile.router_interfaces?.length ?? 0;
@@ -217,6 +246,42 @@ const header = `#pragma once
 #include <cstdint>
 
 namespace router::profile {
+
+enum class IpsecTransformType : std::uint8_t {
+  encryption = 1U,
+  prf = 2U,
+  integrity = 3U,
+  diffie_hellman = 4U,
+  extended_sequence_numbers = 5U
+};
+
+struct IpsecTransform {
+  IpsecTransformType type{};
+  std::uint16_t id{};
+  std::uint16_t key_bits{};
+  bool key_length_attribute_required{};
+  bool authenticated_encryption{};
+  bool implemented{};
+};
+
+inline constexpr std::array<IpsecTransform, ${releaseCatalog.ipsec.transforms.length}> ipsec_transforms{{
+${ipsecTransformRows}
+}};
+inline constexpr std::size_t maximum_ike_policies = ${releaseCatalog.ipsec.maximum_ike_policies}U;
+inline constexpr std::size_t maximum_ike_transforms = ${releaseCatalog.ipsec.maximum_ike_transforms}U;
+inline constexpr std::size_t maximum_ipsec_transforms = ${releaseCatalog.ipsec.maximum_ipsec_transforms}U;
+inline constexpr std::size_t maximum_static_sas = ${releaseCatalog.ipsec.maximum_static_sas}U;
+inline constexpr std::size_t maximum_tunnel_templates = ${releaseCatalog.ipsec.maximum_tunnel_templates}U;
+inline constexpr std::size_t maximum_traffic_selector_lists = ${releaseCatalog.ipsec.maximum_traffic_selector_lists}U;
+inline constexpr std::size_t maximum_traffic_selectors_per_list = ${releaseCatalog.ipsec.maximum_traffic_selectors_per_list}U;
+inline constexpr std::size_t maximum_ppk_lists = ${releaseCatalog.ipsec.maximum_ppk_lists}U;
+inline constexpr std::size_t maximum_ppks_per_list = ${releaseCatalog.ipsec.maximum_ppks_per_list}U;
+inline constexpr std::size_t maximum_ipsec_certificate_profiles = ${releaseCatalog.ipsec.maximum_certificate_profiles}U;
+inline constexpr std::size_t maximum_ipsec_certificate_entries_per_profile = ${releaseCatalog.ipsec.maximum_certificate_entries_per_profile}U;
+inline constexpr std::size_t maximum_ipsec_trust_anchor_profiles = ${releaseCatalog.ipsec.maximum_trust_anchor_profiles}U;
+inline constexpr std::size_t maximum_ipsec_trust_anchors_per_profile = ${releaseCatalog.ipsec.maximum_trust_anchors_per_profile}U;
+inline constexpr std::size_t maximum_project_secret_records = ${releaseCatalog.ipsec.maximum_project_secret_records}U;
+inline constexpr std::chrono::seconds ike_reassembly_timeout{${releaseCatalog.ipsec.ike_reassembly_timeout_default_seconds}};
 
 inline constexpr char id[] = ${cppString(profile.id)};
 inline constexpr char release[] = ${cppString(profile.release)};
@@ -357,11 +422,14 @@ inline constexpr std::array<const char*, ${profile.capture_interfaces.length}> c
 }  // namespace router::profile
 `;
 
-const parameterKinds = [
-  "card_slot", "mda_slot", "card_type", "mda_type", "port_id",
-  "interface_name", "ipv4", "ipv4_key", "ipv4_prefix", "prefix_length", "count", "size", "mtu",
-  "levels", "system_name", "description"
-];
+// Parameter kinds are schema data, not a generator allowlist. Deriving this
+// ordered enum from YAML means a release can add a protocol-specific scalar
+// without editing JavaScript and accidentally creating a second grammar source.
+const parameterKinds = Object.keys(cliSchema.parameters ?? {});
+if (!parameterKinds.length ||
+    parameterKinds.some((kind) => !/^[a-z][a-z0-9_]*$/.test(kind))) {
+  throw new Error("CLI parameter keys must be non-empty lower snake case identifiers");
+}
 for (const kind of parameterKinds) {
   const display = cliSchema.parameters?.[kind]?.display;
   const description = cliSchema.parameters?.[kind]?.description;
@@ -454,7 +522,7 @@ ${cliRows}
 }  // namespace router::cli_schema
 `;
 
-const cmake = `# Generated from ${basename(sourcePath)}. Do not edit.\nset(ROUTER_WASM_INITIAL_MEMORY ${profile.resources.wasm_initial_memory_bytes})\nset(ROUTER_RUNTIME_WORKERS ${profile.resources.runtime_worker_count})\nset(ROUTER_PTHREAD_POOL_MIN ${profile.resources.pthread_pool_min})\nset(ROUTER_PTHREAD_POOL_MAX ${profile.resources.pthread_pool_max})\n`;
+const cmake = `# Generated from ${basename(sourcePath)} and ${profile.release} release catalog. Do not edit.\nset(ROUTER_WASM_INITIAL_MEMORY ${releaseCatalog.runtime.wasm_initial_memory_bytes})\nset(ROUTER_WASM_MAXIMUM_MEMORY ${releaseCatalog.runtime.wasm_maximum_memory_bytes})\nset(ROUTER_WASM_GROWTH_STEP ${releaseCatalog.runtime.wasm_growth_step_bytes})\nset(ROUTER_RUNTIME_WORKERS ${profile.resources.runtime_worker_count})\nset(ROUTER_PTHREAD_POOL_MIN ${profile.resources.pthread_pool_min})\nset(ROUTER_PTHREAD_POOL_MAX ${profile.resources.pthread_pool_max})\n`;
 const outputs = [
   [headerPath, header],
   [cliHeaderPath, cliHeader],

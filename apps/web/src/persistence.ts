@@ -4,18 +4,18 @@
 // live state by normalization, migration or a hidden default topology.
 
 import {
-  createEmptyProjectV3,
-  parseLabProjectV3,
+  createEmptyProjectV4,
+  parseLabProjectV4,
   parseTerminalPresentationV2,
-  type HostProjectV3,
-  type LabProjectV3,
-  type LinkProjectV3,
-  type ProjectManifestV2,
-  type RouterProjectV3,
+  type HostProjectV4,
+  type LabProjectV4,
+  type LinkProjectV4,
+  type ProjectManifestV3,
+  type RouterProjectV4,
   type TerminalPresentationV2
 } from "@router-simulator/contracts";
 
-const DATABASE_NAME = "router-simulator-v3";
+const DATABASE_NAME = "router-simulator-v4";
 const DATABASE_VERSION = 1;
 const HEADS = "project-heads";
 const ROUTERS = "project-routers";
@@ -30,7 +30,7 @@ interface ProjectHead {
   projectId: string;
   name: string;
   notes: string;
-  layout: LabProjectV3["layout"];
+  layout: LabProjectV4["layout"];
   updatedAt: string;
   routers: string[];
   hosts: string[];
@@ -57,7 +57,7 @@ export interface ProjectRevisionSummary {
   linksWritten: number;
 }
 
-type ProjectObject = RouterProjectV3 | HostProjectV3 | LinkProjectV3;
+type ProjectObject = RouterProjectV4 | HostProjectV4 | LinkProjectV4;
 
 function database(): Promise<IDBDatabase> {
   // One long-lived connection avoids accumulating handles during autosave.
@@ -115,7 +115,7 @@ function key(projectId: string, objectId: string): string {
   return `${projectId}\u0000${objectId}`;
 }
 
-function head(project: LabProjectV3): ProjectHead {
+function head(project: LabProjectV4): ProjectHead {
   return {
     projectId: project.projectId,
     name: project.name,
@@ -143,10 +143,10 @@ async function currentRecords<T extends ProjectObject>(db: IDBDatabase,
     entry[1] !== undefined));
 }
 
-async function saveNow(input: LabProjectV3): Promise<ProjectRevisionSummary> {
+async function saveNow(input: LabProjectV4): Promise<ProjectRevisionSummary> {
   // Full validation precedes the first write. Invalid form drafts therefore
   // leave every previously durable entity and the active-project pointer intact.
-  const project = parseLabProjectV3(input);
+  const project = parseLabProjectV4(input);
   const db = await database();
   const previousHead = await requestValue(db.transaction(HEADS).objectStore(HEADS)
     .get(project.projectId)) as ProjectHead | undefined;
@@ -196,7 +196,7 @@ async function saveNow(input: LabProjectV3): Promise<ProjectRevisionSummary> {
   return summary;
 }
 
-export function saveLabProjectV3(project: LabProjectV3): Promise<ProjectRevisionSummary> {
+export function saveLabProjectV4(project: LabProjectV4): Promise<ProjectRevisionSummary> {
   // Serializing autosaves prevents a slower older transaction from landing
   // after a newer edit and resurrecting a removed router or link.
   const operation = saveTail.then(() => saveNow(project));
@@ -204,7 +204,7 @@ export function saveLabProjectV3(project: LabProjectV3): Promise<ProjectRevision
   return operation;
 }
 
-export async function loadLabProjectV3(projectId: string): Promise<LabProjectV3 | undefined> {
+export async function loadLabProjectV4(projectId: string): Promise<LabProjectV4 | undefined> {
   const db = await database();
   const projectHead = await requestValue(db.transaction(HEADS).objectStore(HEADS)
     .get(projectId)) as ProjectHead | undefined;
@@ -222,13 +222,13 @@ export async function loadLabProjectV3(projectId: string): Promise<LabProjectV3 
     return records.map((record) => record!.value);
   };
   const [routers, hosts, links] = await Promise.all([
-    read<RouterProjectV3>(ROUTERS, projectHead.routers),
-    read<HostProjectV3>(HOSTS, projectHead.hosts),
-    read<LinkProjectV3>(LINKS, projectHead.links)
+    read<RouterProjectV4>(ROUTERS, projectHead.routers),
+    read<HostProjectV4>(HOSTS, projectHead.hosts),
+    read<LinkProjectV4>(LINKS, projectHead.links)
   ]);
-  return parseLabProjectV3({
+  return parseLabProjectV4({
     format: "router-simulator-project",
-    version: 3,
+    version: 4,
     projectId: projectHead.projectId,
     name: projectHead.name,
     notes: projectHead.notes,
@@ -240,13 +240,13 @@ export async function loadLabProjectV3(projectId: string): Promise<LabProjectV3 
   });
 }
 
-export async function loadActiveProjectV3(): Promise<LabProjectV3> {
+export async function loadActiveProjectV4(): Promise<LabProjectV4> {
   // Absence is the only fresh-start case. The returned project has no router,
   // host or link because topology creation belongs exclusively to the user.
   const db = await database();
   const id = await requestValue(db.transaction(ACTIVE).objectStore(ACTIVE).get("id"));
-  if (typeof id !== "string") return createEmptyProjectV3();
-  return await loadLabProjectV3(id) ?? createEmptyProjectV3();
+  if (typeof id !== "string") return createEmptyProjectV4();
+  return await loadLabProjectV4(id) ?? createEmptyProjectV4();
 }
 
 export async function saveProjectPresentation(projectId: string,
@@ -302,26 +302,26 @@ function strictBase64(value: unknown, field: string): Uint8Array | undefined {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
-export function createProjectManifestV2(project: LabProjectV3,
-  capture?: Uint8Array): ProjectManifestV2 {
+export function createProjectManifestV3(project: LabProjectV4,
+  capture?: Uint8Array): ProjectManifestV3 {
   return {
     mode: "project",
-    formatVersion: 2,
-    checkpointAbi: 5,
-    project: parseLabProjectV3(project),
+    formatVersion: 3,
+    checkpointAbi: 6,
+    project: parseLabProjectV4(project),
     ...(capture?.length ? { captureBase64: base64(capture) } : {})
   };
 }
 
-export function createCheckpointManifestV2(project: LabProjectV3,
+export function createCheckpointManifestV3(project: LabProjectV4,
   checkpoint: Uint8Array, capture?: Uint8Array,
-  terminalPresentation?: TerminalPresentationV2): ProjectManifestV2 {
+  terminalPresentation?: TerminalPresentationV2): ProjectManifestV3 {
   if (!checkpoint.length) throw new Error("A checkpoint export cannot be empty");
   return {
     mode: "checkpoint",
-    formatVersion: 2,
-    checkpointAbi: 5,
-    project: parseLabProjectV3(project),
+    formatVersion: 3,
+    checkpointAbi: 6,
+    project: parseLabProjectV4(project),
     checkpointBase64: base64(checkpoint),
     ...(capture?.length ? { captureBase64: base64(capture) } : {}),
     ...(terminalPresentation
@@ -329,17 +329,17 @@ export function createCheckpointManifestV2(project: LabProjectV3,
   };
 }
 
-export function parseNetsimV2(text: string): {
-  project: LabProjectV3;
+export function parseNetsimV3(text: string): {
+  project: LabProjectV4;
   checkpoint?: Uint8Array;
   capture?: Uint8Array;
   terminalPresentation?: TerminalPresentationV2;
 } {
   // No raw-project or previous-manifest branch exists. Unsupported bytes stop
   // before project replay, leaving the active Worker and project untouched.
-  const decoded = JSON.parse(text) as Partial<ProjectManifestV2>;
-  if (!decoded || typeof decoded !== "object" || decoded.formatVersion !== 2 ||
-      decoded.checkpointAbi !== 5 ||
+  const decoded = JSON.parse(text) as Partial<ProjectManifestV3>;
+  if (!decoded || typeof decoded !== "object" || decoded.formatVersion !== 3 ||
+      decoded.checkpointAbi !== 6 ||
       (decoded.mode !== "project" && decoded.mode !== "checkpoint")) {
     throw new Error("The .netsim manifest format is not supported");
   }
@@ -351,7 +351,7 @@ export function parseNetsimV2(text: string): {
     throw new Error("A project manifest contains checkpoint-only state");
   }
   return {
-    project: parseLabProjectV3(decoded.project),
+    project: parseLabProjectV4(decoded.project),
     ...(decoded.checkpointBase64 !== undefined
       ? { checkpoint: strictBase64(decoded.checkpointBase64, "Checkpoint") } : {}),
     ...(decoded.captureBase64 !== undefined
@@ -371,14 +371,14 @@ function download(name: string, value: unknown): void {
   URL.revokeObjectURL(url);
 }
 
-export function exportProjectV3(project: LabProjectV3, capture?: Uint8Array): void {
-  const validated = parseLabProjectV3(project);
+export function exportProjectV4(project: LabProjectV4, capture?: Uint8Array): void {
+  const validated = parseLabProjectV4(project);
   download(`${validated.name.replaceAll(" ", "-").toLowerCase()}.netsim`,
-    createProjectManifestV2(validated, capture));
+    createProjectManifestV3(validated, capture));
 }
 
-export async function importNetsimV2(file: File) {
-  return parseNetsimV2(await file.text());
+export async function importNetsimV3(file: File) {
+  return parseNetsimV3(await file.text());
 }
 
 function validateStorageIdentity(value: string): void {
@@ -395,29 +395,29 @@ async function projectDirectory(projectId: string): Promise<FileSystemDirectoryH
   return projects.getDirectoryHandle(projectId, { create: true });
 }
 
-export async function projectCheckpointNameV3(project: LabProjectV3):
-  Promise<`checkpoint-v5-${string}.bin`> {
+export async function projectCheckpointNameV4(project: LabProjectV4):
+  Promise<`checkpoint-v6-${string}.bin`> {
   // Recovery identity covers every portable project field except updatedAt.
   // That timestamp changes after the checkpoint has already been written and
   // therefore cannot participate in the name used on the next application
   // start. Keeping layout in the digest is intentional: a checkpoint saved
   // before a topology edit must never be mistaken for the current project.
-  const { updatedAt: _volatileTimestamp, ...stableProject } = parseLabProjectV3(project);
+  const { updatedAt: _volatileTimestamp, ...stableProject } = parseLabProjectV4(project);
   const bytes = new TextEncoder().encode(JSON.stringify(stableProject));
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   const hexadecimal = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-  return `checkpoint-v5-${hexadecimal}.bin`;
+  return `checkpoint-v6-${hexadecimal}.bin`;
 }
 
-type ProjectBinaryName = "capture.pcapng" | `checkpoint-v5-${string}.bin`;
+type ProjectBinaryName = "capture.pcapng" | `checkpoint-v6-${string}.bin`;
 
-export async function saveProjectBinaryV3(projectId: string,
+export async function saveProjectBinaryV4(projectId: string,
   name: ProjectBinaryName, bytes: Uint8Array): Promise<void> {
   // Project identity has already been validated by projectDirectory. Binary
   // names are checked separately because an imported project must not escape
   // its OPFS directory through a crafted recovery filename.
   if (name !== "capture.pcapng" &&
-      !/^checkpoint-v5-[0-9a-f]{64}\.bin$/.test(name)) {
+      !/^checkpoint-v6-[0-9a-f]{64}\.bin$/.test(name)) {
     throw new Error("Project binary name is invalid");
   }
   // createWritable commits atomically on close. A private copy severs the
@@ -434,10 +434,10 @@ export async function saveProjectBinaryV3(projectId: string,
   }
 }
 
-export async function loadProjectBinaryV3(projectId: string,
+export async function loadProjectBinaryV4(projectId: string,
   name: ProjectBinaryName): Promise<Uint8Array | undefined> {
   if (name !== "capture.pcapng" &&
-      !/^checkpoint-v5-[0-9a-f]{64}\.bin$/.test(name)) {
+      !/^checkpoint-v6-[0-9a-f]{64}\.bin$/.test(name)) {
     throw new Error("Project binary name is invalid");
   }
   try {

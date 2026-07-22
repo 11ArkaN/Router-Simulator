@@ -4,6 +4,7 @@
 
 #include "router/packet_pool.hpp"
 #include "router/multi_device_routing.hpp"
+#include "router/ipv6_neighbor_cache.hpp"
 #include "router/spsc_ring.hpp"
 #include "router/telemetry.hpp"
 
@@ -61,9 +62,48 @@ int main() {
   }
   const auto fib_elapsed = std::chrono::steady_clock::now() - fib_started;
 
+  // Preload enough neighbors to expose a linear-scan implementation while
+  // keeping setup outside the measured interval. Lookups alternate across the
+  // table and therefore exercise hashing and full-key verification rather than
+  // repeatedly hitting one cache line.
+  constexpr std::uint32_t neighbor_count{32768U};
+  // Zero represents the absence of an interface throughout the forwarding
+  // contract. The benchmark uses one ordinary logical interface identity so
+  // every admitted entry satisfies the same scope validation as live ND.
+  constexpr std::uint64_t neighbor_interface_id{1U};
+  router::lab::Ipv6NeighborCache neighbors;
+  const router::packet::Mac neighbor_mac{0x02U, 0U, 0U, 0U, 0U, 1U};
+  const auto neighbor_now = std::chrono::steady_clock::now();
+  for (std::uint32_t index = 0U; index < neighbor_count; ++index) {
+    router::ip::Ipv6 address{0x20U, 0x01U, 0x0dU, 0xb8U};
+    address[12U] = static_cast<std::uint8_t>(index >> 24U);
+    address[13U] = static_cast<std::uint8_t>(index >> 16U);
+    address[14U] = static_cast<std::uint8_t>(index >> 8U);
+    address[15U] = static_cast<std::uint8_t>(index);
+    if (!neighbors.learn_stale(neighbor_interface_id, address, neighbor_mac, false,
+                               neighbor_now))
+      return 5;
+  }
+  const auto neighbor_started = std::chrono::steady_clock::now();
+  for (std::uint32_t iteration = 0U; iteration < iterations; ++iteration) {
+    const auto index =
+        (iteration * 2654435761U) & (neighbor_count - 1U);
+    router::ip::Ipv6 address{0x20U, 0x01U, 0x0dU, 0xb8U};
+    address[12U] = static_cast<std::uint8_t>(index >> 24U);
+    address[13U] = static_cast<std::uint8_t>(index >> 16U);
+    address[14U] = static_cast<std::uint8_t>(index >> 8U);
+    address[15U] = static_cast<std::uint8_t>(index);
+    const auto found = neighbors.find(neighbor_interface_id, address);
+    if (!found)
+      return 6;
+    sink += found->mac[5U];
+  }
+  const auto neighbor_elapsed =
+      std::chrono::steady_clock::now() - neighbor_started;
+
   // Telemetry uses the same odd/even seqlock publication sequence as Runtime.
   // atomic_ref targets the ABI field without changing its plain-data layout.
-  router::TelemetryPageV5 page;
+  router::TelemetryPageV6 page;
   const auto telemetry_started = std::chrono::steady_clock::now();
   for (std::uint32_t index = 0; index < iterations; ++index) {
     std::atomic_ref<std::uint32_t> sequence(page.sequence);
@@ -88,6 +128,7 @@ int main() {
   std::cout << "{\"ringNsPerRoundTrip\":" << ns(ring_elapsed)
             << ",\"packetPoolNsPerRoundTrip\":" << ns(pool_elapsed)
             << ",\"fibLookupNs\":" << ns(fib_elapsed)
+            << ",\"ipv6NeighborLookupNs\":" << ns(neighbor_elapsed)
             << ",\"telemetryPublishNs\":" << ns(telemetry_elapsed)
             << ",\"sink\":" << sink << "}\n";
 }

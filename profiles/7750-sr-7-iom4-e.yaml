@@ -128,7 +128,6 @@ resources:
   # CLI output is streamed through bounded 16 KiB response chunks. The whole
   # command result remains capped at 1 MiB before xterm's pager owns it.
   cli_output_queue_bytes: 1048576
-  wasm_initial_memory_bytes: 268435456
 timing:
   ping_timeout_milliseconds: 2000
   # Base router interfaces inherit the SR OS dynamic ARP aging default.
@@ -161,17 +160,15 @@ cli_defaults:
   ping_max_count: 100000
   history_entries: 50
 abi:
-  # Version 4 exposes physical-link presence separately from ifOperStatus.
-  # Snapshot version 5 is activated with the multi-device JSON bridge.
-  runtime_snapshot: 4
-  # Version 5 adds a telemetry directory with per-device sequence locks and
-  # variable-size port bitset offsets.
-  telemetry: 5
-  # Version 2 adds the router-owned terminal history region to terminal:state.
-  runtime_messages: 2
-  # Version 4 remains active until checkpoint 5 can encode the complete lab
-  # graph atomically. Merely changing the number would claim unsupported data.
-  checkpoint: 4
+  # Snapshot ABI 6 adds complete dual-stack host and interface intent.
+  runtime_snapshot: 6
+  # Telemetry ABI 6 adds IPv6 host operational state to the shared directory.
+  telemetry: 6
+  # Protocol 4 adds dual-stack host identity and rejects older field graphs.
+  runtime_messages: 4
+  # ABI 6 adds dual-stack RIB/FIB, NUD state and relative IPv6 deadlines. Old
+  # checkpoint images are intentionally not accepted by this WIP project.
+  checkpoint: 6
 link_defaults:
   # Propagation belongs to the cable or circuit, not to the Nokia port. The
   # project copies this value into each new physical link and may override it

@@ -1,7 +1,7 @@
-// Generated browser names for runtime protocol 3.
+// Generated browser names for runtime protocol 4.
 export const LAB_RUNTIME_PROTOCOL = {
-  "version": 3,
-  "snapshotAbi": 5,
+  "version": 4,
+  "snapshotAbi": 6,
   "snapshot": "snapshot",
   "router_create": "router-create",
   "router_delete": "router-delete",
@@ -26,6 +26,8 @@ export const LAB_RUNTIME_PROTOCOL = {
   "link_admin_set": "link-admin-set",
   "link_properties_set": "link-properties-set",
   "host_configure": "host-configure",
+  "host_dhcpv6_replace": "host-dhcpv6-replace",
+  "host_dns_replace": "host-dns-replace",
   "router_ping_start": "router-ping-start",
   "router_ping_status": "router-ping-status",
   "host_ping_start": "host-ping-start",

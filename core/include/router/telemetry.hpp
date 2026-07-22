@@ -5,6 +5,7 @@
 #pragma once
 
 #include "router/generated_device_catalog.hpp"
+#include "router/generated_profile.hpp"
 
 #include <array>
 #include <atomic>
@@ -17,9 +18,10 @@ namespace router {
 // The ABI number belongs beside the shared memory layout it identifies. Both
 // the page initializer and capability serializers consume this constant so a
 // layout revision cannot leave a stale hand-written version in another module.
-inline constexpr std::uint32_t telemetry_page_v5_abi = 5U;
+inline constexpr std::uint32_t telemetry_page_v6_abi =
+    profile::telemetry_abi;
 
-struct alignas(64) DeviceTelemetryV5 {
+struct alignas(64) DeviceTelemetryV6 {
   // Each device block has an independent writer sequence. A busy router cannot
   // force the browser to reject stable observations from unrelated devices.
   std::uint32_t sequence{};
@@ -36,7 +38,7 @@ struct alignas(64) DeviceTelemetryV5 {
   std::uint64_t dropped_packets{};
 };
 
-struct alignas(32) SessionTelemetryV5 {
+struct alignas(32) SessionTelemetryV6 {
   // Session cancellation has one browser producer and one control consumer.
   // It is intentionally outside device seqlocks because it carries input
   // intent, not a projection of router state.
@@ -51,14 +53,14 @@ struct alignas(32) SessionTelemetryV5 {
   alignas(4) std::uint32_t cancel_requested{};
 };
 
-enum class WorkerRoleV5 : std::uint8_t {
+enum class WorkerRoleV6 : std::uint8_t {
   control = 1,
   forwarding = 2,
   link = 3,
   forwarding_link = 4
 };
 
-struct alignas(32) WorkerTelemetryV5 {
+struct alignas(32) WorkerTelemetryV6 {
   // One runtime owner publishes each health record through the page seqlock.
   // thread_id is process-local and diagnostic only; it never enters a project
   // or checkpoint and may change after a complete runtime replacement.
@@ -71,14 +73,14 @@ struct alignas(32) WorkerTelemetryV5 {
   std::uint64_t turns{};
 };
 
-struct alignas(64) TelemetryPageV5 {
+struct alignas(64) TelemetryPageV6 {
   // Writer protocol: make sequence odd with release, write scalar fields, then
   // publish the next even value with release. Reader protocol: acquire-load an
   // even sequence before and after copying and retry if either value differs.
   // There is one producer and any number of UI readers. Overflow wraps modulo
   // 2^32 and remains safe because only equality and oddness are tested.
   std::uint32_t sequence{};
-  std::uint32_t abi_version{telemetry_page_v5_abi};
+  std::uint32_t abi_version{telemetry_page_v6_abi};
   std::uint32_t byte_size{};
   std::uint32_t status{1};
   std::uint32_t worker_count{};
@@ -105,21 +107,21 @@ struct alignas(64) TelemetryPageV5 {
 
   static constexpr std::size_t port_bitset_bytes =
       (device_catalog::maximum_ports_per_router + 7U) / 8U;
-  std::array<DeviceTelemetryV5, device_catalog::maximum_routers> devices{};
-  std::array<SessionTelemetryV5,
+  std::array<DeviceTelemetryV6, device_catalog::maximum_routers> devices{};
+  std::array<SessionTelemetryV6,
              device_catalog::maximum_routers *
                  device_catalog::maximum_sessions_per_router>
       sessions{};
-  std::array<WorkerTelemetryV5, device_catalog::maximum_worker_domains>
+  std::array<WorkerTelemetryV6, device_catalog::maximum_worker_domains>
       workers{};
   std::array<std::array<std::uint8_t, port_bitset_bytes>,
              device_catalog::maximum_routers>
       port_oper_bitsets{};
 };
 
-static_assert(std::is_standard_layout_v<DeviceTelemetryV5>);
-static_assert(std::is_standard_layout_v<SessionTelemetryV5>);
-static_assert(std::is_standard_layout_v<WorkerTelemetryV5>);
-static_assert(std::is_standard_layout_v<TelemetryPageV5>);
+static_assert(std::is_standard_layout_v<DeviceTelemetryV6>);
+static_assert(std::is_standard_layout_v<SessionTelemetryV6>);
+static_assert(std::is_standard_layout_v<WorkerTelemetryV6>);
+static_assert(std::is_standard_layout_v<TelemetryPageV6>);
 
 } // namespace router

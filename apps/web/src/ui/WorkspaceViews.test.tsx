@@ -1,11 +1,11 @@
-// Interaction tests for format 3 workspaces. Controls must emit typed project
+// Interaction tests for format 4 workspaces. Controls must emit typed project
 // or runtime intent for the selected stable router instead of mutating hidden
 // singleton state in the browser.
 
 // @vitest-environment jsdom
 
-import { createEmptyProjectV3, createRouterProjectV3,
-  type LabProjectV3, type RouterProjectV3 } from "@router-simulator/contracts";
+import { createEmptyProjectV4, createRouterProjectV4,
+  type LabProjectV4, type RouterProjectV4 } from "@router-simulator/contracts";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
@@ -15,15 +15,15 @@ import { CaptureWorkspace, ConfigWorkspace, DevicesWorkspace, NotesWorkspace,
 
 afterEach(cleanup);
 
-function projectWithRouter(): LabProjectV3 {
-  const project = createEmptyProjectV3();
-  return { ...project, routers: [createRouterProjectV3(
+function projectWithRouter(): LabProjectV4 {
+  const project = createEmptyProjectV4();
+  return { ...project, routers: [createRouterProjectV4(
     "r1", "7750-sr-1", "R1")] };
 }
 
 function ConfigHarness({ initial, observed }: {
-  initial: RouterProjectV3;
-  observed(router: RouterProjectV3): void;
+  initial: RouterProjectV4;
+  observed(router: RouterProjectV4): void;
 }) {
   // Production App owns the draft. Mirroring that controlled flow catches
   // callbacks that accidentally base a second edit on an obsolete render.
@@ -50,9 +50,9 @@ describe("multi-router workspace controls", () => {
   });
 
   it("keeps the device DOM bounded while every router remains reachable", () => {
-    const project = createEmptyProjectV3();
+    const project = createEmptyProjectV4();
     project.routers = Array.from({ length: 16 }, (_, index) =>
-      createRouterProjectV3(`r${index + 1}`, "7750-sr-1", `R${index + 1}`));
+      createRouterProjectV4(`r${index + 1}`, "7750-sr-1", `R${index + 1}`));
     const { container } = render(<DevicesWorkspace project={project}
       onInspect={vi.fn()} onConsole={vi.fn()} />);
     const list = screen.getByRole("list");
@@ -93,14 +93,14 @@ describe("multi-router workspace controls", () => {
     render(<ConfigHarness initial={projectWithRouter().routers[0]}
       observed={observed} />);
 
-    await user.click(screen.getByRole("button", { name: "Add route" }));
+    await user.click(screen.getByRole("button", { name: "Add IPv4 route" }));
     expect(observed).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Apply" }));
-    const latest = observed.mock.calls.at(-1)?.[0] as RouterProjectV3;
+    const latest = observed.mock.calls.at(-1)?.[0] as RouterProjectV4;
     expect(latest.running.staticRoutes.at(-1)).toEqual({ prefix: "", nextHop: "" });
   });
 
-  it("keeps notes and project settings in format 3 intent", async () => {
+  it("keeps notes and project settings in format 4 intent", async () => {
     const user = userEvent.setup();
     const notes = vi.fn();
     const project = projectWithRouter();

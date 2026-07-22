@@ -143,7 +143,7 @@ ScenarioResult run_scenario(std::size_t router_count,
                    "r" + std::to_string(source + 1U),
                    first_port_id,
                    "r" + std::to_string(destination + 1U),
-                   second_port_id, "100", "1"}))
+                   second_port_id, "100", "1", "0"}))
         throw std::runtime_error("scale physical link was rejected");
       // Offset one is a complete physical ring. Retaining its actual allocated
       // ports lets the 16-router workload configure L3 state without assuming
@@ -178,10 +178,10 @@ ScenarioResult run_scenario(std::size_t router_count,
       const auto router = "r" + std::to_string(index + 1U);
       if (!submit(*runtime, lab_runtime_protocol::interface_configure,
                   {router, "ring-out", ring_out_ports[index],
-                   ipv4(outgoing_network + 1U) + "/30", "1"}) ||
+                   ipv4(outgoing_network + 1U) + "/30", "", "", "1"}) ||
           !submit(*runtime, lab_runtime_protocol::interface_configure,
                   {router, "ring-in", ring_in_ports[index],
-                   ipv4(incoming_network + 2U) + "/30", "1"}))
+                   ipv4(incoming_network + 2U) + "/30", "", "", "1"}))
         throw std::runtime_error("scale routed ring interface was rejected");
     }
 

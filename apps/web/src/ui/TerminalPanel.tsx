@@ -178,7 +178,7 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
       // response has already been produced exactly once by the session owner.
       archive.append(output);
       const next = new TerminalPager(output, terminal.rows);
-      let rendered = next.page.join("\r\n");
+      let rendered = next.renderedPage.join("\r\n");
       if (next.active) {
         pager = next;
         rendered += `\r\n${next.status}`;
@@ -244,7 +244,7 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
         } else {
           // A pager redraw replaces the current screen, which permits backward
           // navigation without duplicating old lines in the visible viewport.
-          terminal.write(`\x1b[2J\x1b[H${pager.page.join("\r\n")}`);
+          terminal.write(`\x1b[2J\x1b[H${pager.renderedPage.join("\r\n")}`);
           if (action === "complete") pager = undefined;
           else terminal.write(`\r\n${pager.status}`);
         }

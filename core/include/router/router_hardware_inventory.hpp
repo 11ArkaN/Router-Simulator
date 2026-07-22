@@ -102,6 +102,9 @@ public:
   coordinate_ordinal(std::string_view port_id) const noexcept;
   [[nodiscard]] std::optional<packet::Mac>
   physical_mac(std::string_view port_id) const noexcept;
+  // Stable chassis identity used when an EUI-64 address is created before an
+  // Ethernet port is attached to the routed interface.
+  [[nodiscard]] packet::Mac chassis_base_mac() const noexcept;
   [[nodiscard]] bool set_link_signal(PortHandle port, bool present) noexcept;
   [[nodiscard]] RouterPortState *at(std::uint16_t ordinal) noexcept;
   [[nodiscard]] const RouterPortState *at(std::uint16_t ordinal) const noexcept;

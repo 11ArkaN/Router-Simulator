@@ -8,7 +8,15 @@ limits:
 runtime:
   # These are emulator resource bounds, not claimed Nokia platform limits.
   # They belong to the one shared Wasm runtime and are not per-device budgets.
-  wasm_initial_memory_bytes: 268435456
+  # A maximum-size laboratory eagerly owns packet, capture, terminal, UDP and
+  # dual-stack reassembly arenas. 320 MiB contains the compile-time 16-router
+  # baseline with allocator headroom; later optional services may still grow in
+  # fixed 64 MiB steps up to the separate maximum.
+  wasm_initial_memory_bytes: 335544320
+  # Shared Wasm memory grows in fixed 64 MiB steps. The upper bound is a local
+  # browser resource contract, not a router or forwarding ASIC scale claim.
+  wasm_maximum_memory_bytes: 1073741824
+  wasm_growth_step_bytes: 67108864
   # Product owners allocate large arenas on the heap. This stack budget keeps
   # bounded conformance call frames clear of those shared fixed arenas.
   wasm_stack_bytes: 1048576
@@ -19,7 +27,10 @@ runtime:
   # Fixed registries, hardware inventories, control RIBs, workflow candidates,
   # allocator bookkeeping and bounded checkpoint staging share this reserve.
   # It is an emulator memory contract, not a claimed platform resource value.
-  runtime_control_reserve_bytes: 33554432
+  # Includes every eagerly allocated host UDP, IPv4 reassembly, IPv6
+  # reassembly and source-packet arena for the maximum 16-host topology. The
+  # build-time proof rejects this value if later owners exceed it.
+  runtime_control_reserve_bytes: 41943040
   # Host CPU policy counts the Wasm control owner as a worker domain. At low
   # core counts forwarding and link work share one pthread. Larger hosts split
   # the medium and add forwarding owners without creating one Worker per node.
@@ -43,21 +54,171 @@ runtime:
   # UI projections read shared counters at a human display rate. Packet and
   # protocol work never schedules React updates directly.
   telemetry_publish_interval_milliseconds: 250
+  # Browsers may freeze every freezable task in a page, including the runtime
+  # Worker and its pthreads. The Worker keeps a recent complete runtime image
+  # and treats a five-second event-loop gap as lost real-time continuity. The
+  # two-second image cadence limits rollback while avoiding checkpoint work on
+  # every telemetry sample. These are emulator recovery policies, not protocol
+  # timers and not SR OS defaults.
+  recovery_checkpoint_interval_milliseconds: 2000
+  continuity_loss_threshold_milliseconds: 5000
   link_queue_frames: 256
   # One owner turn touches a bounded number of frames before returning to its
   # mailbox. Rotation prevents a saturated low-index link from monopolizing it.
   fabric_work_budget_frames: 64
+  # A 9212-byte network MTU becomes 9250 wire octets after the Ethernet header,
+  # FCS, preamble and inter-packet gap. At the slowest supported 1 Gb/s port
+  # that interval is exactly 74000 ns. Deadlines no farther away than one such
+  # serialization interval stay on the link owner instead of entering a browser
+  # condition-variable wait whose scheduling quantum is much longer than the
+  # physical transmission. The owner still reads steady_clock until the real
+  # deadline; this is a host scheduling policy, not simulated time.
+  immediate_link_deadline_nanoseconds: 74000
   static_routes_per_router: 64
   # These are bounded forwarding resources. They are not advertised as exact
   # ASIC or SR OS platform scaling values.
   arp_entries_per_router: 4096
+  # SR OS documents a node-wide maximum of 1000 configured static ARP rows.
+  # This is distinct from the emulator's larger combined adjacency arena.
+  static_arp_entries_per_router: 1000
   pending_ipv4_frames_per_router: 512
+  # IPv6 Neighbor Cache and unresolved packet queues are separate resources.
+  # These emulator bounds are not claims about a Nokia forwarding ASIC scale.
+  # One Base-router interface may be configured for 102400 dynamic neighbors
+  # in SR OS 26.7. The router-owned arena must therefore represent at least
+  # that documented single-interface case instead of imposing an emulator-only
+  # 4096-entry ceiling below the CLI contract.
+  ipv6_neighbor_entries_per_router: 102400
+  ipv6_destination_entries_per_endpoint: 4096
+  # SR OS 26.7 interface ICMPv6 redirect defaults and accepted CLI ranges.
+  # These values are release data rather than forwarding-path literals.
+  icmp6_redirect_default_maximum: 100
+  icmp6_redirect_default_interval_seconds: 10
+  icmp6_redirect_minimum_maximum: 10
+  icmp6_redirect_maximum_maximum: 1000
+  icmp6_redirect_minimum_interval_seconds: 1
+  icmp6_redirect_maximum_interval_seconds: 60
+  # SR OS 26.7 uses the same documented rate domain for IPv4 Redirects, but
+  # the values remain separate release facts so one family can change without
+  # silently changing the other generated control contract.
+  icmp_redirect_default_maximum: 100
+  icmp_redirect_default_interval_seconds: 10
+  icmp_redirect_minimum_maximum: 10
+  icmp_redirect_maximum_maximum: 1000
+  icmp_redirect_minimum_interval_seconds: 1
+  icmp_redirect_maximum_interval_seconds: 60
+  ipv6_dad_entries_per_node: 512
+  # SR OS 26.7 network interfaces accept at most sixteen configured primary
+  # and secondary IP addresses across IPv4 and IPv6. The forwarding table uses
+  # this documented per-interface ceiling while the control owner additionally
+  # accounts for the already configured IPv4 address before admitting IPv6.
+  network_interface_ip_addresses: 16
+  pending_ipv6_frames_per_router: 512
+  # IPv4 and IPv6 reassembly are separate protocol repositories because their
+  # keys, overlap rules, headers and timeout error behavior are not compatible.
+  # Four concurrent datagrams keep the first host implementation bounded. The
+  # timeout follows RFC 1122's recommended fixed 60 to 120 second interval.
+  ipv4_reassembly_entries_per_endpoint: 4
+  ipv4_reassembly_timeout_seconds: 60
+  # RFC 1191 recommends ten minutes before testing a higher PMTU and two
+  # minutes between successive upward probes. Entries are bounded per local
+  # IP owner so unauthenticated ICMP cannot allocate memory without limit.
+  ipv4_pmtu_entries_per_endpoint: 64
+  ipv4_pmtu_probe_interval_seconds: 600
+  ipv4_pmtu_probe_retry_interval_seconds: 120
+  ipv6_reassembly_entries_per_endpoint: 4
+  ipv6_reassembly_timeout_seconds: 60
+  ipv6_pmtu_entries_per_endpoint: 64
+  ipv6_pmtu_probe_interval_seconds: 600
+  # UDP sockets own bounded receive queues. Payload memory is a shared block
+  # pool per endpoint so one full datagram cannot reserve 64 KiB in every idle
+  # socket. These are emulator resources, not NOS or kernel scale claims.
+  udp_queued_datagrams_per_endpoint: 128
+  udp_datagrams_per_socket: 64
+  udp_receive_buffer_bytes_per_endpoint: 1048576
+  udp_receive_block_bytes: 2048
+  udp_ephemeral_port_first: 49152
+  udp_ephemeral_port_last: 65535
+  # TCP connection arenas are allocated lazily for active sockets. Callers may
+  # request different sizes up to the serial-arithmetic domain; these values
+  # are resource defaults, not stream or connection-count protocol ceilings.
+  tcp_send_buffer_default_bytes: 262144
+  tcp_receive_buffer_default_bytes: 262144
+  tcp_transmission_records_default: 512
+  tcp_sack_ranges_default: 256
+  tcp_listen_backlog_default: 128
+  tcp_ephemeral_port_first: 49152
+  tcp_ephemeral_port_last: 65535
+  dns_cache_default_bytes: 8388608
+  dns_resolver_advertised_udp_payload_bytes: 1232
+  dns_resolver_retry_milliseconds: 1000
+  dns_resolver_attempts_per_server: 2
+  dns_resolver_max_minimise_count: 10
+  dns_resolver_minimise_one_label_count: 4
+  dns_resolver_max_alias_hops: 16
+  # DHCPv6 server state is allocated only for an enabled logical service.
+  # These are emulator owner capacities, not Nokia platform scale claims.
+  dhcpv6_address_pools_per_server: 8
+  dhcpv6_prefix_pools_per_server: 8
+  dhcpv6_leases_per_server: 1024
+  # SR OS service-interface DHCPv6 relay accepts at most eight server
+  # destinations. This is a documented platform configuration limit, not a
+  # packet-size limit and not an emulator queue capacity.
+  dhcpv6_relay_servers_per_interface: 8
+  # RFC 9915 leaves zero T1/T2 selection to client policy but forbids an
+  # immediate retry. These generated percentages make that policy explicit.
+  dhcpv6_zero_t1_percent_of_preferred: 50
+  dhcpv6_zero_t2_percent_of_preferred: 80
+  dhcpv6_client_rate_limit_packets: 20
+  dhcpv6_client_rate_limit_interval_seconds: 20
+  # The prefix array is an emulator resource ceiling because the release does
+  # not publish a platform scale. The DNS server bound is different: SR OS
+  # documents at most four configured RDNSS server addresses, so accepting a
+  # fifth would expose a command that real 26.7 equipment rejects.
+  ipv6_ra_prefixes_per_interface: 16
+  ipv6_rdnss_servers_per_interface: 4
+  # Host discovery repositories are bounded independently from router RA
+  # encoding. These are emulator resource contracts, not vendor scale claims.
+  ipv6_default_routers_per_host_interface: 8
+  ipv6_on_link_prefixes_per_host_interface: 16
+  ipv6_slaac_addresses_per_host_interface: 16
+  ipv6_rdnss_entries_per_host_interface: 8
+  # RFC 7217 permits an optional implementation-defined Network_ID. Project
+  # identifiers are at most 64 UTF-8 octets, so one fixed owner value carries
+  # the complete identity without heap allocation in forwarding commands.
+  ipv6_stable_iid_network_id_octets: 64
+  host_ipv6_work_budget_actions: 8
+  # MLD repositories are bounded independently from unicast addresses. Source
+  # filters can grow without multiplying every host or router port structure.
+  mld_groups_per_interface: 64
+  mld_sources_per_group: 64
+  mld_records_per_report: 64
+  mld_work_budget_actions: 64
+  # Router listener state is dynamically allocated and therefore does not use
+  # the fixed host/action array extents above. These separate ceilings cover
+  # the complete configurable SR OS interface ranges without allocating the
+  # worst case for every idle port.
+  mld_router_groups_per_interface: 16000
+  mld_router_sources_per_group: 1000
+  mld_router_group_sources_per_interface: 32000
+  # IPv4 and IPv6 share one forwarding-owned unresolved-frame arena. Separate
+  # accounting limits above remain visible for family-specific overload data.
+  pending_l3_frames_per_router: 512
+  # One forwarding owner handles a bounded ND timer batch before returning to
+  # its mailbox, preventing a neighbor storm from starving link delivery.
+  nd_work_budget_actions: 64
   network_command_ring_entries: 8
   network_result_ring_entries: 32
+  # One owner turn processes a bounded command batch. This is an emulator
+  # fairness contract and is deliberately separate from the ring capacity.
+  network_command_work_budget: 64
   forwarding_ring_frames: 64
   # Candidate change keys are emulator metadata used for conflict detection.
-  # They are not advertised as an SR OS platform scale limit.
-  candidate_keys_per_router: 256
+  # A private candidate can remain open while other sessions commit thousands
+  # of distinct paths, so the router history must outlive those commits. This
+  # fixed arena consumes 256 KiB per router and never allocates on a commit.
+  # It is not advertised as an SR OS platform scale limit.
+  candidate_keys_per_router: 16384
   candidate_keys_per_session: 128
   selected_capture_points: 256
   capture_point_name_bytes: 512
@@ -70,9 +231,231 @@ ethernet:
   # Host eth0 uses IPv4 interface MTU semantics. RFC 791 requires forwarding
   # modules to handle 68 octets; 1500 is the ordinary Ethernet host default.
   minimum_host_ipv4_mtu: 68
+  # RFC 8200 requires every IPv6 link to carry a 1280-octet packet. This is a
+  # protocol floor shared by project validation and the native endpoint owner.
+  minimum_host_ipv6_mtu: 1280
   default_host_ipv4_mtu: 1500
+ipsec:
+  # Sources: RFC 5282, RFC 7296, RFC 8221 and the SR OS 26.7 IPsec MD-CLI
+  # command reference. Entries remain invisible until implemented is true.
+  maximum_ike_policies: 2048
+  maximum_ike_transforms: 4096
+  maximum_ipsec_transforms: 2048
+  maximum_static_sas: 1000
+  maximum_tunnel_templates: 2048
+  maximum_traffic_selector_lists: 32768
+  maximum_traffic_selectors_per_list: 32
+  maximum_ppk_lists: 128
+  maximum_ppks_per_list: 128
+  maximum_certificate_profiles: 10200
+  maximum_certificate_entries_per_profile: 8
+  maximum_trust_anchor_profiles: 10128
+  maximum_trust_anchors_per_profile: 8
+  # One vault is shared by all project protocols. This emulator resource bound
+  # covers the documented maximum PPK and certificate dimensions across all
+  # sixteen routers plus transport PSKs and host entropy. It is not presented
+  # as an SR OS scaling limit and allocates records only when secrets exist.
+  maximum_project_secret_records: 131072
+  ike_fragment_mtu_minimum: 512
+  ike_fragment_mtu_maximum: 9000
+  ike_fragment_mtu_default: 1500
+  ike_reassembly_timeout_minimum_seconds: 1
+  ike_reassembly_timeout_maximum_seconds: 5
+  ike_reassembly_timeout_default_seconds: 2
+  transforms:
+    - { type: encryption, id: 20, key_bits: 128, key_length_attribute_required: true, authenticated_encryption: true, implemented: true }
+    - { type: encryption, id: 20, key_bits: 192, key_length_attribute_required: true, authenticated_encryption: true, implemented: true }
+    - { type: encryption, id: 20, key_bits: 256, key_length_attribute_required: true, authenticated_encryption: true, implemented: true }
+    - { type: prf, id: 5, key_bits: 256, key_length_attribute_required: false, authenticated_encryption: false, implemented: true }
+    - { type: integrity, id: 12, key_bits: 256, key_length_attribute_required: false, authenticated_encryption: false, implemented: true }
+    - { type: diffie_hellman, id: 19, key_bits: 256, key_length_attribute_required: false, authenticated_encryption: false, implemented: true }
+    - { type: extended_sequence_numbers, id: 0, key_bits: 0, key_length_attribute_required: false, authenticated_encryption: false, implemented: true }
+    - { type: extended_sequence_numbers, id: 1, key_bits: 0, key_length_attribute_required: false, authenticated_encryption: false, implemented: true }
+tls:
+  # Nokia SR OS 26.7.R1 system security TLS list dimensions. These are
+  # documented NOS configuration limits, not emulator allocation guesses.
+  maximum_cert_profiles: 16
+  maximum_client_cipher_lists: 16
+  maximum_client_group_lists: 16
+  maximum_client_signature_lists: 16
+  maximum_client_tls_profiles: 16
+  maximum_server_cipher_lists: 16
+  maximum_server_group_lists: 16
+  maximum_server_signature_lists: 16
+  maximum_server_tls_profiles: 16
+  maximum_trust_anchor_profiles: 16
+  maximum_cert_entries_per_profile: 8
+  maximum_trust_anchors_per_profile: 8
+  profile_name_bytes: 32
+  certificate_file_name_bytes: 95
+  algorithm_index_minimum: 1
+  algorithm_index_maximum: 255
+  default_admin_state: disable
+  default_protocol_version: tls-version-12
+  default_status_result: revoked
+  default_revocation_primary: crl
+  default_revocation_secondary: none
+  tls13_ciphers:
+    - { sros: tls-aes128-gcm-sha256, openssl: TLS_AES_128_GCM_SHA256, pqc: false }
+    - { sros: tls-aes256-gcm-sha384, openssl: TLS_AES_256_GCM_SHA384, pqc: true }
+    - { sros: tls-chacha20-poly1305-sha256, openssl: TLS_CHACHA20_POLY1305_SHA256, pqc: false }
+    - { sros: tls-aes128-ccm-sha256, openssl: TLS_AES_128_CCM_SHA256, pqc: false }
+    - { sros: tls-aes128-ccm8-sha256, openssl: TLS_AES_128_CCM_8_SHA256, pqc: false }
+  tls13_groups:
+    - { sros: tls-ecdhe-256, openssl: P-256, pqc: false }
+    - { sros: tls-ecdhe-384, openssl: P-384, pqc: false }
+    - { sros: tls-ecdhe-521, openssl: P-521, pqc: false }
+    - { sros: tls-x25519, openssl: X25519, pqc: false }
+    - { sros: tls-x448, openssl: X448, pqc: false }
+    - { sros: tls-ml-kem1024, openssl: MLKEM1024, pqc: true }
+  tls13_signatures:
+    - { sros: tls-rsa-pkcs1-sha256, openssl: rsa_pkcs1_sha256, pqc: false }
+    - { sros: tls-rsa-pkcs1-sha384, openssl: rsa_pkcs1_sha384, pqc: false }
+    - { sros: tls-rsa-pkcs1-sha512, openssl: rsa_pkcs1_sha512, pqc: false }
+    - { sros: tls-ecdsa-secp256r1-sha256, openssl: ecdsa_secp256r1_sha256, pqc: false }
+    - { sros: tls-ecdsa-secp384r1-sha384, openssl: ecdsa_secp384r1_sha384, pqc: false }
+    - { sros: tls-ecdsa-secp521r1-sha512, openssl: ecdsa_secp521r1_sha512, pqc: false }
+    - { sros: tls-rsa-pss-rsae-sha256, openssl: rsa_pss_rsae_sha256, pqc: false }
+    - { sros: tls-rsa-pss-rsae-sha384, openssl: rsa_pss_rsae_sha384, pqc: false }
+    - { sros: tls-rsa-pss-rsae-sha512, openssl: rsa_pss_rsae_sha512, pqc: false }
+    - { sros: tls-rsa-pss-pss-sha256, openssl: rsa_pss_pss_sha256, pqc: false }
+    - { sros: tls-rsa-pss-pss-sha384, openssl: rsa_pss_pss_sha384, pqc: false }
+    - { sros: tls-rsa-pss-pss-sha512, openssl: rsa_pss_pss_sha512, pqc: false }
+    - { sros: tls-ed25519, openssl: ed25519, pqc: false }
+    - { sros: tls-ed448, openssl: ed448, pqc: false }
+    - { sros: tls-ml-dsa87, openssl: mldsa87, pqc: true }
 protocol_defaults:
+  # The Base router interface commands expose this complete range. Zero is a
+  # real value which disables dynamic ARP aging, not an absent-value sentinel.
+  arp_timeout_minimum_seconds: 0
+  arp_timeout_maximum_seconds: 65535
   dynamic_arp_timeout_seconds: 14400
+  # SR OS encodes the retry interval in 100 ms units. The Base router default
+  # is 50 units, or five real seconds, and is used for unresolved next hops.
+  arp_retry_minimum_deciseconds: 1
+  arp_retry_maximum_deciseconds: 300
+  dynamic_arp_retry_deciseconds: 50
+  # RFC 6298 sections 2, 4 and 5. One millisecond reflects the monotonic host
+  # timer granularity used by the live runtime, while the standard conservative
+  # one-second floor and permitted 60-second ceiling govern retransmission.
+  tcp_rto_initial_milliseconds: 1000
+  tcp_rto_minimum_milliseconds: 1000
+  tcp_rto_maximum_milliseconds: 60000
+  tcp_rto_clock_granularity_milliseconds: 1
+  tcp_rto_after_syn_retransmission_milliseconds: 3000
+  # RFC 1122 requires delayed ACK below 500 ms, ACK at least every second
+  # full-sized segment, and a sender SWS override between 100 and 1000 ms.
+  # The 200 ms policy is a standards-conforming endpoint implementation value,
+  # not a claim about a hidden SR OS kernel constant.
+  tcp_delayed_ack_milliseconds: 200
+  tcp_sws_override_milliseconds: 200
+  # Zero-window probes begin after the current RTO and back off exponentially.
+  # RFC 1122 leaves the ceiling unspecified; this resource profile uses the
+  # same conservative 60-second ceiling as ordinary retransmission backoff.
+  tcp_persist_maximum_milliseconds: 60000
+  # RFC 9293 section 3.8.3 recommends negative IP advice after at least three
+  # retransmissions and a default data failure horizon of at least 100 seconds.
+  # A SYN must remain eligible for retransmission for at least three minutes.
+  # These values are endpoint policy, not undocumented vendor kernel limits.
+  tcp_failure_r1_retransmissions: 3
+  tcp_failure_data_r2_seconds: 100
+  tcp_failure_syn_r2_seconds: 180
+  # RFC 9293 section 3.4.2 takes MSL as two minutes. Active close retains its
+  # TCB for twice this value, using real monotonic time in the endpoint shard.
+  tcp_maximum_segment_lifetime_seconds: 120
+  # RFC 4861 section 10 host constants and interface defaults. Reachable time
+  # is randomized per interface from the base value by the ND owner.
+  nd_reachable_time_milliseconds: 30000
+  # SR OS Base-router Neighbor Discovery defaults and YANG ranges. Interface
+  # leaves override these router values only while explicitly present.
+  nd_default_reachable_time_seconds: 30
+  nd_minimum_reachable_time_seconds: 30
+  nd_maximum_reachable_time_seconds: 3600
+  nd_default_stale_time_seconds: 14400
+  nd_minimum_stale_time_seconds: 60
+  nd_maximum_stale_time_seconds: 65535
+  nd_maximum_neighbor_limit: 102400
+  nd_default_neighbor_limit_threshold_percent: 90
+  # RFC 4861 section 6.3.2 requires a new uniformly distributed ReachableTime
+  # at least once every few hours. Three hours gives "few" an explicit,
+  # checkpointable owner-local deadline without introducing a global timer.
+  nd_reachable_time_recalculation_seconds: 10800
+  nd_retrans_timer_milliseconds: 1000
+  nd_delay_first_probe_milliseconds: 5000
+  # RFC 3810 section 9 defaults. Timer owners consume generated values so an
+  # explicit future platform profile can override policy without code edits.
+  mld_robustness_variable: 2
+  mld_query_interval_seconds: 125
+  mld_query_response_interval_milliseconds: 10000
+  mld_last_listener_query_interval_milliseconds: 1000
+  mld_unsolicited_report_interval_milliseconds: 1000
+  # SR OS 26.7 Base-router MLD command ranges. These are vendor CLI limits,
+  # not RFC constants, and therefore stay in the release catalog consumed by
+  # configuration validation and both generated terminal engines.
+  mld_minimum_query_interval_seconds: 2
+  mld_maximum_query_interval_seconds: 1024
+  mld_minimum_query_response_interval_seconds: 1
+  mld_maximum_query_response_interval_seconds: 1023
+  mld_minimum_last_listener_query_interval_seconds: 1
+  mld_maximum_last_listener_query_interval_seconds: 1023
+  mld_minimum_robustness_variable: 2
+  mld_maximum_robustness_variable: 10
+  mld_minimum_version: 1
+  mld_maximum_version: 2
+  mld_default_version: 2
+  # Official nokia-conf-router-mld YANG leaves for release 26.7.R1. Zero is
+  # the internal representation of an absent leaf and therefore means that
+  # SR OS applies no configured admission limit.
+  mld_maximum_number_groups: 16000
+  mld_maximum_number_group_sources: 32000
+  mld_maximum_number_sources: 1000
+  nd_max_multicast_solicit: 3
+  nd_max_unicast_solicit: 3
+  # RFC 4862 defaults DupAddrDetectTransmits to one solicitation.
+  ipv6_dad_transmits: 1
+  # RFC 4862 defers the first DAD solicitation by a random value bounded by
+  # MAX_RTR_SOLICITATION_DELAY from RFC 4861.
+  ipv6_dad_max_initial_delay_milliseconds: 1000
+  # RFC 7217 section 7 defaults. They are separate from ordinary RFC 4862 DAD
+  # transmissions because they bound address regeneration after a conflict.
+  ipv6_stable_iid_dad_retries: 3
+  ipv6_stable_iid_dad_retry_delay_milliseconds: 1000
+  # RFC 4861 section 10 host Router Solicitation constants.
+  ipv6_rs_max_solicitations: 3
+  ipv6_rs_interval_seconds: 4
+  ipv6_rs_max_initial_delay_milliseconds: 1000
+  # SR OS originates ping and locally generated ICMP errors with this default
+  # hop count unless a documented command option overrides it.
+  default_ip_hop_limit: 64
+  # RFC 4861 section 6.2.1 interface defaults. SR OS exposes these values in
+  # its router-advertisement interface context.
+  ra_max_advertisement_interval_seconds: 600
+  ra_min_advertisement_interval_seconds: 200
+  ra_router_lifetime_seconds: 1800
+  # RFC 4861 transmission constraints and SR OS command ranges. Values remain
+  # generated so the timer owner and both CLI engines share one contract.
+  ra_minimum_max_advertisement_interval_seconds: 4
+  ra_maximum_max_advertisement_interval_seconds: 1800
+  ra_minimum_min_advertisement_interval_seconds: 3
+  ra_maximum_min_advertisement_interval_seconds: 1350
+  # SR OS 26.7 router-advertisement leaf ranges. These bounds are release
+  # profile data because the CLI validator and forwarding owner must reject
+  # exactly the same values without embedding product defaults in C++.
+  ra_minimum_nonzero_router_lifetime_seconds: 4
+  ra_maximum_router_lifetime_seconds: 9000
+  ra_maximum_reachable_time_milliseconds: 3600000
+  ra_maximum_retransmit_time_milliseconds: 1800000
+  ra_minimum_advertised_mtu: 1280
+  ra_maximum_advertised_mtu: 9800
+  ra_default_prefix_preferred_lifetime_seconds: 604800
+  ra_default_prefix_valid_lifetime_seconds: 2592000
+  ra_minimum_rdnss_lifetime_seconds: 4
+  ra_maximum_rdnss_lifetime_seconds: 3600
+  ra_infinite_lifetime_seconds: 4294967295
+  ra_max_response_delay_milliseconds: 500
+  ra_min_delay_between_advertisements_seconds: 3
+  ra_max_initial_advertisement_interval_seconds: 16
+  ra_max_initial_advertisements: 3
   # RFC 792 does not mandate an Echo data size. This is the documented SR OS
   # ping default and belongs to the release profile rather than terminal UI.
   ping_payload_octets: 56
@@ -81,6 +464,9 @@ protocol_defaults:
   ping_maximum_count: 100000
   ping_interval_milliseconds: 1000
   ping_timeout_milliseconds: 5000
+  # Checkpoint input never carries an arbitrary duration into steady-clock
+  # arithmetic. One day comfortably covers every current protocol deadline.
+  checkpoint_max_relative_deadline_seconds: 86400
 profiles:
   - id: 7750-sr-1
     chassis: 7750 SR-1

@@ -84,6 +84,10 @@ struct LinkRecord {
   std::string link_id;
   std::array<LinkEndpoint, 2> endpoints;
   bool admin_enabled{true};
+  // Zero requests rate discovery from physical router-port profiles. Two
+  // generic hosts have no equipment catalog, so their direct cable requires
+  // an explicit rate instead of inheriting a hidden 1 or 10 Gb/s default.
+  std::uint32_t configured_speed_mbps{};
   // The supervisor is the only writer of operational media state. carrier is
   // true only after both endpoints resolve, rates agree and the forwarding
   // shard accepts the link program. speed_mbps is zero while no compatible
@@ -224,7 +228,8 @@ public:
   // hardware reinsertion without changing the project graph.
   [[nodiscard]] std::optional<LinkHandle>
   create(std::string_view link_id, const LinkEndpoint &first,
-         const LinkEndpoint &second, std::uint64_t propagation_ns);
+         const LinkEndpoint &second, std::uint64_t propagation_ns,
+         std::uint32_t configured_speed_mbps = 0U);
   [[nodiscard]] bool erase(LinkHandle handle) noexcept;
   [[nodiscard]] LinkRecord *get(LinkHandle handle) noexcept;
   [[nodiscard]] const LinkRecord *get(LinkHandle handle) const noexcept;

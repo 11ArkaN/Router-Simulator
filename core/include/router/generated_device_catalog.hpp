@@ -11,13 +11,19 @@
 
 namespace router::device_catalog {
 
+struct TlsAlgorithmName {
+  std::string_view sros;
+  std::string_view openssl;
+  bool pqc{};
+};
+
 // One release owns this entire generated catalog. Runtime capability output
 // consumes this value instead of repeating the release pin in hand-written C++.
 inline constexpr std::string_view release{"26.7.R1"};
-inline constexpr std::uint64_t catalog_hash = 0x0fae1ef668260ff9ULL;
-inline constexpr std::uint64_t checkpoint_schema_hash = 0x152f7d3524b6caaaULL;
-inline constexpr std::uint64_t runtime_protocol_hash = 0x26f06df6429b2878ULL;
-inline constexpr std::uint64_t build_hash = 0x28923cb2f23d9285ULL;
+inline constexpr std::uint64_t catalog_hash = 0x01daa898ad67b5b7ULL;
+inline constexpr std::uint64_t checkpoint_schema_hash = 0xa9c6c92af60ac429ULL;
+inline constexpr std::uint64_t runtime_protocol_hash = 0x0e4f799b5b5d2714ULL;
+inline constexpr std::uint64_t build_hash = 0xe13c92da55c396f9ULL;
 
 inline constexpr std::size_t maximum_routers = 16;
 inline constexpr std::size_t maximum_hosts = 16;
@@ -30,13 +36,15 @@ inline constexpr std::size_t maximum_ports_per_mda = 40;
 inline constexpr std::size_t maximum_static_routes_per_router = 64;
 inline constexpr std::size_t maximum_fib_routes_per_router =
     maximum_ports_per_router + maximum_static_routes_per_router;
-inline constexpr std::size_t wasm_initial_memory_bytes = 268435456U;
+inline constexpr std::size_t wasm_initial_memory_bytes = 335544320U;
+inline constexpr std::size_t wasm_maximum_memory_bytes = 1073741824U;
+inline constexpr std::size_t wasm_growth_step_bytes = 67108864U;
 inline constexpr std::size_t wasm_stack_bytes = 1048576U;
 inline constexpr std::size_t packet_pool_bytes = 67108864U;
 inline constexpr std::size_t capture_store_bytes = 33554432U;
 inline constexpr std::size_t terminal_output_arena_bytes = 16777216U;
 inline constexpr std::size_t terminal_result_bytes = 1048576U;
-inline constexpr std::size_t runtime_control_reserve_bytes = 33554432U;
+inline constexpr std::size_t runtime_control_reserve_bytes = 41943040U;
 inline constexpr std::size_t low_cpu_max = 4;
 inline constexpr std::size_t medium_cpu_max = 8;
 inline constexpr std::size_t low_control_shards = 1;
@@ -54,14 +62,93 @@ inline constexpr std::chrono::milliseconds worker_startup_poll{
     10};
 inline constexpr std::chrono::milliseconds telemetry_publish_interval{
     250};
+inline constexpr std::chrono::milliseconds recovery_checkpoint_interval{
+    2000};
+inline constexpr std::chrono::milliseconds continuity_loss_threshold{
+    5000};
 inline constexpr std::size_t link_queue_capacity = 256;
 inline constexpr std::size_t fabric_work_budget_frames = 64;
+inline constexpr std::chrono::nanoseconds immediate_link_deadline{
+    74000};
 inline constexpr std::size_t arp_entries_per_router = 4096;
+inline constexpr std::size_t static_arp_entries_per_router = 1000;
 inline constexpr std::size_t pending_ipv4_frames_per_router = 512;
+inline constexpr std::size_t ipv6_neighbor_entries_per_router = 102400;
+inline constexpr std::size_t ipv6_destination_entries_per_endpoint = 4096;
+inline constexpr std::uint16_t icmp6_redirect_default_maximum = 100;
+inline constexpr std::chrono::seconds icmp6_redirect_default_interval{10};
+inline constexpr std::uint16_t icmp6_redirect_minimum_maximum = 10;
+inline constexpr std::uint16_t icmp6_redirect_maximum_maximum = 1000;
+inline constexpr std::chrono::seconds icmp6_redirect_minimum_interval{1};
+inline constexpr std::chrono::seconds icmp6_redirect_maximum_interval{60};
+inline constexpr std::uint16_t icmp_redirect_default_maximum = 100;
+inline constexpr std::chrono::seconds icmp_redirect_default_interval{10};
+inline constexpr std::uint16_t icmp_redirect_minimum_maximum = 10;
+inline constexpr std::uint16_t icmp_redirect_maximum_maximum = 1000;
+inline constexpr std::chrono::seconds icmp_redirect_minimum_interval{1};
+inline constexpr std::chrono::seconds icmp_redirect_maximum_interval{60};
+inline constexpr std::size_t ipv6_dad_entries_per_node = 512;
+inline constexpr std::size_t network_interface_ip_addresses = 16;
+inline constexpr std::size_t pending_ipv6_frames_per_router = 512;
+inline constexpr std::size_t ipv4_reassembly_entries_per_endpoint = 4;
+inline constexpr std::chrono::seconds ipv4_reassembly_timeout{60};
+inline constexpr std::size_t ipv6_reassembly_entries_per_endpoint = 4;
+inline constexpr std::chrono::seconds ipv6_reassembly_timeout{60};
+inline constexpr std::size_t ipv4_pmtu_entries_per_endpoint = 64;
+inline constexpr std::chrono::seconds ipv4_pmtu_probe_interval{600};
+inline constexpr std::chrono::seconds ipv4_pmtu_probe_retry_interval{120};
+inline constexpr std::size_t ipv6_pmtu_entries_per_endpoint = 64;
+inline constexpr std::chrono::seconds ipv6_pmtu_probe_interval{600};
+inline constexpr std::size_t udp_queued_datagrams_per_endpoint = 128;
+inline constexpr std::size_t udp_datagrams_per_socket = 64;
+inline constexpr std::size_t udp_receive_buffer_bytes_per_endpoint = 1048576;
+inline constexpr std::size_t udp_receive_block_bytes = 2048;
+inline constexpr std::uint16_t udp_ephemeral_port_first = 49152;
+inline constexpr std::uint16_t udp_ephemeral_port_last = 65535;
+inline constexpr std::size_t tcp_send_buffer_default_bytes = 262144;
+inline constexpr std::size_t tcp_receive_buffer_default_bytes = 262144;
+inline constexpr std::size_t tcp_transmission_records_default = 512;
+inline constexpr std::size_t tcp_sack_ranges_default = 256;
+inline constexpr std::size_t tcp_listen_backlog_default = 128;
+inline constexpr std::uint16_t tcp_ephemeral_port_first = 49152;
+inline constexpr std::uint16_t tcp_ephemeral_port_last = 65535;
+inline constexpr std::size_t dns_cache_default_bytes = 8388608;
+inline constexpr std::uint16_t dns_resolver_advertised_udp_payload_bytes = 1232;
+inline constexpr std::uint32_t dns_resolver_retry_milliseconds = 1000;
+inline constexpr std::uint32_t dns_resolver_attempts_per_server = 2;
+inline constexpr std::uint32_t dns_resolver_max_minimise_count = 10;
+inline constexpr std::uint32_t dns_resolver_minimise_one_label_count = 4;
+inline constexpr std::uint32_t dns_resolver_max_alias_hops = 16;
+inline constexpr std::size_t dhcpv6_address_pools_per_server = 8;
+inline constexpr std::size_t dhcpv6_prefix_pools_per_server = 8;
+inline constexpr std::size_t dhcpv6_leases_per_server = 1024;
+inline constexpr std::size_t dhcpv6_relay_servers_per_interface = 8;
+inline constexpr std::uint32_t dhcpv6_zero_t1_percent_of_preferred = 50;
+inline constexpr std::uint32_t dhcpv6_zero_t2_percent_of_preferred = 80;
+inline constexpr std::uint32_t dhcpv6_client_rate_limit_packets = 20;
+inline constexpr std::uint32_t dhcpv6_client_rate_limit_interval_seconds = 20;
+inline constexpr std::size_t pending_l3_frames_per_router = 512;
+inline constexpr std::size_t nd_work_budget_actions = 64;
+inline constexpr std::size_t ipv6_ra_prefixes_per_interface = 16;
+inline constexpr std::size_t ipv6_rdnss_servers_per_interface = 4;
+inline constexpr std::size_t ipv6_default_routers_per_host_interface = 8;
+inline constexpr std::size_t ipv6_on_link_prefixes_per_host_interface = 16;
+inline constexpr std::size_t ipv6_slaac_addresses_per_host_interface = 16;
+inline constexpr std::size_t ipv6_rdnss_entries_per_host_interface = 8;
+inline constexpr std::size_t ipv6_stable_iid_network_id_octets = 64;
+inline constexpr std::size_t host_ipv6_work_budget_actions = 8;
+inline constexpr std::size_t mld_groups_per_interface = 64;
+inline constexpr std::size_t mld_sources_per_group = 64;
+inline constexpr std::size_t mld_records_per_report = 64;
+inline constexpr std::size_t mld_work_budget_actions = 64;
+inline constexpr std::size_t mld_router_groups_per_interface = 16000;
+inline constexpr std::size_t mld_router_sources_per_group = 1000;
+inline constexpr std::size_t mld_router_group_sources_per_interface = 32000;
 inline constexpr std::size_t network_command_ring_entries = 8;
 inline constexpr std::size_t network_result_ring_entries = 32;
+inline constexpr std::size_t network_command_work_budget = 64;
 inline constexpr std::size_t forwarding_ring_frames = 64;
-inline constexpr std::size_t candidate_keys_per_router = 256;
+inline constexpr std::size_t candidate_keys_per_router = 16384;
 inline constexpr std::size_t candidate_keys_per_session = 128;
 inline constexpr std::size_t selected_capture_points = 256;
 inline constexpr std::size_t capture_point_name_bytes = 512;
@@ -69,9 +156,222 @@ inline constexpr std::uint16_t default_network_mtu = 9212;
 inline constexpr std::uint16_t minimum_network_mtu = 512;
 inline constexpr std::uint16_t maximum_network_mtu = 9212;
 inline constexpr std::uint16_t minimum_host_ipv4_mtu = 68;
+inline constexpr std::uint16_t minimum_host_ipv6_mtu = 1280;
 inline constexpr std::uint16_t default_host_ipv4_mtu = 1500;
+inline constexpr std::size_t tls_maximum_cert_profiles = 16;
+inline constexpr std::size_t tls_maximum_client_cipher_lists = 16;
+inline constexpr std::size_t tls_maximum_client_group_lists = 16;
+inline constexpr std::size_t tls_maximum_client_signature_lists = 16;
+inline constexpr std::size_t tls_maximum_client_profiles = 16;
+inline constexpr std::size_t tls_maximum_server_cipher_lists = 16;
+inline constexpr std::size_t tls_maximum_server_group_lists = 16;
+inline constexpr std::size_t tls_maximum_server_signature_lists = 16;
+inline constexpr std::size_t tls_maximum_server_profiles = 16;
+inline constexpr std::size_t tls_maximum_trust_anchor_profiles = 16;
+inline constexpr std::size_t tls_maximum_cert_entries_per_profile = 8;
+inline constexpr std::size_t tls_maximum_trust_anchors_per_profile = 8;
+inline constexpr std::size_t tls_profile_name_bytes = 32;
+inline constexpr std::size_t tls_certificate_file_name_bytes = 95;
+inline constexpr std::uint8_t tls_algorithm_index_minimum = 1;
+inline constexpr std::uint8_t tls_algorithm_index_maximum = 255;
+inline constexpr std::array<TlsAlgorithmName, 5> tls13_ciphers{{
+    {"tls-aes128-gcm-sha256", "TLS_AES_128_GCM_SHA256", false},
+    {"tls-aes256-gcm-sha384", "TLS_AES_256_GCM_SHA384", true},
+    {"tls-chacha20-poly1305-sha256", "TLS_CHACHA20_POLY1305_SHA256", false},
+    {"tls-aes128-ccm-sha256", "TLS_AES_128_CCM_SHA256", false},
+    {"tls-aes128-ccm8-sha256", "TLS_AES_128_CCM_8_SHA256", false}
+}};
+inline constexpr std::array<TlsAlgorithmName, 6> tls13_groups{{
+    {"tls-ecdhe-256", "P-256", false},
+    {"tls-ecdhe-384", "P-384", false},
+    {"tls-ecdhe-521", "P-521", false},
+    {"tls-x25519", "X25519", false},
+    {"tls-x448", "X448", false},
+    {"tls-ml-kem1024", "MLKEM1024", true}
+}};
+inline constexpr std::array<TlsAlgorithmName, 15> tls13_signatures{{
+    {"tls-rsa-pkcs1-sha256", "rsa_pkcs1_sha256", false},
+    {"tls-rsa-pkcs1-sha384", "rsa_pkcs1_sha384", false},
+    {"tls-rsa-pkcs1-sha512", "rsa_pkcs1_sha512", false},
+    {"tls-ecdsa-secp256r1-sha256", "ecdsa_secp256r1_sha256", false},
+    {"tls-ecdsa-secp384r1-sha384", "ecdsa_secp384r1_sha384", false},
+    {"tls-ecdsa-secp521r1-sha512", "ecdsa_secp521r1_sha512", false},
+    {"tls-rsa-pss-rsae-sha256", "rsa_pss_rsae_sha256", false},
+    {"tls-rsa-pss-rsae-sha384", "rsa_pss_rsae_sha384", false},
+    {"tls-rsa-pss-rsae-sha512", "rsa_pss_rsae_sha512", false},
+    {"tls-rsa-pss-pss-sha256", "rsa_pss_pss_sha256", false},
+    {"tls-rsa-pss-pss-sha384", "rsa_pss_pss_sha384", false},
+    {"tls-rsa-pss-pss-sha512", "rsa_pss_pss_sha512", false},
+    {"tls-ed25519", "ed25519", false},
+    {"tls-ed448", "ed448", false},
+    {"tls-ml-dsa87", "mldsa87", true}
+}};
 inline constexpr std::chrono::seconds dynamic_arp_timeout{
     14400};
+inline constexpr std::uint32_t arp_timeout_minimum_seconds =
+    0U;
+inline constexpr std::uint32_t arp_timeout_maximum_seconds =
+    65535U;
+inline constexpr std::chrono::milliseconds dynamic_arp_retry{
+    5000};
+inline constexpr std::uint16_t dynamic_arp_retry_deciseconds =
+    50U;
+inline constexpr std::uint16_t arp_retry_minimum_deciseconds =
+    1U;
+inline constexpr std::uint16_t arp_retry_maximum_deciseconds =
+    300U;
+inline constexpr std::chrono::milliseconds tcp_rto_initial{
+    1000};
+inline constexpr std::chrono::milliseconds tcp_rto_minimum{
+    1000};
+inline constexpr std::chrono::milliseconds tcp_rto_maximum{
+    60000};
+inline constexpr std::chrono::milliseconds tcp_rto_clock_granularity{
+    1};
+inline constexpr std::chrono::milliseconds tcp_rto_after_syn_retransmission{
+    3000};
+inline constexpr std::chrono::milliseconds tcp_delayed_ack{
+    200};
+inline constexpr std::chrono::milliseconds tcp_sws_override{
+    200};
+inline constexpr std::chrono::milliseconds tcp_persist_maximum{
+    60000};
+inline constexpr std::uint32_t tcp_failure_r1_retransmissions =
+    3U;
+inline constexpr std::chrono::seconds tcp_failure_data_r2{
+    100};
+inline constexpr std::chrono::seconds tcp_failure_syn_r2{
+    180};
+inline constexpr std::chrono::seconds tcp_maximum_segment_lifetime{
+    120};
+inline constexpr std::chrono::milliseconds nd_base_reachable_time{
+    30000};
+inline constexpr std::uint32_t nd_default_reachable_time_seconds =
+    30U;
+inline constexpr std::uint32_t nd_minimum_reachable_time_seconds =
+    30U;
+inline constexpr std::uint32_t nd_maximum_reachable_time_seconds =
+    3600U;
+inline constexpr std::uint32_t nd_default_stale_time_seconds =
+    14400U;
+inline constexpr std::uint32_t nd_minimum_stale_time_seconds =
+    60U;
+inline constexpr std::uint32_t nd_maximum_stale_time_seconds =
+    65535U;
+inline constexpr std::uint32_t nd_maximum_neighbor_limit =
+    102400U;
+inline constexpr std::uint8_t nd_default_neighbor_limit_threshold_percent =
+    90U;
+inline constexpr std::chrono::seconds nd_reachable_time_recalculation{
+    10800};
+inline constexpr std::chrono::milliseconds nd_retrans_timer{
+    1000};
+inline constexpr std::chrono::milliseconds nd_delay_first_probe{
+    5000};
+inline constexpr std::uint8_t nd_max_multicast_solicit =
+    3;
+inline constexpr std::uint8_t nd_max_unicast_solicit =
+    3;
+inline constexpr std::uint8_t ipv6_dad_transmits =
+    1;
+inline constexpr std::chrono::milliseconds ipv6_dad_max_initial_delay{
+    1000};
+inline constexpr std::uint8_t ipv6_stable_iid_dad_retries =
+    3;
+inline constexpr std::chrono::milliseconds ipv6_stable_iid_dad_retry_delay{
+    1000};
+inline constexpr std::uint8_t ipv6_rs_max_solicitations =
+    3;
+inline constexpr std::chrono::seconds ipv6_rs_interval{
+    4};
+inline constexpr std::chrono::milliseconds ipv6_rs_max_initial_delay{
+    1000};
+inline constexpr std::uint8_t mld_robustness_variable =
+    2;
+inline constexpr std::chrono::seconds mld_query_interval{
+    125};
+inline constexpr std::chrono::milliseconds mld_query_response_interval{
+    10000};
+inline constexpr std::chrono::milliseconds mld_last_listener_query_interval{
+    1000};
+inline constexpr std::chrono::milliseconds mld_unsolicited_report_interval{
+    1000};
+inline constexpr std::uint16_t mld_minimum_query_interval_seconds =
+    2;
+inline constexpr std::uint16_t mld_maximum_query_interval_seconds =
+    1024;
+inline constexpr std::uint16_t mld_minimum_query_response_interval_seconds =
+    1;
+inline constexpr std::uint16_t mld_maximum_query_response_interval_seconds =
+    1023;
+inline constexpr std::uint16_t
+    mld_minimum_last_listener_query_interval_seconds =
+        1;
+inline constexpr std::uint16_t
+    mld_maximum_last_listener_query_interval_seconds =
+        1023;
+inline constexpr std::uint8_t mld_minimum_robustness_variable =
+    2;
+inline constexpr std::uint8_t mld_maximum_robustness_variable =
+    10;
+inline constexpr std::uint8_t mld_minimum_version =
+    1;
+inline constexpr std::uint8_t mld_maximum_version =
+    2;
+inline constexpr std::uint8_t mld_default_version =
+    2;
+inline constexpr std::uint32_t mld_maximum_number_groups =
+    16000;
+inline constexpr std::uint32_t mld_maximum_number_group_sources =
+    32000;
+inline constexpr std::uint32_t mld_maximum_number_sources =
+    1000;
+inline constexpr std::uint8_t default_ip_hop_limit =
+    64;
+inline constexpr std::chrono::seconds ra_max_advertisement_interval{
+    600};
+inline constexpr std::chrono::seconds ra_min_advertisement_interval{
+    200};
+inline constexpr std::chrono::seconds ra_router_lifetime{
+    1800};
+inline constexpr std::chrono::seconds ra_minimum_max_advertisement_interval{
+    4};
+inline constexpr std::chrono::seconds ra_maximum_max_advertisement_interval{
+    1800};
+inline constexpr std::chrono::seconds ra_minimum_min_advertisement_interval{
+    3};
+inline constexpr std::chrono::seconds ra_maximum_min_advertisement_interval{
+    1350};
+inline constexpr std::chrono::seconds ra_minimum_nonzero_router_lifetime{
+    4};
+inline constexpr std::chrono::seconds ra_maximum_router_lifetime{
+    9000};
+inline constexpr std::chrono::milliseconds ra_maximum_reachable_time{
+    3600000};
+inline constexpr std::chrono::milliseconds ra_maximum_retransmit_time{
+    1800000};
+inline constexpr std::uint16_t ra_minimum_advertised_mtu =
+    1280;
+inline constexpr std::uint16_t ra_maximum_advertised_mtu =
+    9800;
+inline constexpr std::uint32_t ra_default_prefix_preferred_lifetime =
+    604800U;
+inline constexpr std::uint32_t ra_default_prefix_valid_lifetime =
+    2592000U;
+inline constexpr std::uint32_t ra_minimum_rdnss_lifetime =
+    4U;
+inline constexpr std::uint32_t ra_maximum_rdnss_lifetime =
+    3600U;
+inline constexpr std::uint32_t ra_infinite_lifetime =
+    4294967295U;
+inline constexpr std::chrono::milliseconds ra_max_response_delay{
+    500};
+inline constexpr std::chrono::seconds ra_min_delay_between_advertisements{
+    3};
+inline constexpr std::chrono::seconds ra_max_initial_advertisement_interval{
+    16};
+inline constexpr std::uint8_t ra_max_initial_advertisements =
+    3;
 inline constexpr std::size_t default_ping_payload_octets =
     56;
 inline constexpr std::size_t minimum_ping_payload_octets =
@@ -84,6 +384,8 @@ inline constexpr std::chrono::milliseconds ping_interval{
     1000};
 inline constexpr std::chrono::milliseconds ping_timeout{
     5000};
+inline constexpr std::chrono::seconds checkpoint_max_relative_deadline{
+    86400};
 
 struct PortGroup {
   std::uint8_t count{};

@@ -289,6 +289,37 @@ export class TerminalPager {
   private readonly lines: string[];
   private readonly height: number;
   private offset = 0;
+  private numericPrefix = "";
+  private searchDirection: "forward" | "backward" | undefined;
+  private searchBuffer = "";
+  private lastSearchPattern = "";
+  private lastSearchDirection: "forward" | "backward" | undefined;
+  private matchLine: number | undefined;
+  private searchHighlightVisible = false;
+  private helpVisible = false;
+
+  // The help is intentionally a compact view of Nokia's two pager command
+  // tables. It fits the documented minimum 24-line terminal and therefore
+  // does not need a second pager whose ownership and exit rules would differ
+  // from the command output pager.
+  private static readonly helpLines = [
+    "Pager commands",
+    "  h, H                         show this help",
+    "  q, Q, Ctrl-C, Ctrl-Z        exit",
+    "  (n)e, j, Enter, Down        move line forward",
+    "  (n)d, Ctrl-D, Tab           move half screen forward",
+    "  (n)f, Space, PageDown       move screen forward",
+    "  (n)k, y, -, Up              move line backward",
+    "  (n)u, Ctrl-U                move half screen backward",
+    "  (n)b, PageUp, Left          move screen backward",
+    "  g, p, <, Home               move to beginning",
+    "  G, >, End                   move to end",
+    "  (n)g, (n)G                  jump to line",
+    "  /expression                 search forward",
+    "  ?expression                 search backward",
+    "  n, N                        repeat forward, backward",
+    "  c, Ctrl-L, Esc+U            clear search highlighting"
+  ];
 
   constructor(output: string, rows: number) {
     this.lines = output.replaceAll("\r", "").split("\n");
@@ -297,49 +328,240 @@ export class TerminalPager {
 
   static restore(state: TerminalPagerStateV1): TerminalPager {
     const pager = new TerminalPager(state.output, state.rows);
-    pager.offset = state.offset;
+    pager.offset = Math.min(state.offset,
+      Math.max(0, pager.lines.length - pager.height));
+    pager.numericPrefix = state.numericPrefix ?? "";
+    pager.searchDirection = state.searchDirection;
+    pager.searchBuffer = state.searchBuffer ?? "";
+    pager.lastSearchPattern = state.lastSearchPattern ?? "";
+    pager.lastSearchDirection = state.lastSearchDirection;
+    pager.matchLine = state.matchLine !== undefined &&
+      state.matchLine < pager.lines.length ? state.matchLine : undefined;
+    pager.searchHighlightVisible = state.searchHighlightVisible ?? false;
+    pager.helpVisible = state.helpVisible ?? false;
     return pager;
   }
 
   snapshot(): TerminalPagerStateV1 {
     // Join with LF because pager parsing normalizes CR on construction. This
     // canonical representation avoids platform line-ending drift in .netsim.
-    return { output: this.lines.join("\n"), rows: this.height + 1, offset: this.offset };
+    return {
+      output: this.lines.join("\n"), rows: this.height + 1, offset: this.offset,
+      ...(this.numericPrefix ? { numericPrefix: this.numericPrefix } : {}),
+      ...(this.searchDirection ? { searchDirection: this.searchDirection,
+        searchBuffer: this.searchBuffer } : {}),
+      ...(this.lastSearchDirection ? { lastSearchPattern: this.lastSearchPattern,
+        lastSearchDirection: this.lastSearchDirection } : {}),
+      ...(this.matchLine !== undefined ? { matchLine: this.matchLine } : {}),
+      ...(this.searchHighlightVisible ? { searchHighlightVisible: true } : {}),
+      ...(this.helpVisible ? { helpVisible: true } : {})
+    };
   }
 
   get active(): boolean { return this.lines.length > this.height && this.end < this.lines.length; }
   get page(): string[] { return this.lines.slice(this.offset, this.end); }
 
+  get renderedPage(): string[] {
+    if (this.helpVisible) return TerminalPager.helpLines.slice(0, this.height);
+    // ANSI emphasis belongs to terminal presentation and never contaminates
+    // archived output or router response bytes. Every visible match is
+    // underlined, and the selected match receives inverse video as the Nokia
+    // guide requires.
+    return this.page.map((line, visibleIndex) => {
+      const lineIndex = this.offset + visibleIndex;
+      return this.decorateMatches(line, lineIndex === this.matchLine);
+    });
+  }
+
   get status(): string {
     // Percent and line bounds are recomputed from the current window, matching
     // the information shown by the 26.7 MD-CLI pager without leaking UI state
     // into the C++ CLI session.
+    if (this.searchDirection) {
+      const marker = this.searchDirection === "forward" ? "/" : "?";
+      return `${marker}${this.searchBuffer}`;
+    }
+    if (this.numericPrefix) return this.numericPrefix;
     const percent = Math.floor((this.end * 100) / this.lines.length);
     return `--(more)--(${percent}%)--(lines ${this.offset + 1}-${this.end}/${this.lines.length})--`;
   }
 
   handle(input: string): PagerResult {
+    // Escape sequences must remain atomic, while pasted printable text is
+    // consumed as the same ordered bytes the terminal would have delivered
+    // interactively. The strongest result wins when one chunk contains more
+    // than one key.
+    const atomic = ["\u001b[6~", "\u001b[5~", "\u001b[3~", "\u001b[C", "\u001b[D",
+      "\u001b[B", "\u001b[A", "\u001b[H", "\u001b[F", "\u001bU"];
+    if (atomic.includes(input)) return this.handleToken(input);
+    let result: PagerResult = "unchanged";
+    for (const token of input) {
+      const next = this.handleToken(token);
+      if (next === "quit" || next === "complete") result = next;
+      else if (next === "continue" && result === "unchanged") result = next;
+    }
+    return result;
+  }
+
+  private handleToken(input: string): PagerResult {
     const maximum = Math.max(0, this.lines.length - this.height);
     const previous = this.offset;
+    // Search input owns every printable character, including h and H. Checking
+    // this first prevents a regular expression from accidentally opening help.
+    if (this.searchDirection) return this.handleSearchInput(input);
+    if (input === "h" || input === "H") {
+      this.helpVisible = true;
+      this.numericPrefix = "";
+      return "continue";
+    }
+    // Any command after help returns to the immutable output and applies that
+    // command in one operation. This avoids inventing a second nested session.
+    this.helpVisible = false;
+    if (/^[0-9]$/.test(input)) {
+      // Nine digits exceed every bounded output in this application while
+      // keeping Number conversion exact. Extra digits ring the terminal bell
+      // through the unchanged result instead of wrapping a movement count.
+      if (this.numericPrefix.length === 9) return "unchanged";
+      this.numericPrefix += input;
+      return "continue";
+    }
+    if (input === "/" || input === "?") {
+      this.searchDirection = input === "/" ? "forward" : "backward";
+      this.searchBuffer = this.lastSearchPattern;
+      this.numericPrefix = "";
+      return "continue";
+    }
+    if ((input === "n" || input === "N") && this.lastSearchDirection) {
+      // SR OS assigns n to forward repetition and N to backward repetition,
+      // regardless of the direction used to establish the expression.
+      const direction = input === "n" ? "forward" : "backward";
+      this.numericPrefix = "";
+      return this.search(this.lastSearchPattern, direction);
+    }
+    if (input === "c" || input === "\u000c" || input === "\u001bU") {
+      this.matchLine = undefined;
+      this.searchHighlightVisible = false;
+      this.numericPrefix = "";
+      return "continue";
+    }
     if (input === "q" || input === "Q" || input === "\u0003" || input === "\u001a") return "quit";
-    if (input === " " || input === "f" || input === "\u0006" || input === "\u0016" ||
-        input === "\u001b[6~" || input === "\u001b[C") this.offset += this.height;
+    const count = this.consumeCount();
+    if ((input === "g" || input === "G") && count !== undefined) {
+      // Line numbers in the pager are one-based. Both g and G accept the
+      // documented numeric jump, while their unprefixed forms retain the
+      // beginning and end meanings below.
+      this.offset = Math.max(0, Math.min(maximum, count - 1));
+    } else if (input === " " || input === "f" || input === "\u0006" || input === "\u0016" ||
+        input === "\u001b[6~" || input === "\u001b[C") this.offset += (count ?? 1) * this.height;
     else if (input === "\r" || input === "\n" || input === "e" || input === "j" ||
              input === "\u0005" || input === "\u000a" || input === "\u000d" ||
-             input === "\u000e" || input === "\u001b[B") ++this.offset;
-    else if (input === "d" || input === "\u0004" || input === "\t") this.offset += Math.max(1, Math.floor(this.height / 2));
-    else if (input === "b" || input === "\u0002" || input === "\u001b[5~" || input === "\u001b[D") this.offset -= this.height;
-    else if (input === "u" || input === "\u0015") this.offset -= Math.max(1, Math.floor(this.height / 2));
+             input === "\u000e" || input === "\u001b[B") this.offset += count ?? 1;
+    else if (input === "d" || input === "\u0004" || input === "\t") this.offset += (count ?? 1) * Math.max(1, Math.floor(this.height / 2));
+    else if (input === "b" || input === "\u0002" || input === "\u001b[5~" || input === "\u001b[D") this.offset -= (count ?? 1) * this.height;
+    else if (input === "u" || input === "\u0015") this.offset -= (count ?? 1) * Math.max(1, Math.floor(this.height / 2));
     else if (input === "k" || input === "y" || input === "-" || input === "\u0010" ||
-             input === "\u0019" || input === "\u007f" || input === "\b" ||
-             input === "\u001b[A") --this.offset;
+             input === "\u0019" || input === "\u000b" || input === "\u007f" ||
+             input === "\b" || input === "\u001b[3~" || input === "\u001b[A")
+      this.offset -= count ?? 1;
     else if (input === "g" || input === "p" || input === "<" || input === "\u0001" ||
              input === "\u001b[H") this.offset = 0;
     else if (input === "G" || input === ">" || input === "\u001b[F") this.offset = maximum;
-    else return "unchanged";
+    else {
+      this.numericPrefix = "";
+      return "unchanged";
+    }
     this.offset = Math.max(0, Math.min(maximum, this.offset));
+    this.matchLine = undefined;
     if (this.offset === maximum) return "complete";
     return this.offset === previous ? "unchanged" : "continue";
+  }
+
+  private consumeCount(): number | undefined {
+    if (!this.numericPrefix) return undefined;
+    const count = Number(this.numericPrefix);
+    this.numericPrefix = "";
+    return Math.max(1, count);
+  }
+
+  private handleSearchInput(input: string): PagerResult {
+    if (input === "\u001b") {
+      this.searchDirection = undefined;
+      this.searchBuffer = "";
+      return "continue";
+    }
+    if (input === "\u007f" || input === "\b") {
+      this.searchBuffer = this.searchBuffer.slice(0, -1);
+      return "continue";
+    }
+    if (input === "\r" || input === "\n") {
+      const direction = this.searchDirection;
+      const pattern = this.searchBuffer;
+      this.searchDirection = undefined;
+      this.searchBuffer = "";
+      if (!direction || !pattern) return "unchanged";
+      try {
+        // Compile before publishing last-search state. An invalid expression
+        // therefore cannot replace the previous repeatable search.
+        void new RegExp(pattern);
+      } catch {
+        return "unchanged";
+      }
+      this.lastSearchPattern = pattern;
+      this.lastSearchDirection = direction;
+      return this.search(pattern, direction);
+    }
+    if (input >= " " && input !== "\u007f") {
+      this.searchBuffer += input;
+      return "continue";
+    }
+    return "unchanged";
+  }
+
+  private search(pattern: string,
+    direction: "forward" | "backward"): PagerResult {
+    let expression: RegExp;
+    try { expression = new RegExp(pattern); } catch { return "unchanged"; }
+    const origin = this.matchLine ??
+      (direction === "forward" ? this.offset - 1 : this.end);
+    for (let line = origin + (direction === "forward" ? 1 : -1);
+         line >= 0 && line < this.lines.length;
+         line += direction === "forward" ? 1 : -1) {
+      expression.lastIndex = 0;
+      if (!expression.test(this.lines[line] ?? "")) continue;
+      this.matchLine = line;
+      this.searchHighlightVisible = true;
+      this.offset = Math.max(0, Math.min(
+        Math.max(0, this.lines.length - this.height), line));
+      // A search remains interactive even when its match is on the final
+      // screen. The user must still be able to repeat backward or clear the
+      // highlight before explicitly leaving the pager.
+      return "continue";
+    }
+    return "unchanged";
+  }
+
+  private decorateMatches(line: string, selectedLine: boolean): string {
+    if (!this.searchHighlightVisible || !this.lastSearchPattern) return line;
+    let expression: RegExp;
+    try { expression = new RegExp(this.lastSearchPattern, "g"); }
+    catch { return line; }
+
+    let rendered = "";
+    let cursor = 0;
+    for (const match of line.matchAll(expression)) {
+      const start = match.index;
+      const text = match[0] ?? "";
+      // JavaScript advances a global zero-width match internally. There are no
+      // bytes to underline, so leaving that assertion undecorated is safer
+      // than modifying an adjacent character that did not match.
+      if (!text) continue;
+      rendered += line.slice(cursor, start);
+      const emphasis = selectedLine ? "\x1b[7m\x1b[4m" : "\x1b[4m";
+      const reset = selectedLine ? "\x1b[24m\x1b[27m" : "\x1b[24m";
+      rendered += `${emphasis}${text}${reset}`;
+      cursor = start + text.length;
+    }
+    return cursor === 0 ? line : rendered + line.slice(cursor);
   }
 
   private get end(): number { return Math.min(this.lines.length, this.offset + this.height); }

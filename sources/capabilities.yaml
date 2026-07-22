@@ -1,6 +1,138 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  dependencies.http2_quic_http3:
+    status: implemented
+    source_ids: [nghttp2.http2.1_69_0, ngtcp2.quic.1_24_0, nghttp3.http3.1_17_0, openssl.crypto.3_5_7]
+  services.http2_session:
+    status: partially-implemented
+    source_ids: [ietf.http2.rfc9113, ietf.hpack.rfc7541, nghttp2.http2.1_69_0]
+  services.dns_over_tls:
+    status: partially-implemented
+    source_ids: [ietf.dot.rfc7858, ietf.dot.authentication.rfc8310, ietf.tls13.rfc8446, openssl.crypto.3_5_7]
+  services.dns_over_http2:
+    status: partially-implemented
+    source_ids: [ietf.doh.rfc8484, ietf.http2.rfc9113, ietf.hpack.rfc7541, ietf.tls.alpn.rfc7301, nghttp2.http2.1_69_0]
+  services.dns_over_http3:
+    status: partially-implemented
+    source_ids: [ietf.doh.rfc8484, ietf.http3.rfc9114, ietf.qpack.rfc9204, ietf.quic.transport.rfc9000, ietf.quic.tls.rfc9001, nghttp3.http3.1_17_0, ngtcp2.quic.1_24_0, openssl.crypto.3_5_7]
+  cli.encrypted_dns_application_binding:
+    status: unsupported
+    source_ids: [nokia.sros.26_7.tls_application_support]
+  services.dns_wire_codec:
+    status: implemented
+    source_ids: [ietf.dns.message.rfc1035]
+  services.dns_authoritative:
+    status: implemented
+    source_ids: [ietf.dns.authoritative.rfc1034, ietf.dns.negative.rfc2308, ietf.dns.message.rfc1035, ietf.dns.wildcards.rfc4592, ietf.dns.dname.rfc6672]
+  services.dns_resolver_cache:
+    status: implemented
+    source_ids: [ietf.dns.negative.rfc2308, ietf.dns.nxdomain_cut.rfc8020, ietf.dns.ttl.rfc2181]
+  services.dns_iterative_resolver:
+    status: implemented
+    source_ids: [ietf.dns.resolver.rfc1034, ietf.dns.qname_minimisation.rfc9156, ietf.dns.tcp.rfc7766, ietf.dns.message.rfc1035]
+  services.dns_endpoint_transport:
+    status: implemented
+    source_ids: [ietf.dns.message.rfc1035, ietf.dns.edns.rfc6891, ietf.dns.tcp.rfc7766, ietf.udp.endpoint.rfc768, ietf.tcp.control.rfc9293]
+  services.dns_master_file:
+    status: implemented
+    source_ids: [ietf.dns.master-file.rfc1035, ietf.dns.master-file-unknown-rdata.rfc3597]
+  services.dnssec_records:
+    status: implemented
+    source_ids: [ietf.dnssec.records.rfc4034, ietf.dnssec.ds_sha256.rfc4509, ietf.dnssec.nsec3.rfc5155, iana.dnssec.algorithm-policy]
+  services.dnssec_validation:
+    status: partially-implemented
+    source_ids: [ietf.dnssec.records.rfc4034, ietf.dnssec.validation.rfc4035, ietf.dnssec.clarifications.rfc6840, ietf.dnssec.do.rfc3225, ietf.dnssec.chain.rfc4035, ietf.dnssec.nsec_denial.rfc4035, ietf.dnssec.nsec3_denial.rfc5155, ietf.dnssec.rsa.rfc3110, ietf.dnssec.rsa_sha256.rfc5702, ietf.dnssec.ecdsa.rfc6605, ietf.dnssec.ed25519.rfc8080, iana.dnssec.algorithm-policy, openssl.crypto.3_5_7]
+  services.dnssec_signing:
+    status: implemented
+    source_ids: [ietf.dnssec.signing.rfc4034, ietf.dnssec.operations.rfc6781, ietf.dnssec.key_timing.rfc7583, ietf.dnssec.records.rfc4034, ietf.dnssec.rsa.rfc3110, ietf.dnssec.rsa_sha256.rfc5702, ietf.dnssec.ecdsa.rfc6605, ietf.dnssec.ed25519.rfc8080, iana.dnssec.algorithm-policy, openssl.crypto.3_5_7]
+  services.local_pki:
+    status: partially-implemented
+    source_ids: [ietf.pki.path_validation.rfc5280, ietf.pki.ocsp.rfc6960, nist.project_key_vault.aes_gcm, openssl.crypto.3_5_7]
+  services.tls13_engine:
+    status: partially-implemented
+    source_ids: [ietf.tls13.rfc8446, ietf.tls.alpn.rfc7301, ietf.pki.path_validation.rfc5280, nokia.sros.26_7.tls_profiles, nokia.sros.26_7.tls_algorithm_support, openssl.tls.memory_bio.3_5, openssl.crypto.3_5_7]
+  security.project_key_vault:
+    status: partially-implemented
+    source_ids: [nist.project_key_vault.aes_gcm, openssl.crypto.3_5_7]
+  transport.tcp_delayed_ack_and_persist:
+    status: implemented
+    source_ids: [ietf.tcp.host_requirements.rfc1122, ietf.tcp.control.rfc9293, ietf.tcp.rto.rfc6298]
+  transport.tcp_connection_failure_policy:
+    status: implemented
+    source_ids: [ietf.tcp.connection_failure.rfc9293]
+  transport.tcp_congestion_controller:
+    status: implemented
+    source_ids: [ietf.tcp.congestion.rfc5681, ietf.tcp.wire.rfc9293]
+  transport.tcp_rto_estimator:
+    status: implemented
+    source_ids: [ietf.tcp.rto.rfc6298, ietf.tcp.wire.rfc9293]
+  transport.tcp_sack_loss_recovery:
+    status: implemented
+    source_ids: [ietf.tcp.sack_recovery.rfc6675, ietf.tcp.wire.rfc9293, ietf.tcp.congestion.rfc5681]
+  transport.tcp_wire_codec:
+    status: implemented
+    source_ids: [ietf.tcp.wire.rfc9293, ietf.ipv4.rfc791, ietf.ipv6.rfc8200]
+  transport.tcp_initial_sequence_generator:
+    status: implemented
+    source_ids: [ietf.tcp.wire.rfc9293]
+  transport.tcp_control_state:
+    status: implemented
+    source_ids: [ietf.tcp.control.rfc9293, ietf.tcp.rto.rfc6298, ietf.tcp.congestion.rfc5681]
+  transport.tcp_data_sender:
+    status: implemented
+    source_ids: [ietf.tcp.control.rfc9293, ietf.tcp.rto.rfc6298, ietf.tcp.congestion.rfc5681, ietf.tcp.connection_failure.rfc9293]
+  transport.tcp_receive_reassembly:
+    status: implemented
+    source_ids: [ietf.tcp.wire.rfc9293]
+  transport.tcp_send_repository:
+    status: implemented
+    source_ids: [ietf.tcp.wire.rfc9293]
+  transport.tcp_option_negotiation:
+    status: implemented
+    source_ids: [ietf.tcp.wire.rfc9293]
+  transport.tcp_endpoint_socket_table:
+    status: implemented
+    source_ids: [ietf.tcp.control.rfc9293, ietf.tcp.host_requirements.rfc1122, ietf.tcp.rto.rfc6298, ietf.tcp.wire.rfc9293, ietf.tcp.icmp_validation.rfc5927]
+  ipv6.dhcpv6_packet_codec:
+    status: implemented
+    source_ids: [ietf.dhcpv6.rfc9915, ietf.dhcpv6.dns_options.rfc3646, ietf.udp.rfc768]
+  ipv6.dhcpv6_server_lease_repository:
+    status: implemented
+    source_ids: [ietf.dhcpv6.rfc9915]
+  ipv6.dhcpv6_relay_codec:
+    status: implemented
+    source_ids: [ietf.dhcpv6.rfc9915, nokia.sros.26_7.dhcpv6_service_interface_relay]
+  ipv6.dhcpv6_relay_transport:
+    status: implemented
+    source_ids: [ietf.dhcpv6.rfc9915, ietf.udp.endpoint.rfc768, nokia.sros.26_7.dhcpv6_service_interface_relay]
+  ipv6.dhcpv6_prefix_exclude:
+    status: implemented
+    source_ids: [ietf.dhcpv6.prefix_exclude.rfc6603]
+  ipv6.dhcpv6_relay_lease_population:
+    status: implemented
+    source_ids: [ietf.dhcpv6.rfc9915, ietf.dhcpv6.prefix_exclude.rfc6603, nokia.sros.26_7.ies.dhcpv6_lease_population]
+  ipv6.dhcpv6_relay_neighbor_resolution:
+    status: implemented
+    source_ids: [nokia.sros.26_7.ies.dhcpv6_neighbor_resolution, ietf.nd.rfc4861]
+  ipv6.dhcpv6_relay_route_population:
+    status: implemented
+    source_ids: [ietf.dhcpv6.prefix_exclude.rfc6603, nokia.sros.26_7.ies.dhcpv6_lease_population]
+  ipv6.dhcpv6_relay_lease_operational:
+    status: implemented
+    source_ids: [nokia.sros.26_7.ies.dhcpv6_lease_operational, nokia.sros.26_7.ies.dhcpv6_lease_population]
+  ipv6.dhcpv6_server:
+    status: implemented
+    source_ids: [ietf.dhcpv6.rfc9915, ietf.dhcpv6.dns_options.rfc3646]
+  ipv6.dhcpv6_client:
+    status: implemented
+    source_ids: [ietf.dhcpv6.rfc9915, ietf.dhcpv6.dns_options.rfc3646]
+  transport.udp_wire_codec:
+    status: implemented
+    source_ids: [ietf.udp.rfc768, ietf.ipv4.rfc791, ietf.ipv6.rfc8200]
+  transport.udp_endpoint:
+    status: implemented
+    source_ids: [ietf.udp.endpoint.rfc768, ietf.ipv4.rfc791, ietf.ipv6.rfc8200]
   hardware.release_catalog:
     status: implemented
     source_ids: [nokia.sros.26_7.srsim.supported_hardware]
@@ -10,6 +142,9 @@ features:
   runtime.dynamic_shards:
     status: implemented
     source_ids: [emscripten.pthreads.shared_memory]
+  runtime.shared_memory_growth:
+    status: implemented
+    source_ids: [emscripten.shared_memory.growth, emscripten.pthreads.shared_memory]
   runtime.sixteen_router_scale:
     status: implemented
     source_ids: [emscripten.pthreads.shared_memory, ieee.802_3.ethernet_frame_timing]
@@ -25,35 +160,107 @@ features:
   ethernet.unicast:
     status: implemented
     source_ids: [ieee.802_3.ethernet_frame_timing]
+  ethernet.vlan_envelope:
+    status: implemented
+    source_ids: [ieee.802_1q.vlan_tagging, ieee.802_3.ethernet_frame_timing]
   arp.ipv4:
     status: implemented
-    source_ids: [ietf.arp.rfc826, ietf.ipv4.router_requirements.rfc1812, nokia.sros.26_7.arp.aging]
+    source_ids: [ietf.arp.rfc826, ietf.ipv4.router_requirements.rfc1812, nokia.sros.26_7.arp.aging, nokia.sros.26_7.static_arp, nokia.sros.26_7.show.arp, nokia.sros.26_7.clear.arp]
   host.ipv4_next_hop:
-    status: partially-implemented
-    source_ids: [ietf.host_requirements.rfc1122, ietf.arp.rfc826]
+    status: implemented
+    source_ids: [ietf.host_requirements.rfc1122, ietf.arp.rfc826, ietf.path_mtu.rfc1191]
   ipv4.forwarding:
-    status: partially-implemented
-    source_ids: [ietf.ipv4.rfc791, ietf.ipv4.router_requirements.rfc1812, ietf.checksum.rfc1071]
+    status: implemented
+    source_ids: [ietf.ipv4.rfc791, ietf.ipv4.router_requirements.rfc1812, ietf.ipv4.directed_broadcast.rfc2644, ietf.checksum.rfc1071]
   ipv4.fragmentation_and_pmtu:
     status: implemented
-    source_ids: [ietf.ipv4.rfc791, ietf.ipv4.router_requirements.rfc1812, ietf.path_mtu.rfc1191, nokia.sros.26_7.port.ethernet_mtu]
+    source_ids: [ietf.ipv4.rfc791, ietf.host_requirements.rfc1122, ietf.ipv4.router_requirements.rfc1812, ietf.path_mtu.rfc1191, nokia.sros.26_7.port.ethernet_mtu]
+  ipv6.addressing:
+    status: implemented
+    source_ids: [ietf.ipv6.addressing.rfc4291, ietf.ipv6.text.rfc5952, ietf.ipv6.zone_identifiers.rfc4007]
+  ipv6.source_address_selection:
+    status: implemented
+    source_ids: [ietf.ipv6.source_selection.rfc6724]
+  ipv6.stable_opaque_interface_identifier:
+    status: implemented
+    source_ids: [ietf.slaac.stable_iid.rfc7217, iana.ipv6.reserved_interface_identifiers, nist.sha256.fips180_4]
+  ipv6.forwarding:
+    status: implemented
+    source_ids: [ietf.ipv6.rfc8200, ietf.icmpv6.rfc4443, ietf.nd.rfc4861]
+  ipv6.fragmentation_and_reassembly:
+    status: implemented
+    source_ids: [ietf.ipv6.rfc8200, ietf.ipv6.path_mtu.rfc8201, ietf.ipv6.fragments.rfc5722, ietf.ipv6.atomic_fragments.rfc6946, ietf.nd.fragmentation.rfc6980]
+  ipv6.extension_header_processing:
+    status: implemented
+    source_ids: [ietf.ipv6.rfc8200, ietf.ipv6.extension_options.rfc8200, ietf.icmpv6.rfc4443, ietf.ipsec.ah.rfc4302, ietf.ipsec.esp.rfc4303]
+  ipsec.policy_sa_and_wire_foundation:
+    status: partially-implemented
+    source_ids: [ietf.ipsec.architecture.rfc4301, ietf.ipsec.ah.rfc4302, ietf.ipsec.esp.rfc4303, ietf.ipsec.esp_aes_gcm.rfc4106, ietf.ipsec.hmac_sha2.rfc4868, ietf.ipsec.ikev2.rfc7296, ietf.ipsec.ikev2_aes_gcm.rfc5282, ietf.ipsec.ikev2_ecp_groups.rfc5903, ietf.ipsec.ikev2_fragmentation.rfc7383, ietf.ipsec.ikev2_signature_auth.rfc7427, ietf.ipsec.nat_traversal.rfc3948, ietf.ipsec.algorithm_requirements.rfc8221, nokia.sros.26_7.ipsec.configuration, nokia.sros.26_7.ipsec.operational]
+  ipv6.neighbor_discovery:
+    status: implemented
+    source_ids: [ietf.nd.rfc4861, ietf.ipv6.addressing.rfc4291]
+  ipv6.redirect_destination_cache:
+    status: implemented
+    source_ids: [ietf.nd.rfc4861, ietf.icmpv6.rfc4443]
+  ipv6.router_advertisement:
+    status: implemented
+    source_ids: [ietf.nd.rfc4861, ietf.ra.preference.rfc4191, ietf.ra.rdnss.rfc8106, nokia.sros.26_7.ipv6.router_advertisement, nokia.sros.26_7.ipv6.router_advertisement_operational]
+  ipv6.mld_packet_codec:
+    status: implemented
+    source_ids: [ietf.mld.version_one.rfc2710, ietf.mld.version_two.rfc3810, ietf.mld.source_selection.rfc3590]
+  ipv6.mld_host_listener:
+    status: implemented
+    source_ids: [ietf.mld.version_one.rfc2710, ietf.mld.version_two.rfc3810, ietf.mld.source_selection.rfc3590]
+  ipv6.mld_router:
+    status: implemented
+    source_ids: [ietf.mld.version_one.rfc2710, ietf.mld.version_two.rfc3810, ietf.mld.source_selection.rfc3590, nokia.sros.26_7.mld.configuration, nokia.sros.26_7.mld.import_policy, nokia.sros.26_7.mld.interface_limits.yang, nokia.sros.26_7.mld.status, nokia.sros.26_7.mld.statistics]
+  cli.ipv6_interface_configuration:
+    status: implemented
+    source_ids: [nokia.sros.26_7.ipv6.interface_address, ietf.ipv6.addressing.rfc4291, ietf.slaac.rfc4862]
+  cli.ipv6_neighbor_configuration:
+    status: partially-implemented
+    source_ids: [nokia.sros.26_7.ipv6.neighbor_configuration, nokia.sros.26_7.ipv6.neighbor_policy, ietf.nd.rfc4861]
+  cli.ipv6_neighbor_operational:
+    status: implemented
+    source_ids: [nokia.sros.26_7.ipv6.neighbor_operational, nokia.sros.26_7.ipv6.neighbor_reset, ietf.nd.rfc4861]
+  cli.ipv6_static_routes:
+    status: implemented
+    source_ids: [nokia.sros.26_7.static_route.configuration, ietf.ipv6.rfc8200]
+  ipv6.duplicate_address_detection:
+    status: implemented
+    source_ids: [ietf.ipv6.dad.rfc4862]
+  icmpv6.echo_and_forwarding_errors:
+    status: implemented
+    source_ids: [ietf.icmpv6.rfc4443, ietf.ipv6.rfc8200]
+  icmpv6.operational_statistics:
+    status: implemented
+    source_ids: [ietf.icmp.statistics.rfc4293, nokia.sros.26_7.ipv6.icmp6_statistics]
   icmp.echo:
     status: implemented
     source_ids: [ietf.icmp.rfc792, nokia.sros.26_7.ping]
   icmp.time_exceeded:
     status: implemented
     source_ids: [ietf.icmp.rfc792, ietf.ipv4.router_requirements.rfc1812]
+  icmpv4.redirect_generation:
+    status: implemented
+    source_ids: [ietf.icmp.rfc792, ietf.ipv4.router_requirements.rfc1812, nokia.sros.26_7.ipv4.icmp_redirects]
+  icmp.destination_unreachable_network_protocol_and_port:
+    status: implemented
+    source_ids: [ietf.icmp.rfc792, ietf.ipv4.router_requirements.rfc1812]
+  icmpv4.operational_statistics:
+    status: implemented
+    source_ids: [ietf.icmp.rfc792, nokia.sros.26_7.ipv4.icmp_statistics]
   cli.md.session:
-    status: partially-implemented
+    status: implemented
     source_ids: [nokia.sros.26_7.md_cli.navigation, nokia.sros.26_7.md_cli.command_completion, nokia.sros.26_7.cli.pagination]
   cli.classic.session:
-    status: partially-implemented
+    status: implemented
     source_ids: [nokia.sros.26_7.classic_cli.navigation, nokia.sros.26_7.cli.pagination]
   cli.operational_reports:
     status: partially-implemented
-    source_ids: [nokia.sros.26_7.show.system_information, nokia.sros.26_7.show.system_alarms, nokia.sros.26_7.facility_alarms, nokia.sros.26_7.hardware_alarm_events, nokia.sros.26_7.show.card, nokia.sros.26_7.show.mda, nokia.sros.26_7.show.port, nokia.sros.26_7.show.router_interface, nokia.sros.26_7.show.route_table, nokia.sros.26_7.show.fib, nokia.sros.26_7.show.arp]
+    source_ids: [nokia.sros.26_7.show.system_information, nokia.sros.26_7.show.system_alarms, nokia.sros.26_7.facility_alarms, nokia.sros.26_7.hardware_alarm_events, nokia.sros.26_7.show.card, nokia.sros.26_7.show.mda, nokia.sros.26_7.show.port, nokia.sros.26_7.show.router_interface, nokia.sros.26_7.show.route_table, nokia.sros.26_7.show.fib, nokia.sros.26_7.show.arp, nokia.sros.26_7.ipv6.neighbor_operational, nokia.sros.26_7.ipv6.neighbor_reset, nokia.sros.26_7.mld.configuration, nokia.sros.26_7.mld.status, nokia.sros.26_7.mld.statistics, nokia.sros.26_7.tls_operational_show]
   capture.pcapng:
-    status: partially-implemented
+    status: implemented
     source_ids: [ietf.pcapng.draft_ietf_opsawg_05, iana.pcap.linktype_ethernet]
   persistence.project:
     status: implemented
@@ -70,9 +277,39 @@ features:
   browser.platform_gate:
     status: implemented
     source_ids: [w3c.webappsec.coop_coep_csp, emscripten.pthreads.shared_memory]
+  runtime.browser_continuity_recovery:
+    status: partially-implemented
+    source_ids: [chrome.page_lifecycle.continuity, emscripten.pthreads.shared_memory]
   cli.port_and_static_configuration:
     status: partially-implemented
     source_ids: [nokia.sros.26_7.port.configuration, nokia.sros.26_7.port.description, nokia.sros.26_7.static_route.configuration, nokia.sros.26_7.system.name]
   cli.router_interface_configuration:
     status: implemented
-    source_ids: [nokia.sros.26_7.router_interface.configuration, nokia.sros.26_7.port.configuration]
+    source_ids: [nokia.sros.26_7.router_interface.configuration, nokia.sros.26_7.system_interface.ipv4, nokia.sros.26_7.port.configuration]
+  ipv4.system_interface:
+    status: implemented
+    source_ids: [nokia.sros.26_7.system_interface.ipv4, ietf.ipv4.router_requirements.rfc1812]
+  transport.quic_v1_connection:
+    status: partially-implemented
+    source_ids: [ietf.quic.transport.rfc9000, ietf.quic.tls.rfc9001, ietf.quic.recovery.rfc9002, ietf.tls.alpn.rfc7301, ietf.pki.path_validation.rfc5280, ngtcp2.quic.1_24_0, openssl.crypto.3_5_7]
+  services.dns_over_quic:
+    status: partially-implemented
+    source_ids: [ietf.doq.rfc9250, ietf.quic.transport.rfc9000, ietf.quic.tls.rfc9001, ietf.quic.recovery.rfc9002, ietf.dns.message.rfc1035, ietf.dot.authentication.rfc8310, ngtcp2.quic.1_24_0, openssl.crypto.3_5_7]
+  services.http3_session:
+    status: partially-implemented
+    source_ids: [ietf.http3.rfc9114, ietf.qpack.rfc9204, ietf.quic.transport.rfc9000, ietf.quic.tls.rfc9001, nghttp3.http3.1_17_0, ngtcp2.quic.1_24_0, openssl.crypto.3_5_7]
+  services.dns_service_binding:
+    status: implemented
+    source_ids: [ietf.svcb.rfc9460, ietf.dns_svcb.rfc9461, ietf.dns.message.rfc1035]
+  services.designated_resolver_discovery:
+    status: partially-implemented
+    source_ids: [ietf.ddr.rfc9462, ietf.dns_svcb.rfc9461, ietf.svcb.rfc9460, ietf.pki.path_validation.rfc5280]
+  services.ies_ipv6_attachment:
+    status: implemented
+    source_ids: [nokia.sros.26_7.ies.service_model, ieee.802_1q.vlan_tagging, ietf.ipv6.rfc8200]
+  services.ies_dhcpv6_relay:
+    status: implemented
+    source_ids: [nokia.sros.26_7.ies.dhcpv6_relay, ietf.dhcpv6.rfc9915, ietf.ipv6.zone_identifiers.rfc4007]
+  services.ies_dhcpv6_relay_ifindex_interface_id:
+    status: unsupported
+    source_ids: [nokia.sros.26_7.ies.dhcpv6_relay_ifindex]

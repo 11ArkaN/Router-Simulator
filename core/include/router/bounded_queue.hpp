@@ -52,6 +52,11 @@ public:
 
   [[nodiscard]] std::size_t size() const noexcept { return size_; }
   [[nodiscard]] bool full() const noexcept { return size_ == Capacity; }
+  [[nodiscard]] std::size_t available() const noexcept {
+    // This is an owner-local admission value. No other thread can mutate the
+    // queue between checking a datagram's fragment count and enqueueing it.
+    return Capacity - size_;
+  }
 
   [[nodiscard]] bool copy_at(std::size_t offset, T &value) const noexcept {
     // Structural checkpoints inspect FIFO order without popping live handles.

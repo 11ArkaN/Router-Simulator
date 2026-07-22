@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <type_traits>
 
 namespace router {
@@ -10,9 +11,17 @@ namespace router {
 // The default is a trivial value copy. Packet-bearing message types may add an
 // ADL overload that copies only their live frame prefix while preserving the
 // same trivially-copyable shared-memory representation.
-template <typename T>
-void spsc_copy(T &destination, const T &source) noexcept {
+template <typename T> void spsc_copy(T &destination, const T &source) noexcept {
   destination = source;
+}
+
+// Sensitive control records use an explicit consuming pop. Volatile byte
+// stores prevent an optimizer from leaving a project key in a released shared
+// slot. Ordinary packet and command rings avoid this O(sizeof(T)) erase cost.
+template <typename T> void spsc_secure_clear(T &value) noexcept {
+  auto *bytes = reinterpret_cast<volatile std::uint8_t *>(&value);
+  for (std::size_t index{}; index < sizeof(T); ++index)
+    bytes[index] = 0U;
 }
 
 // The producer alone writes head and the consumer alone writes tail. Release on
@@ -41,6 +50,16 @@ public:
     return increment(head) == tail_.load(std::memory_order_acquire);
   }
 
+  [[nodiscard]] std::size_t producer_available() const noexcept {
+    // Only the producer may use this admission snapshot. Its private head is
+    // relaxed, while acquire observes all slots the consumer has released.
+    // The consumer can only increase availability before subsequent pushes,
+    // so one producer may safely preflight an indivisible packet batch.
+    const auto head = head_.load(std::memory_order_relaxed);
+    const auto tail = tail_.load(std::memory_order_acquire);
+    return tail > head ? tail - head - 1U : Capacity - head + tail - 1U;
+  }
+
   [[nodiscard]] bool try_push(const T &value) noexcept {
     // Only the producer mutates head. Its own previous value needs no fence.
     const auto head = head_.load(std::memory_order_relaxed);
@@ -60,6 +79,18 @@ public:
       return false;
     spsc_copy(value, slots_[tail]);
     // Publishing tail permits reuse only after the slot copy has completed.
+    tail_.store(increment(tail), std::memory_order_release);
+    return true;
+  }
+
+  [[nodiscard]] bool try_pop_and_clear(T &value) noexcept {
+    // The consumer clears the slot before release-publishing tail, so the
+    // producer can never race a new write with the erasure of the old secret.
+    const auto tail = tail_.load(std::memory_order_relaxed);
+    if (tail == head_.load(std::memory_order_acquire))
+      return false;
+    spsc_copy(value, slots_[tail]);
+    spsc_secure_clear(slots_[tail]);
     tail_.store(increment(tail), std::memory_order_release);
     return true;
   }

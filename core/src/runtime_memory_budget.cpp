@@ -1,6 +1,6 @@
-// Build-time fixed-memory proof for the maximum multi-router laboratory. This
-// translation unit owns no runtime state. It depends on the concrete bounded
-// owner types so a layout change that exceeds 256 MiB fails compilation.
+// Build-time memory-envelope proof for the maximum multi-router laboratory.
+// Baseline arenas fit the initial allocation; later protocol-owned dynamic
+// state may request fixed-step growth without changing any existing offset.
 
 #include "router/capture_store.hpp"
 #include "router/generated_device_catalog.hpp"
@@ -25,6 +25,12 @@ constexpr std::size_t packet_pool_handles =
 // same bounded implementation and therefore require no separate estimate.
 constexpr std::size_t router_forwarding_arenas =
     device_catalog::maximum_routers * sizeof(RouterForwarder);
+// UdpEndpoint keeps its payload blocks in one vector allocation that sizeof
+// cannot observe. Every router may run a relay or later router-local service,
+// so the initial-memory proof budgets the complete arena for all sixteen.
+constexpr std::size_t router_udp_payload_arenas =
+    device_catalog::maximum_routers *
+    transport::UdpEndpoint::payload_arena_allocation_bytes;
 
 // LabRuntime contains all fixed control registries, hardware inventory slots,
 // telemetry and channel objects. Heap allocations with variable standard
@@ -34,14 +40,20 @@ constexpr std::size_t maximum_live_storage =
     device_catalog::capture_store_bytes +
     device_catalog::terminal_output_arena_bytes +
     device_catalog::runtime_control_reserve_bytes +
-    router_forwarding_arenas + sizeof(MultiDeviceFabric) +
+    router_forwarding_arenas + router_udp_payload_arenas +
+    sizeof(MultiDeviceFabric) +
     sizeof(CaptureStore) + sizeof(LabRuntime) + device_catalog::wasm_stack_bytes;
 
 static_assert(device_catalog::terminal_result_bytes <=
                   device_catalog::terminal_output_arena_bytes,
               "one terminal result cannot exceed its shared arena");
 static_assert(maximum_live_storage <= device_catalog::wasm_initial_memory_bytes,
-              "maximum 16-router storage exceeds fixed WebAssembly memory");
+              "baseline 16-router arenas exceed initial WebAssembly memory");
+static_assert(device_catalog::wasm_initial_memory_bytes <=
+                  device_catalog::wasm_maximum_memory_bytes,
+              "initial WebAssembly memory exceeds its growth ceiling");
+static_assert(device_catalog::wasm_growth_step_bytes % (64U * 1024U) == 0U,
+              "WebAssembly memory growth step must contain complete pages");
 
 } // namespace
 } // namespace router::lab::memory_budget

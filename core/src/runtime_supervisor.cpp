@@ -6,6 +6,7 @@
 #include "router/multi_device_routing.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <new>
 #include <thread>
 
@@ -15,15 +16,89 @@ struct RuntimeSupervisor::RouterNetworkState {
   // Control owns interface and RIB inputs. The forwarding object owns only its
   // installed value projections, adjacency table and packet queues.
   routing::RouteTable rib;
-  std::array<routing::ConnectedInput, device_catalog::maximum_ports_per_router>
+  std::array<routing::ConnectedInput, routing::maximum_ipv4_connected_inputs>
       connected{};
   std::array<routing::StaticInput,
              device_catalog::maximum_static_routes_per_router>
       statics{};
+  routing::Ipv6RouteTable ipv6_rib;
+  std::array<routing::Ipv6ConnectedInput,
+             device_catalog::maximum_ports_per_router>
+      ipv6_connected{};
+  // Native secondary addresses are cold control intent. The separate derived
+  // connected vector is rebuilt transactionally and passed to the RIB without
+  // making the forwarding shard inspect mutable configuration memory.
+  std::vector<RouterIpv6Address> native_ipv6_addresses{};
+  std::vector<routing::Ipv6ConnectedInput> native_ipv6_connected{};
+  std::array<routing::Ipv6StaticInput,
+             device_catalog::maximum_static_routes_per_router>
+      ipv6_statics{};
   std::array<ForwardPort, device_catalog::maximum_ports_per_router> ports{};
   std::array<bool, device_catalog::maximum_ports_per_router> interface_admin{};
+  std::array<bool, device_catalog::maximum_ports_per_router> ies_port_owned{};
+  std::array<RouterAdvertisementIntent,
+             device_catalog::maximum_ports_per_router>
+      router_advertisements{};
+  std::array<MldInterfaceIntent, device_catalog::maximum_ports_per_router>
+      mld_interfaces{};
+  // Control retains committed relay intent independently of the forwarding
+  // socket. Card removal may destroy the latter while the former must be
+  // available for exact reprovisioning when hardware returns.
+  std::array<std::optional<dhcpv6::RelayInterfaceConfig>,
+             device_catalog::maximum_ports_per_router>
+      dhcpv6_relays{};
+  // These vectors are cold-path, control-owned configuration generations.
+  // Packet owners receive only complete immutable projections through the
+  // SPSC command stream, never pointers into these allocations.
+  service::Configuration ies_configuration{};
+  std::vector<service::SapAttachment> ies_sap_attachments{};
+  std::vector<service::ServiceIpv6Interface> ies_ipv6_interfaces{};
+  std::vector<routing::Ipv6ConnectedInput> ies_ipv6_connected{};
+  std::vector<dhcpv6::RelayInterfaceConfig> ies_dhcpv6_relays{};
   std::uint64_t fib_generation{};
+  std::uint64_t ipv6_fib_generation{};
 };
+
+namespace {
+
+bool build_native_ipv6_connected(
+    std::span<const RouterIpv6Address> addresses,
+    std::span<const ForwardPort> ports,
+    std::vector<routing::Ipv6ConnectedInput> &output) noexcept {
+  try {
+    std::vector<routing::Ipv6ConnectedInput> candidate;
+    candidate.reserve(addresses.size());
+    for (const auto &address : addresses) {
+      if (address.port_ordinal >= ports.size())
+        return false;
+      // Multiple addresses in one subnet install one connected prefix. Local
+      // address ownership remains per-address in RouterIpv6AddressTable, while
+      // duplicating the connected FIB entry would create ambiguous show output
+      // without adding any forwarding reachability.
+      const auto duplicate = std::find_if(
+          candidate.begin(), candidate.end(), [&](const auto &entry) {
+            return entry.interface_id == address.interface_id &&
+                   entry.network == address.network &&
+                   entry.prefix_length == address.prefix_length;
+          });
+      if (duplicate != candidate.end())
+        continue;
+      candidate.push_back(
+          {.configured = true,
+           .operational = ports[address.port_ordinal].operational,
+           .network = address.network,
+           .interface_id = address.interface_id,
+           .physical_port_ordinal = address.port_ordinal,
+           .prefix_length = address.prefix_length});
+    }
+    output.swap(candidate);
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
+} // namespace
 
 RuntimeSupervisor::RuntimeSupervisor()
     : session_workflows_(sessions_),
@@ -42,8 +117,9 @@ RuntimeSupervisor::~RuntimeSupervisor() {
   network_worker_->stop();
 }
 
-std::optional<SessionHandle> RuntimeSupervisor::create_session(
-    DeviceHandle device, std::string_view session_id) {
+std::optional<SessionHandle>
+RuntimeSupervisor::create_session(DeviceHandle device,
+                                  std::string_view session_id) {
   const auto *record = devices_.get(device);
   // Quiescing closes admission before link and arena teardown begins. A new
   // terminal can never revive a router whose generation is being removed.
@@ -64,13 +140,15 @@ bool RuntimeSupervisor::set_cli_session(SessionHandle session,
   return true;
 }
 
-SessionWorkflowResult RuntimeSupervisor::enter_session_mode(
-    SessionHandle session, CandidateMode mode) noexcept {
+SessionWorkflowResult
+RuntimeSupervisor::enter_session_mode(SessionHandle session,
+                                      CandidateMode mode) noexcept {
   return session_workflows_.enter(session, mode);
 }
 
-SessionWorkflowResult RuntimeSupervisor::leave_session_mode(
-    SessionHandle session, bool discard) noexcept {
+SessionWorkflowResult
+RuntimeSupervisor::leave_session_mode(SessionHandle session,
+                                      bool discard) noexcept {
   return session_workflows_.leave(session, discard);
 }
 
@@ -79,8 +157,9 @@ SessionWorkflowResult RuntimeSupervisor::transition_session_mode(
   return session_workflows_.transition(session, target, discard);
 }
 
-SessionWorkflowResult RuntimeSupervisor::record_session_edit(
-    SessionHandle session, std::uint64_t key) noexcept {
+SessionWorkflowResult
+RuntimeSupervisor::record_session_edit(SessionHandle session,
+                                       std::uint64_t key) noexcept {
   return session_workflows_.record_edit(session, key);
 }
 
@@ -94,15 +173,16 @@ RuntimeSupervisor::discard_session(SessionHandle session) noexcept {
   return session_workflows_.discard(session);
 }
 
-SessionWorkflowResult RuntimeSupervisor::authorize_classic_write(
-    DeviceHandle device) const noexcept {
+SessionWorkflowResult
+RuntimeSupervisor::authorize_classic_write(DeviceHandle device) const noexcept {
   return devices_.get(device)
              ? session_workflows_.authorize_classic_write(device)
              : SessionWorkflowResult::invalid_session;
 }
 
-SessionWorkflowResult RuntimeSupervisor::classic_write(
-    DeviceHandle device, std::uint64_t key) noexcept {
+SessionWorkflowResult
+RuntimeSupervisor::classic_write(DeviceHandle device,
+                                 std::uint64_t key) noexcept {
   return devices_.get(device) ? session_workflows_.classic_write(device, key)
                               : SessionWorkflowResult::invalid_session;
 }
@@ -143,8 +223,41 @@ RuntimeSupervisor::dispatch(NetworkCommand &command) noexcept {
   return result;
 }
 
-NetworkCommand &
-RuntimeSupervisor::prepare(NetworkCommandKind kind) noexcept {
+bool RuntimeSupervisor::initialize_signing_vault(
+    std::span<const std::uint8_t> wrapping_key,
+    const crypto::Sha256Digest &project_context_digest) noexcept {
+  if (wrapping_key.size() !=
+      NetworkSigningVaultInitialize{}.wrapping_key.size())
+    return false;
+
+  NetworkSigningVaultInitialize payload;
+  std::copy(wrapping_key.begin(), wrapping_key.end(),
+            payload.wrapping_key.begin());
+  payload.project_context_digest = project_context_digest;
+
+  auto &command = prepare(NetworkCommandKind::initialize_signing_vault);
+  command.id = next_network_command_id_++;
+  if (!network_worker_->submit_signing_vault(command, payload)) {
+    // The producer-local copy is sensitive too. Clear it on every exit path;
+    // secure clearing of the shared slot is the network consumer's duty.
+    spsc_secure_clear(payload);
+    return false;
+  }
+  spsc_secure_clear(payload);
+
+  NetworkResult result;
+  while (!network_worker_->read(result)) {
+    // This synchronous control-shard wait mirrors ordinary dispatch. It never
+    // blocks the browser UI thread and preserves the single-outstanding-command
+    // ordering contract without a second response queue.
+    std::this_thread::yield();
+  }
+  return result.version == network_plane_message_version &&
+         result.id == command.id && result.kind == command.kind &&
+         result.success;
+}
+
+NetworkCommand &RuntimeSupervisor::prepare(NetworkCommandKind kind) noexcept {
   // Assignment resets every inactive payload field in the persistent arena.
   // This keeps stale handles or FIB bytes from accidentally accompanying a
   // later command if the message schema grows another handler.
@@ -153,9 +266,10 @@ RuntimeSupervisor::prepare(NetworkCommandKind kind) noexcept {
   return *network_command_;
 }
 
-std::optional<DeviceHandle> RuntimeSupervisor::create_router(
-    std::string_view node_id, std::string_view profile_id,
-    std::string_view system_name) {
+std::optional<DeviceHandle>
+RuntimeSupervisor::create_router(std::string_view node_id,
+                                 std::string_view profile_id,
+                                 std::string_view system_name) {
   // Cross-kind identity is checked before DeviceRegistry reserves a slot.
   if (hosts_.find(node_id))
     return std::nullopt;
@@ -181,8 +295,9 @@ std::optional<DeviceHandle> RuntimeSupervisor::create_router(
   return handle;
 }
 
-std::optional<HostHandle> RuntimeSupervisor::create_host(
-    std::string_view node_id, std::string_view name) {
+std::optional<HostHandle>
+RuntimeSupervisor::create_host(std::string_view node_id,
+                               std::string_view name) {
   // The reciprocal check makes stable identity unique regardless of node kind.
   if (devices_.find(node_id))
     return std::nullopt;
@@ -202,7 +317,7 @@ std::optional<HostHandle> RuntimeSupervisor::create_host(
 }
 
 bool RuntimeSupervisor::set_system_name(DeviceHandle device,
-                                         std::string_view system_name) {
+                                        std::string_view system_name) {
   auto *record = devices_.get(device);
   if (!record || system_name.empty() || system_name.size() > 64U)
     return false;
@@ -213,8 +328,7 @@ bool RuntimeSupervisor::set_system_name(DeviceHandle device,
   return true;
 }
 
-bool RuntimeSupervisor::set_host_name(HostHandle host,
-                                      std::string_view name) {
+bool RuntimeSupervisor::set_host_name(HostHandle host, std::string_view name) {
   auto *record = hosts_.get(host);
   if (!record || name.empty() || name.size() > 64U)
     return false;
@@ -276,11 +390,12 @@ void RuntimeSupervisor::deactivate(LinkHandle link) noexcept {
     record->speed_mbps = 0U;
     for (const auto &endpoint : record->endpoints) {
       // Resolve current inventory rather than trusting endpoints retained by a
-      // fabric generation that hardware replacement may already have invalidated.
+      // fabric generation that hardware replacement may already have
+      // invalidated.
       const auto current = resolve(endpoint);
       if (current && current->router)
-        static_cast<void>(current->router->set_link_signal(current->handle,
-                                                           false));
+        static_cast<void>(
+            current->router->set_link_signal(current->handle, false));
     }
   }
   // NetworkPlane validates the complete generation. An absent live binding is
@@ -323,16 +438,25 @@ void RuntimeSupervisor::reconcile(LinkHandle link) noexcept {
   } else if (second->router_port) {
     speed_mbps = second->router_port->speed_mbps;
   } else {
-    // Project format 3 supplies no host-host rate source. Carrier stays down
-    // instead of using a hidden default.
-    return;
+    // Host endpoints have no hardware profile from which IEEE autonegotiation
+    // capabilities can be derived. A direct cable therefore needs explicit
+    // project intent and never receives a fabricated default.
+    speed_mbps = record->configured_speed_mbps;
   }
+  // Explicit media intent also constrains catalog-backed router links. A
+  // mismatch represents incompatible physical configuration and must not be
+  // repaired by silently replacing either administrator-selected rate.
+  if (record->configured_speed_mbps &&
+      record->configured_speed_mbps != speed_mbps)
+    return;
   auto &configure = prepare(NetworkCommandKind::configure_link);
-  configure.link_program = {
-      link, first->handle, second->handle,
-      static_cast<std::uint64_t>(speed_mbps) * 1'000'000ULL,
-      std::chrono::nanoseconds{record->propagation_ns},
-      record->admin_enabled};
+  configure.link_program = {link,
+                            first->handle,
+                            second->handle,
+                            static_cast<std::uint64_t>(speed_mbps) *
+                                1'000'000ULL,
+                            std::chrono::nanoseconds{record->propagation_ns},
+                            record->admin_enabled};
   const auto configured = speed_mbps ? dispatch(configure) : std::nullopt;
   if (!configured || !configured->success)
     return;
@@ -346,11 +470,11 @@ void RuntimeSupervisor::reconcile(LinkHandle link) noexcept {
   // Physical signal follows endpoint compatibility and cable administration.
   // Router port administration remains a separate operational-state gate.
   if (first->router)
-    static_cast<void>(first->router->set_link_signal(first->handle,
-                                                     record->admin_enabled));
+    static_cast<void>(
+        first->router->set_link_signal(first->handle, record->admin_enabled));
   if (second->router)
-    static_cast<void>(second->router->set_link_signal(second->handle,
-                                                      record->admin_enabled));
+    static_cast<void>(
+        second->router->set_link_signal(second->handle, record->admin_enabled));
   if (first->handle.node.kind == NodeKind::router)
     refresh_router({first->handle.node.index, first->handle.node.generation});
   if (second->handle.node.kind == NodeKind::router)
@@ -365,9 +489,10 @@ void RuntimeSupervisor::reconcile(NodeHandle node_handle) noexcept {
     reconcile(links.handles[index]);
 }
 
-HardwareEditResult RuntimeSupervisor::set_card(
-    DeviceHandle device, std::uint16_t slot, std::string_view provisioned,
-    std::string_view equipped) noexcept {
+HardwareEditResult
+RuntimeSupervisor::set_card(DeviceHandle device, std::uint16_t slot,
+                            std::string_view provisioned,
+                            std::string_view equipped) noexcept {
   auto *inventory = hardware(device);
   if (!inventory)
     return HardwareEditResult::invalid_slot;
@@ -379,9 +504,10 @@ HardwareEditResult RuntimeSupervisor::set_card(
   return result;
 }
 
-HardwareEditResult RuntimeSupervisor::set_mda(
-    DeviceHandle device, std::uint16_t card, std::uint16_t mda,
-    std::string_view provisioned, std::string_view equipped) noexcept {
+HardwareEditResult
+RuntimeSupervisor::set_mda(DeviceHandle device, std::uint16_t card,
+                           std::uint16_t mda, std::string_view provisioned,
+                           std::string_view equipped) noexcept {
   auto *inventory = hardware(device);
   if (!inventory)
     return HardwareEditResult::invalid_slot;
@@ -391,8 +517,9 @@ HardwareEditResult RuntimeSupervisor::set_mda(
   return result;
 }
 
-HardwareEditResult RuntimeSupervisor::set_card_admin(
-    DeviceHandle device, std::uint16_t slot, bool enabled) noexcept {
+HardwareEditResult RuntimeSupervisor::set_card_admin(DeviceHandle device,
+                                                     std::uint16_t slot,
+                                                     bool enabled) noexcept {
   auto *inventory = hardware(device);
   if (!inventory)
     return HardwareEditResult::invalid_slot;
@@ -402,9 +529,10 @@ HardwareEditResult RuntimeSupervisor::set_card_admin(
   return result;
 }
 
-HardwareEditResult RuntimeSupervisor::set_mda_admin(
-    DeviceHandle device, std::uint16_t card, std::uint16_t mda,
-    bool enabled) noexcept {
+HardwareEditResult RuntimeSupervisor::set_mda_admin(DeviceHandle device,
+                                                    std::uint16_t card,
+                                                    std::uint16_t mda,
+                                                    bool enabled) noexcept {
   auto *inventory = hardware(device);
   if (!inventory)
     return HardwareEditResult::invalid_slot;
@@ -414,9 +542,10 @@ HardwareEditResult RuntimeSupervisor::set_mda_admin(
   return result;
 }
 
-HardwareEditResult RuntimeSupervisor::configure_port(
-    DeviceHandle device, std::string_view port_id, bool admin_enabled,
-    std::uint16_t mtu, std::uint32_t speed_mbps) noexcept {
+HardwareEditResult
+RuntimeSupervisor::configure_port(DeviceHandle device, std::string_view port_id,
+                                  bool admin_enabled, std::uint16_t mtu,
+                                  std::uint32_t speed_mbps) noexcept {
   auto *inventory = hardware(device);
   if (!inventory)
     return HardwareEditResult::invalid_slot;
@@ -430,7 +559,7 @@ HardwareEditResult RuntimeSupervisor::configure_port(
 std::optional<LinkHandle> RuntimeSupervisor::create_link(
     std::string_view link_id, const LinkEndpoint &first,
     const LinkEndpoint &second, std::chrono::nanoseconds propagation,
-    bool admin_enabled) noexcept {
+    bool admin_enabled, std::uint32_t configured_speed_mbps) noexcept {
   // Node identity must exist, while absent port hardware is valid retained link
   // intent and will reconcile when compatible inventory appears.
   const auto exists = [this](NodeHandle handle) {
@@ -441,8 +570,8 @@ std::optional<LinkHandle> RuntimeSupervisor::create_link(
   if (!exists(first.node) || !exists(second.node) || propagation.count() < 0)
     return std::nullopt;
   const auto link = topology_.create(
-      link_id, first, second,
-      static_cast<std::uint64_t>(propagation.count()));
+      link_id, first, second, static_cast<std::uint64_t>(propagation.count()),
+      configured_speed_mbps);
   if (!link)
     return std::nullopt;
   topology_.get(*link)->admin_enabled = admin_enabled;
@@ -467,8 +596,8 @@ bool RuntimeSupervisor::set_link_admin(LinkHandle link, bool enabled) noexcept {
 }
 
 bool RuntimeSupervisor::set_link_properties(
-    LinkHandle link, bool enabled,
-    std::chrono::nanoseconds propagation) noexcept {
+    LinkHandle link, bool enabled, std::chrono::nanoseconds propagation,
+    std::uint32_t configured_speed_mbps) noexcept {
   auto *record = topology_.get(link);
   if (!record || propagation.count() < 0)
     return false;
@@ -476,19 +605,26 @@ bool RuntimeSupervisor::set_link_properties(
   // reprograms both physical directions and their local propagation deadlines
   // from this one accepted value, never from an editor-side timer.
   record->admin_enabled = enabled;
-  record->propagation_ns =
-      static_cast<std::uint64_t>(propagation.count());
+  record->propagation_ns = static_cast<std::uint64_t>(propagation.count());
+  // Zero means that physical router ports negotiate from their catalog-backed
+  // selected rates. A nonzero value is retained as administrator intent and
+  // reconciliation refuses carrier when it conflicts with either endpoint.
+  record->configured_speed_mbps = configured_speed_mbps;
   reconcile(link);
   return true;
 }
 
 bool RuntimeSupervisor::configure_interface(
     DeviceHandle device, std::string_view port_id, packet::Mac mac,
-    std::uint32_t address, std::uint8_t prefix_length,
-    bool admin_enabled) noexcept {
+    std::uint32_t address, std::uint8_t prefix_length, bool admin_enabled,
+    std::uint32_t arp_timeout_seconds,
+    std::uint16_t arp_retry_deciseconds) noexcept {
   auto *inventory = hardware(device);
   if (!inventory || device.index >= router_network_.size() ||
-      !router_network_[device.index] || prefix_length > 32U)
+      !router_network_[device.index] || prefix_length > 32U ||
+      arp_timeout_seconds > device_catalog::arp_timeout_maximum_seconds ||
+      arp_retry_deciseconds < device_catalog::arp_retry_minimum_deciseconds ||
+      arp_retry_deciseconds > device_catalog::arp_retry_maximum_deciseconds)
     return false;
   const auto ordinal_value = inventory->coordinate_ordinal(port_id);
   const auto *physical = inventory->find(port_id);
@@ -497,25 +633,1571 @@ bool RuntimeSupervisor::configure_interface(
   auto &network = *router_network_[device.index];
   const auto ordinal = *ordinal_value;
   // The interface key is the stable physical ordinal. Removing its MDA leaves
-  // control intent in this slot while forwarding operational state becomes down.
-  network.ports[ordinal] = {
-      .configured = true,
-      .operational = false,
-      .ordinal = ordinal,
-      .mtu = physical->mtu,
-      .address = address,
-      .network = address & routing::prefix_mask(prefix_length),
-      .speed_mbps = physical->speed_mbps,
-      .prefix_length = prefix_length,
-      .mac = mac};
+  // control intent in this slot while forwarding operational state becomes
+  // down. IPv4 and IPv6 are leaves of one routed interface. Updating one family
+  // must preserve the other family's addresses and ND state projection.
+  auto &port = network.ports[ordinal];
+  port.configured = true;
+  port.operational = false;
+  port.ordinal = ordinal;
+  port.mtu = physical->mtu;
+  port.address = address;
+  port.network = address & routing::prefix_mask(prefix_length);
+  port.speed_mbps = physical->speed_mbps;
+  port.prefix_length = prefix_length;
+  port.mac = mac;
+  port.arp_timeout_seconds = arp_timeout_seconds;
+  port.arp_retry_deciseconds = arp_retry_deciseconds;
+  port.ipv4_configured = true;
   network.interface_admin[ordinal] = admin_enabled;
-  network.connected[ordinal] = {
+  network.connected[ordinal] = {.configured = true,
+                                .operational = false,
+                                .network = address &
+                                           routing::prefix_mask(prefix_length),
+                                .port_ordinal = ordinal,
+                                .prefix_length = prefix_length};
+  refresh_router(device);
+  return true;
+}
+
+bool RuntimeSupervisor::configure_system_interface(
+    DeviceHandle device, std::uint32_t address, bool admin_enabled) noexcept {
+  if (!devices_.get(device) || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  // Zero, multicast and the limited broadcast value cannot identify a local
+  // unicast endpoint. The /32 length is structural in this API, so callers
+  // cannot accidentally create a connected subnet without a physical medium.
+  const bool multicast = (address & 0xf0000000U) == 0xe0000000U;
+  if (!address || address == 0xffffffffU || multicast)
+    return false;
+
+  auto &state = *router_network_[device.index];
+  auto &system = state.connected[routing::system_ipv4_connected_index];
+  system = {.configured = true,
+            .operational = admin_enabled,
+            .network = address,
+            // The ordinal is deliberately meaningless for a local route. The
+            // local_system discriminator prevents every consumer from using it.
+            .port_ordinal = 0U,
+            .prefix_length = 32U,
+            .local_system = true};
+  rebuild_routes(device);
+  return state.rib.last_rebuild_valid();
+}
+
+bool RuntimeSupervisor::remove_system_interface(DeviceHandle device) noexcept {
+  if (!devices_.get(device) || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  auto &state = *router_network_[device.index];
+  auto &system = state.connected[routing::system_ipv4_connected_index];
+  if (!system.configured || !system.local_system)
+    return false;
+  system = {};
+  rebuild_routes(device);
+  return state.rib.last_rebuild_valid();
+}
+
+bool RuntimeSupervisor::configure_ipv6_interface(
+    DeviceHandle device, std::string_view port_id, packet::Mac mac,
+    const packet::Ipv6 &address, std::uint8_t prefix_length,
+    const packet::Ipv6 &link_local, bool admin_enabled) noexcept {
+  auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index] || prefix_length > ip::ipv6_address_bits ||
+      ip::is_unspecified(address) || ip::is_multicast(address) ||
+      !ip::is_link_local(link_local))
+    return false;
+  const auto ordinal_value = inventory->coordinate_ordinal(port_id);
+  const auto *physical = inventory->find(port_id);
+  if (!ordinal_value || !physical || !physical->speed_mbps ||
+      physical->mtu < packet::ipv6_minimum_ethernet_mtu)
+    return false;
+
+  auto &network = *router_network_[device.index];
+  const auto ordinal = *ordinal_value;
+  auto candidate_port = network.ports[ordinal];
+  const bool previously_configured = candidate_port.configured;
+  if (!previously_configured)
+    candidate_port.ipv4_configured = false;
+  candidate_port.configured = true;
+  candidate_port.operational = false;
+  candidate_port.ordinal = ordinal;
+  candidate_port.mtu = physical->mtu;
+  candidate_port.speed_mbps = physical->speed_mbps;
+  candidate_port.mac = mac;
+  candidate_port.ipv6_configured = true;
+  candidate_port.ipv6_address = address;
+  candidate_port.ipv6_network = ip::mask(address, prefix_length);
+  candidate_port.ipv6_link_local = link_local;
+  candidate_port.ipv6_prefix_length = prefix_length;
+  const routing::Ipv6ConnectedInput selected_connected{
       .configured = true,
       .operational = false,
-      .network = address & routing::prefix_mask(prefix_length),
-      .port_ordinal = ordinal,
+      .network = candidate_port.ipv6_network,
+      .interface_id = physical_interface_id(ordinal),
+      .physical_port_ordinal = ordinal,
       .prefix_length = prefix_length};
+  try {
+    auto candidate_addresses = network.native_ipv6_addresses;
+    candidate_addresses.erase(
+        std::remove_if(candidate_addresses.begin(), candidate_addresses.end(),
+                       [&](const auto &configured) {
+                         return configured.interface_id ==
+                                physical_interface_id(ordinal);
+                       }),
+        candidate_addresses.end());
+    candidate_addresses.push_back(
+        {.address = address,
+         .network = candidate_port.ipv6_network,
+         .interface_id = physical_interface_id(ordinal),
+         .primary_preference = 0U,
+         .port_ordinal = ordinal,
+         .prefix_length = prefix_length});
+    std::vector<routing::Ipv6ConnectedInput> candidate_connected;
+    if (!build_native_ipv6_connected(candidate_addresses, network.ports,
+                                     candidate_connected))
+      return false;
+    for (auto &connected : candidate_connected)
+      if (connected.interface_id == physical_interface_id(ordinal))
+        connected.operational = false;
+
+    // Allocation and derivation are complete. Publish all control-owned
+    // fields together before reconciliation emits the forwarding generation.
+    network.ports[ordinal] = candidate_port;
+    network.interface_admin[ordinal] = admin_enabled;
+    network.ipv6_connected[ordinal] = selected_connected;
+    network.native_ipv6_addresses.swap(candidate_addresses);
+    network.native_ipv6_connected.swap(candidate_connected);
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
   refresh_router(device);
+  return true;
+}
+
+bool RuntimeSupervisor::configure_ipv6_address(
+    DeviceHandle device, std::string_view port_id, const packet::Ipv6 &address,
+    std::uint8_t prefix_length, std::uint32_t primary_preference,
+    bool duplicate_address_detection,
+    std::optional<std::uint32_t> tag) noexcept {
+  auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index] || prefix_length > ip::ipv6_address_bits ||
+      ip::is_unspecified(address) || ip::is_multicast(address) ||
+      ip::is_link_local(address))
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal)
+    return false;
+  auto &state = *router_network_[device.index];
+  const auto &port = state.ports[*ordinal];
+  if (!port.configured || !port.ipv6_configured)
+    return false;
+
+  try {
+    auto candidate_addresses = state.native_ipv6_addresses;
+    auto existing = std::find_if(
+        candidate_addresses.begin(), candidate_addresses.end(),
+        [&](const auto &configured) { return configured.address == address; });
+    if (existing != candidate_addresses.end() &&
+        existing->interface_id != physical_interface_id(*ordinal))
+      return false;
+    const auto on_interface = static_cast<std::size_t>(std::count_if(
+        candidate_addresses.begin(), candidate_addresses.end(),
+        [&](const auto &configured) {
+          return configured.interface_id == physical_interface_id(*ordinal);
+        }));
+    // The documented sixteen-address ceiling is shared with IPv4. Updating an
+    // existing record consumes no resource; a new IPv6 record accounts for the
+    // native IPv4 address already present on the same routed interface.
+    if (existing == candidate_addresses.end() &&
+        on_interface + (port.ipv4_configured ? 1U : 0U) >=
+            device_catalog::network_interface_ip_addresses)
+      return false;
+    const RouterIpv6Address replacement{
+        .address = address,
+        .network = ip::mask(address, prefix_length),
+        .interface_id = physical_interface_id(*ordinal),
+        .primary_preference = primary_preference,
+        .tag = tag.value_or(0U),
+        .port_ordinal = *ordinal,
+        .prefix_length = prefix_length,
+        .duplicate_address_detection = duplicate_address_detection,
+        .tag_configured = tag.has_value()};
+    if (existing == candidate_addresses.end())
+      candidate_addresses.push_back(replacement);
+    else
+      *existing = replacement;
+
+    std::vector<routing::Ipv6ConnectedInput> candidate_connected;
+    if (!build_native_ipv6_connected(candidate_addresses, state.ports,
+                                     candidate_connected))
+      return false;
+    auto candidate_rib = std::unique_ptr<routing::Ipv6RouteTable>{
+        new (std::nothrow) routing::Ipv6RouteTable{}};
+    if (!candidate_rib)
+      return false;
+    static_cast<void>(candidate_rib->rebuild(
+        candidate_connected, state.ipv6_statics, state.ies_ipv6_connected));
+    if (!candidate_rib->last_rebuild_valid() ||
+        !program_ipv6_address_generation(device, candidate_addresses))
+      return false;
+    state.native_ipv6_addresses.swap(candidate_addresses);
+    state.native_ipv6_connected.swap(candidate_connected);
+
+    // The lowest preference cache is updated only after the complete address
+    // generation is live. A leaf edit can never expose a port primary that the
+    // forwarding table rejected.
+    const RouterIpv6Address *primary{};
+    for (const auto &configured : state.native_ipv6_addresses)
+      if (configured.interface_id == physical_interface_id(*ordinal) &&
+          (!primary ||
+           configured.primary_preference < primary->primary_preference ||
+           (configured.primary_preference == primary->primary_preference &&
+            configured.address < primary->address)))
+        primary = &configured;
+    if (primary) {
+      state.ports[*ordinal].ipv6_address = primary->address;
+      state.ports[*ordinal].ipv6_network = primary->network;
+      state.ports[*ordinal].ipv6_prefix_length = primary->prefix_length;
+    }
+    rebuild_routes(device);
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
+bool RuntimeSupervisor::remove_ipv6_address(
+    DeviceHandle device, std::string_view port_id,
+    const packet::Ipv6 &address) noexcept {
+  auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal)
+    return false;
+  auto &state = *router_network_[device.index];
+  try {
+    auto candidate = state.native_ipv6_addresses;
+    const auto removed = std::erase_if(candidate, [&](const auto &configured) {
+      return configured.interface_id == physical_interface_id(*ordinal) &&
+             configured.address == address;
+    });
+    if (removed != 1U || std::none_of(candidate.begin(), candidate.end(),
+                                      [&](const auto &value) {
+                                        return value.interface_id ==
+                                               physical_interface_id(*ordinal);
+                                      }))
+      return false;
+    std::vector<routing::Ipv6ConnectedInput> candidate_connected;
+    if (!build_native_ipv6_connected(candidate, state.ports,
+                                     candidate_connected))
+      return false;
+    auto candidate_rib = std::unique_ptr<routing::Ipv6RouteTable>{
+        new (std::nothrow) routing::Ipv6RouteTable{}};
+    if (!candidate_rib)
+      return false;
+    static_cast<void>(candidate_rib->rebuild(
+        candidate_connected, state.ipv6_statics, state.ies_ipv6_connected));
+    if (!candidate_rib->last_rebuild_valid() ||
+        !program_ipv6_address_generation(device, candidate))
+      return false;
+    state.native_ipv6_addresses.swap(candidate);
+    state.native_ipv6_connected.swap(candidate_connected);
+    const auto *primary = [&]() -> const RouterIpv6Address * {
+      const RouterIpv6Address *selected{};
+      for (const auto &configured : state.native_ipv6_addresses)
+        if (configured.interface_id == physical_interface_id(*ordinal) &&
+            (!selected ||
+             configured.primary_preference < selected->primary_preference ||
+             (configured.primary_preference == selected->primary_preference &&
+              configured.address < selected->address)))
+          selected = &configured;
+      return selected;
+    }();
+    state.ports[*ordinal].ipv6_address = primary->address;
+    state.ports[*ordinal].ipv6_network = primary->network;
+    state.ports[*ordinal].ipv6_prefix_length = primary->prefix_length;
+    rebuild_routes(device);
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
+bool RuntimeSupervisor::remove_ipv6_interface(
+    DeviceHandle device, std::string_view port_id) noexcept {
+  auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal)
+    return false;
+  auto &state = *router_network_[device.index];
+  auto &port = state.ports[*ordinal];
+  if (!port.configured || !port.ipv6_configured)
+    return false;
+
+  // RA is an IPv6-interface child. Remove the forwarding-owned timer before
+  // clearing the address family so no advertisement can be emitted between
+  // the two owner turns. Failure leaves every control-owned field unchanged.
+  if (state.router_advertisements[*ordinal].configured) {
+    auto &remove_ra = prepare(NetworkCommandKind::remove_router_advertisement);
+    remove_ra.device = device;
+    remove_ra.port.ordinal = *ordinal;
+    const auto result = dispatch(remove_ra);
+    if (!result || !result->success)
+      return false;
+    state.router_advertisements[*ordinal] = {};
+  }
+  // MLD is also bound to the routed IPv6 interface, but it is a distinct
+  // protocol context in SR OS. Withdraw it explicitly before its source
+  // link-local address disappears. This prevents a final Query from being
+  // emitted with an address that control has already removed.
+  if (state.mld_interfaces[*ordinal].configured) {
+    auto &remove_mld = prepare(NetworkCommandKind::remove_mld_interface);
+    remove_mld.device = device;
+    remove_mld.port.ordinal = *ordinal;
+    const auto result = dispatch(remove_mld);
+    if (!result || !result->success)
+      return false;
+    state.mld_interfaces[*ordinal] = {};
+  }
+  if (state.dhcpv6_relays[*ordinal] && !remove_dhcpv6_relay(device, port_id))
+    return false;
+  port.ipv6_configured = false;
+  port.ipv6_address = {};
+  port.ipv6_network = {};
+  port.ipv6_link_local = {};
+  port.ipv6_prefix_length = 0;
+  port.ipv6_unsolicited_learning = Ipv6UnsolicitedLearning::none;
+  port.nd_reachable_time_milliseconds = static_cast<std::uint32_t>(
+      device_catalog::nd_base_reachable_time.count());
+  port.nd_stale_time_seconds = device_catalog::nd_default_stale_time_seconds;
+  port.ipv6_proactive_refresh = Ipv6UnsolicitedLearning::none;
+  port.ipv6_neighbor_limit = 0U;
+  port.ipv6_neighbor_limit_threshold_percent =
+      device_catalog::nd_default_neighbor_limit_threshold_percent;
+  port.ipv6_neighbor_limit_configured = false;
+  port.ipv6_neighbor_limit_log_only = false;
+  state.ipv6_connected[*ordinal] = {};
+  std::erase_if(state.native_ipv6_addresses, [&](const auto &configured) {
+    return configured.interface_id == physical_interface_id(*ordinal);
+  });
+  std::erase_if(state.native_ipv6_connected, [&](const auto &configured) {
+    return configured.interface_id == physical_interface_id(*ordinal);
+  });
+  if (!port.ipv4_configured && !state.ies_port_owned[*ordinal]) {
+    port = {};
+    state.interface_admin[*ordinal] = false;
+    auto &remove = prepare(NetworkCommandKind::remove_port);
+    remove.device = device;
+    remove.port.ordinal = *ordinal;
+    const auto result = dispatch(remove);
+    rebuild_routes(device);
+    return result && result->success;
+  }
+  if (!port.ipv4_configured) {
+    // Removing the final native address family must not remove a physical
+    // access port still owned by IES. A service interface carries its own MAC,
+    // so retaining the former native source MAC here would create an identity
+    // that no longer exists in configuration.
+    port.mac = {};
+    state.interface_admin[*ordinal] = false;
+  }
+  refresh_router(device);
+  return true;
+}
+
+bool RuntimeSupervisor::configure_ipv6_redirects(
+    DeviceHandle device, std::string_view port_id, bool enabled,
+    std::uint16_t maximum, std::uint16_t interval_seconds) noexcept {
+  auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index] ||
+      maximum < device_catalog::icmp6_redirect_minimum_maximum ||
+      maximum > device_catalog::icmp6_redirect_maximum_maximum ||
+      interval_seconds <
+          device_catalog::icmp6_redirect_minimum_interval.count() ||
+      interval_seconds >
+          device_catalog::icmp6_redirect_maximum_interval.count())
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal)
+    return false;
+  auto &port = router_network_[device.index]->ports[*ordinal];
+  if (!port.configured || !port.ipv6_configured)
+    return false;
+
+  // The control owner changes the complete tuple before one refresh command.
+  // RouterForwarder validates it again and resets only the affected port's
+  // rate window, while an unchanged IPv6 identity keeps its completed DAD.
+  port.icmp6_redirects_enabled = enabled;
+  port.icmp6_redirect_maximum = maximum;
+  port.icmp6_redirect_interval_seconds = interval_seconds;
+  refresh_router(device);
+  return true;
+}
+
+bool RuntimeSupervisor::configure_ipv4_redirects(
+    DeviceHandle device, std::string_view port_id, bool enabled,
+    std::uint16_t maximum, std::uint16_t interval_seconds) noexcept {
+  auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index] ||
+      maximum < device_catalog::icmp_redirect_minimum_maximum ||
+      maximum > device_catalog::icmp_redirect_maximum_maximum ||
+      interval_seconds <
+          device_catalog::icmp_redirect_minimum_interval.count() ||
+      interval_seconds > device_catalog::icmp_redirect_maximum_interval.count())
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal)
+    return false;
+  auto &port = router_network_[device.index]->ports[*ordinal];
+  if (!port.configured || !port.ipv4_configured)
+    return false;
+
+  // The complete policy tuple crosses the existing whole-port projection.
+  // No separate mutable limiter state is exposed to the control shard.
+  port.icmp_redirects_enabled = enabled;
+  port.icmp_redirect_maximum = maximum;
+  port.icmp_redirect_interval_seconds = interval_seconds;
+  refresh_router(device);
+  return true;
+}
+
+bool RuntimeSupervisor::configure_ipv6_neighbor_policy(
+    DeviceHandle device, std::string_view port_id,
+    std::uint32_t reachable_time_seconds, std::uint32_t stale_time_seconds,
+    Ipv6UnsolicitedLearning unsolicited_learning,
+    Ipv6UnsolicitedLearning proactive_refresh, bool limit_configured,
+    std::uint32_t limit, bool limit_log_only,
+    std::uint8_t limit_threshold_percent) noexcept {
+  auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index] ||
+      reachable_time_seconds <
+          device_catalog::nd_minimum_reachable_time_seconds ||
+      reachable_time_seconds >
+          device_catalog::nd_maximum_reachable_time_seconds ||
+      stale_time_seconds < device_catalog::nd_minimum_stale_time_seconds ||
+      stale_time_seconds > device_catalog::nd_maximum_stale_time_seconds ||
+      unsolicited_learning > Ipv6UnsolicitedLearning::both ||
+      proactive_refresh > Ipv6UnsolicitedLearning::both ||
+      limit > device_catalog::nd_maximum_neighbor_limit ||
+      limit_threshold_percent > 100U ||
+      (!limit_configured &&
+       (limit != 0U || limit_log_only ||
+        limit_threshold_percent !=
+            device_catalog::nd_default_neighbor_limit_threshold_percent)))
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal)
+    return false;
+  auto &port = router_network_[device.index]->ports[*ordinal];
+  if (!port.configured || !port.ipv6_configured)
+    return false;
+  // The complete policy tuple is replaced before one forwarding refresh.
+  // Packet processing can therefore see either the old or new settings but
+  // never a reachable timer paired with stale limit metadata from another
+  // configuration generation.
+  port.nd_reachable_time_milliseconds = reachable_time_seconds * 1000U;
+  port.nd_stale_time_seconds = stale_time_seconds;
+  port.ipv6_unsolicited_learning = unsolicited_learning;
+  port.ipv6_proactive_refresh = proactive_refresh;
+  port.ipv6_neighbor_limit_configured = limit_configured;
+  port.ipv6_neighbor_limit = limit;
+  port.ipv6_neighbor_limit_log_only = limit_log_only;
+  port.ipv6_neighbor_limit_threshold_percent = limit_threshold_percent;
+  refresh_router(device);
+  return true;
+}
+
+bool RuntimeSupervisor::configure_router_advertisement(
+    DeviceHandle device, std::string_view port_id, bool enabled,
+    const packet::nd::RouterAdvertisementConfig &config) noexcept {
+  auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal)
+    return false;
+  auto &state = *router_network_[device.index];
+  if (!state.ports[*ordinal].configured ||
+      !state.ports[*ordinal].ipv6_configured)
+    return false;
+
+  // Forwarding validates wire fields and interval relationships before the
+  // control owner publishes intent. A rejected command leaves the prior
+  // configuration untouched in both owners.
+  auto &command = prepare(NetworkCommandKind::configure_router_advertisement);
+  command.device = device;
+  command.fib = RouterAdvertisementProgram{.device = device,
+                                           .config = config,
+                                           .port_ordinal = *ordinal,
+                                           .enabled = enabled};
+  const auto result = dispatch(command);
+  if (!result || !result->success)
+    return false;
+  state.router_advertisements[*ordinal] = {
+      .config = config, .configured = true, .enabled = enabled};
+  return true;
+}
+
+bool RuntimeSupervisor::remove_router_advertisement(
+    DeviceHandle device, std::string_view port_id) noexcept {
+  auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal)
+    return false;
+  auto &state = *router_network_[device.index];
+  if (!state.router_advertisements[*ordinal].configured)
+    return false;
+
+  // The forwarding owner acknowledges removal before control drops its copy.
+  // This ordering makes a failed transaction observable and checkpoint-safe.
+  auto &command = prepare(NetworkCommandKind::remove_router_advertisement);
+  command.device = device;
+  command.port.ordinal = *ordinal;
+  const auto result = dispatch(command);
+  if (!result || !result->success)
+    return false;
+  state.router_advertisements[*ordinal] = {};
+  return true;
+}
+
+bool RuntimeSupervisor::configure_mld_interface(
+    DeviceHandle device, std::string_view port_id,
+    const MldRouterConfiguration &configuration) noexcept {
+  auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal)
+    return false;
+  auto &state = *router_network_[device.index];
+  const auto &port = state.ports[*ordinal];
+  if (!port.configured || !port.ipv6_configured ||
+      !ip::is_link_local(port.ipv6_link_local))
+    return false;
+
+  // Interface identity is owned by the inventory and IPv6 interface owners.
+  // Replace both derived fields so a caller cannot aim MLD at another port or
+  // advertise a fabricated Querier address. Timer, version and admin intent
+  // remain caller supplied and are validated by MldRouterInterface.
+  auto resolved = configuration;
+  resolved.port_ordinal = *ordinal;
+  resolved.link_local_address = port.ipv6_link_local;
+  auto &command = prepare(NetworkCommandKind::configure_mld_interface);
+  command.device = device;
+  command.fib =
+      MldInterfaceProgram{.device = device, .configuration = resolved};
+  const auto result = dispatch(command);
+  if (!result || !result->success)
+    return false;
+  state.mld_interfaces[*ordinal] = {.configuration = resolved,
+                                    .ssm_translations = {},
+                                    .import_policy = {},
+                                    .configured = true};
+  return true;
+}
+
+bool RuntimeSupervisor::remove_mld_interface(
+    DeviceHandle device, std::string_view port_id) noexcept {
+  auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal)
+    return false;
+  auto &state = *router_network_[device.index];
+  if (!state.mld_interfaces[*ordinal].configured)
+    return false;
+
+  // Acknowledgement precedes intent removal, preserving an exact rollback
+  // point when the bounded cross-shard command cannot be accepted.
+  auto &command = prepare(NetworkCommandKind::remove_mld_interface);
+  command.device = device;
+  command.port.ordinal = *ordinal;
+  const auto result = dispatch(command);
+  if (!result || !result->success)
+    return false;
+  state.mld_interfaces[*ordinal] = {};
+  return true;
+}
+
+bool RuntimeSupervisor::program_sap_generation(
+    DeviceHandle device, std::span<const service::SapAttachment> attachments,
+    std::span<const service::ServiceIpv6Interface> interfaces) noexcept {
+  if (!devices_.get(device) ||
+      attachments.size() > std::numeric_limits<std::uint32_t>::max() ||
+      interfaces.size() > std::numeric_limits<std::uint32_t>::max())
+    return false;
+
+  // Begin declares both cardinalities before one value is copied. The network
+  // worker reserves its private staging vectors once, acknowledges each SPSC
+  // record in order, and publishes only when Commit observes both exact sets.
+  auto &begin = prepare(NetworkCommandKind::begin_sap_generation);
+  begin.device = device;
+  begin.fib = SapGenerationBegin{
+      .expected_attachments = static_cast<std::uint32_t>(attachments.size()),
+      .expected_interfaces = static_cast<std::uint32_t>(interfaces.size())};
+  auto result = dispatch(begin);
+  if (!result || !result->success)
+    return false;
+
+  for (const auto &attachment : attachments) {
+    auto &command = prepare(NetworkCommandKind::add_sap_attachment);
+    command.device = device;
+    command.fib = attachment;
+    result = dispatch(command);
+    if (!result || !result->success)
+      goto abort_sap_generation;
+  }
+  for (const auto &interface : interfaces) {
+    auto &command = prepare(NetworkCommandKind::add_service_ipv6_interface);
+    command.device = device;
+    command.fib = interface;
+    result = dispatch(command);
+    if (!result || !result->success)
+      goto abort_sap_generation;
+  }
+  {
+    auto &command = prepare(NetworkCommandKind::commit_sap_generation);
+    command.device = device;
+    result = dispatch(command);
+    if (result && result->success)
+      return true;
+  }
+
+abort_sap_generation: {
+  // Abort is idempotent after a failed Commit and is mandatory after a
+  // rejected value record. A later candidate can never inherit a prefix of
+  // this generation from the network owner's private staging storage.
+  auto &command = prepare(NetworkCommandKind::abort_sap_generation);
+  command.device = device;
+  static_cast<void>(dispatch(command));
+}
+  return false;
+}
+
+bool RuntimeSupervisor::program_ipv6_address_generation(
+    DeviceHandle device,
+    std::span<const RouterIpv6Address> addresses) noexcept {
+  if (!device || addresses.size() > RouterIpv6AddressTable::capacity)
+    return false;
+  auto &begin = prepare(NetworkCommandKind::begin_ipv6_address_generation);
+  begin.device = device;
+  begin.fib =
+      Ipv6AddressGenerationBegin{static_cast<std::uint32_t>(addresses.size())};
+  auto result = dispatch(begin);
+  if (!result || !result->success)
+    return false;
+  for (const auto &address : addresses) {
+    auto &add = prepare(NetworkCommandKind::add_ipv6_interface_address);
+    add.device = device;
+    add.fib = address;
+    result = dispatch(add);
+    if (!result || !result->success)
+      goto abort_ipv6_addresses;
+  }
+  {
+    auto &commit = prepare(NetworkCommandKind::commit_ipv6_address_generation);
+    commit.device = device;
+    result = dispatch(commit);
+    if (result && result->success)
+      return true;
+  }
+
+abort_ipv6_addresses: {
+  // Abort is safe after a failed Commit. Both lower owners treat it as a
+  // terminal cleanup and never retain a prefix for a later generation.
+  auto &abort = prepare(NetworkCommandKind::abort_ipv6_address_generation);
+  abort.device = device;
+  static_cast<void>(dispatch(abort));
+}
+  return false;
+}
+
+bool RuntimeSupervisor::configure_ies_services(
+    DeviceHandle device, const service::Configuration &configuration) noexcept {
+  auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index] ||
+      service::validate(configuration) != service::ValidationError::none)
+    return false;
+  auto &state = *router_network_[device.index];
+
+  service::Configuration candidate_configuration;
+  auto candidate_ports = state.ports;
+  std::array<bool, device_catalog::maximum_ports_per_router>
+      candidate_port_ownership{};
+  std::vector<service::SapAttachment> candidate_attachments;
+  std::vector<service::ServiceIpv6Interface> candidate_interfaces;
+  std::vector<routing::Ipv6ConnectedInput> candidate_connected;
+  std::vector<dhcpv6::RelayInterfaceConfig> candidate_relays;
+  try {
+    candidate_configuration = configuration;
+    std::size_t interface_count{};
+    for (const auto &service : configuration.ies_services)
+      interface_count += service.interfaces.size();
+    candidate_attachments.reserve(interface_count);
+    candidate_interfaces.reserve(interface_count);
+    candidate_connected.reserve(interface_count);
+    candidate_relays.reserve(interface_count);
+
+    // Configuration stores both visible card/MDA/port coordinates and the
+    // dense runtime ordinal. Validate their relation against this router's
+    // hardware owner before allowing either identity to reach forwarding.
+    for (const auto &port_configuration : configuration.ports) {
+      const auto ordinal = port_configuration.coordinate.ordinal;
+      const auto *hardware_port = inventory->at(ordinal);
+      if (!hardware_port ||
+          hardware_port->card_slot != port_configuration.coordinate.card ||
+          hardware_port->mda_slot != port_configuration.coordinate.mda ||
+          hardware_port->port_number != port_configuration.coordinate.port)
+        return false;
+
+      // Port configuration and a routed interface are separate SR OS
+      // objects. An access port therefore needs a forwarding projection even
+      // when it has no native IPv4 or IPv6 child. Keep the physical object
+      // address-free and let the SAP generation supply each logical L3 MAC
+      // and address. This prevents one arbitrary SAP from becoming a fake
+      // native interface on a port that can host several tagged services.
+      if (!hardware_port->present)
+        continue;
+      candidate_port_ownership[ordinal] = true;
+      auto &candidate_port = candidate_ports[ordinal];
+      if (!candidate_port.configured) {
+        candidate_port = {};
+        candidate_port.configured = true;
+        candidate_port.ipv4_configured = false;
+        candidate_port.ordinal = ordinal;
+      }
+      candidate_port.mtu = hardware_port->mtu;
+      candidate_port.speed_mbps = hardware_port->speed_mbps;
+      candidate_port.operational =
+          hardware_port->configuration_compatible &&
+          hardware_port->hierarchy_enabled && hardware_port->admin_enabled &&
+          hardware_port->link_signal &&
+          (state.interface_admin[ordinal] || candidate_port_ownership[ordinal]);
+    }
+
+    // Retiring service ownership must not remove a native routed interface.
+    // Conversely, a port that existed solely for an old IES generation is
+    // cleared in the candidate control image after the new SAP generation has
+    // stopped referencing it.
+    for (std::size_t ordinal = 0; ordinal < candidate_ports.size(); ++ordinal)
+      if (state.ies_port_owned[ordinal] && !candidate_port_ownership[ordinal] &&
+          !candidate_ports[ordinal].ipv4_configured &&
+          !candidate_ports[ordinal].ipv6_configured)
+        candidate_ports[ordinal] = {};
+
+    const auto configured_local_source = [&](const packet::Ipv6 &address) {
+      for (const auto &service : configuration.ies_services)
+        for (const auto &interface : service.interfaces)
+          if (interface.address_configured &&
+              (interface.address == address || interface.link_local == address))
+            return true;
+      for (const auto &port : state.ports)
+        if (port.configured && port.ipv6_configured &&
+            (port.ipv6_address == address || port.ipv6_link_local == address))
+          return true;
+      return false;
+    };
+
+    for (const auto &ies : configuration.ies_services) {
+      for (const auto &interface : ies.interfaces) {
+        // Classic CLI permits creation of an IP interface before its SAP.
+        // Such intent is real running configuration but owns no forwarding
+        // classifier or physical port until the attachment is configured.
+        if (interface.sap.port.card == 0U && interface.sap.port.mda == 0U &&
+            interface.sap.port.port == 0U)
+          continue;
+        const auto ordinal = interface.sap.port.ordinal;
+        if (ordinal >= state.ports.size())
+          return false;
+        const auto port_configuration =
+            std::find_if(configuration.ports.begin(), configuration.ports.end(),
+                         [&](const auto &port) {
+                           return port.coordinate == interface.sap.port;
+                         });
+        if (port_configuration == configuration.ports.end())
+          return false;
+
+        // Intent on an unequipped card remains in candidate_configuration but
+        // cannot become a live SAP classifier. refresh_router republishes the
+        // same retained graph after the physical owner reports the port again.
+        const auto &physical = candidate_ports[ordinal];
+        if (!candidate_port_ownership[ordinal] || !physical.configured)
+          continue;
+        candidate_attachments.push_back(
+            {.logical_interface_id = interface.logical_id,
+             .sap = interface.sap,
+             .outer_tpid = port_configuration->outer_tpid,
+             .inner_tpid = static_cast<std::uint16_t>(
+                 interface.sap.encapsulation ==
+                         service::EthernetEncapsulation::qinq
+                     ? packet::ethernet_type_customer_vlan
+                     : 0U)});
+        const bool operational = interface.address_configured &&
+                                 ies.admin_enabled && interface.admin_enabled &&
+                                 physical.operational;
+        candidate_interfaces.push_back(
+            {.interface_id = interface.logical_id,
+             .physical_port_ordinal = ordinal,
+             .mtu = interface.ip_mtu,
+             .mac = interface.mac,
+             .address = interface.address,
+             .network =
+                 interface.address_configured
+                     ? ip::mask(interface.address, interface.prefix_length)
+                     : packet::Ipv6{},
+             .link_local = interface.link_local,
+             .prefix_length = interface.prefix_length,
+             .nd_reachable_time_milliseconds =
+                 device_catalog::nd_default_reachable_time_seconds * 1000U,
+             .nd_stale_time_seconds =
+                 device_catalog::nd_default_stale_time_seconds,
+             .neighbor_limit_threshold_percent =
+                 device_catalog::nd_default_neighbor_limit_threshold_percent,
+             .redirect_maximum = device_catalog::icmp6_redirect_default_maximum,
+             .redirect_interval_seconds = static_cast<std::uint16_t>(
+                 device_catalog::icmp6_redirect_default_interval.count()),
+             .redirects_enabled = true,
+             .configured = interface.address_configured,
+             .operational = operational});
+        if (interface.address_configured)
+          candidate_connected.push_back(
+              {.configured = true,
+               .operational = operational,
+               .network = ip::mask(interface.address, interface.prefix_length),
+               .interface_id = interface.logical_id,
+               .physical_port_ordinal = ordinal,
+               .prefix_length = interface.prefix_length});
+
+        const auto &relay_intent = interface.dhcpv6_relay;
+        if (!relay_intent.configured || !relay_intent.admin_enabled ||
+            relay_intent.servers.empty() || !operational)
+          continue;
+        const auto interface_id =
+            service::relay_interface_id(configuration, ies, interface);
+        if (!interface_id ||
+            (relay_intent.source_address &&
+             !configured_local_source(*relay_intent.source_address)))
+          return false;
+        dhcpv6::RelayInterfaceConfig relay{
+            .interface_id = interface.logical_id,
+            .physical_port_ordinal = ordinal,
+            .link_address =
+                relay_intent.link_address.value_or(interface.address),
+            .source_address =
+                relay_intent.source_address.value_or(packet::Ipv6{}),
+            .has_source_address = relay_intent.source_address.has_value(),
+            .relay_interface_id = std::move(*interface_id),
+            .server_count = relay_intent.servers.size(),
+            .upstream_policy =
+                dhcpv6::RelayUpstreamPolicy::explicit_servers_required,
+            .client_prefix = {.network = ip::mask(interface.address,
+                                                  interface.prefix_length),
+                              .length = interface.prefix_length},
+            .lease_population_limit = relay_intent.lease_population_limit,
+            .neighbor_resolution = relay_intent.neighbor_resolution,
+            .route_non_temporary = relay_intent.route_populate_na,
+            .route_temporary = relay_intent.route_populate_ta,
+            .route_delegated_prefix = relay_intent.route_populate_pd,
+            .route_prefix_exclude = relay_intent.route_populate_pd_exclude};
+        std::copy(relay_intent.servers.begin(), relay_intent.servers.end(),
+                  relay.servers.begin());
+        candidate_relays.push_back(std::move(relay));
+      }
+    }
+
+    // Route admission is checked before any forwarding publication. This
+    // prevents a valid SAP generation from becoming live when the combined
+    // native, service and static RIB would exceed its profiled capacity.
+    auto candidate_rib = std::make_unique<routing::Ipv6RouteTable>();
+    static_cast<void>(candidate_rib->rebuild(
+        state.native_ipv6_connected, state.ipv6_statics, candidate_connected));
+    if (!candidate_rib->last_rebuild_valid())
+      return false;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+
+  // Publish every physical prerequisite before the atomic SAP generation.
+  // Old service-only ports remain installed until after that generation is
+  // replaced, so no live classifier ever points at a removed physical port.
+  std::array<bool, device_catalog::maximum_ports_per_router>
+      candidate_port_published{};
+  for (std::size_t ordinal = 0; ordinal < candidate_ports.size(); ++ordinal) {
+    if (!candidate_ports[ordinal].configured ||
+        (!candidate_port_ownership[ordinal] && !state.ies_port_owned[ordinal]))
+      continue;
+    auto &configure = prepare(NetworkCommandKind::configure_port);
+    configure.device = device;
+    configure.port = candidate_ports[ordinal];
+    const auto result = dispatch(configure);
+    if (!result || !result->success) {
+      // Only earlier records were accepted. Restore those exact records in
+      // reverse ownership order before reporting a failed transaction.
+      for (std::size_t rollback_ordinal = 0;
+           rollback_ordinal < candidate_port_published.size();
+           ++rollback_ordinal) {
+        if (!candidate_port_published[rollback_ordinal])
+          continue;
+        auto &restore = prepare(state.ports[rollback_ordinal].configured
+                                    ? NetworkCommandKind::configure_port
+                                    : NetworkCommandKind::remove_port);
+        restore.device = device;
+        restore.port = state.ports[rollback_ordinal].configured
+                           ? state.ports[rollback_ordinal]
+                           : ForwardPort{.ordinal = static_cast<std::uint16_t>(
+                                             rollback_ordinal)};
+        static_cast<void>(dispatch(restore));
+      }
+      return false;
+    }
+    candidate_port_published[ordinal] = true;
+  }
+
+  const auto rollback = [&]() noexcept {
+    // Remove every candidate relay first while its candidate SAP still owns
+    // the logical interface. Then restore the prior SAP generation and its
+    // complete relay set. Each operation is best effort because the caller
+    // already receives failure, but no successful candidate state is retained
+    // intentionally.
+    for (const auto &relay : candidate_relays) {
+      auto &remove = prepare(NetworkCommandKind::remove_dhcpv6_relay);
+      remove.device = device;
+      remove.logical_interface_id = relay.interface_id;
+      static_cast<void>(dispatch(remove));
+    }
+    // Restore old configured physical records first because the old SAP
+    // generation is validated against them. Candidate-only ports deliberately
+    // remain until that old generation has displaced every candidate SAP.
+    for (std::size_t ordinal = 0; ordinal < state.ports.size(); ++ordinal) {
+      if (!candidate_port_published[ordinal] ||
+          !state.ports[ordinal].configured)
+        continue;
+      auto &restore = prepare(NetworkCommandKind::configure_port);
+      restore.device = device;
+      restore.port = state.ports[ordinal];
+      static_cast<void>(dispatch(restore));
+    }
+    static_cast<void>(program_sap_generation(device, state.ies_sap_attachments,
+                                             state.ies_ipv6_interfaces));
+    for (std::size_t ordinal = 0; ordinal < state.ports.size(); ++ordinal) {
+      if (!candidate_port_published[ordinal] || state.ports[ordinal].configured)
+        continue;
+      auto &remove = prepare(NetworkCommandKind::remove_port);
+      remove.device = device;
+      remove.port.ordinal = static_cast<std::uint16_t>(ordinal);
+      static_cast<void>(dispatch(remove));
+    }
+    for (const auto &relay : state.ies_dhcpv6_relays)
+      static_cast<void>(program_dhcpv6_relay(
+          device, relay.physical_port_ordinal, relay, false));
+  };
+
+  if (!program_sap_generation(device, candidate_attachments,
+                              candidate_interfaces)) {
+    rollback();
+    return false;
+  }
+  for (const auto &relay : candidate_relays)
+    if (!program_dhcpv6_relay(device, relay.physical_port_ordinal, relay,
+                              false)) {
+      rollback();
+      return false;
+    }
+  for (const auto &old : state.ies_dhcpv6_relays) {
+    const auto retained =
+        std::find_if(candidate_relays.begin(), candidate_relays.end(),
+                     [&](const auto &relay) {
+                       return relay.interface_id == old.interface_id;
+                     });
+    if (retained != candidate_relays.end())
+      continue;
+    auto &remove = prepare(NetworkCommandKind::remove_dhcpv6_relay);
+    remove.device = device;
+    remove.logical_interface_id = old.interface_id;
+    const auto result = dispatch(remove);
+    if (!result || !result->success) {
+      rollback();
+      return false;
+    }
+  }
+
+  for (std::size_t ordinal = 0; ordinal < candidate_ports.size(); ++ordinal) {
+    if (!state.ies_port_owned[ordinal] || candidate_port_ownership[ordinal] ||
+        candidate_ports[ordinal].configured)
+      continue;
+    auto &remove = prepare(NetworkCommandKind::remove_port);
+    remove.device = device;
+    remove.port.ordinal = static_cast<std::uint16_t>(ordinal);
+    const auto result = dispatch(remove);
+    if (!result || !result->success) {
+      rollback();
+      return false;
+    }
+  }
+
+  // Every move publishes a fully built cold-path value without allocation.
+  // The forwarding owner has already acknowledged the corresponding packet
+  // generation, so control can now make it the source for CLI and checkpoint.
+  state.ies_configuration = std::move(candidate_configuration);
+  state.ports = candidate_ports;
+  state.ies_port_owned = candidate_port_ownership;
+  state.ies_sap_attachments = std::move(candidate_attachments);
+  state.ies_ipv6_interfaces = std::move(candidate_interfaces);
+  state.ies_ipv6_connected = std::move(candidate_connected);
+  state.ies_dhcpv6_relays = std::move(candidate_relays);
+  rebuild_routes(device);
+  return true;
+}
+
+bool RuntimeSupervisor::configure_dhcpv6_relay(
+    DeviceHandle device, std::string_view port_id,
+    const dhcpv6::RelayInterfaceConfig &configuration) noexcept {
+  const auto *inventory = hardware(device);
+  if (!inventory)
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  return ordinal && program_dhcpv6_relay(device, *ordinal, configuration);
+}
+
+bool RuntimeSupervisor::program_dhcpv6_relay(
+    DeviceHandle device, std::uint16_t port_ordinal,
+    const dhcpv6::RelayInterfaceConfig &configuration,
+    bool retain_legacy_port_intent) noexcept {
+  if (device.index >= router_network_.size() ||
+      !router_network_[device.index] ||
+      port_ordinal >= router_network_[device.index]->ports.size())
+    return false;
+  const auto &port = router_network_[device.index]->ports[port_ordinal];
+  if ((retain_legacy_port_intent &&
+       (!port.configured || !port.ipv6_configured)) ||
+      configuration.interface_id == 0U ||
+      configuration.relay_interface_id.size() >
+          std::numeric_limits<std::uint16_t>::max() ||
+      configuration.server_count > configuration.servers.size())
+    return false;
+
+  // A full IES transaction publishes its candidate physical port and SAP
+  // generation before the relay child, while the old control generation stays
+  // visible until every forwarding command succeeds. In that path the
+  // forwarding owner validates the just-published logical interface. Requiring
+  // the old control port here would break transaction atomicity and force a
+  // fake native IPv6 child onto a service-only access port.
+
+  // Copy the value before touching the forwarding owner. If allocation fails,
+  // the old generation remains active on both owners. Once commit succeeds,
+  // moving this staged value into the fixed control slot cannot allocate.
+  auto staged = std::optional<dhcpv6::RelayInterfaceConfig>{};
+  try {
+    staged = configuration;
+    // Hardware resolution is authoritative. A caller cannot route the relay
+    // through a different physical port by embedding a conflicting ordinal.
+    staged->physical_port_ordinal = port_ordinal;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+
+  // The begin record declares the complete generation before any variable
+  // data is accepted. Every following command is synchronously acknowledged,
+  // so failure can abort without publishing a prefix of Interface-Id or a
+  // partial server list. The forwarding owner swaps generations only at
+  // commit after the declared counts match exactly.
+  auto &begin_command = prepare(NetworkCommandKind::begin_dhcpv6_relay);
+  begin_command.device = device;
+  begin_command.fib = Dhcpv6RelayBegin{
+      .interface_id = configuration.interface_id,
+      .physical_port_ordinal = port_ordinal,
+      .link_address = configuration.link_address,
+      .source_address = configuration.source_address,
+      .client_prefix = configuration.client_prefix,
+      .expected_interface_id_octets =
+          static_cast<std::uint32_t>(configuration.relay_interface_id.size()),
+      .expected_servers =
+          static_cast<std::uint16_t>(configuration.server_count),
+      .lease_population_limit = configuration.lease_population_limit,
+      .has_source_address = configuration.has_source_address,
+      .neighbor_resolution = configuration.neighbor_resolution,
+      .route_non_temporary = configuration.route_non_temporary,
+      .route_temporary = configuration.route_temporary,
+      .route_delegated_prefix = configuration.route_delegated_prefix,
+      .route_prefix_exclude = configuration.route_prefix_exclude,
+      .upstream_policy = configuration.upstream_policy};
+  auto result = dispatch(begin_command);
+  if (!result || !result->success)
+    return false;
+
+  for (std::size_t offset = 0; offset < configuration.relay_interface_id.size();
+       offset += dhcpv6_relay_program_chunk_octets) {
+    Dhcpv6RelayInterfaceIdChunk chunk;
+    chunk.size = static_cast<std::uint16_t>(
+        std::min(dhcpv6_relay_program_chunk_octets,
+                 configuration.relay_interface_id.size() - offset));
+    std::copy_n(configuration.relay_interface_id.begin() + offset, chunk.size,
+                chunk.octets.begin());
+    auto &command = prepare(NetworkCommandKind::add_dhcpv6_relay_interface_id);
+    command.device = device;
+    command.fib = chunk;
+    result = dispatch(command);
+    if (!result || !result->success)
+      goto abort_relay;
+  }
+  for (std::size_t index = 0; index < configuration.server_count; ++index) {
+    auto &command = prepare(NetworkCommandKind::add_dhcpv6_relay_server);
+    command.device = device;
+    command.fib = configuration.servers[index];
+    result = dispatch(command);
+    if (!result || !result->success)
+      goto abort_relay;
+  }
+  {
+    auto &command = prepare(NetworkCommandKind::commit_dhcpv6_relay);
+    command.device = device;
+    result = dispatch(command);
+    if (result && result->success) {
+      if (!retain_legacy_port_intent)
+        return true;
+      auto &state = *router_network_[device.index];
+      state.dhcpv6_relays[port_ordinal] = std::move(staged);
+      // Regular relay is an IES-interface child, not an independent port
+      // protocol. Publish the same stable logical identity to the RIB so ND,
+      // PMTU, UDP metadata and Relay-reply all use one RFC 4007 zone.
+      state.ipv6_connected[port_ordinal].interface_id =
+          configuration.interface_id;
+      rebuild_routes(device);
+      return true;
+    }
+  }
+
+abort_relay: {
+  // Abort is idempotent after a rejected commit. Keeping it on all failure
+  // paths also protects future workers that retain a rejected generation for
+  // diagnostics instead of discarding it inside commit handling.
+  auto &command = prepare(NetworkCommandKind::abort_dhcpv6_relay);
+  command.device = device;
+  static_cast<void>(dispatch(command));
+}
+  return false;
+}
+
+bool RuntimeSupervisor::remove_dhcpv6_relay(DeviceHandle device,
+                                            std::string_view port_id) noexcept {
+  const auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal ||
+      !router_network_[device.index]->ports[*ordinal].ipv6_configured ||
+      !router_network_[device.index]->dhcpv6_relays[*ordinal])
+    return false;
+  auto &command = prepare(NetworkCommandKind::remove_dhcpv6_relay);
+  command.device = device;
+  command.logical_interface_id =
+      router_network_[device.index]->dhcpv6_relays[*ordinal]->interface_id;
+  const auto result = dispatch(command);
+  if (!result || !result->success)
+    return false;
+  router_network_[device.index]->dhcpv6_relays[*ordinal].reset();
+  // The current native-interface API has no remaining service object after
+  // relay removal. Restore its collision-free native identity. Full IES
+  // ownership keeps the service ID independently when only its relay child is
+  // removed.
+  router_network_[device.index]->ipv6_connected[*ordinal].interface_id =
+      physical_interface_id(*ordinal);
+  rebuild_routes(device);
+  return true;
+}
+
+bool RuntimeSupervisor::clear_dhcpv6_relay_leases(
+    DeviceHandle device, const Dhcpv6RelayLeaseClearProgram &program) noexcept {
+  if (!device || program.filter.interface_id == 0U ||
+      device.index >= router_network_.size() || !router_network_[device.index])
+    return false;
+  const auto &state = *router_network_[device.index];
+  const auto owns_interface = [&](const auto &relay) {
+    return relay.interface_id == program.filter.interface_id;
+  };
+  const bool configured =
+      std::any_of(state.ies_dhcpv6_relays.begin(),
+                  state.ies_dhcpv6_relays.end(), owns_interface) ||
+      std::any_of(
+          state.dhcpv6_relays.begin(), state.dhcpv6_relays.end(),
+          [&](const auto &relay) { return relay && owns_interface(*relay); });
+  if (!configured)
+    return false;
+  auto &command = prepare(NetworkCommandKind::clear_dhcpv6_relay_leases);
+  command.device = device;
+  command.fib = program;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_mld_database(
+    DeviceHandle device, std::string_view port_id,
+    const std::optional<packet::Ipv6> &group) noexcept {
+  const auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal ||
+      !router_network_[device.index]->mld_interfaces[*ordinal].configured)
+    return false;
+
+  // The group selector is validated before crossing the shard boundary. An
+  // all-interface clear is intentionally performed by LabRuntime as one
+  // command per configured interface, preserving each interface owner.
+  if (group && !ip::is_multicast(*group))
+    return false;
+  auto &command = prepare(NetworkCommandKind::clear_mld_database);
+  command.device = device;
+  command.port.ordinal = *ordinal;
+  command.ipv6_destination = group.value_or(packet::Ipv6{});
+  command.mld_group_specific = group.has_value();
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_mld_database_all(DeviceHandle device) noexcept {
+  if (!devices_.get(device) || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  auto &command = prepare(NetworkCommandKind::clear_mld_database_all);
+  command.device = device;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_icmpv4_statistics_all(
+    DeviceHandle device) noexcept {
+  if (!devices_.get(device) || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  auto &command = prepare(NetworkCommandKind::clear_icmpv4_statistics_all);
+  command.device = device;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_icmpv4_global_statistics(
+    DeviceHandle device) noexcept {
+  if (!devices_.get(device) || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  auto &command = prepare(NetworkCommandKind::clear_icmpv4_global_statistics);
+  command.device = device;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_icmpv4_interface_statistics(
+    DeviceHandle device, std::string_view port_id) noexcept {
+  const auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal || !router_network_[device.index]->ports[*ordinal].configured)
+    return false;
+  auto &command =
+      prepare(NetworkCommandKind::clear_icmpv4_interface_statistics);
+  command.device = device;
+  command.port.ordinal = *ordinal;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_icmpv6_statistics_all(
+    DeviceHandle device) noexcept {
+  if (!devices_.get(device) || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  auto &command = prepare(NetworkCommandKind::clear_icmpv6_statistics_all);
+  command.device = device;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_icmpv6_global_statistics(
+    DeviceHandle device) noexcept {
+  if (!devices_.get(device) || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  auto &command = prepare(NetworkCommandKind::clear_icmpv6_global_statistics);
+  command.device = device;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_icmpv6_interface_statistics(
+    DeviceHandle device, std::string_view port_id) noexcept {
+  const auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal || !router_network_[device.index]->ports[*ordinal].configured)
+    return false;
+  auto &command =
+      prepare(NetworkCommandKind::clear_icmpv6_interface_statistics);
+  command.device = device;
+  command.port.ordinal = *ordinal;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_router_advertisement_statistics_all(
+    DeviceHandle device) noexcept {
+  if (!devices_.get(device) || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  auto &command =
+      prepare(NetworkCommandKind::clear_router_advertisement_statistics_all);
+  command.device = device;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_router_advertisement_interface_statistics(
+    DeviceHandle device, std::string_view port_id) noexcept {
+  const auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal || !router_network_[device.index]->ports[*ordinal].configured)
+    return false;
+  auto &command = prepare(
+      NetworkCommandKind::clear_router_advertisement_interface_statistics);
+  command.device = device;
+  command.port.ordinal = *ordinal;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_mld_version(DeviceHandle device,
+                                          std::string_view port_id) noexcept {
+  const auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal ||
+      !router_network_[device.index]->mld_interfaces[*ordinal].configured)
+    return false;
+  auto &command = prepare(NetworkCommandKind::clear_mld_version);
+  command.device = device;
+  command.port.ordinal = *ordinal;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_mld_statistics(
+    DeviceHandle device, std::string_view port_id) noexcept {
+  const auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal ||
+      !router_network_[device.index]->mld_interfaces[*ordinal].configured)
+    return false;
+  auto &command = prepare(NetworkCommandKind::clear_mld_statistics);
+  command.device = device;
+  command.port.ordinal = *ordinal;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_mld_statistics_all(DeviceHandle device) noexcept {
+  if (!devices_.get(device) || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  // A router-wide clear is one bounded mailbox command. A sequence of
+  // per-interface requests could otherwise stop halfway when the ring fills.
+  auto &command = prepare(NetworkCommandKind::clear_mld_statistics_all);
+  command.device = device;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::edit_mld_static(DeviceHandle device,
+                                        std::string_view port_id,
+                                        MldStaticOperation operation,
+                                        const packet::Ipv6 &group,
+                                        const packet::Ipv6 &source) noexcept {
+  const auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal ||
+      !router_network_[device.index]->mld_interfaces[*ordinal].configured)
+    return false;
+  if (!ip::is_multicast(group))
+    return false;
+  const bool needs_source = operation == MldStaticOperation::add_source ||
+                            operation == MldStaticOperation::remove_source;
+  if (needs_source && (ip::is_unspecified(source) || ip::is_multicast(source)))
+    return false;
+  auto &command = prepare(NetworkCommandKind::edit_mld_static);
+  command.device = device;
+  command.port.ordinal = *ordinal;
+  command.ipv6_destination = group;
+  command.ipv6_source = source;
+  command.mld_static_operation = operation;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::replace_mld_ssm_translations(
+    DeviceHandle device, std::string_view port_id,
+    std::span<const MldSsmTranslation> translations) noexcept {
+  const auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index] ||
+      translations.size() >
+          device_catalog::mld_router_group_sources_per_interface)
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal ||
+      !router_network_[device.index]->mld_interfaces[*ordinal].configured)
+    return false;
+
+  // Validate the complete value program before opening forwarding staging.
+  // This keeps malformed or duplicate candidate state on the control owner and
+  // guarantees that every accepted add in the transaction has one meaning.
+  for (std::size_t index = 0; index < translations.size(); ++index) {
+    const auto &entry = translations[index];
+    if (!ip::is_multicast(entry.start) || !ip::is_multicast(entry.end) ||
+        entry.end < entry.start || ip::is_unspecified(entry.source) ||
+        ip::is_multicast(entry.source) ||
+        std::find(translations.begin(),
+                  translations.begin() + static_cast<std::ptrdiff_t>(index),
+                  entry) !=
+            translations.begin() + static_cast<std::ptrdiff_t>(index))
+      return false;
+  }
+  std::vector<MldSsmTranslation> control_program;
+  try {
+    control_program.assign(translations.begin(), translations.end());
+  } catch (...) {
+    return false;
+  }
+
+  const auto submit = [&](MldSsmProgramOperation operation,
+                          const MldSsmTranslation &entry = {}) {
+    auto &command = prepare(NetworkCommandKind::program_mld_ssm_translation);
+    command.device = device;
+    command.port.ordinal = *ordinal;
+    command.mld_ssm_operation = operation;
+    command.mld_ssm_translation = entry;
+    command.mld_ssm_expected_entries =
+        operation == MldSsmProgramOperation::begin
+            ? static_cast<std::uint32_t>(translations.size())
+            : 0U;
+    const auto result = dispatch(command);
+    return result && result->success;
+  };
+
+  if (!submit(MldSsmProgramOperation::begin))
+    return false;
+  for (const auto &entry : translations) {
+    if (submit(MldSsmProgramOperation::add, entry))
+      continue;
+    static_cast<void>(submit(MldSsmProgramOperation::abort));
+    return false;
+  }
+  if (!submit(MldSsmProgramOperation::commit)) {
+    static_cast<void>(submit(MldSsmProgramOperation::abort));
+    return false;
+  }
+
+  // Control updates its checkpointable projection only after forwarding has
+  // atomically published the complete generation.
+  router_network_[device.index]->mld_interfaces[*ordinal].ssm_translations.swap(
+      control_program);
+  return true;
+}
+
+bool RuntimeSupervisor::replace_mld_import_policy(
+    DeviceHandle device, std::string_view port_id,
+    std::span<const mld::ImportPolicyEntry> entries,
+    mld::ImportPolicyAction default_action) noexcept {
+  const auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index] ||
+      entries.size() > std::numeric_limits<std::uint32_t>::max())
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal ||
+      !router_network_[device.index]->mld_interfaces[*ordinal].configured)
+    return false;
+
+  // Compile into detached control memory first. This validates canonical
+  // prefixes, numeric ordering and terminal action before opening forwarding
+  // staging. It also creates the exact checkpoint projection that will be
+  // published only after the network owner acknowledges commit.
+  mld::ImportPolicyProgram validator;
+  if (!validator.replace(entries, default_action))
+    return false;
+  mld::ImportPolicyCheckpoint control_program;
+  try {
+    control_program = validator.checkpoint();
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+
+  const auto submit = [&](mld::ImportPolicyProgramOperation operation,
+                          const mld::ImportPolicyEntry &entry = {}) {
+    auto &command = prepare(NetworkCommandKind::program_mld_import_policy);
+    command.device = device;
+    command.port.ordinal = *ordinal;
+    command.mld_import_policy_operation = operation;
+    command.mld_import_policy_entry = entry;
+    command.mld_import_policy_default_action = default_action;
+    command.mld_import_policy_expected_entries =
+        operation == mld::ImportPolicyProgramOperation::begin
+            ? static_cast<std::uint32_t>(entries.size())
+            : 0U;
+    const auto result = dispatch(command);
+    return result && result->success;
+  };
+
+  if (!submit(mld::ImportPolicyProgramOperation::begin))
+    return false;
+  for (const auto &entry : entries) {
+    if (submit(mld::ImportPolicyProgramOperation::add, entry))
+      continue;
+    static_cast<void>(submit(mld::ImportPolicyProgramOperation::abort));
+    return false;
+  }
+  if (!submit(mld::ImportPolicyProgramOperation::commit)) {
+    static_cast<void>(submit(mld::ImportPolicyProgramOperation::abort));
+    return false;
+  }
+
+  router_network_[device.index]->mld_interfaces[*ordinal].import_policy =
+      std::move(control_program);
   return true;
 }
 
@@ -529,21 +2211,38 @@ bool RuntimeSupervisor::remove_interface(DeviceHandle device,
   if (!ordinal)
     return false;
   auto &state = *router_network_[device.index];
-  if (!state.ports[*ordinal].configured)
+  auto &port = state.ports[*ordinal];
+  if (!port.configured || !port.ipv4_configured)
     return false;
 
-  // Clear control-owned RIB input before withdrawing the forwarding port. The
-  // next FIB generation therefore cannot retain a connected route that points
-  // at an interface whose ARP and pending queues are about to be destroyed.
-  state.ports[*ordinal] = {};
-  state.interface_admin[*ordinal] = false;
+  // IPv4 and IPv6 are leaves on one routed interface. Removing the IPv4 leaf
+  // must not tear down IPv6, DAD, ND or RA state. The physical forwarding port
+  // is withdrawn only after the final configured address family is removed.
+  port.ipv4_configured = false;
+  port.address = 0U;
+  port.network = 0U;
+  port.prefix_length = 0U;
   state.connected[*ordinal] = {};
-  rebuild_routes(device);
-  auto &remove = prepare(NetworkCommandKind::remove_port);
-  remove.device = device;
-  remove.port.ordinal = *ordinal;
-  const auto result = dispatch(remove);
-  return result && result->success;
+  if (!port.ipv6_configured && !state.ies_port_owned[*ordinal]) {
+    port = {};
+    state.interface_admin[*ordinal] = false;
+    state.ipv6_connected[*ordinal] = {};
+    rebuild_routes(device);
+    auto &remove = prepare(NetworkCommandKind::remove_port);
+    remove.device = device;
+    remove.port.ordinal = *ordinal;
+    const auto result = dispatch(remove);
+    return result && result->success;
+  }
+  if (!port.ipv6_configured) {
+    // SAP lookup, not the physical access-port projection, supplies the source
+    // identity for service traffic. Keep only carrier, MTU and line rate when
+    // the native IPv4 child was the final native address family.
+    port.mac = {};
+    state.interface_admin[*ordinal] = false;
+  }
+  refresh_router(device);
+  return true;
 }
 
 bool RuntimeSupervisor::add_static_route(DeviceHandle device,
@@ -577,9 +2276,9 @@ bool RuntimeSupervisor::add_static_route(DeviceHandle device,
   return true;
 }
 
-bool RuntimeSupervisor::remove_static_route(DeviceHandle device,
-                                            std::uint32_t network,
-                                            std::uint8_t prefix_length) noexcept {
+bool RuntimeSupervisor::remove_static_route(
+    DeviceHandle device, std::uint32_t network,
+    std::uint8_t prefix_length) noexcept {
   if (!devices_.get(device) || device.index >= router_network_.size() ||
       !router_network_[device.index] || prefix_length > 32U)
     return false;
@@ -597,6 +2296,211 @@ bool RuntimeSupervisor::remove_static_route(DeviceHandle device,
   return true;
 }
 
+bool RuntimeSupervisor::add_ipv6_static_route(
+    DeviceHandle device, const packet::Ipv6 &network,
+    std::uint8_t prefix_length, const packet::Ipv6 &next_hop,
+    std::string_view outgoing_port_id) noexcept {
+  if (!devices_.get(device) || device.index >= router_network_.size() ||
+      !router_network_[device.index] || prefix_length > ip::ipv6_address_bits ||
+      ip::is_unspecified(next_hop) || ip::is_multicast(next_hop))
+    return false;
+  auto &state = *router_network_[device.index];
+  const auto canonical = ip::mask(network, prefix_length);
+  std::optional<std::uint16_t> outgoing_port;
+  if (!outgoing_port_id.empty()) {
+    const auto *inventory = hardware(device);
+    if (!inventory)
+      return false;
+    outgoing_port = inventory->coordinate_ordinal(outgoing_port_id);
+    if (!outgoing_port)
+      return false;
+  }
+  if (ip::is_link_local(next_hop) && !outgoing_port)
+    return false;
+
+  routing::Ipv6StaticInput *target{};
+  for (auto &entry : state.ipv6_statics) {
+    if (entry.configured && entry.network == canonical &&
+        entry.prefix_length == prefix_length) {
+      target = &entry;
+      break;
+    }
+    if (!entry.configured && !target)
+      target = &entry;
+  }
+  if (!target)
+    return false;
+  *target = {.configured = true,
+             .outgoing_interface_set = outgoing_port.has_value(),
+             .network = canonical,
+             .next_hop = next_hop,
+             .outgoing_interface_id =
+                 outgoing_port ? physical_interface_id(*outgoing_port) : 0U,
+             .prefix_length = prefix_length};
+  rebuild_routes(device);
+  return true;
+}
+
+bool RuntimeSupervisor::remove_ipv6_static_route(
+    DeviceHandle device, const packet::Ipv6 &network,
+    std::uint8_t prefix_length) noexcept {
+  if (!devices_.get(device) || device.index >= router_network_.size() ||
+      !router_network_[device.index] || prefix_length > ip::ipv6_address_bits)
+    return false;
+  auto &state = *router_network_[device.index];
+  const auto canonical = ip::mask(network, prefix_length);
+  const auto found =
+      std::find_if(state.ipv6_statics.begin(), state.ipv6_statics.end(),
+                   [&](const auto &entry) {
+                     return entry.configured && entry.network == canonical &&
+                            entry.prefix_length == prefix_length;
+                   });
+  if (found == state.ipv6_statics.end())
+    return false;
+  *found = {};
+  rebuild_routes(device);
+  return true;
+}
+
+bool RuntimeSupervisor::install_static_ipv6_neighbor(
+    DeviceHandle device, std::string_view port_id, const packet::Ipv6 &address,
+    packet::Mac mac) noexcept {
+  auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index] || ip::is_unspecified(address) ||
+      ip::is_multicast(address))
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal)
+    return false;
+  const auto &port = router_network_[device.index]->ports[*ordinal];
+  if (!port.configured || !port.ipv6_configured)
+    return false;
+
+  // Forwarding validates the MAC and owns capacity. Control publishes no
+  // parallel cache copy, so a rejected full-cache installation cannot appear
+  // in management intent until LabRuntime commits the acknowledged change.
+  auto &command = prepare(NetworkCommandKind::install_static_ipv6_neighbor);
+  command.device = device;
+  command.fib = StaticIpv6NeighborProgram{.device = device,
+                                          .address = address,
+                                          .mac = mac,
+                                          .port_ordinal = *ordinal};
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::remove_static_ipv6_neighbor(
+    DeviceHandle device, std::string_view port_id,
+    const packet::Ipv6 &address) noexcept {
+  auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal)
+    return false;
+  auto &command = prepare(NetworkCommandKind::remove_static_ipv6_neighbor);
+  command.device = device;
+  command.port.ordinal = *ordinal;
+  command.ipv6_destination = address;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::install_static_ipv4_neighbor(DeviceHandle device,
+                                                     std::string_view port_id,
+                                                     std::uint32_t address,
+                                                     packet::Mac mac) noexcept {
+  auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index] || address == 0U || address == 0xffffffffU)
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal)
+    return false;
+  const auto &port = router_network_[device.index]->ports[*ordinal];
+  if (!port.configured || !port.ipv4_configured)
+    return false;
+
+  // The forwarding owner performs the final on-link and capacity validation.
+  // Intent is committed only after this bounded command is acknowledged.
+  auto &command = prepare(NetworkCommandKind::install_static_ipv4_neighbor);
+  command.device = device;
+  command.fib = StaticIpv4NeighborProgram{.device = device,
+                                          .address = address,
+                                          .mac = mac,
+                                          .port_ordinal = *ordinal};
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::remove_static_ipv4_neighbor(
+    DeviceHandle device, std::string_view port_id,
+    std::uint32_t address) noexcept {
+  auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal)
+    return false;
+  auto &command = prepare(NetworkCommandKind::remove_static_ipv4_neighbor);
+  command.device = device;
+  command.port.ordinal = *ordinal;
+  command.destination = address;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_dynamic_ipv6_neighbors(
+    DeviceHandle device, std::optional<std::string_view> port_id,
+    std::optional<packet::Ipv6> address) noexcept {
+  if (!devices_.get(device) || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  std::optional<std::uint16_t> ordinal;
+  if (port_id) {
+    auto *inventory = hardware(device);
+    if (!inventory)
+      return false;
+    ordinal = inventory->coordinate_ordinal(*port_id);
+    if (!ordinal)
+      return false;
+  }
+  auto &command = prepare(NetworkCommandKind::clear_dynamic_ipv6_neighbors);
+  command.device = device;
+  command.port.ordinal = ordinal.value_or(0U);
+  command.ipv6_destination = address.value_or(packet::Ipv6{});
+  command.ipv6_neighbor_interface_specific = ordinal.has_value();
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_dynamic_ipv4_neighbors(
+    DeviceHandle device, std::optional<std::string_view> port_id,
+    std::optional<std::uint32_t> address) noexcept {
+  if (!devices_.get(device) || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  std::optional<std::uint16_t> ordinal;
+  if (port_id) {
+    auto *inventory = hardware(device);
+    if (!inventory)
+      return false;
+    ordinal = inventory->coordinate_ordinal(*port_id);
+    if (!ordinal)
+      return false;
+  }
+  auto &command = prepare(NetworkCommandKind::clear_dynamic_ipv4_neighbors);
+  command.device = device;
+  command.port.ordinal = ordinal.value_or(0U);
+  command.destination = address.value_or(0U);
+  command.ipv4_neighbor_interface_specific = ordinal.has_value();
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
 void RuntimeSupervisor::refresh_router(DeviceHandle device) noexcept {
   auto *inventory = hardware(device);
   if (!inventory || device.index >= router_network_.size() ||
@@ -607,30 +2511,146 @@ void RuntimeSupervisor::refresh_router(DeviceHandle device) noexcept {
     if (!state.ports[ordinal].configured)
       continue;
     const auto *physical = inventory->at(static_cast<std::uint16_t>(ordinal));
-    const bool operational = physical && physical->present &&
-                             physical->configuration_compatible &&
-                             physical->hierarchy_enabled &&
-                             physical->admin_enabled && physical->link_signal &&
-                             state.interface_admin[ordinal];
+    const bool operational =
+        physical && physical->present && physical->configuration_compatible &&
+        physical->hierarchy_enabled && physical->admin_enabled &&
+        physical->link_signal &&
+        (state.interface_admin[ordinal] || state.ies_port_owned[ordinal]);
     state.ports[ordinal].operational = operational;
     if (physical) {
       state.ports[ordinal].mtu = physical->mtu;
       state.ports[ordinal].speed_mbps = physical->speed_mbps;
     }
     state.connected[ordinal].operational = operational;
+    state.ipv6_connected[ordinal].operational =
+        operational && state.ports[ordinal].ipv6_configured;
+    for (auto &connected : state.native_ipv6_connected)
+      if (connected.physical_port_ordinal == ordinal)
+        connected.operational =
+            operational && state.ports[ordinal].ipv6_configured;
     // Forwarding receives the complete port projection even when down. This
     // preserves address and MTU configuration without granting packet passage.
     auto &configure = prepare(NetworkCommandKind::configure_port);
     configure.device = device;
     configure.port = state.ports[ordinal];
     static_cast<void>(dispatch(configure));
+    const auto &advertisement = state.router_advertisements[ordinal];
+    if (advertisement.configured) {
+      auto &ra = prepare(NetworkCommandKind::configure_router_advertisement);
+      ra.device = device;
+      ra.fib = RouterAdvertisementProgram{
+          .device = device,
+          .config = advertisement.config,
+          .port_ordinal = static_cast<std::uint16_t>(ordinal),
+          .enabled = advertisement.enabled};
+      static_cast<void>(dispatch(ra));
+    }
+    const auto &mld = state.mld_interfaces[ordinal];
+    if (mld.configured) {
+      // Re-resolve fields that originate outside the MLD configuration tree.
+      // Hardware replacement may preserve the stable ordinal while an IPv6
+      // address edit changes the local Querier address.
+      auto configuration = mld.configuration;
+      configuration.port_ordinal = static_cast<std::uint16_t>(ordinal);
+      configuration.link_local_address = state.ports[ordinal].ipv6_link_local;
+      auto &program = prepare(NetworkCommandKind::configure_mld_interface);
+      program.device = device;
+      program.fib =
+          MldInterfaceProgram{.device = device, .configuration = configuration};
+      const auto result = dispatch(program);
+      if (result && result->success) {
+        state.mld_interfaces[ordinal].configuration = configuration;
+        // configure_mld_interface recreates the forwarding-owned protocol
+        // object. Reinstall the last committed SSM program before this refresh
+        // can be considered complete. The begin/add/commit sequence keeps the
+        // previous generation visible until every range-source tuple arrives.
+        const auto &translations = mld.ssm_translations;
+        const auto submit = [&](MldSsmProgramOperation operation,
+                                const MldSsmTranslation &entry = {}) {
+          auto &translation =
+              prepare(NetworkCommandKind::program_mld_ssm_translation);
+          translation.device = device;
+          translation.port.ordinal = static_cast<std::uint16_t>(ordinal);
+          translation.mld_ssm_operation = operation;
+          translation.mld_ssm_translation = entry;
+          translation.mld_ssm_expected_entries =
+              operation == MldSsmProgramOperation::begin
+                  ? static_cast<std::uint32_t>(translations.size())
+                  : 0U;
+          const auto programmed = dispatch(translation);
+          return programmed && programmed->success;
+        };
+        bool complete = submit(MldSsmProgramOperation::begin);
+        for (const auto &translation : translations)
+          complete =
+              complete && submit(MldSsmProgramOperation::add, translation);
+        complete = complete && submit(MldSsmProgramOperation::commit);
+        if (!complete)
+          static_cast<void>(submit(MldSsmProgramOperation::abort));
+
+        // Reconfiguration constructs a new forwarding MLD owner, so the
+        // effective policy generation must follow the same rebuild path as SSM
+        // translation. The named policy remains a LabRuntime concern; this
+        // transaction restores only its already resolved value program.
+        const auto &policy = mld.import_policy;
+        const auto submit_policy =
+            [&](mld::ImportPolicyProgramOperation operation,
+                const mld::ImportPolicyEntry &entry = {}) {
+              auto &policy_command =
+                  prepare(NetworkCommandKind::program_mld_import_policy);
+              policy_command.device = device;
+              policy_command.port.ordinal = static_cast<std::uint16_t>(ordinal);
+              policy_command.mld_import_policy_operation = operation;
+              policy_command.mld_import_policy_entry = entry;
+              policy_command.mld_import_policy_default_action =
+                  policy.default_action;
+              policy_command.mld_import_policy_expected_entries =
+                  operation == mld::ImportPolicyProgramOperation::begin
+                      ? static_cast<std::uint32_t>(policy.entries.size())
+                      : 0U;
+              const auto programmed = dispatch(policy_command);
+              return programmed && programmed->success;
+            };
+        bool policy_complete =
+            submit_policy(mld::ImportPolicyProgramOperation::begin);
+        for (const auto &entry : policy.entries)
+          policy_complete =
+              policy_complete &&
+              submit_policy(mld::ImportPolicyProgramOperation::add, entry);
+        policy_complete =
+            policy_complete &&
+            submit_policy(mld::ImportPolicyProgramOperation::commit);
+        if (!policy_complete)
+          static_cast<void>(
+              submit_policy(mld::ImportPolicyProgramOperation::abort));
+      }
+    }
+    if (state.dhcpv6_relays[ordinal]) {
+      // A forwarding port can disappear with a card while committed service
+      // intent remains. Reinstall the complete relay generation only after
+      // IPv6 and its UDP/FIB prerequisites have been republished.
+      static_cast<void>(
+          program_dhcpv6_relay(device, static_cast<std::uint16_t>(ordinal),
+                               *state.dhcpv6_relays[ordinal]));
+    }
+  }
+  // configure_port carries only the selected-primary compatibility cache.
+  // Republish the full generation after all physical projections so secondary
+  // addresses cannot disappear during card, link or admin reconciliation.
+  static_cast<void>(
+      program_ipv6_address_generation(device, state.native_ipv6_addresses));
+  if (!state.ies_configuration.ports.empty() ||
+      !state.ies_configuration.ies_services.empty()) {
+    // Rebuild the entire service generation after all physical port views are
+    // current. The call retains configured intent for absent equipment while
+    // publishing classifiers only for ports that presently exist.
+    static_cast<void>(configure_ies_services(device, state.ies_configuration));
   }
   rebuild_routes(device);
 }
 
 void RuntimeSupervisor::rebuild_routes(DeviceHandle device) noexcept {
-  if (device.index >= router_network_.size() ||
-      !router_network_[device.index])
+  if (device.index >= router_network_.size() || !router_network_[device.index])
     return;
   auto &state = *router_network_[device.index];
   const bool changed = state.rib.rebuild(state.connected, state.statics);
@@ -645,12 +2665,25 @@ void RuntimeSupervisor::rebuild_routes(DeviceHandle device) noexcept {
     program.fib = state.rib.compile(state.fib_generation);
     static_cast<void>(dispatch(program));
   }
+  const bool ipv6_changed =
+      state.ipv6_rib.rebuild(state.native_ipv6_connected, state.ipv6_statics,
+                             state.ies_ipv6_connected);
+  if (!state.ipv6_rib.last_rebuild_valid())
+    return;
+  if (ipv6_changed || !state.ipv6_fib_generation) {
+    ++state.ipv6_fib_generation;
+    auto &program = prepare(NetworkCommandKind::program_ipv6_fib);
+    program.device = device;
+    program.fib = state.ipv6_rib.compile(state.ipv6_fib_generation);
+    static_cast<void>(dispatch(program));
+  }
 }
 
-bool RuntimeSupervisor::start_router_ping(
-    DeviceHandle device, std::uint32_t destination,
-    std::uint16_t sequence, std::uint16_t payload_octets,
-    bool dont_fragment) noexcept {
+bool RuntimeSupervisor::start_router_ping(DeviceHandle device,
+                                          std::uint32_t destination,
+                                          std::uint16_t sequence,
+                                          std::uint16_t payload_octets,
+                                          bool dont_fragment) noexcept {
   if (!devices_.get(device))
     return false;
   auto &command = prepare(NetworkCommandKind::router_ping);
@@ -665,28 +2698,546 @@ bool RuntimeSupervisor::start_router_ping(
 
 bool RuntimeSupervisor::router_ping_reply(DeviceHandle device,
                                           std::uint16_t sequence) noexcept {
+  return (router_ping_outcome(device, sequence) & 0xffU) == 1U;
+}
+
+std::uint64_t
+RuntimeSupervisor::router_ping_outcome(DeviceHandle device,
+                                       std::uint16_t sequence) noexcept {
   if (!devices_.get(device))
-    return false;
+    return 0U;
   auto &command = prepare(NetworkCommandKind::router_ping_status);
   command.device = device;
   command.sequence = sequence;
   const auto result = dispatch(command);
-  return result && result->success && result->value != 0;
+  return result && result->success ? result->value : 0U;
 }
 
-bool RuntimeSupervisor::configure_host(HostHandle host, packet::Mac mac,
-                                       packet::Ipv4 address,
-                                       std::uint8_t prefix_length,
-                                       packet::Ipv4 gateway,
-                                       std::uint16_t mtu) noexcept {
+bool RuntimeSupervisor::start_router_ipv6_ping(
+    DeviceHandle device, const packet::Ipv6 &destination,
+    std::uint16_t sequence, std::uint16_t payload_octets) noexcept {
+  if (!devices_.get(device) || ip::is_unspecified(destination) ||
+      ip::is_multicast(destination))
+    return false;
+  auto &command = prepare(NetworkCommandKind::router_ipv6_ping);
+  command.device = device;
+  command.ipv6_destination = destination;
+  command.sequence = sequence;
+  command.payload_octets = payload_octets;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::router_ipv6_ping_reply(
+    DeviceHandle device, std::uint16_t sequence) noexcept {
+  return (router_ipv6_ping_outcome(device, sequence) & 0xffU) == 1U;
+}
+
+std::uint64_t
+RuntimeSupervisor::router_ipv6_ping_outcome(DeviceHandle device,
+                                            std::uint16_t sequence) noexcept {
+  if (!devices_.get(device))
+    return 0U;
+  auto &command = prepare(NetworkCommandKind::router_ipv6_ping_status);
+  command.device = device;
+  command.sequence = sequence;
+  const auto result = dispatch(command);
+  return result && result->success ? result->value : 0U;
+}
+
+bool RuntimeSupervisor::configure_host(
+    HostHandle host, packet::Mac mac, packet::Ipv4 address,
+    std::uint8_t prefix_length, packet::Ipv4 gateway, std::uint16_t mtu,
+    std::uint64_t interface_id, bool ipv6_autoconfiguration,
+    const host::Ipv6InterfaceIdentifierConfiguration &ipv6_identifier,
+    crypto::Sha256Digest transport_secret) noexcept {
+  const bool transport_secret_present =
+      std::any_of(transport_secret.begin(), transport_secret.end(),
+                  [](std::uint8_t value) { return value != 0U; });
   if (!hosts_.get(host) || prefix_length > 32U ||
       mtu < device_catalog::minimum_host_ipv4_mtu ||
-      mtu > device_catalog::maximum_network_mtu)
+      mtu > device_catalog::maximum_network_mtu || !transport_secret_present ||
+      (ipv6_autoconfiguration &&
+       (!interface_id || mtu < packet::ipv6_minimum_link_mtu)))
     return false;
   // HostNetworkProgram crosses the same value boundary as router port and FIB
   // projections. Control never receives a pointer to endpoint ARP state.
   auto &command = prepare(NetworkCommandKind::configure_host);
-  command.host_program = {host, mac, address, gateway, prefix_length, mtu};
+  command.host_program = {host,
+                          mac,
+                          address,
+                          gateway,
+                          prefix_length,
+                          mtu,
+                          interface_id,
+                          ipv6_autoconfiguration,
+                          ipv6_identifier,
+                          transport_secret};
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::configure_host_dhcpv6_client(
+    const HostDhcpv6ClientProgram &program) noexcept {
+  if (!hosts_.get(program.host) ||
+      program.configuration.identity_associations.size() >
+          std::numeric_limits<std::uint32_t>::max() ||
+      program.configuration.requested_options.size() >
+          std::numeric_limits<std::uint32_t>::max())
+    return false;
+  auto &begin_command = prepare(NetworkCommandKind::begin_host_dhcpv6_client);
+  begin_command.host = program.host;
+  begin_command.fib = NetworkDhcpv6ClientBegin{
+      .duid = program.configuration.duid,
+      .transaction_secret = program.configuration.transaction_secret,
+      .expected_associations = static_cast<std::uint32_t>(
+          program.configuration.identity_associations.size()),
+      .expected_options = static_cast<std::uint32_t>(
+          program.configuration.requested_options.size()),
+      .duid_octets = program.configuration.duid_octets,
+      .rapid_commit = program.configuration.rapid_commit,
+      .information_only = program.information_only};
+  auto result = dispatch(begin_command);
+  if (!result || !result->success)
+    return false;
+  for (const auto &association : program.configuration.identity_associations) {
+    auto &command = prepare(NetworkCommandKind::add_host_dhcpv6_client_ia);
+    command.host = program.host;
+    command.fib =
+        NetworkDhcpv6ClientAssociation{association.iaid, association.kind};
+    result = dispatch(command);
+    if (!result || !result->success)
+      goto abort_client;
+  }
+  for (const auto option : program.configuration.requested_options) {
+    auto &command = prepare(NetworkCommandKind::add_host_dhcpv6_client_option);
+    command.host = program.host;
+    command.dhcpv6_option_code = option;
+    result = dispatch(command);
+    if (!result || !result->success)
+      goto abort_client;
+  }
+  {
+    auto &command = prepare(NetworkCommandKind::commit_host_dhcpv6_client);
+    command.host = program.host;
+    result = dispatch(command);
+    if (result && result->success)
+      return true;
+  }
+abort_client: {
+  auto &command = prepare(NetworkCommandKind::abort_host_dhcpv6_client);
+  command.host = program.host;
+  static_cast<void>(dispatch(command));
+}
+  return false;
+}
+
+bool RuntimeSupervisor::remove_host_dhcpv6_client(HostHandle host) noexcept {
+  if (!hosts_.get(host))
+    return false;
+  auto &command = prepare(NetworkCommandKind::remove_host_dhcpv6_client);
+  command.host = host;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::configure_host_dhcpv6_server(
+    const HostDhcpv6ServerProgram &program) noexcept {
+  if (!hosts_.get(program.host) ||
+      program.decline_hold_time < std::chrono::seconds::zero() ||
+      program.configuration.dns_recursive_servers.size() >
+          std::numeric_limits<std::uint32_t>::max() ||
+      program.address_pools.size() >
+          std::numeric_limits<std::uint32_t>::max() ||
+      program.prefix_pools.size() > std::numeric_limits<std::uint32_t>::max())
+    return false;
+  const auto &configuration = program.configuration;
+  auto &begin_command = prepare(NetworkCommandKind::begin_host_dhcpv6_server);
+  begin_command.host = program.host;
+  begin_command.fib = NetworkDhcpv6ServerBegin{
+      .duid = configuration.duid,
+      .decline_hold_seconds =
+          static_cast<std::uint64_t>(program.decline_hold_time.count()),
+      .expected_dns_servers = static_cast<std::uint32_t>(
+          configuration.dns_recursive_servers.size()),
+      .expected_address_pools =
+          static_cast<std::uint32_t>(program.address_pools.size()),
+      .expected_prefix_pools =
+          static_cast<std::uint32_t>(program.prefix_pools.size()),
+      .information_refresh_time_seconds =
+          configuration.information_refresh_time_seconds,
+      .solicit_maximum_retransmission_seconds =
+          configuration.solicit_maximum_retransmission_seconds.value_or(0U),
+      .information_maximum_retransmission_seconds =
+          configuration.information_maximum_retransmission_seconds.value_or(0U),
+      .duid_octets = configuration.duid_octets,
+      .preference = configuration.preference,
+      .address_pool_index = configuration.address_pool_index,
+      .prefix_pool_index = configuration.prefix_pool_index,
+      .rapid_commit = configuration.rapid_commit,
+      .has_solicit_maximum_retransmission =
+          configuration.solicit_maximum_retransmission_seconds.has_value(),
+      .has_information_maximum_retransmission =
+          configuration.information_maximum_retransmission_seconds.has_value()};
+  auto result = dispatch(begin_command);
+  if (!result || !result->success)
+    return false;
+  for (const auto &dns : configuration.dns_recursive_servers) {
+    auto &command = prepare(NetworkCommandKind::add_host_dhcpv6_server_dns);
+    command.host = program.host;
+    command.ipv6_destination = dns;
+    result = dispatch(command);
+    if (!result || !result->success)
+      goto abort_server;
+  }
+  for (const auto &pool : program.address_pools) {
+    auto &command =
+        prepare(NetworkCommandKind::add_host_dhcpv6_server_address_pool);
+    command.host = program.host;
+    command.fib = pool;
+    result = dispatch(command);
+    if (!result || !result->success)
+      goto abort_server;
+  }
+  for (const auto &pool : program.prefix_pools) {
+    auto &command =
+        prepare(NetworkCommandKind::add_host_dhcpv6_server_prefix_pool);
+    command.host = program.host;
+    command.fib = pool;
+    result = dispatch(command);
+    if (!result || !result->success)
+      goto abort_server;
+  }
+  {
+    auto &command = prepare(NetworkCommandKind::commit_host_dhcpv6_server);
+    command.host = program.host;
+    result = dispatch(command);
+    if (result && result->success)
+      return true;
+  }
+abort_server: {
+  auto &command = prepare(NetworkCommandKind::abort_host_dhcpv6_server);
+  command.host = program.host;
+  static_cast<void>(dispatch(command));
+}
+  return false;
+}
+
+bool RuntimeSupervisor::remove_host_dhcpv6_server(HostHandle host) noexcept {
+  if (!hosts_.get(host))
+    return false;
+  auto &command = prepare(NetworkCommandKind::remove_host_dhcpv6_server);
+  command.host = host;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+std::optional<std::size_t>
+RuntimeSupervisor::host_dhcpv6_client_lease_count(HostHandle host) noexcept {
+  if (!hosts_.get(host))
+    return std::nullopt;
+  auto &command = prepare(NetworkCommandKind::host_dhcpv6_client_status);
+  command.host = host;
+  const auto result = dispatch(command);
+  return result && result->success ? std::optional<std::size_t>{result->value}
+                                   : std::nullopt;
+}
+
+bool RuntimeSupervisor::configure_host_dns_resolver(
+    const HostDnsResolverProgram &program) noexcept {
+  if (!hosts_.get(program.host) || program.root_hints.empty() ||
+      program.root_hints.size() > std::numeric_limits<std::uint32_t>::max() ||
+      program.trust_anchors.size() > std::numeric_limits<std::uint32_t>::max())
+    return false;
+  auto &begin = prepare(NetworkCommandKind::begin_host_dns_resolver);
+  begin.host = program.host;
+  begin.fib = NetworkDnsResolverBegin{
+      .identifier_secret = program.identifier_secret,
+      .expected_root_hints =
+          static_cast<std::uint32_t>(program.root_hints.size()),
+      .expected_trust_anchors =
+          static_cast<std::uint32_t>(program.trust_anchors.size()),
+      .maximum_nsec3_iterations = program.nsec3_policy.maximum,
+      .serve_clients = program.serve_clients};
+  auto result = dispatch(begin);
+  if (!result || !result->success)
+    return false;
+  for (const auto &hint : program.root_hints) {
+    if (hint.addresses.empty() ||
+        hint.addresses.size() > std::numeric_limits<std::uint32_t>::max())
+      goto abort_resolver;
+    auto &root = prepare(NetworkCommandKind::begin_host_dns_root_hint);
+    root.host = program.host;
+    root.fib = NetworkDnsRootHintBegin{
+        .server_name = hint.server_name,
+        .expected_addresses =
+            static_cast<std::uint32_t>(hint.addresses.size())};
+    result = dispatch(root);
+    if (!result || !result->success)
+      goto abort_resolver;
+    for (const auto &address : hint.addresses) {
+      auto &add = prepare(NetworkCommandKind::add_host_dns_root_address);
+      add.host = program.host;
+      add.fib = address;
+      result = dispatch(add);
+      if (!result || !result->success)
+        goto abort_resolver;
+    }
+    auto &commit = prepare(NetworkCommandKind::commit_host_dns_root_hint);
+    commit.host = program.host;
+    result = dispatch(commit);
+    if (!result || !result->success)
+      goto abort_resolver;
+  }
+  for (const auto &anchor : program.trust_anchors) {
+    if (anchor.type != packet::dns::type_dnskey || !anchor.record_class ||
+        anchor.rdata.empty() ||
+        anchor.rdata.size() > std::numeric_limits<std::uint16_t>::max())
+      goto abort_resolver;
+    auto &anchor_begin =
+        prepare(NetworkCommandKind::begin_host_dns_trust_anchor);
+    anchor_begin.host = program.host;
+    anchor_begin.fib = NetworkDnsTrustAnchorBegin{
+        .owner = anchor.owner,
+        .ttl = anchor.ttl,
+        .expected_rdata_octets =
+            static_cast<std::uint32_t>(anchor.rdata.size()),
+        .record_class = anchor.record_class};
+    result = dispatch(anchor_begin);
+    if (!result || !result->success)
+      goto abort_resolver;
+    for (std::size_t offset{}; offset < anchor.rdata.size();
+         offset += network_dns_chunk_octets) {
+      NetworkDnsRdataChunk chunk;
+      chunk.size = static_cast<std::uint16_t>(std::min<std::size_t>(
+          chunk.octets.size(), anchor.rdata.size() - offset));
+      std::copy_n(anchor.rdata.begin() + static_cast<std::ptrdiff_t>(offset),
+                  chunk.size, chunk.octets.begin());
+      auto &add = prepare(NetworkCommandKind::add_host_dns_trust_anchor_rdata);
+      add.host = program.host;
+      add.fib = chunk;
+      result = dispatch(add);
+      if (!result || !result->success)
+        goto abort_resolver;
+    }
+    auto &commit = prepare(NetworkCommandKind::commit_host_dns_trust_anchor);
+    commit.host = program.host;
+    result = dispatch(commit);
+    if (!result || !result->success)
+      goto abort_resolver;
+  }
+  {
+    auto &commit = prepare(NetworkCommandKind::commit_host_dns_resolver);
+    commit.host = program.host;
+    result = dispatch(commit);
+    if (result && result->success)
+      return true;
+  }
+abort_resolver: {
+  auto &abort = prepare(NetworkCommandKind::abort_host_dns_resolver);
+  abort.host = program.host;
+  static_cast<void>(dispatch(abort));
+}
+  return false;
+}
+
+bool RuntimeSupervisor::remove_host_dns_resolver(HostHandle host) noexcept {
+  if (!hosts_.get(host))
+    return false;
+  auto &command = prepare(NetworkCommandKind::remove_host_dns_resolver);
+  command.host = host;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::configure_host_dns_authoritative(
+    const HostDnsAuthoritativeProgram &program) noexcept {
+  if (!hosts_.get(program.host) || program.zones.empty() ||
+      program.zones.size() > std::numeric_limits<std::uint32_t>::max())
+    return false;
+  auto &begin = prepare(NetworkCommandKind::begin_host_dns_authoritative);
+  begin.host = program.host;
+  begin.fib = NetworkDnsAuthoritativeBegin{
+      .wall_now = 0U,
+      .expected_zones = static_cast<std::uint32_t>(program.zones.size()),
+      .managed_signing = false};
+  auto result = dispatch(begin);
+  if (!result || !result->success)
+    return false;
+  for (const auto &zone : program.zones) {
+    if (zone.records.empty() ||
+        zone.records.size() > std::numeric_limits<std::uint32_t>::max())
+      goto abort_authoritative;
+    auto &zone_begin = prepare(NetworkCommandKind::begin_host_dns_zone);
+    zone_begin.host = program.host;
+    zone_begin.fib = NetworkDnsZoneBegin{
+        .origin = zone.origin,
+        .policy = {},
+        .expected_records = static_cast<std::uint32_t>(zone.records.size()),
+        .expected_keys = 0U};
+    result = dispatch(zone_begin);
+    if (!result || !result->success)
+      goto abort_authoritative;
+    for (const auto &record : zone.records) {
+      if (record.rdata.size() > std::numeric_limits<std::uint16_t>::max())
+        goto abort_authoritative;
+      auto &record_begin = prepare(NetworkCommandKind::begin_host_dns_record);
+      record_begin.host = program.host;
+      record_begin.fib = NetworkDnsRecordBegin{
+          .owner = record.owner,
+          .ttl = record.ttl,
+          .expected_rdata_octets =
+              static_cast<std::uint32_t>(record.rdata.size()),
+          .type = record.type,
+          .record_class = record.record_class};
+      result = dispatch(record_begin);
+      if (!result || !result->success)
+        goto abort_authoritative;
+      for (std::size_t offset{}; offset < record.rdata.size();
+           offset += network_dns_chunk_octets) {
+        NetworkDnsRdataChunk chunk;
+        chunk.size = static_cast<std::uint16_t>(std::min<std::size_t>(
+            chunk.octets.size(), record.rdata.size() - offset));
+        std::copy_n(record.rdata.begin() + static_cast<std::ptrdiff_t>(offset),
+                    chunk.size, chunk.octets.begin());
+        auto &add = prepare(NetworkCommandKind::add_host_dns_rdata);
+        add.host = program.host;
+        add.fib = chunk;
+        result = dispatch(add);
+        if (!result || !result->success)
+          goto abort_authoritative;
+      }
+      auto &commit = prepare(NetworkCommandKind::commit_host_dns_record);
+      commit.host = program.host;
+      result = dispatch(commit);
+      if (!result || !result->success)
+        goto abort_authoritative;
+    }
+    auto &zone_commit = prepare(NetworkCommandKind::commit_host_dns_zone);
+    zone_commit.host = program.host;
+    result = dispatch(zone_commit);
+    if (!result || !result->success)
+      goto abort_authoritative;
+  }
+  {
+    auto &commit = prepare(NetworkCommandKind::commit_host_dns_authoritative);
+    commit.host = program.host;
+    result = dispatch(commit);
+    if (result && result->success)
+      return true;
+  }
+abort_authoritative: {
+  auto &abort = prepare(NetworkCommandKind::abort_host_dns_authoritative);
+  abort.host = program.host;
+  static_cast<void>(dispatch(abort));
+}
+  return false;
+}
+
+bool RuntimeSupervisor::configure_host_dns_signed_authoritative(
+    const HostDnsSignedAuthoritativeProgram &program) noexcept {
+  if (!hosts_.get(program.host) || !program.wall_now || program.zones.empty() ||
+      program.zones.size() > std::numeric_limits<std::uint32_t>::max())
+    return false;
+  auto &begin = prepare(NetworkCommandKind::begin_host_dns_authoritative);
+  begin.host = program.host;
+  begin.fib = NetworkDnsAuthoritativeBegin{
+      .wall_now = program.wall_now,
+      .expected_zones = static_cast<std::uint32_t>(program.zones.size()),
+      .managed_signing = true};
+  auto result = dispatch(begin);
+  if (!result || !result->success)
+    return false;
+  for (const auto &zone : program.zones) {
+    if (zone.zone.records.empty() || zone.keys.empty() ||
+        zone.zone.records.size() > std::numeric_limits<std::uint32_t>::max() ||
+        zone.keys.size() > std::numeric_limits<std::uint32_t>::max() ||
+        !dnssec::valid_managed_zone_policy(zone.policy))
+      goto abort_signed;
+    auto &zone_begin = prepare(NetworkCommandKind::begin_host_dns_zone);
+    zone_begin.host = program.host;
+    zone_begin.fib = NetworkDnsZoneBegin{
+        .origin = zone.zone.origin,
+        .policy = zone.policy,
+        .expected_records =
+            static_cast<std::uint32_t>(zone.zone.records.size()),
+        .expected_keys = static_cast<std::uint32_t>(zone.keys.size())};
+    result = dispatch(zone_begin);
+    if (!result || !result->success)
+      goto abort_signed;
+    for (const auto &key : zone.keys) {
+      auto &add_key = prepare(NetworkCommandKind::add_host_dns_signing_key);
+      add_key.host = program.host;
+      add_key.fib = NetworkDnsSigningKeyDefinition{.schedule = key.schedule,
+                                                   .generation = key.generation,
+                                                   .role = key.role,
+                                                   .algorithm = key.algorithm};
+      result = dispatch(add_key);
+      if (!result || !result->success)
+        goto abort_signed;
+    }
+    for (const auto &record : zone.zone.records) {
+      if (record.rdata.size() > std::numeric_limits<std::uint16_t>::max())
+        goto abort_signed;
+      auto &record_begin = prepare(NetworkCommandKind::begin_host_dns_record);
+      record_begin.host = program.host;
+      record_begin.fib = NetworkDnsRecordBegin{
+          .owner = record.owner,
+          .ttl = record.ttl,
+          .expected_rdata_octets =
+              static_cast<std::uint32_t>(record.rdata.size()),
+          .type = record.type,
+          .record_class = record.record_class};
+      result = dispatch(record_begin);
+      if (!result || !result->success)
+        goto abort_signed;
+      for (std::size_t offset{}; offset < record.rdata.size();
+           offset += network_dns_chunk_octets) {
+        NetworkDnsRdataChunk chunk;
+        chunk.size = static_cast<std::uint16_t>(std::min<std::size_t>(
+            chunk.octets.size(), record.rdata.size() - offset));
+        std::copy_n(record.rdata.begin() + static_cast<std::ptrdiff_t>(offset),
+                    chunk.size, chunk.octets.begin());
+        auto &add = prepare(NetworkCommandKind::add_host_dns_rdata);
+        add.host = program.host;
+        add.fib = chunk;
+        result = dispatch(add);
+        if (!result || !result->success)
+          goto abort_signed;
+      }
+      auto &record_commit = prepare(NetworkCommandKind::commit_host_dns_record);
+      record_commit.host = program.host;
+      result = dispatch(record_commit);
+      if (!result || !result->success)
+        goto abort_signed;
+    }
+    auto &zone_commit = prepare(NetworkCommandKind::commit_host_dns_zone);
+    zone_commit.host = program.host;
+    result = dispatch(zone_commit);
+    if (!result || !result->success)
+      goto abort_signed;
+  }
+  {
+    auto &commit = prepare(NetworkCommandKind::commit_host_dns_authoritative);
+    commit.host = program.host;
+    result = dispatch(commit);
+    if (result && result->success)
+      return true;
+  }
+abort_signed: {
+  auto &abort = prepare(NetworkCommandKind::abort_host_dns_authoritative);
+  abort.host = program.host;
+  static_cast<void>(dispatch(abort));
+}
+  return false;
+}
+
+bool RuntimeSupervisor::remove_host_dns_authoritative(
+    HostHandle host) noexcept {
+  if (!hosts_.get(host))
+    return false;
+  auto &command = prepare(NetworkCommandKind::remove_host_dns_authoritative);
+  command.host = host;
   const auto result = dispatch(command);
   return result && result->success;
 }
@@ -758,7 +3309,8 @@ std::size_t RuntimeSupervisor::active_links() noexcept {
   auto &query = prepare(NetworkCommandKind::active_link_count);
   const auto result = dispatch(query);
   // A failed health query cannot safely invent a stale physical link count.
-  return result && result->success ? static_cast<std::size_t>(result->value) : 0;
+  return result && result->success ? static_cast<std::size_t>(result->value)
+                                   : 0;
 }
 
 bool RuntimeSupervisor::configure_capture_point(
@@ -769,8 +3321,7 @@ bool RuntimeSupervisor::configure_capture_point(
   return result && result->success;
 }
 
-std::span<const std::uint8_t>
-RuntimeSupervisor::prepare_capture() noexcept {
+std::span<const std::uint8_t> RuntimeSupervisor::prepare_capture() noexcept {
   auto &command = prepare(NetworkCommandKind::prepare_capture);
   const auto result = dispatch(command);
   if (!result || !result->success ||
@@ -784,7 +3335,8 @@ RuntimeSupervisor::prepare_capture() noexcept {
 std::size_t RuntimeSupervisor::captured_frames() noexcept {
   auto &command = prepare(NetworkCommandKind::capture_frame_count);
   const auto result = dispatch(command);
-  return result && result->success ? static_cast<std::size_t>(result->value) : 0;
+  return result && result->success ? static_cast<std::size_t>(result->value)
+                                   : 0;
 }
 
 std::uint64_t RuntimeSupervisor::capture_dropped() noexcept {
@@ -821,8 +3373,7 @@ RuntimeSupervisor::router_operational_state(DeviceHandle device) noexcept {
   }
 }
 
-std::unique_ptr<RuntimeSupervisorCheckpoint>
-RuntimeSupervisor::checkpoint() {
+std::unique_ptr<RuntimeSupervisorCheckpoint> RuntimeSupervisor::checkpoint() {
   auto &barrier = prepare(NetworkCommandKind::prepare_checkpoint);
   const auto result = dispatch(barrier);
   if (!result || !result->success)
@@ -848,15 +3399,34 @@ RuntimeSupervisor::checkpoint() {
         return nullptr;
       state->hardware.emplace_back();
       inventory->checkpoint(state->hardware.back());
-      RouterControlCheckpoint router;
+      // RouterControlCheckpoint contains full fixed-capacity route and RA
+      // projections. Construct it directly in the reserved heap vector so the
+      // one MiB Wasm stack never receives a second temporary copy.
+      state->control.emplace_back();
+      auto &router = state->control.back();
       router.device = device.handle;
       router.connected = control->connected;
       router.statics = control->statics;
+      router.ipv6_connected = control->ipv6_connected;
+      router.native_ipv6_addresses = control->native_ipv6_addresses;
+      router.native_ipv6_connected = control->native_ipv6_connected;
+      router.ipv6_statics = control->ipv6_statics;
       router.ports = control->ports;
       router.interface_admin = control->interface_admin;
+      router.ies_port_owned = control->ies_port_owned;
+      router.router_advertisements = control->router_advertisements;
+      router.mld_interfaces = control->mld_interfaces;
+      router.dhcpv6_relays = control->dhcpv6_relays;
+      router.ies_configuration = control->ies_configuration;
+      router.ies_sap_attachments = control->ies_sap_attachments;
+      router.ies_ipv6_interfaces = control->ies_ipv6_interfaces;
+      router.ies_ipv6_connected = control->ies_ipv6_connected;
+      router.ies_dhcpv6_relays = control->ies_dhcpv6_relays;
       router.fib_generation = control->fib_generation;
       router.selected_rib = control->rib.compile(control->fib_generation);
-      state->control.push_back(std::move(router));
+      router.ipv6_fib_generation = control->ipv6_fib_generation;
+      router.selected_ipv6_rib =
+          control->ipv6_rib.compile(control->ipv6_fib_generation);
     }
     state->network = std::move(*network);
     state->next_network_command_id = next_network_command_id_;
@@ -884,13 +3454,12 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
         return false;
     for (const auto &link : state.topology.entries)
       for (const auto &endpoint : link.record.endpoints) {
-        const bool exists = endpoint.node.kind == NodeKind::router
-                                ? devices->get({endpoint.node.index,
-                                                endpoint.node.generation}) !=
-                                      nullptr
-                                : hosts->get({endpoint.node.index,
-                                              endpoint.node.generation}) !=
-                                      nullptr;
+        const bool exists =
+            endpoint.node.kind == NodeKind::router
+                ? devices->get({endpoint.node.index,
+                                endpoint.node.generation}) != nullptr
+                : hosts->get({endpoint.node.index, endpoint.node.generation}) !=
+                      nullptr;
         if (!exists)
           return false;
       }
@@ -919,6 +3488,20 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
                           return a.network == b.network &&
                                  a.next_hop == b.next_hop &&
                                  a.port_ordinal == b.port_ordinal &&
+                                 a.prefix_length == b.prefix_length &&
+                                 a.local_system == b.local_system;
+                        });
+    };
+    const auto same_ipv6_fib = [](const routing::Ipv6FibProgram &left,
+                                  const routing::Ipv6FibProgram &right) {
+      return left.generation == right.generation && left.count == right.count &&
+             std::equal(left.routes.begin(), left.routes.begin() + left.count,
+                        right.routes.begin(), [](const auto &a, const auto &b) {
+                          return a.network == b.network &&
+                                 a.next_hop == b.next_hop &&
+                                 a.interface_id == b.interface_id &&
+                                 a.physical_port_ordinal ==
+                                     b.physical_port_ordinal &&
                                  a.prefix_length == b.prefix_length;
                         });
     };
@@ -927,25 +3510,164 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
           source.device.index >= control_seen.size() ||
           control_seen[source.device.index] ||
           source.selected_rib.generation != source.fib_generation ||
-          source.selected_rib.count > source.selected_rib.routes.size())
+          source.selected_rib.count > source.selected_rib.routes.size() ||
+          source.selected_ipv6_rib.generation != source.ipv6_fib_generation ||
+          source.selected_ipv6_rib.count >
+              source.selected_ipv6_rib.routes.size())
         return false;
       auto restored = std::make_unique<RouterNetworkState>();
       restored->connected = source.connected;
       restored->statics = source.statics;
+      restored->ipv6_connected = source.ipv6_connected;
+      restored->native_ipv6_addresses = source.native_ipv6_addresses;
+      restored->native_ipv6_connected = source.native_ipv6_connected;
+      restored->ipv6_statics = source.ipv6_statics;
       restored->ports = source.ports;
       restored->interface_admin = source.interface_admin;
+      restored->ies_port_owned = source.ies_port_owned;
+      restored->router_advertisements = source.router_advertisements;
+      restored->mld_interfaces = source.mld_interfaces;
+      restored->dhcpv6_relays = source.dhcpv6_relays;
+      restored->ies_configuration = source.ies_configuration;
+      restored->ies_sap_attachments = source.ies_sap_attachments;
+      restored->ies_ipv6_interfaces = source.ies_ipv6_interfaces;
+      restored->ies_ipv6_connected = source.ies_ipv6_connected;
+      restored->ies_dhcpv6_relays = source.ies_dhcpv6_relays;
       restored->fib_generation = source.fib_generation;
-      static_cast<void>(restored->rib.rebuild(restored->connected,
-                                              restored->statics));
+      restored->ipv6_fib_generation = source.ipv6_fib_generation;
+      service::SapForwardingTable service_validation;
+      dhcpv6::RelayAgent service_relay_validation;
+      if (service::validate(source.ies_configuration) !=
+              service::ValidationError::none ||
+          service_validation.replace(source.ies_sap_attachments,
+                                     source.ies_ipv6_interfaces) !=
+              service::SapProgramStatus::accepted ||
+          !service_relay_validation.restore(source.ies_dhcpv6_relays))
+        return false;
+      for (std::size_t ordinal = 0; ordinal < source.ies_port_owned.size();
+           ++ordinal) {
+        if (!source.ies_port_owned[ordinal])
+          continue;
+        // A serialized forwarding owner must be backed by both the physical
+        // projection and the service configuration object that created it.
+        // Otherwise removing a native interface after restore could preserve
+        // an orphan port indefinitely.
+        if (!source.ports[ordinal].configured ||
+            std::none_of(source.ies_configuration.ports.begin(),
+                         source.ies_configuration.ports.end(),
+                         [ordinal](const auto &port) {
+                           return port.coordinate.ordinal == ordinal;
+                         }))
+          return false;
+      }
+      auto advertisement_validation =
+          std::make_unique<Ipv6RouterAdvertisementTable>();
+      for (std::size_t ordinal = 0;
+           ordinal < source.router_advertisements.size(); ++ordinal) {
+        const auto &advertisement = source.router_advertisements[ordinal];
+        if (!advertisement.configured) {
+          if (advertisement.enabled)
+            return false;
+          continue;
+        }
+        if (!source.ports[ordinal].configured ||
+            !source.ports[ordinal].ipv6_configured ||
+            !advertisement_validation->configure(
+                static_cast<std::uint16_t>(ordinal), false,
+                advertisement.config))
+          return false;
+      }
+      for (std::size_t ordinal = 0; ordinal < source.mld_interfaces.size();
+           ++ordinal) {
+        const auto &mld = source.mld_interfaces[ordinal];
+        if (!mld.configured)
+          continue;
+        const auto &port = source.ports[ordinal];
+        if (!port.configured || !port.ipv6_configured ||
+            mld.configuration.port_ordinal != ordinal ||
+            mld.configuration.link_local_address != port.ipv6_link_local ||
+            !MldRouterInterface{}.configure(mld.configuration))
+          return false;
+        if (mld.ssm_translations.size() >
+            device_catalog::mld_router_group_sources_per_interface)
+          return false;
+        for (std::size_t index = 0; index < mld.ssm_translations.size();
+             ++index) {
+          const auto &translation = mld.ssm_translations[index];
+          if (!ip::is_multicast(translation.start) ||
+              !ip::is_multicast(translation.end) ||
+              translation.end < translation.start ||
+              ip::is_unspecified(translation.source) ||
+              ip::is_multicast(translation.source) ||
+              std::find(mld.ssm_translations.begin(),
+                        mld.ssm_translations.begin() +
+                            static_cast<std::ptrdiff_t>(index),
+                        translation) != mld.ssm_translations.begin() +
+                                            static_cast<std::ptrdiff_t>(index))
+            return false;
+        }
+      }
+      std::vector<dhcpv6::RelayInterfaceConfig> relay_validation_values;
+      for (std::size_t ordinal = 0; ordinal < source.dhcpv6_relays.size();
+           ++ordinal) {
+        if (!source.dhcpv6_relays[ordinal])
+          continue;
+        const auto &port = source.ports[ordinal];
+        const auto &relay = *source.dhcpv6_relays[ordinal];
+        if (!port.configured || !port.ipv6_configured ||
+            relay.interface_id == 0U || relay.physical_port_ordinal != ordinal)
+          return false;
+        relay_validation_values.push_back(relay);
+      }
+      dhcpv6::RelayAgent relay_validation;
+      if (!relay_validation.restore(relay_validation_values))
+        return false;
+      static_cast<void>(
+          restored->rib.rebuild(restored->connected, restored->statics));
       if (!restored->rib.last_rebuild_valid() ||
           !same_fib(restored->rib.compile(source.fib_generation),
                     source.selected_rib))
         return false;
+      static_cast<void>(restored->ipv6_rib.rebuild(
+          restored->native_ipv6_connected, restored->ipv6_statics,
+          restored->ies_ipv6_connected));
+      if (!restored->ipv6_rib.last_rebuild_valid() ||
+          !same_ipv6_fib(restored->ipv6_rib.compile(source.ipv6_fib_generation),
+                         source.selected_ipv6_rib))
+        return false;
       RouterForwarderCheckpoint forwarding_validation;
       forwarding_validation.fib = source.selected_rib;
+      forwarding_validation.ipv6_fib = source.selected_ipv6_rib;
+      forwarding_validation.sap_attachments = source.ies_sap_attachments;
+      forwarding_validation.service_ipv6_interfaces =
+          source.ies_ipv6_interfaces;
+      forwarding_validation.native_ipv6_addresses =
+          source.native_ipv6_addresses;
       for (const auto &port : source.ports)
-        if (port.configured)
+        if (port.configured) {
           forwarding_validation.ports.push_back(port);
+          // Validation uses a minimal synthetic forwarding image rather than
+          // the live network checkpoint. Every configured interface still
+          // requires independent zero-valued ICMPv4 and ICMPv6 rows because
+          // restore rejects counters detached from physical inventory.
+          forwarding_validation.icmpv4_interface_statistics.push_back(
+              {.port_ordinal = port.ordinal});
+          forwarding_validation.icmpv6_interface_statistics.push_back(
+              {.port_ordinal = port.ordinal});
+          if (port.ipv6_configured) {
+            // The synthetic image validates control intent only, but the
+            // forwarding checkpoint contract also requires one operational
+            // ReachableTime variable per IPv6 interface. Use a canonical
+            // in-range sample and nonzero continuation state. Live random
+            // state is validated separately in state.network below.
+            forwarding_validation.ipv6_reachable_times.push_back(
+                {.port_ordinal = port.ordinal,
+                 .base_milliseconds = port.nd_reachable_time_milliseconds,
+                 .effective_milliseconds = port.nd_reachable_time_milliseconds,
+                 .random_state = 1U,
+                 .remaining_refresh_nanoseconds = 0});
+          }
+        }
       if (!RouterForwarder::validate_checkpoint(forwarding_validation))
         return false;
       (*control)[source.device.index] = std::move(restored);
@@ -959,9 +3681,24 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
     if (state.network.routers.size() != state.devices.entries.size() ||
         state.network.hosts.size() != state.hosts.entries.size())
       return false;
-    for (const auto &router : state.network.routers)
-      if (!devices->get(router.device))
+    for (const auto &router : state.network.routers) {
+      if (!devices->get(router.device) ||
+          router.device.index >= control->size() ||
+          !(*control)[router.device.index])
         return false;
+      const auto &intent = *(*control)[router.device.index];
+      if (router.forwarding.sap_attachments != intent.ies_sap_attachments ||
+          router.forwarding.service_ipv6_interfaces !=
+              intent.ies_ipv6_interfaces ||
+          router.forwarding.native_ipv6_addresses !=
+              intent.native_ipv6_addresses)
+        return false;
+      for (const auto &relay : intent.ies_dhcpv6_relays)
+        if (std::find(router.forwarding.dhcpv6_relay_interfaces.begin(),
+                      router.forwarding.dhcpv6_relay_interfaces.end(),
+                      relay) == router.forwarding.dhcpv6_relay_interfaces.end())
+          return false;
+    }
     for (const auto &host : state.network.hosts)
       if (!hosts->get(host.host))
         return false;

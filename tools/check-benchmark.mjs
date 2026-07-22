@@ -58,8 +58,14 @@ const independentlySlowerStages = rawRatios.filter((ratio) => ratio > limit).len
 // because the other two stayed at the baseline. The separate coherent guard
 // still rejects catastrophic compiler or runtime slowdowns.
 for (const [name, observed, reference] of measurements) {
+  const rawRatio = observed / reference;
   const normalized = (observed / reference) / scale;
-  if (normalized > limit ||
+  // Normalization compares independent stages on the same CPU run, but it
+  // must not turn an absolute improvement into a failure merely because two
+  // other stages improved more. A stage is slower only when it also exceeds
+  // its own checked-in allowance. The coherent guard below remains responsible
+  // for a machine-wide slowdown that scales every stage by the same factor.
+  if ((rawRatio > limit && normalized > limit) ||
       (independentlySlowerStages >= 2 && normalized < lowerLimit)) failures.push(name);
 }
 if (scale > coherentLimit) failures.push("coherent-runtime-slowdown");

@@ -33,7 +33,7 @@ bool SessionWorkflowController::ChangeSet::add(std::uint64_t key) noexcept {
 void SessionWorkflowController::ChangeSet::clear() noexcept {
   // Clearing the active prefix is enough for correctness, but zeroing it keeps
   // checkpoints and diagnostics from retaining stale configuration identities.
-  std::fill(keys.begin(), keys.begin() + count, 0);
+  std::fill(keys.begin(), keys.begin() + count, std::uint64_t{0});
   count = 0;
 }
 
@@ -194,7 +194,8 @@ SessionWorkflowResult SessionWorkflowController::leave(
     // Exclusive exit discards its global changes. Global mode differs and
     // intentionally leaves the shared candidate alive for other sessions.
     std::fill(state.global_keys.begin(),
-              state.global_keys.begin() + state.global_count, 0);
+              state.global_keys.begin() + state.global_count,
+              std::uint64_t{0});
     state.global_count = 0;
     state.global_baseline = state.running_generation;
   }
@@ -235,7 +236,8 @@ SessionWorkflowResult SessionWorkflowController::transition(
   }
   if (source == CandidateMode::exclusive && discard) {
     std::fill(state.global_keys.begin(),
-              state.global_keys.begin() + state.global_count, 0);
+              state.global_keys.begin() + state.global_count,
+              std::uint64_t{0});
     state.global_count = 0;
     state.global_baseline = state.running_generation;
   }
@@ -297,7 +299,8 @@ SessionWorkflowController::commit(SessionHandle handle) noexcept {
                             state.global_count, state.global_baseline);
   if (result == SessionWorkflowResult::applied) {
     std::fill(state.global_keys.begin(),
-              state.global_keys.begin() + state.global_count, 0);
+              state.global_keys.begin() + state.global_count,
+              std::uint64_t{0});
     state.global_count = 0;
     state.global_baseline = state.running_generation;
     session->base_generation = state.running_generation;
@@ -348,7 +351,8 @@ SessionWorkflowController::discard(SessionHandle handle) noexcept {
     candidate(handle, *session).changes.clear();
   else {
     std::fill(state.global_keys.begin(),
-              state.global_keys.begin() + state.global_count, 0);
+              state.global_keys.begin() + state.global_count,
+              std::uint64_t{0});
     state.global_count = 0;
     state.global_baseline = state.running_generation;
   }
