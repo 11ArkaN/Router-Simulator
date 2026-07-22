@@ -3,10 +3,39 @@
 // release catalog and all operational values come from runtime snapshot ABI 6.
 
 import { useEffect, useMemo, useState } from "react";
-import { PROFILE_CATALOG, type HostProjectV4, type LabProjectV4,
-  type LabRuntimeSnapshotV6, type RouterProjectV4 } from "@router-simulator/contracts";
+import { ANNOTATION_LIMITS, PROFILE_CATALOG, type HostProjectV4,
+  type LabProjectV4, type LabRuntimeSnapshotV6, type RouterProjectV4,
+  type TopologyAnnotationV4 } from "@router-simulator/contracts";
 import { PanelResizeHandle } from "./PanelResizeHandle";
-import { X } from "lucide-react";
+import { AlignCenter, AlignLeft, AlignRight, Bold, Italic, X } from "lucide-react";
+
+function expandHex(hex: string): string {
+  // Native colour inputs require the six-digit form. Expanding #rgb(a) keeps a
+  // hand-authored short value from resetting the picker to black.
+  if (hex.length === 4 || hex.length === 5) {
+    return "#" + hex.slice(1).split("").map((digit) => digit + digit).join("");
+  }
+  return hex;
+}
+
+function fillColor(background: string | null): string {
+  return background ? expandHex(background).slice(0, 7) : "#b47cf0";
+}
+
+function fillAlpha(background: string | null): number {
+  if (!background) return 100;
+  const expanded = expandHex(background);
+  return expanded.length >= 9
+    ? Math.round(Number.parseInt(expanded.slice(7, 9), 16) / 255 * 100) : 100;
+}
+
+function composeFill(color: string, alphaPercent: number): string {
+  // The stored fill is always #rrggbbaa so a grouping region can be translucent
+  // without a second opacity leaf. Solid #rrggbb only appears from six-digit
+  // hand editing, which validation still accepts.
+  const clamped = Math.round(Math.min(Math.max(alphaPercent, 0), 100) / 100 * 255);
+  return `${expandHex(color).slice(0, 7)}${clamped.toString(16).padStart(2, "0")}`;
+}
 
 export type RouterTab = "chassis" | "cpm" | "cards" | "ports" | "operational";
 
@@ -30,6 +59,8 @@ interface Props {
     configuredSpeedMbps: number | null): void;
   deleteLink(linkId: string): void;
   deleteNode(nodeId: string): void;
+  updateAnnotation(annotation: TopologyAnnotationV4): void;
+  deleteAnnotation(annotationId: string): void;
   ping(sourceId: string, destination: string): Promise<string>;
   width: number;
   onWidthChange(value: number): void;
@@ -48,12 +79,14 @@ function speedLabel(speedMbps: number): string {
 export function Inspector({ selected, tab, onTabChange, project, snapshot,
   updateHost, updateRouter, setCard, setMda, setCardAdmin, setMdaAdmin,
   setLink, updateLink, deleteLink,
-  deleteNode, ping, width, onWidthChange, openConsole, close }: Props) {
+  deleteNode, updateAnnotation, deleteAnnotation, ping, width, onWidthChange,
+  openConsole, close }: Props) {
   const [pingResult, setPingResult] = useState("");
   const [pingBusy, setPingBusy] = useState(false);
   const host = project.hosts.find((item) => item.id === selected);
   const router = project.routers.find((item) => item.id === selected);
   const link = project.links.find((item) => item.id === selected);
+  const annotation = project.annotations.find((item) => item.id === selected);
   const live = snapshot?.routers.find((item) => item.id === selected);
   const profile = useMemo(() => router
     ? PROFILE_CATALOG.profiles.find((item) => item.id === router.profileId)
@@ -83,6 +116,43 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
         <label>Propagation delay in ns<input type="number" min={0} step={1} value={link.propagationDelayNs} onChange={(event) => { const value = Number(event.target.value); if (Number.isSafeInteger(value) && value >= 0) updateLink(link.id, link.admin === "up", value, link.configuredSpeedMbps); }} /></label>
         <button className="inspector-action" onClick={() => setLink(link.id, link.admin !== "up")}>{link.admin === "up" ? "Disconnect" : "Connect"}</button>
         <button className="secondary-action" onClick={() => deleteLink(link.id)}>Delete link</button>
+      </div>{resizeHandle}
+    </aside>;
+  }
+
+  if (annotation) {
+    const alignButton = (value: TopologyAnnotationV4["align"],
+      Icon: typeof AlignLeft, label: string) =>
+      <button type="button" className={`seg ${annotation.align === value ? "active" : ""}`} aria-pressed={annotation.align === value} aria-label={label} onClick={() => updateAnnotation({ ...annotation, align: value })}><Icon size={15} /></button>;
+    const clampInteger = (value: number, min: number, max: number) =>
+      Math.min(Math.max(Math.round(value), min), max);
+    return <aside className="inspector">
+      <div className="inspector-title"><div><h2>Text label</h2><p>Canvas annotation</p></div><button aria-label="Close inspector" onClick={close}><X size={18} /></button></div>
+      <div className="host-form annotation-form">
+        <label>Label text<textarea className="annotation-editor" value={annotation.text} maxLength={1000} rows={3} placeholder="e.g. 10.0.12.0/30 · R1 ↔ R2" onChange={(event) => updateAnnotation({ ...annotation, text: event.target.value })} /></label>
+        <div className="annotation-grid">
+          <label className="stack">Font size<input type="number" min={ANNOTATION_LIMITS.minFontSize} max={ANNOTATION_LIMITS.maxFontSize} value={annotation.fontSize} onChange={(event) => { const value = Number(event.target.value); if (Number.isFinite(value)) updateAnnotation({ ...annotation, fontSize: clampInteger(value, ANNOTATION_LIMITS.minFontSize, ANNOTATION_LIMITS.maxFontSize) }); }} /></label>
+          <label className="stack">Box width<input type="number" min={ANNOTATION_LIMITS.minWidth} max={ANNOTATION_LIMITS.maxWidth} step={10} value={annotation.width} onChange={(event) => { const value = Number(event.target.value); if (Number.isFinite(value)) updateAnnotation({ ...annotation, width: clampInteger(value, ANNOTATION_LIMITS.minWidth, ANNOTATION_LIMITS.maxWidth) }); }} /></label>
+        </div>
+        <div className="annotation-segmented">
+          <div className="seg-group" role="group" aria-label="Emphasis">
+            <button type="button" className={`seg ${annotation.bold ? "active" : ""}`} aria-pressed={annotation.bold} aria-label="Bold" onClick={() => updateAnnotation({ ...annotation, bold: !annotation.bold })}><Bold size={15} /></button>
+            <button type="button" className={`seg ${annotation.italic ? "active" : ""}`} aria-pressed={annotation.italic} aria-label="Italic" onClick={() => updateAnnotation({ ...annotation, italic: !annotation.italic })}><Italic size={15} /></button>
+          </div>
+          <div className="seg-group" role="group" aria-label="Text alignment">
+            {alignButton("left", AlignLeft, "Align left")}
+            {alignButton("center", AlignCenter, "Align centre")}
+            {alignButton("right", AlignRight, "Align right")}
+          </div>
+        </div>
+        <label className="color-row"><span>Text colour</span><input type="color" value={expandHex(annotation.color)} onChange={(event) => updateAnnotation({ ...annotation, color: event.target.value })} /></label>
+        <label className="toggle-row"><span>Background fill</span><input type="checkbox" checked={annotation.background !== null} onChange={(event) => updateAnnotation({ ...annotation, background: event.target.checked ? composeFill("#b47cf0", 20) : null })} /></label>
+        {annotation.background !== null && <>
+          <label className="color-row"><span>Fill colour</span><input type="color" value={fillColor(annotation.background)} onChange={(event) => updateAnnotation({ ...annotation, background: composeFill(event.target.value, fillAlpha(annotation.background)) })} /></label>
+          <label className="stack">Fill opacity · {fillAlpha(annotation.background)}%<input type="range" min={0} max={100} value={fillAlpha(annotation.background)} onChange={(event) => updateAnnotation({ ...annotation, background: composeFill(fillColor(annotation.background), Number(event.target.value)) })} /></label>
+        </>}
+        <label className="toggle-row"><span>Border</span><input type="checkbox" checked={annotation.border} onChange={(event) => updateAnnotation({ ...annotation, border: event.target.checked })} /></label>
+        <button className="secondary-action" onClick={() => deleteAnnotation(annotation.id)}>Delete label</button>
       </div>{resizeHandle}
     </aside>;
   }

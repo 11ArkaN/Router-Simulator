@@ -21,7 +21,8 @@ describe("host IPv6 inspector", () => {
       project={project} updateHost={updateHost} updateRouter={vi.fn()}
       setCard={vi.fn()} setMda={vi.fn()} setCardAdmin={vi.fn()}
       setMdaAdmin={vi.fn()} setLink={vi.fn()} updateLink={vi.fn()}
-      deleteLink={vi.fn()} deleteNode={vi.fn()}
+      deleteLink={vi.fn()} deleteNode={vi.fn()} updateAnnotation={vi.fn()}
+      deleteAnnotation={vi.fn()}
       ping={vi.fn().mockResolvedValue("")} width={324}
       onWidthChange={vi.fn()} openConsole={vi.fn()} close={vi.fn()} />);
 

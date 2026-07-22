@@ -30,6 +30,10 @@ interface ProjectHead {
   projectId: string;
   name: string;
   notes: string;
+  // Canvas annotations are small presentation records with no separate
+  // revision history, so they ride in the head next to notes and layout rather
+  // than in their own object store like routers, hosts and links.
+  annotations: LabProjectV4["annotations"];
   layout: LabProjectV4["layout"];
   updatedAt: string;
   routers: string[];
@@ -120,6 +124,7 @@ function head(project: LabProjectV4): ProjectHead {
     projectId: project.projectId,
     name: project.name,
     notes: project.notes,
+    annotations: project.annotations,
     layout: project.layout,
     updatedAt: project.updatedAt,
     routers: project.routers.map((item) => item.id),
@@ -232,6 +237,10 @@ export async function loadLabProjectV4(projectId: string): Promise<LabProjectV4 
     projectId: projectHead.projectId,
     name: projectHead.name,
     notes: projectHead.notes,
+    // A head written before annotations existed has none. parseLabProjectV4
+    // also tolerates the absent field; the fallback keeps the reconstructed
+    // object shape explicit here.
+    annotations: projectHead.annotations ?? [],
     layout: projectHead.layout,
     updatedAt: projectHead.updatedAt,
     routers,

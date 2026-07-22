@@ -234,6 +234,40 @@ export interface LinkProjectV4 {
   propagationDelayNs: number;
 }
 
+// A free-form canvas annotation. It is pure presentation intent owned by the
+// browser, never sent to the runtime: the C++ owner receives routers, hosts
+// and links only, exactly like node positions and panel geometry. It carries
+// enough styling to document addressing, areas and intent directly on the
+// topology rather than only in the separate project notes document.
+export interface TopologyAnnotationV4 {
+  id: string;
+  text: string;
+  x: number;
+  y: number;
+  // Box width in flow units. Height is content-driven, so text wraps at this
+  // width and a label never clips its own content.
+  width: number;
+  fontSize: number;
+  bold: boolean;
+  italic: boolean;
+  align: "left" | "center" | "right";
+  // #rgb or #rrggbb foreground. Background accepts an optional alpha pair so a
+  // translucent region can group devices without hiding them; null is a plain
+  // label with no fill.
+  color: string;
+  background: string | null;
+  border: boolean;
+}
+
+export const ANNOTATION_LIMITS = {
+  count: 240,
+  minWidth: 80,
+  maxWidth: 1600,
+  minFontSize: 9,
+  maxFontSize: 96,
+  maxTextBytes: 4000
+} as const;
+
 export interface LabProjectV4 {
   format: "router-simulator-project";
   version: typeof LAB_PROJECT_VERSION;
@@ -242,6 +276,7 @@ export interface LabProjectV4 {
   routers: RouterProjectV4[];
   hosts: HostProjectV4[];
   links: LinkProjectV4[];
+  annotations: TopologyAnnotationV4[];
   notes: string;
   layout: {
     nodes: Record<NodeId, { x: number; y: number }>;
@@ -269,6 +304,11 @@ const macPattern = /^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/i;
 const uint64Pattern = /^(?:0|[1-9]\d{0,19})$/;
 const stableIidSecretPattern = /^[0-9a-f]{64}$/i;
 const hexadecimalPattern = /^[0-9a-f]+$/i;
+// Annotation foreground is an opaque CSS hex triple or sextet. The optional
+// fill additionally admits a four or eight digit form so the alpha channel of
+// a grouping region survives save and reload unchanged.
+const annotationColorPattern = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+const annotationFillPattern = /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 const maximumUint64 = (1n << 64n) - 1n;
 const maximumUint32 = 0xffffffff;
 
@@ -760,9 +800,21 @@ export function createEmptyProjectV4(now = new Date()): LabProjectV4 {
   return {
     format: "router-simulator-project", version: LAB_PROJECT_VERSION,
     projectId: random, name: "Untitled lab", routers: [], hosts: [], links: [],
-    notes: "", layout: { nodes: {}, sidebarWidth: 194, inspectorWidth: 324,
+    annotations: [], notes: "",
+    layout: { nodes: {}, sidebarWidth: 194, inspectorWidth: 324,
       terminalHeight: 360 }, updatedAt: timestamp
   };
+}
+
+export function createAnnotationV4(id: string, x: number,
+  y: number): TopologyAnnotationV4 {
+  // Identity is validated before the record is handed to callers so a rejected
+  // placement never leaves a half-built annotation on the canvas. The default
+  // is a plain readable label; fill, border and emphasis are opt-in styling.
+  assert(identifierPattern.test(id), "Annotation ID is invalid");
+  return { id, text: "", x, y, width: 240, fontSize: 14, bold: false,
+    italic: false, align: "left", color: "#f3f0f7", background: null,
+    border: false };
 }
 
 function validateHardware(router: RouterProjectV4,
@@ -1061,9 +1113,48 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
     assert(nodes.has(id) && Number.isFinite(point?.x) && Number.isFinite(point?.y),
       "Project layout contains an invalid node position");
   }
+
+  // Annotations are optional so a project written before this feature still
+  // loads. When present each record is validated as strictly as operational
+  // intent, including that its identity cannot shadow a node or link id, since
+  // selection shares one identifier namespace across the canvas.
+  const annotations = project.annotations ?? [];
+  assert(Array.isArray(annotations) &&
+    annotations.length <= ANNOTATION_LIMITS.count,
+    "Project exceeds the annotation limit");
+  const annotationIds = new Set<string>();
+  for (const annotation of annotations) {
+    assert(annotation && typeof annotation === "object" &&
+      identifierPattern.test(annotation.id) &&
+      !annotationIds.has(annotation.id) && !nodes.has(annotation.id) &&
+      !linkIds.has(annotation.id) && typeof annotation.text === "string" &&
+      encoder.encode(annotation.text).length <= ANNOTATION_LIMITS.maxTextBytes &&
+      Number.isFinite(annotation.x) && Number.isFinite(annotation.y) &&
+      Number.isFinite(annotation.width) &&
+      annotation.width >= ANNOTATION_LIMITS.minWidth &&
+      annotation.width <= ANNOTATION_LIMITS.maxWidth &&
+      Number.isSafeInteger(annotation.fontSize) &&
+      annotation.fontSize >= ANNOTATION_LIMITS.minFontSize &&
+      annotation.fontSize <= ANNOTATION_LIMITS.maxFontSize &&
+      typeof annotation.bold === "boolean" &&
+      typeof annotation.italic === "boolean" &&
+      (annotation.align === "left" || annotation.align === "center" ||
+        annotation.align === "right") &&
+      annotationColorPattern.test(annotation.color) &&
+      (annotation.background === null ||
+        annotationFillPattern.test(annotation.background)) &&
+      typeof annotation.border === "boolean",
+      "Annotation configuration is invalid");
+    annotationIds.add(annotation.id);
+  }
+
   // Detach the accepted value from the caller's mutable object graph. Later
   // edits cannot change the project while a runtime transaction is in flight.
-  return structuredClone(project as LabProjectV4);
+  // A legacy project without an annotations array is normalized to an empty
+  // one so every accepted value has the same shape.
+  const result = structuredClone(project as LabProjectV4);
+  result.annotations = structuredClone(annotations) as TopologyAnnotationV4[];
+  return result;
 }
 
 export { PROFILE_CATALOG };

@@ -2,9 +2,10 @@
 // point-to-point ownership before a project can reach a runtime shard.
 
 import { describe, expect, it } from "vitest";
-import { createEmptyProjectV4, createRouterProjectV4, equippedRouterPorts,
+import { ANNOTATION_LIMITS, createAnnotationV4, createEmptyProjectV4,
+  createRouterProjectV4, equippedRouterPorts,
   createFourRouterReferenceLabV4, hostInterfaceId, parseLabProjectV4, PROFILE_CATALOG, type HostProjectV4,
-  type LabProjectV4 } from "../src";
+  type LabProjectV4, type TopologyAnnotationV4 } from "../src";
 
 function host(id: string, octet: number): HostProjectV4 {
   // Tests vary only the final octet so every fixture remains in one subnet
@@ -356,5 +357,85 @@ describe("multi-router project format", () => {
       expect(() => parseLabProjectV4(malformed)).toThrow();
       expect(parseLabProjectV4(valid)).toEqual(valid);
     }
+  });
+});
+
+describe("canvas annotations", () => {
+  it("round-trips a fully styled annotation as portable project intent", () => {
+    // Annotations are presentation intent, so every leaf must survive save and
+    // reload byte for byte, including translucent fills and embedded newlines.
+    const project = createEmptyProjectV4();
+    const annotation: TopologyAnnotationV4 = {
+      id: "note1", text: "OSPF area 0\n10.0.0.0/24", x: 42, y: -8,
+      width: 320, fontSize: 18, bold: true, italic: true, align: "center",
+      color: "#cba6ff", background: "#b47cf033", border: true
+    };
+    project.annotations.push(annotation);
+    const parsed = parseLabProjectV4(project);
+    expect(parsed.annotations).toEqual([annotation]);
+    // A second parse of an already-accepted value is a fixed point.
+    expect(parseLabProjectV4(parsed).annotations).toEqual([annotation]);
+  });
+
+  it("defaults a project written before annotations existed to an empty list", () => {
+    // Backward compatibility inside format 4: an absent array must load rather
+    // than fail, so older persisted projects and .netsim files still open.
+    const legacy = createEmptyProjectV4();
+    Reflect.deleteProperty(legacy, "annotations");
+    expect(parseLabProjectV4(legacy).annotations).toEqual([]);
+  });
+
+  it("creates a valid default annotation and rejects a malformed identity", () => {
+    const project = createEmptyProjectV4();
+    project.annotations.push(createAnnotationV4("note1", 0, 0));
+    expect(parseLabProjectV4(project).annotations).toHaveLength(1);
+    expect(() => createAnnotationV4("bad id", 0, 0)).toThrow("Annotation ID");
+  });
+
+  it("rejects an annotation identity that shadows a node or duplicates a peer", () => {
+    // Selection resolves one id against nodes, links and annotations, so a
+    // shared identity would make the inspector ambiguous.
+    const base = createEmptyProjectV4();
+    base.routers.push(createRouterProjectV4("r1", "7750-sr-1", "R1"));
+    base.layout.nodes.r1 = { x: 0, y: 0 };
+
+    const nodeClash = structuredClone(base);
+    nodeClash.annotations.push(createAnnotationV4("r1", 0, 0));
+    expect(() => parseLabProjectV4(nodeClash)).toThrow("Annotation configuration");
+
+    const duplicate = structuredClone(base);
+    duplicate.annotations.push(createAnnotationV4("note1", 0, 0),
+      createAnnotationV4("note1", 10, 10));
+    expect(() => parseLabProjectV4(duplicate)).toThrow("Annotation configuration");
+  });
+
+  it("rejects styling outside the validated annotation bounds", () => {
+    const project = createEmptyProjectV4();
+    project.annotations.push(createAnnotationV4("note1", 0, 0));
+    const invalidate = (change: (value: TopologyAnnotationV4) => void) => {
+      const malformed = structuredClone(project);
+      change(malformed.annotations[0]);
+      expect(() => parseLabProjectV4(malformed)).toThrow("Annotation configuration");
+    };
+    invalidate((value) => { value.width = ANNOTATION_LIMITS.maxWidth + 1; });
+    invalidate((value) => { value.width = ANNOTATION_LIMITS.minWidth - 1; });
+    invalidate((value) => { value.fontSize = ANNOTATION_LIMITS.maxFontSize + 1; });
+    invalidate((value) => { (value as { align: string }).align = "middle"; });
+    invalidate((value) => { value.color = "purple"; });
+    invalidate((value) => { value.color = "#12345"; });
+    invalidate((value) => { value.background = "#xyz"; });
+    invalidate((value) => { value.x = Number.NaN; });
+    invalidate((value) => { (value as { bold: unknown }).bold = "yes"; });
+    invalidate((value) => {
+      value.text = "x".repeat(ANNOTATION_LIMITS.maxTextBytes + 1);
+    });
+  });
+
+  it("rejects annotation overflow at the product boundary", () => {
+    const project = createEmptyProjectV4();
+    for (let index = 0; index <= ANNOTATION_LIMITS.count; ++index) {
+      project.annotations.push(createAnnotationV4(`note${index}`, index, 0));
+    }
+    expect(() => parseLabProjectV4(project)).toThrow("annotation limit");
   });
 });

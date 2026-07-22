@@ -672,6 +672,41 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .notes-page textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .settings-page .secondary-action { margin-top: 24px; }
 
+/* ── Canvas annotations ──────────────────────────────────────────────────────
+   Free-form text placed on the topology. The box width is author-controlled
+   while height follows the content, so an addressing note never clips itself.
+   Styling is inline per annotation; these rules own only structure and the
+   selection, editing and resize affordances. */
+.topology.tool-text .react-flow__pane { cursor: text; }
+.canvas-hint { position: absolute; z-index: 5; top: 16px; left: 50%; transform: translateX(-50%); max-width: min(460px, calc(100% - 220px)); padding: 7px 14px; border: 1px solid var(--line-strong); border-radius: var(--radius-pill); background: rgba(17, 15, 20, .9); backdrop-filter: blur(10px); color: var(--text-dim); font-size: 11.5px; text-align: center; box-shadow: var(--shadow-2); }
+.annotation-node { position: relative; box-sizing: border-box; min-width: 60px; min-height: 24px; padding: 6px 9px; border: 1px solid transparent; border-radius: 8px; color: var(--text); font-family: var(--font-ui); line-height: 1.35; transition: border-color 130ms ease, box-shadow 130ms ease; }
+.annotation-node.bordered { border-color: var(--accent-line); }
+.annotation-node.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 0 18px rgba(180, 124, 240, .22); }
+.annotation-node.editing { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.annotation-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.annotation-input { display: block; width: 100%; margin: 0; padding: 0; border: 0; outline: 0; resize: none; background: transparent; color: inherit; font: inherit; text-align: inherit; line-height: inherit; field-sizing: content; min-height: 1.35em; overflow: hidden; }
+.annotation-input::placeholder { color: var(--text-faint); }
+.react-flow__resize-control.annotation-resizer.line { border-color: var(--accent); opacity: .55; }
+.react-flow__resize-control.annotation-resizer.line:hover { opacity: 1; }
+
+/* Annotation inspector — a compact styling surface that reuses the host-form
+   frame but adds segmented toggles and colour controls. */
+.annotation-form .annotation-editor { width: 100%; margin-top: 7px; min-height: 74px; padding: 9px 11px; resize: vertical; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); outline: 0; color: var(--text); background: var(--bg); font: 12px/1.5 var(--font-mono); text-transform: none; letter-spacing: 0; transition: border-color 130ms ease, box-shadow 130ms ease; }
+.annotation-form .annotation-editor:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.annotation-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 0 16px 14px; }
+.inspector label.stack { display: block; margin: 0 16px 14px; }
+.annotation-grid label.stack { margin: 0; }
+.annotation-segmented { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 16px 14px; }
+.seg-group { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); overflow: hidden; }
+.seg { display: grid; place-items: center; width: 38px; height: 32px; border: 0; border-right: 1px solid var(--line-strong); background: var(--surface); color: var(--text-mute); cursor: pointer; }
+.seg:last-child { border-right: 0; }
+.seg:hover { background: var(--surface-hover); color: var(--text); }
+.seg.active { background: var(--accent-soft); color: var(--accent-bright); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.inspector label.color-row, .inspector label.toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 34px; }
+.annotation-form input[type="color"] { width: 46px; height: 30px; margin: 0; padding: 2px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--bg); cursor: pointer; }
+.annotation-form input[type="range"] { width: 100%; height: auto; margin-top: 9px; padding: 0; accent-color: var(--accent); cursor: pointer; }
+.annotation-form input[type="checkbox"] { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+
 @media (max-width: 650px) {
   .workspace-page { padding: 22px 18px 44px; }
   /* Title and its actions stack instead of colliding on a narrow row. */
