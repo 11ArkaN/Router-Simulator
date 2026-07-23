@@ -115,7 +115,6 @@ resources:
   static_route_capacity: 8
   fib_route_capacity: 18
   packet_pool_bytes: 67108864
-  capture_memory_bytes: 33554432
   # TX and RX queues are device buffers owned by one forwarding shard. Their
   # capacity is independent from frames already admitted onto the medium.
   link_queue_frames: 256
@@ -176,16 +175,6 @@ link_defaults:
   propagation_delay_nanoseconds: 100
   propagation_status: experimental
   source_id: ieee.802_3.ethernet_frame_timing
-capture_interfaces:
-  - link-host-a-to-router
-  - link-router-to-host-a
-  - link-host-b-to-router
-  - link-router-to-host-b
-  - router-1/1/1-ingress
-  - router-1/1/2-ingress
-  - router-1/1/1-egress
-  - router-1/1/2-egress
-  - cpm-punt
 capability_status: partially-implemented
 source_ids:
   - nokia.sros.26_7.sr7.supported_hardware

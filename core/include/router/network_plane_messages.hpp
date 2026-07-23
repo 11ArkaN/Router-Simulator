@@ -212,6 +212,7 @@ enum class NetworkCommandKind : std::uint8_t {
   active_link_count,
   configure_capture_point,
   prepare_capture,
+  clear_capture,
   capture_frame_count,
   capture_drop_count,
   packet_drop_count,

@@ -1112,6 +1112,9 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
     result.success = true;
     result.value = plane_.prepared_capture().size();
     break;
+  case NetworkCommandKind::clear_capture:
+    result.success = plane_.clear_capture();
+    break;
   case NetworkCommandKind::capture_frame_count:
     result.success = true;
     result.value = plane_.captured_frames();

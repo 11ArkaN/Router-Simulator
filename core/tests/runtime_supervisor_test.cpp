@@ -8,11 +8,21 @@
 #include <array>
 #include <chrono>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace {
+
+std::uint32_t capture_u32(std::span<const std::uint8_t> bytes,
+                          std::size_t offset) {
+  return static_cast<std::uint32_t>(bytes[offset]) |
+         static_cast<std::uint32_t>(bytes[offset + 1U]) << 8U |
+         static_cast<std::uint32_t>(bytes[offset + 2U]) << 16U |
+         static_cast<std::uint32_t>(bytes[offset + 3U]) << 24U;
+}
 
 void require(bool condition, const char *message) {
   // The shared runner preserves the first focused lifecycle diagnostic.
@@ -646,6 +656,12 @@ void runtime_supervisor_tests() {
                           .count()),
           "IPv6 forwarding-to-link wake-up added scheduler-scale RTT");
 
+  // Packet bytes are drained to the independent PCAPNG artifact rather than
+  // duplicated in recovery checkpoints. Inspect the public capture projection
+  // before taking the structural checkpoint to retain the TTL wire assertion.
+  const auto path_capture_view = runtime->prepare_capture();
+  const std::vector<std::uint8_t> path_capture(path_capture_view.begin(),
+                                               path_capture_view.end());
   auto path_checkpoint = runtime->checkpoint();
   require(path_checkpoint && path_checkpoint->network.routers.size() == 4,
           "four-router forwarding checkpoint was unavailable");
@@ -698,14 +714,28 @@ void runtime_supervisor_tests() {
                 !router.forwarding.ipv6_neighbors.empty(),
             "a physical hop completed without ARP or IPv6 ND state");
   std::array<bool, 3> observed_ttl{};
-  for (const auto &record : path_checkpoint->network.capture.records) {
-    if (record.capture_point >= observed_ttl.size())
-      continue;
-    const auto ipv4 = router::packet::parse_ipv4(record.frame);
-    const auto icmp = router::packet::parse_icmp(record.frame);
-    if (ipv4 && icmp && icmp->type == 8U && icmp->sequence == 77U)
-      observed_ttl[record.capture_point] =
-          ipv4->ttl == static_cast<std::uint8_t>(64U - record.capture_point);
+  for (std::size_t offset = 0; offset + 12U <= path_capture.size();) {
+    const auto block_length = capture_u32(path_capture, offset + 4U);
+    require(block_length >= 12U && offset + block_length <= path_capture.size(),
+            "four-router capture contains an invalid PCAPNG block");
+    if (capture_u32(path_capture, offset) == 6U) {
+      const auto interface_id = capture_u32(path_capture, offset + 8U);
+      const auto captured_length = capture_u32(path_capture, offset + 20U);
+      if (interface_id < observed_ttl.size() && captured_length &&
+          offset + 28U + captured_length <= path_capture.size()) {
+        router::packet::Frame captured;
+        captured.length = static_cast<std::uint16_t>(captured_length);
+        std::copy_n(path_capture.begin() +
+                        static_cast<std::ptrdiff_t>(offset + 28U),
+                    captured_length, captured.bytes.begin());
+        const auto ipv4 = router::packet::parse_ipv4(captured);
+        const auto icmp = router::packet::parse_icmp(captured);
+        if (ipv4 && icmp && icmp->type == 8U && icmp->sequence == 77U)
+          observed_ttl[interface_id] =
+              ipv4->ttl == static_cast<std::uint8_t>(64U - interface_id);
+      }
+    }
+    offset += block_length;
   }
   require(std::all_of(observed_ttl.begin(), observed_ttl.end(),
                       [](bool value) { return value; }),

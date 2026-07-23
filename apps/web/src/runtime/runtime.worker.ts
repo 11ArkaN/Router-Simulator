@@ -21,6 +21,7 @@ interface WasmModule {
   _telemetry_publish(): void;
   _capture_export_pcapng(): number;
   _capture_export_size(): number;
+  _capture_clear(): number;
   _checkpoint_export(): number;
   _checkpoint_export_size(): number;
   _checkpoint_import(pointer: number, size: number): number;
@@ -34,8 +35,11 @@ interface WasmModule {
         argumentTypes: Array<"string">, arguments_: string[]): number | string | null;
 }
 
-type RuntimeRequest = { id: number; command?: string; action?: "capture-export" | "checkpoint-export" | "checkpoint-import" | "secret-vault-initialize";
-  bytes?: ArrayBuffer; shutdown?: true };
+type RuntimeRequest = { id: number; command?: string; action?: "capture-export" |
+  "capture-clear" | "capture-import" | "capture-storage-activate" |
+  "capture-storage-release" | "checkpoint-export" | "checkpoint-import" |
+  "secret-vault-initialize"; bytes?: ArrayBuffer; storageId?: string;
+  shutdown?: true };
 type RuntimeResponse = { id: number; ok: boolean; value?: string; bytes?: ArrayBuffer; error?: string };
 type RuntimeContinuityNotice = { kind: "continuity-recovered" |
   "continuity-unrecoverable"; elapsedMilliseconds: number;
@@ -49,6 +53,12 @@ let telemetryProjection: { offset: number; size: number;
   layout: TelemetryLayout } | undefined;
 let continuityRecovery: RuntimeRecoveryController | undefined;
 let continuityBridgeUnavailable = false;
+let captureFileHandle: FileSystemFileHandle | undefined;
+let captureAccess: FileSystemSyncAccessHandle | undefined;
+let captureOffset = 0;
+let capturePending: Uint8Array | undefined;
+let capturePendingWritten = 0;
+let captureProjectId: string | undefined;
 const continuity = new RuntimeContinuityGuard(
   PROFILE_CATALOG.runtime.recovery_checkpoint_interval_milliseconds,
   PROFILE_CATALOG.runtime.continuity_loss_threshold_milliseconds,
@@ -172,6 +182,57 @@ function netstrings(values: readonly string[]): string {
   return values.map((value) => `${encoder.encode(value).byteLength}:${value},`).join("");
 }
 
+async function bindCaptureStorage(projectId: string): Promise<void> {
+  // Project IDs are directory names, not paths. Applying the same grammar as
+  // the main-thread persistence owner prevents traversal through a crafted
+  // imported identity before asking OPFS to create any handle.
+  if (!/^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/i.test(projectId))
+    throw new Error("Capture storage identity is invalid");
+  if (!navigator.storage?.getDirectory)
+    throw new Error("OPFS is not available for packet capture");
+  const root = await navigator.storage.getDirectory();
+  const projects = await root.getDirectoryHandle("projects", { create: true });
+  const directory = await projects.getDirectoryHandle(projectId, { create: true });
+  captureFileHandle = await directory.getFileHandle("capture.pcapng", { create: true });
+  // A dedicated Worker may use the synchronous OPFS handle. It gives the
+  // capture bridge positional writes and flush without blocking React or
+  // opening one atomic replacement stream for every short capture chunk.
+  captureAccess = await captureFileHandle.createSyncAccessHandle();
+  captureOffset = captureAccess.getSize();
+}
+
+async function ensureCaptureStorage(): Promise<void> {
+  if (!captureAccess) {
+    if (!captureProjectId)
+      throw new Error("Capture project identity is not initialized");
+    await bindCaptureStorage(captureProjectId);
+  }
+}
+
+function drainCaptureToStorage(module: WasmModule): void {
+  if (!captureAccess) return;
+  if (!capturePending) {
+    const pointer = module._capture_export_pcapng();
+    const size = module._capture_export_size();
+    if (!pointer || !size) return;
+    refreshMemoryViews(module);
+    // Keep one retryable private chunk. The next C++ drain may reuse prepared_
+    // after this call, and an OPFS quota or device error must not turn that
+    // reuse into silent packet loss.
+    capturePending = module.HEAPU8.slice(pointer, pointer + size);
+    capturePendingWritten = 0;
+  }
+  while (capturePendingWritten < capturePending.byteLength) {
+    const count = captureAccess.write(capturePending.subarray(capturePendingWritten),
+      { at: captureOffset + capturePendingWritten });
+    if (!count) throw new Error("OPFS capture write made no progress");
+    capturePendingWritten += count;
+  }
+  captureOffset += capturePending.byteLength;
+  capturePending = undefined;
+  capturePendingWritten = 0;
+}
+
 async function loadRuntime(): Promise<WasmModule> {
   // Memoization guarantees one Emscripten module, one shared memory, and one C++
   // Runtime per browser Worker even when requests arrive during startup.
@@ -247,7 +308,14 @@ async function loadRuntime(): Promise<WasmModule> {
         // continuity baseline only after those one-time costs have completed.
         const runtimeReadyNow = performance.now();
         continuityRecovery = new RuntimeRecoveryController(continuity, {
-          exportCheckpoint: () => exportRecoveryCheckpoint(module),
+          exportCheckpoint: () => {
+            // Persist packet bytes before publishing the matching structural
+            // recovery point. A later continuity rollback can then restore
+            // capture counters without losing a chunk that existed only in
+            // the old runtime's transient encoder vector.
+            drainCaptureToStorage(module);
+            return exportRecoveryCheckpoint(module);
+          },
           importCheckpoint: (bytes) => importCheckpointBytes(module, bytes)
         });
         if (!continuityRecovery.initialize(runtimeReadyNow))
@@ -260,6 +328,16 @@ async function loadRuntime(): Promise<WasmModule> {
           if (!maintainRuntimeContinuity(module)) return;
           module._telemetry_publish();
           publishTelemetryMemory(module);
+          // One drain per telemetry interval bounds transient Wasm bytes by
+          // traffic produced during that interval, not by capture duration.
+          // OPFS capacity is the persistent session limit and any write error
+          // is surfaced rather than silently discarding the prepared chunk.
+          try {
+            drainCaptureToStorage(module);
+          } catch (cause) {
+            self.postMessage({ kind: "capture-storage-error",
+              error: cause instanceof Error ? cause.message : String(cause) });
+          }
         }, PROFILE_CATALOG.runtime.telemetry_publish_interval_milliseconds);
         return module;
       });
@@ -276,7 +354,13 @@ self.onmessage = async ({ data }: MessageEvent<RuntimeRequest>) => {
       // booting. If construction completed, rs_shutdown performs the required
       // pthread joins before the Worker closes its own event loop.
       if (telemetryTimer !== undefined) self.clearInterval(telemetryTimer);
-      if (modulePromise) (await modulePromise)._lab_close();
+      if (modulePromise) {
+        const module = await modulePromise;
+        drainCaptureToStorage(module);
+        captureAccess?.flush();
+        captureAccess?.close();
+        module._lab_close();
+      }
       self.close();
       return;
     }
@@ -285,12 +369,84 @@ self.onmessage = async ({ data }: MessageEvent<RuntimeRequest>) => {
       throw new Error("Runtime continuity recovery failed");
     refreshMemoryViews(module);
     if (data.action === "capture-export") {
-      const pointer = module._capture_export_pcapng();
-      const size = module._capture_export_size();
-      if (!pointer || !size) throw new Error("PCAPNG export failed");
-      refreshMemoryViews(module);
-      const bytes = module.HEAPU8.slice(pointer, pointer + size).buffer;
-      self.postMessage({ id: data.id, ok: true, bytes } satisfies RuntimeResponse, [bytes]);
+      await ensureCaptureStorage();
+      drainCaptureToStorage(module);
+      if (!captureAccess || !captureFileHandle)
+        throw new Error("Capture storage is not initialized");
+      captureAccess.flush();
+      // Export may transiently allocate the complete file for browser download,
+      // but the live runtime never retains it and has no 32 MiB session cap.
+      // Chromium can indefinitely defer getFile() while this Worker owns the
+      // synchronous handle, and releasing then immediately reacquiring the
+      // handle is not an atomic snapshot. Read the flushed extent through the
+      // existing exclusive owner instead. Positional reads also let us reject
+      // a zero-progress storage failure rather than exporting truncated data.
+      const size = captureAccess.getSize();
+      const snapshot = new Uint8Array(size);
+      let read = 0;
+      while (read < size) {
+        const count = captureAccess.read(snapshot.subarray(read), { at: read });
+        if (!count) throw new Error("OPFS capture read made no progress");
+        read += count;
+      }
+      const bytes = snapshot.buffer;
+      self.postMessage({ id: data.id, ok: true, bytes } satisfies RuntimeResponse,
+        [bytes]);
+      return;
+    }
+    if (data.action === "capture-clear") {
+      await ensureCaptureStorage();
+      if (!captureAccess || !module._capture_clear())
+        throw new Error("Capture session could not be cleared");
+      captureAccess.truncate(0);
+      captureOffset = 0;
+      capturePending = undefined;
+      capturePendingWritten = 0;
+      drainCaptureToStorage(module);
+      captureAccess.flush();
+      self.postMessage({ id: data.id, ok: true,
+        value: "capture cleared" } satisfies RuntimeResponse);
+      return;
+    }
+    if (data.action === "capture-import") {
+      await ensureCaptureStorage();
+      if (!captureAccess || !data.bytes || data.bytes.byteLength < 28)
+        throw new Error("Imported capture is empty or storage is unavailable");
+      const imported = new Uint8Array(data.bytes);
+      if (imported[0] !== 0x0a || imported[1] !== 0x0d ||
+          imported[2] !== 0x0d || imported[3] !== 0x0a)
+        throw new Error("Imported capture is not a PCAPNG section");
+      captureAccess.truncate(0);
+      captureOffset = 0;
+      capturePending = imported;
+      capturePendingWritten = 0;
+      drainCaptureToStorage(module);
+      // The live runtime already owns a fresh section header and active IDBs.
+      // Append them after the imported section so new traffic never refers to
+      // an interface table from the external artifact.
+      drainCaptureToStorage(module);
+      captureAccess.flush();
+      self.postMessage({ id: data.id, ok: true,
+        value: "capture imported" } satisfies RuntimeResponse);
+      return;
+    }
+    if (data.action === "capture-storage-activate") {
+      await ensureCaptureStorage();
+      drainCaptureToStorage(module);
+      self.postMessage({ id: data.id, ok: true,
+        value: "capture storage active" } satisfies RuntimeResponse);
+      return;
+    }
+    if (data.action === "capture-storage-release") {
+      if (captureAccess) {
+        drainCaptureToStorage(module);
+        captureAccess.flush();
+        captureAccess.close();
+      }
+      captureAccess = undefined;
+      captureFileHandle = undefined;
+      self.postMessage({ id: data.id, ok: true,
+        value: "capture storage released" } satisfies RuntimeResponse);
       return;
     }
     if (data.action === "checkpoint-export") {
@@ -311,7 +467,8 @@ self.onmessage = async ({ data }: MessageEvent<RuntimeRequest>) => {
       return;
     }
     if (data.action === "secret-vault-initialize") {
-      if (!data.bytes || data.bytes.byteLength !== 32 || !data.command)
+      if (!data.bytes || data.bytes.byteLength !== 32 || !data.command ||
+          !data.storageId)
         throw new Error("Project vault material is invalid");
       const key = new Uint8Array(data.bytes);
       const context = new TextEncoder().encode(data.command);
@@ -340,6 +497,10 @@ self.onmessage = async ({ data }: MessageEvent<RuntimeRequest>) => {
       }
       if (!continuityRecovery?.refreshRecoveryPoint(performance.now()))
         throw new Error("Vault initialization recovery checkpoint failed");
+      // Storage ownership is activated separately. Transactional runtime
+      // replacement can therefore build and validate a new Worker while the
+      // visible predecessor still owns the same project capture file.
+      captureProjectId = data.storageId;
       self.postMessage({ id: data.id, ok: true,
         value: "project vault initialized" } satisfies RuntimeResponse);
       return;

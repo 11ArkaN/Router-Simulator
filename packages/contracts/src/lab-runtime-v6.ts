@@ -144,7 +144,7 @@ export function parseLabRuntimeSnapshotV6(input: unknown): LabRuntimeSnapshotV6 
     Array.isArray(value.sessions) && value.sessions.length <=
       PROFILE_CATALOG.limits.routers * PROFILE_CATALOG.limits.sessions_per_router &&
     Array.isArray(value.capturePoints) && value.capturePoints.length <=
-      PROFILE_CATALOG.runtime.selected_capture_points &&
+      PROFILE_CATALOG.runtime.maximum_active_capture_points &&
     finiteCounter(value.activeLinks) && value.activeLinks <= value.links.length &&
     finiteCounter(value.capturedFrames) && finiteCounter(value.captureDropped) &&
     finiteCounter(value.droppedPackets),
@@ -285,7 +285,7 @@ export function parseLabRuntimeSnapshotV6(input: unknown): LabRuntimeSnapshotV6 
     // A location must still exist when projected. Retained PCAPNG records for
     // deleted locations remain in the capture store but are not active points.
     assert(point && Number.isInteger(point.id) && point.id >= 0 &&
-      point.id < PROFILE_CATALOG.runtime.selected_capture_points &&
+      point.id <= 0xffff_ffff &&
       !captureIds.has(point.id) && (routerPoint || linkPoint) &&
       (point.direction === 0 || point.direction === 1) &&
       (linkPoint ? links.has(point.objectId) : value.routers.some((router) =>

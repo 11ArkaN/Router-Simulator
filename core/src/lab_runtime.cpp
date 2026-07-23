@@ -12702,13 +12702,14 @@ bool LabRuntime::configure_capture(std::span<const std::string_view> fields) {
   auto intent = std::find_if(capture_intents_.begin(), capture_intents_.end(),
                              same_location);
   if (intent == capture_intents_.end()) {
-    if (!selected ||
-        capture_intents_.size() >= device_catalog::selected_capture_points)
+    if (!selected || next_capture_id_ ==
+                         std::numeric_limits<CapturePointId>::max())
       return false;
-    // IDs are never recycled during a runtime lifetime. Old records therefore
-    // cannot acquire a different location after a topology object is deleted.
+    // IDs remain unique for the runtime lifetime, but their backing capture
+    // records are streamed out and inactive CaptureStore metadata is released.
+    // There is therefore no 256-toggle lifetime failure mode.
     capture_intents_.push_back(
-        {static_cast<CapturePointId>(capture_intents_.size()), kind,
+        {next_capture_id_++, kind,
          std::string{fields[1]}, std::string{fields[2]},
          static_cast<std::uint8_t>(direction), false});
     intent = std::prev(capture_intents_.end());
@@ -12786,7 +12787,14 @@ bool LabRuntime::configure_capture(std::span<const std::string_view> fields) {
   std::copy(name.begin(), name.end(), program.name.begin());
   if (!supervisor_.configure_capture_point(program))
     return false;
-  intent->selected = selected;
+  if (selected) {
+    intent->selected = true;
+  } else {
+    // Packet bytes and the final ISB are already in the forwarding-owned
+    // stream. Keeping a dead facade row would reintroduce a lifetime selection
+    // limit and enlarge every later checkpoint without preserving information.
+    capture_intents_.erase(intent);
+  }
   return true;
 }
 
@@ -12801,7 +12809,7 @@ bool LabRuntime::replace_capture_selection(
   std::string_view count_text;
   unsigned count{};
   if (!next_netstring(payload, count_text) || !decimal(count_text, count) ||
-      count > device_catalog::selected_capture_points)
+      count > device_catalog::maximum_active_capture_points)
     return false;
   struct RequestedCapture {
     std::array<std::string_view, 5> fields;
@@ -12836,6 +12844,7 @@ bool LabRuntime::replace_capture_selection(
   if (!backup)
     return false;
   const auto previous = capture_intents_;
+  const auto previous_next_capture_id = next_capture_id_;
   const auto requested_location = [&](const CaptureIntent &intent) {
     return std::any_of(
         requested.begin(), requested.end(), [&](const auto &item) {
@@ -12878,6 +12887,7 @@ bool LabRuntime::replace_capture_selection(
   if (accepted)
     return true;
   capture_intents_ = previous;
+  next_capture_id_ = previous_next_capture_id;
   static_cast<void>(supervisor_.restore(std::move(*backup)));
   return false;
 }
@@ -13727,6 +13737,11 @@ std::span<const std::uint8_t> LabRuntime::prepare_capture() noexcept {
   return capture_bytes_;
 }
 
+bool LabRuntime::clear_capture() noexcept {
+  capture_bytes_.clear();
+  return supervisor_.clear_capture();
+}
+
 std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
   const auto checkpoint = supervisor_.checkpoint();
   if (!checkpoint) {
@@ -14520,6 +14535,9 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
     hosts_.swap(hosts);
     sessions_.swap(sessions);
     capture_intents_.swap(captures);
+    next_capture_id_ = 0;
+    for (const auto &capture : capture_intents_)
+      next_capture_id_ = std::max(next_capture_id_, capture.id + 1U);
   } catch (...) {
     return false;
   }

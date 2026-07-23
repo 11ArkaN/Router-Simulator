@@ -847,6 +847,7 @@ public:
   [[nodiscard]] bool
   configure_capture_point(const CapturePointProgram &program) noexcept;
   [[nodiscard]] std::span<const std::uint8_t> prepare_capture() noexcept;
+  [[nodiscard]] bool clear_capture() noexcept;
   [[nodiscard]] std::size_t captured_frames() noexcept;
   [[nodiscard]] std::uint64_t capture_dropped() noexcept;
   [[nodiscard]] std::uint64_t dropped_packets() noexcept;

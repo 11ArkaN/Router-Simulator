@@ -4394,35 +4394,30 @@ void capture_state(Writer &out, const CaptureStoreCheckpoint &state) {
     out.integer(point.id);
     out.string(point.name);
     out.boolean(point.active);
+    out.integer(point.received);
+    out.integer(point.dropped);
   }
-  count(out, state.records);
-  for (const auto &record : state.records) {
-    out.integer(record.timestamp_us);
-    out.integer(record.capture_point);
-    out.frame(record.frame);
-  }
+  // ABI 6 reserved this count for packet records. Keep the zero field so the
+  // surrounding checkpoint layout remains stable, but packet bytes now live
+  // exclusively in the independently persisted PCAPNG artifact.
+  out.integer<std::uint32_t>(0U);
 }
 
 bool capture_state(Reader &in, CaptureStoreCheckpoint &state) {
   std::uint32_t size{};
-  if (!count(in, size, device_catalog::selected_capture_points))
+  // Only live capture points enter new checkpoints. The serialized file size
+  // is already bounded by the checkpoint envelope, so decoding does not impose
+  // the obsolete lifetime total of 256 selections.
+  if (!count(in, size, device_catalog::maximum_active_capture_points))
     return false;
   state.points.resize(size);
   for (auto &point : state.points)
     if (!in.integer(point.id) ||
         !in.string(point.name, device_catalog::capture_point_name_bytes) ||
-        !in.boolean(point.active))
+        !in.boolean(point.active) || !in.integer(point.received) ||
+        !in.integer(point.dropped))
       return false;
-  constexpr auto maximum_records =
-      device_catalog::capture_store_bytes / sizeof(CaptureRecordCheckpoint);
-  if (!count(in, size, maximum_records))
-    return false;
-  state.records.resize(size);
-  for (auto &record : state.records)
-    if (!in.integer(record.timestamp_us) || !in.integer(record.capture_point) ||
-        !in.frame(record.frame))
-      return false;
-  return true;
+  return in.integer(size) && size == 0U;
 }
 
 void capture_program(Writer &out, const CapturePointProgram &value) {
@@ -4489,7 +4484,7 @@ bool network_state(Reader &in, NetworkPlaneCheckpoint &state) {
     if (!host_state(in, host))
       return false;
   if (!fabric_state(in, state.fabric) || !capture_state(in, state.capture) ||
-      !count(in, size, device_catalog::selected_capture_points))
+      !count(in, size, device_catalog::maximum_active_capture_points))
     return false;
   state.capture_points.resize(size);
   for (auto &program : state.capture_points)
@@ -6500,7 +6495,7 @@ void portable_capture(Writer &out,
 
 bool portable_capture(Reader &in, PortableCaptureIntentCheckpoint &state) {
   return in.integer(state.id) &&
-         state.id < device_catalog::selected_capture_points &&
+         state.id != std::numeric_limits<CapturePointId>::max() &&
          in.integer(state.kind) && state.kind <= CapturePointKind::cpm_punt &&
          in.string(state.object_id, 64) && !state.object_id.empty() &&
          in.string(state.port_id, 32) && in.integer(state.direction) &&
@@ -6705,7 +6700,7 @@ decode(std::span<const std::uint8_t> bytes) {
     for (auto &value : state->portable_hosts)
       if (!portable_host(in, value))
         return nullptr;
-    if (!count(in, size, device_catalog::selected_capture_points))
+    if (!count(in, size, device_catalog::maximum_active_capture_points))
       return nullptr;
     state->portable_capture_points.resize(size);
     for (auto &value : state->portable_capture_points)

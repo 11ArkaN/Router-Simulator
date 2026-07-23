@@ -40,6 +40,7 @@ public:
   // Callers copy them into a transferable JavaScript buffer before issuing
   // another operation that could replace the backing vector.
   [[nodiscard]] std::span<const std::uint8_t> prepare_capture() noexcept;
+  [[nodiscard]] bool clear_capture() noexcept;
   [[nodiscard]] std::span<const std::uint8_t>
   prepared_capture() const noexcept {
     return capture_bytes_;
@@ -471,6 +472,9 @@ private:
   std::vector<HostIntent> hosts_;
   std::vector<SessionIntent> sessions_;
   std::vector<CaptureIntent> capture_intents_;
+  // Monotonic within one live runtime. Deselected intent rows are erased, but
+  // their numeric identity is not reused inside the current PCAPNG section.
+  CapturePointId next_capture_id_{};
   // Present only for the generated high-CPU policy. Declaring it after the
   // supervisor makes it join before the network owners during destruction.
   std::unique_ptr<ControlProjectionWorker> secondary_control_;

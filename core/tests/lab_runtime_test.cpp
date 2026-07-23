@@ -2277,6 +2277,20 @@ void lab_runtime_tests() {
                                 {"router-ingress", "r1", "1/1/1", "0", "1"}))
                .starts_with("ERROR:"),
       "portable checkpoint fixture could not be configured");
+  // Repeatedly retire and recreate one location beyond the former 256-entry
+  // lifetime table. Only the final active intent belongs in snapshots and
+  // checkpoints; completed IDB and ISB blocks remain in the capture stream.
+  for (std::size_t cycle = 0; cycle < 300U; ++cycle) {
+    require(!runtime
+                 .command(message(lab_runtime_protocol::capture_point_set,
+                                  {"router-ingress", "r1", "1/1/1", "0", "0"}))
+                 .starts_with("ERROR:") &&
+                !runtime
+                     .command(message(lab_runtime_protocol::capture_point_set,
+                                      {"router-ingress", "r1", "1/1/1", "0", "1"}))
+                     .starts_with("ERROR:"),
+            "capture selection retained the obsolete lifetime point limit");
+  }
   const std::string capture_before{
       runtime.command(message(lab_runtime_protocol::snapshot))};
   require(capture_before.find("\"kind\":\"router-ingress\"") !=

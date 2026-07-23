@@ -3369,6 +3369,12 @@ std::span<const std::uint8_t> RuntimeSupervisor::prepare_capture() noexcept {
   return network_worker_->prepared_capture();
 }
 
+bool RuntimeSupervisor::clear_capture() noexcept {
+  auto &command = prepare(NetworkCommandKind::clear_capture);
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
 std::size_t RuntimeSupervisor::captured_frames() noexcept {
   auto &command = prepare(NetworkCommandKind::capture_frame_count);
   const auto result = dispatch(command);
@@ -3402,7 +3408,7 @@ RuntimeSupervisor::router_operational_state(DeviceHandle device) noexcept {
     return std::nullopt;
   // Acquire on the result ring publishes the immutable prepared value. Copying
   // now releases the worker-owned buffer for the next show request without
-  // exposing forwarding pointers or taking the 32 MiB capture checkpoint.
+  // exposing forwarding pointers or serializing unrelated capture metadata.
   try {
     return *prepared;
   } catch (const std::bad_alloc &) {

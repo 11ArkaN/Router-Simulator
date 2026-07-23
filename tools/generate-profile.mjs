@@ -134,17 +134,11 @@ const links = profile.links ?? [];
 if (!endpointCount || endpointCount !== interfaceCount || links.length !== endpointCount) {
   throw new Error("A profile requires one router interface and one link for every endpoint");
 }
-if (profile.capture_interfaces?.length !== endpointCount * 4 + 1) {
-  throw new Error("Capture points require two link directions, ingress, egress and one CPM point");
-}
 if (!Number.isInteger(profile.ports?.count) || profile.ports.count < endpointCount) {
   throw new Error("Equipped port count must cover every endpoint binding");
 }
 if (profile.ports.count > 32) {
   throw new Error("Telemetry ABI v3 represents operational ports in a 32-bit bitmap");
-}
-if (profile.capture_interfaces.length > 255 || endpointCount > 127) {
-  throw new Error("Current capture and link identifiers require capacities below 256");
 }
 // The largest legal first-stage running configuration contains every port
 // description and every static route. Netstring framing adds a decimal length,
@@ -309,10 +303,6 @@ inline constexpr char line_card_alarm_id[] = "card-${profile.line_card.slot}";
 inline constexpr char mda_alarm_id[] = "mda-${profile.line_card.slot}/${profile.mda.slot}";
 inline constexpr std::size_t port_count = ${profile.ports.count};
 inline constexpr std::size_t endpoint_count = ${endpointCount};
-inline constexpr std::size_t link_direction_count = endpoint_count * 2U;
-inline constexpr std::size_t capture_ingress_base = link_direction_count;
-inline constexpr std::size_t capture_egress_base = capture_ingress_base + endpoint_count;
-inline constexpr std::size_t capture_cpm_index = capture_egress_base + endpoint_count;
 inline constexpr std::uint32_t port_speed_mbps = ${profile.ports.speed_mbps}U;
 inline constexpr std::uint16_t default_port_mtu = ${profile.ports.default_mtu};
 inline constexpr std::uint16_t minimum_port_mtu = ${profile.ports.minimum_mtu};
@@ -325,7 +315,6 @@ inline constexpr std::uint32_t pthread_pool_max = ${profile.resources.pthread_po
 inline constexpr std::size_t command_message_bytes = ${profile.resources.command_message_bytes};
 inline constexpr std::size_t response_message_bytes = ${profile.resources.response_message_bytes};
 inline constexpr std::size_t packet_pool_bytes = ${profile.resources.packet_pool_bytes}U;
-inline constexpr std::size_t capture_memory_bytes = ${profile.resources.capture_memory_bytes}U;
 inline constexpr std::size_t link_queue_capacity = ${profile.resources.link_queue_frames};
 inline constexpr std::size_t link_inflight_capacity = ${profile.resources.link_inflight_frames};
 inline constexpr std::size_t adjacency_pending_capacity = ${profile.resources.adjacency_pending_frames};
@@ -416,9 +405,6 @@ inline constexpr std::array<std::uint8_t, endpoint_count> interface_port_indices
     ${profile.router_interfaces.map((item) => portIndex.get(item.port)).join(", ")}};
 inline constexpr std::array<bool, endpoint_count> initial_interface_admin_enabled{
     ${profile.router_interfaces.map((item) => item.admin_state === "enable").join(", ")}};
-inline constexpr std::array<const char*, ${profile.capture_interfaces.length}> capture_interface_names{
-    ${quoted(profile.capture_interfaces)}};
-
 }  // namespace router::profile
 `;
 

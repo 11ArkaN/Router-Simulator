@@ -112,6 +112,7 @@ export class MultiRouterRuntimeClient {
   private initializedProjectId?: string;
   private readonly continuityListeners = new Set<
     (event: RuntimeContinuityEvent) => void>();
+  private readonly captureErrorListeners = new Set<(error: Error) => void>();
 
   constructor() {
     // Shared memory and pthreads are product requirements. A missing isolation
@@ -143,6 +144,11 @@ export class MultiRouterRuntimeClient {
           ...(data.error ? { error: data.error } : {})
         };
         for (const listener of this.continuityListeners) listener(event);
+        return;
+      }
+      if (data.kind === "capture-storage-error") {
+        const error = new Error(data.error ?? "Packet capture storage failed");
+        for (const listener of this.captureErrorListeners) listener(error);
         return;
       }
       if (data.id !== undefined && data.bytes) {
@@ -180,6 +186,11 @@ export class MultiRouterRuntimeClient {
     // React effects from accumulating listeners across runtime replacement.
     this.continuityListeners.add(listener);
     return () => this.continuityListeners.delete(listener);
+  }
+
+  onCaptureStorageError(listener: (error: Error) => void): () => void {
+    this.captureErrorListeners.add(listener);
+    return () => this.captureErrorListeners.delete(listener);
   }
 
   private send(operation: string, fields: readonly string[] = []): Promise<string> {
@@ -223,7 +234,8 @@ export class MultiRouterRuntimeClient {
         this.pending.set(id, { resolve, reject });
         const bytes = material.wrappingKey.buffer;
         this.worker.postMessage({ id, action: "secret-vault-initialize",
-          command: new TextDecoder().decode(material.context), bytes }, [bytes]);
+          command: new TextDecoder().decode(material.context), storageId: projectId,
+          bytes }, [bytes]);
       });
       this.initializedProjectId = projectId;
     } finally {
@@ -603,6 +615,39 @@ export class MultiRouterRuntimeClient {
   }
 
   exportCapture(): Promise<Uint8Array> { return this.binary("capture-export"); }
+  clearCapture(): Promise<string> {
+    const id = this.nextRequestId++;
+    return new Promise((resolve, reject) => {
+      if (this.closed) return reject(new Error("Runtime client is closed"));
+      this.pending.set(id, { resolve, reject });
+      this.worker.postMessage({ id, action: "capture-clear" });
+    });
+  }
+  importCapture(bytes: Uint8Array): Promise<string> {
+    const id = this.nextRequestId++;
+    return new Promise((resolve, reject) => {
+      if (this.closed) return reject(new Error("Runtime client is closed"));
+      this.pending.set(id, { resolve, reject });
+      const buffer = bytes.slice().buffer;
+      this.worker.postMessage({ id, action: "capture-import", bytes: buffer },
+        [buffer]);
+    });
+  }
+  private captureStorageAction(action: "capture-storage-activate" |
+    "capture-storage-release"): Promise<string> {
+    const id = this.nextRequestId++;
+    return new Promise((resolve, reject) => {
+      if (this.closed) return reject(new Error("Runtime client is closed"));
+      this.pending.set(id, { resolve, reject });
+      this.worker.postMessage({ id, action });
+    });
+  }
+  activateCaptureStorage(): Promise<string> {
+    return this.captureStorageAction("capture-storage-activate");
+  }
+  releaseCaptureStorage(): Promise<string> {
+    return this.captureStorageAction("capture-storage-release");
+  }
   exportCheckpoint(): Promise<Uint8Array> { return this.binary("checkpoint-export"); }
 
   importCheckpoint(bytes: Uint8Array): Promise<string> {
@@ -696,6 +741,7 @@ export class MultiRouterRuntimeClient {
     this.pending.clear();
     this.binaryPending.clear();
     this.continuityListeners.clear();
+    this.captureErrorListeners.clear();
     this.worker.postMessage({ id: 0, shutdown: true });
     window.setTimeout(() => this.worker.terminate(), 2000);
   }

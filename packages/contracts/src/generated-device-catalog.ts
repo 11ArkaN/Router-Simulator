@@ -15,7 +15,6 @@ export const PROFILE_CATALOG = {
     "wasm_growth_step_bytes": 67108864,
     "wasm_stack_bytes": 1048576,
     "packet_pool_bytes": 67108864,
-    "capture_store_bytes": 33554432,
     "terminal_output_arena_bytes": 16777216,
     "terminal_result_bytes": 1048576,
     "runtime_control_reserve_bytes": 41943040,
@@ -124,7 +123,7 @@ export const PROFILE_CATALOG = {
     "forwarding_ring_frames": 64,
     "candidate_keys_per_router": 16384,
     "candidate_keys_per_session": 128,
-    "selected_capture_points": 256,
+    "maximum_active_capture_points": 25744,
     "capture_point_name_bytes": 512
   },
   "ethernet": {
@@ -1035,5 +1034,5 @@ export const PROFILE_CATALOG_COMPILED = {
   "maximumMdaSlotsPerCard": 2,
   "maximumPortsPerMda": 40
 } as const;
-export const PROFILE_CATALOG_HASH = "f7cb337f8e395967" as const;
-export const LAB_BUILD_HASH = "f68b9126e5f05201" as const;
+export const PROFILE_CATALOG_HASH = "922379034b3dcf54" as const;
+export const LAB_BUILD_HASH = "7f8a23c2daaecae3" as const;

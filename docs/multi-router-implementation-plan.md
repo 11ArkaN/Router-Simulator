@@ -116,7 +116,7 @@ SPSC rings connect known producer and consumer pairs. A matrix of SPSC rings is 
 WebAssembly initial memory is 320 MiB. The laboratory shares:
 
 - one 64 MiB packet pool
-- one 32 MiB capture store
+- one forwarding-owned incremental PCAPNG encoder drained to project OPFS
 - one 16 MiB terminal output arena
 
 Per-router arenas are sized from the selected hardware profile. The build calculates the maximum storage required by 16 SR-12 routers and fails if the configured memory budget is exceeded. Stable arena addresses prevent pointer invalidation.
@@ -191,7 +191,7 @@ Capture selection supports:
 - router egress
 - CPM punt
 
-PCAPNG interface names include stable node identity, current system name, port and direction. Removing a capture point stops future observations but retains records already stored in the active capture.
+PCAPNG interface names include stable node identity, current system name, port and direction. Complete packet blocks are appended to project OPFS during capture, and runtime checkpoints retain only selection and accounting metadata. Removing a point emits its final interface statistics before releasing owner-local metadata.
 
 Checkpoint ABI 5 stores:
 

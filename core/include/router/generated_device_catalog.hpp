@@ -20,10 +20,10 @@ struct TlsAlgorithmName {
 // One release owns this entire generated catalog. Runtime capability output
 // consumes this value instead of repeating the release pin in hand-written C++.
 inline constexpr std::string_view release{"26.7.R1"};
-inline constexpr std::uint64_t catalog_hash = 0xf7cb337f8e395967ULL;
+inline constexpr std::uint64_t catalog_hash = 0x922379034b3dcf54ULL;
 inline constexpr std::uint64_t checkpoint_schema_hash = 0xc14824cbb3c71b17ULL;
 inline constexpr std::uint64_t runtime_protocol_hash = 0x0e4f799b5b5d2714ULL;
-inline constexpr std::uint64_t build_hash = 0xf68b9126e5f05201ULL;
+inline constexpr std::uint64_t build_hash = 0x7f8a23c2daaecae3ULL;
 
 inline constexpr std::size_t maximum_routers = 16;
 inline constexpr std::size_t maximum_hosts = 16;
@@ -42,7 +42,6 @@ inline constexpr std::size_t wasm_maximum_memory_bytes = 1073741824U;
 inline constexpr std::size_t wasm_growth_step_bytes = 67108864U;
 inline constexpr std::size_t wasm_stack_bytes = 1048576U;
 inline constexpr std::size_t packet_pool_bytes = 67108864U;
-inline constexpr std::size_t capture_store_bytes = 33554432U;
 inline constexpr std::size_t terminal_output_arena_bytes = 16777216U;
 inline constexpr std::size_t terminal_result_bytes = 1048576U;
 inline constexpr std::size_t runtime_control_reserve_bytes = 41943040U;
@@ -151,7 +150,7 @@ inline constexpr std::size_t network_command_work_budget = 64;
 inline constexpr std::size_t forwarding_ring_frames = 64;
 inline constexpr std::size_t candidate_keys_per_router = 16384;
 inline constexpr std::size_t candidate_keys_per_session = 128;
-inline constexpr std::size_t selected_capture_points = 256;
+inline constexpr std::size_t maximum_active_capture_points = 25744;
 inline constexpr std::size_t capture_point_name_bytes = 512;
 inline constexpr std::uint16_t default_network_mtu = 9212;
 inline constexpr std::uint16_t minimum_network_mtu = 512;

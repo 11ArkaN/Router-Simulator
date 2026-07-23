@@ -990,17 +990,18 @@ struct NetworkPlane::Impl {
       ++missing_binding_dropped;
       return false;
     }
-    if (fabric->enqueue(current->link, current->endpoint, frame) !=
-        MultiDeviceFabric::DropReason::none)
-      return false;
-    // Observation happens only after successful queue admission. A dropped
-    // frame is counted by the queue owner and is not invented in the capture.
-    observe(link_captures[current->link.index][current->endpoint],
-            current->link, frame);
+    // Router egress precedes medium admission. A frame rejected by the link
+    // queue was still emitted by the router and belongs in the port egress tap,
+    // but must not appear at the link-direction observation point.
     if (source.kind == NodeKind::router &&
         source.index < egress_captures.size() &&
         ordinal < egress_captures[source.index].size())
       observe(egress_captures[source.index][ordinal], source, frame);
+    if (fabric->enqueue(current->link, current->endpoint, frame) !=
+        MultiDeviceFabric::DropReason::none)
+      return false;
+    observe(link_captures[current->link.index][current->endpoint],
+            current->link, frame);
     return true;
   }
 
@@ -2522,12 +2523,6 @@ void NetworkPlane::Impl::drain_forwarding_egress() noexcept {
         ++missing_binding_dropped;
         continue;
       }
-      if (fabric->enqueue(current->link, current->endpoint,
-                          egress_frame.frame) !=
-          MultiDeviceFabric::DropReason::none)
-        continue;
-      observe(link_captures[current->link.index][current->endpoint],
-              current->link, egress_frame.frame);
       if (egress_frame.source.kind == NodeKind::router &&
           egress_frame.source.index < egress_captures.size() &&
           egress_frame.ordinal <
@@ -2535,6 +2530,12 @@ void NetworkPlane::Impl::drain_forwarding_egress() noexcept {
         observe(
             egress_captures[egress_frame.source.index][egress_frame.ordinal],
             egress_frame.source, egress_frame.frame);
+      if (fabric->enqueue(current->link, current->endpoint,
+                          egress_frame.frame) !=
+          MultiDeviceFabric::DropReason::none)
+        continue;
+      observe(link_captures[current->link.index][current->endpoint],
+              current->link, egress_frame.frame);
     }
   }
 }
@@ -3962,14 +3963,13 @@ bool NetworkPlane::remove_link(LinkHandle link) noexcept {
 
 bool NetworkPlane::configure_capture_point(
     const CapturePointProgram &program) noexcept {
-  if (program.id >= device_catalog::selected_capture_points)
-    return false;
   if (program.kind < CapturePointKind::link_direction ||
       program.kind > CapturePointKind::cpm_punt)
     return false;
   if (!program.selected) {
-    // CaptureStore retains the name and records while the indexed packet-path
-    // binding is removed. Repeating removal of an unknown point is not success.
+    // Encoded historic blocks remain self-describing in the byte stream, while
+    // live point metadata is retired with the packet-path binding. Repeating
+    // removal of an unknown point is not success.
     const auto removed = impl_->capture->deactivate_point(program.id);
     impl_->clear_capture_id(program.id);
     return removed;
@@ -4017,6 +4017,15 @@ bool NetworkPlane::configure_capture_point(
 }
 
 void NetworkPlane::prepare_capture() { impl_->capture->encode(); }
+
+bool NetworkPlane::clear_capture() noexcept {
+  // The same forwarding owner that records packets rotates the section. No
+  // packet can interleave between reset and the new Section Header Block.
+  if (!impl_->capture->clear_session())
+    return false;
+  impl_->capture_dropped = 0;
+  return true;
+}
 
 std::span<const std::uint8_t> NetworkPlane::prepared_capture() const noexcept {
   return impl_->capture->prepared();
@@ -4155,7 +4164,8 @@ bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
                            Clock::time_point now) {
   if (state.routers.size() > device_catalog::maximum_routers ||
       state.hosts.size() > device_catalog::maximum_hosts ||
-      state.capture_points.size() > device_catalog::selected_capture_points ||
+      state.capture_points.size() >
+          device_catalog::maximum_active_capture_points ||
       !MultiDeviceFabric::validate_checkpoint(state.fabric) ||
       !CaptureStore::validate_checkpoint(state.capture))
     return false;
@@ -4167,7 +4177,8 @@ bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
   } resume{impl_.get()};
   std::array<bool, device_catalog::maximum_routers> router_seen{};
   std::array<bool, device_catalog::maximum_hosts> host_seen{};
-  std::array<bool, device_catalog::selected_capture_points> capture_seen{};
+  std::vector<CapturePointId> capture_seen;
+  capture_seen.reserve(state.capture_points.size());
   try {
     auto staged_routers = std::make_unique<decltype(impl_->routers)>();
     auto staged_hosts = std::make_unique<decltype(impl_->hosts)>();
@@ -4305,13 +4316,13 @@ bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
     }
     for (const auto &program : state.capture_points) {
       if (!program.selected ||
-          program.id >= device_catalog::selected_capture_points ||
-          capture_seen[program.id] || !program.name_size ||
+          std::find(capture_seen.begin(), capture_seen.end(), program.id) !=
+              capture_seen.end() || !program.name_size ||
           program.name_size > program.name.size() ||
           program.kind < CapturePointKind::link_direction ||
           program.kind > CapturePointKind::cpm_punt)
         return false;
-      capture_seen[program.id] = true;
+      capture_seen.push_back(program.id);
       const auto point = std::find_if(
           state.capture.points.begin(), state.capture.points.end(),
           [&](const auto &candidate) { return candidate.id == program.id; });

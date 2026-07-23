@@ -130,7 +130,9 @@ IndexedDB stores the active project and UI layout. OPFS stores the terminal tran
 A `.netsim` file has one of two modes:
 
 - `project` stores portable intent, topology, hardware choices, running configuration, notes, layout and an optional capture
-- `checkpoint` adds the live operational state: dual-stack RIBs and FIBs, ARP and IPv6 neighbor caches, router advertisement, Path MTU and reassembly state, MLD, DHCPv6 leases, UDP and TCP sockets, the DNS resolver and DNSSEC caches, fabric link transmissions, capture records, the project secret vault, relative deadlines, counters, alarms, CLI semantics, terminal editor state, histories, queued input and pager position
+- `checkpoint` adds the live operational state: dual-stack RIBs and FIBs, ARP and IPv6 neighbor caches, router advertisement, Path MTU and reassembly state, MLD, DHCPv6 leases, UDP and TCP sockets, the DNS resolver and DNSSEC caches, fabric link transmissions, capture selection and counters, the project secret vault, relative deadlines, counters, alarms, CLI semantics, terminal editor state, histories, queued input and pager position
+
+Packet capture is encoded incrementally as PCAPNG and appended by the runtime Worker to project-scoped OPFS. A session has no fixed 32 MiB runtime limit. Export flushes the active generation before downloading the complete file.
 
 An incompatible checkpoint is rejected before runtime replacement. The user can explicitly import only its project data, which starts a new runtime without the incompatible operational state.
 

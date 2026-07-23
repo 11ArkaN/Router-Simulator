@@ -1,12 +1,13 @@
-// Forwarding-owned bounded capture storage and deterministic PCAPNG encoding.
-// Live packet delivery never waits for capture memory or export serialization.
+// Forwarding-owned incremental PCAPNG encoder. The packet path writes complete
+// frame blocks into a byte stream and never retains a maximum-sized Frame per
+// observation. The Worker drains immutable chunks to OPFS, so session length is
+// bounded by project storage rather than a fixed WebAssembly capture arena.
 
 #pragma once
 
 #include "router/generated_device_catalog.hpp"
 #include "router/packet.hpp"
 
-#include <array>
 #include <cstdint>
 #include <span>
 #include <string>
@@ -21,74 +22,85 @@ struct CapturePointCheckpoint {
   CapturePointId id{};
   std::string name;
   bool active{};
-};
-
-struct CaptureRecordCheckpoint {
-  std::uint64_t timestamp_us{};
-  CapturePointId capture_point{};
-  packet::Frame frame{};
+  std::uint64_t received{};
+  std::uint64_t dropped{};
 };
 
 struct CaptureStoreCheckpoint {
   std::vector<CapturePointCheckpoint> points;
-  std::vector<CaptureRecordCheckpoint> records;
 };
 
 class CaptureStore final {
 public:
   CaptureStore();
 
-  // Point configuration is a low-frequency forwarding-owner command. IDs are
-  // stable within one capture session. Deactivation stops future records but
-  // deliberately retains the name needed to decode already captured frames.
+  // Forwarding-owner only. IDs may be sparse and are not limited by the
+  // historic number of selections. Names become immutable PCAPNG IDB metadata
+  // once emitted, so a changed name creates a new interface description.
   [[nodiscard]] bool configure_point(CapturePointId id,
                                      std::string_view name);
   [[nodiscard]] bool deactivate_point(CapturePointId id) noexcept;
   [[nodiscard]] bool point_active(CapturePointId id) const noexcept;
 
-  // Preconditions: forwarding-shard affinity. false means diagnostics capacity
-  // is exhausted; callers must continue packet delivery and count the drop.
+  // Appends one complete Enhanced Packet Block. false means either the point
+  // is inactive or allocation failed. Allocation failure is recorded per IDB
+  // and forwarding must continue without waiting for diagnostics.
   [[nodiscard]] bool record(CapturePointId capture_point,
                             const packet::Frame &frame,
                             std::uint64_t timestamp_us);
-  // Preconditions: forwarding is quiescent at the caller's barrier. Encoding
-  // replaces the prior immutable PCAPNG projection without altering records.
+
+  // Finalizes a drain generation with Interface Statistics Blocks and swaps it
+  // into an immutable view. Subsequent packets enter a fresh byte vector while
+  // the caller copies prepared(). Multiple returned chunks concatenate into a
+  // valid PCAPNG section.
   void encode();
-  // The span remains valid until the next encode or CaptureStore destruction.
   [[nodiscard]] std::span<const std::uint8_t> prepared() const noexcept {
     return prepared_;
   }
-  // size reports retained records, excluding tail-dropped observations.
-  [[nodiscard]] std::size_t size() const noexcept { return records_.size(); }
 
-  // Export is a forwarding-barrier copy. Restore builds a complete temporary
-  // store and swaps only after every stable ID, name and record validates.
+  // Starts a new PCAPNG section while preserving selected observation points.
+  // The Worker must truncate its OPFS file in the same serialized operation.
+  [[nodiscard]] bool clear_session() noexcept;
+  [[nodiscard]] std::size_t size() const noexcept { return record_count_; }
+
   [[nodiscard]] CaptureStoreCheckpoint checkpoint() const;
   [[nodiscard]] static bool
   validate_checkpoint(const CaptureStoreCheckpoint &state) noexcept;
   [[nodiscard]] bool restore(const CaptureStoreCheckpoint &state);
 
 private:
-  struct Record {
-    std::uint64_t timestamp_us{};
-    CapturePointId capture_point{};
-    packet::Frame frame{};
-  };
-
   struct Point {
+    CapturePointId id{};
     std::string name;
-    bool configured{};
+    std::uint32_t pcap_interface{};
+    std::uint64_t received{};
+    std::uint64_t dropped{};
+    std::uint64_t reported_received{};
+    std::uint64_t reported_dropped{};
     bool active{};
+    bool described{};
   };
 
-  // Starting the expression in size_t prevents a 32-bit intermediate if this
-  // budget is raised on a future profile.
-  static constexpr std::size_t memory_bytes =
-      device_catalog::capture_store_bytes;
-  static constexpr std::size_t capacity = memory_bytes / sizeof(Record);
-  std::array<Point, device_catalog::selected_capture_points> points_{};
-  std::vector<Record> records_;
+  [[nodiscard]] Point *find_point(CapturePointId id) noexcept;
+  [[nodiscard]] const Point *find_point(CapturePointId id) const noexcept;
+  void append_section_header();
+  [[nodiscard]] bool describe(Point &point);
+  [[nodiscard]] bool append_packet(Point &point, const packet::Frame &frame,
+                                   std::uint64_t timestamp_us);
+  void append_statistics(Point &point, std::uint64_t timestamp_us);
+
+  // stream_ has no session-size ceiling. It contains only bytes produced since
+  // the previous drain, not an array of 9212-byte record slots. prepared_ is
+  // read-only until the next drain and is never touched by the packet path.
+  // Only currently configured points live here. The vector is ordered by ID,
+  // so packet observation is a logarithmic lookup without a hash allocation.
+  // Crucially, memory depends on active capture points, not on the largest ID
+  // ever issued during a long-lived lab session.
+  std::vector<Point> points_;
+  std::vector<std::uint8_t> stream_;
   std::vector<std::uint8_t> prepared_;
+  std::size_t record_count_{};
+  std::uint32_t next_pcap_interface_{};
 };
 
 } // namespace router

@@ -37,7 +37,6 @@ constexpr std::size_t router_udp_payload_arenas =
 // library overhead are covered by the explicit generated control reserve.
 constexpr std::size_t maximum_live_storage =
     device_catalog::packet_pool_bytes + packet_pool_handles +
-    device_catalog::capture_store_bytes +
     device_catalog::terminal_output_arena_bytes +
     device_catalog::runtime_control_reserve_bytes +
     router_forwarding_arenas + router_udp_payload_arenas +

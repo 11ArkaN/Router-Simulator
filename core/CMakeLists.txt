@@ -399,7 +399,7 @@ if(EMSCRIPTEN)
     "-sEXPORT_ES6=1"
     "-sEXPORT_NAME=createRouterRuntime"
     "-sENVIRONMENT=worker"
-    "-sEXPORTED_FUNCTIONS=['_malloc','_free','_runtime_initialize','_secret_vault_initialize','_runtime_capabilities','_memory_epoch','_memory_size','_memory_reserve','_lab_close','_lab_submit_command','_telemetry_get_page','_telemetry_get_page_size','_telemetry_publish','_telemetry_get_layout','_capture_export_pcapng','_capture_export_size','_checkpoint_export','_checkpoint_export_size','_checkpoint_import']"
+    "-sEXPORTED_FUNCTIONS=['_malloc','_free','_runtime_initialize','_secret_vault_initialize','_runtime_capabilities','_memory_epoch','_memory_size','_memory_reserve','_lab_close','_lab_submit_command','_telemetry_get_page','_telemetry_get_page_size','_telemetry_publish','_telemetry_get_layout','_capture_export_pcapng','_capture_export_size','_capture_clear','_checkpoint_export','_checkpoint_export_size','_checkpoint_import']"
     # HEAPU8 is an explicit Emscripten module API dependency. Newer optimized
     # builds keep the internal view lexical unless it is exported, so relying
     # on an accidental Module property makes browser startup version-sensitive.

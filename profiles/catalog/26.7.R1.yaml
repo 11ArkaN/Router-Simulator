@@ -21,7 +21,6 @@ runtime:
   # bounded conformance call frames clear of those shared fixed arenas.
   wasm_stack_bytes: 1048576
   packet_pool_bytes: 67108864
-  capture_store_bytes: 33554432
   terminal_output_arena_bytes: 16777216
   terminal_result_bytes: 1048576
   # Fixed registries, hardware inventories, control RIBs, workflow candidates,
@@ -224,7 +223,10 @@ runtime:
   # It is not advertised as an SR OS platform scale limit.
   candidate_keys_per_router: 16384
   candidate_keys_per_session: 128
-  selected_capture_points: 256
+  # Every physical link direction, every router port ingress and egress, and
+  # every CPM can be selected together in the maximum generated topology.
+  # The generator rejects this value if hardware or topology bounds change.
+  maximum_active_capture_points: 25744
   capture_point_name_bytes: 512
 ethernet:
   # SR OS network Ethernet ports in this modeled set use the documented

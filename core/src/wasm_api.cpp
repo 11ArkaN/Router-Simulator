@@ -251,6 +251,10 @@ RS_EXPORT std::size_t capture_export_size() {
   return runtime ? runtime->prepared_capture().size() : 0U;
 }
 
+RS_EXPORT int capture_clear() {
+  return runtime && runtime->clear_capture() ? 1 : 0;
+}
+
 RS_EXPORT const std::uint8_t *checkpoint_export() {
   if (!runtime)
     return nullptr;

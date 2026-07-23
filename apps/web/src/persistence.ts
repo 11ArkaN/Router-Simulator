@@ -464,6 +464,12 @@ export function downloadBinary(name: string, bytes: Uint8Array, type: string): v
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = name;
+  anchor.hidden = true;
+  // Keep the anchor connected for the click and retain the object URL until
+  // the browser has queued its download task. Immediate revocation can race
+  // Chromium's Blob navigation and silently cancel a valid large export.
+  document.body.append(anchor);
   anchor.click();
-  URL.revokeObjectURL(url);
+  anchor.remove();
+  self.setTimeout(() => URL.revokeObjectURL(url), 0);
 }

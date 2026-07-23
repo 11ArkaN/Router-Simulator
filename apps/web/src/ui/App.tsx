@@ -42,6 +42,20 @@ function captureKey(kind: CaptureKind, objectId: string, portId: string,
   return `${kind}:${objectId}:${portId}:${direction}`;
 }
 
+async function transferCaptureStorage(previous: MultiRouterRuntimeClient | undefined,
+  next: MultiRouterRuntimeClient): Promise<void> {
+  // Only one dedicated Worker may own the synchronous OPFS handle. If the new
+  // runtime cannot acquire it, restore the still-live predecessor before
+  // surfacing failure so packet capture is not left detached from storage.
+  if (previous) await previous.releaseCaptureStorage();
+  try {
+    await next.activateCaptureStorage();
+  } catch (cause) {
+    if (previous) await previous.activateCaptureStorage();
+    throw cause;
+  }
+}
+
 function captureSelectionsFromSnapshot(snapshot: LabRuntimeSnapshotV6):
   CaptureSelection[] {
   // Runtime numeric IDs remain an internal capture-store concern. React keys
@@ -219,6 +233,7 @@ export function App() {
           live = await client.applyProject(stored);
         }
       }
+      await client.activateCaptureStorage();
       if (cancelled) return client.close();
       const recoveredProject = mergeRuntimeProject(stored, live);
       setProject(recoveredProject);
@@ -323,9 +338,13 @@ export function App() {
         if (active) setRuntimeError(visibleFailure("startup", cause));
       });
     });
+    const unsubscribeCapture = runtime.onCaptureStorageError((error) => {
+      if (active) setOperationError(visibleFailure("operation", error));
+    });
     return () => {
       active = false;
       unsubscribe();
+      unsubscribeCapture();
     };
   }, [runtime]);
 
@@ -796,7 +815,9 @@ export function App() {
   const exportCaptureNow = async () => {
     if (!runtime) return;
     const bytes = await runtime.exportCapture();
-    await saveProjectBinaryV4(project.projectId, "capture.pcapng", bytes);
+    // The runtime Worker already flushed this generation to the project OPFS
+    // file. A second main-thread writer would contend with its exclusive
+    // synchronous handle and cannot make the downloaded bytes more durable.
     downloadBinary(`${project.name}.pcapng`, bytes, "application/vnd.tcpdump.pcap");
   };
   const setCaptureSelection = async (kind: CaptureKind, objectId: string,
@@ -824,6 +845,10 @@ export function App() {
     }
     const selected = captureSelections.length === 0;
     try {
+      // Starting from the stopped state creates a new capture session. Reset
+      // happens before point installation so no packet from the prior section
+      // can race into the visually new recording.
+      if (selected) await runtime.clearCapture();
       // The initial capture surface represents both wire directions of every
       // physical link. The runtime applies the complete set atomically while
       // later hierarchy controls can still toggle one location independently.
@@ -867,12 +892,18 @@ export function App() {
   const importFile = async (file?: File) => {
     if (!file) return;
     let replacement: MultiRouterRuntimeClient | undefined;
+    let previous: MultiRouterRuntimeClient | undefined;
+    let storageTransferred = false;
     try {
       const decoded = await importNetsimV3(file);
       replacement = new MultiRouterRuntimeClient();
       let live = await replacement.applyProject(decoded.project);
       if (decoded.checkpoint) { await replacement.importCheckpoint(decoded.checkpoint); live = await replacement.snapshot(); }
-      const previous = runtimeRef.current;
+      previous = runtimeRef.current;
+      await transferCaptureStorage(previous, replacement);
+      storageTransferred = true;
+      if (decoded.capture) await replacement.importCapture(decoded.capture);
+      else await replacement.clearCapture();
       setRuntime(replacement); runtimeRef.current = replacement;
       setProject(decoded.project); setSnapshot(live); setSelected(decoded.project.routers[0]?.id ?? decoded.project.hosts[0]?.id);
       const importedPresentations = decoded.terminalPresentation
@@ -887,7 +918,19 @@ export function App() {
         item.id === importedActive)));
       setCaptureSelections(captureSelectionsFromSnapshot(live));
       previous?.close(); replacement = undefined;
-    } catch (cause) { replacement?.close(); setOperationError(visibleFailure("operation", cause)); }
+    } catch (cause) {
+      if (storageTransferred && replacement && previous) {
+        try {
+          await replacement.releaseCaptureStorage();
+          await previous.activateCaptureStorage();
+        } catch {
+          // Preserve the original import error. The next explicit capture
+          // operation will retry storage activation on the visible runtime.
+        }
+      }
+      replacement?.close();
+      setOperationError(visibleFailure("operation", cause));
+    }
   };
   const importCheckpointFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]; event.target.value = "";
@@ -901,6 +944,7 @@ export function App() {
       if (!snapshotMatchesProject(project, live))
         throw new Error("Checkpoint belongs to a different laboratory topology");
       const previous = runtimeRef.current;
+      await transferCaptureStorage(previous, replacement);
       runtimeRef.current = replacement;
       setRuntime(replacement);
       replacement = undefined;
@@ -918,8 +962,13 @@ export function App() {
   const resetProject = () => {
     const empty = createEmptyProjectV4();
     const replacement = new MultiRouterRuntimeClient();
-    void replacement.snapshot().then((live) => {
-      runtimeRef.current?.close(); runtimeRef.current = replacement; setRuntime(replacement);
+    const previous = runtimeRef.current;
+    let storageTransferred = false;
+    void replacement.applyProject(empty).then(async (live) => {
+      await transferCaptureStorage(previous, replacement);
+      storageTransferred = true;
+      await replacement.clearCapture();
+      previous?.close(); runtimeRef.current = replacement; setRuntime(replacement);
       setProject(empty); setSnapshot(live); setSelected(undefined); setActiveSession(undefined);
       setTerminalOpen(false); setTerminalPresentations({}); setCaptureSelections([]);
       // A new laboratory is a fresh runtime boundary.  In particular, an
@@ -930,7 +979,19 @@ export function App() {
       setRuntimeError(undefined); setOperationError(undefined); setContinuityNotice(undefined);
       setConfirmNewProject(false);
       setProjectMenuOpen(false);
-    }).catch((cause) => { replacement.close(); setOperationError(visibleFailure("operation", cause)); });
+    }).catch(async (cause) => {
+      if (storageTransferred && previous) {
+        try {
+          await replacement.releaseCaptureStorage();
+          await previous.activateCaptureStorage();
+        } catch {
+          // Preserve the reset failure. The visible runtime will retry its
+          // storage acquisition on the next explicit capture operation.
+        }
+      }
+      replacement.close();
+      setOperationError(visibleFailure("operation", cause));
+    });
   };
   const resetLayout = () => setProject((current) => ({ ...current, layout: {
     ...current.layout,

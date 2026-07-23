@@ -650,14 +650,14 @@ records:
     platforms: [all-supported]
     source_type: ietf-internet-draft
     source_url: https://datatracker.ietf.org/doc/html/draft-ietf-opsawg-pcapng-05
-    section: Section Header Block, Interface Description Block, Enhanced Packet Block
+    section: Section Header Block, Interface Description Block, Enhanced Packet Block, Interface Statistics Block
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-07-16
-    implementation: [core/src/capture_store.cpp, core/src/lab_runtime.cpp, core/src/network_plane.cpp, core/src/wasm_api.cpp, core/tools/capture_fixture.cpp, scripts/core.ps1]
+    last_verified_at: 2026-07-23
+    implementation: [core/src/capture_store.cpp, core/src/lab_runtime.cpp, core/src/network_plane.cpp, core/src/wasm_api.cpp, apps/web/src/runtime/runtime.worker.ts, core/tools/capture_fixture.cpp, scripts/core.ps1]
     tests: [core/tests/capture_store_test.cpp, core/tests/network_plane_test.cpp, core/tests/lab_runtime_test.cpp, core/tools/capture_fixture.cpp]
     status: implemented
-    notes: Export generates named Ethernet IDBs containing stable node identity, current system name, port and direction for selected link, router ingress, router egress and CPM punt points. It maps sparse identities to compact PCAP interface IDs, retains records after point removal, accounts for bounded capture drops and is parsed independently by tshark.
+    notes: The forwarding owner incrementally emits named Ethernet IDBs, complete EPBs and per-interface ISBs for link, router ingress, router egress and CPM punt points. Sparse runtime identities receive section-local interface IDs. The dedicated runtime Worker drains immutable chunks into a project-scoped OPFS file, so capture duration has no fixed WebAssembly byte cap. Allocation or storage failure remains explicit and never blocks forwarding.
   - id: iana.pcap.linktype_ethernet
     kind: capture-format
     release: current
@@ -667,11 +667,11 @@ records:
     section: LINKTYPE_ETHERNET value 1
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-07-14
+    last_verified_at: 2026-07-23
     implementation: [core/src/capture_store.cpp]
     tests: [core/tests/capture_store_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
-    notes: Every Interface Description Block uses registered link type 1 and snap length 1514.
+    notes: Every Interface Description Block uses registered link type 1 and a 9212-octet snap length. Tests compare every byte of a maximum-size QinQ Ethernet frame.
   - id: emscripten.pthreads.shared_memory
     kind: runtime-platform
     release: 6.0.3
@@ -864,11 +864,11 @@ records:
     section: Origin private file system
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-07-14
-    implementation: [apps/web/src/persistence.ts, apps/web/src/ui/terminal-history.ts, apps/web/src/ui/TerminalHistoryView.tsx, apps/web/src/ui/TerminalPanel.tsx]
+    last_verified_at: 2026-07-23
+    implementation: [apps/web/src/persistence.ts, apps/web/src/runtime/runtime.worker.ts, apps/web/src/ui/terminal-history.ts, apps/web/src/ui/TerminalHistoryView.tsx, apps/web/src/ui/TerminalPanel.tsx]
     tests: [apps/web/src/persistence-v4.test.ts, apps/web/src/ui/terminal-history.test.ts, apps/web/src/ui/TerminalPanel.test.tsx]
     status: implemented
-    notes: Binary capture and structural checkpoint data use project-scoped OPFS paths. Terminal transcripts use immutable OPFS chunks with bounded decoded-window caching while project metadata remains in IndexedDB.
+    notes: The dedicated runtime Worker incrementally appends PCAPNG chunks through one synchronous project-scoped OPFS handle and flushes before export. Structural checkpoints use atomic project-scoped files. Terminal transcripts use immutable OPFS chunks with bounded decoded-window caching while project metadata remains in IndexedDB.
   - id: w3c.webappsec.coop_coep_csp
     kind: runtime-platform
     release: current

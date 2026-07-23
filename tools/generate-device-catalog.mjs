@@ -69,7 +69,7 @@ for (const [name, value] of Object.entries(catalog.runtime ?? {}))
 // TypeScript catalog and malformed numeric tokens in the C++ projection.
 for (const name of ["wasm_initial_memory_bytes", "wasm_maximum_memory_bytes",
   "wasm_growth_step_bytes", "packet_pool_bytes",
-  "capture_store_bytes", "terminal_output_arena_bytes", "terminal_result_bytes",
+  "terminal_output_arena_bytes", "terminal_result_bytes",
   "runtime_control_reserve_bytes",
   "recovery_checkpoint_interval_milliseconds",
   "continuity_loss_threshold_milliseconds",
@@ -135,7 +135,7 @@ for (const name of ["wasm_initial_memory_bytes", "wasm_maximum_memory_bytes",
   "medium_link_shards", "high_link_shards", "pthread_pool_low",
   "pthread_pool_medium", "pthread_pool_high", "maximum_worker_domains",
   "candidate_keys_per_router",
-  "candidate_keys_per_session", "selected_capture_points",
+  "candidate_keys_per_session", "maximum_active_capture_points",
   "capture_point_name_bytes"]) {
   if (!(name in (catalog.runtime ?? {}))) fail(`runtime.${name} is required`);
 }
@@ -455,6 +455,10 @@ if (!catalog.profiles.some((profile) => profile.fixed) ||
 const maximumPortsPerRouter = Math.max(...profileMaximumPorts.values());
 const maximumCardSlots = Math.max(...catalog.profiles.map((profile) =>
   profile.fixed ? 1 : profile.card_slots));
+const maximumActiveCapturePoints = catalog.limits.links * 2 +
+  catalog.limits.routers * (maximumPortsPerRouter * 2 + 1);
+if (catalog.runtime.maximum_active_capture_points !== maximumActiveCapturePoints)
+  fail("runtime.maximum_active_capture_points does not cover the generated topology");
 
 const ts = `// Generated from profiles/catalog/26.7.R1.yaml. Do not edit.\n` +
 `// Runtime and UI code use this catalog instead of chassis-specific branches.\n\n` +
@@ -539,7 +543,6 @@ inline constexpr std::size_t wasm_maximum_memory_bytes = ${catalog.runtime.wasm_
 inline constexpr std::size_t wasm_growth_step_bytes = ${catalog.runtime.wasm_growth_step_bytes}U;
 inline constexpr std::size_t wasm_stack_bytes = ${catalog.runtime.wasm_stack_bytes}U;
 inline constexpr std::size_t packet_pool_bytes = ${catalog.runtime.packet_pool_bytes}U;
-inline constexpr std::size_t capture_store_bytes = ${catalog.runtime.capture_store_bytes}U;
 inline constexpr std::size_t terminal_output_arena_bytes = ${catalog.runtime.terminal_output_arena_bytes}U;
 inline constexpr std::size_t terminal_result_bytes = ${catalog.runtime.terminal_result_bytes}U;
 inline constexpr std::size_t runtime_control_reserve_bytes = ${catalog.runtime.runtime_control_reserve_bytes}U;
@@ -648,7 +651,7 @@ inline constexpr std::size_t network_command_work_budget = ${catalog.runtime.net
 inline constexpr std::size_t forwarding_ring_frames = ${catalog.runtime.forwarding_ring_frames};
 inline constexpr std::size_t candidate_keys_per_router = ${catalog.runtime.candidate_keys_per_router};
 inline constexpr std::size_t candidate_keys_per_session = ${catalog.runtime.candidate_keys_per_session};
-inline constexpr std::size_t selected_capture_points = ${catalog.runtime.selected_capture_points};
+inline constexpr std::size_t maximum_active_capture_points = ${catalog.runtime.maximum_active_capture_points};
 inline constexpr std::size_t capture_point_name_bytes = ${catalog.runtime.capture_point_name_bytes};
 inline constexpr std::uint16_t default_network_mtu = ${catalog.ethernet.default_network_mtu};
 inline constexpr std::uint16_t minimum_network_mtu = ${catalog.ethernet.minimum_network_mtu};

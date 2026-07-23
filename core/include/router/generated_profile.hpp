@@ -81,10 +81,6 @@ inline constexpr char line_card_alarm_id[] = "card-1";
 inline constexpr char mda_alarm_id[] = "mda-1/1";
 inline constexpr std::size_t port_count = 10;
 inline constexpr std::size_t endpoint_count = 2;
-inline constexpr std::size_t link_direction_count = endpoint_count * 2U;
-inline constexpr std::size_t capture_ingress_base = link_direction_count;
-inline constexpr std::size_t capture_egress_base = capture_ingress_base + endpoint_count;
-inline constexpr std::size_t capture_cpm_index = capture_egress_base + endpoint_count;
 inline constexpr std::uint32_t port_speed_mbps = 10000U;
 inline constexpr std::uint16_t default_port_mtu = 9212;
 inline constexpr std::uint16_t minimum_port_mtu = 512;
@@ -97,7 +93,6 @@ inline constexpr std::uint32_t pthread_pool_max = 4U;
 inline constexpr std::size_t command_message_bytes = 4096;
 inline constexpr std::size_t response_message_bytes = 16384;
 inline constexpr std::size_t packet_pool_bytes = 67108864U;
-inline constexpr std::size_t capture_memory_bytes = 33554432U;
 inline constexpr std::size_t link_queue_capacity = 256;
 inline constexpr std::size_t link_inflight_capacity = 2048;
 inline constexpr std::size_t adjacency_pending_capacity = 8;
@@ -120,9 +115,9 @@ inline constexpr std::uint32_t runtime_snapshot_abi = 6;
 inline constexpr std::uint32_t telemetry_abi = 6;
 inline constexpr std::uint32_t runtime_message_abi = 4;
 inline constexpr std::uint32_t checkpoint_abi = 6;
-inline constexpr std::uint64_t profile_hash = 0x7fd29a3639d9fc84ULL;
+inline constexpr std::uint64_t profile_hash = 0x252e6e9903595d0bULL;
 inline constexpr std::uint64_t checkpoint_schema_hash = 0xc14824cbb3c71b17ULL;
-inline constexpr std::uint64_t build_hash = 0xf8368296fbbf39feULL;
+inline constexpr std::uint64_t build_hash = 0xa4dea4d3d86b2cf6ULL;
 
 // Hardware initialization values are experimental emulator timing profiles,
 // not claims about physical platform boot guarantees.
@@ -193,7 +188,4 @@ inline constexpr std::array<std::uint8_t, endpoint_count> interface_port_indices
     0, 1};
 inline constexpr std::array<bool, endpoint_count> initial_interface_admin_enabled{
     true, true};
-inline constexpr std::array<const char*, 9> capture_interface_names{
-    "link-host-a-to-router", "link-router-to-host-a", "link-host-b-to-router", "link-router-to-host-b", "router-1/1/1-ingress", "router-1/1/2-ingress", "router-1/1/1-egress", "router-1/1/2-egress", "cpm-punt"};
-
 }  // namespace router::profile

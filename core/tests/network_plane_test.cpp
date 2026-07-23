@@ -6,10 +6,21 @@
 #include <algorithm>
 #include <chrono>
 #include <memory>
+#include <numeric>
+#include <span>
 #include <stdexcept>
 #include <string_view>
+#include <vector>
 
 namespace {
+
+std::uint32_t capture_u32(std::span<const std::uint8_t> bytes,
+                          std::size_t offset) {
+  return static_cast<std::uint32_t>(bytes[offset]) |
+         static_cast<std::uint32_t>(bytes[offset + 1U]) << 8U |
+         static_cast<std::uint32_t>(bytes[offset + 2U]) << 16U |
+         static_cast<std::uint32_t>(bytes[offset + 3U]) << 24U;
+}
 
 void require(bool condition, const char *message) {
   // The shared module runner preserves the first ownership-boundary failure.
@@ -143,12 +154,32 @@ void network_plane_tests() {
   const auto capture = plane->prepared_capture();
   require(capture.size() > 28 && capture[0] == 0x0a && capture[1] == 0x0d,
           "multi-router capture did not produce a PCAPNG section");
+  std::vector<std::uint32_t> observed_interfaces;
+  for (std::size_t offset = 0; offset + 12U <= capture.size();) {
+    const auto length = capture_u32(capture, offset + 4U);
+    require(length >= 12U && offset + length <= capture.size(),
+            "network-plane capture emitted an invalid PCAPNG block");
+    if (capture_u32(capture, offset) == 6U)
+      observed_interfaces.push_back(capture_u32(capture, offset + 8U));
+    offset += length;
+  }
+  require(observed_interfaces.size() >= 4U &&
+              observed_interfaces[0] == 2U &&
+              observed_interfaces[1] == 0U &&
+              observed_interfaces[2] == 1U &&
+              observed_interfaces[3] == 3U,
+          "capture tap order did not follow egress, link, ingress and CPM");
 
   auto checkpoint = std::make_unique<NetworkPlaneCheckpoint>(
       network_checkpoint(*plane, origin + std::chrono::milliseconds{1}));
   require(checkpoint->routers.size() == 2 &&
               checkpoint->fabric.links.size() == 1 &&
-              checkpoint->capture.records.size() == 8 &&
+              std::accumulate(checkpoint->capture.points.begin(),
+                              checkpoint->capture.points.end(),
+                              std::uint64_t{0},
+                              [](auto total, const auto &point) {
+                                return total + point.received;
+                              }) == 8U &&
               checkpoint->capture_points.size() == 4,
           "network-plane barrier omitted an owner-local checkpoint domain");
   plane.reset();
