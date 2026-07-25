@@ -22,7 +22,7 @@ Above the network layer the runtime carries a real transport and a set of host a
 
 Live traffic can be captured at link, ingress, egress and CPM points and exported as PCAPNG that `tshark` opens cleanly. A project saves to `.netsim` as portable intent or as a full structural checkpoint, and import is locked to the matching profile.
 
-Routers and hosts are dragged onto the canvas, and a link picks its physical ports when you connect it. The topology, inspector, sidebar and terminal panels resize on desktop. The terminal recalculates its row and column geometry from the available panel rectangle, so long prompts reflow instead of being clipped when neighboring panels change width. Below 900px the sidebar folds into a drawer and the inspector into an overlay.
+Routers and hosts are dragged onto the canvas, and a link picks its physical ports when you connect it. Device and link graphics remain visually stable while they are hovered or selected. The built-in black theme is declared to the browser before styles load, so native controls and accessibility extensions recognize that the page is already dark. The topology, inspector, sidebar and terminal panels resize on desktop. The terminal recalculates its row and column geometry from the available panel rectangle, so long prompts reflow instead of being clipped when neighboring panels change width. Below 900px the sidebar folds into a drawer and the inspector into an overlay.
 
 ## Architecture
 

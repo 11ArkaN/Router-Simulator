@@ -272,9 +272,65 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
       return <div className="hardware-slot" key={card.slot}>
         <div className="slot-head"><span>SLOT {card.slot}</span><StatePill up={Boolean(card.admin === "up" && card.equippedType && card.equippedType === card.provisionedType)}>{card.equippedType ? card.equippedType === card.provisionedType ? card.admin === "up" ? "ready" : "shutdown" : "mismatch" : "absent"}</StatePill></div>
         <strong>{card.equippedType ?? "No line card"}</strong>
-        <div className="button-pair"><select disabled={profile.fixed} value={card.provisionedType ?? ""} onChange={(event) => setCard(router.id, card.slot, event.target.value || null, card.equippedType)}><option value="">Not provisioned</option>{compatible.map((item) => <option key={item.type}>{item.type}</option>)}</select><select disabled={profile.fixed} value={card.equippedType ?? ""} onChange={(event) => setCard(router.id, card.slot, card.provisionedType, event.target.value || null)}><option value="">Absent</option>{compatible.map((item) => <option key={item.type}>{item.type}</option>)}</select></div>
+        {/* Provisioned and equipped types are intentionally separate. SR OS
+            configuration may reserve a slot before hardware is inserted, and
+            the runtime must expose a mismatch instead of silently repairing it. */}
+        <div className="hardware-type-pair">
+          <label>Provisioned type<select disabled={profile.fixed}
+            value={card.provisionedType ?? ""}
+            onChange={(event) => setCard(router.id, card.slot,
+              event.target.value || null, card.equippedType)}>
+            <option value="">Not provisioned</option>
+            {compatible.map((item) => <option key={item.type}>{item.type}</option>)}
+          </select></label>
+          <label>Equipped type<select disabled={profile.fixed}
+            value={card.equippedType ?? ""}
+            onChange={(event) => setCard(router.id, card.slot,
+              card.provisionedType, event.target.value || null)}>
+            <option value="">Absent</option>
+            {compatible.map((item) => <option key={item.type}>{item.type}</option>)}
+          </select></label>
+        </div>
         <label className="hardware-admin">Administrative state<select disabled={profile.fixed || !card.provisionedType} value={card.admin} onChange={(event) => setCardAdmin(router.id, card.slot, event.target.value === "up")}><option value="down">down</option><option value="up">up</option></select></label>
-        {card.mdas.slice(0, selectedCard?.mda_slots ?? 0).map((mda) => <div className="mda-editor" key={mda.slot}><div className="slot-head"><span>MDA {card.slot}/{mda.slot}</span><StatePill up={mda.admin === "up" && Boolean(mda.equippedType && mda.equippedType === mda.provisionedType)}>{mda.equippedType ? mda.equippedType === mda.provisionedType ? mda.admin === "up" ? "ready" : "shutdown" : "mismatch" : "absent"}</StatePill></div><div className="button-pair"><select disabled={profile.fixed} value={mda.provisionedType ?? ""} onChange={(event) => setMda(router.id, card.slot, mda.slot, event.target.value || null, mda.equippedType)}><option value="">Not provisioned</option>{selectedCard?.mdas.map((type) => <option key={type}>{type}</option>)}</select><select disabled={profile.fixed} value={mda.equippedType ?? ""} onChange={(event) => setMda(router.id, card.slot, mda.slot, mda.provisionedType, event.target.value || null)}><option value="">Absent</option>{selectedCard?.mdas.map((type) => <option key={type}>{type}</option>)}</select></div><label className="hardware-admin">Administrative state<select disabled={profile.fixed || !mda.provisionedType} value={mda.admin} onChange={(event) => setMdaAdmin(router.id, card.slot, mda.slot, event.target.value === "up")}><option value="down">down</option><option value="up">up</option></select></label></div>)}
+        {card.mdas.slice(0, selectedCard?.mda_slots ?? 0).map((mda) =>
+          <div className="mda-editor" key={mda.slot}>
+            <div className="slot-head"><span>MDA {card.slot}/{mda.slot}</span>
+              <StatePill up={mda.admin === "up" && Boolean(mda.equippedType &&
+                mda.equippedType === mda.provisionedType)}>
+                {mda.equippedType ? mda.equippedType === mda.provisionedType
+                  ? mda.admin === "up" ? "ready" : "shutdown"
+                  : "mismatch" : "absent"}
+              </StatePill>
+            </div>
+            {/* An MDA follows the same configured-versus-inserted contract as
+                its parent card. Keeping both controls visible makes physical
+                replacement and deliberate mismatch testing possible. */}
+            <div className="hardware-type-pair">
+              <label>Provisioned type<select disabled={profile.fixed}
+                value={mda.provisionedType ?? ""}
+                onChange={(event) => setMda(router.id, card.slot, mda.slot,
+                  event.target.value || null, mda.equippedType)}>
+                <option value="">Not provisioned</option>
+                {selectedCard?.mdas.map((type) =>
+                  <option key={type}>{type}</option>)}
+              </select></label>
+              <label>Equipped type<select disabled={profile.fixed}
+                value={mda.equippedType ?? ""}
+                onChange={(event) => setMda(router.id, card.slot, mda.slot,
+                  mda.provisionedType, event.target.value || null)}>
+                <option value="">Absent</option>
+                {selectedCard?.mdas.map((type) =>
+                  <option key={type}>{type}</option>)}
+              </select></label>
+            </div>
+            <label className="hardware-admin">Administrative state<select
+              disabled={profile.fixed || !mda.provisionedType}
+              value={mda.admin}
+              onChange={(event) => setMdaAdmin(router.id, card.slot, mda.slot,
+                event.target.value === "up")}>
+              <option value="down">down</option><option value="up">up</option>
+            </select></label>
+          </div>)}
       </div>;
     })}</>;
     if (tab === "ports") return <div className="ports-summary"><div className="panel-kicker">PHYSICAL PORTS</div>{live?.ports.length ? live.ports.map((port) => {
