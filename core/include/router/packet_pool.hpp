@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <vector>
 
@@ -27,6 +28,7 @@ public:
 
   PacketPool()
       : slots_(capacity), free_(slots_.size()),
+        references_(slots_.size()),
         free_count_(slots_.size()) {
     // The free-list vector is sized, not merely reserved. Allocation and
     // release therefore mutate an index and never call the heap on the packet
@@ -44,6 +46,7 @@ public:
       return std::nullopt;
     const auto handle = free_[--free_count_];
     packet::copy_frame(slots_[handle], frame);
+    references_[handle] = 1U;
     return handle;
   }
 
@@ -53,10 +56,26 @@ public:
     return slots_[handle];
   }
 
-  // release must be called exactly once after the final owning queue pops the
-  // handle. A pre-sized free list makes the noexcept contract real instead of
-  // relying on std::vector capacity as an undocumented allocation invariant.
+  // retain adds one immutable consumer before a shared frame handle is copied
+  // into another queue. The 16-bit counter exceeds the maximum generated
+  // switch fanout while avoiding an atomic operation: one link/switch shard is
+  // the sole owner of this pool and all references remain in its local queues.
+  [[nodiscard]] bool retain(PacketHandle handle) noexcept {
+    if (handle >= references_.size() || references_[handle] == 0U ||
+        references_[handle] ==
+            std::numeric_limits<std::uint16_t>::max())
+      return false;
+    ++references_[handle];
+    return true;
+  }
+
+  // release removes one consumer reference. Only the last release returns the
+  // slot to the pre-sized free list, so switch flooding shares one immutable
+  // frame image without copying its jumbo envelope for every egress.
   void release(PacketHandle handle) noexcept {
+    assert(handle < references_.size() && references_[handle] != 0U);
+    if (--references_[handle] != 0U)
+      return;
     assert(free_count_ < free_.size());
     free_[free_count_++] = handle;
   }
@@ -67,6 +86,7 @@ private:
   // pointers never enter shared ABI or persisted state.
   std::vector<packet::Frame> slots_;
   std::vector<PacketHandle> free_;
+  std::vector<std::uint16_t> references_;
   std::size_t free_count_{};
 };
 

@@ -3,6 +3,10 @@ release: 26.7.R1
 limits:
   routers: 16
   hosts: 16
+  # Switches are runtime topology owners, not emulated SR OS systems. The
+  # project-format 5 resource contract admits one independent broadcast-domain
+  # bridge per router without claiming a Nokia hardware platform limit.
+  switches: 16
   links: 64
   sessions_per_router: 4
 runtime:
@@ -29,10 +33,14 @@ runtime:
   # Includes every eagerly allocated host UDP, IPv4 reassembly, IPv6
   # reassembly and source-packet arena for the maximum 16-host topology. The
   # build-time proof rejects this value if later owners exceed it.
-  runtime_control_reserve_bytes: 41943040
+  # Includes the complete fixed OSPF forwarding/control SPSC packet channels
+  # in addition to endpoint protocol arenas. This is an emulator memory
+  # reservation within the Wasm maximum, not a Nokia hardware scale value.
+  runtime_control_reserve_bytes: 67108864
   # Host CPU policy counts the Wasm control owner as a worker domain. At low
-  # core counts forwarding and link work share one pthread. Larger hosts split
-  # the medium and add forwarding owners without creating one Worker per node.
+  # core counts forwarding and link work share one pthread. OSPF remains a
+  # separate protocol owner at every tier because its LSDB and neighbor state
+  # must never migrate onto the UI-facing control owner or packet owner.
   low_cpu_max: 4
   medium_cpu_max: 8
   low_control_shards: 1
@@ -44,11 +52,14 @@ runtime:
   low_link_shards: 0
   medium_link_shards: 1
   high_link_shards: 1
-  pthread_pool_low: 1
-  pthread_pool_medium: 3
-  pthread_pool_high: 5
-  maximum_worker_domains: 6
-  worker_startup_attempts: 200
+  pthread_pool_low: 2
+  pthread_pool_medium: 4
+  pthread_pool_high: 6
+  maximum_worker_domains: 7
+  # Chromium may still be retiring the previous page's pthread Workers during
+  # an intentional reload. The startup gate remains fail-closed, but permits
+  # the new fixed pool to publish both distinct owners for up to ten seconds.
+  worker_startup_attempts: 1000
   worker_startup_poll_milliseconds: 10
   # UI projections read shared counters at a human display rate. Packet and
   # protocol work never schedules React updates directly.
@@ -74,6 +85,9 @@ runtime:
   # deadline; this is a host scheduling policy, not simulated time.
   immediate_link_deadline_nanoseconds: 74000
   static_routes_per_router: 64
+  # Dynamic route capacity is an emulator resource bound shared by protocol
+  # candidates. It is not an SR OS platform scale statement.
+  dynamic_routes_per_router: 8192
   # SR OS 26.7 accepts configure router ecmp values from 1 through 128. The
   # configured ceiling may exceed this emulator's current static-route arena;
   # it still remains the correct routing-instance value for future protocols.
@@ -216,6 +230,25 @@ runtime:
   # fairness contract and is deliberately separate from the ring capacity.
   network_command_work_budget: 64
   forwarding_ring_frames: 64
+  # OSPF packet ownership crosses a dedicated SPSC channel between one
+  # forwarding owner and one protocol owner. These capacities bound emulator
+  # memory and scheduling work; they are not Nokia platform scale claims.
+  ospf_packet_ring_frames: 256
+  ospf_lsas_per_instance: 4096
+  ospf_vertices_per_area: 2048
+  ospf_edges_per_area: 8192
+  ospf_neighbors_per_interface: 256
+  ospf_work_budget_packets: 64
+  # The release exposes OSPFv2 instances 0 through 31. OSPFv3 uses 0 through
+  # 31 for IPv6 and 64 through 95 for the IPv4 address family.
+  ospf_v2_instances_per_router: 32
+  ospf_v3_instances_per_router: 64
+  ospf_v2_instance_first: 0
+  ospf_v2_instance_last: 31
+  ospf_v3_ipv6_instance_first: 0
+  ospf_v3_ipv6_instance_last: 31
+  ospf_v3_ipv4_instance_first: 64
+  ospf_v3_ipv4_instance_last: 95
   # Candidate change keys are emulator metadata used for conflict detection.
   # A private candidate can remain open while other sessions commit thousands
   # of distinct paths, so the router history must outlive those commits. This
@@ -241,6 +274,29 @@ ethernet:
   # protocol floor shared by project validation and the native endpoint owner.
   minimum_host_ipv6_mtu: 1280
   default_host_ipv4_mtu: 1500
+# The switch is deliberately vendor-neutral. Its physical and forwarding
+# dimensions are project profile data rather than UI-created ports or SR OS
+# platform claims.
+switch_profiles:
+  - id: generic-ethernet-24
+    display_name: Ethernet Switch 24
+    port_count: 24
+    supported_speeds_mbps: [1000, 10000]
+    default_speed_mbps: 10000
+    minimum_mtu: 68
+    maximum_mtu: 9212
+    # This virtual hardware profile ships with every physical port enabled and
+    # accepting the full profile MTU. These are explicit device defaults, not
+    # values inferred from the first cable attached by the UI.
+    default_mtu: 9212
+    default_admin_enabled: true
+    queue_frames_per_port: 256
+    fdb_entries: 4096
+    fdb_aging_seconds: 300
+    # The first switch profile implements one untagged IEEE 802.1D forwarding
+    # domain. VLAN-aware forwarding will introduce an explicit domain table
+    # instead of allowing the UI to invent a count from attached cables.
+    untagged_broadcast_domains: 1
 ipsec:
   # Sources: RFC 5282, RFC 7296, RFC 8221 and the SR OS 26.7 IPsec MD-CLI
   # command reference. Entries remain invisible until implemented is true.
@@ -331,6 +387,51 @@ tls:
     - { sros: tls-ed448, openssl: ed448, pqc: false }
     - { sros: tls-ml-dsa87, openssl: mldsa87, pqc: true }
 protocol_defaults:
+  # RFC 2328 section 9 and the SR OS 26.7 interface command defaults. A
+  # configured metric of zero means no explicit metric. The operational cost
+  # is then calculated from reference bandwidth and actual interface speed.
+  ospf_hello_interval_seconds: 10
+  ospf_dead_interval_seconds: 40
+  ospf_retransmit_interval_seconds: 5
+  ospf_transmit_delay_seconds: 1
+  # These bounds come from the 26.7 base-router interface and virtual-link
+  # command references. Keeping them in the release profile prevents parser
+  # code from silently imposing a different platform range.
+  ospf_hello_interval_minimum_seconds: 1
+  ospf_hello_interval_maximum_seconds: 65535
+  ospf_dead_interval_minimum_seconds: 2
+  ospf_dead_interval_maximum_seconds: 65535
+  ospf_retransmit_interval_minimum_seconds: 1
+  ospf_retransmit_interval_maximum_seconds: 1800
+  ospf_transmit_delay_minimum_seconds: 1
+  ospf_transmit_delay_maximum_seconds: 1800
+  # SR OS reports 120 seconds as the default interval between Hellos sent to
+  # an inactive neighbor on an NBMA interface.
+  ospf_poll_interval_seconds: 120
+  ospf_interface_cost: 0
+  # RFC 2328 permits 0 through 255. SR OS defaults an OSPF interface to
+  # election priority 1, while 0 makes the router ineligible for DR or BDR.
+  ospf_interface_priority: 1
+  ospf_interface_metric_minimum: 1
+  ospf_interface_metric_maximum: 65535
+  # SR OS stores this leaf in kb/s. The 100,000,000 kb/s default is 100 Gb/s.
+  ospf_reference_bandwidth_kbps: 100000000
+  ospf_router_preference: 10
+  ospf_external_preference: 150
+  # SR OS 26.7.R1 configure router ospf|ospf3 timers defaults. The process
+  # applies the documented exponential backoff and 10/100 ms granularity.
+  ospf_spf_initial_wait_milliseconds: 1000
+  ospf_spf_second_wait_milliseconds: 1000
+  ospf_spf_maximum_wait_milliseconds: 10000
+  ospf_lsa_initial_wait_milliseconds: 5000
+  ospf_lsa_second_wait_milliseconds: 5000
+  ospf_lsa_maximum_wait_milliseconds: 5000
+  # RFC 2328 section 14 owns these protocol timing constants. They are kept
+  # visible to generation so tests and runtime cannot silently disagree.
+  ospf_lsa_refresh_seconds: 1800
+  ospf_lsa_max_age_seconds: 3600
+  ospf_min_lsa_interval_seconds: 5
+  ospf_min_ls_arrival_seconds: 1
   # The Base router interface commands expose this complete range. Zero is a
   # real value which disables dynamic ARP aging, not an absent-value sentinel.
   arp_timeout_minimum_seconds: 0

@@ -55,6 +55,14 @@ parse_interface_address(std::string_view address,
 // path semantics as the fully tested terminal engine.
 [[nodiscard]] std::string resolve_session_input(const CliSession &session,
                                                 std::string_view input);
+// Stores a validated classic present-working-context after the runtime facade
+// has successfully applied a command that both creates and enters a list
+// instance. This narrow session-only operation cannot mutate configuration.
+// Preconditions: control-shard affinity and a canonical resolved command path.
+// Postcondition: the classic path and reversible previous path are updated
+// together, or neither changes when the bounded session storage is exceeded.
+[[nodiscard]] bool enter_classic_context(CliSession &session,
+                                         std::string_view path) noexcept;
 
 template <std::size_t N>
 bool copy_config_text(std::array<char, N> &destination,

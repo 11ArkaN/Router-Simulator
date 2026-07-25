@@ -1,4 +1,4 @@
-// Whole-laboratory checkpoint ABI 6. The codec serializes only explicit value
+// Whole-laboratory checkpoint ABI 7. The codec serializes only explicit value
 // fields in little-endian order. Runtime pointers, padding, pthread identities
 // and steady-clock epochs never cross this boundary.
 
@@ -11,9 +11,9 @@
 #include <span>
 #include <vector>
 
-namespace router::lab::checkpoint_v6 {
+namespace router::lab::checkpoint_v7 {
 
-inline constexpr std::uint32_t abi = 6;
+inline constexpr std::uint32_t abi = 7;
 inline constexpr std::uint64_t schema_hash =
     device_catalog::checkpoint_schema_hash;
 
@@ -22,4 +22,4 @@ encode(const RuntimeSupervisorCheckpoint &state);
 [[nodiscard]] std::unique_ptr<RuntimeSupervisorCheckpoint>
 decode(std::span<const std::uint8_t> bytes);
 
-} // namespace router::lab::checkpoint_v6
+} // namespace router::lab::checkpoint_v7

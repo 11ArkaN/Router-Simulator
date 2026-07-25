@@ -12,12 +12,16 @@ const sourcePath = resolve(root, "profiles/catalog/26.7.R1.yaml");
 const typescriptPath = resolve(root, "packages/contracts/src/generated-device-catalog.ts");
 const headerPath = resolve(root, "core/include/router/generated_device_catalog.hpp");
 const protocolSourcePath = resolve(root, "schemas/runtime/4.yaml");
-const checkpointSourcePath = resolve(root, "schemas/checkpoint/6.yaml");
 const protocolHeaderPath = resolve(root, "core/include/router/generated_lab_runtime_protocol.hpp");
 const protocolTypescriptPath = resolve(root, "packages/contracts/src/generated-lab-runtime-protocol.ts");
 const cmakePath = resolve(root, "core/generated-device-catalog.cmake");
 const catalog = parse(readFileSync(sourcePath, "utf8"));
 const protocol = parse(readFileSync(protocolSourcePath, "utf8"));
+// The browser snapshot and binary continuity checkpoint are independent
+// contracts. A JSON projection can gain a field without changing native
+// memory layout, so the runtime schema names both versions explicitly.
+const checkpointSourcePath = resolve(
+  root, "schemas/checkpoint", `${protocol.checkpoint_abi}.yaml`);
 const checkpoint = parse(readFileSync(checkpointSourcePath, "utf8"));
 
 // Sorting object keys makes hashes insensitive to YAML presentation while
@@ -55,16 +59,38 @@ const cppBoolean = (value) => value ? "true" : "false";
 // make hardware validation appear authoritative while accepting combinations
 // that never existed in one SR OS image.
 if (catalog.release !== "26.7.R1") fail("release must match the pinned baseline");
-if (protocol.version !== 4 || protocol.snapshot_abi !== 6 ||
-    !protocol.operations || checkpoint.version !== 6)
-  fail("runtime protocol 4, snapshot ABI 6 and checkpoint schema 6 are required");
+if (protocol.version !== 4 || protocol.snapshot_abi !== 8 ||
+    protocol.telemetry_abi !== 6 ||
+    protocol.checkpoint_abi !== 7 ||
+    !protocol.operations || checkpoint.version !== 7)
+  fail("runtime protocol 4, snapshot ABI 8, telemetry ABI 6 and checkpoint schema 7 are required");
 for (const [name, value] of Object.entries(catalog.limits ?? {})) exactInteger(value, `limits.${name}`, 1);
 if (catalog.limits.routers !== 16 || catalog.limits.hosts !== 16 ||
+    catalog.limits.switches !== 16 ||
     catalog.limits.links !== 64 || catalog.limits.sessions_per_router !== 4) {
-  fail("laboratory limits do not match project format 4");
+  fail("laboratory limits do not match project format 5");
 }
 for (const [name, value] of Object.entries(catalog.runtime ?? {}))
-  exactInteger(value, `runtime.${name}`, name === "low_link_shards" ? 0 : 1);
+  exactInteger(value, `runtime.${name}`,
+    name === "low_link_shards" ||
+    name === "ospf_v2_instance_first" ||
+    name === "ospf_v3_ipv6_instance_first" ? 0 : 1);
+if (!Array.isArray(catalog.switch_profiles) ||
+    catalog.switch_profiles.length === 0)
+  fail("at least one switch profile is required");
+for (const [index, profile] of catalog.switch_profiles.entries()) {
+  for (const name of ["port_count", "default_speed_mbps", "minimum_mtu",
+    "maximum_mtu", "default_mtu", "queue_frames_per_port", "fdb_entries",
+    "fdb_aging_seconds", "untagged_broadcast_domains"])
+    exactInteger(profile[name], `switch_profiles.${index}.${name}`, 1);
+  if (!profile.id || !profile.display_name ||
+      !Array.isArray(profile.supported_speeds_mbps) ||
+      !profile.supported_speeds_mbps.includes(profile.default_speed_mbps) ||
+      typeof profile.default_admin_enabled !== "boolean" ||
+      profile.minimum_mtu > profile.default_mtu ||
+      profile.default_mtu > profile.maximum_mtu)
+    fail(`switch_profiles.${index} is inconsistent`);
+}
 // Missing fields must fail generation instead of becoming undefined in the
 // TypeScript catalog and malformed numeric tokens in the C++ projection.
 for (const name of ["wasm_initial_memory_bytes", "wasm_maximum_memory_bytes",
@@ -73,7 +99,8 @@ for (const name of ["wasm_initial_memory_bytes", "wasm_maximum_memory_bytes",
   "runtime_control_reserve_bytes",
   "recovery_checkpoint_interval_milliseconds",
   "continuity_loss_threshold_milliseconds",
-  "link_queue_frames", "fabric_work_budget_frames", "static_routes_per_router", "maximum_ecmp_paths", "arp_entries_per_router",
+  "link_queue_frames", "fabric_work_budget_frames", "static_routes_per_router",
+  "dynamic_routes_per_router", "maximum_ecmp_paths", "arp_entries_per_router",
   "static_arp_entries_per_router",
   "pending_ipv4_frames_per_router", "ipv6_neighbor_entries_per_router",
   "ipv6_destination_entries_per_endpoint",
@@ -128,7 +155,14 @@ for (const name of ["wasm_initial_memory_bytes", "wasm_maximum_memory_bytes",
   "nd_work_budget_actions", "network_command_ring_entries",
   "network_result_ring_entries", "network_command_work_budget",
   "immediate_link_deadline_nanoseconds",
-  "forwarding_ring_frames",
+  "forwarding_ring_frames", "ospf_packet_ring_frames",
+  "ospf_lsas_per_instance", "ospf_vertices_per_area",
+  "ospf_edges_per_area", "ospf_neighbors_per_interface",
+  "ospf_work_budget_packets", "ospf_v2_instances_per_router",
+  "ospf_v3_instances_per_router", "ospf_v2_instance_first",
+  "ospf_v2_instance_last", "ospf_v3_ipv6_instance_first",
+  "ospf_v3_ipv6_instance_last", "ospf_v3_ipv4_instance_first",
+  "ospf_v3_ipv4_instance_last",
   "low_cpu_max", "medium_cpu_max", "low_control_shards",
   "medium_control_shards", "high_control_shards", "low_forwarding_shards",
   "medium_forwarding_shards", "high_forwarding_shards", "low_link_shards",
@@ -144,17 +178,36 @@ if (catalog.runtime.low_cpu_max >= catalog.runtime.medium_cpu_max ||
     catalog.runtime.medium_link_shards !== 1 ||
     catalog.runtime.high_link_shards !== 1 ||
     catalog.runtime.pthread_pool_low !==
-      catalog.runtime.low_control_shards + catalog.runtime.low_forwarding_shards - 1 ||
+      catalog.runtime.low_control_shards + catalog.runtime.low_forwarding_shards ||
     catalog.runtime.pthread_pool_medium !==
       catalog.runtime.medium_control_shards + catalog.runtime.medium_forwarding_shards +
-      catalog.runtime.medium_link_shards - 1 ||
+      catalog.runtime.medium_link_shards ||
     catalog.runtime.pthread_pool_high !==
       catalog.runtime.high_control_shards + catalog.runtime.high_forwarding_shards +
-      catalog.runtime.high_link_shards - 1 ||
+      catalog.runtime.high_link_shards ||
     catalog.runtime.maximum_worker_domains <
       catalog.runtime.high_control_shards + catalog.runtime.high_forwarding_shards +
-      catalog.runtime.high_link_shards) {
+      catalog.runtime.high_link_shards + 1) {
+  // Every pool expression includes one dedicated OSPF owner. The browser
+  // Worker remains the primary control owner and does not consume a pool slot.
   fail("runtime shard counts and pthread pools are inconsistent");
+}
+if (catalog.runtime.ospf_v2_instances_per_router !== 32 ||
+    catalog.runtime.ospf_v3_instances_per_router !== 64 ||
+    catalog.runtime.ospf_v2_instance_last -
+        catalog.runtime.ospf_v2_instance_first + 1 !==
+      catalog.runtime.ospf_v2_instances_per_router ||
+    catalog.runtime.ospf_v3_ipv6_instance_last -
+        catalog.runtime.ospf_v3_ipv6_instance_first + 1 +
+        catalog.runtime.ospf_v3_ipv4_instance_last -
+        catalog.runtime.ospf_v3_ipv4_instance_first + 1 !==
+      catalog.runtime.ospf_v3_instances_per_router ||
+    catalog.runtime.ospf_edges_per_area < catalog.runtime.ospf_vertices_per_area ||
+    catalog.runtime.ospf_work_budget_packets > catalog.runtime.ospf_packet_ring_frames) {
+  // Instance counts are release-visible configuration ranges. The remaining
+  // relations ensure a generated emulator profile cannot ask one owner turn
+  // to consume more handles than its channel can contain.
+  fail("OSPF instance or bounded owner capacities are inconsistent");
 }
 if (catalog.runtime.recovery_checkpoint_interval_milliseconds <
       catalog.runtime.telemetry_publish_interval_milliseconds ||
@@ -283,9 +336,11 @@ if (catalog.tls.default_admin_state !== "disable" ||
     catalog.tls.default_revocation_secondary !== "none")
   fail("TLS defaults do not match SR OS 26.7.R1");
 for (const [name, value] of Object.entries(catalog.protocol_defaults ?? {})) {
-  // SR OS deliberately assigns zero to ARP timeout as the disable-aging
-  // value. Every other generated protocol scalar remains strictly positive.
-  const minimum = name === "arp_timeout_minimum_seconds" ? 0 : 1;
+  // Zero has source-defined meaning for a small set of leaves. ARP zero
+  // disables aging, while OSPF metric zero represents an absent explicit
+  // metric and selects reference-bandwidth calculation.
+  const minimum = name === "arp_timeout_minimum_seconds" ||
+    name === "ospf_interface_cost" ? 0 : 1;
   exactInteger(value, `protocol_defaults.${name}`, minimum);
 }
 if (catalog.protocol_defaults.arp_timeout_minimum_seconds !== 0 ||
@@ -296,6 +351,25 @@ if (catalog.protocol_defaults.arp_timeout_minimum_seconds !== 0 ||
     catalog.protocol_defaults.dynamic_arp_retry_deciseconds >
       catalog.protocol_defaults.arp_retry_maximum_deciseconds) {
   fail("ARP defaults are outside the SR OS 26.7.R1 command ranges");
+}
+if (catalog.protocol_defaults.ospf_dead_interval_seconds <
+      catalog.protocol_defaults.ospf_hello_interval_seconds ||
+    catalog.protocol_defaults.ospf_spf_initial_wait_milliseconds >
+      catalog.protocol_defaults.ospf_spf_maximum_wait_milliseconds ||
+    catalog.protocol_defaults.ospf_spf_second_wait_milliseconds >
+      catalog.protocol_defaults.ospf_spf_maximum_wait_milliseconds ||
+    catalog.protocol_defaults.ospf_lsa_initial_wait_milliseconds >
+      catalog.protocol_defaults.ospf_lsa_maximum_wait_milliseconds ||
+    catalog.protocol_defaults.ospf_lsa_second_wait_milliseconds >
+      catalog.protocol_defaults.ospf_lsa_maximum_wait_milliseconds ||
+    catalog.protocol_defaults.ospf_lsa_refresh_seconds >=
+      catalog.protocol_defaults.ospf_lsa_max_age_seconds ||
+    catalog.protocol_defaults.ospf_min_lsa_interval_seconds <
+      catalog.protocol_defaults.ospf_min_ls_arrival_seconds) {
+  // These are protocol invariants, not merely preferred defaults. Violating
+  // them would make neighbors expire before a Hello cadence or make refresh
+  // occur only after an LSA has already reached MaxAge.
+  fail("OSPF timer defaults violate RFC 2328 ordering");
 }
 if (catalog.protocol_defaults.tcp_rto_initial_milliseconds <
       catalog.protocol_defaults.tcp_rto_minimum_milliseconds ||
@@ -457,6 +531,10 @@ const maximumCardSlots = Math.max(...catalog.profiles.map((profile) =>
   profile.fixed ? 1 : profile.card_slots));
 const maximumActiveCapturePoints = catalog.limits.links * 2 +
   catalog.limits.routers * (maximumPortsPerRouter * 2 + 1);
+const maximumSwitchPorts = Math.max(...catalog.switch_profiles.map(
+  (profile) => profile.port_count));
+const maximumSwitchQueueFrames = Math.max(...catalog.switch_profiles.map(
+  (profile) => profile.queue_frames_per_port));
 if (catalog.runtime.maximum_active_capture_points !== maximumActiveCapturePoints)
   fail("runtime.maximum_active_capture_points does not cover the generated topology");
 
@@ -498,6 +576,12 @@ const profileRows = catalog.profiles.map((profile) => {
   const defaults = [...profile.default_hardware.mdas, "", ""].slice(0, 2);
   return `    {${cppString(profile.id)}, ${cppString(profile.chassis)}, ${cppString(catalog.release)}, ${profile.fixed}, ${profile.card_slots}, ${firstCard}, ${profile.cards.length}, ${cppString(profile.control.slot)}, ${cppString(profile.control.types[0])}, ${cppString(profile.default_hardware.card)}, {${cppString(defaults[0])}, ${cppString(defaults[1])}}, ${profileMaximumPorts.get(profile.id)}}`;
 }).join(",\n");
+const switchRows = catalog.switch_profiles.map((profile) => {
+  // Four profile speeds cover the current catalog without making every switch
+  // port carry a dynamic container in shared memory.
+  const speeds = [...profile.supported_speeds_mbps, 0, 0, 0, 0].slice(0, 4);
+  return `    {${cppString(profile.id)}, ${cppString(profile.display_name)}, ${profile.port_count}, ${profile.supported_speeds_mbps.length}, {{${speeds.map((speed) => `${speed}U`).join(", ")}}}, ${profile.default_speed_mbps}U, ${profile.minimum_mtu}U, ${profile.maximum_mtu}U, ${profile.default_mtu}U, ${cppBoolean(profile.default_admin_enabled)}, ${profile.queue_frames_per_port}U, ${profile.fdb_entries}U, std::chrono::seconds{${profile.fdb_aging_seconds}}, ${profile.untagged_broadcast_domains}U}`;
+}).join(",\n");
 
 const header = `#pragma once
 
@@ -508,6 +592,7 @@ const header = `#pragma once
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 namespace router::device_catalog {
@@ -516,6 +601,23 @@ struct TlsAlgorithmName {
   std::string_view sros;
   std::string_view openssl;
   bool pqc{};
+};
+
+struct EthernetSwitchProfile {
+  std::string_view id;
+  std::string_view display_name;
+  std::uint16_t port_count{};
+  std::uint8_t speed_count{};
+  std::array<std::uint32_t, 4> supported_speeds_mbps{};
+  std::uint32_t default_speed_mbps{};
+  std::uint16_t minimum_mtu{};
+  std::uint16_t maximum_mtu{};
+  std::uint16_t default_mtu{};
+  bool default_admin_enabled{};
+  std::uint16_t queue_frames_per_port{};
+  std::uint32_t fdb_entries{};
+  std::chrono::seconds fdb_aging{};
+  std::uint16_t untagged_broadcast_domains{};
 };
 
 // One release owns this entire generated catalog. Runtime capability output
@@ -528,13 +630,17 @@ inline constexpr std::uint64_t build_hash = 0x${buildHash}ULL;
 
 inline constexpr std::size_t maximum_routers = ${catalog.limits.routers};
 inline constexpr std::size_t maximum_hosts = ${catalog.limits.hosts};
+inline constexpr std::size_t maximum_switches = ${catalog.limits.switches};
 inline constexpr std::size_t maximum_links = ${catalog.limits.links};
 inline constexpr std::size_t maximum_sessions_per_router = ${catalog.limits.sessions_per_router};
 inline constexpr std::size_t maximum_ports_per_router = ${maximumPortsPerRouter};
 inline constexpr std::size_t maximum_card_slots = ${maximumCardSlots};
 inline constexpr std::size_t maximum_mda_slots_per_card = ${maximumMdaSlotsPerCard};
 inline constexpr std::size_t maximum_ports_per_mda = ${maximumPortsPerMda};
+inline constexpr std::size_t maximum_switch_ports = ${maximumSwitchPorts};
+inline constexpr std::size_t maximum_switch_queue_frames = ${maximumSwitchQueueFrames};
 inline constexpr std::size_t maximum_static_routes_per_router = ${catalog.runtime.static_routes_per_router};
+inline constexpr std::size_t maximum_dynamic_routes_per_router = ${catalog.runtime.dynamic_routes_per_router};
 inline constexpr std::uint16_t maximum_ecmp_paths = ${catalog.runtime.maximum_ecmp_paths};
 inline constexpr std::size_t maximum_fib_routes_per_router =
     maximum_ports_per_router + maximum_static_routes_per_router;
@@ -649,6 +755,20 @@ inline constexpr std::size_t network_command_ring_entries = ${catalog.runtime.ne
 inline constexpr std::size_t network_result_ring_entries = ${catalog.runtime.network_result_ring_entries};
 inline constexpr std::size_t network_command_work_budget = ${catalog.runtime.network_command_work_budget};
 inline constexpr std::size_t forwarding_ring_frames = ${catalog.runtime.forwarding_ring_frames};
+inline constexpr std::size_t ospf_packet_ring_frames = ${catalog.runtime.ospf_packet_ring_frames};
+inline constexpr std::size_t ospf_lsas_per_instance = ${catalog.runtime.ospf_lsas_per_instance};
+inline constexpr std::size_t ospf_vertices_per_area = ${catalog.runtime.ospf_vertices_per_area};
+inline constexpr std::size_t ospf_edges_per_area = ${catalog.runtime.ospf_edges_per_area};
+inline constexpr std::size_t ospf_neighbors_per_interface = ${catalog.runtime.ospf_neighbors_per_interface};
+inline constexpr std::size_t ospf_work_budget_packets = ${catalog.runtime.ospf_work_budget_packets};
+inline constexpr std::size_t ospf_v2_instances_per_router = ${catalog.runtime.ospf_v2_instances_per_router};
+inline constexpr std::size_t ospf_v3_instances_per_router = ${catalog.runtime.ospf_v3_instances_per_router};
+inline constexpr std::uint8_t ospf_v2_instance_first = ${catalog.runtime.ospf_v2_instance_first};
+inline constexpr std::uint8_t ospf_v2_instance_last = ${catalog.runtime.ospf_v2_instance_last};
+inline constexpr std::uint8_t ospf_v3_ipv6_instance_first = ${catalog.runtime.ospf_v3_ipv6_instance_first};
+inline constexpr std::uint8_t ospf_v3_ipv6_instance_last = ${catalog.runtime.ospf_v3_ipv6_instance_last};
+inline constexpr std::uint8_t ospf_v3_ipv4_instance_first = ${catalog.runtime.ospf_v3_ipv4_instance_first};
+inline constexpr std::uint8_t ospf_v3_ipv4_instance_last = ${catalog.runtime.ospf_v3_ipv4_instance_last};
 inline constexpr std::size_t candidate_keys_per_router = ${catalog.runtime.candidate_keys_per_router};
 inline constexpr std::size_t candidate_keys_per_session = ${catalog.runtime.candidate_keys_per_session};
 inline constexpr std::size_t maximum_active_capture_points = ${catalog.runtime.maximum_active_capture_points};
@@ -686,6 +806,66 @@ ${catalog.tls.tls13_signatures.map((item) => `    {${cppString(item.sros)}, ${cp
 }};
 inline constexpr std::chrono::seconds dynamic_arp_timeout{
     ${catalog.protocol_defaults.dynamic_arp_timeout_seconds}};
+inline constexpr std::chrono::seconds ospf_hello_interval{
+    ${catalog.protocol_defaults.ospf_hello_interval_seconds}};
+inline constexpr std::chrono::seconds ospf_dead_interval{
+    ${catalog.protocol_defaults.ospf_dead_interval_seconds}};
+inline constexpr std::chrono::seconds ospf_retransmit_interval{
+    ${catalog.protocol_defaults.ospf_retransmit_interval_seconds}};
+inline constexpr std::chrono::seconds ospf_transmit_delay{
+    ${catalog.protocol_defaults.ospf_transmit_delay_seconds}};
+inline constexpr std::chrono::seconds ospf_hello_interval_minimum{
+    ${catalog.protocol_defaults.ospf_hello_interval_minimum_seconds}};
+inline constexpr std::chrono::seconds ospf_hello_interval_maximum{
+    ${catalog.protocol_defaults.ospf_hello_interval_maximum_seconds}};
+inline constexpr std::chrono::seconds ospf_dead_interval_minimum{
+    ${catalog.protocol_defaults.ospf_dead_interval_minimum_seconds}};
+inline constexpr std::chrono::seconds ospf_dead_interval_maximum{
+    ${catalog.protocol_defaults.ospf_dead_interval_maximum_seconds}};
+inline constexpr std::chrono::seconds ospf_retransmit_interval_minimum{
+    ${catalog.protocol_defaults.ospf_retransmit_interval_minimum_seconds}};
+inline constexpr std::chrono::seconds ospf_retransmit_interval_maximum{
+    ${catalog.protocol_defaults.ospf_retransmit_interval_maximum_seconds}};
+inline constexpr std::chrono::seconds ospf_transmit_delay_minimum{
+    ${catalog.protocol_defaults.ospf_transmit_delay_minimum_seconds}};
+inline constexpr std::chrono::seconds ospf_transmit_delay_maximum{
+    ${catalog.protocol_defaults.ospf_transmit_delay_maximum_seconds}};
+inline constexpr std::chrono::seconds ospf_poll_interval{
+    ${catalog.protocol_defaults.ospf_poll_interval_seconds}};
+inline constexpr std::uint32_t ospf_interface_cost =
+    ${catalog.protocol_defaults.ospf_interface_cost}U;
+inline constexpr std::uint8_t ospf_interface_priority =
+    ${catalog.protocol_defaults.ospf_interface_priority}U;
+inline constexpr std::uint32_t ospf_interface_metric_minimum =
+    ${catalog.protocol_defaults.ospf_interface_metric_minimum}U;
+inline constexpr std::uint32_t ospf_interface_metric_maximum =
+    ${catalog.protocol_defaults.ospf_interface_metric_maximum}U;
+inline constexpr std::uint32_t ospf_reference_bandwidth_kbps =
+    ${catalog.protocol_defaults.ospf_reference_bandwidth_kbps}U;
+inline constexpr std::uint32_t ospf_router_preference =
+    ${catalog.protocol_defaults.ospf_router_preference}U;
+inline constexpr std::uint32_t ospf_external_preference =
+    ${catalog.protocol_defaults.ospf_external_preference}U;
+inline constexpr std::chrono::milliseconds ospf_spf_initial_wait{
+    ${catalog.protocol_defaults.ospf_spf_initial_wait_milliseconds}};
+inline constexpr std::chrono::milliseconds ospf_spf_second_wait{
+    ${catalog.protocol_defaults.ospf_spf_second_wait_milliseconds}};
+inline constexpr std::chrono::milliseconds ospf_spf_maximum_wait{
+    ${catalog.protocol_defaults.ospf_spf_maximum_wait_milliseconds}};
+inline constexpr std::chrono::milliseconds ospf_lsa_initial_wait{
+    ${catalog.protocol_defaults.ospf_lsa_initial_wait_milliseconds}};
+inline constexpr std::chrono::milliseconds ospf_lsa_second_wait{
+    ${catalog.protocol_defaults.ospf_lsa_second_wait_milliseconds}};
+inline constexpr std::chrono::milliseconds ospf_lsa_maximum_wait{
+    ${catalog.protocol_defaults.ospf_lsa_maximum_wait_milliseconds}};
+inline constexpr std::chrono::seconds ospf_lsa_refresh{
+    ${catalog.protocol_defaults.ospf_lsa_refresh_seconds}};
+inline constexpr std::chrono::seconds ospf_lsa_max_age{
+    ${catalog.protocol_defaults.ospf_lsa_max_age_seconds}};
+inline constexpr std::chrono::seconds ospf_min_lsa_interval{
+    ${catalog.protocol_defaults.ospf_min_lsa_interval_seconds}};
+inline constexpr std::chrono::seconds ospf_min_ls_arrival{
+    ${catalog.protocol_defaults.ospf_min_ls_arrival_seconds}};
 inline constexpr std::uint32_t arp_timeout_minimum_seconds =
     ${catalog.protocol_defaults.arp_timeout_minimum_seconds}U;
 inline constexpr std::uint32_t arp_timeout_maximum_seconds =
@@ -865,6 +1045,33 @@ inline constexpr std::chrono::milliseconds ping_timeout{
 inline constexpr std::chrono::seconds checkpoint_max_relative_deadline{
     ${catalog.protocol_defaults.checkpoint_max_relative_deadline_seconds}};
 
+inline constexpr std::array<EthernetSwitchProfile, ${catalog.switch_profiles.length}> ethernet_switch_profiles{{
+${switchRows}
+}};
+
+[[nodiscard]] inline constexpr const EthernetSwitchProfile *
+find_ethernet_switch_profile(std::string_view id) noexcept {
+  for (const auto &profile : ethernet_switch_profiles)
+    if (profile.id == id)
+      return &profile;
+  return nullptr;
+}
+
+[[nodiscard]] inline constexpr std::optional<std::uint16_t>
+ethernet_switch_profile_index(std::string_view id) noexcept {
+  for (std::size_t index{}; index < ethernet_switch_profiles.size(); ++index)
+    if (ethernet_switch_profiles[index].id == id)
+      return static_cast<std::uint16_t>(index);
+  return std::nullopt;
+}
+
+[[nodiscard]] inline constexpr const EthernetSwitchProfile *
+ethernet_switch_profile(std::uint16_t index) noexcept {
+  return index < ethernet_switch_profiles.size()
+             ? &ethernet_switch_profiles[index]
+             : nullptr;
+}
+
 struct PortGroup {
   std::uint8_t count{};
   std::array<std::uint32_t, 2> speeds_mbps{};
@@ -977,7 +1184,7 @@ ${Object.entries(protocol.operations).map(([name, value]) =>
 `;
 const protocolTypescript = `// Generated browser names for runtime protocol 4.\n` +
 `export const LAB_RUNTIME_PROTOCOL = ${JSON.stringify({ version: protocol.version,
-  snapshotAbi: protocol.snapshot_abi,
+  snapshotAbi: protocol.snapshot_abi, telemetryAbi: protocol.telemetry_abi,
   ...protocol.operations }, null, 2)} as const;\n`;
 const cmake = `# Generated from profiles/catalog/26.7.R1.yaml. Do not edit.\n` +
   `set(ROUTER_WASM_STACK_BYTES ${catalog.runtime.wasm_stack_bytes})\n` +

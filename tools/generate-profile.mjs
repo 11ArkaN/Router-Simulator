@@ -436,6 +436,18 @@ for (const command of cliSchema.commands ?? []) {
     throw new Error(`${command.id}: invalid CLI engine list`);
   }
   if (!command.tokens?.length) throw new Error(`${command.id}: empty CLI token list`);
+  // Output modifiers are parser semantics shared by unrelated operational
+  // reports. They remain opt-in per documented command row: accepting
+  // `detail` globally would advertise syntax that the selected SR OS release
+  // does not support, while deriving the flag from the command ID would make
+  // execution depend on a naming convention rather than the release schema.
+  if (command.modifier !== undefined && command.modifier !== "detail") {
+    throw new Error(`${command.id}: invalid CLI output modifier ${command.modifier}`);
+  }
+  if (command.modifier === "detail" &&
+      command.tokens.at(-1) !== "detail") {
+    throw new Error(`${command.id}: detail modifier requires a final detail token`);
+  }
   maximumTokens = Math.max(maximumTokens, command.tokens.length);
   for (const token of command.tokens) {
     if (typeof token !== "string" && !parameterKinds.includes(token?.parameter)) {
@@ -459,9 +471,10 @@ const cliRows = cliSchema.commands.map((command) => {
   // the same grammar row while retaining separate execution semantics.
   const mask = (command.engines.includes("md") ? 1 : 0) |
     (command.engines.includes("classic") ? 2 : 0);
+  const modifierMask = command.modifier === "detail" ? 1 : 0;
   const tokens = command.tokens.map(cppToken);
   while (tokens.length < maximumTokens) tokens.push("{}");
-  return `    {CommandId::${command.id}, ${mask}, ${command.tokens.length}, {{${tokens.join(", ")}}}, "${command.source_id}"}`;
+  return `    {CommandId::${command.id}, ${mask}, ${modifierMask}, ${command.tokens.length}, {{${tokens.join(", ")}}}, "${command.source_id}"}`;
 }).join(",\n");
 
 const cliHeader = `#pragma once
@@ -485,6 +498,10 @@ enum class TokenKind : std::uint8_t {
 ${parameterKinds.map((kind) => `  ${kind}`).join(",\n")}
 };
 
+enum class OutputModifier : std::uint8_t {
+  detail = 1U << 0U
+};
+
 struct TokenSpec {
   TokenKind kind{TokenKind::literal};
   std::string_view display{};
@@ -496,6 +513,7 @@ inline constexpr std::size_t maximum_tokens = ${maximumTokens};
 struct CommandSpec {
   CommandId id{};
   std::uint8_t engine_mask{};
+  std::uint8_t output_modifier_mask{};
   std::uint8_t token_count{};
   std::array<TokenSpec, maximum_tokens> tokens{};
   std::string_view source_id{};

@@ -1,7 +1,8 @@
 // Generated browser names for runtime protocol 4.
 export const LAB_RUNTIME_PROTOCOL = {
   "version": 4,
-  "snapshotAbi": 6,
+  "snapshotAbi": 8,
+  "telemetryAbi": 6,
   "snapshot": "snapshot",
   "router_create": "router-create",
   "router_delete": "router-delete",
@@ -12,6 +13,10 @@ export const LAB_RUNTIME_PROTOCOL = {
   "host_delete": "host-delete",
   "host_name_set": "host-name-set",
   "host_update": "host-update",
+  "switch_create": "switch-create",
+  "switch_delete": "switch-delete",
+  "switch_name_set": "switch-name-set",
+  "switch_port_configure": "switch-port-configure",
   "hardware_card_set": "hardware-card-set",
   "hardware_mda_set": "hardware-mda-set",
   "hardware_card_admin_set": "hardware-card-admin-set",

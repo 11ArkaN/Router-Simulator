@@ -235,6 +235,15 @@ features:
   routing.static_ecmp:
     status: implemented
     source_ids: [nokia.sros.26_7.static_route.configuration, nokia.sros.26_7.ecmp.configuration]
+  routing.ospf_foundation:
+    status: implemented
+    source_ids: [ietf.ospfv2.packet_formats.rfc2328, ietf.ospfv3.packet_formats.rfc5340, ietf.ospf.interface_neighbor_fsm.rfc2328, ietf.ospf.spf.rfc2328, ietf.ospf.lsdb.rfc2328, ietf.ospf.lsa_bodies.rfc2328_rfc5340, ietf.ospf.route_selection.rfc2328, ietf.ospf.abr_nssa.rfc2328_rfc3101, ietf.ospf.ip_lfa.rfc5286, ietf.ospf.stub_router.rfc6987, ietf.ospf.graceful_restart_helper.rfc3623_rfc5187, ietf.ospf.router_information.rfc7770, nokia.sros.26_7.ospf.keychain, nokia.sros.26_7.ospf3.ipsec_authentication, emscripten.ospf.spsc_packet_buffers, nokia.sros.26_7.route_policy.ospf_export]
+  cli.ospf_neighbor_detail:
+    status: implemented
+    source_ids: [nokia.sros.26_7.ospf.neighbor_detail]
+  cli.ospf_interface_detail:
+    status: implemented
+    source_ids: [nokia.sros.26_7.ospf.interface_detail]
   ipv6.duplicate_address_detection:
     status: implemented
     source_ids: [ietf.ipv6.dad.rfc4862]
@@ -273,7 +282,7 @@ features:
     source_ids: [ietf.pcapng.draft_ietf_opsawg_05, iana.pcap.linktype_ethernet]
   persistence.project:
     status: implemented
-    source_ids: [w3c.indexeddb.persistence]
+    source_ids: [w3c.indexeddb.persistence, nist.webcrypto.portable_project_encryption]
   persistence.checkpoint:
     status: implemented
     source_ids: [whatwg.storage.opfs, emscripten.pthreads.shared_memory]

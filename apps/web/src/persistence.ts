@@ -10,16 +10,18 @@ import {
   type HostProjectV4,
   type LabProjectV4,
   type LinkProjectV4,
-  type ProjectManifestV3,
+  type ProjectManifestV4,
   type RouterProjectV4,
+  type SwitchProjectV5,
   type TerminalPresentationV2
 } from "@router-simulator/contracts";
 
-const DATABASE_NAME = "router-simulator-v4";
+const DATABASE_NAME = "router-simulator-v5";
 const DATABASE_VERSION = 1;
 const HEADS = "project-heads";
 const ROUTERS = "project-routers";
 const HOSTS = "project-hosts";
+const SWITCHES = "project-switches";
 const LINKS = "project-links";
 const PRESENTATION = "project-presentation";
 const ACTIVE = "active-project";
@@ -38,6 +40,7 @@ interface ProjectHead {
   updatedAt: string;
   routers: string[];
   hosts: string[];
+  switches: string[];
   links: string[];
 }
 
@@ -59,9 +62,48 @@ export interface ProjectRevisionSummary {
   routersWritten: number;
   hostsWritten: number;
   linksWritten: number;
+  switchesWritten: number;
 }
 
-type ProjectObject = RouterProjectV4 | HostProjectV4 | LinkProjectV4;
+type ProjectObject =
+  RouterProjectV4 | HostProjectV4 | SwitchProjectV5 | LinkProjectV4;
+
+const ENCRYPTED_FORMAT = "router-simulator-encrypted-manifest";
+const ENCRYPTED_VERSION = 1;
+// OWASP's current PBKDF2-HMAC-SHA-256 work factor is release metadata for the
+// envelope. It is serialized and authenticated so a future version can raise
+// the cost without making existing exports ambiguous.
+const PBKDF2_SHA256_ITERATIONS = 600_000;
+const ENVELOPE_CONTEXT =
+  "router-simulator/.netsim/encrypted-manifest/v1";
+
+interface EncryptedManifestEnvelope {
+  format: typeof ENCRYPTED_FORMAT;
+  version: typeof ENCRYPTED_VERSION;
+  kdf: {
+    name: "PBKDF2";
+    hash: "SHA-256";
+    iterations: number;
+    saltBase64: string;
+  };
+  cipher: {
+    name: "AES-256-GCM";
+    nonceBase64: string;
+  };
+  ciphertextBase64: string;
+}
+
+interface ProtectedManifestPayload {
+  manifest: ProjectManifestV4;
+  projectWrappingKeyBase64: string;
+}
+
+function ownedBuffer(value: Uint8Array): ArrayBuffer {
+  // WebCrypto's DOM types reject a view that might reference shared memory.
+  // A private copy also prevents the caller from racing key derivation by
+  // mutating its source buffer after the operation begins.
+  return value.slice().buffer as ArrayBuffer;
+}
 
 function database(): Promise<IDBDatabase> {
   // One long-lived connection avoids accumulating handles during autosave.
@@ -71,7 +113,8 @@ function database(): Promise<IDBDatabase> {
   databasePromise = new Promise((resolve, reject) => {
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
     request.onupgradeneeded = () => {
-      for (const store of [HEADS, ROUTERS, HOSTS, LINKS, PRESENTATION, ACTIVE]) {
+      for (const store of
+        [HEADS, ROUTERS, HOSTS, SWITCHES, LINKS, PRESENTATION, ACTIVE]) {
         if (!request.result.objectStoreNames.contains(store)) {
           request.result.createObjectStore(store);
         }
@@ -129,6 +172,7 @@ function head(project: LabProjectV4): ProjectHead {
     updatedAt: project.updatedAt,
     routers: project.routers.map((item) => item.id),
     hosts: project.hosts.map((item) => item.id),
+    switches: project.switches.map((item) => item.id),
     links: project.links.map((item) => item.id)
   };
 }
@@ -155,15 +199,19 @@ async function saveNow(input: LabProjectV4): Promise<ProjectRevisionSummary> {
   const db = await database();
   const previousHead = await requestValue(db.transaction(HEADS).objectStore(HEADS)
     .get(project.projectId)) as ProjectHead | undefined;
-  const [routerRecords, hostRecords, linkRecords] = await Promise.all([
+  const [routerRecords, hostRecords, switchRecords, linkRecords] =
+    await Promise.all([
     currentRecords(db, ROUTERS, project.projectId, project.routers),
     currentRecords(db, HOSTS, project.projectId, project.hosts),
+    currentRecords(db, SWITCHES, project.projectId, project.switches),
     currentRecords(db, LINKS, project.projectId, project.links)
   ]);
-  const transaction = db.transaction([HEADS, ROUTERS, HOSTS, LINKS, ACTIVE], "readwrite");
+  const transaction = db.transaction(
+    [HEADS, ROUTERS, HOSTS, SWITCHES, LINKS, ACTIVE], "readwrite");
   const summary: ProjectRevisionSummary = {
     routersWritten: 0,
     hostsWritten: 0,
+    switchesWritten: 0,
     linksWritten: 0
   };
 
@@ -182,6 +230,7 @@ async function saveNow(input: LabProjectV4): Promise<ProjectRevisionSummary> {
   };
   write(ROUTERS, project.routers, routerRecords, "routersWritten");
   write(HOSTS, project.hosts, hostRecords, "hostsWritten");
+  write(SWITCHES, project.switches, switchRecords, "switchesWritten");
   write(LINKS, project.links, linkRecords, "linksWritten");
 
   const removeMissing = (storeName: string, before: readonly string[] | undefined,
@@ -194,6 +243,8 @@ async function saveNow(input: LabProjectV4): Promise<ProjectRevisionSummary> {
   };
   removeMissing(ROUTERS, previousHead?.routers, project.routers.map((item) => item.id));
   removeMissing(HOSTS, previousHead?.hosts, project.hosts.map((item) => item.id));
+  removeMissing(SWITCHES, previousHead?.switches,
+    project.switches.map((item) => item.id));
   removeMissing(LINKS, previousHead?.links, project.links.map((item) => item.id));
   transaction.objectStore(HEADS).put(head(project), project.projectId);
   transaction.objectStore(ACTIVE).put(project.projectId, "id");
@@ -226,14 +277,15 @@ export async function loadLabProjectV4(projectId: string): Promise<LabProjectV4 
     }
     return records.map((record) => record!.value);
   };
-  const [routers, hosts, links] = await Promise.all([
+  const [routers, hosts, switches, links] = await Promise.all([
     read<RouterProjectV4>(ROUTERS, projectHead.routers),
     read<HostProjectV4>(HOSTS, projectHead.hosts),
+    read<SwitchProjectV5>(SWITCHES, projectHead.switches),
     read<LinkProjectV4>(LINKS, projectHead.links)
   ]);
   return parseLabProjectV4({
     format: "router-simulator-project",
-    version: 4,
+    version: 5,
     projectId: projectHead.projectId,
     name: projectHead.name,
     notes: projectHead.notes,
@@ -245,6 +297,7 @@ export async function loadLabProjectV4(projectId: string): Promise<LabProjectV4 
     updatedAt: projectHead.updatedAt,
     routers,
     hosts,
+    switches,
     links
   });
 }
@@ -311,25 +364,25 @@ function strictBase64(value: unknown, field: string): Uint8Array | undefined {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
-export function createProjectManifestV3(project: LabProjectV4,
-  capture?: Uint8Array): ProjectManifestV3 {
+export function createProjectManifestV4(project: LabProjectV4,
+  capture?: Uint8Array): ProjectManifestV4 {
   return {
     mode: "project",
-    formatVersion: 3,
-    checkpointAbi: 6,
+    formatVersion: 4,
+    checkpointAbi: 7,
     project: parseLabProjectV4(project),
     ...(capture?.length ? { captureBase64: base64(capture) } : {})
   };
 }
 
-export function createCheckpointManifestV3(project: LabProjectV4,
+export function createCheckpointManifestV4(project: LabProjectV4,
   checkpoint: Uint8Array, capture?: Uint8Array,
-  terminalPresentation?: TerminalPresentationV2): ProjectManifestV3 {
+  terminalPresentation?: TerminalPresentationV2): ProjectManifestV4 {
   if (!checkpoint.length) throw new Error("A checkpoint export cannot be empty");
   return {
     mode: "checkpoint",
-    formatVersion: 3,
-    checkpointAbi: 6,
+    formatVersion: 4,
+    checkpointAbi: 7,
     project: parseLabProjectV4(project),
     checkpointBase64: base64(checkpoint),
     ...(capture?.length ? { captureBase64: base64(capture) } : {}),
@@ -338,7 +391,7 @@ export function createCheckpointManifestV3(project: LabProjectV4,
   };
 }
 
-export function parseNetsimV3(text: string): {
+export function parseNetsimV4(text: string): {
   project: LabProjectV4;
   checkpoint?: Uint8Array;
   capture?: Uint8Array;
@@ -346,9 +399,9 @@ export function parseNetsimV3(text: string): {
 } {
   // No raw-project or previous-manifest branch exists. Unsupported bytes stop
   // before project replay, leaving the active Worker and project untouched.
-  const decoded = JSON.parse(text) as Partial<ProjectManifestV3>;
-  if (!decoded || typeof decoded !== "object" || decoded.formatVersion !== 3 ||
-      decoded.checkpointAbi !== 6 ||
+  const decoded = JSON.parse(text) as Partial<ProjectManifestV4>;
+  if (!decoded || typeof decoded !== "object" || decoded.formatVersion !== 4 ||
+      decoded.checkpointAbi !== 7 ||
       (decoded.mode !== "project" && decoded.mode !== "checkpoint")) {
     throw new Error("The .netsim manifest format is not supported");
   }
@@ -370,24 +423,139 @@ export function parseNetsimV3(text: string): {
   };
 }
 
-function download(name: string, value: unknown): void {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)],
-    { type: "application/json" }));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = name;
-  anchor.click();
-  URL.revokeObjectURL(url);
+function envelopeHeader(envelope: Omit<EncryptedManifestEnvelope,
+  "ciphertextBase64">): Uint8Array {
+  // AAD binds every visible parameter to the authentication tag. An attacker
+  // cannot lower the PBKDF2 work factor or substitute a nonce while preserving
+  // a ciphertext that decrypts successfully.
+  return new TextEncoder().encode(JSON.stringify({
+    context: ENVELOPE_CONTEXT,
+    format: envelope.format,
+    version: envelope.version,
+    kdf: envelope.kdf,
+    cipher: envelope.cipher
+  }));
 }
 
-export function exportProjectV4(project: LabProjectV4, capture?: Uint8Array): void {
-  const validated = parseLabProjectV4(project);
-  download(`${validated.name.replaceAll(" ", "-").toLowerCase()}.netsim`,
-    createProjectManifestV3(validated, capture));
+async function passphraseKey(passphrase: string, salt: Uint8Array,
+  iterations: number, usage: KeyUsage): Promise<CryptoKey> {
+  if (!passphrase.length || new TextEncoder().encode(passphrase).length > 1024)
+    throw new Error("Passphrase must contain between 1 and 1024 UTF-8 bytes");
+  const encoded = new TextEncoder().encode(passphrase);
+  try {
+    const material = await crypto.subtle.importKey(
+      "raw", encoded, "PBKDF2", false, ["deriveKey"]);
+    return await crypto.subtle.deriveKey({
+      name: "PBKDF2", salt: ownedBuffer(salt), iterations, hash: "SHA-256"
+    }, material, { name: "AES-GCM", length: 256 }, false, [usage]);
+  } finally {
+    encoded.fill(0);
+  }
 }
 
-export async function importNetsimV3(file: File) {
-  return parseNetsimV3(await file.text());
+export async function protectNetsimV4(manifest: ProjectManifestV4,
+  projectWrappingKey: Uint8Array, passphrase: string): Promise<string> {
+  if (projectWrappingKey.byteLength !== 32)
+    throw new Error("Project wrapping key must contain 256 bits");
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const header: Omit<EncryptedManifestEnvelope, "ciphertextBase64"> = {
+    format: ENCRYPTED_FORMAT,
+    version: ENCRYPTED_VERSION,
+    kdf: { name: "PBKDF2" as const, hash: "SHA-256" as const,
+      iterations: PBKDF2_SHA256_ITERATIONS, saltBase64: base64(salt) },
+    cipher: { name: "AES-256-GCM" as const, nonceBase64: base64(nonce) }
+  };
+  const plaintext = new TextEncoder().encode(JSON.stringify({
+    manifest,
+    projectWrappingKeyBase64: base64(projectWrappingKey)
+  } satisfies ProtectedManifestPayload));
+  try {
+    const key = await passphraseKey(passphrase, salt,
+      PBKDF2_SHA256_ITERATIONS, "encrypt");
+    const ciphertext = new Uint8Array(await crypto.subtle.encrypt({
+      name: "AES-GCM", iv: ownedBuffer(nonce),
+      additionalData: ownedBuffer(envelopeHeader(header)),
+      tagLength: 128
+    }, key, ownedBuffer(plaintext)));
+    return JSON.stringify({ ...header,
+      ciphertextBase64: base64(ciphertext) } satisfies EncryptedManifestEnvelope,
+    null, 2);
+  } finally {
+    plaintext.fill(0);
+    salt.fill(0);
+    nonce.fill(0);
+  }
+}
+
+export async function unprotectNetsimV4(text: string,
+  passphrase: string): Promise<ReturnType<typeof parseNetsimV4> & {
+    projectWrappingKey: Uint8Array;
+  }> {
+  const decoded = JSON.parse(text) as Partial<EncryptedManifestEnvelope>;
+  if (decoded.format !== ENCRYPTED_FORMAT ||
+      decoded.version !== ENCRYPTED_VERSION ||
+      decoded.kdf?.name !== "PBKDF2" ||
+      decoded.kdf.hash !== "SHA-256" ||
+      decoded.kdf.iterations !== PBKDF2_SHA256_ITERATIONS ||
+      decoded.cipher?.name !== "AES-256-GCM") {
+    throw new Error("The encrypted .netsim envelope is not supported");
+  }
+  const salt = strictBase64(decoded.kdf.saltBase64, "KDF salt");
+  const nonce = strictBase64(decoded.cipher.nonceBase64, "Cipher nonce");
+  const ciphertext = strictBase64(decoded.ciphertextBase64, "Ciphertext");
+  if (!salt || salt.byteLength !== 16 || !nonce || nonce.byteLength !== 12 ||
+      !ciphertext || ciphertext.byteLength < 16)
+    throw new Error("The encrypted .netsim envelope is malformed");
+  const header: Omit<EncryptedManifestEnvelope, "ciphertextBase64"> = {
+    format: ENCRYPTED_FORMAT,
+    version: ENCRYPTED_VERSION,
+    kdf: decoded.kdf,
+    cipher: decoded.cipher
+  };
+  let plaintext: Uint8Array | undefined;
+  try {
+    const key = await passphraseKey(passphrase, salt,
+      decoded.kdf.iterations, "decrypt");
+    plaintext = new Uint8Array(await crypto.subtle.decrypt({
+      name: "AES-GCM", iv: ownedBuffer(nonce),
+      additionalData: ownedBuffer(envelopeHeader(header)),
+      tagLength: 128
+    }, key, ownedBuffer(ciphertext)));
+    const payload = JSON.parse(new TextDecoder("utf-8", { fatal: true })
+      .decode(plaintext)) as Partial<ProtectedManifestPayload>;
+    const projectWrappingKey = strictBase64(
+      payload.projectWrappingKeyBase64, "Project wrapping key");
+    if (!projectWrappingKey || projectWrappingKey.byteLength !== 32)
+      throw new Error("The protected project wrapping key is malformed");
+    return { ...parseNetsimV4(JSON.stringify(payload.manifest)),
+      projectWrappingKey };
+  } catch (cause) {
+    if (cause instanceof DOMException && cause.name === "OperationError")
+      throw new Error("The passphrase is incorrect or the file is corrupted");
+    throw cause;
+  } finally {
+    plaintext?.fill(0);
+    salt.fill(0);
+    nonce.fill(0);
+    ciphertext.fill(0);
+  }
+}
+
+export function isProtectedNetsimV4(text: string): boolean {
+  try {
+    const decoded = JSON.parse(text) as { format?: unknown };
+    return decoded.format === ENCRYPTED_FORMAT;
+  } catch {
+    return false;
+  }
+}
+
+export async function importNetsimV4(file: File, passphrase?: string) {
+  const text = await file.text();
+  return isProtectedNetsimV4(text)
+    ? unprotectNetsimV4(text, passphrase ?? "")
+    : parseNetsimV4(text);
 }
 
 function validateStorageIdentity(value: string): void {
@@ -472,4 +640,80 @@ export function downloadBinary(name: string, bytes: Uint8Array, type: string): v
   anchor.click();
   anchor.remove();
   self.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+export interface BinarySaveDestination {
+  /**
+   * Writes the complete immutable export generation selected by the user.
+   * The destination owns the writable stream and closes it only after every
+   * byte has been accepted, so a failed write cannot be reported as a
+   * successful export.
+   */
+  save(bytes: Uint8Array): Promise<void>;
+}
+
+type SaveFilePickerWindow = Window & {
+  showSaveFilePicker?: (options: {
+    suggestedName: string;
+    types: Array<{
+      description: string;
+      accept: Record<string, string[]>;
+    }>;
+  }) => Promise<FileSystemFileHandle>;
+};
+
+/**
+ * Reserves a user-selected file while the click still has transient browser
+ * activation. Capture bytes are produced asynchronously by the Wasm Worker;
+ * waiting for those bytes before opening the picker causes Chromium to discard
+ * the activation and silently reject the save UI.
+ *
+ * Browsers without the File System Access API retain the ordinary download
+ * path. That fallback still receives the exact same immutable byte generation
+ * and does not alter runtime capture ownership.
+ */
+export async function selectBinarySaveDestination(name: string, type: string,
+  description: string): Promise<BinarySaveDestination | undefined> {
+  const picker = (window as SaveFilePickerWindow).showSaveFilePicker;
+  if (!picker) {
+    return {
+      save: async (bytes) => {
+        downloadBinary(name, bytes, type);
+      }
+    };
+  }
+
+  try {
+    const extension = name.includes(".")
+      ? `.${name.split(".").at(-1)!}`
+      : "";
+    const handle = await picker.call(window, {
+      suggestedName: name,
+      types: [{
+        description,
+        accept: { [type]: extension ? [extension] : [] }
+      }]
+    });
+    return {
+      save: async (bytes) => {
+        const writable = await handle.createWritable();
+        try {
+          await writable.write(bytes as FileSystemWriteChunkType);
+          await writable.close();
+        } catch (cause) {
+          // Abort releases the temporary file generation when the platform
+          // supports it. Preserve the original failure for the UI instead of
+          // replacing it with a secondary cleanup error.
+          await writable.abort().catch(() => undefined);
+          throw cause;
+        }
+      }
+    };
+  } catch (cause) {
+    // Cancelling a native save picker is a user decision, not an operation
+    // failure. Every other exception is surfaced by the caller.
+    if (cause instanceof DOMException && cause.name === "AbortError")
+      return undefined;
+    throw cause;
+  }
 }

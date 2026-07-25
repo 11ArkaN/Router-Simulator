@@ -5,6 +5,7 @@
 #pragma once
 
 #include "router/generated_device_catalog.hpp"
+#include "router/interface_identity.hpp"
 #include "router/packet.hpp"
 
 #include <cstddef>
@@ -55,7 +56,7 @@ public:
   // the generated hardware inventory ceiling. It is fixed in forwarding
   // memory, so packet lookup and source selection never allocate or lock.
   static constexpr std::size_t capacity =
-      device_catalog::maximum_ports_per_router *
+      (device_catalog::maximum_ports_per_router + 1U) *
       device_catalog::network_interface_ip_addresses;
 
   // Preconditions: records is a complete intended generation. Every network

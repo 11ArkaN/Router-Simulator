@@ -20,7 +20,8 @@ describe("host IPv6 inspector", () => {
     render(<Inspector selected="h1" tab="chassis" onTabChange={vi.fn()}
       project={project} updateHost={updateHost} updateRouter={vi.fn()}
       setCard={vi.fn()} setMda={vi.fn()} setCardAdmin={vi.fn()}
-      setMdaAdmin={vi.fn()} setLink={vi.fn()} updateLink={vi.fn()}
+      setMdaAdmin={vi.fn()} setSwitchName={vi.fn()}
+      setSwitchPort={vi.fn()} setLink={vi.fn()} updateLink={vi.fn()}
       deleteLink={vi.fn()} deleteNode={vi.fn()} updateAnnotation={vi.fn()}
       deleteAnnotation={vi.fn()}
       ping={vi.fn().mockResolvedValue("")} width={324}

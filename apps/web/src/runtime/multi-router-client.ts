@@ -219,11 +219,13 @@ export class MultiRouterRuntimeClient {
     });
   }
 
-  private async initializeProjectVault(projectId: string): Promise<void> {
+  private async initializeProjectVault(projectId: string,
+    importedWrappingKey?: Uint8Array): Promise<void> {
     if (this.initializedProjectId === projectId) return;
     if (this.initializedProjectId)
       throw new Error("A runtime cannot own two project vault identities");
-    const material = await projectVaultMaterial(projectId);
+    const material = await projectVaultMaterial(projectId,
+      importedWrappingKey);
     const id = this.nextRequestId++;
     try {
       await new Promise<string>((resolve, reject) => {
@@ -305,6 +307,75 @@ export class MultiRouterRuntimeClient {
     for (const route of router.running.ipv6StaticRoutes)
       values.push(route.prefix, route.nextHop, route.outgoingPortId,
         boolean(route.indirect));
+    values.push(String(router.running.policyOptions.prefixLists.length));
+    for (const list of router.running.policyOptions.prefixLists) {
+      values.push(list.name, String(list.prefixes.length), ...list.prefixes);
+    }
+    values.push(String(router.running.policyOptions.statements.length));
+    for (const statement of router.running.policyOptions.statements) {
+      values.push(statement.name, statement.defaultAction ?? "",
+        String(statement.entries.length));
+      for (const entry of statement.entries)
+        values.push(String(entry.number), entry.groupPrefixList,
+          entry.sourceAddress ?? "", entry.sourcePrefixList,
+          boolean(entry.protocolMld), entry.routePrefixList,
+          entry.routeSource ?? "", entry.protocolInstance?.toString() ?? "",
+          entry.routeTag?.toString() ?? "", entry.action ?? "",
+          entry.setMetric?.toString() ?? "", entry.setMetricType ?? "",
+          entry.setRouteTag?.toString() ?? "");
+    }
+    values.push(String(router.running.ospf.instances.length));
+    for (const instance of router.running.ospf.instances) {
+      values.push(String(instance.instanceId), instance.addressFamily,
+        instance.routerId ?? "", instance.exportPolicy,
+        instance.asbrTracePathDomainId?.toString() ?? "",
+        String(instance.referenceBandwidthKbps),
+        String(instance.routerPreference), String(instance.externalPreference),
+        String(instance.spfTimersMilliseconds.initial),
+        String(instance.spfTimersMilliseconds.second),
+        String(instance.spfTimersMilliseconds.maximum),
+        String(instance.lsaTimersMilliseconds.initial),
+        String(instance.lsaTimersMilliseconds.second),
+        String(instance.lsaTimersMilliseconds.maximum),
+        boolean(instance.asbr), boolean(instance.gracefulRestartHelper),
+        boolean(instance.loopfreeAlternates), boolean(instance.overload),
+        boolean(instance.admin === "up"), String(instance.areas.length));
+      for (const area of instance.areas) {
+        values.push(area.areaId, area.type, String(area.defaultMetric),
+          boolean(area.summaries), boolean(area.nssaTranslateAlways),
+          String(area.ranges.length));
+        for (const range of area.ranges)
+          values.push(range.prefix, range.advertisedMetric?.toString() ?? "",
+            boolean(range.advertise));
+        values.push(String(area.interfaces.length));
+        for (const attached of area.interfaces) {
+          values.push(attached.interfaceName, String(attached.cost),
+            String(attached.helloIntervalSeconds),
+            String(attached.deadIntervalSeconds),
+            String(attached.retransmitIntervalSeconds),
+            String(attached.transmitDelaySeconds), String(attached.priority),
+            attached.networkType, attached.authentication, attached.keychain,
+            attached.ipsecSaInbound, attached.ipsecSaOutbound,
+            boolean(attached.passive),
+            boolean(attached.mtuMismatchIgnore),
+            boolean(attached.admin === "up"),
+            String(attached.nbmaNeighbors.length));
+          for (const neighbor of attached.nbmaNeighbors)
+            values.push(neighbor.address, String(neighbor.priority),
+              String(neighbor.pollIntervalSeconds));
+        }
+        values.push(String(area.virtualLinks.length));
+        for (const virtualLink of area.virtualLinks)
+          values.push(virtualLink.transitAreaId, virtualLink.remoteRouterId,
+            String(virtualLink.helloIntervalSeconds),
+            String(virtualLink.deadIntervalSeconds),
+            String(virtualLink.retransmitIntervalSeconds),
+            String(virtualLink.transmitDelaySeconds),
+            virtualLink.authentication, virtualLink.keychain,
+            virtualLink.ipsecSaInbound, virtualLink.ipsecSaOutbound,
+            boolean(virtualLink.admin === "up"));
+      }
+    }
     return this.mutation(LAB_RUNTIME_PROTOCOL.router_configuration_replace,
       [router.id, protocolMessage(values[0], values.slice(1))]);
   }
@@ -315,6 +386,28 @@ export class MultiRouterRuntimeClient {
 
   deleteHost(id: string) {
     return this.mutation(LAB_RUNTIME_PROTOCOL.host_delete, [id]);
+  }
+
+  createSwitch(id: string, profileId: string, name: string) {
+    return this.mutation(LAB_RUNTIME_PROTOCOL.switch_create,
+      [id, profileId, name]);
+  }
+
+  deleteSwitch(id: string) {
+    return this.mutation(LAB_RUNTIME_PROTOCOL.switch_delete, [id]);
+  }
+
+  setSwitchName(id: string, name: string) {
+    return this.mutation(LAB_RUNTIME_PROTOCOL.switch_name_set, [id, name]);
+  }
+
+  configureSwitchPort(switchId: string, portId: string, admin: boolean,
+    speedMbps: number, mtu: number) {
+    // Port IDs and supported media rates are validated against the selected
+    // generated profile again by C++. Sending the user-visible canonical ID
+    // keeps this wire contract independent of a UI array index.
+    return this.mutation(LAB_RUNTIME_PROTOCOL.switch_port_configure,
+      [switchId, portId, boolean(admin), String(speedMbps), String(mtu)]);
   }
 
   setCard(routerId: string, slot: number, provisioned: string | null,
@@ -663,16 +756,52 @@ export class MultiRouterRuntimeClient {
     });
   }
 
-  async applyProject(project: LabProjectV4): Promise<LabRuntimeSnapshotV6> {
-    await this.initializeProjectVault(project.projectId);
+  async restoreProjectCheckpoint(projectId: string,
+    bytes: Uint8Array, importedWrappingKey?: Uint8Array):
+    Promise<LabRuntimeSnapshotV6> {
+    // Recovery checkpoints contain the complete portable router object graph,
+    // including configuration committed through CLI sessions. Initialize the
+    // project-bound vault before decoding the checkpoint so opaque OSPF and
+    // IPsec secret handles can be authenticated by the C++ owner during its
+    // atomic staged restore.
+    await this.initializeProjectVault(projectId, importedWrappingKey);
+    await this.importCheckpoint(bytes);
+
+    // Return the restored canonical projection in the same owner turn from the
+    // caller's perspective. The UI validates this object graph before it
+    // publishes any recovered state.
+    return this.snapshot();
+  }
+
+  async applyProject(project: LabProjectV4,
+    importedWrappingKey?: Uint8Array): Promise<LabRuntimeSnapshotV6> {
+    await this.initializeProjectVault(project.projectId,
+      importedWrappingKey);
+    const replay = async <T>(step: string, action: () => Promise<T>):
+      Promise<T> => {
+      // Protocol mutations deliberately expose one generic atomic-rejection
+      // error. During a complete project replay that is insufficient because
+      // dozens of independently valid objects are applied in dependency
+      // order. Attach the portable object identity at this boundary while
+      // retaining the original exception as the cause.
+      try {
+        return await action();
+      } catch (cause) {
+        const detail = cause instanceof Error ? cause.message : String(cause);
+        throw new Error(`Project replay failed at ${step}: ${detail}`,
+          { cause });
+      }
+    };
     // This method is used on a fresh replacement Worker. A failed replay never
     // mutates the currently visible runtime owned by the caller's old client.
     let snapshot = await this.snapshot();
-    if (snapshot.routers.length || snapshot.hosts.length || snapshot.links.length) {
+    if (snapshot.routers.length || snapshot.hosts.length ||
+        snapshot.switches.length || snapshot.links.length) {
       throw new Error("Project replay requires an empty runtime");
     }
     for (const router of project.routers) {
-      snapshot = await this.createRouter(router.id, router.profileId, router.systemName);
+      snapshot = await replay(`router ${router.id} creation`, () =>
+        this.createRouter(router.id, router.profileId, router.systemName));
       // The same generated catalog used by project validation decides whether
       // card inventory is mutable. No chassis name is embedded in this branch.
       const catalogProfile = PROFILE_CATALOG.profiles.find(
@@ -698,26 +827,38 @@ export class MultiRouterRuntimeClient {
       // Publish one validated configuration transaction after inventory is
       // present. Replaying leaves one at a time would temporarily compile a
       // different RIB and could lose ECMP siblings with the same prefix.
-      snapshot = await this.replaceRouterConfiguration(router);
+      snapshot = await replay(`router ${router.id} configuration`, () =>
+        this.replaceRouterConfiguration(router));
     }
     for (const host of project.hosts) {
-      snapshot = await this.createConfiguredHost(host.id, host.name,
-        host.eth0.mac, host.eth0.address, host.eth0.gateway, host.eth0.mtu,
-        host.eth0.ipv6.interfaceId, host.eth0.ipv6.autoconfiguration,
-        host.eth0.ipv6.interfaceIdentifierMode,
-        host.eth0.ipv6.stableIidSecret, host.eth0.ipv6.networkId,
-        host.eth0.transportSecretHex);
+      snapshot = await replay(`host ${host.id} creation`, () =>
+        this.createConfiguredHost(host.id, host.name,
+          host.eth0.mac, host.eth0.address, host.eth0.gateway, host.eth0.mtu,
+          host.eth0.ipv6.interfaceId, host.eth0.ipv6.autoconfiguration,
+          host.eth0.ipv6.interfaceIdentifierMode,
+          host.eth0.ipv6.stableIidSecret, host.eth0.ipv6.networkId,
+          host.eth0.transportSecretHex));
       if (host.eth0.ipv6.dhcpv6.client || host.eth0.ipv6.dhcpv6.server)
         snapshot = await this.replaceHostDhcpv6(
           host.id, host.eth0.ipv6.dhcpv6);
       if (host.eth0.dns.resolver || host.eth0.dns.authoritative)
         snapshot = await this.replaceHostDns(host.id, host.eth0.dns);
     }
+    for (const ethernetSwitch of project.switches) {
+      snapshot = await replay(`switch ${ethernetSwitch.id} creation`, () =>
+        this.createSwitch(ethernetSwitch.id,
+          ethernetSwitch.profileId, ethernetSwitch.name));
+      for (const port of ethernetSwitch.ports) {
+        snapshot = await this.configureSwitchPort(ethernetSwitch.id, port.id,
+          port.admin === "up", port.speedMbps, port.mtu);
+      }
+    }
     for (const link of project.links) {
-      snapshot = await this.createLink(link.id, link.endpoints[0].nodeId,
-        link.endpoints[0].portId, link.endpoints[1].nodeId,
-        link.endpoints[1].portId, link.propagationDelayNs,
-        link.admin === "up", link.configuredSpeedMbps);
+      snapshot = await replay(`link ${link.id} creation`, () =>
+        this.createLink(link.id, link.endpoints[0].nodeId,
+          link.endpoints[0].portId, link.endpoints[1].nodeId,
+          link.endpoints[1].portId, link.propagationDelayNs,
+          link.admin === "up", link.configuredSpeedMbps));
     }
     return snapshot;
   }

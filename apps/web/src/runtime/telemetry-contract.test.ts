@@ -8,7 +8,11 @@ import { readTelemetrySnapshot, type TelemetryLayout,
   type TelemetryPage } from "./telemetry-contract";
 
 const layout: TelemetryLayout = {
-  abi: 6, size: 512, sequence: 0, abiVersion: 4,
+  // The reader intentionally rejects a layout compiled for another telemetry
+  // ABI. This fixture models the current shared page, so its descriptor must
+  // advance together with the C++ layout instead of accidentally exercising
+  // the rejection path in every positive projection assertion.
+  abi: 8, size: 512, sequence: 0, abiVersion: 4,
   workerCount: 0, workerDirectory: 0, workerBlockSize: 0, workerRole: 0,
   workerRunning: 0, workerThreadId: 0, workerTurns: 0,
   capturedFrames: 8, captureDropped: 16, droppedPackets: 24,
@@ -21,13 +25,17 @@ const layout: TelemetryLayout = {
 };
 
 function snapshot(): LabRuntimeSnapshotV6 {
-  return { abiVersion: 6, protocolVersion: 4, status: "ready",
+  return { abiVersion: 8, protocolVersion: 4, status: "ready",
     routers: [{ id: "r1", profileId: "7750-sr-1", chassis: "7750 SR-1",
       systemName: "R1", maximumEcmpPaths: 1,
       handle: { index: 0, generation: 1 }, cards: [],
       ports: [{ id: "1/1/1", admin: true, carrier: false, oper: false,
         mtu: 9212, speedMbps: 100000, description: "" }], interfaces: [],
-      staticRoutes: [], ipv6StaticRoutes: [] }], hosts: [], links: [], sessions: [], capturePoints: [],
+      staticRoutes: [], ipv6StaticRoutes: [],
+      policyOptions: { prefixLists: [], statements: [] },
+      ospf: { instances: [] } }],
+    hosts: [], switches: [],
+    links: [], sessions: [], capturePoints: [],
     activeLinks: 0, capturedFrames: 0, captureDropped: 0, droppedPackets: 0 };
 }
 

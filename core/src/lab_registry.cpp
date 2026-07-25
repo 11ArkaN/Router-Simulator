@@ -163,6 +163,65 @@ HostRegistry::find(std::string_view node_id) const noexcept {
   return std::nullopt;
 }
 
+std::optional<SwitchHandle>
+SwitchRegistry::create(std::string_view node_id, std::string_view profile_id,
+                       std::string_view name) {
+  if (node_id.empty() || name.empty() || find(node_id))
+    return std::nullopt;
+  const auto *profile =
+      device_catalog::find_ethernet_switch_profile(profile_id);
+  if (!profile)
+    return std::nullopt;
+  for (std::size_t index{}; index < slots_.size(); ++index) {
+    auto &slot = slots_[index];
+    if (slot.occupied)
+      continue;
+    // Strings and profile resolution are complete before occupancy publishes
+    // the new generation to topology validation.
+    std::vector<SwitchPortIntent> ports(
+        profile->port_count,
+        {.speed_mbps = profile->default_speed_mbps,
+         .mtu = profile->default_mtu,
+         .admin_enabled = profile->default_admin_enabled});
+    slot.value = {std::string{node_id}, std::string{name}, profile,
+                  std::move(ports)};
+    slot.occupied = true;
+    ++size_;
+    return SwitchHandle{static_cast<std::uint16_t>(index), slot.generation};
+  }
+  return std::nullopt;
+}
+
+bool SwitchRegistry::erase(SwitchHandle handle) noexcept {
+  if (handle.index >= slots_.size() || !valid(slots_[handle.index], handle))
+    return false;
+  release(slots_[handle.index]);
+  --size_;
+  return true;
+}
+
+SwitchRecord *SwitchRegistry::get(SwitchHandle handle) noexcept {
+  return handle.index < slots_.size() && valid(slots_[handle.index], handle)
+             ? &slots_[handle.index].value
+             : nullptr;
+}
+
+const SwitchRecord *SwitchRegistry::get(SwitchHandle handle) const noexcept {
+  return handle.index < slots_.size() && valid(slots_[handle.index], handle)
+             ? &slots_[handle.index].value
+             : nullptr;
+}
+
+std::optional<SwitchHandle>
+SwitchRegistry::find(std::string_view node_id) const noexcept {
+  for (std::size_t index{}; index < slots_.size(); ++index) {
+    const auto &slot = slots_[index];
+    if (slot.occupied && slot.value.node_id == node_id)
+      return SwitchHandle{static_cast<std::uint16_t>(index), slot.generation};
+  }
+  return std::nullopt;
+}
+
 std::optional<LinkHandle>
 TopologyRegistry::create(std::string_view link_id, const LinkEndpoint &first,
                          const LinkEndpoint &second,
@@ -468,6 +527,74 @@ bool HostRegistry::restore(const HostRegistryCheckpoint &state) {
     for (const auto &entry : state.entries) {
       auto &slot = replacement.slots_[entry.handle.index];
       slot.value = {entry.node_id, entry.name};
+      slot.occupied = true;
+    }
+    replacement.size_ = state.entries.size();
+    *this = std::move(replacement);
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
+SwitchRegistryCheckpoint SwitchRegistry::checkpoint() const {
+  SwitchRegistryCheckpoint state;
+  state.entries.reserve(size_);
+  for (std::size_t index{}; index < slots_.size(); ++index) {
+    const auto &slot = slots_[index];
+    state.generations[index] = slot.generation;
+    if (slot.occupied)
+      state.entries.push_back(
+          {{static_cast<std::uint16_t>(index), slot.generation},
+           slot.value.node_id, slot.value.name,
+           std::string{slot.value.profile->id}, slot.value.ports});
+  }
+  return state;
+}
+
+bool SwitchRegistry::restore(const SwitchRegistryCheckpoint &state) {
+  if (state.entries.size() > slots_.size() ||
+      std::any_of(state.generations.begin(), state.generations.end(),
+                  [](auto generation) { return generation == 0U; }))
+    return false;
+  std::array<bool, device_catalog::maximum_switches> occupied{};
+  for (const auto &entry : state.entries) {
+    if (!entry.handle || entry.handle.index >= occupied.size() ||
+        occupied[entry.handle.index] ||
+        state.generations[entry.handle.index] != entry.handle.generation ||
+        entry.node_id.empty() || entry.name.empty() ||
+        !device_catalog::find_ethernet_switch_profile(entry.profile_id))
+      return false;
+    const auto *profile =
+        device_catalog::find_ethernet_switch_profile(entry.profile_id);
+    if (entry.ports.size() != profile->port_count)
+      return false;
+    for (const auto &port : entry.ports) {
+      const auto supported =
+          std::find(profile->supported_speeds_mbps.begin(),
+                    profile->supported_speeds_mbps.begin() +
+                        profile->speed_count,
+                    port.speed_mbps) !=
+          profile->supported_speeds_mbps.begin() + profile->speed_count;
+      if (!supported || port.mtu < profile->minimum_mtu ||
+          port.mtu > profile->maximum_mtu)
+        return false;
+    }
+    for (const auto &other : state.entries)
+      if (&entry != &other && entry.node_id == other.node_id)
+        return false;
+    occupied[entry.handle.index] = true;
+  }
+  try {
+    SwitchRegistry replacement;
+    for (std::size_t index{}; index < replacement.slots_.size(); ++index)
+      replacement.slots_[index].generation = state.generations[index];
+    for (const auto &entry : state.entries) {
+      auto &slot = replacement.slots_[entry.handle.index];
+      slot.value = {
+          entry.node_id, entry.name,
+          device_catalog::find_ethernet_switch_profile(entry.profile_id),
+          entry.ports};
       slot.occupied = true;
     }
     replacement.size_ = state.entries.size();

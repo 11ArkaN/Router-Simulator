@@ -33,6 +33,10 @@ inline constexpr std::uint8_t vlan_tag_octets = 4;
 // MTU profile includes the untagged Ethernet header, while RFC 8200 expresses
 // the IPv6 minimum in network-layer octets.
 inline constexpr std::uint16_t ipv6_header_octets = 40;
+// RFC 791's Internet Header Length has a five-word minimum. Callers sizing
+// unfragmented control packets use this codec constant instead of repeating
+// the twenty-octet wire value.
+inline constexpr std::uint16_t ipv4_minimum_header_octets = 20;
 // RFC 791 requires every IPv4 destination to accept 576 octets and every
 // internet module to forward or reassemble 68 octets. RFC 1191 uses the latter
 // as the absolute Path MTU floor.
@@ -188,7 +192,8 @@ struct FragmentBatch {
   // RFC 791 requires every non-final payload to end on an eight-octet boundary.
   // Compute the worst case from the generated MTU limits so expanding jumbo
   // support cannot silently retain an obsolete four-fragment ceiling.
-  static constexpr std::size_t ipv4_header_octets = 20;
+  static constexpr std::size_t ipv4_header_octets =
+      ipv4_minimum_header_octets;
   static constexpr std::size_t minimum_fragment_payload =
       ((minimum_network_ip_mtu - ipv4_header_octets) / 8U) * 8U;
   static constexpr std::size_t maximum_fragment_count =

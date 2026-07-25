@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 namespace router::device_catalog {
@@ -17,23 +18,44 @@ struct TlsAlgorithmName {
   bool pqc{};
 };
 
+struct EthernetSwitchProfile {
+  std::string_view id;
+  std::string_view display_name;
+  std::uint16_t port_count{};
+  std::uint8_t speed_count{};
+  std::array<std::uint32_t, 4> supported_speeds_mbps{};
+  std::uint32_t default_speed_mbps{};
+  std::uint16_t minimum_mtu{};
+  std::uint16_t maximum_mtu{};
+  std::uint16_t default_mtu{};
+  bool default_admin_enabled{};
+  std::uint16_t queue_frames_per_port{};
+  std::uint32_t fdb_entries{};
+  std::chrono::seconds fdb_aging{};
+  std::uint16_t untagged_broadcast_domains{};
+};
+
 // One release owns this entire generated catalog. Runtime capability output
 // consumes this value instead of repeating the release pin in hand-written C++.
 inline constexpr std::string_view release{"26.7.R1"};
-inline constexpr std::uint64_t catalog_hash = 0x922379034b3dcf54ULL;
-inline constexpr std::uint64_t checkpoint_schema_hash = 0xc14824cbb3c71b17ULL;
-inline constexpr std::uint64_t runtime_protocol_hash = 0x0e4f799b5b5d2714ULL;
-inline constexpr std::uint64_t build_hash = 0x7f8a23c2daaecae3ULL;
+inline constexpr std::uint64_t catalog_hash = 0x6963e703b930a967ULL;
+inline constexpr std::uint64_t checkpoint_schema_hash = 0xafb89f3baf57987dULL;
+inline constexpr std::uint64_t runtime_protocol_hash = 0x93fe9fe7c895d610ULL;
+inline constexpr std::uint64_t build_hash = 0xae9ae746d44fddcbULL;
 
 inline constexpr std::size_t maximum_routers = 16;
 inline constexpr std::size_t maximum_hosts = 16;
+inline constexpr std::size_t maximum_switches = 16;
 inline constexpr std::size_t maximum_links = 64;
 inline constexpr std::size_t maximum_sessions_per_router = 4;
 inline constexpr std::size_t maximum_ports_per_router = 800;
 inline constexpr std::size_t maximum_card_slots = 10;
 inline constexpr std::size_t maximum_mda_slots_per_card = 2;
 inline constexpr std::size_t maximum_ports_per_mda = 40;
+inline constexpr std::size_t maximum_switch_ports = 24;
+inline constexpr std::size_t maximum_switch_queue_frames = 256;
 inline constexpr std::size_t maximum_static_routes_per_router = 64;
+inline constexpr std::size_t maximum_dynamic_routes_per_router = 8192;
 inline constexpr std::uint16_t maximum_ecmp_paths = 128;
 inline constexpr std::size_t maximum_fib_routes_per_router =
     maximum_ports_per_router + maximum_static_routes_per_router;
@@ -44,7 +66,7 @@ inline constexpr std::size_t wasm_stack_bytes = 1048576U;
 inline constexpr std::size_t packet_pool_bytes = 67108864U;
 inline constexpr std::size_t terminal_output_arena_bytes = 16777216U;
 inline constexpr std::size_t terminal_result_bytes = 1048576U;
-inline constexpr std::size_t runtime_control_reserve_bytes = 41943040U;
+inline constexpr std::size_t runtime_control_reserve_bytes = 67108864U;
 inline constexpr std::size_t low_cpu_max = 4;
 inline constexpr std::size_t medium_cpu_max = 8;
 inline constexpr std::size_t low_control_shards = 1;
@@ -56,8 +78,8 @@ inline constexpr std::size_t high_forwarding_shards = 3;
 inline constexpr std::size_t low_link_shards = 0;
 inline constexpr std::size_t medium_link_shards = 1;
 inline constexpr std::size_t high_link_shards = 1;
-inline constexpr std::size_t maximum_worker_domains = 6;
-inline constexpr std::size_t worker_startup_attempts = 200;
+inline constexpr std::size_t maximum_worker_domains = 7;
+inline constexpr std::size_t worker_startup_attempts = 1000;
 inline constexpr std::chrono::milliseconds worker_startup_poll{
     10};
 inline constexpr std::chrono::milliseconds telemetry_publish_interval{
@@ -148,6 +170,20 @@ inline constexpr std::size_t network_command_ring_entries = 8;
 inline constexpr std::size_t network_result_ring_entries = 32;
 inline constexpr std::size_t network_command_work_budget = 64;
 inline constexpr std::size_t forwarding_ring_frames = 64;
+inline constexpr std::size_t ospf_packet_ring_frames = 256;
+inline constexpr std::size_t ospf_lsas_per_instance = 4096;
+inline constexpr std::size_t ospf_vertices_per_area = 2048;
+inline constexpr std::size_t ospf_edges_per_area = 8192;
+inline constexpr std::size_t ospf_neighbors_per_interface = 256;
+inline constexpr std::size_t ospf_work_budget_packets = 64;
+inline constexpr std::size_t ospf_v2_instances_per_router = 32;
+inline constexpr std::size_t ospf_v3_instances_per_router = 64;
+inline constexpr std::uint8_t ospf_v2_instance_first = 0;
+inline constexpr std::uint8_t ospf_v2_instance_last = 31;
+inline constexpr std::uint8_t ospf_v3_ipv6_instance_first = 0;
+inline constexpr std::uint8_t ospf_v3_ipv6_instance_last = 31;
+inline constexpr std::uint8_t ospf_v3_ipv4_instance_first = 64;
+inline constexpr std::uint8_t ospf_v3_ipv4_instance_last = 95;
 inline constexpr std::size_t candidate_keys_per_router = 16384;
 inline constexpr std::size_t candidate_keys_per_session = 128;
 inline constexpr std::size_t maximum_active_capture_points = 25744;
@@ -208,6 +244,66 @@ inline constexpr std::array<TlsAlgorithmName, 15> tls13_signatures{{
 }};
 inline constexpr std::chrono::seconds dynamic_arp_timeout{
     14400};
+inline constexpr std::chrono::seconds ospf_hello_interval{
+    10};
+inline constexpr std::chrono::seconds ospf_dead_interval{
+    40};
+inline constexpr std::chrono::seconds ospf_retransmit_interval{
+    5};
+inline constexpr std::chrono::seconds ospf_transmit_delay{
+    1};
+inline constexpr std::chrono::seconds ospf_hello_interval_minimum{
+    1};
+inline constexpr std::chrono::seconds ospf_hello_interval_maximum{
+    65535};
+inline constexpr std::chrono::seconds ospf_dead_interval_minimum{
+    2};
+inline constexpr std::chrono::seconds ospf_dead_interval_maximum{
+    65535};
+inline constexpr std::chrono::seconds ospf_retransmit_interval_minimum{
+    1};
+inline constexpr std::chrono::seconds ospf_retransmit_interval_maximum{
+    1800};
+inline constexpr std::chrono::seconds ospf_transmit_delay_minimum{
+    1};
+inline constexpr std::chrono::seconds ospf_transmit_delay_maximum{
+    1800};
+inline constexpr std::chrono::seconds ospf_poll_interval{
+    120};
+inline constexpr std::uint32_t ospf_interface_cost =
+    0U;
+inline constexpr std::uint8_t ospf_interface_priority =
+    1U;
+inline constexpr std::uint32_t ospf_interface_metric_minimum =
+    1U;
+inline constexpr std::uint32_t ospf_interface_metric_maximum =
+    65535U;
+inline constexpr std::uint32_t ospf_reference_bandwidth_kbps =
+    100000000U;
+inline constexpr std::uint32_t ospf_router_preference =
+    10U;
+inline constexpr std::uint32_t ospf_external_preference =
+    150U;
+inline constexpr std::chrono::milliseconds ospf_spf_initial_wait{
+    1000};
+inline constexpr std::chrono::milliseconds ospf_spf_second_wait{
+    1000};
+inline constexpr std::chrono::milliseconds ospf_spf_maximum_wait{
+    10000};
+inline constexpr std::chrono::milliseconds ospf_lsa_initial_wait{
+    5000};
+inline constexpr std::chrono::milliseconds ospf_lsa_second_wait{
+    5000};
+inline constexpr std::chrono::milliseconds ospf_lsa_maximum_wait{
+    5000};
+inline constexpr std::chrono::seconds ospf_lsa_refresh{
+    1800};
+inline constexpr std::chrono::seconds ospf_lsa_max_age{
+    3600};
+inline constexpr std::chrono::seconds ospf_min_lsa_interval{
+    5};
+inline constexpr std::chrono::seconds ospf_min_ls_arrival{
+    1};
 inline constexpr std::uint32_t arp_timeout_minimum_seconds =
     0U;
 inline constexpr std::uint32_t arp_timeout_maximum_seconds =
@@ -386,6 +482,33 @@ inline constexpr std::chrono::milliseconds ping_timeout{
     5000};
 inline constexpr std::chrono::seconds checkpoint_max_relative_deadline{
     86400};
+
+inline constexpr std::array<EthernetSwitchProfile, 1> ethernet_switch_profiles{{
+    {"generic-ethernet-24", "Ethernet Switch 24", 24, 2, {{1000U, 10000U, 0U, 0U}}, 10000U, 68U, 9212U, 9212U, true, 256U, 4096U, std::chrono::seconds{300}, 1U}
+}};
+
+[[nodiscard]] inline constexpr const EthernetSwitchProfile *
+find_ethernet_switch_profile(std::string_view id) noexcept {
+  for (const auto &profile : ethernet_switch_profiles)
+    if (profile.id == id)
+      return &profile;
+  return nullptr;
+}
+
+[[nodiscard]] inline constexpr std::optional<std::uint16_t>
+ethernet_switch_profile_index(std::string_view id) noexcept {
+  for (std::size_t index{}; index < ethernet_switch_profiles.size(); ++index)
+    if (ethernet_switch_profiles[index].id == id)
+      return static_cast<std::uint16_t>(index);
+  return std::nullopt;
+}
+
+[[nodiscard]] inline constexpr const EthernetSwitchProfile *
+ethernet_switch_profile(std::uint16_t index) noexcept {
+  return index < ethernet_switch_profiles.size()
+             ? &ethernet_switch_profiles[index]
+             : nullptr;
+}
 
 struct PortGroup {
   std::uint8_t count{};

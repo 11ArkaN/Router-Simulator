@@ -21,6 +21,11 @@ export interface ProjectVaultMaterial {
   context: Uint8Array;
 }
 
+function projectContext(projectId: string): Uint8Array {
+  return new TextEncoder().encode(
+    `router-simulator/project-secret-vault/v1/${projectId}`);
+}
+
 function database(): Promise<IDBDatabase> {
   if (databasePromise) return databasePromise;
   databasePromise = new Promise((resolve, reject) => {
@@ -131,9 +136,16 @@ async function projectKey(projectId: string, db: IDBDatabase,
 }
 
 export async function projectVaultMaterial(
-  projectId: string): Promise<ProjectVaultMaterial> {
+  projectId: string,
+  importedWrappingKey?: Uint8Array): Promise<ProjectVaultMaterial> {
   if (!projectId || new TextEncoder().encode(projectId).byteLength > 128)
     throw new Error("Project identity is invalid for secret storage");
+  if (importedWrappingKey) {
+    if (importedWrappingKey.byteLength !== 32)
+      throw new Error("Imported project wrapping key has an invalid size");
+    return { wrappingKey: importedWrappingKey.slice(),
+      context: projectContext(projectId) };
+  }
   const db = await database();
   const deviceKey = await deviceWrappingKey(db);
   const unwrapped = await projectKey(projectId, db, deviceKey);
@@ -141,7 +153,25 @@ export async function projectVaultMaterial(
     await crypto.subtle.exportKey("raw", unwrapped));
   if (wrappingKey.byteLength !== 32)
     throw new Error("Project wrapping key has an invalid size");
-  const context = new TextEncoder().encode(
-    `router-simulator/project-secret-vault/v1/${projectId}`);
-  return { wrappingKey, context };
+  return { wrappingKey, context: projectContext(projectId) };
+}
+
+export async function persistProjectWrappingKey(
+  projectId: string, rawKey: Uint8Array): Promise<void> {
+  if (!projectId || new TextEncoder().encode(projectId).byteLength > 128 ||
+      rawKey.byteLength !== 32)
+    throw new Error("Imported project key record is invalid");
+  const db = await database();
+  const deviceKey = await deviceWrappingKey(db);
+  const imported = await crypto.subtle.importKey(
+    "raw", rawKey.slice().buffer as ArrayBuffer,
+    { name: "AES-GCM", length: 256 }, true,
+    ["encrypt", "decrypt"]);
+  const wrapped = await crypto.subtle.wrapKey(
+    "raw", imported, deviceKey, "AES-KW");
+  const transaction = db.transaction(PROJECT_KEYS, "readwrite");
+  transaction.objectStore(PROJECT_KEYS).put({
+    projectId, algorithm: "AES-KW-256", wrapped
+  } satisfies StoredProjectKey, projectId);
+  await committed(transaction);
 }

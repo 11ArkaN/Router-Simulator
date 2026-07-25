@@ -32,6 +32,29 @@ inline constexpr std::size_t maximum_ipv4_connected_inputs =
          static_cast<std::uint32_t>(c) << 8 | d;
 }
 
+// The protocol identity crosses the RIB-to-FIB boundary. Collapsing OSPFv2
+// and OSPFv3 into a generic dynamic value would make administrative selection,
+// route inspection and later policy evaluation depend on hidden side state.
+enum class RouteSource : std::uint8_t {
+  connected,
+  static_route,
+  ospf,
+  ospf3
+};
+
+// RFC 2328 section 16.4 defines an ordering between OSPF path classes that is
+// independent of the numeric cost. NSSA origins remain explicit so translation
+// and route policy never have to infer them from an already flattened metric.
+enum class OspfPathType : std::uint8_t {
+  none,
+  intra_area,
+  inter_area,
+  external_type_1,
+  external_type_2,
+  nssa_type_1,
+  nssa_type_2
+};
+
 struct Route {
   std::uint32_t network{};
   std::uint32_t next_hop{};
@@ -42,11 +65,13 @@ struct Route {
   // selection policy from insertion order.
   std::uint16_t preference{};
   std::uint32_t metric{};
-  enum class Source : std::uint8_t { connected, static_route, dynamic } source{};
+  RouteSource source{};
   // The Base router system interface is a local /32 and has no physical
   // egress. This bit prevents its route from borrowing ordinal zero and being
   // forwarded or used to resolve a static next hop through unrelated hardware.
   bool local_system{};
+  OspfPathType ospf_path_type{OspfPathType::none};
+  std::uint8_t protocol_instance{};
 };
 
 struct ConnectedInput {
@@ -84,14 +109,28 @@ struct DynamicInput {
   std::uint16_t preference{};
   std::uint32_t metric{};
   std::uint8_t prefix_length{};
+  RouteSource source{RouteSource::ospf};
+  OspfPathType ospf_path_type{OspfPathType::intra_area};
+  std::uint32_t internal_metric{};
+  std::uint32_t area_id{};
+  std::uint32_t tag{};
+  std::uint8_t protocol_instance{};
+  // RFC 5286 repair next hops are retained outside the normal ECMP set. They
+  // become eligible only after forwarding observes that the primary egress is
+  // unavailable, so a longer alternate cannot carry ordinary steady traffic.
+  bool loop_free_alternate{};
 };
 
 struct FibProgram {
   // Generation is compared by the forwarding owner before replacement. A
   // delayed older programming message cannot restore withdrawn routes.
   std::uint64_t generation{};
+  // Primary routes occupy [0, count); RFC 5286 repair entries immediately
+  // follow them. Both classes consume the same generated hardware FIB budget,
+  // which avoids inventing a second hidden route resource for backups.
   std::array<Route, device_catalog::maximum_fib_routes_per_router> routes{};
   std::uint16_t count{};
+  std::uint16_t loop_free_alternate_count{};
 };
 
 class RouteTable final {
@@ -112,7 +151,10 @@ public:
 
 private:
   std::array<Route, device_catalog::maximum_fib_routes_per_router> routes_{};
+  std::array<Route, device_catalog::maximum_fib_routes_per_router>
+      loop_free_alternates_{};
   std::uint16_t count_{};
+  std::uint16_t loop_free_alternate_count_{};
   bool last_rebuild_valid_{true};
 };
 
@@ -143,6 +185,10 @@ host_next_hop(HostNextHopInput input) noexcept {
 [[nodiscard]] bool lookup(const FibProgram &fib, std::uint32_t destination,
                           Route &selected,
                           std::uint64_t flow_hash = 0U) noexcept;
+[[nodiscard]] bool
+lookup_loop_free_alternate(const FibProgram &fib, std::uint32_t destination,
+                           Route &selected,
+                           std::uint64_t flow_hash = 0U) noexcept;
 
 struct Ipv6Route {
   // The logical interface scopes RFC 4007 state. The physical ordinal selects
@@ -155,7 +201,9 @@ struct Ipv6Route {
   std::uint8_t prefix_length{};
   std::uint16_t preference{};
   std::uint32_t metric{};
-  Route::Source source{};
+  RouteSource source{};
+  OspfPathType ospf_path_type{OspfPathType::none};
+  std::uint8_t protocol_instance{};
 };
 
 struct Ipv6ConnectedInput {
@@ -192,13 +240,23 @@ struct Ipv6DynamicInput {
   std::uint16_t preference{};
   std::uint32_t metric{};
   std::uint8_t prefix_length{};
+  RouteSource source{RouteSource::ospf3};
+  OspfPathType ospf_path_type{OspfPathType::intra_area};
+  std::uint32_t internal_metric{};
+  std::uint32_t area_id{};
+  std::uint32_t tag{};
+  std::uint8_t protocol_instance{};
+  bool loop_free_alternate{};
 };
 
 struct Ipv6FibProgram {
   std::uint64_t generation{};
+  // IPv6 uses the same contiguous primary-then-repair ownership contract as
+  // IPv4. Checkpoint and forwarding code can therefore validate one capacity.
   std::array<Ipv6Route,
              device_catalog::maximum_fib_routes_per_router> routes{};
   std::uint16_t count{};
+  std::uint16_t loop_free_alternate_count{};
 };
 
 class Ipv6RouteTable final {
@@ -224,7 +282,11 @@ public:
 private:
   std::array<Ipv6Route,
              device_catalog::maximum_fib_routes_per_router> routes_{};
+  std::array<Ipv6Route,
+             device_catalog::maximum_fib_routes_per_router>
+      loop_free_alternates_{};
   std::uint16_t count_{};
+  std::uint16_t loop_free_alternate_count_{};
   bool last_rebuild_valid_{true};
 };
 
@@ -232,5 +294,8 @@ private:
                           const ip::Ipv6 &destination,
                           Ipv6Route &selected,
                           std::uint64_t flow_hash = 0U) noexcept;
+[[nodiscard]] bool lookup_loop_free_alternate(
+    const Ipv6FibProgram &fib, const ip::Ipv6 &destination,
+    Ipv6Route &selected, std::uint64_t flow_hash = 0U) noexcept;
 
 } // namespace router::lab::routing

@@ -11,8 +11,10 @@
 #include <array>
 #include <chrono>
 #include <initializer_list>
+#include <limits>
 #include <memory>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -87,6 +89,35 @@ std::string_view capture_projection(std::string_view snapshot) {
   return end == std::string_view::npos
              ? std::string_view{}
              : snapshot.substr(content, end - content);
+}
+
+std::size_t pcapng_enhanced_packet_blocks(
+    std::span<const std::uint8_t> bytes) {
+  // A capture-generation regression must inspect the exported wire format, not
+  // only the facade counter. The little-endian block walk verifies every
+  // leading and trailing length while counting type 6 Enhanced Packet Blocks.
+  // Returning max on malformed input makes corruption fail the same assertion
+  // as historic packet leakage, without introducing a test-only parser path.
+  std::size_t packets{};
+  for (std::size_t offset{}; offset < bytes.size();) {
+    if (bytes.size() - offset < 12U)
+      return std::numeric_limits<std::size_t>::max();
+    const auto read32 = [&](std::size_t at) {
+      return static_cast<std::uint32_t>(bytes[at]) |
+             (static_cast<std::uint32_t>(bytes[at + 1U]) << 8U) |
+             (static_cast<std::uint32_t>(bytes[at + 2U]) << 16U) |
+             (static_cast<std::uint32_t>(bytes[at + 3U]) << 24U);
+    };
+    const auto type = read32(offset);
+    const auto length = read32(offset + 4U);
+    if (length < 12U || (length & 3U) != 0U ||
+        length > bytes.size() - offset ||
+        read32(offset + length - 4U) != length)
+      return std::numeric_limits<std::size_t>::max();
+    packets += type == 6U ? 1U : 0U;
+    offset += length;
+  }
+  return packets;
 }
 
 } // namespace
@@ -164,13 +195,418 @@ void lab_runtime_tests() {
               sr7_cards.find("iom5-e") != std::string_view::npos &&
               sr7_cards.find("cpm-1") == std::string_view::npos,
           "CLI completion escaped the selected router profile catalog");
+  // A link supplies physical carrier independently of the router's equipment
+  // hierarchy. Keep the card down while equipping its MDA so this fixture
+  // proves that the operational CLI does not mistake carrier for a usable
+  // forwarding port.
+  require(
+      !runtime
+               .command(message(lab_runtime_protocol::hardware_card_set,
+                                {"r7", "1", "iom4-e", "iom4-e"}))
+               .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::hardware_mda_set,
+                                {"r7", "1", "1", "me10-10gb-sfp+",
+                                 "me10-10gb-sfp+"}))
+               .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::hardware_mda_admin_set,
+                                {"r7", "1", "1", "1"}))
+               .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::port_configure,
+                                {"r7", "1/1/1", "1", "9212", "10000", ""}))
+               .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::host_create,
+                                {"r7-peer", "R7 peer"}))
+               .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::link_create,
+                                {"r7-disabled-card-link", "r7", "1/1/1",
+                                 "r7-peer", "eth0", "0", "1", "0"}))
+               .starts_with("ERROR:"),
+      "disabled-card operational fixture could not create its physical path");
+  const auto disabled_card_port = runtime.command(
+      message(lab_runtime_protocol::session_execute,
+              {"r7-console", "show port 1/1/1"}));
+  require(disabled_card_port.find("Admin State        : up") !=
+                  std::string_view::npos &&
+              disabled_card_port.find("Physical Link      : Yes") !=
+                  std::string_view::npos &&
+              disabled_card_port.find("Oper State         : down") !=
+                  std::string_view::npos,
+          "show port ignored the disabled card or MDA hierarchy");
   require(
       !runtime.command(
                   message(lab_runtime_protocol::session_close, {"r7-console"}))
               .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::link_delete,
+                                {"r7-disabled-card-link"}))
+               .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::host_delete,
+                                {"r7-peer"}))
+               .starts_with("ERROR:") &&
           !runtime.command(message(lab_runtime_protocol::router_delete, {"r7"}))
                .starts_with("ERROR:"),
       "profile completion fixture did not release its router and session");
+
+  // Exercise the system-interface workflow as an operator enters it, one
+  // context at a time. Earlier coverage used complete root-relative leaf
+  // paths, which could pass while an interactive `router -> interface ->
+  // ipv4 -> primary` traversal saved the wrong context and committed no
+  // interface at all. The isolated router also proves that the operational
+  // report reads the running datastore rather than state left by the larger
+  // forwarding fixture below.
+  require(
+      !runtime.command(message(lab_runtime_protocol::router_create,
+                               {"r-context", "7750-sr-1", "R-CONTEXT"}))
+               .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::session_create,
+                                {"context-console", "r-context",
+                                 "operational"}))
+               .starts_with("ERROR:"),
+      "contextual system-interface fixture could not create its router");
+  const auto contextual_command = [&](std::string_view command) {
+    return runtime.command(message(lab_runtime_protocol::session_execute,
+                                   {"context-console", command}));
+  };
+  const auto forbidden_context =
+      contextual_command("configure router \"Base\" interface \"system\"");
+  require(forbidden_context.find(
+              "Operation not allowed - currently in operational mode") !=
+              std::string_view::npos &&
+              forbidden_context.find("[/configure") == std::string_view::npos,
+          "operational session entered a false MD configuration context");
+  const auto contextual_entry = contextual_command("edit-config exclusive");
+  if (contextual_entry.find("(ex)[/]") == std::string_view::npos)
+    throw std::runtime_error(
+        std::string{"explicit workflow changed the operational root: "} +
+        std::string{contextual_entry});
+  require(contextual_command("configure router \"Base\"")
+                  .find("(ex)[/configure router \"Base\"]") !=
+              std::string_view::npos,
+          "Base router navigation selected the wrong context");
+  const auto contextual_system = contextual_command("interface \"system\"");
+  if (contextual_system.find(
+          "(ex)[/configure router \"Base\" interface \"system\"]") ==
+      std::string_view::npos)
+    throw std::runtime_error(
+        std::string{"system interface navigation selected the wrong context: "} +
+        std::string{contextual_system});
+  const auto keyed_list_compare = contextual_command("compare");
+  require(keyed_list_compare.find(
+              "~ router \"Base\" interface \"system\"") !=
+              std::string_view::npos,
+          "entering an MD interface list instance did not create its "
+          "candidate key");
+  require(contextual_command("ipv4")
+                  .find("(ex)[/configure router \"Base\" interface \"system\" "
+                        "ipv4]") != std::string_view::npos &&
+              contextual_command("primary")
+                      .find("(ex)[/configure router \"Base\" interface "
+                            "\"system\" "
+                            "ipv4 primary]") != std::string_view::npos,
+          "IPv4 primary navigation lost the system interface list key");
+  require(contextual_command("address 10.255.255.1 prefix-length 32")
+                  .find("MINOR:") == std::string_view::npos &&
+              contextual_command("back 2")
+                      .find("(ex)[/configure router \"Base\" interface "
+                            "\"system\"]") != std::string_view::npos &&
+              contextual_command("admin-state enable")
+                      .find("MINOR:") == std::string_view::npos,
+          "contextual system-interface leaves were not accepted");
+  require(contextual_command("commit").find("MINOR:") ==
+                  std::string_view::npos &&
+              contextual_command("exit all").find("(ex)[/]") !=
+                  std::string_view::npos &&
+              contextual_command("quit-config")
+                      .find("CLI #2064: Exiting exclusive") !=
+                  std::string_view::npos,
+          "system-interface candidate could not commit and leave its workflow");
+  const auto contextual_show = contextual_command("show router interface");
+  if (contextual_show.find("system") == std::string_view::npos ||
+      contextual_show.find("10.255.255.1/32") == std::string_view::npos ||
+      contextual_show.find("Up/Down") == std::string_view::npos)
+    throw std::runtime_error(
+        std::string{
+            "show router interface lost a contextually committed system "
+            "interface: "} +
+        std::string{contextual_show});
+
+  // The immutable system interface is a special loopback and cannot prove
+  // that ordinary keyed interfaces are created correctly. Exercise a new
+  // user-named list entry without a port. Its administrative state and address
+  // must commit, while the operational state remains Down because no physical
+  // carrier is associated. Rendering the row instead of hiding it is
+  // important: `show router interface` reports configured interfaces, not only
+  // interfaces that currently forward packets.
+  require(contextual_command("edit-config exclusive")
+                  .find("(ex)[/]") != std::string_view::npos &&
+              contextual_command(
+                  "configure router \"Base\" interface \"md-loop\"")
+                      .find("interface \"md-loop\"") !=
+                  std::string_view::npos &&
+              contextual_command("ipv4 primary")
+                      .find("ipv4 primary") != std::string_view::npos &&
+              contextual_command("address 192.0.2.1 prefix-length 32")
+                      .find("MINOR:") == std::string_view::npos &&
+              contextual_command("back 2")
+                      .find("interface \"md-loop\"") !=
+                  std::string_view::npos &&
+              contextual_command("admin-state enable")
+                      .find("MINOR:") == std::string_view::npos &&
+              contextual_command("commit").find("MINOR:") ==
+                  std::string_view::npos &&
+              contextual_command("exit all").find("(ex)[/]") !=
+                  std::string_view::npos &&
+              contextual_command("quit-config")
+                      .find("CLI #2064: Exiting exclusive") !=
+                  std::string_view::npos,
+          "ordinary MD router interface did not survive its candidate "
+          "workflow");
+  const auto md_interface_show = contextual_command("show router interface");
+  require(md_interface_show.find("md-loop") != std::string_view::npos &&
+              md_interface_show.find("192.0.2.1/32") !=
+                  std::string_view::npos &&
+              md_interface_show.find("Down/Down") != std::string_view::npos,
+          "show router interface hid an unbound MD interface");
+
+  // Validate OSPF MD navigation exactly as an interactive operator uses it.
+  // A root-relative command can hide a broken saved working context because
+  // the parser sees the complete schema path in one input. These individual
+  // entries therefore prove that every keyed parent survives into the next
+  // command and that the global `info` command reads the deepest saved path.
+  require(contextual_command("edit-config exclusive")
+                  .find("(ex)[/]") != std::string_view::npos &&
+              contextual_command("configure router \"Base\"")
+                      .find("router \"Base\"") != std::string_view::npos &&
+              contextual_command("ospf 0").find("ospf 0") !=
+                  std::string_view::npos &&
+              contextual_command("router-id 10.255.255.1")
+                      .find("MINOR:") == std::string_view::npos &&
+              contextual_command("area 0.0.0.0")
+                      .find("area 0.0.0.0") != std::string_view::npos &&
+              contextual_command("interface \"md-loop\"")
+                      .find("interface \"md-loop\"") !=
+                  std::string_view::npos &&
+              contextual_command("metric 17").find("MINOR:") ==
+                  std::string_view::npos,
+          "MD OSPF navigation lost a keyed context");
+  const auto contextual_info = contextual_command("info");
+  require(contextual_info.find("metric 17\n") !=
+                  std::string_view::npos &&
+              contextual_info.find("interface-type") !=
+                  std::string_view::npos &&
+              contextual_info.find("interface \"md-loop\" {\n") ==
+                  std::string_view::npos &&
+              contextual_info.find(
+                  "(ex)[/configure router \"Base\" ospf 0 area 0.0.0.0 "
+                  "interface \"md-loop\"]") != std::string_view::npos &&
+              contextual_info.find("MINOR:") == std::string_view::npos,
+          "info did not render the current OSPF interface candidate context");
+  const auto contextual_info_detail = contextual_command("info detail");
+  require(contextual_info_detail.find("metric 17") !=
+                  std::string_view::npos &&
+              contextual_info_detail.find("hello-interval") !=
+                  std::string_view::npos,
+          "info detail omitted effective OSPF interface configuration");
+
+  // SR OS accepts quit-config only from the operational root. The rejected
+  // nested attempt must not damage the working context; otherwise a typo can
+  // strand or silently relocate an editor session. The following exit-all
+  // and quit sequence verifies the documented route out of the editor.
+  const auto nested_quit = contextual_command("quit-config");
+  require(nested_quit.find("MINOR:") != std::string_view::npos &&
+              nested_quit.find("interface \"md-loop\"") !=
+                  std::string_view::npos &&
+              contextual_command("commit").find("MINOR:") ==
+                  std::string_view::npos &&
+              contextual_command("exit all").find("(ex)[/]") !=
+                  std::string_view::npos &&
+              contextual_command("quit-config")
+                      .find("CLI #2064: Exiting exclusive") !=
+                  std::string_view::npos,
+          "nested quit-config changed context or the documented exit failed");
+
+  // Classic CLI owns immediate running edits rather than an MD candidate.
+  // Validate the root-relative form because operators commonly paste complete
+  // commands instead of navigating one context at a time. The address command
+  // creates the interface, and `no shutdown` changes only its administrative
+  // leaf. Both changes must be visible through the same operational report.
+  require(contextual_command("//").find("Switching to the classic CLI") !=
+              std::string_view::npos,
+          "contextual fixture could not enter classic CLI");
+  for (const auto command :
+       {"configure router interface classic-loop address 198.51.100.1/32",
+        "configure router interface classic-loop no shutdown"}) {
+    const auto result = contextual_command(command);
+    if (result.find("Error:") != std::string_view::npos)
+      throw std::runtime_error(
+          "valid classic router-interface edit failed: " +
+          std::string{command} + " output=" + std::string{result});
+  }
+  const auto classic_interface_show =
+      contextual_command("show router interface");
+  require(classic_interface_show.find("classic-loop") !=
+                  std::string_view::npos &&
+              classic_interface_show.find("198.51.100.1/32") !=
+                  std::string_view::npos &&
+              classic_interface_show.find("Down/Down") !=
+                  std::string_view::npos,
+          "show router interface hid an immediately configured classic "
+          "interface");
+
+  // OSPF references the canonical Base interface list. Configuration on an
+  // existing but currently unbound interface is legal and remains
+  // operationally Down until a port is attached; command ordering must not
+  // force the operator to fabricate a physical link first. Conversely, a
+  // name absent from the router interface list is an invalid leafref and the
+  // immediate classic transaction must roll back without creating protocol
+  // intent.
+  for (const auto command :
+       {"configure router ospf 0 10.255.255.1",
+        "configure router ospf 0 area 0 interface classic-loop passive",
+        "configure router ospf 0 no shutdown"}) {
+    const auto result = contextual_command(command);
+    if (result.find("Error:") != std::string_view::npos)
+      throw std::runtime_error(
+          "valid classic OSPF edit on a canonical Down interface failed: " +
+          std::string{command} + " output=" + std::string{result});
+  }
+  const auto ospf_status = contextual_command("show router ospf status");
+  require(ospf_status.find("10.255.255.1") != std::string_view::npos &&
+              ospf_status.find("0.0.0.0") != std::string_view::npos,
+          "OSPF status did not query the configured process owner");
+  const auto ospf_interfaces =
+      contextual_command("show router ospf interface");
+  require(ospf_interfaces.find("classic-loop") != std::string_view::npos &&
+              ospf_interfaces.find("Down") != std::string_view::npos,
+          "OSPF interface report hid a configured operationally Down row");
+  const auto ospf_interface_detail =
+      contextual_command("show router ospf interface classic-loop detail");
+  require(ospf_interface_detail.find(
+              "Interface \"classic-loop\" (detail)") !=
+                  std::string_view::npos &&
+              ospf_interface_detail.find("Area Id          : 0.0.0.0") !=
+                  std::string_view::npos &&
+              ospf_interface_detail.find("Oper State       : Down") !=
+                  std::string_view::npos &&
+              ospf_interface_detail.find("Unknown element") ==
+                  std::string_view::npos,
+          "OSPF interface detail did not filter and render the canonical "
+          "configured Down interface");
+  // A classic OSPF create command enters the process context. Return to the
+  // operational root before exercising the complete, user-typed hierarchy so
+  // this test verifies every transition instead of depending on the context
+  // left by the earlier absolute configuration compatibility checks.
+  contextual_command("exit all");
+  for (const auto command :
+       {"configure", "router", "ospf 0", "area 0",
+        "interface classic-loop"}) {
+    const auto result = contextual_command(command);
+    if (result.find("Error:") != std::string_view::npos ||
+        result.find("MINOR:") != std::string_view::npos)
+      throw std::runtime_error(
+          "classic context navigation failed: " + std::string{command} +
+          " output=" + std::string{result});
+  }
+  const auto classic_context_info = contextual_command("info");
+  require(classic_context_info.find(
+              "----------------------------------------------\n") !=
+                  std::string_view::npos &&
+              classic_context_info.find("passive\n") !=
+                  std::string_view::npos &&
+              classic_context_info.find('{') == std::string_view::npos &&
+              classic_context_info.find(">config>router>ospf>area>if#") !=
+                  std::string_view::npos &&
+              classic_context_info.find(">ospf>0>") ==
+                  std::string_view::npos &&
+              classic_context_info.find("MINOR:") == std::string_view::npos,
+          "classic info did not render running configuration in the current "
+          "OSPF interface context");
+  const auto classic_context_detail = contextual_command("info detail");
+  require(classic_context_detail.find("metric ") != std::string_view::npos &&
+              classic_context_detail.find("hello-interval ") !=
+                  std::string_view::npos,
+          "classic info detail omitted effective OSPF interface defaults");
+  require(contextual_command("exit all").find(">config") ==
+              std::string_view::npos,
+          "classic info test did not return to the operational root");
+  // SR OS 26.7 accepts the detail suffix for both OSPF versions. Even without
+  // an OSPFv3 adjacency, the command must select the real detailed report and
+  // return an empty count rather than misdiagnosing the first `show` token.
+  const auto ospf3_neighbor_detail =
+      contextual_command("show router ospf3 neighbor detail");
+  require(ospf3_neighbor_detail.find("OSPF3 Neighbors (detail)") !=
+                  std::string_view::npos &&
+              ospf3_neighbor_detail.find("No. of Neighbors: 0") !=
+                  std::string_view::npos &&
+              ospf3_neighbor_detail.find("Unknown element") ==
+                  std::string_view::npos,
+          "OSPFv3 neighbor detail did not select its operational report");
+  const auto ospf_database_detail =
+      contextual_command("show router ospf database detail");
+  // This fixture intentionally binds OSPF only to an unbound, operationally
+  // Down interface, so the protocol owner has no LSA to describe. Requiring
+  // fabricated header fields here would make the test reward false state.
+  // Non-empty LSDB details are exercised by the routed multi-router scenario;
+  // this assertion proves that the generic schema modifier selects the real
+  // detailed report even when its truthful row count is zero.
+  require(ospf_database_detail.find("Link State Database (detail)") !=
+                  std::string_view::npos &&
+              ospf_database_detail.find("No. of LSAs: 0") !=
+                  std::string_view::npos &&
+              ospf_database_detail.find("Unknown element") ==
+                  std::string_view::npos,
+          "empty OSPF database detail was rejected or misclassified");
+  const auto ospf3_database_detail =
+      contextual_command("show router ospf3 database detail");
+  require(ospf3_database_detail.find("Link State Database (detail)") !=
+                  std::string_view::npos &&
+              ospf3_database_detail.find("No. of LSAs: 0") !=
+                  std::string_view::npos &&
+              ospf3_database_detail.find("Unknown element") ==
+                  std::string_view::npos,
+          "empty OSPF3 database detail was rejected or misclassified");
+  const auto phantom_ospf = contextual_command(
+      "configure router ospf 0 area 0 interface missing-interface passive");
+  require(phantom_ospf.find("Error:") != std::string_view::npos,
+          "OSPF accepted an interface key absent from router Base");
+
+  // Configuration vector order cannot suppress a later running instance.
+  // Keep instance 0 present but shutdown, then enable instance 1. This is the
+  // exact regression that formerly stopped projection at the first disabled
+  // record and made a valid later process disappear from operational state.
+  for (const auto command :
+       {"configure router ospf 0 shutdown",
+        "configure router ospf 1 10.255.255.2",
+        "configure router ospf 1 area 0 interface classic-loop passive",
+        "configure router ospf 1 no shutdown"}) {
+    const auto result = contextual_command(command);
+    if (result.find("Error:") != std::string_view::npos)
+      throw std::runtime_error(
+          "ordered OSPF instance regression setup failed: " +
+          std::string{command} + " output=" + std::string{result});
+  }
+  const auto ordered_ospf_status =
+      contextual_command("show router ospf status");
+  require(ordered_ospf_status.find("10.255.255.2") !=
+              std::string_view::npos,
+          "a disabled earlier OSPF instance hid a later enabled instance");
+  require(
+      !runtime
+               .command(message(lab_runtime_protocol::session_close,
+                                {"context-console"}))
+               .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::router_delete,
+                                {"r-context"}))
+               .starts_with("ERROR:"),
+      "contextual system-interface fixture did not release its owners");
 
   require(!runtime
                .command(
@@ -356,16 +792,21 @@ void lab_runtime_tests() {
                                    "",
                                    "1",
                                    "0",
+                                   "0",
+                                   "0",
+                                   "0",
                                    "0"});
-  require(
-      !runtime.command(
-                  message(lab_runtime_protocol::router_configuration_replace,
-                          {"r1", replacement}))
-              .starts_with("ERROR:") &&
-          runtime.command(message(lab_runtime_protocol::snapshot))
-                  .find("\"address\":\"2001:db8:1::1/64\"") !=
-              std::string_view::npos,
-      "atomic running configuration replacement was rejected");
+  const std::string replacement_result{runtime.command(
+      message(lab_runtime_protocol::router_configuration_replace,
+              {"r1", replacement}))};
+  const std::string replacement_snapshot{
+      runtime.command(message(lab_runtime_protocol::snapshot))};
+  if (replacement_result.starts_with("ERROR:") ||
+      replacement_snapshot.find("\"address\":\"2001:db8:1::1/64\"") ==
+          std::string_view::npos)
+    throw std::runtime_error(
+        "atomic running configuration replacement was rejected: " +
+        replacement_result);
   const std::string before_invalid{
       runtime.command(message(lab_runtime_protocol::snapshot))};
   const auto duplicate_interface = nested({"R1",
@@ -404,6 +845,9 @@ void lab_runtime_tests() {
                                            "",
                                            "1",
                                            "0",
+                                           "0",
+                                           "0",
+                                           "0",
                                            "0"});
   require(runtime.command(
                      message(lab_runtime_protocol::router_configuration_replace,
@@ -432,6 +876,28 @@ void lab_runtime_tests() {
       message(lab_runtime_protocol::session_execute, {"r1-console-1", "//"}));
   require(switched.find("A:R1#") != std::string_view::npos,
           "engine switch escaped its router terminal session");
+
+  // Inline other-engine execution must traverse the live LabRuntime command
+  // path, not the presentation-only DeviceState adapter used for prompts. OSPF
+  // and interface reports are owned by RouterIntent and the worker shards, so
+  // an empty adapter would either reject the command or silently show the
+  // wrong model. Keep the classic engine active around a foreign MD report and
+  // prove both live data visibility and exact context restoration.
+  const auto foreign_interface_show = runtime.command(
+      message(lab_runtime_protocol::session_execute,
+              {"r1-console-1", "//show router interface"}));
+  require(foreign_interface_show.find("Interface Table (Router: Base)") !=
+                  std::string_view::npos &&
+              foreign_interface_show.find("edge") != std::string_view::npos &&
+              foreign_interface_show.find("Switching to the MD-CLI engine") !=
+                  std::string_view::npos &&
+              foreign_interface_show.find(
+                  "\nINFO: CLI #2051: Switching to the classic CLI engine") !=
+                  std::string_view::npos &&
+              foreign_interface_show.find("A:R1#") != std::string_view::npos,
+          "inline MD report did not delimit live output or restore classic "
+          "context");
+
   const auto switched_back = runtime.command(
       message(lab_runtime_protocol::session_execute, {"r1-console-1", "//"}));
   require(switched_back.find("A:admin@R1#") != std::string_view::npos,
@@ -524,6 +990,12 @@ void lab_runtime_tests() {
   for (const auto command :
        {"router \"Base\" interface system ipv4 primary address "
         "10.255.0.1 prefix-length 32",
+        // SR OS treats the system interface as a loopback and therefore
+        // accepts an IPv6 host address without a physical port.  This command
+        // guards the contextual candidate editor that previously rejected all
+        // IPv6 system-interface leaves with MGMT_CORE #2301.
+        "router \"Base\" interface system ipv6 address "
+        "2001:db8:ffff::1 prefix-length 128",
         "router \"Base\" interface system admin-state enable"}) {
     const auto result = runtime.command(message(
         lab_runtime_protocol::session_execute, {"r1-console-1", command}));
@@ -540,11 +1012,28 @@ void lab_runtime_tests() {
   for (const auto command :
        {"router \"Base\" interface system ipv4 primary address "
         "10.255.0.1 prefix-length 32",
+        "router \"Base\" interface system ipv6 address "
+        "2001:db8:ffff::1 prefix-length 128",
         "router \"Base\" interface system admin-state enable"})
     require(runtime.command(message(lab_runtime_protocol::session_execute,
                                     {"r1-console-1", command}))
                     .find("MINOR:") == std::string_view::npos,
             "MD could not recreate the system interface after list deletion");
+
+  // The system-interface address must survive candidate publication and be
+  // visible through the same operational report used by Browser Use.  Looking
+  // only at the candidate would miss a failure in the forwarding-owner
+  // projection or in the special loopback interface identity.
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "commit"}))
+                  .find("MINOR:") == std::string_view::npos,
+          "MD could not commit the dual-stack system interface");
+  const auto dual_stack_system = runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1", "//show router interface system detail"}));
+  require(dual_stack_system.find("2001:db8:ffff::1/128") !=
+              std::string_view::npos,
+          "show router interface omitted the committed IPv6 system address");
 
   // IPv4 Redirect configuration is a real child of the numbered interface,
   // not merely accepted grammar. Exercise MD leaf presence and exact release
@@ -616,6 +1105,51 @@ void lab_runtime_tests() {
           "valid IPv6 MD command failed: " + std::string{command} +
           " output=" + std::string{result});
   }
+  const auto ra_context_navigation = runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1",
+       "router \"Base\" ipv6 router-advertisement interface edge"}));
+  if (ra_context_navigation.find("router-advertisement") ==
+          std::string_view::npos ||
+      ra_context_navigation.find("interface") == std::string_view::npos ||
+      ra_context_navigation.find("edge") == std::string_view::npos ||
+      ra_context_navigation.find("MINOR:") != std::string_view::npos)
+    throw std::runtime_error(
+        "MD could not enter the RA interface list context: " +
+        std::string{ra_context_navigation});
+  const auto ra_context_info = runtime.command(message(
+      lab_runtime_protocol::session_execute, {"r1-console-1", "info"}));
+  require(ra_context_info.find("admin-state enable\n") !=
+                  std::string_view::npos &&
+              ra_context_info.find("dns-options {\n") !=
+                  std::string_view::npos &&
+              ra_context_info.find("    server 2001:db8:1::53\n") !=
+                  std::string_view::npos &&
+              ra_context_info.find("prefix 2001:db8:1::/64 {\n") !=
+                  std::string_view::npos &&
+              ra_context_info.find("    autonomous true\n") !=
+                  std::string_view::npos &&
+              ra_context_info.find("    on-link true\n") !=
+                  std::string_view::npos &&
+              ra_context_info.find("interface \"edge\" {\n") ==
+                  std::string_view::npos &&
+              ra_context_info.find("MINOR:") == std::string_view::npos,
+          "info did not render the current RA interface candidate context");
+  const auto ra_context_detail = runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1", "info detail"}));
+  require(ra_context_detail.find("current-hop-limit 64\n") !=
+                  std::string_view::npos &&
+              ra_context_detail.find("router-lifetime ") !=
+                  std::string_view::npos,
+          "info detail omitted effective RA release defaults");
+  const auto ra_exit = runtime.command(message(
+      lab_runtime_protocol::session_execute, {"r1-console-1", "back 5"}));
+  if (ra_exit.find("/configure]") == std::string_view::npos ||
+      ra_exit.find("MINOR:") != std::string_view::npos)
+    throw std::runtime_error(
+        "RA info test could not return to the candidate root: " +
+        std::string{ra_exit});
   // Route siblings share one destination key but retain independent next-hop
   // children. Indirect intent is accepted even while inactive because no
   // dynamic protocol has published a resolver for it in this fixture.
@@ -874,12 +1408,24 @@ void lab_runtime_tests() {
   const std::string selected_port_report{
       runtime.command(message(lab_runtime_protocol::session_execute,
                               {"r1-console-1", "show port 1/1/1"}))};
+  const std::string detailed_port_report{
+      runtime.command(message(lab_runtime_protocol::session_execute,
+                              {"r1-console-1",
+                               "show port 1/1/1 detail"}))};
   const std::string system_routes{
       runtime.command(message(lab_runtime_protocol::session_execute,
                               {"r1-console-1", "show router route-table"}))};
   const std::string ipv6_routes{runtime.command(
       message(lab_runtime_protocol::session_execute,
               {"r1-console-1", "show router route-table ipv6"}))};
+  const std::string ospf_filtered_routes{runtime.command(
+      message(lab_runtime_protocol::session_execute,
+              {"r1-console-1",
+               "show router route-table protocol ospf"}))};
+  const std::string ospf3_filtered_ipv6_routes{runtime.command(
+      message(lab_runtime_protocol::session_execute,
+              {"r1-console-1",
+               "show router route-table ipv6 protocol ospf3"}))};
   const std::string router_advertisement_report{runtime.command(message(
       lab_runtime_protocol::session_execute,
       {"r1-console-1", "show router rtr-advertisement interface edge"}))};
@@ -897,12 +1443,23 @@ void lab_runtime_tests() {
           std::string_view::npos ||
       selected_port_report.find("Physical Link      : Yes") ==
           std::string_view::npos ||
+      detailed_port_report.find("Ethernet Interface") ==
+          std::string_view::npos ||
+      detailed_port_report.find("Interface          : 1/1/1") ==
+          std::string_view::npos ||
       interface_summary.find("Router Summary (Interfaces)") ==
           std::string_view::npos ||
       interface_summary.find("1         Base") == std::string_view::npos ||
       system_interfaces.find("system") == std::string_view::npos ||
       system_interfaces.find("10.255.0.1/32") == std::string_view::npos ||
       system_interfaces.find("edge") == std::string_view::npos ||
+      ospf_filtered_routes.find("Route Table (Router: Base)") ==
+          std::string_view::npos ||
+      ospf_filtered_routes.find("Unknown element") != std::string_view::npos ||
+      ospf3_filtered_ipv6_routes.find("IPv6 Route Table (Router: Base)") ==
+          std::string_view::npos ||
+      ospf3_filtered_ipv6_routes.find("Unknown element") !=
+          std::string_view::npos ||
       system_interfaces.find("Up/Up") == std::string_view::npos ||
       system_interfaces.find("2001:db8:2::1/64") == std::string_view::npos ||
       system_interfaces.find("PREFERRED") == std::string_view::npos ||
@@ -1530,7 +2087,7 @@ void lab_runtime_tests() {
   const std::vector<std::uint8_t> owned_multi_address_checkpoint(
       multi_address_checkpoint.begin(), multi_address_checkpoint.end());
   const auto decoded_multi_address =
-      checkpoint_v6::decode(owned_multi_address_checkpoint);
+      checkpoint_v7::decode(owned_multi_address_checkpoint);
   const PortableInterfaceIntentCheckpoint *multi_address_interface{};
   if (decoded_multi_address) {
     const auto device =
@@ -2245,7 +2802,15 @@ void lab_runtime_tests() {
   }
   require(ping_output.find("108 bytes from 192.0.2.2") !=
                   std::string_view::npos &&
+              ping_output.find("icmp_seq=1 ttl=64 time=") !=
+                  std::string_view::npos &&
+              ping_output.find("---- 192.0.2.2 PING Statistics ----") !=
+                  std::string_view::npos &&
               ping_output.find("1 packets transmitted, 1 packets received") !=
+                  std::string_view::npos &&
+              ping_output.find("0.00% packet loss") !=
+                  std::string_view::npos &&
+              ping_output.find("round-trip min = ") !=
                   std::string_view::npos,
           "asynchronous CLI ping did not return through the packet path");
   static_cast<void>(
@@ -2256,7 +2821,7 @@ void lab_runtime_tests() {
                   .starts_with("ERROR:") &&
               runtime.command(message(lab_runtime_protocol::session_poll,
                                       {"r1-console-1"}))
-                      .find("ping statistics") != std::string_view::npos,
+                      .find("PING Statistics") != std::string_view::npos,
           "out-of-band terminal cancellation did not stop active ping");
   require(!runtime.command(message(lab_runtime_protocol::interface_delete,
                                    {"r1", "edge"}))
@@ -2332,6 +2897,49 @@ void lab_runtime_tests() {
               replaced_capture.find("\"kind\":\"link-direction\"") !=
                   std::string_view::npos,
           "atomic capture replacement did not publish both locations");
+  // Exercise the browser's exact recording lifecycle through the public
+  // facade: deselect every point, rotate the capture generation, select the
+  // same physical wire again, then send a real ICMP exchange. This guards both
+  // halves of the contract. Historic EPBs must disappear, and retained binding
+  // metadata must not prevent the restarted session from seeing new frames.
+  const auto stopped_capture = runtime.command(message(
+      lab_runtime_protocol::capture_selection_replace, {nested({"0"})}));
+  require(!stopped_capture.starts_with("ERROR:") &&
+              capture_projection(stopped_capture).empty(),
+          "stopping capture did not retire every live observation point");
+  require(runtime.clear_capture(),
+          "capture generation could not rotate after all points were stopped");
+  const auto restarted_capture_selection =
+      nested({"2", "link-direction", "edge-link", "", "0", "1",
+              "link-direction", "edge-link", "", "1", "1"});
+  const auto restarted_capture = runtime.command(message(
+      lab_runtime_protocol::capture_selection_replace,
+      {restarted_capture_selection}));
+  require(!restarted_capture.starts_with("ERROR:") &&
+              capture_projection(restarted_capture).find("link-direction") !=
+                  std::string_view::npos,
+          "restarting capture did not restore the physical wire taps");
+  const auto empty_generation = runtime.prepare_capture();
+  require(pcapng_enhanced_packet_blocks(empty_generation) == 0U,
+          "fresh capture generation retained packets from the stopped session");
+  std::string capture_ping{runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1", "ping 192.0.2.2 count 1"}))};
+  for (std::size_t attempt = 0;
+       attempt < 200U && capture_ping.find("pending") != std::string::npos;
+       ++attempt) {
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    capture_ping += runtime.command(
+        message(lab_runtime_protocol::session_poll, {"r1-console-1"}));
+  }
+  require(capture_ping.find("1 packets transmitted, 1 packets received") !=
+              std::string_view::npos,
+          "capture restart fixture did not carry ICMP through the real link");
+  const auto restarted_bytes = runtime.prepare_capture();
+  const auto restarted_packets = pcapng_enhanced_packet_blocks(restarted_bytes);
+  require(restarted_packets > 0U &&
+              restarted_packets != std::numeric_limits<std::size_t>::max(),
+          "restarted capture did not export newly observed link frames");
   require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1", "configure exclusive"}))
                   .find("[ex:/configure]") != std::string_view::npos,
@@ -2485,7 +3093,26 @@ void lab_runtime_tests() {
         "policy-options policy-statement CHECKPOINT-MLD-IN default-action "
         "action-type accept",
         "router \"Base\" mld interface checkpoint-edge import-policy "
-        "CHECKPOINT-MLD-IN"}) {
+        "CHECKPOINT-MLD-IN",
+        // Keep an active protocol key in both portable intent and the control
+        // owner's operational checkpoint. The byte scan below then guards
+        // every serialization route instead of proving only that the generic
+        // SecretVault record is sealed.
+        "router \"Base\" interface system ipv4 primary address "
+        "10.255.255.1 prefix-length 32",
+        "router \"Base\" interface system admin-state enable",
+        "router \"Base\" ospf 0 router-id 10.255.255.1",
+        // The system interface advertises a passive stub but has no physical
+        // port and therefore no wire Interface ID. Its runtime checkpoint uses
+        // zero as a typed absence marker. Decoding this exact owner guards
+        // against accidentally imposing the physical-interface rule on a
+        // passive system prefix during browser autosave recovery.
+        "router \"Base\" ospf 0 area 0 interface system passive true",
+        "router \"Base\" ospf 0 area 0 interface checkpoint-edge "
+        "authentication-type password",
+        "router \"Base\" ospf 0 area 0 interface checkpoint-edge "
+        "authentication-key ospfkey1",
+        "router \"Base\" ospf 0 admin-state enable"}) {
     const std::string result{runtime.command(message(
         lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
     if (result.find("MINOR:") != std::string_view::npos)
@@ -2499,7 +3126,7 @@ void lab_runtime_tests() {
   const auto precommit_checkpoint = runtime.export_checkpoint();
   const std::vector<std::uint8_t> precommit_owned(precommit_checkpoint.begin(),
                                                   precommit_checkpoint.end());
-  const auto precommit_state = checkpoint_v6::decode(precommit_owned);
+  const auto precommit_state = checkpoint_v7::decode(precommit_owned);
   if (!precommit_state || precommit_state->portable_routers.size() != 1U ||
       !precommit_state->portable_routers.front().global_candidate_initialized)
     throw std::runtime_error(
@@ -2564,7 +3191,25 @@ void lab_runtime_tests() {
   const auto checkpoint = runtime.export_checkpoint();
   require(!checkpoint.empty(), "protocol 4 checkpoint export failed");
   const std::vector<std::uint8_t> owned(checkpoint.begin(), checkpoint.end());
-  const auto decoded_addresses = checkpoint_v6::decode(owned);
+  const auto decoded_addresses = checkpoint_v7::decode(owned);
+  require(decoded_addresses &&
+              !decoded_addresses->network.ospf.processes.empty() &&
+              !decoded_addresses->network.ospf.processes.front()
+                   .process.interfaces.empty(),
+          "checkpoint fixture did not retain its OSPF interface owner");
+  {
+    // RFC 2328 section 9.3 leaves a broadcast interface in DR Other, Backup
+    // or Designated Router after election. Exercise the highest valid state
+    // explicitly so the checkpoint bound cannot regress to the numerically
+    // earlier Point-to-Point state merely because simpler fixtures never run
+    // a broadcast election.
+    decoded_addresses->network.ospf.processes.front()
+        .process.interfaces.front()
+        .runtime.state = ospf::InterfaceState::designated;
+    const auto elected_bytes = checkpoint_v7::encode(*decoded_addresses);
+    require(checkpoint_v7::decode(elected_bytes) != nullptr,
+            "checkpoint rejected a valid OSPF Designated Router state");
+  }
   const auto contains_plaintext = [&owned](std::string_view secret) {
     // This searches the complete portable checkpoint, not only the vault
     // record. A failure therefore also detects accidental plaintext copies in
@@ -2575,8 +3220,9 @@ void lab_runtime_tests() {
   require(!contains_plaintext("primary-ppk") &&
               !contains_plaintext("primary-ike-psk") &&
               !contains_plaintext("protected-manual-key") &&
-              !contains_plaintext("12345678901234567890"),
-          "checkpoint serialized an IPsec credential in plaintext");
+              !contains_plaintext("12345678901234567890") &&
+              !contains_plaintext("ospfkey1"),
+          "checkpoint serialized an IPsec or OSPF credential in plaintext");
 
   {
     LabRuntime wrong_key_runtime;
@@ -2596,12 +3242,12 @@ void lab_runtime_tests() {
     // Flip a ciphertext byte through the public checkpoint codec so the test
     // does not depend on a private byte offset. The import must authenticate
     // the complete vault before restoring any router or terminal owner.
-    auto tampered_state = checkpoint_v6::decode(owned);
+    auto tampered_state = checkpoint_v7::decode(owned);
     require(tampered_state && !tampered_state->secret_vault.records.empty() &&
                 !tampered_state->secret_vault.records.front().sealed.empty(),
             "checkpoint fixture did not retain configured IPsec credentials");
     tampered_state->secret_vault.records.front().sealed.back() ^= 0x01U;
-    const auto tampered = checkpoint_v6::encode(*tampered_state);
+    const auto tampered = checkpoint_v7::encode(*tampered_state);
     LabRuntime tampered_runtime;
     require(
         tampered_runtime.initialize_secret_vault(project_key, project_context),
@@ -2712,9 +3358,9 @@ void lab_runtime_tests() {
       "intent");
   require(!restored
                .command(message(lab_runtime_protocol::capture_point_set,
-                                {"router-ingress", "r1", "1/1/1", "0", "0"}))
+                                {"link-direction", "edge-link", "", "0", "0"}))
                .starts_with("ERROR:"),
-          "checkpoint lost the stable capture location identity");
+          "checkpoint lost the active link-direction capture identity");
   std::string restored_ping;
   for (std::size_t attempt = 0; attempt < 200U; ++attempt) {
     std::this_thread::sleep_for(std::chrono::milliseconds{1});
@@ -2724,6 +3370,10 @@ void lab_runtime_tests() {
       break;
   }
   require(restored_ping.find("1 packets transmitted, 1 packets received") !=
-              std::string_view::npos,
+                  std::string_view::npos &&
+              restored_ping.find("ttl=") != std::string_view::npos &&
+              restored_ping.find("round-trip min = ") !=
+                  std::string_view::npos,
           "checkpoint lost asynchronous ping state or relative deadlines");
+
 }

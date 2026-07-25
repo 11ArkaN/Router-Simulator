@@ -120,6 +120,11 @@ address_octets(AddressFamily family) noexcept {
   return address[0] == 0xff;
 }
 
+[[nodiscard]] constexpr bool is_multicast(const Ipv4 &address) noexcept {
+  // RFC 1112 assigns class-D 224.0.0.0/4 to IPv4 multicast.
+  return (address[0] & 0xf0U) == 0xe0U;
+}
+
 [[nodiscard]] constexpr bool is_link_local(const Ipv6 &address) noexcept {
   // fe80::/10 is the complete unicast link-local block. Checking only the
   // first byte would incorrectly classify fec0::/10 site-local addresses.

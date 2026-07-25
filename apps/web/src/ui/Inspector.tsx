@@ -1,6 +1,6 @@
-// Inspector for the selected format 4 device. It retains the approved panel,
+// Inspector for the selected format 5 device. It retains the approved panel,
 // tab and control styling while all inventory choices come from the generated
-// release catalog and all operational values come from runtime snapshot ABI 6.
+// release catalog and all operational values come from runtime snapshot ABI 8.
 
 import { useEffect, useMemo, useState } from "react";
 import { ANNOTATION_LIMITS, PROFILE_CATALOG, type HostProjectV4,
@@ -54,6 +54,9 @@ interface Props {
   setCardAdmin(routerId: string, slot: number, enabled: boolean): void;
   setMdaAdmin(routerId: string, cardSlot: number, mdaSlot: number,
     enabled: boolean): void;
+  setSwitchName(switchId: string, name: string): void;
+  setSwitchPort(switchId: string, portId: string, enabled: boolean,
+    speedMbps: number, mtu: number): void;
   setLink(linkId: string, up: boolean): void;
   updateLink(linkId: string, up: boolean, propagationDelayNs: number,
     configuredSpeedMbps: number | null): void;
@@ -78,6 +81,7 @@ function speedLabel(speedMbps: number): string {
 
 export function Inspector({ selected, tab, onTabChange, project, snapshot,
   updateHost, updateRouter, setCard, setMda, setCardAdmin, setMdaAdmin,
+  setSwitchName, setSwitchPort,
   setLink, updateLink, deleteLink,
   deleteNode, updateAnnotation, deleteAnnotation, ping, width, onWidthChange,
   openConsole, close }: Props) {
@@ -85,19 +89,30 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
   const [pingBusy, setPingBusy] = useState(false);
   const host = project.hosts.find((item) => item.id === selected);
   const router = project.routers.find((item) => item.id === selected);
+  const ethernetSwitch = project.switches.find(
+    (item) => item.id === selected);
   const link = project.links.find((item) => item.id === selected);
   const annotation = project.annotations.find((item) => item.id === selected);
   const live = snapshot?.routers.find((item) => item.id === selected);
+  const liveSwitch = snapshot?.switches.find(
+    (item) => item.id === selected);
   const profile = useMemo(() => router
     ? PROFILE_CATALOG.profiles.find((item) => item.id === router.profileId)
     : undefined, [router]);
   const [hostDraft, setHostDraft] = useState<HostProjectV4>();
+  const [switchNameDraft, setSwitchNameDraft] = useState("");
   useEffect(() => {
     // Host addressing is validated as one record. Keeping edits local permits
     // a user to replace a prefix, gateway or MAC without submitting every
     // incomplete intermediate character to the running endpoint stack.
     setHostDraft(host ? structuredClone(host) : undefined);
   }, [host]);
+  useEffect(() => {
+    // A name is a complete configuration leaf. Editing it locally avoids
+    // publishing invalid empty and partial names to the runtime on each
+    // keystroke; blur commits the final value through the switch owner.
+    setSwitchNameDraft(ethernetSwitch?.name ?? "");
+  }, [ethernetSwitch]);
   const resizeHandle = <PanelResizeHandle axis="x" className="inspector-resizer"
     defaultValue={324} direction={-1} label="Resize inspector" min={64}
     max={Math.max(64, window.innerWidth - 64)} value={width}
@@ -108,7 +123,7 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
       project.hosts.some((host) => host.id === endpoint.nodeId));
     return <aside className="inspector">
       <div className="inspector-title"><div><h2>{link.id}</h2><p>Point-to-point Ethernet</p></div><button aria-label="Close inspector" onClick={close}><X size={18} /></button></div>
-      <div className="host-form">
+      <div className="host-form switch-inspector-form">
         <label>First endpoint<input readOnly value={`${link.endpoints[0].nodeId} / ${link.endpoints[0].portId}`} /></label>
         <label>Second endpoint<input readOnly value={`${link.endpoints[1].nodeId} / ${link.endpoints[1].portId}`} /></label>
         <label>Administrative state<select value={link.admin} onChange={(event) => updateLink(link.id, event.target.value === "up", link.propagationDelayNs, link.configuredSpeedMbps)}><option value="up">up</option><option value="down">down</option></select></label>
@@ -182,6 +197,58 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
         <button className="inspector-action" disabled={!peer || pingBusy} onClick={() => void runPing()}>{pingBusy ? "Pinging" : `Ping ${peer?.name ?? "peer"}`}</button>
         <button className="secondary-action" onClick={() => deleteNode(host.id)}>Delete host</button>
         {pingResult && <pre className="operation-result">{pingResult}</pre>}
+      </div>{resizeHandle}
+    </aside>;
+  }
+
+  if (ethernetSwitch) {
+    const switchProfile = PROFILE_CATALOG.switch_profiles.find(
+      (item) => item.id === ethernetSwitch.profileId);
+    // Project validation guarantees that every selected profile comes from
+    // the generated catalog. Refusing to render an invented fallback keeps a
+    // corrupt project visible as an integrity problem rather than fake data.
+    if (!switchProfile) {
+      return <aside className="inspector"><div className="inspector-title">
+        <div><h2>{ethernetSwitch.name}</h2><p>Unknown switch profile</p></div>
+        <button aria-label="Close inspector" onClick={close}><X size={18} /></button>
+      </div>{resizeHandle}</aside>;
+    }
+    return <aside className="inspector">
+      <div className="inspector-title"><div><h2>{ethernetSwitch.name}<i className={liveSwitch ? "dot-good" : "dot-muted"} /></h2><p>Ethernet switch</p></div><button aria-label="Close inspector" onClick={close}><X size={18} /></button></div>
+      <div className="host-form">
+        <label>Name<input value={switchNameDraft}
+          onChange={(event) => setSwitchNameDraft(event.target.value)}
+          onBlur={() => {
+            const committed = switchNameDraft.trim();
+            if (committed && committed !== ethernetSwitch.name)
+              setSwitchName(ethernetSwitch.id, committed);
+            else setSwitchNameDraft(ethernetSwitch.name);
+          }} /></label>
+        <div className="spec-grid"><span>Profile</span><strong>{switchProfile.display_name}</strong><span>Broadcast domains</span><strong>{switchProfile.untagged_broadcast_domains}</strong><span>FDB capacity</span><strong>{switchProfile.fdb_entries}</strong></div>
+        <div className="ports-summary switch-ports">
+          <div className="panel-kicker switch-ports-heading">
+            <span>PHYSICAL PORTS</span>
+            <strong>{ethernetSwitch.ports.length}</strong>
+          </div>
+          {ethernetSwitch.ports.map((port) => {
+          const runtimePort = liveSwitch?.ports.find((item) => item.id === port.id);
+          const attached = project.links.find((item) => item.endpoints.some(
+            (endpoint) => endpoint.nodeId === ethernetSwitch.id &&
+              endpoint.portId === port.id));
+          return <div className="switch-port-editor" key={port.id}>
+            <span className="switch-port-identity">
+              <i className={runtimePort?.admin && attached
+                ? "dot-good" : "dot-muted"} />
+              {port.id}
+            </span>
+            <div className="switch-port-controls">
+              <label>State<select value={port.admin} onChange={(event) => setSwitchPort(ethernetSwitch.id, port.id, event.target.value === "up", port.speedMbps, port.mtu)}><option value="up">up</option><option value="down">down</option></select></label>
+              <label>Speed<select value={port.speedMbps} onChange={(event) => setSwitchPort(ethernetSwitch.id, port.id, port.admin === "up", Number(event.target.value), port.mtu)}>{switchProfile.supported_speeds_mbps.map((speed) => <option key={speed} value={speed}>{speedLabel(speed)}</option>)}</select></label>
+              <label>MTU<input type="number" min={switchProfile.minimum_mtu} max={switchProfile.maximum_mtu} value={port.mtu} onChange={(event) => { const mtu = Number(event.target.value); if (Number.isSafeInteger(mtu)) setSwitchPort(ethernetSwitch.id, port.id, port.admin === "up", port.speedMbps, mtu); }} /></label>
+            </div>
+          </div>;
+        })}</div>
+        <button className="secondary-action" onClick={() => deleteNode(ethernetSwitch.id)}>Delete switch</button>
       </div>{resizeHandle}
     </aside>;
   }

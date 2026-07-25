@@ -380,6 +380,47 @@ void runtime_supervisor_tests() {
               runtime->topology().size() == 0 && runtime->active_links() == 0,
           "router deletion retained links or changed unrelated router");
 
+  const auto h2 = runtime->create_host("h2", "Host 2");
+  const auto bridge = runtime->create_switch(
+      "bridge", "generic-ethernet-24", "Broadcast domain");
+  require(h2 && bridge &&
+              !runtime->create_router("bridge", "7750-sr-1", "duplicate"),
+          "supervisor rejected switch lifecycle or cross-kind identity");
+  const auto h1_bridge = runtime->create_link(
+      "h1-bridge", {node(*h1), "eth0"}, {node(*bridge), "1"},
+      std::chrono::nanoseconds{100});
+  const auto h2_bridge = runtime->create_link(
+      "h2-bridge", {node(*h2), "eth0"}, {node(*bridge), "2"},
+      std::chrono::nanoseconds{100});
+  require(h1_bridge && h2_bridge && runtime->active_links() == 2U,
+          "profile-backed switch links did not reach carrier");
+  auto bridge_state = runtime->checkpoint();
+  require(bridge_state && bridge_state->switches.entries.size() == 1U &&
+              bridge_state->network.switches.size() == 1U,
+          "supervisor checkpoint omitted switch control or forwarding state");
+  const auto bridge_two = runtime->create_switch(
+      "bridge-two", "generic-ethernet-24", "Broadcast domain 2");
+  const auto bridge_three = runtime->create_switch(
+      "bridge-three", "generic-ethernet-24", "Broadcast domain 3");
+  require(bridge_two && bridge_three &&
+              runtime->create_link(
+                  "bridge-chain-1", {node(*bridge), "3"},
+                  {node(*bridge_two), "1"}, std::chrono::nanoseconds{100}) &&
+              runtime->create_link(
+                  "bridge-chain-2", {node(*bridge_two), "2"},
+                  {node(*bridge_three), "1"}, std::chrono::nanoseconds{100}) &&
+              !runtime->create_link(
+                  "bridge-loop", {node(*bridge_three), "2"},
+                  {node(*bridge), "4"}, std::chrono::nanoseconds{100}),
+          "supervisor accepted a physical bridge cycle without STP");
+  require(runtime->delete_switch(*bridge_two) &&
+              runtime->delete_switch(*bridge_three),
+          "bridge loop fixture did not clean up");
+  require(runtime->delete_switch(*bridge) && runtime->switches().size() == 0U &&
+              runtime->topology().size() == 0U &&
+              runtime->active_links() == 0U,
+          "switch deletion retained incident links or forwarding state");
+
   // Release the first shared packet pool before constructing the four-router
   // reference path inside the generated Wasm memory budget.
   runtime.reset();
@@ -478,7 +519,8 @@ void runtime_supervisor_tests() {
           "four-router ping did not traverse encoded hop-by-hop forwarding");
   const auto ipv4_ping_outcome = runtime->router_ping_outcome(*a, 77);
   require((ipv4_ping_outcome & 0xffU) == 1U &&
-              (ipv4_ping_outcome >> 8U) <
+              ((ipv4_ping_outcome >> 8U) & 0xffU) != 0U &&
+              (ipv4_ping_outcome >> 16U) <
                   static_cast<std::uint64_t>(
                       std::chrono::duration_cast<std::chrono::nanoseconds>(
                           std::chrono::milliseconds{50})
@@ -649,7 +691,8 @@ void runtime_supervisor_tests() {
   }
   const auto ipv6_ping_outcome = runtime->router_ipv6_ping_outcome(*a, 78);
   require((ipv6_ping_outcome & 0xffU) == 1U &&
-              (ipv6_ping_outcome >> 8U) <
+              ((ipv6_ping_outcome >> 8U) & 0xffU) != 0U &&
+              (ipv6_ping_outcome >> 16U) <
                   static_cast<std::uint64_t>(
                       std::chrono::duration_cast<std::chrono::nanoseconds>(
                           std::chrono::milliseconds{50})
@@ -763,8 +806,40 @@ void runtime_supervisor_tests() {
           removed_forwarding_a->forwarding.dhcpv6_relay_interfaces.empty() &&
           !removed_forwarding_a->forwarding.dhcpv6_relay_socket,
       "IPv6 interface removal retained RA, MLD or DHCPv6 relay child state");
-  // Restore the exact pre-removal image so the remainder of this integration
-  // fixture continues from the already validated four-router path.
+
+  // A connected/static RIB cannot regenerate an OSPF-owned row without
+  // advancing protocol state. Validate the exact subset rule separately from
+  // the unmodified whole-lab checkpoint restored below.
+  auto base_fib = control_a->selected_rib;
+  auto protocol_fib = base_fib;
+  require(
+      base_fib.count > 0U && base_fib.count < base_fib.routes.size(),
+      "dynamic-route restore fixture has no FIB capacity");
+  auto protocol_route = base_fib.routes[base_fib.count - 1U];
+  protocol_route.network = 0xcb007100U;
+  protocol_route.prefix_length = 24U;
+  protocol_route.preference = 10U;
+  protocol_route.metric = 20U;
+  protocol_route.source = routing::RouteSource::ospf;
+  protocol_fib.routes[protocol_fib.count++] = protocol_route;
+  require(checkpoint_validation::base_fib_preserved(base_fib, protocol_fib),
+          "checkpoint validation rejected an OSPF-owned FIB extension");
+  protocol_fib.routes[protocol_fib.count - 1U].source =
+      routing::RouteSource::static_route;
+  require(!checkpoint_validation::base_fib_preserved(base_fib, protocol_fib),
+          "checkpoint validation accepted an unexplained static FIB row");
+
+  // Configuration presentation retains address insertion order, while the
+  // forwarding table sorts by interface and primary preference. A checkpoint
+  // is valid when those owners contain the same generation even if their
+  // vector orders differ. Reverse the control copy without touching the
+  // network-owned canonical copy to reproduce a real multi-interface browser
+  // checkpoint that previously failed restore.
+  std::reverse(control_a->native_ipv6_addresses.begin(),
+               control_a->native_ipv6_addresses.end());
+
+  // Restore the semantically unchanged pre-removal image so the remainder of
+  // this integration fixture continues from the validated four-router path.
   require(runtime->restore(std::move(*path_checkpoint)),
           "pre-removal checkpoint did not restore the validated path");
 
@@ -924,6 +999,7 @@ void runtime_supervisor_tests() {
        .tls = tls_fixture,
        .ipsec = ipsec_fixture,
        .ies = {},
+       .ospf = {},
        .global_candidate = std::move(global_candidate),
        .global_candidate_initialized = true});
   PortableConfigurationCheckpoint private_candidate;
@@ -959,7 +1035,14 @@ void runtime_supervisor_tests() {
                     .source_prefix_list = {},
                     .action = router::mld::ImportPolicyAction::drop,
                     .action_configured = true,
-                    .protocol_mld = true}},
+                    .protocol_mld = true,
+                    .route_prefix_list = {},
+                    .route_source = std::nullopt,
+                    .protocol_instance = std::nullopt,
+                    .route_tag = std::nullopt,
+                    .set_metric = std::nullopt,
+                    .set_metric_type = std::nullopt,
+                    .set_route_tag = std::nullopt}},
        .default_action = router::mld::ImportPolicyAction::accept,
        .default_action_configured = true});
   checkpoint->portable_session_candidates.push_back(
@@ -971,8 +1054,8 @@ void runtime_supervisor_tests() {
        // abort or replace it with the ordinary private MD candidate.
        .classic_policy_candidate = classic_policy_candidate,
        .classic_policy_edit_active = true});
-  const auto bytes = checkpoint_v6::encode(*checkpoint);
-  auto decoded = checkpoint_v6::decode(bytes);
+  const auto bytes = checkpoint_v7::encode(*checkpoint);
+  auto decoded = checkpoint_v7::decode(bytes);
   require(decoded && bytes.size() > 64 &&
               decoded->network.hosts.front().endpoint.ipv4_reassembly.size() ==
                   1U &&
@@ -1021,7 +1104,7 @@ void runtime_supervisor_tests() {
           "checkpoint ABI 6 did not round-trip the value graph");
   auto corrupted = bytes;
   corrupted[0] ^= 0x5aU;
-  require(!checkpoint_v6::decode(corrupted),
+  require(!checkpoint_v7::decode(corrupted),
           "checkpoint ABI 6 accepted corrupted family magic");
   decoded->network.hosts.front().dns.reset();
   // The two portable entries above belong to LabRuntime in production. Remove
@@ -1186,8 +1269,8 @@ void runtime_supervisor_tests() {
   auto ies_checkpoint = runtime->checkpoint();
   require(static_cast<bool>(ies_checkpoint),
           "IES runtime checkpoint was unavailable");
-  const auto ies_checkpoint_bytes = checkpoint_v6::encode(*ies_checkpoint);
-  auto decoded_ies_checkpoint = checkpoint_v6::decode(ies_checkpoint_bytes);
+  const auto ies_checkpoint_bytes = checkpoint_v7::encode(*ies_checkpoint);
+  auto decoded_ies_checkpoint = checkpoint_v7::decode(ies_checkpoint_bytes);
   require(static_cast<bool>(decoded_ies_checkpoint),
           "IES control graph did not survive checkpoint ABI 6 encoding");
   require(decoded_ies_checkpoint->control.size() == 1U &&
@@ -1440,8 +1523,8 @@ void runtime_supervisor_tests() {
   auto dhcp_checkpoint = runtime->checkpoint();
   require(static_cast<bool>(dhcp_checkpoint),
           "threaded DHCPv6 checkpoint was unavailable");
-  const auto dhcp_checkpoint_bytes = checkpoint_v6::encode(*dhcp_checkpoint);
-  auto decoded_dhcp_checkpoint = checkpoint_v6::decode(dhcp_checkpoint_bytes);
+  const auto dhcp_checkpoint_bytes = checkpoint_v7::encode(*dhcp_checkpoint);
+  auto decoded_dhcp_checkpoint = checkpoint_v7::decode(dhcp_checkpoint_bytes);
   require(static_cast<bool>(decoded_dhcp_checkpoint),
           "DHCPv6 state did not survive checkpoint ABI 6 encoding");
   runtime.reset();

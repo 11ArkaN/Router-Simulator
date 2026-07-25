@@ -12,6 +12,15 @@
 
 namespace router::lab {
 
+NetworkPlaneWorker::OspfGenerationStaging::~OspfGenerationStaging() {
+  // Every authentication program contains a transient plaintext key copy.
+  // Clearing the complete trivially-copyable record before vector storage is
+  // released prevents an aborted or committed generation from leaving key
+  // material in the network-owner heap.
+  for (auto &program : authentications)
+    spsc_secure_clear(program);
+}
+
 NetworkPlaneWorker::NetworkPlaneWorker(NetworkPlaneChannels &channels)
     : channels_(channels),
       command_scratch_(std::make_unique<NetworkCommand>()) {
@@ -138,6 +147,7 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
         command.device.index < sap_generation_staging_.size()) {
       sap_generation_staging_[command.device.index].reset();
       ipv6_address_generation_staging_[command.device.index].reset();
+      ospf_generation_staging_[command.device.index].reset();
     }
     break;
   case NetworkCommandKind::remove_router:
@@ -146,6 +156,7 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
         command.device.index < sap_generation_staging_.size()) {
       sap_generation_staging_[command.device.index].reset();
       ipv6_address_generation_staging_[command.device.index].reset();
+      ospf_generation_staging_[command.device.index].reset();
     }
     break;
   case NetworkCommandKind::add_host:
@@ -154,11 +165,227 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
   case NetworkCommandKind::remove_host:
     result.success = plane_.remove_host(command.host);
     break;
+  case NetworkCommandKind::add_switch:
+    result.success = plane_.add_switch(command.ethernet_switch,
+                                       command.switch_profile_index);
+    break;
+  case NetworkCommandKind::remove_switch:
+    result.success = plane_.remove_switch(command.ethernet_switch);
+    break;
+  case NetworkCommandKind::configure_switch_port:
+    result.success = plane_.configure_switch_port(
+        command.ethernet_switch, command.switch_port,
+        command.switch_port_configuration);
+    break;
+  case NetworkCommandKind::begin_ospf_generation:
+    if (command.device &&
+        command.device.index < ospf_generation_staging_.size())
+      if (const auto *begin =
+              std::get_if<NetworkOspfGenerationBegin>(&command.fib);
+          begin &&
+          begin->expected_processes <=
+              device_catalog::ospf_v2_instances_per_router +
+                  device_catalog::ospf_v3_instances_per_router &&
+          begin->expected_interfaces <=
+              device_catalog::maximum_ports_per_router *
+                  (device_catalog::ospf_v2_instances_per_router +
+                   device_catalog::ospf_v3_instances_per_router) &&
+          begin->expected_authentications <=
+              64U * device_catalog::maximum_ports_per_router *
+                  (device_catalog::ospf_v2_instances_per_router +
+                   device_catalog::ospf_v3_instances_per_router) &&
+          begin->expected_nbma_neighbors <=
+              device_catalog::ospf_neighbors_per_interface *
+                  device_catalog::maximum_ports_per_router &&
+          begin->expected_virtual_links <=
+              device_catalog::ospf_neighbors_per_interface *
+                  (device_catalog::ospf_v2_instances_per_router +
+                   device_catalog::ospf_v3_instances_per_router) &&
+          begin->expected_ranges <=
+              device_catalog::ospf_lsas_per_instance *
+                  (device_catalog::ospf_v2_instances_per_router +
+                   device_catalog::ospf_v3_instances_per_router) &&
+          begin->expected_external_routes <=
+              device_catalog::maximum_dynamic_routes_per_router) {
+        try {
+          OspfGenerationStaging staged;
+          staged.processes.reserve(begin->expected_processes);
+          staged.interfaces.reserve(begin->expected_interfaces);
+          staged.authentications.reserve(
+              begin->expected_authentications);
+          staged.nbma_neighbors.reserve(begin->expected_nbma_neighbors);
+          staged.virtual_links.reserve(begin->expected_virtual_links);
+          staged.ranges.reserve(begin->expected_ranges);
+          staged.external_routes.reserve(begin->expected_external_routes);
+          staged.expected_processes = begin->expected_processes;
+          staged.expected_interfaces = begin->expected_interfaces;
+          staged.expected_authentications =
+              begin->expected_authentications;
+          staged.expected_nbma_neighbors = begin->expected_nbma_neighbors;
+          staged.expected_virtual_links = begin->expected_virtual_links;
+          staged.expected_ranges = begin->expected_ranges;
+          staged.expected_external_routes =
+              begin->expected_external_routes;
+          ospf_generation_staging_[command.device.index].reset();
+          ospf_generation_staging_[command.device.index] = std::move(staged);
+          result.success = true;
+        } catch (const std::bad_alloc &) {
+          ospf_generation_staging_[command.device.index].reset();
+        }
+      }
+    break;
+  case NetworkCommandKind::add_ospf_process:
+    if (command.device.index < ospf_generation_staging_.size())
+      if (auto &staged = ospf_generation_staging_[command.device.index];
+          staged && staged->processes.size() < staged->expected_processes)
+        if (const auto *process =
+                std::get_if<OspfProcessProgram>(&command.fib);
+            process && process->device == command.device) {
+          try {
+            staged->processes.push_back(*process);
+            result.success = true;
+          } catch (const std::bad_alloc &) {
+          }
+        }
+    break;
+  case NetworkCommandKind::add_ospf_interface:
+    if (command.device.index < ospf_generation_staging_.size())
+      if (auto &staged = ospf_generation_staging_[command.device.index];
+          staged && staged->interfaces.size() < staged->expected_interfaces)
+        if (const auto *interface =
+                std::get_if<OspfInterfaceProgram>(&command.fib);
+            interface && interface->process.device == command.device) {
+          try {
+            staged->interfaces.push_back(*interface);
+            result.success = true;
+          } catch (const std::bad_alloc &) {
+          }
+        }
+    break;
+  case NetworkCommandKind::add_ospf_authentication:
+    if (command.device.index < ospf_generation_staging_.size())
+      if (auto &staged = ospf_generation_staging_[command.device.index];
+          staged &&
+          staged->authentications.size() <
+              staged->expected_authentications)
+        if (const auto *authentication =
+                std::get_if<OspfAuthenticationProgram>(&command.fib);
+            authentication &&
+            authentication->process.device == command.device) {
+          try {
+            staged->authentications.push_back(*authentication);
+            result.success = true;
+          } catch (const std::bad_alloc &) {
+          }
+        }
+    break;
+  case NetworkCommandKind::add_ospf_nbma_neighbor:
+    if (command.device.index < ospf_generation_staging_.size())
+      if (auto &staged = ospf_generation_staging_[command.device.index];
+          staged &&
+          staged->nbma_neighbors.size() < staged->expected_nbma_neighbors)
+        if (const auto *neighbor =
+                std::get_if<OspfNbmaNeighborProgram>(&command.fib);
+            neighbor && neighbor->process.device == command.device) {
+          try {
+            staged->nbma_neighbors.push_back(*neighbor);
+            result.success = true;
+          } catch (const std::bad_alloc &) {
+          }
+        }
+    break;
+  case NetworkCommandKind::add_ospf_virtual_link:
+    if (command.device.index < ospf_generation_staging_.size())
+      if (auto &staged = ospf_generation_staging_[command.device.index];
+          staged &&
+          staged->virtual_links.size() < staged->expected_virtual_links)
+        if (const auto *link =
+                std::get_if<OspfVirtualLinkProgram>(&command.fib);
+            link && link->process.device == command.device) {
+          try {
+            staged->virtual_links.push_back(*link);
+            result.success = true;
+          } catch (const std::bad_alloc &) {
+          }
+        }
+    break;
+  case NetworkCommandKind::add_ospf_area_range:
+    if (command.device.index < ospf_generation_staging_.size())
+      if (auto &staged = ospf_generation_staging_[command.device.index];
+          staged && staged->ranges.size() < staged->expected_ranges)
+        if (const auto *range =
+                std::get_if<OspfAreaRangeProgram>(&command.fib);
+            range && range->process.device == command.device) {
+          try {
+            staged->ranges.push_back(*range);
+            result.success = true;
+          } catch (const std::bad_alloc &) {
+          }
+        }
+    break;
+  case NetworkCommandKind::add_ospf_external_route:
+    if (command.device.index < ospf_generation_staging_.size())
+      if (auto &staged = ospf_generation_staging_[command.device.index];
+          staged &&
+          staged->external_routes.size() <
+              staged->expected_external_routes)
+        if (const auto *external =
+                std::get_if<OspfExternalRouteProgram>(&command.fib);
+            external && external->process.device == command.device) {
+          try {
+            staged->external_routes.push_back(*external);
+            result.success = true;
+          } catch (const std::bad_alloc &) {
+          }
+        }
+    break;
+  case NetworkCommandKind::commit_ospf_generation:
+    if (command.device.index < ospf_generation_staging_.size()) {
+      auto &staged = ospf_generation_staging_[command.device.index];
+      if (staged &&
+          staged->processes.size() == staged->expected_processes &&
+          staged->interfaces.size() == staged->expected_interfaces &&
+          staged->authentications.size() ==
+              staged->expected_authentications &&
+          staged->nbma_neighbors.size() ==
+              staged->expected_nbma_neighbors &&
+          staged->virtual_links.size() ==
+              staged->expected_virtual_links &&
+          staged->ranges.size() == staged->expected_ranges &&
+          staged->external_routes.size() ==
+              staged->expected_external_routes)
+        result.success = plane_.replace_ospf_generation(
+            command.device, staged->processes, staged->interfaces,
+            staged->authentications, staged->nbma_neighbors,
+            staged->virtual_links, staged->ranges, staged->external_routes);
+      staged.reset();
+    }
+    break;
+  case NetworkCommandKind::abort_ospf_generation:
+    if (command.device.index < ospf_generation_staging_.size()) {
+      ospf_generation_staging_[command.device.index].reset();
+      result.success = true;
+    }
+    break;
+  case NetworkCommandKind::query_ospf:
+    if (const auto *query =
+            std::get_if<OspfOperationalQuery>(&command.fib)) {
+      const auto snapshot = plane_.query_ospf(command.device, *query);
+      if (snapshot) {
+        result.ospf = *snapshot;
+        result.success = true;
+      }
+    }
+    break;
   case NetworkCommandKind::configure_port:
     result.success = plane_.configure_port(command.device, command.port);
     break;
   case NetworkCommandKind::remove_port:
     result.success = plane_.remove_port(command.device, command.port.ordinal);
+    break;
+  case NetworkCommandKind::program_route_policy:
+    if (const auto *policy = std::get_if<RoutePolicyProgram>(&command.fib))
+      result.success = plane_.program_route_policy(command.device, *policy);
     break;
   case NetworkCommandKind::program_fib:
     if (const auto *fib = std::get_if<routing::FibProgram>(&command.fib))
@@ -1201,8 +1428,14 @@ void NetworkPlaneWorker::run() noexcept {
     // worker-owned heap buffer so increasing a hardware route profile cannot
     // silently consume the fixed Wasm pthread stack.
     auto &command = *command_scratch_;
-    while (!pending_result && budget-- && channels_.commands.try_pop(command)) {
+    while (!pending_result && budget-- &&
+           channels_.commands.try_pop_and_clear(command)) {
       auto result = apply(command);
+      // The ring slot was already erased before its tail was published. Erase
+      // the worker scratch as well after apply has copied any authentication
+      // record into owner-controlled staging.
+      if (command.kind == NetworkCommandKind::add_ospf_authentication)
+        spsc_secure_clear(command);
       if (!channels_.results.try_push(result))
         pending_result = result;
       if (stop_requested_.load(std::memory_order_acquire))

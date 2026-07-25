@@ -93,6 +93,12 @@ public:
   // The method copies bytes into the shared pool and never calls a peer device.
   [[nodiscard]] DropReason enqueue(LinkHandle link, std::uint8_t endpoint,
                                    const packet::Frame &frame) noexcept;
+  // enqueue_shared transfers an additional reference to the TX queue without
+  // copying frame bytes. The caller and fabric must share this exact pool and
+  // the caller retains its own reference until this method returns.
+  [[nodiscard]] DropReason enqueue_shared(LinkHandle link,
+                                          std::uint8_t endpoint,
+                                          PacketHandle frame) noexcept;
   // The link owner may preflight all fragments from one source datagram. This
   // does not reserve medium capacity for a remote thread. It is used only in
   // combined owner mode, where no mutation can occur before the matching
@@ -124,6 +130,10 @@ public:
   [[nodiscard]] std::size_t available_packets() const noexcept {
     return pool_.available();
   }
+  // Switches are link-shard components and therefore share the medium pool.
+  // This owner-only accessor must never be retained by control or forwarding
+  // shards; it exists solely to make broadcast replication zero-copy.
+  [[nodiscard]] PacketPool &packet_pool() noexcept { return pool_; }
   [[nodiscard]] std::size_t in_flight_frames() const noexcept {
     return PacketPool::capacity - free_in_flight_count_;
   }
@@ -171,6 +181,8 @@ private:
   [[nodiscard]] std::chrono::nanoseconds
   serialization_time(std::uint64_t bits,
                      std::uint64_t bits_per_second) const noexcept;
+  [[nodiscard]] DropReason enqueue_owned_reference(
+      LinkHandle link, std::uint8_t endpoint, PacketHandle frame) noexcept;
 
   // One packet pool is shared by all 64 links. This makes laboratory-wide
   // memory pressure explicit instead of reserving 64 independent 64 MiB pools.

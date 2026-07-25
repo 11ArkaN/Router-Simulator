@@ -9,11 +9,15 @@
 #include "router/dhcpv6_server.hpp"
 #include "router/dns_endpoint_checkpoint.hpp"
 #include "router/endpoint_protocol.hpp"
+#include "router/ethernet_switch.hpp"
 #include "router/lab_registry.hpp"
 #include "router/multi_device_fabric.hpp"
 #include "router/multi_device_routing.hpp"
+#include "router/ospf_control_worker.hpp"
+#include "router/ospf_process.hpp"
 #include "router/packet.hpp"
 #include "router/router_forwarder.hpp"
+#include "router/route_policy.hpp"
 #include "router/udp_transport.hpp"
 
 #include <array>
@@ -23,6 +27,7 @@
 #include <optional>
 #include <span>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 namespace router::lab {
@@ -49,6 +54,21 @@ struct HostNetworkProgram {
   bool ipv6_autoconfiguration{};
   host::Ipv6InterfaceIdentifierConfiguration ipv6_identifier{};
   crypto::Sha256Digest transport_secret{};
+};
+
+struct RoutePolicyProgram {
+  // Control publishes unresolved static intent together with the selected
+  // ECMP width. The network route owner combines this intent with connected
+  // routes from the base FIB and complete OSPF generations. Keeping indirect
+  // statics here is essential because a route unresolved before OSPF
+  // convergence may become active after a learned next-hop route appears.
+  std::array<routing::StaticInput,
+             device_catalog::maximum_static_routes_per_router>
+      ipv4_statics{};
+  std::array<routing::Ipv6StaticInput,
+             device_catalog::maximum_static_routes_per_router>
+      ipv6_statics{};
+  std::uint16_t maximum_ecmp_paths{1U};
 };
 
 struct RouterAdvertisementProgram {
@@ -84,6 +104,115 @@ struct StaticIpv4NeighborProgram {
   packet::Mac mac{};
   std::uint16_t port_ordinal{};
 };
+
+struct OspfProcessProgram {
+  // The canonical configuration owner compiles one fixed area record before
+  // crossing the control-to-network SPSC boundary. These values describe
+  // protocol intent only. The OSPF pthread remains the sole owner of LSAs,
+  // ABR decisions, timers and calculated routes.
+  DeviceHandle device{};
+  std::uint32_t router_id{};
+  std::uint32_t area_id{};
+  std::uint32_t initial_dd_sequence{};
+  std::uint32_t maximum_interfaces{};
+  std::uint32_t default_metric{};
+  std::uint32_t router_preference{};
+  std::uint32_t external_preference{};
+  std::uint32_t spf_initial_wait_milliseconds{};
+  std::uint32_t spf_second_wait_milliseconds{};
+  std::uint32_t spf_maximum_wait_milliseconds{};
+  std::uint32_t lsa_initial_wait_milliseconds{};
+  std::uint32_t lsa_second_wait_milliseconds{};
+  std::uint32_t lsa_maximum_wait_milliseconds{};
+  ospf::AreaType area_type{ospf::AreaType::normal};
+  std::uint8_t version{};
+  std::uint8_t instance_id{};
+  bool summaries{true};
+  bool nssa_translate_always{};
+  bool asbr{};
+  bool graceful_restart_helper{};
+  bool loopfree_alternates{};
+  bool overload{};
+};
+
+struct OspfInterfaceProgram {
+  OspfProcessProgram process{};
+  ospf::ProcessInterfaceConfiguration interface{};
+};
+
+struct OspfAuthenticationProgram {
+  // Producer: serialized configuration owner. Consumers: network transaction
+  // staging and the dedicated OSPF pthread. Each message carries one bounded
+  // secret record by value, so no vault pointer or vector storage crosses an
+  // SPSC ring. The owner scrubs its copy after installing the generation.
+  OspfProcessProgram process{};
+  ospf::ProcessAuthentication authentication{};
+  std::uint32_t interface_id{};
+  bool receive{true};
+  bool send{};
+};
+
+struct OspfNbmaNeighborProgram {
+  // The configuration owner resolves the enclosing process and interface.
+  // This fixed record crosses both SPSC transactions by value. The OSPF
+  // pthread remains the sole owner of peer timers and learned Router IDs.
+  OspfProcessProgram process{};
+  std::uint32_t interface_id{};
+  ospf::ProcessNbmaNeighborConfiguration neighbor{};
+};
+
+struct OspfVirtualLinkProgram {
+  // The process identity always names area 0. The transit area and remote ABR
+  // remain semantic configuration until the OSPF owner resolves them through
+  // that area's LSDB and SPF tree.
+  OspfProcessProgram process{};
+  ospf::ProcessVirtualLinkConfiguration link{};
+};
+
+struct OspfAreaRangeProgram {
+  // Producer: canonical router configuration. Consumers: network transaction
+  // staging and the OSPF owner. The fixed prefix is copied by value; no
+  // std::vector storage or configuration pointer crosses either SPSC ring.
+  OspfProcessProgram process{};
+  ip::IpPrefix prefix{};
+  std::uint32_t advertised_metric{};
+  bool has_advertised_metric{};
+  bool advertise{true};
+};
+
+struct OspfExternalRouteProgram {
+  // Policy evaluation happens in the serialized configuration owner. The
+  // dedicated OSPF pthread receives only an accepted semantic advertisement,
+  // assigns its local sequence and Link State ID, and emits real LSA bytes.
+  OspfProcessProgram process{};
+  routing::PolicyCandidate source{};
+  ospf::CoordinatorAdvertisement advertisement{};
+};
+
+struct OspfRouteDiagnostics {
+  // This projection reports only the last complete generation accepted by the
+  // route owner. It does not expose mutable daemon vectors or fabricate
+  // neighbor state from configured intent.
+  std::uint64_t generation{};
+  std::uint32_t ipv4_candidates{};
+  std::uint32_t ipv6_candidates{};
+};
+
+struct OspfOperationalQuery {
+  // Producer: serialized control owner. Consumer: OSPF control pthread through
+  // the network owner. Ordinals select one row in the generation observed by
+  // this synchronous command and have no meaning after the result is copied.
+  ospf::ControlCommandKind kind{ospf::ControlCommandKind::query_process};
+  std::uint32_t process_ordinal{};
+  std::uint32_t interface_ordinal{};
+  std::uint32_t interface_id{};
+  std::uint32_t row_ordinal{};
+  std::uint32_t neighbor_router_id{};
+  std::uint8_t version{};
+  std::uint8_t instance_id{};
+};
+
+static_assert(std::is_trivially_copyable_v<OspfOperationalQuery>);
 
 // Variable-length relay policy is divided into fixed, trivially-copyable
 // records before it crosses a shared-memory queue. The chunk size controls
@@ -268,8 +397,18 @@ struct NetworkPlaneCheckpoint {
   // retain queue bytes and selected diagnostic locations independently.
   std::vector<NetworkRouterCheckpoint> routers;
   std::vector<NetworkHostCheckpoint> hosts;
+  struct Switch {
+    SwitchHandle handle{};
+    std::uint16_t profile_index{};
+    EthernetSwitchCheckpoint forwarding;
+  };
+  std::vector<Switch> switches;
   MultiDeviceFabricCheckpoint fabric;
   CaptureStoreCheckpoint capture;
+  // The OSPF pthread contributes one detached owner snapshot. It contains no
+  // pointer into live process state and stores all deadlines as durations
+  // relative to the same checkpoint instant used by forwarding and fabric.
+  ospf::ControlWorkerCheckpoint ospf;
   std::vector<CapturePointProgram> capture_points;
   std::uint64_t capture_dropped{};
   // Transfer rings exist only between physical runtime owners. Their loss
@@ -296,6 +435,15 @@ public:
   [[nodiscard]] bool remove_router(DeviceHandle device) noexcept;
   [[nodiscard]] bool add_host(HostHandle host) noexcept;
   [[nodiscard]] bool remove_host(HostHandle host) noexcept;
+  // profile_index addresses the immutable generated switch catalog included in
+  // the runtime protocol hash. No UI-created port count or default crosses
+  // this boundary.
+  [[nodiscard]] bool add_switch(SwitchHandle handle,
+                                std::uint16_t profile_index) noexcept;
+  [[nodiscard]] bool remove_switch(SwitchHandle handle) noexcept;
+  [[nodiscard]] bool configure_switch_port(
+      SwitchHandle handle, std::uint16_t port,
+      const SwitchPortConfiguration &configuration) noexcept;
 
   // Port and FIB programs replace complete owner-local projections. Neither
   // method retains a control pointer after the call or future mailbox turn.
@@ -303,6 +451,34 @@ public:
                                     const ForwardPort &port) noexcept;
   [[nodiscard]] bool remove_port(DeviceHandle device,
                                  std::uint16_t ordinal) noexcept;
+  [[nodiscard]] bool
+  add_ospf_process(const OspfProcessProgram &program) noexcept;
+  [[nodiscard]] bool
+  remove_ospf_process(const OspfProcessProgram &program) noexcept;
+  [[nodiscard]] bool
+  add_ospf_interface(const OspfInterfaceProgram &program) noexcept;
+  [[nodiscard]] bool
+  remove_ospf_interface(const OspfInterfaceProgram &program) noexcept;
+  // Replaces the complete OSPF projection for one router. Processes and
+  // interfaces are staged on the protocol owner before forwarding is paused;
+  // Commit and the derived per-port punt mask are then published as one
+  // quiesced transaction. No caller-owned span is retained.
+  [[nodiscard]] bool replace_ospf_generation(
+      DeviceHandle device, std::span<const OspfProcessProgram> processes,
+      std::span<const OspfInterfaceProgram> interfaces,
+      std::span<const OspfAuthenticationProgram> authentications,
+      std::span<const OspfNbmaNeighborProgram> nbma_neighbors,
+      std::span<const OspfVirtualLinkProgram> virtual_links,
+      std::span<const OspfAreaRangeProgram> ranges,
+      std::span<const OspfExternalRouteProgram> external_routes = {}) noexcept;
+  [[nodiscard]] bool
+  program_route_policy(DeviceHandle device,
+                       const RoutePolicyProgram &policy) noexcept;
+  [[nodiscard]] std::optional<OspfRouteDiagnostics>
+  ospf_route_diagnostics(DeviceHandle device) const noexcept;
+  [[nodiscard]] std::optional<ospf::ControlResult>
+  query_ospf(DeviceHandle device,
+             const OspfOperationalQuery &query) noexcept;
   [[nodiscard]] bool program_fib(DeviceHandle device,
                                  const routing::FibProgram &fib) noexcept;
   [[nodiscard]] bool
@@ -493,6 +669,9 @@ public:
   forwarding_owner_thread_id(std::size_t index) const noexcept;
   [[nodiscard]] std::uint64_t
   forwarding_owner_turns(std::size_t index) const noexcept;
+  // The OSPF owner exists at NetworkPlane construction, before any router or
+  // CLI command. Zero means its run loop has not published startup yet.
+  [[nodiscard]] std::uint64_t ospf_owner_thread_id() const noexcept;
 
 private:
   // PIMPL keeps the large fixed arenas and internal endpoint stack out of every

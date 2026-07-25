@@ -102,6 +102,102 @@ void multi_device_routing_tests() {
               !lookup(indirect_rib->compile(33U), 0xc6336401U, selected),
           "indirect static route resolved without a dynamic protocol route");
 
+  // OSPF path class precedes numeric cost. An intra-area route therefore wins
+  // over a numerically cheaper inter-area route. Type 2 external candidates
+  // compare their external metric first and internal cost to the ASBR second;
+  // only equal winners may form ECMP.
+  const std::array ospf_candidates{
+      DynamicInput{.configured = true,
+                   .operational = true,
+                   .network = 0xac100000U,
+                   .next_hop = 0x0a000002U,
+                   .port_ordinal = 4U,
+                   .preference = 10U,
+                   .metric = 30U,
+                   .prefix_length = 16U,
+                   .source = RouteSource::ospf,
+                   .ospf_path_type = OspfPathType::intra_area},
+      DynamicInput{.configured = true,
+                   .operational = true,
+                   .network = 0xac100000U,
+                   .next_hop = 0x0a000102U,
+                   .port_ordinal = 7U,
+                   .preference = 10U,
+                   .metric = 5U,
+                   .prefix_length = 16U,
+                   .source = RouteSource::ospf,
+                   .ospf_path_type = OspfPathType::inter_area},
+      DynamicInput{.configured = true,
+                   .operational = true,
+                   .network = 0xcb007100U,
+                   .next_hop = 0x0a000002U,
+                   .port_ordinal = 4U,
+                   .preference = 10U,
+                   .metric = 50U,
+                   .prefix_length = 24U,
+                   .source = RouteSource::ospf,
+                   .ospf_path_type = OspfPathType::external_type_2,
+                   .internal_metric = 20U},
+      DynamicInput{.configured = true,
+                   .operational = true,
+                   .network = 0xcb007100U,
+                   .next_hop = 0x0a000102U,
+                   .port_ordinal = 7U,
+                   .preference = 10U,
+                   .metric = 50U,
+                   .prefix_length = 24U,
+                   .source = RouteSource::ospf,
+                   .ospf_path_type = OspfPathType::external_type_2,
+                   .internal_metric = 10U}};
+  auto ospf_rib = std::make_unique<RouteTable>();
+  require(ospf_rib->rebuild(ecmp_connected, {}, ospf_candidates, 2U),
+          "RIB rejected valid OSPF route candidates");
+  const auto ospf_fib = ospf_rib->compile(34U);
+  require(lookup(ospf_fib, 0xac100001U, selected) &&
+              selected.ospf_path_type == OspfPathType::intra_area &&
+              selected.metric == 30U &&
+              lookup(ospf_fib, 0xcb007101U, selected) &&
+              selected.next_hop == 0x0a000102U,
+          "RIB violated OSPF path or Type 2 selection order");
+
+  // A longer RFC 5286 repair remains outside the primary ECMP set. The
+  // contiguous FIB image records it only after the selected primary entries,
+  // and an explicit repair lookup is required to make it eligible.
+  const std::array protected_ospf{
+      DynamicInput{.configured = true,
+                   .operational = true,
+                   .network = 0xc6120000U,
+                   .next_hop = 0x0a000002U,
+                   .port_ordinal = 4U,
+                   .preference = 10U,
+                   .metric = 20U,
+                   .prefix_length = 16U,
+                   .source = RouteSource::ospf,
+                   .ospf_path_type = OspfPathType::intra_area},
+      DynamicInput{.configured = true,
+                   .operational = true,
+                   .network = 0xc6120000U,
+                   .next_hop = 0x0a000102U,
+                   .port_ordinal = 7U,
+                   .preference = 10U,
+                   .metric = 30U,
+                   .prefix_length = 16U,
+                   .source = RouteSource::ospf,
+                   .ospf_path_type = OspfPathType::intra_area,
+                   .loop_free_alternate = true}};
+  auto protected_rib = std::make_unique<RouteTable>();
+  require(protected_rib->rebuild(ecmp_connected, {}, protected_ospf, 2U),
+          "RIB rejected an OSPF route with a loop-free repair");
+  const auto protected_fib = protected_rib->compile(35U);
+  Route repair;
+  require(protected_fib.loop_free_alternate_count == 1U &&
+              lookup(protected_fib, 0xc6120001U, selected) &&
+              selected.next_hop == 0x0a000002U &&
+              lookup_loop_free_alternate(protected_fib, 0xc6120001U,
+                                         repair) &&
+              repair.next_hop == 0x0a000102U,
+          "LFA entered primary ECMP or was absent from its repair table");
+
   auto failed = connected;
   failed[1].operational = false;
   require(rib->rebuild(failed, statics),

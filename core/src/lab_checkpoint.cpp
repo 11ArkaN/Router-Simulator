@@ -1,4 +1,4 @@
-// ABI 6 codec implementation. Decoding creates a detached value graph. The
+// ABI 7 codec implementation. Decoding creates a detached value graph. The
 // supervisor performs cross-owner validation and atomic commit only afterwards.
 
 #include "router/lab_checkpoint.hpp"
@@ -14,11 +14,11 @@
 #include <string>
 #include <type_traits>
 
-namespace router::lab::checkpoint_v6 {
+namespace router::lab::checkpoint_v7 {
 namespace {
 
 inline constexpr std::array<std::uint8_t, 8> magic{'R', 'S', 'L', 'A',
-                                                   'B', '0', '6', 0};
+                                                   'B', '0', '7', 0};
 inline constexpr std::size_t maximum_checkpoint_bytes =
     device_catalog::wasm_initial_memory_bytes;
 
@@ -171,7 +171,11 @@ void node(Writer &out, NodeHandle value) {
 }
 
 bool node(Reader &in, NodeHandle &value) noexcept {
-  return in.integer(value.kind) && value.kind <= NodeKind::host &&
+  // The serialized discriminant is validated before any index is consumed.
+  // This prevents corrupt project bytes from manufacturing a fourth endpoint
+  // class that downstream router/host/switch ownership code cannot handle.
+  return in.integer(value.kind) &&
+         value.kind <= NodeKind::ethernet_switch &&
          in.integer(value.index) && in.integer(value.generation);
 }
 
@@ -309,6 +313,11 @@ void route(Writer &out, const routing::Route &value) {
   out.integer(value.metric);
   out.integer(value.source);
   out.boolean(value.local_system);
+  // OSPF route provenance is part of forwarding continuity. Omitting it would
+  // restore a byte-valid FIB whose later RIB comparisons and show output no
+  // longer describe the protocol generation that produced it.
+  out.integer(value.ospf_path_type);
+  out.integer(value.protocol_instance);
 }
 
 bool route(Reader &in, routing::Route &value) noexcept {
@@ -316,8 +325,10 @@ bool route(Reader &in, routing::Route &value) noexcept {
          in.integer(value.port_ordinal) && in.integer(value.prefix_length) &&
          in.integer(value.preference) && in.integer(value.metric) &&
          in.integer(value.source) &&
-         value.source <= routing::Route::Source::dynamic &&
-         in.boolean(value.local_system);
+         value.source <= routing::RouteSource::ospf3 &&
+         in.boolean(value.local_system) && in.integer(value.ospf_path_type) &&
+         value.ospf_path_type <= routing::OspfPathType::nssa_type_2 &&
+         in.integer(value.protocol_instance);
 }
 
 void fib(Writer &out, const routing::FibProgram &value) {
@@ -325,6 +336,9 @@ void fib(Writer &out, const routing::FibProgram &value) {
   out.integer(value.count);
   for (std::size_t index = 0; index < value.count; ++index)
     route(out, value.routes[index]);
+  out.integer(value.loop_free_alternate_count);
+  for (std::size_t index{}; index < value.loop_free_alternate_count; ++index)
+    route(out, value.routes[value.count + index]);
 }
 
 bool fib(Reader &in, routing::FibProgram &value) noexcept {
@@ -333,6 +347,12 @@ bool fib(Reader &in, routing::FibProgram &value) noexcept {
     return false;
   for (std::size_t index = 0; index < value.count; ++index)
     if (!route(in, value.routes[index]))
+      return false;
+  if (!in.integer(value.loop_free_alternate_count) ||
+      value.count + value.loop_free_alternate_count > value.routes.size())
+    return false;
+  for (std::size_t index{}; index < value.loop_free_alternate_count; ++index)
+    if (!route(in, value.routes[value.count + index]))
       return false;
   return true;
 }
@@ -346,6 +366,8 @@ void ipv6_route(Writer &out, const routing::Ipv6Route &value) {
   out.integer(value.preference);
   out.integer(value.metric);
   out.integer(value.source);
+  out.integer(value.ospf_path_type);
+  out.integer(value.protocol_instance);
 }
 
 bool ipv6_route(Reader &in, routing::Ipv6Route &value) noexcept {
@@ -354,7 +376,10 @@ bool ipv6_route(Reader &in, routing::Ipv6Route &value) noexcept {
          in.integer(value.physical_port_ordinal) &&
          in.integer(value.prefix_length) && in.integer(value.preference) &&
          in.integer(value.metric) && in.integer(value.source) &&
-         value.source <= routing::Route::Source::dynamic;
+         value.source <= routing::RouteSource::ospf3 &&
+         in.integer(value.ospf_path_type) &&
+         value.ospf_path_type <= routing::OspfPathType::nssa_type_2 &&
+         in.integer(value.protocol_instance);
 }
 
 void ipv6_fib(Writer &out, const routing::Ipv6FibProgram &value) {
@@ -362,6 +387,9 @@ void ipv6_fib(Writer &out, const routing::Ipv6FibProgram &value) {
   out.integer(value.count);
   for (std::size_t index = 0; index < value.count; ++index)
     ipv6_route(out, value.routes[index]);
+  out.integer(value.loop_free_alternate_count);
+  for (std::size_t index{}; index < value.loop_free_alternate_count; ++index)
+    ipv6_route(out, value.routes[value.count + index]);
 }
 
 bool ipv6_fib(Reader &in, routing::Ipv6FibProgram &value) noexcept {
@@ -370,6 +398,12 @@ bool ipv6_fib(Reader &in, routing::Ipv6FibProgram &value) noexcept {
     return false;
   for (std::size_t index = 0; index < value.count; ++index)
     if (!ipv6_route(in, value.routes[index]))
+      return false;
+  if (!in.integer(value.loop_free_alternate_count) ||
+      value.count + value.loop_free_alternate_count > value.routes.size())
+    return false;
+  for (std::size_t index{}; index < value.loop_free_alternate_count; ++index)
+    if (!ipv6_route(in, value.routes[value.count + index]))
       return false;
   return true;
 }
@@ -453,6 +487,46 @@ bool host_registry(Reader &in, HostRegistryCheckpoint &state) {
     if (!handle(in, entry.handle) || !in.string(entry.node_id, 64) ||
         !in.string(entry.name, 64))
       return false;
+  return true;
+}
+
+void switch_registry(Writer &out, const SwitchRegistryCheckpoint &state) {
+  generations(out, state.generations);
+  count(out, state.entries);
+  for (const auto &entry : state.entries) {
+    handle(out, entry.handle);
+    out.string(entry.node_id);
+    out.string(entry.name);
+    out.string(entry.profile_id);
+    count(out, entry.ports);
+    for (const auto &port : entry.ports) {
+      out.integer(port.speed_mbps);
+      out.integer(port.mtu);
+      out.boolean(port.admin_enabled);
+    }
+  }
+}
+
+bool switch_registry(Reader &in, SwitchRegistryCheckpoint &state) {
+  std::uint32_t size{};
+  if (!generations(in, state.generations) ||
+      !count(in, size, device_catalog::maximum_switches))
+    return false;
+  state.entries.resize(size);
+  for (auto &entry : state.entries) {
+    if (!handle(in, entry.handle) || !in.string(entry.node_id, 64) ||
+        !in.string(entry.name, 64) || !in.string(entry.profile_id, 64))
+      return false;
+    const auto *profile =
+        device_catalog::find_ethernet_switch_profile(entry.profile_id);
+    if (!profile || !count(in, size, profile->port_count))
+      return false;
+    entry.ports.resize(size);
+    for (auto &port : entry.ports)
+      if (!in.integer(port.speed_mbps) || !in.integer(port.mtu) ||
+          !in.boolean(port.admin_enabled))
+        return false;
+  }
   return true;
 }
 
@@ -912,6 +986,25 @@ void named_mld_import_policies(
       out.integer(entry.action);
       out.boolean(entry.action_configured);
       out.boolean(entry.protocol_mld);
+      out.string(entry.route_prefix_list);
+      out.boolean(entry.route_source.has_value());
+      if (entry.route_source)
+        out.integer(*entry.route_source);
+      out.boolean(entry.protocol_instance.has_value());
+      if (entry.protocol_instance)
+        out.integer(*entry.protocol_instance);
+      out.boolean(entry.route_tag.has_value());
+      if (entry.route_tag)
+        out.integer(*entry.route_tag);
+      out.boolean(entry.set_metric.has_value());
+      if (entry.set_metric)
+        out.integer(*entry.set_metric);
+      out.boolean(entry.set_metric_type.has_value());
+      if (entry.set_metric_type)
+        out.integer(*entry.set_metric_type);
+      out.boolean(entry.set_route_tag.has_value());
+      if (entry.set_route_tag)
+        out.integer(*entry.set_route_tag);
     }
     out.integer(policy.default_action);
     out.boolean(policy.default_action_configured);
@@ -939,6 +1032,12 @@ bool named_mld_import_policies(
     }
     for (auto &entry : policy.entries) {
       bool source_present{};
+      bool route_source_present{};
+      bool protocol_instance_present{};
+      bool route_tag_present{};
+      bool metric_present{};
+      bool metric_type_present{};
+      bool set_route_tag_present{};
       if (!in.integer(entry.number) || !entry.number ||
           !in.string(entry.group_prefix_list,
                      mld::maximum_policy_name_octets) ||
@@ -961,8 +1060,68 @@ bool named_mld_import_policies(
           !in.boolean(entry.action_configured) ||
           (!entry.action_configured &&
            entry.action != mld::ImportPolicyAction::next_entry) ||
-          !in.boolean(entry.protocol_mld))
+          !in.boolean(entry.protocol_mld) ||
+          !in.string(entry.route_prefix_list,
+                     mld::maximum_policy_name_octets) ||
+          !in.boolean(route_source_present))
         return false;
+      if (route_source_present) {
+        entry.route_source.emplace();
+        if (!in.integer(*entry.route_source) ||
+            *entry.route_source > routing::RouteSource::ospf3)
+          return false;
+      } else {
+        entry.route_source.reset();
+      }
+      if (!in.boolean(protocol_instance_present))
+        return false;
+      if (protocol_instance_present) {
+        entry.protocol_instance.emplace();
+        if (!in.integer(*entry.protocol_instance))
+          return false;
+      } else {
+        entry.protocol_instance.reset();
+      }
+      if (!in.boolean(route_tag_present))
+        return false;
+      if (route_tag_present) {
+        entry.route_tag.emplace();
+        if (!in.integer(*entry.route_tag))
+          return false;
+      } else {
+        entry.route_tag.reset();
+      }
+      if (!in.boolean(metric_present))
+        return false;
+      if (metric_present) {
+        entry.set_metric.emplace();
+        if (!in.integer(*entry.set_metric))
+          return false;
+      } else {
+        entry.set_metric.reset();
+      }
+      if (!in.boolean(metric_type_present))
+        return false;
+      if (metric_type_present) {
+        entry.set_metric_type.emplace();
+        if (!in.integer(*entry.set_metric_type) ||
+            (*entry.set_metric_type !=
+                 routing::OspfPathType::external_type_1 &&
+             *entry.set_metric_type !=
+                 routing::OspfPathType::external_type_2))
+          return false;
+      } else {
+        entry.set_metric_type.reset();
+      }
+      if (!in.boolean(set_route_tag_present))
+        return false;
+      if (set_route_tag_present) {
+        entry.set_route_tag.emplace();
+        if (!in.integer(*entry.set_route_tag))
+          return false;
+      } else {
+        entry.set_route_tag.reset();
+      }
     }
     std::sort(policy.entries.begin(), policy.entries.end(),
               [](const auto &left, const auto &right) {
@@ -2179,12 +2338,14 @@ void forwarder_state(Writer &out, const RouterForwarderCheckpoint &state) {
   ipv4(out, state.echo_request_destination);
   out.integer(state.echo_request_age_nanoseconds);
   out.integer(state.echo_reply_rtt_nanoseconds);
+  out.integer(state.echo_reply_ttl);
   out.integer(state.echo_request_sequence);
   out.boolean(state.echo_request_valid);
   out.integer(state.ipv6_echo_reply_sequence);
   out.boolean(state.ipv6_echo_reply_valid);
   out.integer(state.ipv6_probe_age_nanoseconds);
   out.integer(state.ipv6_echo_reply_rtt_nanoseconds);
+  out.integer(state.ipv6_echo_reply_hop_limit);
   out.integer(state.ipv6_echo_error_parameter);
   out.integer(state.ipv6_echo_error_sequence);
   out.integer(state.ipv6_echo_error_type);
@@ -2430,12 +2591,14 @@ bool forwarder_state(Reader &in, RouterForwarderCheckpoint &state) {
          ipv4(in, state.echo_request_destination) &&
          in.integer(state.echo_request_age_nanoseconds) &&
          in.integer(state.echo_reply_rtt_nanoseconds) &&
+         in.integer(state.echo_reply_ttl) &&
          in.integer(state.echo_request_sequence) &&
          in.boolean(state.echo_request_valid) &&
          in.integer(state.ipv6_echo_reply_sequence) &&
          in.boolean(state.ipv6_echo_reply_valid) &&
          in.integer(state.ipv6_probe_age_nanoseconds) &&
          in.integer(state.ipv6_echo_reply_rtt_nanoseconds) &&
+         in.integer(state.ipv6_echo_reply_hop_limit) &&
          state.echo_request_age_nanoseconds <=
              static_cast<std::uint64_t>(
                  std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -4318,6 +4481,67 @@ bool host_state(Reader &in, NetworkHostCheckpoint &state) {
          })();
 }
 
+void switch_state(Writer &out,
+                  const NetworkPlaneCheckpoint::Switch &state) {
+  handle(out, state.handle);
+  out.integer(state.profile_index);
+  count(out, state.forwarding.ports);
+  for (const auto &port : state.forwarding.ports) {
+    out.integer(port.configuration.speed_mbps);
+    out.integer(port.configuration.mtu);
+    out.boolean(port.configuration.admin_enabled);
+    out.boolean(port.configuration.carrier);
+    out.boolean(port.configured);
+  }
+  count(out, state.forwarding.fdb);
+  for (const auto &entry : state.forwarding.fdb) {
+    mac(out, entry.address);
+    out.integer(entry.remaining_nanoseconds);
+    out.integer(entry.port);
+  }
+  count(out, state.forwarding.egress);
+  for (const auto &entry : state.forwarding.egress) {
+    out.frame(entry.frame);
+    out.integer(entry.port);
+  }
+}
+
+bool switch_state(Reader &in, NetworkPlaneCheckpoint::Switch &state) {
+  if (!handle(in, state.handle) || !in.integer(state.profile_index))
+    return false;
+  const auto *profile =
+      device_catalog::ethernet_switch_profile(state.profile_index);
+  std::uint32_t size{};
+  if (!profile || !count(in, size, profile->port_count))
+    return false;
+  state.forwarding.ports.resize(size);
+  for (auto &port : state.forwarding.ports)
+    if (!in.integer(port.configuration.speed_mbps) ||
+        !in.integer(port.configuration.mtu) ||
+        !in.boolean(port.configuration.admin_enabled) ||
+        !in.boolean(port.configuration.carrier) ||
+        !in.boolean(port.configured))
+      return false;
+  if (!count(in, size, profile->fdb_entries))
+    return false;
+  state.forwarding.fdb.resize(size);
+  for (auto &entry : state.forwarding.fdb)
+    if (!mac(in, entry.address) ||
+        !in.integer(entry.remaining_nanoseconds) ||
+        !in.integer(entry.port))
+      return false;
+  const auto maximum_queued =
+      static_cast<std::size_t>(profile->port_count) *
+      profile->queue_frames_per_port;
+  if (!count(in, size, maximum_queued))
+    return false;
+  state.forwarding.egress.resize(size);
+  for (auto &entry : state.forwarding.egress)
+    if (!in.frame(entry.frame) || !in.integer(entry.port))
+      return false;
+  return true;
+}
+
 void fabric_frame(Writer &out, const FabricFrameCheckpoint &value) {
   out.frame(value.frame);
   out.integer(value.delivery_remaining_nanoseconds);
@@ -4449,6 +4673,915 @@ bool capture_program(Reader &in, CapturePointProgram &value) noexcept {
   return true;
 }
 
+void ospf_duration(Writer &out, std::chrono::milliseconds value) {
+  out.integer(value.count());
+}
+
+bool ospf_duration(Reader &in, std::chrono::milliseconds &value) noexcept {
+  std::int64_t count_value{};
+  if (!in.integer(count_value) || count_value < 0 ||
+      std::chrono::milliseconds{count_value} >
+          device_catalog::checkpoint_max_relative_deadline)
+    return false;
+  value = std::chrono::milliseconds{count_value};
+  return true;
+}
+
+void ospf_lsa_key(Writer &out, const ospf::LsaKey &value) {
+  out.integer(value.link_state_id);
+  out.integer(value.advertising_router);
+  out.integer(value.type);
+  out.integer(value.scope);
+}
+
+bool ospf_lsa_key(Reader &in, ospf::LsaKey &value) noexcept {
+  return in.integer(value.link_state_id) &&
+         in.integer(value.advertising_router) &&
+         in.integer(value.type) && in.integer(value.scope) &&
+         value.scope <= ospf::FloodingScope::autonomous_system;
+}
+
+void ospf_lsa_header(Writer &out,
+                     const packet::ospf::LsaHeaderView &value) {
+  out.integer(value.link_state_id);
+  out.integer(value.advertising_router);
+  out.integer(value.sequence_number);
+  out.integer(value.age_seconds);
+  out.integer(value.type);
+  out.integer(value.checksum);
+  out.integer(value.length);
+  out.integer(value.options);
+  out.integer(value.version);
+}
+
+bool ospf_lsa_header(Reader &in,
+                     packet::ospf::LsaHeaderView &value) noexcept {
+  return in.integer(value.link_state_id) &&
+         in.integer(value.advertising_router) &&
+         in.integer(value.sequence_number) &&
+         in.integer(value.age_seconds) &&
+         value.age_seconds <= ospf::max_age_seconds &&
+         in.integer(value.type) && in.integer(value.checksum) &&
+         in.integer(value.length) && in.integer(value.options) &&
+         in.integer(value.version) &&
+         (value.version == packet::ospf::version_two ||
+          value.version == packet::ospf::version_three);
+}
+
+void ospf_process_identity(Writer &out,
+                           const ospf::ProcessIdentity &value) {
+  handle(out, value.device);
+  out.integer(value.area_id);
+  out.integer(value.version);
+  out.integer(value.instance_id);
+}
+
+bool ospf_process_identity(Reader &in,
+                           ospf::ProcessIdentity &value) noexcept {
+  return handle(in, value.device) && in.integer(value.area_id) &&
+         in.integer(value.version) &&
+         (value.version == packet::ospf::version_two ||
+          value.version == packet::ospf::version_three) &&
+         in.integer(value.instance_id);
+}
+
+void ospf_interface_configuration(
+    Writer &out, const ospf::InterfaceConfiguration &value) {
+  out.integer(value.router_id);
+  out.integer(value.area_id);
+  out.integer(value.interface_id);
+  out.integer(value.network_mask);
+  out.integer(value.local_election_identity);
+  out.integer(value.options);
+  out.integer(value.hello_interval_seconds);
+  out.integer(value.dead_interval_seconds);
+  out.integer(value.interface_mtu);
+  out.integer(value.router_priority);
+  out.integer(value.version);
+  out.integer(value.instance_id);
+  out.integer(value.network_type);
+  out.boolean(value.passive);
+  out.boolean(value.enabled);
+}
+
+bool ospf_interface_configuration(
+    Reader &in, ospf::InterfaceConfiguration &value) noexcept {
+  if (!in.integer(value.router_id) || value.router_id == 0U)
+    return false;
+  if (!in.integer(value.area_id))
+    return false;
+  if (!in.integer(value.interface_id))
+    return false;
+  if (!in.integer(value.network_mask))
+    return false;
+  if (!in.integer(value.local_election_identity))
+    return false;
+  if (!in.integer(value.options))
+    return false;
+  if (!in.integer(value.hello_interval_seconds))
+    return false;
+  if (!in.integer(value.dead_interval_seconds))
+    return false;
+  if (!in.integer(value.interface_mtu))
+    return false;
+  if (!in.integer(value.router_priority))
+    return false;
+  if (!in.integer(value.version))
+    return false;
+  if (!in.integer(value.instance_id))
+    return false;
+  if (!in.integer(value.network_type) ||
+      value.network_type > ospf::NetworkType::virtual_link)
+    return false;
+  if (!in.boolean(value.passive))
+    return false;
+  if (!in.boolean(value.enabled))
+    return false;
+  if (value.interface_id == 0U && !value.passive)
+    return false;
+  if (!ospf::InterfaceRuntime::validate_configuration(value))
+    return false;
+  return true;
+  // A physical OSPF owner always has a stable Interface ID. The passive
+  // system interface is different: it contributes a stub prefix but owns no
+  // port and never emits a Hello, so zero is its deliberate internal absence
+  // marker. Reject zero on every active owner to keep corrupt checkpoints
+  // from creating an unaddressable packet-producing interface.
+}
+
+void ospf_process_interface_configuration(
+    Writer &out, const ospf::ProcessInterfaceConfiguration &value) {
+  ospf_interface_configuration(out, value.protocol);
+  ipv4(out, value.ipv4_source);
+  ipv6(out, value.ipv6_source);
+  ipv6(out, value.ipv6_prefix);
+  mac(out, value.source_mac);
+  out.integer(value.physical_port_ordinal);
+  out.integer(value.metric);
+  out.integer(value.retransmit_interval_seconds);
+  out.integer(value.transmit_delay_seconds);
+  out.integer(value.prefix_length);
+  out.integer(value.virtual_neighbor_router_id);
+  ip_address(out, value.virtual_neighbor_address);
+}
+
+bool ospf_process_interface_configuration(
+    Reader &in, ospf::ProcessInterfaceConfiguration &value) noexcept {
+  return ospf_interface_configuration(in, value.protocol) &&
+         ipv4(in, value.ipv4_source) && ipv6(in, value.ipv6_source) &&
+         ipv6(in, value.ipv6_prefix) && mac(in, value.source_mac) &&
+         in.integer(value.physical_port_ordinal) &&
+         in.integer(value.metric) &&
+         in.integer(value.retransmit_interval_seconds) &&
+         in.integer(value.transmit_delay_seconds) &&
+         in.integer(value.prefix_length) && value.prefix_length <= 128U &&
+         in.integer(value.virtual_neighbor_router_id) &&
+         ip_address(in, value.virtual_neighbor_address);
+}
+
+void ospf_authentication(Writer &out,
+                         const ospf::ProcessAuthentication &value) {
+  out.integer(value.key_size);
+  out.integer(value.initial_sequence);
+  out.integer(value.secret_handle);
+  out.integer(value.key_id);
+  out.integer(value.algorithm);
+  out.integer(value.secret_kind);
+  out.boolean(value.ipsec_ah);
+  out.integer(value.begin_utc_seconds);
+  out.boolean(value.end_utc_seconds.has_value());
+  if (value.end_utc_seconds)
+    out.integer(*value.end_utc_seconds);
+  out.integer(value.tolerance_seconds);
+  out.boolean(value.timed);
+}
+
+bool ospf_authentication(Reader &in,
+                         ospf::ProcessAuthentication &value) noexcept {
+  bool has_end{};
+  std::int64_t end{};
+  if (!in.integer(value.key_size) || value.key_size > value.key.size() ||
+      !in.integer(value.initial_sequence) ||
+      !in.integer(value.secret_handle) || value.secret_handle == 0U ||
+      !in.integer(value.key_id) ||
+      !in.integer(value.algorithm) ||
+      value.algorithm > ospf::KeychainAlgorithm::hmac_sha256 ||
+      !in.integer(value.secret_kind) ||
+      value.secret_kind >
+          static_cast<std::uint8_t>(
+              vault::SecretKind::ospf_authentication_key) ||
+      value.secret_kind == 0U ||
+      !in.boolean(value.ipsec_ah) ||
+      !in.integer(value.begin_utc_seconds) || !in.boolean(has_end) ||
+      (has_end && !in.integer(end)) ||
+      !in.integer(value.tolerance_seconds) || !in.boolean(value.timed))
+    return false;
+  value.end_utc_seconds =
+      has_end ? std::optional<std::int64_t>{end} : std::nullopt;
+  value.key.fill(0U);
+  return value.key_size != 0U;
+}
+
+void ospf_interface_runtime(
+    Writer &out, const ospf::InterfaceRuntimeCheckpoint &value) {
+  ospf_interface_configuration(out, value.configuration);
+  count(out, value.neighbors);
+  for (const auto &neighbor : value.neighbors) {
+    out.integer(neighbor.router_id);
+    out.integer(neighbor.election_identity);
+    out.integer(neighbor.interface_id);
+    out.integer(neighbor.designated_router);
+    out.integer(neighbor.backup_designated_router);
+    ospf_duration(
+        out, std::chrono::duration_cast<std::chrono::milliseconds>(
+                 neighbor.inactivity_deadline.time_since_epoch()));
+    out.integer(neighbor.state);
+    out.integer(neighbor.priority);
+  }
+  ospf_duration(out, value.hello_remaining);
+  ospf_duration(out, value.wait_remaining);
+  out.integer(value.state);
+  out.integer(value.designated_router);
+  out.integer(value.backup_designated_router);
+}
+
+bool ospf_interface_runtime(
+    Reader &in, ospf::InterfaceRuntimeCheckpoint &value) {
+  std::uint32_t size{};
+  if (!ospf_interface_configuration(in, value.configuration) ||
+      !count(in, size, device_catalog::ospf_neighbors_per_interface))
+    return false;
+  value.neighbors.resize(size);
+  for (auto &neighbor : value.neighbors) {
+    std::chrono::milliseconds remaining{};
+    if (!in.integer(neighbor.router_id) || neighbor.router_id == 0U ||
+        !in.integer(neighbor.election_identity) ||
+        !in.integer(neighbor.interface_id) ||
+        !in.integer(neighbor.designated_router) ||
+        !in.integer(neighbor.backup_designated_router) ||
+        !ospf_duration(in, remaining) || !in.integer(neighbor.state) ||
+        neighbor.state > ospf::NeighborState::full ||
+        !in.integer(neighbor.priority))
+      return false;
+    neighbor.inactivity_deadline =
+        ospf::RuntimeClock::time_point{remaining};
+  }
+  return ospf_duration(in, value.hello_remaining) &&
+         ospf_duration(in, value.wait_remaining) &&
+         in.integer(value.state) &&
+         // Broadcast Ethernet interfaces legitimately restore in DR Other,
+         // Backup or Designated Router after RFC 2328 section 9.3 election.
+         // Point-to-Point is not the maximum enum value and using it as the
+         // decoder bound rejected every converged broadcast checkpoint.
+         value.state <= ospf::InterfaceState::designated &&
+         in.integer(value.designated_router) &&
+         in.integer(value.backup_designated_router);
+}
+
+void ospf_database_exchange(
+    Writer &out,
+    const ospf::NeighborDatabaseExchangeCheckpoint &value) {
+  count(out, value.summaries);
+  for (const auto &entry : value.summaries)
+    ospf_lsa_header(out, entry);
+  count(out, value.requests);
+  for (const auto &entry : value.requests) {
+    out.integer(entry.link_state_type);
+    out.integer(entry.link_state_id);
+    out.integer(entry.advertising_router);
+  }
+  count(out, value.retransmissions);
+  for (const auto &entry : value.retransmissions) {
+    ospf_lsa_key(out, entry.key);
+    out.integer(entry.sequence_number);
+    out.integer(entry.checksum);
+  }
+  count(out, value.acknowledgments);
+  for (const auto &entry : value.acknowledgments)
+    ospf_lsa_header(out, entry);
+  out.integer(value.version);
+  out.boolean(value.permit_autonomous_system_scope);
+}
+
+bool ospf_database_exchange(
+    Reader &in, ospf::NeighborDatabaseExchangeCheckpoint &value) {
+  std::uint32_t size{};
+  if (!count(in, size, device_catalog::ospf_lsas_per_instance))
+    return false;
+  value.summaries.resize(size);
+  for (auto &entry : value.summaries)
+    if (!ospf_lsa_header(in, entry))
+      return false;
+  if (!count(in, size, device_catalog::ospf_lsas_per_instance))
+    return false;
+  value.requests.resize(size);
+  for (auto &entry : value.requests)
+    if (!in.integer(entry.link_state_type) ||
+        !in.integer(entry.link_state_id) ||
+        !in.integer(entry.advertising_router))
+      return false;
+  if (!count(in, size, device_catalog::ospf_lsas_per_instance))
+    return false;
+  value.retransmissions.resize(size);
+  for (auto &entry : value.retransmissions)
+    if (!ospf_lsa_key(in, entry.key) ||
+        !in.integer(entry.sequence_number) ||
+        !in.integer(entry.checksum))
+      return false;
+  if (!count(in, size, device_catalog::ospf_lsas_per_instance))
+    return false;
+  value.acknowledgments.resize(size);
+  for (auto &entry : value.acknowledgments)
+    if (!ospf_lsa_header(in, entry))
+      return false;
+  return in.integer(value.version) &&
+         (value.version == 0U ||
+          value.version == packet::ospf::version_two ||
+          value.version == packet::ospf::version_three) &&
+         in.boolean(value.permit_autonomous_system_scope);
+}
+
+void ospf_lsa_database(
+    Writer &out, const ospf::LinkStateDatabaseCheckpoint &value) {
+  count(out, value.records);
+  for (const auto &record : value.records) {
+    ospf_lsa_key(out, record.key);
+    count(out, record.bytes);
+    out.octets(record.bytes);
+    out.integer(record.effective_age);
+    out.integer(record.last_checksum_check_age);
+    out.boolean(record.max_age_flooded);
+  }
+}
+
+bool ospf_lsa_database(
+    Reader &in, ospf::LinkStateDatabaseCheckpoint &value) {
+  std::uint32_t size{};
+  if (!count(in, size, device_catalog::ospf_lsas_per_instance))
+    return false;
+  value.records.resize(size);
+  for (auto &record : value.records) {
+    std::uint32_t byte_count{};
+    if (!ospf_lsa_key(in, record.key) ||
+        !count(in, byte_count, packet::maximum_frame_octets) ||
+        byte_count < packet::ospf::lsa_header_octets ||
+        !(record.bytes.resize(byte_count), in.octets(record.bytes)) ||
+        !in.integer(record.effective_age) ||
+        record.effective_age > ospf::max_age_seconds ||
+        !in.integer(record.last_checksum_check_age) ||
+        record.last_checksum_check_age > record.effective_age ||
+        !in.boolean(record.max_age_flooded))
+      return false;
+  }
+  return true;
+}
+
+void ospf_coordinator_advertisement(
+    Writer &out, const ospf::CoordinatorAdvertisement &value) {
+  ip_address(out, value.prefix.network);
+  out.integer(value.prefix.length);
+  out.integer(value.destination_router_id);
+  out.integer(value.metric);
+  out.integer(value.internal_metric);
+  out.integer(value.forwarding_address_v4);
+  ipv6(out, value.forwarding_address_v6);
+  out.integer(value.tag);
+  out.integer(value.source_link_state_id);
+  out.integer(value.kind);
+  out.boolean(value.type_two);
+  out.boolean(value.ipv4_forwarding_address);
+}
+
+bool ospf_coordinator_advertisement(
+    Reader &in, ospf::CoordinatorAdvertisement &value) noexcept {
+  return ip_address(in, value.prefix.network) &&
+         in.integer(value.prefix.length) &&
+         value.prefix.length <= ip::address_bits(value.prefix.network.family) &&
+         in.integer(value.destination_router_id) &&
+         in.integer(value.metric) && in.integer(value.internal_metric) &&
+         in.integer(value.forwarding_address_v4) &&
+         ipv6(in, value.forwarding_address_v6) && in.integer(value.tag) &&
+         in.integer(value.source_link_state_id) &&
+         in.integer(value.kind) &&
+         value.kind <= ospf::CoordinatorAdvertisementKind::nssa_external &&
+         in.boolean(value.type_two) &&
+         in.boolean(value.ipv4_forwarding_address);
+}
+
+void ospf_process_checkpoint(
+    Writer &out, const ospf::InstanceProcessCheckpoint &value) {
+  ospf_lsa_database(out, value.database);
+  count(out, value.interfaces);
+  for (const auto &interface : value.interfaces) {
+    ospf_process_interface_configuration(out, interface.configuration);
+    ospf_interface_runtime(out, interface.runtime);
+    count(out, interface.exchanges);
+    for (const auto &exchange : interface.exchanges) {
+      ospf_database_exchange(out, exchange.database);
+      out.integer(exchange.router_id);
+      out.integer(exchange.dd_sequence);
+      out.integer(static_cast<std::uint32_t>(exchange.summary_cursor));
+      out.integer(static_cast<std::uint32_t>(exchange.request_cursor));
+      out.integer(static_cast<std::uint32_t>(exchange.update_cursor));
+      ospf_duration(out, exchange.dd_retransmit_remaining);
+      ospf_duration(out, exchange.request_retransmit_remaining);
+      ospf_duration(out, exchange.update_retransmit_remaining);
+      ipv4(out, exchange.ipv4_address);
+      ipv6(out, exchange.ipv6_address);
+      for (const auto sequence : exchange.authentication_sequences)
+        out.integer(sequence);
+      for (const auto seen : exchange.authentication_sequence_seen)
+        out.boolean(seen);
+      ospf_duration(out, exchange.helper_remaining);
+      out.boolean(exchange.local_master);
+      out.boolean(exchange.negotiation_complete);
+      out.boolean(exchange.pending_database_description);
+      out.boolean(exchange.pending_request);
+      out.boolean(exchange.pending_update);
+      out.boolean(exchange.pending_acknowledgment);
+      out.boolean(exchange.peer_more);
+      out.boolean(exchange.sent_more);
+      out.boolean(exchange.complete_after_reply);
+      out.boolean(exchange.helper_active);
+      out.boolean(exchange.helper_was_designated_router);
+    }
+    count(out, interface.nbma_peers);
+    for (const auto &peer : interface.nbma_peers) {
+      ip_address(out, peer.configuration.address);
+      out.integer(peer.configuration.poll_interval_seconds);
+      out.integer(peer.configuration.priority);
+      ospf_duration(out, peer.hello_remaining);
+      out.integer(peer.router_id);
+    }
+    out.boolean(interface.send_authentication.has_value());
+    if (interface.send_authentication)
+      ospf_authentication(out, *interface.send_authentication);
+    count(out, interface.receive_authentications);
+    for (const auto &authentication : interface.receive_authentications)
+      ospf_authentication(out, authentication);
+    out.integer(interface.authentication_sequence);
+    out.integer(interface.authentication_send_key_id);
+    out.integer(interface.ipsec_replay_sequence);
+    out.integer(interface.network_lsa_sequence);
+    out.integer(interface.network_prefix_lsa_sequence);
+    out.integer(interface.link_lsa_sequence);
+    out.boolean(interface.authentication_required);
+    out.boolean(interface.ipsec_replay_sequence_seen);
+    out.boolean(interface.network_lsa_originated);
+    out.boolean(interface.network_sequence_at_max);
+    out.boolean(interface.network_prefix_sequence_at_max);
+    out.boolean(interface.link_sequence_at_max);
+    out.boolean(interface.network_sequence_wrap_pending);
+    out.boolean(interface.network_prefix_sequence_wrap_pending);
+    out.boolean(interface.link_sequence_wrap_pending);
+  }
+  count(out, value.pending_fight_backs);
+  for (const auto &entry : value.pending_fight_backs) {
+    ospf_lsa_key(out, entry.key);
+    count(out, entry.bytes);
+    out.octets(entry.bytes);
+  }
+  count(out, value.pending_sequence_wraps);
+  for (const auto &entry : value.pending_sequence_wraps)
+    ospf_lsa_key(out, entry);
+  count(out, value.coordinator_lsas);
+  for (const auto &entry : value.coordinator_lsas) {
+    ospf_coordinator_advertisement(out, entry.advertisement);
+    ospf_lsa_key(out, entry.key);
+    out.integer(entry.sequence);
+    out.boolean(entry.withdrawing);
+    out.boolean(entry.sequence_at_max);
+    out.boolean(entry.sequence_wrap_pending);
+  }
+  count(out, value.virtual_endpoint_addresses);
+  for (const auto &address : value.virtual_endpoint_addresses)
+    ipv6(out, address);
+  count(out, value.pending_coordinator_advertisements);
+  for (const auto &entry : value.pending_coordinator_advertisements)
+    ospf_coordinator_advertisement(out, entry);
+  ospf_duration(out, value.last_local_origination_age);
+  ospf_duration(out, value.local_origination_remaining);
+  ospf_duration(out, value.spf_remaining);
+  ospf_duration(out, value.last_spf_started_age);
+  ospf_duration(out, value.current_lsa_delay);
+  ospf_duration(out, value.current_spf_delay);
+  out.integer(value.route_generation);
+  out.integer(value.next_dd_sequence);
+  out.integer(value.next_coordinator_link_state_id);
+  out.integer(value.router_lsa_sequence);
+  out.integer(value.prefix_lsa_sequence);
+  out.integer(value.router_information_lsa_sequence);
+  out.integer(value.route_recalculation_status);
+  out.integer(value.run_ready_status);
+  out.integer(value.local_origination_status);
+  out.integer(value.local_origination_install_result);
+  out.boolean(value.coordinator_reconcile_pending);
+  out.boolean(value.router_sequence_at_max);
+  out.boolean(value.prefix_sequence_at_max);
+  out.boolean(value.router_information_sequence_at_max);
+  out.boolean(value.router_sequence_wrap_pending);
+  out.boolean(value.prefix_sequence_wrap_pending);
+  out.boolean(value.router_information_sequence_wrap_pending);
+  out.boolean(value.area_border_router);
+  out.boolean(value.autonomous_system_boundary_router);
+  out.boolean(value.virtual_link_endpoint);
+  out.boolean(value.overload);
+  out.boolean(value.graceful_restart_helper);
+  out.boolean(value.loop_free_alternates);
+}
+
+bool ospf_process_checkpoint(
+    Reader &in, ospf::InstanceProcessCheckpoint &value) {
+  std::uint32_t size{};
+  if (!ospf_lsa_database(in, value.database) ||
+      !count(in, size, device_catalog::maximum_ports_per_router + 1U))
+    return false;
+  value.interfaces.resize(size);
+  for (auto &interface : value.interfaces) {
+    if (!ospf_process_interface_configuration(
+            in, interface.configuration))
+      return false;
+    if (!ospf_interface_runtime(in, interface.runtime))
+      return false;
+    if (!count(in, size,
+               device_catalog::ospf_neighbors_per_interface))
+      return false;
+    interface.exchanges.resize(size);
+    for (auto &exchange : interface.exchanges) {
+      std::uint32_t summary_cursor{};
+      std::uint32_t request_cursor{};
+      std::uint32_t update_cursor{};
+      if (!ospf_database_exchange(in, exchange.database) ||
+          !in.integer(exchange.router_id) ||
+          exchange.router_id == 0U ||
+          !in.integer(exchange.dd_sequence) ||
+          !in.integer(summary_cursor) ||
+          !in.integer(request_cursor) ||
+          !in.integer(update_cursor) ||
+          !ospf_duration(in, exchange.dd_retransmit_remaining) ||
+          !ospf_duration(in, exchange.request_retransmit_remaining) ||
+          !ospf_duration(in, exchange.update_retransmit_remaining) ||
+          !ipv4(in, exchange.ipv4_address) ||
+          !ipv6(in, exchange.ipv6_address))
+        return false;
+      exchange.summary_cursor = summary_cursor;
+      exchange.request_cursor = request_cursor;
+      exchange.update_cursor = update_cursor;
+      for (auto &sequence : exchange.authentication_sequences)
+        if (!in.integer(sequence))
+          return false;
+      for (auto &seen : exchange.authentication_sequence_seen)
+        if (!in.boolean(seen))
+          return false;
+      if (!ospf_duration(in, exchange.helper_remaining) ||
+          !in.boolean(exchange.local_master) ||
+          !in.boolean(exchange.negotiation_complete) ||
+          !in.boolean(exchange.pending_database_description) ||
+          !in.boolean(exchange.pending_request) ||
+          !in.boolean(exchange.pending_update) ||
+          !in.boolean(exchange.pending_acknowledgment) ||
+          !in.boolean(exchange.peer_more) ||
+          !in.boolean(exchange.sent_more) ||
+          !in.boolean(exchange.complete_after_reply) ||
+          !in.boolean(exchange.helper_active) ||
+          !in.boolean(exchange.helper_was_designated_router))
+        return false;
+    }
+    if (!count(in, size,
+               device_catalog::ospf_neighbors_per_interface))
+      return false;
+    interface.nbma_peers.resize(size);
+    for (auto &peer : interface.nbma_peers)
+      if (!ip_address(in, peer.configuration.address) ||
+          !in.integer(peer.configuration.poll_interval_seconds) ||
+          !in.integer(peer.configuration.priority) ||
+          !ospf_duration(in, peer.hello_remaining) ||
+          !in.integer(peer.router_id))
+        return false;
+    bool has_send{};
+    if (!in.boolean(has_send))
+      return false;
+    if (has_send) {
+      interface.send_authentication.emplace();
+      if (!ospf_authentication(in, *interface.send_authentication))
+        return false;
+    }
+    if (!count(in, size, 64U))
+      return false;
+    interface.receive_authentications.resize(size);
+    for (auto &authentication : interface.receive_authentications)
+      if (!ospf_authentication(in, authentication))
+        return false;
+    if (!in.integer(interface.authentication_sequence) ||
+        !in.integer(interface.authentication_send_key_id) ||
+        !in.integer(interface.ipsec_replay_sequence) ||
+        !in.integer(interface.network_lsa_sequence) ||
+        !in.integer(interface.network_prefix_lsa_sequence) ||
+        !in.integer(interface.link_lsa_sequence) ||
+        !in.boolean(interface.authentication_required) ||
+        !in.boolean(interface.ipsec_replay_sequence_seen) ||
+        !in.boolean(interface.network_lsa_originated) ||
+        !in.boolean(interface.network_sequence_at_max) ||
+        !in.boolean(interface.network_prefix_sequence_at_max) ||
+        !in.boolean(interface.link_sequence_at_max) ||
+        !in.boolean(interface.network_sequence_wrap_pending) ||
+        !in.boolean(interface.network_prefix_sequence_wrap_pending) ||
+        !in.boolean(interface.link_sequence_wrap_pending))
+      return false;
+  }
+  if (!count(in, size, device_catalog::ospf_lsas_per_instance))
+    return false;
+  value.pending_fight_backs.resize(size);
+  for (auto &entry : value.pending_fight_backs) {
+    std::uint32_t bytes{};
+    if (!ospf_lsa_key(in, entry.key) ||
+        !count(in, bytes, packet::maximum_frame_octets) ||
+        bytes < packet::ospf::lsa_header_octets)
+      return false;
+    entry.bytes.resize(bytes);
+    if (!in.octets(entry.bytes))
+      return false;
+  }
+  if (!count(in, size, device_catalog::ospf_lsas_per_instance))
+    return false;
+  value.pending_sequence_wraps.resize(size);
+  for (auto &entry : value.pending_sequence_wraps)
+    if (!ospf_lsa_key(in, entry))
+      return false;
+  if (!count(in, size, device_catalog::ospf_lsas_per_instance))
+    return false;
+  value.coordinator_lsas.resize(size);
+  for (auto &entry : value.coordinator_lsas)
+    if (!ospf_coordinator_advertisement(in, entry.advertisement) ||
+        !ospf_lsa_key(in, entry.key) || !in.integer(entry.sequence) ||
+        !in.boolean(entry.withdrawing) ||
+        !in.boolean(entry.sequence_at_max) ||
+        !in.boolean(entry.sequence_wrap_pending))
+      return false;
+  if (!count(in, size, device_catalog::maximum_ports_per_router + 1U))
+    return false;
+  value.virtual_endpoint_addresses.resize(size);
+  for (auto &address : value.virtual_endpoint_addresses)
+    if (!ipv6(in, address))
+      return false;
+  if (!count(in, size, device_catalog::ospf_lsas_per_instance))
+    return false;
+  value.pending_coordinator_advertisements.resize(size);
+  for (auto &entry : value.pending_coordinator_advertisements)
+    if (!ospf_coordinator_advertisement(in, entry))
+      return false;
+  return ospf_duration(in, value.last_local_origination_age) &&
+         ospf_duration(in, value.local_origination_remaining) &&
+         ospf_duration(in, value.spf_remaining) &&
+         ospf_duration(in, value.last_spf_started_age) &&
+         ospf_duration(in, value.current_lsa_delay) &&
+         ospf_duration(in, value.current_spf_delay) &&
+         in.integer(value.route_generation) &&
+         in.integer(value.next_dd_sequence) &&
+         in.integer(value.next_coordinator_link_state_id) &&
+         in.integer(value.router_lsa_sequence) &&
+         in.integer(value.prefix_lsa_sequence) &&
+         in.integer(value.router_information_lsa_sequence) &&
+         in.integer(value.route_recalculation_status) &&
+         value.route_recalculation_status <=
+             ospf::RouteRecalculationStatus::allocation_failed &&
+         in.integer(value.run_ready_status) &&
+         value.run_ready_status <=
+             ospf::RunReadyStatus::request_encoding_rejected &&
+         in.integer(value.local_origination_status) &&
+         value.local_origination_status <=
+             ospf::LocalOriginationStatus::allocation_failed &&
+         in.integer(value.local_origination_install_result) &&
+         value.local_origination_install_result <=
+             ospf::InstallResult::capacity_exhausted &&
+         in.boolean(value.coordinator_reconcile_pending) &&
+         in.boolean(value.router_sequence_at_max) &&
+         in.boolean(value.prefix_sequence_at_max) &&
+         in.boolean(value.router_information_sequence_at_max) &&
+         in.boolean(value.router_sequence_wrap_pending) &&
+         in.boolean(value.prefix_sequence_wrap_pending) &&
+         in.boolean(value.router_information_sequence_wrap_pending) &&
+         in.boolean(value.area_border_router) &&
+         in.boolean(value.autonomous_system_boundary_router) &&
+         in.boolean(value.virtual_link_endpoint) &&
+         in.boolean(value.overload) &&
+         in.boolean(value.graceful_restart_helper) &&
+         in.boolean(value.loop_free_alternates);
+}
+
+void ospf_process_definition(Writer &out,
+                             const ospf::ControlCommand &value) {
+  ospf_process_identity(out, value.process);
+  out.integer(value.router_id);
+  out.integer(value.initial_dd_sequence);
+  out.integer(value.maximum_interfaces);
+  out.integer(value.default_metric);
+  out.integer(value.router_preference);
+  out.integer(value.external_preference);
+  out.integer(value.spf_initial_wait_milliseconds);
+  out.integer(value.spf_second_wait_milliseconds);
+  out.integer(value.spf_maximum_wait_milliseconds);
+  out.integer(value.lsa_initial_wait_milliseconds);
+  out.integer(value.lsa_second_wait_milliseconds);
+  out.integer(value.lsa_maximum_wait_milliseconds);
+  out.integer(value.area_type);
+  out.boolean(value.summaries);
+  out.boolean(value.nssa_translate_always);
+  out.boolean(value.asbr);
+  out.boolean(value.graceful_restart_helper);
+  out.boolean(value.loopfree_alternates);
+  out.boolean(value.overload);
+}
+
+bool ospf_process_definition(Reader &in,
+                             ospf::ControlCommand &value) noexcept {
+  value.kind = ospf::ControlCommandKind::stage_process;
+  return ospf_process_identity(in, value.process) &&
+         in.integer(value.router_id) && value.router_id != 0U &&
+         in.integer(value.initial_dd_sequence) &&
+         in.integer(value.maximum_interfaces) &&
+         value.maximum_interfaces != 0U &&
+         value.maximum_interfaces <=
+             device_catalog::maximum_ports_per_router + 1U &&
+         in.integer(value.default_metric) &&
+         in.integer(value.router_preference) &&
+         in.integer(value.external_preference) &&
+         in.integer(value.spf_initial_wait_milliseconds) &&
+         in.integer(value.spf_second_wait_milliseconds) &&
+         in.integer(value.spf_maximum_wait_milliseconds) &&
+         in.integer(value.lsa_initial_wait_milliseconds) &&
+         in.integer(value.lsa_second_wait_milliseconds) &&
+         in.integer(value.lsa_maximum_wait_milliseconds) &&
+         in.integer(value.area_type) &&
+         value.area_type <= ospf::AreaType::nssa &&
+         in.boolean(value.summaries) &&
+         in.boolean(value.nssa_translate_always) &&
+         in.boolean(value.asbr) &&
+         in.boolean(value.graceful_restart_helper) &&
+         in.boolean(value.loopfree_alternates) &&
+         in.boolean(value.overload);
+}
+
+void ospf_range(Writer &out,
+                const ospf::AreaRangeConfiguration &value) {
+  ip_address(out, value.prefix.network);
+  out.integer(value.prefix.length);
+  out.boolean(value.advertised_metric.has_value());
+  if (value.advertised_metric)
+    out.integer(*value.advertised_metric);
+  out.boolean(value.advertise);
+}
+
+bool ospf_range(Reader &in,
+                ospf::AreaRangeConfiguration &value) noexcept {
+  bool has_metric{};
+  std::uint32_t metric{};
+  if (!ip_address(in, value.prefix.network) ||
+      !in.integer(value.prefix.length) ||
+      value.prefix.length > ip::address_bits(value.prefix.network.family) ||
+      !in.boolean(has_metric) ||
+      (has_metric && !in.integer(metric)) ||
+      !in.boolean(value.advertise))
+    return false;
+  value.advertised_metric =
+      has_metric ? std::optional<std::uint32_t>{metric} : std::nullopt;
+  return true;
+}
+
+void ospf_virtual_link(
+    Writer &out, const ospf::ProcessVirtualLinkConfiguration &value) {
+  out.integer(value.interface_id);
+  out.integer(value.transit_area_id);
+  out.integer(value.remote_router_id);
+  out.integer(value.hello_interval_seconds);
+  out.integer(value.dead_interval_seconds);
+  out.integer(value.retransmit_interval_seconds);
+  out.integer(value.transmit_delay_seconds);
+  out.integer(value.options);
+  out.integer(value.authentication);
+  out.boolean(value.admin_enabled);
+}
+
+bool ospf_virtual_link(
+    Reader &in, ospf::ProcessVirtualLinkConfiguration &value) noexcept {
+  return in.integer(value.interface_id) && value.interface_id != 0U &&
+         in.integer(value.transit_area_id) &&
+         value.transit_area_id != 0U &&
+         in.integer(value.remote_router_id) &&
+         value.remote_router_id != 0U &&
+         in.integer(value.hello_interval_seconds) &&
+         in.integer(value.dead_interval_seconds) &&
+         in.integer(value.retransmit_interval_seconds) &&
+         in.integer(value.transmit_delay_seconds) &&
+         in.integer(value.options) &&
+         in.integer(value.authentication) &&
+         value.authentication <=
+             ospf::AuthenticationMode::ipsec_security_association &&
+         in.boolean(value.admin_enabled);
+}
+
+void ospf_control_checkpoint(
+    Writer &out, const ospf::ControlWorkerCheckpoint &value) {
+  count(out, value.processes);
+  for (const auto &process : value.processes) {
+    ospf_process_definition(out, process.definition);
+    ospf_process_checkpoint(out, process.process);
+    count(out, process.ranges);
+    for (const auto &range : process.ranges)
+      ospf_range(out, range);
+    count(out, process.virtual_links);
+    for (const auto &link : process.virtual_links)
+      ospf_virtual_link(out, link);
+    count(out, process.authentications);
+    for (const auto &authentication : process.authentications) {
+      ospf_process_identity(out, authentication.process);
+      out.integer(authentication.interface_id);
+      ospf_authentication(out, authentication.authentication);
+      out.boolean(authentication.authentication_receive);
+      out.boolean(authentication.authentication_send);
+    }
+    count(out, process.external_routes);
+    for (const auto &route : process.external_routes)
+      ospf_coordinator_advertisement(out, route);
+    out.integer(process.published_route_generation);
+    out.integer(process.coordinated_route_generation);
+  }
+  for (const auto generation : value.next_route_generation)
+    out.integer(generation);
+  for (const auto device : value.active_devices)
+    handle(out, device);
+  for (const auto pending : value.route_publication_pending)
+    out.boolean(pending);
+  for (const auto pending : value.route_coordination_pending)
+    out.boolean(pending);
+}
+
+bool ospf_control_checkpoint(
+    Reader &in, ospf::ControlWorkerCheckpoint &value) {
+  std::uint32_t size{};
+  const auto maximum_processes =
+      device_catalog::maximum_routers *
+      (device_catalog::ospf_v2_instances_per_router +
+       device_catalog::ospf_v3_instances_per_router);
+  if (!count(in, size, maximum_processes))
+    return false;
+  value.processes.resize(size);
+  for (auto &process : value.processes) {
+    if (!ospf_process_definition(in, process.definition))
+      return false;
+    if (!ospf_process_checkpoint(in, process.process))
+      return false;
+    if (!count(in, size, device_catalog::ospf_lsas_per_instance))
+      return false;
+    process.ranges.resize(size);
+    for (auto &range : process.ranges)
+      if (!ospf_range(in, range))
+        return false;
+    if (!count(in, size, device_catalog::ospf_lsas_per_instance))
+      return false;
+    process.virtual_links.resize(size);
+    for (auto &link : process.virtual_links)
+      if (!ospf_virtual_link(in, link))
+        return false;
+    if (!count(in, size,
+               (device_catalog::maximum_ports_per_router + 1U) * 64U))
+      return false;
+    process.authentications.resize(size);
+    for (auto &authentication : process.authentications) {
+      authentication.kind =
+          ospf::ControlCommandKind::stage_authentication;
+      if (!ospf_process_identity(in, authentication.process) ||
+          !in.integer(authentication.interface_id) ||
+          !ospf_authentication(in, authentication.authentication) ||
+          !in.boolean(authentication.authentication_receive) ||
+          !in.boolean(authentication.authentication_send))
+        return false;
+    }
+    if (!count(in, size, device_catalog::ospf_lsas_per_instance))
+      return false;
+    process.external_routes.resize(size);
+    for (auto &route : process.external_routes)
+      if (!ospf_coordinator_advertisement(in, route))
+        return false;
+    if (!in.integer(process.published_route_generation) ||
+        !in.integer(process.coordinated_route_generation))
+      return false;
+  }
+  for (auto &generation : value.next_route_generation)
+    if (!in.integer(generation))
+      return false;
+  for (auto &device : value.active_devices)
+    if (!handle(in, device))
+      return false;
+  for (auto &pending : value.route_publication_pending)
+    if (!in.boolean(pending))
+      return false;
+  for (auto &pending : value.route_coordination_pending)
+    if (!in.boolean(pending))
+      return false;
+  return true;
+}
+
 void network_state(Writer &out, const NetworkPlaneCheckpoint &state) {
   count(out, state.routers);
   for (const auto &router : state.routers) {
@@ -4458,8 +5591,12 @@ void network_state(Writer &out, const NetworkPlaneCheckpoint &state) {
   count(out, state.hosts);
   for (const auto &host : state.hosts)
     host_state(out, host);
+  count(out, state.switches);
+  for (const auto &ethernet_switch : state.switches)
+    switch_state(out, ethernet_switch);
   fabric_state(out, state.fabric);
   capture_state(out, state.capture);
+  ospf_control_checkpoint(out, state.ospf);
   count(out, state.capture_points);
   for (const auto &program : state.capture_points)
     capture_program(out, program);
@@ -4483,8 +5620,19 @@ bool network_state(Reader &in, NetworkPlaneCheckpoint &state) {
   for (auto &host : state.hosts)
     if (!host_state(in, host))
       return false;
-  if (!fabric_state(in, state.fabric) || !capture_state(in, state.capture) ||
-      !count(in, size, device_catalog::maximum_active_capture_points))
+  if (!count(in, size, device_catalog::maximum_switches))
+    return false;
+  state.switches.resize(size);
+  for (auto &ethernet_switch : state.switches)
+    if (!switch_state(in, ethernet_switch))
+      return false;
+  if (!fabric_state(in, state.fabric))
+    return false;
+  if (!capture_state(in, state.capture))
+    return false;
+  if (!ospf_control_checkpoint(in, state.ospf))
+    return false;
+  if (!count(in, size, device_catalog::maximum_active_capture_points))
     return false;
   state.capture_points.resize(size);
   for (auto &program : state.capture_points)
@@ -5131,8 +6279,13 @@ bool portable_interface(Reader &in,
       return false;
   }
   const bool system = interface.name == "system";
+  // The system interface is a portless routed loopback, not an IPv4-only
+  // special case. Its /32 and /128 host addresses are legitimate routing
+  // inputs and therefore belong in a portable checkpoint. Only children that
+  // require an attached data-link medium remain prohibited here. This mirrors
+  // LabRuntime::validate_portable_configuration so encode and decode enforce
+  // one contract instead of accepting a configuration that cannot be restored.
   const bool unsupported_system_children =
-      interface.ipv6_address_configured || !interface.ipv6_addresses.empty() ||
       !interface.static_ipv4_neighbors.empty() ||
       !interface.static_ipv6_neighbors.empty() ||
       interface.router_advertisement_configured || interface.mld_configured ||
@@ -5253,8 +6406,9 @@ bool portable_interface(Reader &in,
   // checkpoints preserve the unspecified sentinel so a restore does not turn
   // derived operational state into an explicit configuration leaf.
   const bool valid_link_local =
-      ip::is_link_local(interface.ipv6_link_local) ||
-      (candidate && ip::is_unspecified(interface.ipv6_link_local));
+      system ? ip::is_unspecified(interface.ipv6_link_local)
+             : ip::is_link_local(interface.ipv6_link_local) ||
+                   (candidate && ip::is_unspecified(interface.ipv6_link_local));
   const bool valid_ipv6 =
       !interface.ipv6_address_configured ||
       (interface.ipv6_prefix_length <= ip::ipv6_address_bits &&
@@ -5297,10 +6451,31 @@ bool portable_interface(Reader &in,
       interface.mld_version <= device_catalog::mld_maximum_version &&
       (!interface.mld_configured || interface.ipv6_address_configured) &&
       (!interface.mld_enabled || interface.mld_configured);
-  const bool valid = valid_system && valid_binding && valid_ipv4 &&
-                     valid_icmp4 && valid_ipv6 && valid_ra && valid_icmp6 &&
-                     valid_mld;
-  return valid;
+  if (!valid_system) {
+    return false;
+  }
+  if (!valid_binding) {
+    return false;
+  }
+  if (!valid_ipv4) {
+    return false;
+  }
+  if (!valid_icmp4) {
+    return false;
+  }
+  if (!valid_ipv6) {
+    return false;
+  }
+  if (!valid_ra) {
+    return false;
+  }
+  if (!valid_icmp6) {
+    return false;
+  }
+  if (!valid_mld) {
+    return false;
+  }
+  return true;
 }
 
 void portable_ipv6_route(Writer &out,
@@ -6159,6 +7334,294 @@ bool ipsec_configuration(Reader &in, ipsec::configuration::Configuration &state,
   return ipsec::configuration::validate(state, allow_incomplete);
 }
 
+void ospf_configuration(Writer &out,
+                        const ospf::RouterConfiguration &state) {
+  // Keychains precede consumers so a hostile checkpoint cannot create an
+  // interface leafref before its bounded secret metadata has been decoded.
+  // Only opaque vault handles enter the checkpoint. Clear key material never
+  // crosses this persistence boundary.
+  count(out, state.keychains);
+  for (const auto &keychain : state.keychains) {
+    out.string(keychain.name);
+    out.boolean(keychain.admin_enabled);
+    count(out, keychain.bidirectional);
+    for (const auto &entry : keychain.bidirectional) {
+      out.integer(entry.secret);
+      out.integer(entry.begin_utc_seconds);
+      out.boolean(entry.end_utc_seconds.has_value());
+      if (entry.end_utc_seconds)
+        out.integer(*entry.end_utc_seconds);
+      out.integer(entry.tolerance_seconds);
+      out.integer(entry.id);
+      out.integer(entry.algorithm);
+      out.boolean(entry.admin_enabled);
+      out.boolean(entry.algorithm_configured);
+      out.boolean(entry.secret_configured);
+    }
+  }
+  count(out, state.instances);
+  for (const auto &instance : state.instances) {
+    out.string(instance.export_policy);
+    out.boolean(instance.configured_router_id.has_value());
+    if (instance.configured_router_id)
+      out.integer(*instance.configured_router_id);
+    out.boolean(instance.asbr_trace_path_domain_id.has_value());
+    if (instance.asbr_trace_path_domain_id)
+      out.integer(*instance.asbr_trace_path_domain_id);
+    out.integer(instance.reference_bandwidth_kbps);
+    out.integer(instance.router_preference);
+    out.integer(instance.external_preference);
+    out.integer(instance.spf_initial_wait_milliseconds);
+    out.integer(instance.spf_second_wait_milliseconds);
+    out.integer(instance.spf_maximum_wait_milliseconds);
+    out.integer(instance.lsa_initial_wait_milliseconds);
+    out.integer(instance.lsa_second_wait_milliseconds);
+    out.integer(instance.lsa_maximum_wait_milliseconds);
+    out.integer(instance.instance_id);
+    out.integer(instance.address_family);
+    out.boolean(instance.asbr);
+    out.boolean(instance.graceful_restart_helper);
+    out.boolean(instance.loopfree_alternates);
+    out.boolean(instance.overload);
+    out.boolean(instance.admin_enabled);
+    count(out, instance.areas);
+    for (const auto &area : instance.areas) {
+      out.integer(area.area_id);
+      out.integer(area.type);
+      out.integer(area.default_metric);
+      out.boolean(area.summaries);
+      out.boolean(area.nssa_translate_always);
+      count(out, area.ranges);
+      for (const auto &range : area.ranges) {
+        ip_address(out, range.prefix.network);
+        out.integer(range.prefix.length);
+        out.boolean(range.advertised_metric.has_value());
+        if (range.advertised_metric)
+          out.integer(*range.advertised_metric);
+        out.boolean(range.advertise);
+      }
+      count(out, area.interfaces);
+      for (const auto &interface : area.interfaces) {
+        out.string(interface.interface_name);
+        out.string(interface.keychain);
+        out.string(interface.ipsec_sa_inbound);
+        out.string(interface.ipsec_sa_outbound);
+        out.integer(interface.authentication_secret);
+        out.integer(interface.authentication_key_id);
+        out.integer(interface.cost);
+        out.integer(interface.hello_interval_seconds);
+        out.integer(interface.dead_interval_seconds);
+        out.integer(interface.retransmit_interval_seconds);
+        out.integer(interface.transmit_delay_seconds);
+        out.integer(interface.priority);
+        out.integer(interface.network_type);
+        out.integer(interface.authentication);
+        out.boolean(interface.passive);
+        out.boolean(interface.mtu_mismatch_ignore);
+        out.boolean(interface.admin_enabled);
+        count(out, interface.nbma_neighbors);
+        for (const auto &neighbor : interface.nbma_neighbors) {
+          ip_address(out, neighbor.address);
+          out.integer(neighbor.priority);
+          out.integer(neighbor.poll_interval_seconds);
+        }
+      }
+      count(out, area.virtual_links);
+      for (const auto &link : area.virtual_links) {
+        out.integer(link.transit_area_id);
+        out.integer(link.remote_router_id);
+        out.integer(link.hello_interval_seconds);
+        out.integer(link.dead_interval_seconds);
+        out.integer(link.retransmit_interval_seconds);
+        out.integer(link.transmit_delay_seconds);
+        out.integer(link.authentication);
+        out.string(link.keychain);
+        out.string(link.ipsec_sa_inbound);
+        out.string(link.ipsec_sa_outbound);
+        out.integer(link.authentication_secret);
+        out.integer(link.authentication_key_id);
+        out.boolean(link.admin_enabled);
+      }
+    }
+  }
+}
+
+bool ospf_configuration(Reader &in,
+                        ospf::RouterConfiguration &state) {
+  std::uint32_t keychain_count{};
+  // The platform documents 64 entries per keychain. The same bound on the
+  // number of named chains is a persistence allocation guard, not a claim
+  // that SR OS restricts the global namespace to this count.
+  if (!count(in, keychain_count, 64U))
+    return false;
+  state.keychains.resize(keychain_count);
+  for (auto &keychain : state.keychains) {
+    std::uint32_t entry_count{};
+    if (!in.string(keychain.name, 32U) ||
+        !in.boolean(keychain.admin_enabled) ||
+        !count(in, entry_count, 64U))
+      return false;
+    keychain.bidirectional.resize(entry_count);
+    for (auto &entry : keychain.bidirectional) {
+      bool has_end{};
+      std::int64_t end{};
+      if (!in.integer(entry.secret) || entry.secret == 0U ||
+          !in.integer(entry.begin_utc_seconds) ||
+          !in.boolean(has_end) ||
+          (has_end && !in.integer(end)) ||
+          !in.integer(entry.tolerance_seconds) ||
+          !in.integer(entry.id) || entry.id > 63U ||
+          !in.integer(entry.algorithm) ||
+          entry.algorithm > ospf::KeychainAlgorithm::hmac_sha256 ||
+          !in.boolean(entry.admin_enabled) ||
+          !in.boolean(entry.algorithm_configured) ||
+          !in.boolean(entry.secret_configured))
+        return false;
+      entry.end_utc_seconds =
+          has_end ? std::optional<std::int64_t>{end} : std::nullopt;
+    }
+    if (ospf::validate(keychain) != ospf::KeychainStatus::valid)
+      return false;
+  }
+  std::uint32_t instance_count{};
+  constexpr auto maximum_instances =
+      device_catalog::ospf_v2_instances_per_router +
+      device_catalog::ospf_v3_instances_per_router;
+  if (!count(in, instance_count, maximum_instances))
+    return false;
+  state.instances.resize(instance_count);
+  for (auto &instance : state.instances) {
+    bool has_router_id{};
+    std::uint32_t router_id{};
+    bool has_asbr_domain_id{};
+    std::uint8_t asbr_domain_id{};
+    if (!in.string(instance.export_policy, 64U) ||
+        !in.boolean(has_router_id) ||
+        (has_router_id && !in.integer(router_id)) ||
+        (has_router_id && router_id == 0U) ||
+        !in.boolean(has_asbr_domain_id) ||
+        (has_asbr_domain_id && !in.integer(asbr_domain_id)) ||
+        (has_asbr_domain_id && asbr_domain_id > 31U) ||
+        !in.integer(instance.reference_bandwidth_kbps) ||
+        !in.integer(instance.router_preference) ||
+        !in.integer(instance.external_preference) ||
+        !in.integer(instance.spf_initial_wait_milliseconds) ||
+        !in.integer(instance.spf_second_wait_milliseconds) ||
+        !in.integer(instance.spf_maximum_wait_milliseconds) ||
+        !in.integer(instance.lsa_initial_wait_milliseconds) ||
+        !in.integer(instance.lsa_second_wait_milliseconds) ||
+        !in.integer(instance.lsa_maximum_wait_milliseconds) ||
+        !in.integer(instance.instance_id) ||
+        !in.integer(instance.address_family) ||
+        instance.address_family > ospf::AddressFamily::ipv4_over_ospfv3 ||
+        !in.boolean(instance.asbr) ||
+        !in.boolean(instance.graceful_restart_helper) ||
+        !in.boolean(instance.loopfree_alternates) ||
+        !in.boolean(instance.overload) ||
+        !in.boolean(instance.admin_enabled))
+      return false;
+    instance.configured_router_id =
+        has_router_id ? std::optional<std::uint32_t>{router_id}
+                      : std::nullopt;
+    instance.asbr_trace_path_domain_id =
+        has_asbr_domain_id
+            ? std::optional<std::uint8_t>{asbr_domain_id}
+            : std::nullopt;
+
+    std::uint32_t area_count{};
+    // This is a hostile-checkpoint allocation guard tied to the generated
+    // per-instance LSA arena. It is not exposed as an SR OS area scale claim.
+    if (!count(in, area_count, device_catalog::ospf_lsas_per_instance))
+      return false;
+    instance.areas.resize(area_count);
+    for (auto &area : instance.areas) {
+      if (!in.integer(area.area_id) || !in.integer(area.type) ||
+          area.type > ospf::AreaType::nssa ||
+          !in.integer(area.default_metric) ||
+          !in.boolean(area.summaries) ||
+          !in.boolean(area.nssa_translate_always))
+        return false;
+      std::uint32_t item_count{};
+      if (!count(in, item_count, device_catalog::ospf_lsas_per_instance))
+        return false;
+      area.ranges.resize(item_count);
+      for (auto &range : area.ranges) {
+        bool has_metric{};
+        std::uint32_t metric{};
+        if (!ip_address(in, range.prefix.network) ||
+            !in.integer(range.prefix.length) ||
+            range.prefix.length >
+                ip::address_bits(range.prefix.network.family) ||
+            !in.boolean(has_metric) ||
+            (has_metric && !in.integer(metric)) ||
+            !in.boolean(range.advertise))
+          return false;
+        range.advertised_metric =
+            has_metric ? std::optional<std::uint32_t>{metric}
+                       : std::nullopt;
+      }
+      if (!count(in, item_count,
+                 device_catalog::maximum_ports_per_router + 1U))
+        return false;
+      area.interfaces.resize(item_count);
+      for (auto &interface : area.interfaces) {
+        if (!in.string(interface.interface_name, 64U) ||
+            !in.string(interface.keychain, 64U) ||
+            !in.string(interface.ipsec_sa_inbound, 64U) ||
+            !in.string(interface.ipsec_sa_outbound, 64U) ||
+            !in.integer(interface.authentication_secret) ||
+            !in.integer(interface.authentication_key_id) ||
+            !in.integer(interface.cost) ||
+            !in.integer(interface.hello_interval_seconds) ||
+            !in.integer(interface.dead_interval_seconds) ||
+            !in.integer(interface.retransmit_interval_seconds) ||
+            !in.integer(interface.transmit_delay_seconds) ||
+            !in.integer(interface.priority) ||
+            !in.integer(interface.network_type) ||
+            interface.network_type > ospf::NetworkType::virtual_link ||
+            !in.integer(interface.authentication) ||
+            interface.authentication >
+                ospf::AuthenticationMode::ipsec_security_association ||
+            !in.boolean(interface.passive) ||
+            !in.boolean(interface.mtu_mismatch_ignore) ||
+            !in.boolean(interface.admin_enabled))
+          return false;
+        std::uint32_t neighbor_count{};
+        if (!count(in, neighbor_count,
+                   device_catalog::ospf_neighbors_per_interface))
+          return false;
+        interface.nbma_neighbors.resize(neighbor_count);
+        for (auto &neighbor : interface.nbma_neighbors)
+          if (!ip_address(in, neighbor.address) ||
+              !in.integer(neighbor.priority) ||
+              !in.integer(neighbor.poll_interval_seconds))
+            return false;
+      }
+      if (!count(in, item_count, device_catalog::ospf_lsas_per_instance))
+        return false;
+      area.virtual_links.resize(item_count);
+      for (auto &link : area.virtual_links)
+        if (!in.integer(link.transit_area_id) ||
+            !in.integer(link.remote_router_id) ||
+            !in.integer(link.hello_interval_seconds) ||
+            !in.integer(link.dead_interval_seconds) ||
+            !in.integer(link.retransmit_interval_seconds) ||
+            !in.integer(link.transmit_delay_seconds) ||
+            !in.integer(link.authentication) ||
+            link.authentication >
+                ospf::AuthenticationMode::ipsec_security_association ||
+            !in.string(link.keychain, 64U) ||
+            !in.string(link.ipsec_sa_inbound, 64U) ||
+            !in.string(link.ipsec_sa_outbound, 64U) ||
+            !in.integer(link.authentication_secret) ||
+            !in.integer(link.authentication_key_id) ||
+            !in.boolean(link.admin_enabled))
+          return false;
+    }
+  }
+  return ospf::validate(state) == ospf::ConfigurationStatus::valid;
+}
+
 void portable_router(Writer &out, const PortableRouterIntentCheckpoint &state) {
   // Names and descriptions are management-plane configuration. They are
   // written after forwarding state so restoring a bare checkpoint never has
@@ -6178,6 +7641,7 @@ void portable_router(Writer &out, const PortableRouterIntentCheckpoint &state) {
   tls_configuration(out, state.tls);
   ipsec_configuration(out, state.ipsec);
   ies_configuration(out, state.ies);
+  ospf_configuration(out, state.ospf);
   count(out, state.ports);
   for (const auto &port : state.ports) {
     out.string(port.id);
@@ -6233,6 +7697,7 @@ bool portable_router(Reader &in, PortableRouterIntentCheckpoint &state) {
       !tls_configuration(in, state.tls) ||
       !ipsec_configuration(in, state.ipsec) ||
       !ies_configuration(in, state.ies) ||
+      !ospf_configuration(in, state.ospf) ||
       !count(in, size, device_catalog::maximum_ports_per_router))
     return false;
   state.ports.resize(size);
@@ -6304,6 +7769,7 @@ void portable_configuration(Writer &out,
   tls_configuration(out, state.tls);
   ipsec_configuration(out, state.ipsec);
   ies_configuration(out, state.ies);
+  ospf_configuration(out, state.ospf);
   for (const auto &card : state.cards) {
     out.string(card.provisioned);
     out.boolean(card.admin_enabled);
@@ -6363,7 +7829,8 @@ bool portable_configuration(Reader &in,
                                     state.ipv6_nd_stale_time_configured) ||
       !tls_configuration(in, state.tls) ||
       !ipsec_configuration(in, state.ipsec, true) ||
-      !ies_configuration(in, state.ies, true))
+      !ies_configuration(in, state.ies, true) ||
+      !ospf_configuration(in, state.ospf))
     return false;
   for (auto &card : state.cards) {
     if (!in.string(card.provisioned, 64) || !in.boolean(card.admin_enabled))
@@ -6530,7 +7997,7 @@ bool secret_vault(Reader &in, vault::Checkpoint &state) {
         record.handle <= previous || record.handle >= state.next_handle ||
         !in.integer(record.kind) ||
         record.kind < vault::SecretKind::ipsec_ppk_ascii ||
-        record.kind > vault::SecretKind::ipsec_static_authentication_key ||
+        record.kind > vault::SecretKind::ospf_authentication_key ||
         !in.integer(sealed_size) || !sealed_size ||
         sealed_size > maximum_sealed_secret_octets)
       return false;
@@ -6555,6 +8022,7 @@ std::vector<std::uint8_t> encode(const RuntimeSupervisorCheckpoint &state) {
   out.integer(device_catalog::build_hash);
   device_registry(out, state.devices);
   host_registry(out, state.hosts);
+  switch_registry(out, state.switches);
   topology_registry(out, state.topology);
   session_registry(out, state.sessions);
   count(out, state.hardware);
@@ -6585,6 +8053,10 @@ std::vector<std::uint8_t> encode(const RuntimeSupervisorCheckpoint &state) {
     out.integer(value.ping_requested);
     out.integer(value.ping_sent);
     out.integer(value.ping_received);
+    out.integer(value.ping_rtt_min_microseconds);
+    out.integer(value.ping_rtt_max_microseconds);
+    out.integer(value.ping_rtt_sum_microseconds);
+    out.integer(value.ping_rtt_squared_sum_microseconds);
     out.integer(value.ping_next_send_ns);
     out.integer(value.ping_reply_deadline_ns);
     out.boolean(value.ping_dont_fragment);
@@ -6622,6 +8094,7 @@ decode(std::span<const std::uint8_t> bytes) {
     auto state = std::make_unique<RuntimeSupervisorCheckpoint>();
     if (!device_registry(in, state->devices) ||
         !host_registry(in, state->hosts) ||
+        !switch_registry(in, state->switches) ||
         !topology_registry(in, state->topology) ||
         !session_registry(in, state->sessions))
       return nullptr;
@@ -6638,8 +8111,9 @@ decode(std::span<const std::uint8_t> bytes) {
     for (auto &value : state->control)
       if (!control_state(in, value))
         return nullptr;
-    if (!workflows(in, state->workflows) ||
-        !network_state(in, state->network) ||
+    if (!workflows(in, state->workflows))
+      return nullptr;
+    if (!network_state(in, state->network) ||
         !in.integer(state->next_network_command_id) ||
         !count(in, size, device_catalog::maximum_routers))
       return nullptr;
@@ -6671,6 +8145,28 @@ decode(std::span<const std::uint8_t> bytes) {
           !in.integer(value.ping_sent) || !in.integer(value.ping_received) ||
           value.ping_received > value.ping_sent ||
           value.ping_sent > value.ping_requested ||
+          !in.integer(value.ping_rtt_min_microseconds) ||
+          !in.integer(value.ping_rtt_max_microseconds) ||
+          !in.integer(value.ping_rtt_sum_microseconds) ||
+          !in.integer(value.ping_rtt_squared_sum_microseconds) ||
+          (value.ping_received == 0U &&
+           (value.ping_rtt_min_microseconds != 0U ||
+            value.ping_rtt_max_microseconds != 0U ||
+            value.ping_rtt_sum_microseconds != 0U ||
+            value.ping_rtt_squared_sum_microseconds != 0U)) ||
+          (value.ping_received != 0U &&
+           (value.ping_rtt_min_microseconds >
+                value.ping_rtt_max_microseconds ||
+            value.ping_rtt_min_microseconds >
+                static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        device_catalog::ping_timeout)
+                        .count()) ||
+            value.ping_rtt_max_microseconds >
+                static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::microseconds>(
+                        device_catalog::ping_timeout)
+                        .count()))) ||
           !in.integer(value.ping_next_send_ns) ||
           value.ping_next_send_ns >
               static_cast<std::uint64_t>(
@@ -6718,4 +8214,4 @@ decode(std::span<const std::uint8_t> bytes) {
   }
 }
 
-} // namespace router::lab::checkpoint_v6
+} // namespace router::lab::checkpoint_v7

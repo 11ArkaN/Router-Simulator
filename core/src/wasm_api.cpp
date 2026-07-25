@@ -161,7 +161,7 @@ RS_EXPORT const char *runtime_capabilities() {
       << ",\"protocolVersion\":" << router::lab_runtime_protocol::version
       << ",\"threads\":true"
       << ",\"sharedTelemetry\":true,\"checkpoint\":"
-      << router::lab::checkpoint_v6::abi << ",\"release\":\""
+      << router::lab::checkpoint_v7::abi << ",\"release\":\""
       << router::device_catalog::release << '"'
       << ",\"maximumRouters\":" << router::device_catalog::maximum_routers
       << ",\"memoryInitial\":"

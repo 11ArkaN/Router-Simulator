@@ -1,0 +1,397 @@
+# OSPFv2 and OSPFv3 Implementation Plan
+
+**Status: implemented and locally verified on 2026-07-24.**
+
+## Objective
+
+Implement a distributed, real-time OSPF control plane whose observable packet,
+routing, failure, timing and CLI behavior follows the normative standards and
+the Nokia SR OS 26.7.R1 base-router profile.
+
+The delivered scope includes:
+
+- OSPFv2 for IPv4.
+- OSPFv3 for IPv6 and the IPv4 unicast address family.
+- Per-router and per-instance protocol state, LSDB, timers and SPF.
+- Real OSPF packets transported through interfaces, queues, links and Ethernet
+  switches.
+- Point-to-point, broadcast, NBMA, point-to-multipoint and virtual links.
+- Normal, backbone, stub and NSSA areas.
+- ABR, ASBR, ECMP and policy-controlled route redistribution.
+- Full behavior-backed MD-CLI and classic CLI command coverage for the
+  implemented base-router scope.
+- A profile-driven Ethernet switch used to construct real broadcast domains.
+
+OSPF must remain unavailable as a production capability until its packet path,
+state machines, route installation and required tests are complete. No
+adjacency, LSA or route may be derived from the editor topology or communicated
+directly between routers.
+
+## Normative Sources
+
+The source catalog must map each implemented behavior and command to a precise
+section of the applicable source. The initial normative set is:
+
+- RFC 2328, OSPF Version 2:
+  https://www.rfc-editor.org/rfc/rfc2328.html
+- RFC 3101, The OSPF Not-So-Stubby Area Option:
+  https://www.rfc-editor.org/rfc/rfc3101.html
+- RFC 3623, Graceful OSPF Restart:
+  https://www.rfc-editor.org/rfc/rfc3623.html
+- RFC 5250, The OSPF Opaque LSA Option:
+  https://www.rfc-editor.org/rfc/rfc5250.html
+- RFC 5340, OSPF for IPv6:
+  https://www.rfc-editor.org/rfc/rfc5340.html
+- RFC 5709, OSPFv2 HMAC-SHA Cryptographic Authentication:
+  https://www.rfc-editor.org/rfc/rfc5709.html
+- RFC 5838, Support of Address Families in OSPFv3:
+  https://www.rfc-editor.org/rfc/rfc5838.html
+- RFC 7166, Supporting Authentication Trailer for OSPFv3:
+  https://www.rfc-editor.org/rfc/rfc7166.html
+- RFC 4302, IP Authentication Header:
+  https://www.rfc-editor.org/rfc/rfc4302.html
+- RFC 2403, HMAC-MD5-96 within ESP and AH:
+  https://www.rfc-editor.org/rfc/rfc2403.html
+- RFC 2404, HMAC-SHA-1-96 within ESP and AH:
+  https://www.rfc-editor.org/rfc/rfc2404.html
+- RFC 7770, Extensions to OSPF for Advertising Optional Router Capabilities:
+  https://www.rfc-editor.org/rfc/rfc7770.html
+- Nokia SR OS 26.7.R1 OSPF and OSPF3 command and protocol documentation:
+  https://documentation.nokia.com/sr/26-7/7750-sr/
+- IEEE 802.1Q, Bridges and Bridged Networks:
+  https://standards.ieee.org/ieee/802.1Q/6844/
+- IEEE 802.3, Ethernet:
+  https://standards.ieee.org/ieee/802.3/7071/
+
+Secondary decoders such as Wireshark may validate emitted packet bytes but
+cannot define protocol behavior. External FRRouting, SR-SIM or hardware
+interoperability is not a completion requirement. The corresponding
+`verified-srsim` and `verified-hardware` capability states remain unset until
+those environments are actually tested.
+
+## Runtime Architecture
+
+### Protocol ownership
+
+- A dedicated pthread-backed control-plane shard owns OSPF processing outside
+  the UI and forwarding threads.
+- Each OSPF instance exclusively owns its areas, interfaces, neighbors, LSDB,
+  retransmission lists, local timers, counters and SPF results.
+- The runtime may place multiple logical instances on one physical control
+  shard. It must not create one pthread per router or per protocol instance.
+- Configuration flows from the supervisor to a protocol shard through a
+  bounded SPSC ring.
+- Each forwarding and protocol shard pair uses its own bounded SPSC ingress
+  and egress rings. No MPMC queue is permitted.
+- Packet messages transfer ownership of immutable shared packet-buffer handles.
+  Their contracts document producer, consumer, capacity, ordering, overflow
+  behavior and memory ordering.
+- OSPF publishes complete dynamic-route generations to the route owner.
+  Partially calculated generations are never visible to RIB or FIB.
+
+### Packet path
+
+- Forwarding accepts IPv4 and IPv6 protocol number 89 only for valid local OSPF
+  traffic on a configured OSPF interface.
+- OSPFv2 supports AllSPFRouters 224.0.0.5 and AllDRouters 224.0.0.6 with the
+  corresponding Ethernet multicast addresses.
+- OSPFv3 supports ff02::5 and ff02::6, link-local sources and Hop Limit 1.
+- Virtual-link packets follow their specified unicast and routing rules.
+- The protocol shard receives the original encoded network packet plus stable
+  ingress router and interface identity. It performs protocol decoding itself.
+- Protocol output consists of encoded packet bytes and an explicit local
+  egress intent. Forwarding performs adjacency resolution, Ethernet framing,
+  queueing and transmission.
+- Capture observes the same complete frames that are delivered to and emitted
+  by forwarding. No synthetic capture records are generated by the daemon.
+
+### Time and scheduling
+
+- Every instance uses `std::chrono::steady_clock`.
+- Interfaces, neighbors, LSAs and protocol processes own local deadlines.
+- A control shard runs ready work with a budget and then sleeps until its
+  earliest owner-local deadline or mailbox notification.
+- No global protocol event heap, virtual clock, time multiplier or polling loop
+  is allowed.
+- Continuity checkpoints store remaining durations rather than host clock
+  epochs.
+
+## Protocol Behavior
+
+### Packet processing and adjacency
+
+- Implement byte-exact OSPFv2 and OSPFv3 headers, Hello, Database Description,
+  Link State Request, Link State Update and Link State Acknowledgment packets.
+- Validate versions, lengths, checksums, area and instance IDs, source scope,
+  destination group, authentication, options and interface compatibility before
+  changing protocol state.
+- Implement all interface states and events required by the selected network
+  types.
+- Implement neighbor states Down, Attempt, Init, 2-Way, ExStart, Exchange,
+  Loading and Full with every normative event and transition.
+- Implement master and slave negotiation, database summaries, request lists,
+  retransmission lists, delayed acknowledgments, duplicate handling, bad
+  sequence handling and MTU mismatch behavior.
+- Implement broadcast and NBMA DR and BDR election exactly from interface
+  priority and router ID, including non-preemption.
+
+### LSDB and flooding
+
+- Implement LSA comparison, installation, origination, flooding,
+  retransmission, explicit and implied acknowledgment, aging, refresh, MaxAge,
+  premature aging, sequence wrap and self-originated LSA fight-back.
+- Enforce MinLSArrival, MinLSInterval and the source-defined timer
+  granularities.
+- OSPFv2 supports router, network, summary network, summary ASBR, AS external,
+  NSSA, opaque and required Router Information LSAs.
+- OSPFv3 supports router, network, inter-area prefix, inter-area router, AS
+  external, NSSA, link and intra-area prefix LSAs.
+- Unknown OSPFv3 LSAs follow the encoded flooding scope and U-bit rules.
+- Each area owns its area-scoped LSDB. Link-scoped and AS-scoped databases have
+  explicit owners and cannot be mutated through borrowed pointers.
+
+### SPF and routes
+
+- Run Dijkstra independently from each router's own LSDB.
+- Calculate intra-area, inter-area, external type 1, external type 2, NSSA type
+  1 and NSSA type 2 routes with the standards-defined preference rules.
+- Implement ABR and ASBR behavior, backbone connectivity, area ranges, summary
+  origination and suppression.
+- Implement stub and SR OS totally-stub behavior, NSSA translation and
+  translator election.
+- Implement virtual links through a transit area.
+- Support equal-cost next hops up to the selected hardware and release profile
+  limit.
+- Support OSPFv3 link-local next-hop scope and IPv4 address-family next-hop
+  rules.
+- Implement IP Loop-Free Alternates that require no tunnel subsystem.
+- Publish a new route generation only after a complete successful
+  recalculation.
+
+### Configuration and security
+
+- Support multiple OSPFv2 and OSPFv3 instances in the ranges documented for SR
+  OS 26.7.R1.
+- Implement router-ID selection and restart behavior using the documented
+  router value, system interface and chassis-MAC fallback order.
+- Implement interface costs, reference bandwidth, priorities, passive mode,
+  network types, Hello, Dead, retransmit and transmit-delay timers, MTU
+  handling, SPF throttling, LSA throttling and overload behavior.
+- Implement OSPFv2 null, simple-password, message-digest and source-supported
+  keychain authentication.
+- Implement the OSPFv3 authentication mechanisms and IPsec SA references
+  exposed by the SR OS base-router profile.
+- Implement source-supported key rollover without exposing cleartext material
+  in operational or configuration output.
+- Implement the SR OS graceful-restart helper behavior. A restarting-router
+  behavior must not be invented where the selected release documents only
+  helper operation.
+
+## Routing Policy, RIB and FIB
+
+- Replace the generic dynamic source with distinct OSPF and OSPF3 protocol
+  identities.
+- A route candidate carries protocol instance, area, path type, administrative
+  preference, metric, external metric type, tag and all scoped next hops.
+- Introduce an address-family-independent next-hop representation so an IPv4
+  destination can retain the next-hop form required by OSPFv3 AF.
+- Preserve longest-match, protocol preference, OSPF path preference, metric,
+  deterministic tie-break and configured ECMP limits.
+- Introduce reusable named policy statements with ordered entries.
+- Policy matches include address-family prefixes, source protocol, protocol
+  instance and route tag.
+- Policy actions include accept, reject, metric, metric type and tag.
+- Connected and static routes enter OSPF redistribution only through an
+  accepted export policy. No export policy means no redistribution.
+- RIB selection remains the sole route authority and forwarding remains the
+  sole FIB owner.
+
+## Ethernet Switch
+
+- Add a vendor-neutral Ethernet switch node backed by a data-driven hardware
+  profile.
+- Chassis, modules, port count, speed, MTU, queues and operational state come
+  from profile data rather than UI constants or created links.
+- The network or link shard owns the switch, FDB, per-port queues and FDB aging
+  deadlines.
+- Implement source-MAC learning, known-unicast forwarding, unknown-unicast
+  flooding, broadcast flooding and multicast flooding.
+- Replicated egress uses references to one immutable packet buffer until each
+  consumer releases ownership.
+- The initial switch profile exposes one untagged broadcast domain.
+- Until STP is implemented, the project validator rejects a physical L2 loop
+  involving these switches with an explicit error.
+- The existing application layout remains unchanged. The palette and
+  inspector receive only the switch device, hardware configuration and port
+  state required to create the broadcast domain.
+
+## Contracts and Persistence
+
+- Introduce project format 5, `.netsim` manifest format 4 and checkpoint ABI 7.
+- Do not migrate or silently accept older formats.
+- Project intent contains OSPF instances, areas, interfaces, virtual links,
+  NBMA neighbors, policies, keychain references, IPsec SA references, switches
+  and switch hardware.
+- A normal project open restores configuration and starts fresh protocol
+  convergence.
+- A continuity checkpoint stores LSDB contents, FSM states, queues, sequence
+  numbers, counters and remaining timer durations.
+- Checkpoint restore recalculates dynamic routes and validates the resulting
+  RIB and FIB before publishing recovered state.
+- Local secret storage continues to use the existing non-extractable
+  device-bound WebCrypto wrapping key.
+- Export of a project containing secrets requires a passphrase and encrypts
+  the complete manifest with AES-256-GCM, a random salt and nonce, and a
+  PBKDF2-HMAC-SHA-256 derived key.
+- A wrong passphrase, failed authentication tag or malformed envelope leaves
+  the active project and runtime untouched.
+- Cleartext keys are erased from temporary JavaScript and C++ buffers after
+  use.
+
+## CLI
+
+- Extend the generated SR OS 26.7.R1 schema rather than adding parser branches
+  containing command strings.
+- MD-CLI and classic CLI receive separate syntax and session semantics over one
+  canonical OSPF configuration model.
+- Implement every behavior-backed `configure`, `show`, `clear`, `monitor` and
+  `debug` command in the selected base-router OSPF and OSPF3 scope.
+- MD-CLI preserves candidate, validation, commit and discard.
+- Classic CLI applies valid changes immediately.
+- Help, completion, defaults, ranges, validation errors, pager behavior,
+  monitor refresh and output fields follow the release-specific sources.
+- Commands depending on BFD, VPRN, MPLS, traffic engineering, Segment Routing,
+  Remote LFA, TI-LFA, forwarding adjacency or LDP synchronization do not appear
+  in completion until those real subsystems exist.
+- Explicitly entered unavailable commands return the source-appropriate
+  capability error and never succeed as a no-op.
+- OSPF configuration remains a terminal function. No parallel OSPF
+  configuration form is added to the UI.
+
+## Implementation Order
+
+1. Add source records, capability records, limits and release-specific CLI
+   schema entries.
+2. Add project and runtime contracts, route types, next-hop types, policy
+   contracts and switch profiles.
+3. Implement the Ethernet switch, FDB, queues and multi-access packet path.
+4. Implement OSPFv2 and OSPFv3 packet and LSA codecs with byte-level tests.
+5. Implement protocol shards, interface FSM, neighbor FSM, timers, LSDB
+   synchronization and flooding.
+6. Implement SPF, areas, ABR, ASBR, stub, NSSA, virtual links, ECMP and route
+   generation.
+7. Connect policy-controlled redistribution, RIB selection and FIB
+   programming.
+8. Implement authentication, key rollover, graceful-restart helper and
+   checkpoint continuity.
+9. Implement both complete CLI surfaces and operational projections.
+10. Implement the new project manifest and encrypted import and export.
+11. Run conformance, performance, browser and hardcoding audits.
+
+## Verification
+
+### Native and TypeScript tests
+
+- Byte-exact positive and negative fixtures cover every packet, LSA, checksum,
+  digest and multicast mapping.
+- Table-driven tests cover every interface and neighbor FSM transition.
+- Timer tests use native injected clocks only and cover expiry ordering,
+  cancellation generations and stale callbacks.
+- LSDB tests cover duplicates, older and newer LSAs, MaxAge, sequence wrap,
+  self-originated collisions, flooding scope and retransmission.
+- SPF tests cover all path types, ECMP, unreachable nodes, ABR, ASBR, stub,
+  NSSA, virtual links and topology changes.
+- Policy tests cover ordered matching, default reject, metric and tag changes.
+- Switch tests cover learning, movement, aging, flooding, queue pressure, port
+  failure and rejection of L2 loops.
+- Checkpoint tests compare uninterrupted execution with continuity restore.
+- Project tests cover authenticated encryption, wrong passwords, corruption,
+  atomic import failure and cleartext-secret absence.
+- Every CLI command has parser, help, completion, success, error and observable
+  state tests.
+
+### Runtime scenarios
+
+- Point-to-point OSPFv2 and OSPFv3 adjacencies reach Full using only transmitted
+  packets.
+- At least three routers on one switch perform a real DR and BDR election.
+- NBMA, point-to-multipoint and virtual-link scenarios converge correctly.
+- Multi-area, stub, NSSA, ABR, ASBR, redistribution and ECMP scenarios install
+  the expected routes.
+- Port, link, card, switch and router failures trigger the correct order of
+  adjacency loss, LSA flooding, SPF, RIB selection and FIB programming.
+- IPv4 and IPv6 host ping and traceroute cross learned OSPF routes.
+- Packet capture contains complete Hello, DD, LSR, LSU and LSAck frames on the
+  correct physical interfaces.
+
+### Browser Use
+
+- Build a user-owned topology containing 16 routers, hosts and at least two
+  Ethernet switches through product controls.
+- Configure OSPFv2, OSPFv3, multiple areas, ECMP, DR/BDR, NSSA, export policy
+  and authentication through both terminal engines.
+- Exercise every newly added command family through the terminal, including
+  representative valid and invalid forms.
+- Verify IPv4 and IPv6 connectivity, failure convergence, DR change, autosave,
+  reload, continuity checkpoint and encrypted export and import.
+- Inspect browser errors, cross-origin isolation, terminal history,
+  responsiveness and persistence.
+
+### Completion gates
+
+- The maximum 16-router benchmark records convergence, reconvergence, SPF time,
+  memory, allocation count, packet copies, ring occupancy and UI projection
+  cost.
+- No control-plane ring overflows in the supported maximum scenario.
+- No LSDB divergence remains after all expected adjacencies reach Full.
+- No partially built route generation reaches RIB or FIB.
+- Existing benchmark thresholds and `pnpm verify` remain passing.
+- The scoped capability matrix contains no `schema-only`,
+  `partially-implemented` or `experimental` entries.
+- `git diff --check`, source-catalog verification, generated-file drift checks,
+  native tests, browser tests and the final hardcoded-value audit all pass.
+- After every item in this plan and every completion gate above is satisfied,
+  run the repository-mandated local `pnpm verify` gate, create one detailed
+  commit covering the completed OSPF implementation, and push that commit to
+  the current remote branch. No partial OSPF commit or push is made before this
+  final gate.
+
+## Excluded Integrations
+
+The following integrations require their own complete subsystems and are not
+part of this OSPF milestone:
+
+- BFD liveness integration.
+- VPRN and sham links.
+- MPLS traffic engineering.
+- Segment Routing and TI-LFA.
+- Remote LFA tunnels.
+- RSVP forwarding adjacencies.
+- LDP and LDP-IGP synchronization.
+
+Their commands remain unavailable and cannot return success. The OSPF data
+model and process interfaces must allow these integrations to be added later
+without replacing LSDB, SPF, RIB or packet processing.
+
+## Completion Record
+
+- The generated source catalog and capability matrix expose the implemented
+  OSPF scope without schema-only or partial OSPF entries.
+- The C++ and TypeScript verification suite covers packet codecs, state
+  machines, LSDB behavior, SPF, route selection, policy, authentication,
+  switch forwarding, checkpoint continuity and browser contracts.
+- Browser Use verified a 16-router lab with hosts, Ethernet switches,
+  point-to-point and shared segments, nested MD-CLI area navigation, contextual
+  `info`, explicit workflow exit, OSPF and OSPF3 Full neighbors, installed IPv4
+  and IPv6 routes, and host pings through those learned routes.
+- Browser Use verified that `show router ospf3 neighbor detail` reports the
+  forwarding-owned Full neighbor and that IPv4 and IPv6 ping output uses the
+  documented SR OS detail and statistics format.
+- The generated command schema carries `detail` as an explicit output
+  modifier. OSPF and OSPF3 interface, neighbor and database reports opt in
+  according to the 26.7 command reference, and both engines render their
+  values from protocol-owner snapshots.
+- Checkpoint restore preserves forwarding generation high-water marks and
+  republishes the Base RIB before accepting recovered OSPF generations.
+  Browser Use verified that learned IPv4 and IPv6 routes remain installed
+  after a full page reload.

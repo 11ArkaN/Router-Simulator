@@ -579,6 +579,193 @@ bool RouterForwarder::configure_port(const ForwardPort &input) noexcept {
   return true;
 }
 
+bool RouterForwarder::configure_ospf_punt(std::uint16_t port_ordinal,
+                                          bool version_two,
+                                          bool version_three) noexcept {
+  // Protocol multicast acceptance is an interface property, not a router-wide
+  // shortcut. Require an installed physical port so a stale configuration
+  // transaction cannot activate protocol processing on a reused ordinal.
+  if (port_ordinal >= ports_.size() || !ports_[port_ordinal].configured)
+    return false;
+
+  // Forwarding owns these projections and reads them on the same shard. The
+  // protocol process owns the source configuration, but never borrows these
+  // arrays or mutates packet-path state directly.
+  ospf_v2_punt_[port_ordinal] = version_two;
+  ospf_v3_punt_[port_ordinal] = version_three;
+  return true;
+}
+
+bool RouterForwarder::originate_ospf(
+    std::uint16_t port_ordinal, const packet::Frame &frame, void *context,
+    EgressSink sink, Clock::time_point now) noexcept {
+  const auto port = std::find_if(
+      ports_.begin(), ports_.end(), [&](const auto &candidate) {
+        return candidate.ordinal == port_ordinal && candidate.configured;
+      });
+  if (port == ports_.end() || !port->operational) {
+    drop(ForwardDrop::port_down);
+    return false;
+  }
+  const auto ethernet = packet::parse_ethernet(frame);
+  if (!ethernet) {
+    drop(ForwardDrop::malformed);
+    return false;
+  }
+  if (const auto ipv4 = packet::parse_ipv4(frame);
+      ipv4 && ipv4->protocol == packet::ospf::ip_protocol) {
+    if (ipv4->source != to_ipv4(port->address)) {
+      drop(ForwardDrop::malformed);
+      return false;
+    }
+    if (ip::is_multicast(ipv4->destination)) {
+      packet::Frame wire;
+      packet::copy_frame(wire, frame);
+      packet::rewrite_ethernet(
+          wire, port->mac,
+          ipv4->destination == packet::ospf::all_spf_routers_v4
+              ? packet::ospf::all_spf_routers_mac_v4
+              : packet::ospf::all_dr_routers_mac_v4);
+      return emit(port_ordinal, wire, context, sink);
+    }
+    return send_ospf_ipv4_unicast(
+        *port, frame, to_u32(ipv4->destination), context, sink, now);
+  }
+  if (const auto ipv6 = packet::parse_ipv6(frame);
+      ipv6 && ipv6->upper_layer_protocol == packet::ospf::ip_protocol) {
+    const auto interface_id = physical_interface_id(port->ordinal);
+    const bool link_source =
+        ipv6->source == port->ipv6_link_local &&
+        ipv6_dad_.preferred(interface_id, port->ipv6_link_local);
+    const auto *global =
+        native_ipv6_addresses_.find(interface_id, ipv6->source);
+    const bool virtual_source =
+        global && ipv6_dad_.preferred(interface_id, global->address);
+    // RFC 5340 uses the preferred link-local address on ordinary links and a
+    // preferred global address on virtual links. Accept only addresses owned
+    // by this real egress interface, never an arbitrary locally configured
+    // address from another port.
+    if (!link_source && !virtual_source) {
+      drop(ForwardDrop::malformed);
+      return false;
+    }
+    if (ip::is_multicast(ipv6->destination)) {
+      packet::Frame wire;
+      packet::copy_frame(wire, frame);
+      packet::rewrite_ethernet(
+          wire, port->mac, packet::ipv6_multicast_mac(ipv6->destination));
+      return emit(port_ordinal, wire, context, sink);
+    }
+    return send_ospf_ipv6_unicast(
+        *port, frame, ipv6->destination, context, sink, now);
+  }
+  drop(ForwardDrop::malformed);
+  return false;
+}
+
+bool RouterForwarder::send_ospf_ipv4_unicast(
+    const ForwardPort &egress, packet::Frame frame,
+    std::uint32_t destination, void *context, EgressSink sink,
+    Clock::time_point now) noexcept {
+  // RFC 2328 binds every packet to an OSPF interface. Reusing the generic
+  // route lookup here can select another equal connected prefix and move a DD
+  // packet to the wrong data link. Resolution is therefore scoped to the port
+  // selected by the protocol owner, while ARP remains the sole MAC authority.
+  if (auto *adjacency =
+          find_adjacency(egress.ordinal, destination, now)) {
+    send_resolved(frame, egress, adjacency->mac, false, context, sink, now);
+    return true;
+  }
+
+  bool request_in_progress{};
+  auto retry_deadline = Clock::time_point::max();
+  Pending *free{};
+  for (auto &entry : pending_) {
+    if (entry.valid && !entry.ipv6 &&
+        entry.port_ordinal == egress.ordinal &&
+        entry.next_hop == destination) {
+      request_in_progress = true;
+      retry_deadline = entry.arp_retry_deadline;
+    }
+    if (!entry.valid && !free)
+      free = &entry;
+  }
+  if (!free) {
+    drop(ForwardDrop::arp_pending_full);
+    return false;
+  }
+
+  free->valid = true;
+  free->port_ordinal = egress.ordinal;
+  free->next_hop = destination;
+  free->arp_retry_deadline =
+      request_in_progress ? retry_deadline : now + arp_retry_interval(egress);
+  packet::copy_frame(free->frame, frame);
+  if (request_in_progress)
+    return true;
+
+  const auto request = packet::arp_request(
+      egress.mac, to_ipv4(egress.address), to_ipv4(destination));
+  if (emit(egress.ordinal, request, context, sink))
+    return true;
+  *free = {};
+  return false;
+}
+
+bool RouterForwarder::send_ospf_ipv6_unicast(
+    const ForwardPort &egress, packet::Frame frame,
+    const packet::Ipv6 &destination, void *context, EgressSink sink,
+    Clock::time_point now) noexcept {
+  const auto interface_id = physical_interface_id(egress.ordinal);
+  // RFC 4007 requires a zone when a link-local destination is used. The OSPF
+  // interface is that zone. A generic longest-prefix lookup over fe80::/64
+  // cannot preserve it when the router owns more than one physical link.
+  if (!egress.ipv6_configured ||
+      !ipv6_dad_.preferred(interface_id, egress.ipv6_link_local)) {
+    drop(ForwardDrop::port_down);
+    return false;
+  }
+
+  const auto resolution =
+      resolve_ipv6_neighbor(egress, interface_id, destination, now);
+  if (resolution.status == Ipv6ResolutionStatus::resolved)
+    return send_resolved_ipv6(frame, egress, interface_id, resolution.mac,
+                              false, context, sink, now);
+  if (resolution.status == Ipv6ResolutionStatus::table_full) {
+    drop(ForwardDrop::neighbor_pending_full);
+    return false;
+  }
+
+  Pending *free{};
+  for (auto &entry : pending_)
+    if (!entry.valid) {
+      free = &entry;
+      break;
+    }
+  if (!free) {
+    drop(ForwardDrop::neighbor_pending_full);
+    return false;
+  }
+
+  free->valid = true;
+  free->ipv6 = true;
+  free->interface_id = interface_id;
+  free->port_ordinal = egress.ordinal;
+  free->next_hop_ipv6 = destination;
+  packet::copy_frame(free->frame, frame);
+  if (resolution.status == Ipv6ResolutionStatus::pending)
+    return true;
+
+  const auto request = packet::nd::neighbor_solicitation(
+      egress.mac, egress.ipv6_link_local, destination);
+  count_sent_icmpv6(egress.ordinal, request);
+  if (emit_ipv6_interface(interface_id, egress.ordinal, request, context,
+                          sink))
+    return true;
+  *free = {};
+  return false;
+}
+
 RouterIpv6AddressProgramStatus RouterForwarder::program_ipv6_addresses(
     std::span<const RouterIpv6Address> addresses,
     Clock::time_point now) noexcept {
@@ -588,9 +775,13 @@ RouterIpv6AddressProgramStatus RouterForwarder::program_ipv6_addresses(
     return status;
 
   // A valid value record is not sufficient to establish hardware ownership.
-  // Cross-check stable interface identity and configured carrier before any
-  // DAD or selected-primary state is touched.
+  // Cross-check physical identity before any DAD or selected-primary state is
+  // touched. The one exception is the typed system sentinel: it deliberately
+  // has no carrier and must never be mapped onto a physical port by accident.
   for (const auto &address : candidate.records()) {
+    if (address.interface_id == system_interface_id &&
+        address.port_ordinal == system_interface_port_ordinal)
+      continue;
     if (address.port_ordinal >= ports_.size() ||
         !ports_[address.port_ordinal].configured ||
         physical_interface_id(address.port_ordinal) != address.interface_id)
@@ -609,6 +800,11 @@ RouterIpv6AddressProgramStatus RouterForwarder::program_ipv6_addresses(
     if (!candidate.find(old.interface_id, old.address))
       candidate_dad->remove(old.interface_id, old.address);
   for (const auto &address : candidate.records()) {
+    // RFC 4862 DAD operates on a link. A /128 system loopback is immediately
+    // usable after its complete address generation is published, and creating
+    // a fake DAD participant would invent both a port and multicast traffic.
+    if (address.interface_id == system_interface_id)
+      continue;
     const auto &port = ports_[address.port_ordinal];
     if (!port.operational ||
         !candidate_dad->preferred(address.interface_id, port.ipv6_link_local) ||
@@ -653,6 +849,12 @@ RouterIpv6AddressProgramStatus RouterForwarder::program_ipv6_addresses(
   native_ipv6_addresses_ = std::move(candidate);
   ipv6_dad_ = *candidate_dad;
   return RouterIpv6AddressProgramStatus::accepted;
+}
+
+bool RouterForwarder::ipv6_address_preferred(
+    std::uint64_t interface_id, const packet::Ipv6 &address) const noexcept {
+  return interface_id == system_interface_id ||
+         ipv6_dad_.preferred(interface_id, address);
 }
 
 service::SapProgramStatus RouterForwarder::program_sap_generation(
@@ -1114,6 +1316,11 @@ void RouterForwarder::remove_port(std::uint16_t ordinal) noexcept {
   sap_forwarding_.remove_physical_port(ordinal);
   native_ipv6_addresses_.remove_physical_port(ordinal);
   ports_[ordinal] = {};
+  // A removed port cannot continue accepting either OSPF address family. This
+  // is cleared in the same owner turn as the forwarding port so no packet can
+  // observe a half-removed interface generation.
+  ospf_v2_punt_[ordinal] = false;
+  ospf_v3_punt_[ordinal] = false;
   ipv6_reachable_times_[ordinal] = {};
   ipv6_redirect_limiters_[ordinal] = {};
   ipv4_redirect_limiters_[ordinal] = {};
@@ -1613,6 +1820,16 @@ bool RouterForwarder::accepts_ipv6_multicast(
   if (destination == packet::dhcpv6::all_relay_agents_and_servers &&
       dhcpv6_relay_.unique_on_physical_port(port_value.ordinal))
     return true;
+  // RFC 5340 section 2.8 keeps OSPFv3 multicast membership local to each
+  // enabled protocol interface. The Ethernet admission gate runs before the
+  // protocol-89 punt check, so it must admit ff02::5 and ff02::6 here when
+  // the control owner has programmed this exact physical port. Without this
+  // branch valid Hello packets are discarded as foreign L2 multicast before
+  // the stricter source-scope, Hop Limit and Next Header checks can run.
+  if (ospf_v3_punt_[port_value.ordinal] &&
+      (destination == packet::ospf::all_spf_routers_v6 ||
+       destination == packet::ospf::all_dr_routers_v6))
+    return true;
   // An enabled multicast-router interface must receive MLDv1 Reports sent to
   // the reported group as well as MLDv2 Reports sent to ff02::16. The strict
   // ICMPv6 decoder below decides whether the accepted Ethernet multicast is a
@@ -1815,6 +2032,7 @@ void RouterForwarder::checkpoint(RouterForwarderCheckpoint &state,
           : 0U;
   state.echo_reply_rtt_nanoseconds = static_cast<std::uint64_t>(
       std::max<std::int64_t>(0, echo_reply_rtt_.count()));
+  state.echo_reply_ttl = echo_reply_ttl_;
   state.echo_request_sequence = echo_request_sequence_;
   state.echo_request_valid = echo_request_valid_;
   state.ipv6_echo_reply_sequence = ipv6_echo_reply_sequence_;
@@ -1828,6 +2046,7 @@ void RouterForwarder::checkpoint(RouterForwarderCheckpoint &state,
           : 0U;
   state.ipv6_echo_reply_rtt_nanoseconds = static_cast<std::uint64_t>(
       std::max<std::int64_t>(0, ipv6_echo_reply_rtt_.count()));
+  state.ipv6_echo_reply_hop_limit = ipv6_echo_reply_hop_limit_;
   state.ipv6_echo_error_parameter = ipv6_echo_error_parameter_;
   state.ipv6_echo_error_sequence = ipv6_echo_error_sequence_;
   state.ipv6_echo_error_type = ipv6_echo_error_type_;
@@ -1878,7 +2097,11 @@ bool RouterForwarder::validate_checkpoint(
           device_catalog::maximum_ports_per_router ||
       state.pending.size() > device_catalog::pending_l3_frames_per_router ||
       state.fib.count > state.fib.routes.size() ||
+      state.fib.count + state.fib.loop_free_alternate_count >
+          state.fib.routes.size() ||
       state.ipv6_fib.count > state.ipv6_fib.routes.size() ||
+      state.ipv6_fib.count + state.ipv6_fib.loop_free_alternate_count >
+          state.ipv6_fib.routes.size() ||
       state.last_drop < ForwardDrop::none ||
       state.last_drop > ForwardDrop::blackhole ||
       state.mld_service_cursor > state.mld_interfaces.size())
@@ -1992,28 +2215,62 @@ bool RouterForwarder::validate_checkpoint(
       return false;
     seen_ports[port.ordinal] = true;
   }
-  for (std::size_t index = 0U; index < state.fib.count; ++index) {
-    const auto &route = state.fib.routes[index];
+  const auto valid_ipv4_route = [&](const auto &route, bool alternate) {
     const bool canonical =
         route.prefix_length <= 32U &&
         route.network ==
             (route.network & routing::prefix_mask(route.prefix_length));
-    const bool valid_local = route.local_system && route.prefix_length == 32U &&
-                             route.next_hop == 0U && route.port_ordinal == 0U;
-    const bool valid_egress = !route.local_system &&
-                              route.port_ordinal < seen_ports.size() &&
-                              seen_ports[route.port_ordinal];
-    // A restored system route is the sole FIB entry allowed without a port.
-    // Conversely, a physical route cannot cite an absent ordinal or smuggle a
-    // local discriminator into a non-/32 prefix.
-    if (!canonical || (!valid_local && !valid_egress))
+    const bool valid_local =
+        !alternate && route.local_system && route.prefix_length == 32U &&
+        route.next_hop == 0U && route.port_ordinal == 0U;
+    const bool valid_egress =
+        !route.local_system && route.port_ordinal < seen_ports.size() &&
+        seen_ports[route.port_ordinal];
+    return canonical && (valid_local || valid_egress);
+  };
+  // A restored system route is the sole primary FIB entry allowed without a
+  // port. An LFA must always cite a real OSPF egress and can never smuggle a
+  // local termination into the repair table.
+  for (std::size_t index{}; index < state.fib.count; ++index)
+    if (!valid_ipv4_route(state.fib.routes[index], false))
       return false;
-  }
+  for (std::size_t index{};
+       index < state.fib.loop_free_alternate_count; ++index)
+    if (!valid_ipv4_route(state.fib.routes[state.fib.count + index], true))
+      return false;
+  const auto valid_ipv6_route = [&](const auto &route) {
+    const bool system =
+        route.interface_id == system_interface_id &&
+        route.physical_port_ordinal == system_interface_port_ordinal &&
+        route.source == routing::RouteSource::connected &&
+        route.prefix_length == ip::ipv6_address_bits &&
+        ip::is_unspecified(route.next_hop);
+    const bool physical =
+        route.physical_port_ordinal < seen_ports.size() &&
+        seen_ports[route.physical_port_ordinal] &&
+        (route.source == routing::RouteSource::connected ||
+         (!ip::is_unspecified(route.next_hop) &&
+          !ip::is_multicast(route.next_hop)));
+    return route.prefix_length <= ip::ipv6_address_bits &&
+           ip::mask(route.network, route.prefix_length) == route.network &&
+           route.interface_id != 0U && (system || physical);
+  };
+  for (std::size_t index{}; index < state.ipv6_fib.count; ++index)
+    if (!valid_ipv6_route(state.ipv6_fib.routes[index]))
+      return false;
+  for (std::size_t index{};
+       index < state.ipv6_fib.loop_free_alternate_count; ++index)
+    if (!valid_ipv6_route(
+            state.ipv6_fib.routes[state.ipv6_fib.count + index]))
+      return false;
   RouterIpv6AddressTable native_addresses;
   if (native_addresses.program(state.native_ipv6_addresses) !=
       RouterIpv6AddressProgramStatus::accepted)
     return false;
   for (const auto &address : native_addresses.records()) {
+    if (address.interface_id == system_interface_id &&
+        address.port_ordinal == system_interface_port_ordinal)
+      continue;
     if (address.port_ordinal >= seen_ports.size() ||
         !seen_ports[address.port_ordinal] ||
         address.interface_id != physical_interface_id(address.port_ordinal))
@@ -2586,6 +2843,7 @@ bool RouterForwarder::restore(const RouterForwarderCheckpoint &state,
                 state.echo_request_age_nanoseconds)};
   echo_reply_rtt_ = std::chrono::nanoseconds{static_cast<std::int64_t>(
       state.echo_reply_rtt_nanoseconds)};
+  echo_reply_ttl_ = state.echo_reply_ttl;
   echo_request_sequence_ = state.echo_request_sequence;
   echo_request_valid_ = state.echo_request_valid;
   ipv6_echo_reply_sequence_ = state.ipv6_echo_reply_sequence;
@@ -2595,6 +2853,7 @@ bool RouterForwarder::restore(const RouterForwarderCheckpoint &state,
                 state.ipv6_probe_age_nanoseconds)};
   ipv6_echo_reply_rtt_ = std::chrono::nanoseconds{static_cast<std::int64_t>(
       state.ipv6_echo_reply_rtt_nanoseconds)};
+  ipv6_echo_reply_hop_limit_ = state.ipv6_echo_reply_hop_limit;
   ipv6_echo_error_parameter_ = state.ipv6_echo_error_parameter;
   ipv6_echo_error_sequence_ = state.ipv6_echo_error_sequence;
   ipv6_echo_error_type_ = state.ipv6_echo_error_type;
@@ -2631,24 +2890,35 @@ bool RouterForwarder::program_fib(const routing::FibProgram &program) noexcept {
   // Equal generation is idempotent. Older generations are stale shard messages
   // and cannot replace forwarding state selected later by control.
   if (program.generation < fib_.generation ||
-      program.count > program.routes.size())
+      program.count > program.routes.size() ||
+      program.count + program.loop_free_alternate_count >
+          program.routes.size())
     return false;
   if (program.generation == fib_.generation && fib_.generation) {
     // Reusing a generation with different bytes would make stale-message
     // ordering ambiguous. Accept only an exact idempotent replay.
+    const auto same = [](const auto &left, const auto &right) {
+      return left.network == right.network &&
+             left.next_hop == right.next_hop &&
+             left.port_ordinal == right.port_ordinal &&
+             left.prefix_length == right.prefix_length &&
+             left.preference == right.preference &&
+             left.metric == right.metric &&
+             left.source == right.source &&
+             left.local_system == right.local_system &&
+             left.ospf_path_type == right.ospf_path_type &&
+             left.protocol_instance == right.protocol_instance;
+    };
     if (program.count != fib_.count ||
+        program.loop_free_alternate_count !=
+            fib_.loop_free_alternate_count ||
         !std::equal(program.routes.begin(),
                     program.routes.begin() + program.count, fib_.routes.begin(),
-                    [](const auto &left, const auto &right) {
-                      return left.network == right.network &&
-                             left.next_hop == right.next_hop &&
-                             left.port_ordinal == right.port_ordinal &&
-                             left.prefix_length == right.prefix_length &&
-                             left.preference == right.preference &&
-                             left.metric == right.metric &&
-                             left.source == right.source &&
-                             left.local_system == right.local_system;
-                    }))
+                    same) ||
+        !std::equal(program.routes.begin() + program.count,
+                    program.routes.begin() + program.count +
+                        program.loop_free_alternate_count,
+                    fib_.routes.begin() + fib_.count, same))
       return false;
     return true;
   }
@@ -2659,23 +2929,33 @@ bool RouterForwarder::program_fib(const routing::FibProgram &program) noexcept {
 bool RouterForwarder::program_ipv6_fib(
     const routing::Ipv6FibProgram &program) noexcept {
   if (program.generation < ipv6_fib_.generation ||
-      program.count > program.routes.size())
+      program.count > program.routes.size() ||
+      program.count + program.loop_free_alternate_count >
+          program.routes.size())
     return false;
   if (program.generation == ipv6_fib_.generation && ipv6_fib_.generation) {
+    const auto same = [](const auto &left, const auto &right) {
+      return left.network == right.network &&
+             left.next_hop == right.next_hop &&
+             left.interface_id == right.interface_id &&
+             left.physical_port_ordinal == right.physical_port_ordinal &&
+             left.prefix_length == right.prefix_length &&
+             left.preference == right.preference &&
+             left.metric == right.metric &&
+             left.source == right.source &&
+             left.ospf_path_type == right.ospf_path_type &&
+             left.protocol_instance == right.protocol_instance;
+    };
     if (program.count != ipv6_fib_.count ||
+        program.loop_free_alternate_count !=
+            ipv6_fib_.loop_free_alternate_count ||
         !std::equal(
             program.routes.begin(), program.routes.begin() + program.count,
-            ipv6_fib_.routes.begin(), [](const auto &left, const auto &right) {
-              return left.network == right.network &&
-                     left.next_hop == right.next_hop &&
-                     left.interface_id == right.interface_id &&
-                     left.physical_port_ordinal ==
-                         right.physical_port_ordinal &&
-                     left.prefix_length == right.prefix_length &&
-                     left.preference == right.preference &&
-                     left.metric == right.metric &&
-                     left.source == right.source;
-            }))
+            ipv6_fib_.routes.begin(), same) ||
+        !std::equal(program.routes.begin() + program.count,
+                    program.routes.begin() + program.count +
+                        program.loop_free_alternate_count,
+                    ipv6_fib_.routes.begin() + ipv6_fib_.count, same))
       return false;
     return true;
   }
@@ -2692,7 +2972,7 @@ bool RouterForwarder::originate_echo(std::uint32_t destination,
   // Source selection follows the same local FIB used by transit packets. This
   // prevents a CLI ping from gaining an out-of-band route through the lab
   // graph.
-  if (!routing::lookup(fib_, destination, route)) {
+  if (!lookup_ipv4_route(destination, route)) {
     drop(ForwardDrop::no_route);
     return false;
   }
@@ -2710,6 +2990,10 @@ bool RouterForwarder::originate_echo(std::uint32_t destination,
     echo_reply_sequence_ = sequence;
     echo_reply_valid_ = true;
     echo_reply_rtt_ = std::chrono::nanoseconds::zero();
+    // A local reply is generated by this profile's IP stack and has crossed
+    // no forwarding hop, so its observed TTL is the stack's configured
+    // initial value rather than a UI constant.
+    echo_reply_ttl_ = device_catalog::default_ip_hop_limit;
     echo_request_valid_ = false;
     return true;
   }
@@ -2732,6 +3016,7 @@ bool RouterForwarder::originate_echo(std::uint32_t destination,
   echo_request_sequence_ = sequence;
   echo_request_sent_at_ = now;
   echo_reply_rtt_ = std::chrono::nanoseconds::zero();
+  echo_reply_ttl_ = 0U;
   echo_request_valid_ = true;
   // The message has entered the local ICMP output path even when ARP must
   // queue it before Ethernet transmission. RFC counter semantics account for
@@ -2792,7 +3077,7 @@ bool RouterForwarder::originate_ipv6_echo(
   bool preferred_local_destination{};
   if (const auto *native = native_ipv6_addresses_.owner(destination))
     preferred_local_destination =
-        ipv6_dad_.preferred(native->interface_id, destination);
+        ipv6_address_preferred(native->interface_id, destination);
   if (!preferred_local_destination)
     for (const auto &candidate : ports_) {
       if (!candidate.configured || !candidate.operational ||
@@ -2828,6 +3113,7 @@ bool RouterForwarder::originate_ipv6_echo(
     ipv6_probe_packet_count_ = 0U;
     ipv6_echo_reply_sequence_ = sequence;
     ipv6_echo_reply_rtt_ = std::chrono::nanoseconds::zero();
+    ipv6_echo_reply_hop_limit_ = device_catalog::default_ip_hop_limit;
     ipv6_echo_reply_valid_ = true;
     ipv6_echo_error_valid_ = false;
     return true;
@@ -2909,6 +3195,7 @@ bool RouterForwarder::originate_ipv6_echo(
   ipv6_probe_valid_ = true;
   ipv6_probe_sent_at_ = now;
   ipv6_echo_reply_rtt_ = std::chrono::nanoseconds::zero();
+  ipv6_echo_reply_hop_limit_ = 0U;
   ipv6_echo_reply_valid_ = false;
   ipv6_echo_error_valid_ = false;
   const auto forwarded_before = forwarded_frames_;
@@ -3258,14 +3545,80 @@ bool RouterForwarder::emit(std::uint16_t port_ordinal,
   return true;
 }
 
+bool RouterForwarder::lookup_ipv4_route(
+    std::uint32_t destination, routing::Route &selected,
+    std::uint64_t flow_hash) const noexcept {
+  // Probe every possible ECMP residue before declaring the primary unusable.
+  // The generated maximum bounds this allocation-free loop. A healthy member
+  // remains preferable to an LFA, even when the original flow hash selected a
+  // failed equal-cost egress.
+  for (std::uint64_t offset{};
+       offset < device_catalog::maximum_ecmp_paths; ++offset) {
+    routing::Route candidate;
+    if (!routing::lookup(fib_, destination, candidate,
+                         flow_hash + offset))
+      break;
+    if (candidate.local_system ||
+        (candidate.port_ordinal < ports_.size() &&
+         ports_[candidate.port_ordinal].configured &&
+         ports_[candidate.port_ordinal].operational)) {
+      selected = candidate;
+      return true;
+    }
+  }
+
+  for (std::uint64_t offset{};
+       offset < device_catalog::maximum_ecmp_paths; ++offset) {
+    routing::Route candidate;
+    if (!routing::lookup_loop_free_alternate(
+            fib_, destination, candidate, flow_hash + offset))
+      break;
+    if (candidate.port_ordinal < ports_.size() &&
+        ports_[candidate.port_ordinal].configured &&
+        ports_[candidate.port_ordinal].operational) {
+      selected = candidate;
+      return true;
+    }
+  }
+  return false;
+}
+
 bool RouterForwarder::lookup_ipv6_route(const packet::Ipv6 &destination,
                                         routing::Ipv6Route &selected,
                                         bool &blackhole,
                                         std::uint64_t flow_hash) const noexcept {
   routing::Ipv6Route configured;
   dhcpv6::RelayRoute populated;
-  const bool have_configured =
-      routing::lookup(ipv6_fib_, destination, configured, flow_hash);
+  bool have_configured{};
+  for (std::uint64_t offset{};
+       offset < device_catalog::maximum_ecmp_paths; ++offset) {
+    routing::Ipv6Route candidate;
+    if (!routing::lookup(ipv6_fib_, destination, candidate,
+                         flow_hash + offset))
+      break;
+    if (candidate.physical_port_ordinal < ports_.size() &&
+        ports_[candidate.physical_port_ordinal].configured &&
+        ports_[candidate.physical_port_ordinal].operational) {
+      configured = candidate;
+      have_configured = true;
+      break;
+    }
+  }
+  if (!have_configured)
+    for (std::uint64_t offset{};
+         offset < device_catalog::maximum_ecmp_paths; ++offset) {
+      routing::Ipv6Route candidate;
+      if (!routing::lookup_loop_free_alternate(
+              ipv6_fib_, destination, candidate, flow_hash + offset))
+        break;
+      if (candidate.physical_port_ordinal < ports_.size() &&
+          ports_[candidate.physical_port_ordinal].configured &&
+          ports_[candidate.physical_port_ordinal].operational) {
+        configured = candidate;
+        have_configured = true;
+        break;
+      }
+    }
   const bool have_populated =
       dhcpv6_relay_routes_.lookup(destination, populated);
   if (!have_configured && !have_populated)
@@ -3591,7 +3944,7 @@ void RouterForwarder::send(packet::Frame frame, std::uint32_t destination,
   routing::Route route;
   const auto parsed_for_hash = packet::parse_ipv4(frame);
   const auto flow_hash = parsed_for_hash ? ipv4_ecmp_hash(*parsed_for_hash) : 0U;
-  if (!routing::lookup(fib_, destination, route, flow_hash)) {
+  if (!lookup_ipv4_route(destination, route, flow_hash)) {
     // A transit failure is observable on the wire. Locally originated traffic
     // reports failure to its local caller and must not recursively send an
     // ICMP error to itself.
@@ -3613,6 +3966,7 @@ void RouterForwarder::send(packet::Frame frame, std::uint32_t destination,
       echo_reply_sequence_ = icmp->sequence;
       echo_reply_valid_ = true;
       echo_reply_rtt_ = std::chrono::nanoseconds::zero();
+      echo_reply_ttl_ = parsed_for_hash ? parsed_for_hash->ttl : 0U;
       echo_request_valid_ = false;
     }
     return;
@@ -3721,7 +4075,7 @@ void RouterForwarder::send_time_exceeded(const packet::Frame &original,
   routing::Route reverse;
   // The return path is independently looked up. Symmetry is never inferred
   // from the ingress port because static routing may be asymmetric.
-  if (!routing::lookup(fib_, to_u32(ip.source), reverse)) {
+  if (!lookup_ipv4_route(to_u32(ip.source), reverse)) {
     drop(ForwardDrop::no_route);
     return;
   }
@@ -3751,7 +4105,7 @@ void RouterForwarder::send_network_unreachable(const packet::Frame &original,
   // RFC 1812 requires the diagnostic, but it still needs an ordinary return
   // route. The ingress port is not a substitute because routing can be
   // asymmetric and accepting that shortcut would be hidden topology magic.
-  if (!routing::lookup(fib_, to_u32(ip.source), reverse) ||
+  if (!lookup_ipv4_route(to_u32(ip.source), reverse) ||
       reverse.local_system)
     return;
   const auto *egress = port(reverse.port_ordinal);
@@ -3773,7 +4127,7 @@ void RouterForwarder::send_local_destination_unreachable(
   if (!may_send_icmp_error(original, ip))
     return;
   routing::Route reverse;
-  if (!routing::lookup(fib_, to_u32(ip.source), reverse) ||
+  if (!lookup_ipv4_route(to_u32(ip.source), reverse) ||
       reverse.local_system)
     return;
   const auto *egress = port(reverse.port_ordinal);
@@ -3803,7 +4157,7 @@ void RouterForwarder::send_reassembly_time_exceeded(
   if (!may_send_icmp_error(first_fragment, ip))
     return;
   routing::Route reverse;
-  if (!routing::lookup(fib_, to_u32(ip.source), reverse) ||
+  if (!lookup_ipv4_route(to_u32(ip.source), reverse) ||
       reverse.local_system)
     return;
   const auto *egress = port(reverse.port_ordinal);
@@ -3823,7 +4177,7 @@ void RouterForwarder::send_fragmentation_needed(
     std::uint16_t next_hop_mtu, void *context, EgressSink sink,
     Clock::time_point now) noexcept {
   routing::Route reverse;
-  if (!routing::lookup(fib_, to_u32(ip.source), reverse))
+  if (!lookup_ipv4_route(to_u32(ip.source), reverse))
     return;
   const auto *egress = port(reverse.port_ordinal);
   if (!egress || !egress->operational)
@@ -4013,9 +4367,11 @@ RouterForwarder::echo_outcome(std::uint16_t sequence) const noexcept {
     return 0U;
   const auto nanoseconds = static_cast<std::uint64_t>(std::max<std::int64_t>(
       0, echo_reply_rtt_.count()));
-  // Fifty-six payload bits cover more than two years at nanosecond precision,
-  // comfortably beyond the release-profile ping timeout.
-  return 1U | nanoseconds << 8U;
+  // Forty-eight payload bits cover more than three days at nanosecond
+  // precision, comfortably beyond the release-profile ping timeout. The
+  // middle byte is the TTL decoded from this exact correlated reply.
+  return 1U | static_cast<std::uint64_t>(echo_reply_ttl_) << 8U |
+         nanoseconds << 16U;
 }
 
 std::uint64_t
@@ -4023,7 +4379,9 @@ RouterForwarder::ipv6_echo_outcome(std::uint16_t sequence) const noexcept {
   if (received_ipv6_echo_reply(sequence)) {
     const auto nanoseconds = static_cast<std::uint64_t>(
         std::max<std::int64_t>(0, ipv6_echo_reply_rtt_.count()));
-    return 1U | nanoseconds << 8U;
+    return 1U |
+           static_cast<std::uint64_t>(ipv6_echo_reply_hop_limit_) << 8U |
+           nanoseconds << 16U;
   }
   if (!ipv6_echo_error_valid_ || ipv6_echo_error_sequence_ != sequence)
     return 0U;
@@ -4049,7 +4407,7 @@ bool RouterForwarder::accept_ipv4_fragmentation_needed(
   // report is valid evidence about the old packet but not about the new path,
   // so both the logical interface and physical port must still agree.
   routing::Route route;
-  if (!routing::lookup(fib_, to_u32(ipv4_probe_destination_), route) ||
+  if (!lookup_ipv4_route(to_u32(ipv4_probe_destination_), route) ||
       route.local_system || route.port_ordinal != ipv4_probe_port_ordinal_ ||
       physical_interface_id(route.port_ordinal) != ipv4_probe_interface_id_)
     return false;
@@ -4514,7 +4872,7 @@ bool RouterForwarder::originate_dhcpv6_relay(
     if (const auto *native =
             native_ipv6_addresses_.owner(decision.source_address))
       source_is_preferred =
-          ipv6_dad_.preferred(native->interface_id, native->address);
+          ipv6_address_preferred(native->interface_id, native->address);
     if (!source_is_preferred)
       for (const auto &candidate : ports_) {
         const auto candidate_interface =
@@ -4548,7 +4906,7 @@ bool RouterForwarder::originate_dhcpv6_relay(
     std::size_t candidate_count{};
     for (const auto &address : native_ipv6_addresses_.records())
       if (address.interface_id == egress_interface_id &&
-          ipv6_dad_.preferred(address.interface_id, address.address))
+          ipv6_address_preferred(address.interface_id, address.address))
         candidates[candidate_count++] = {.address = address.address,
                                          .interface_id = address.interface_id,
                                          .prefix_length = address.prefix_length,
@@ -4797,7 +5155,26 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
   std::optional<packet::Ipv6View> ipv6;
   bool layer_two_local =
       packet::ethernet_for_local(ethernet->destination, ingress->mac);
-  if (ethernet->ether_type == 0x86dd) {
+  if (ethernet->ether_type == 0x0800) {
+    // Ethernet broadcast acceptance does not include the two IPv4 multicast
+    // MAC addresses used by OSPFv2. Admit them only when the IP mapping, TTL,
+    // protocol and per-interface punt projection all agree. This prevents a
+    // generic multicast shortcut from delivering unrelated groups to CPM.
+    const auto ospf_ipv4 = packet::parse_ipv4(frame);
+    const bool all_spf =
+        ospf_ipv4 &&
+        ospf_ipv4->destination == packet::ospf::all_spf_routers_v4 &&
+        ethernet->destination == packet::ospf::all_spf_routers_mac_v4;
+    const bool all_dr =
+        ospf_ipv4 &&
+        ospf_ipv4->destination == packet::ospf::all_dr_routers_v4 &&
+        ethernet->destination == packet::ospf::all_dr_routers_mac_v4;
+    layer_two_local =
+        layer_two_local ||
+        (ospf_v2_punt_[ingress_port] && ospf_ipv4 &&
+         ospf_ipv4->protocol == packet::ospf::ip_protocol &&
+         ospf_ipv4->ttl == 1U && (all_spf || all_dr));
+  } else if (ethernet->ether_type == 0x86dd) {
     ipv6 = packet::parse_ipv6(frame);
     // IPv6 has no broadcast. A multicast frame is accepted only when the
     // destination MAC matches the IPv6 mapping and this router joined the
@@ -4855,7 +5232,8 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
     const auto *native_owner = native_ipv6_addresses_.owner(ipv6->destination);
     const bool native_destination_local =
         native_owner &&
-        ipv6_dad_.preferred(native_owner->interface_id, native_owner->address);
+        ipv6_address_preferred(native_owner->interface_id,
+                               native_owner->address);
     const bool ipv6_destination_local =
         ip::is_multicast(ipv6->destination) || native_destination_local ||
         (service_ingress &&
@@ -5326,8 +5704,9 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
               physical_interface_id(candidate.ordinal);
           const bool global = native_owner &&
                               native_owner->port_ordinal == candidate.ordinal &&
-                              ipv6_dad_.preferred(native_owner->interface_id,
-                                                  native_owner->address);
+                              ipv6_address_preferred(
+                                  native_owner->interface_id,
+                                  native_owner->address);
           // Link-local unicast is meaningful only in the ingress zone. Do not
           // accept an equal byte value owned by a different physical link.
           const bool link_local =
@@ -5348,8 +5727,14 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
     const bool relay_multicast_local =
         ipv6->destination == packet::dhcpv6::all_relay_agents_and_servers &&
         dhcpv6_relay_.unique_on_physical_port(ingress_port);
+    const bool ospf_multicast_local =
+        ospf_v3_punt_[ingress_port] &&
+        ipv6->upper_layer_protocol == packet::ospf::ip_protocol &&
+        ipv6->hop_limit == 1U && ip::is_link_local(ipv6->source) &&
+        (ipv6->destination == packet::ospf::all_spf_routers_v6 ||
+         ipv6->destination == packet::ospf::all_dr_routers_v6);
     if (local != ports_.end() || ingress_service_local ||
-        relay_multicast_local) {
+        relay_multicast_local || ospf_multicast_local) {
       // Multicast delivery belongs to the ingress interface. Unicast may target
       // another local address, so it retains the address-owning port for source
       // MAC and interface counters.
@@ -5408,6 +5793,12 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
       // inner Next Header into ICMPv6, UDP or DHCPv6 processing.
       if (local_ipv6->authentication_header_present)
         return;
+      // Protocol 89 is consumed by the dedicated OSPF control-plane channel.
+      // The generic punt observer sees the original encoded frame above, and
+      // forwarding must neither interpret its payload nor return an ICMPv6
+      // Parameter Problem for a protocol it deliberately accepted.
+      if (local_ipv6->upper_layer_protocol == packet::ospf::ip_protocol)
+        return;
       const auto icmp = packet::parse_icmpv6(local_packet);
       if (icmp && icmp->type == packet::icmpv6_echo_request_type &&
           icmp->code == 0U && local_frame) {
@@ -5431,6 +5822,10 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
                                          std::chrono::nanoseconds>(
                                          now - ipv6_probe_sent_at_)
                                    : std::chrono::nanoseconds::zero();
+        // Hop Limit is read from the received IPv6 header after all transit
+        // routers have decremented it. Reporting a profile constant here
+        // would conceal the actual path length from the operator.
+        ipv6_echo_reply_hop_limit_ = local_ipv6->hop_limit;
         // Only the retained source generation can confirm an upward PMTU
         // experiment. Destination and interface are checked again here so a
         // reply after route replacement cannot publish evidence for a new path.
@@ -5620,12 +6015,17 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
       });
   routing::Route destination_route;
   const bool local_system =
-      routing::lookup(fib_, destination, destination_route) &&
+      lookup_ipv4_route(destination, destination_route) &&
       destination_route.local_system &&
       destination_route.prefix_length == 32U &&
       destination_route.network == destination;
   const bool ingress_broadcast =
       ingress->ipv4_configured && destination == 0xffffffffU;
+  const bool ospf_multicast_local =
+      ospf_v2_punt_[ingress_port] &&
+      ip->protocol == packet::ospf::ip_protocol && ip->ttl == 1U &&
+      (ip->destination == packet::ospf::all_spf_routers_v4 ||
+       ip->destination == packet::ospf::all_dr_routers_v4);
   const bool any_directed_broadcast = std::any_of(
       ports_.begin(), ports_.end(), [destination](const auto &candidate) {
         return directed_broadcast(candidate, destination);
@@ -5637,7 +6037,8 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
     drop(ForwardDrop::directed_broadcast_disabled);
     return;
   }
-  if (local != ports_.end() || local_system || ingress_broadcast) {
+  if (local != ports_.end() || local_system || ingress_broadcast ||
+      ospf_multicast_local) {
     // Locally addressed IPv4 leaves the transit pipeline for the CPM protocol
     // stack. Capture observes bytes before an ICMP reply or session state is
     // generated, preserving the actual received packet.
@@ -5684,6 +6085,11 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
     // precise RFC 792 diagnostic through the normal reverse FIB and ARP path.
     if (ip->protocol == 1U)
       count_received_icmpv4(ingress_port, local_packet, *ip);
+    // As with OSPFv3, forwarding validates only the IP envelope and configured
+    // ingress interface. The control-plane owner parses and authenticates the
+    // untouched OSPF packet delivered through the punt channel.
+    if (ip->protocol == packet::ospf::ip_protocol)
+      return;
     const auto icmp = packet::parse_icmp(local_packet);
     if (icmp && icmp->type == 8U && icmp->code == 0U && local_frame &&
         !ingress_broadcast) {
@@ -5699,7 +6105,7 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
         // Sent counters belong to the actual reverse egress interface, which
         // can differ from ingress under asymmetric static routing.
         routing::Route reverse;
-        if (routing::lookup(fib_, to_u32(ip->source), reverse) &&
+        if (lookup_ipv4_route(to_u32(ip->source), reverse) &&
             !reverse.local_system) {
           if (const auto *reply_egress = port(reverse.port_ordinal);
               reply_egress && reply_egress->operational)
@@ -5724,6 +6130,9 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
                             ? std::chrono::duration_cast<std::chrono::nanoseconds>(
                                   now - echo_request_sent_at_)
                             : std::chrono::nanoseconds::zero();
+      // TTL belongs to the correlated reply packet and therefore reflects
+      // every forwarding hop. The CLI never manufactures a display value.
+      echo_reply_ttl_ = ip->ttl;
       echo_request_valid_ = false;
       if (ipv4_probe_valid_ && ip->source == ipv4_probe_destination_)
         static_cast<void>(ipv4_path_mtu_.confirm_probe(
@@ -5775,7 +6184,7 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
     return;
   }
   routing::Route redirect_route;
-  if (routing::lookup(fib_, destination, redirect_route))
+  if (lookup_ipv4_route(destination, redirect_route))
     maybe_send_ipv4_redirect(*ingress, *ethernet, *ip, redirect_route, frame,
                              context, sink, now);
   send(frame, destination, true, context, sink, now);

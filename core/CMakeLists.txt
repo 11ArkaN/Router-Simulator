@@ -71,6 +71,7 @@ add_library(router_primitives STATIC
   src/dhcpv6_relay_route.cpp
   src/dhcpv6_retransmission.cpp
   src/dhcpv6_server.cpp
+  src/ethernet_switch.cpp
   src/ip_address.cpp
   src/ipv4_path_mtu.cpp
   src/ipv4_reassembly.cpp
@@ -112,6 +113,24 @@ add_library(router_primitives STATIC
   src/mld_listener.cpp
   src/mld_router.cpp
   src/neighbor_discovery_packet.cpp
+  # OSPF packet framing is a protocol primitive. It depends only on IP address
+  # and checksum helpers and cannot acquire LSDB, runtime or CLI ownership.
+  src/ospf_fsm.cpp
+  src/ospf_configuration.cpp
+  src/ospf_interface.cpp
+  src/ospf_database_exchange.cpp
+  src/ospf_lsdb.cpp
+  src/ospf_lsa.cpp
+  src/ospf_lsa_builder.cpp
+  src/ospf_packet.cpp
+  src/ospf_authentication.cpp
+  src/ospf_keychain.cpp
+  src/ospf_area_coordinator.cpp
+  src/ospf_process.cpp
+  src/ospf_route_calculator.cpp
+  src/ospf_spf.cpp
+  src/ospf_topology.cpp
+  src/route_policy.cpp
   src/packet.cpp
   src/sha256.cpp
   src/tcp_packet.cpp
@@ -258,6 +277,10 @@ add_library(router_network STATIC
   src/router_ipv6_address_table.cpp
   src/multi_device_fabric.cpp
   src/network_plane.cpp
+  # OSPF is a separate control pthread, but its packet channels terminate at
+  # forwarding shards. Keeping the worker in the network layer preserves the
+  # primitive protocol library's independence from lab device handles.
+  src/ospf_control_worker.cpp
   src/network_endpoint.cpp
   src/router_forwarder.cpp
   src/sap_forwarding.cpp
@@ -271,6 +294,7 @@ add_library(router_management STATIC
   src/cli_parser.cpp
   src/ies_cli_configuration.cpp
   src/ipsec_cli_configuration.cpp
+  src/ospf_cli_configuration.cpp
   src/session_workflows.cpp
   src/tls_cli_configuration.cpp
 )
@@ -463,6 +487,7 @@ if(ROUTER_BUILD_TESTS)
     tests/dhcpv6_relay_route_test.cpp
     tests/dhcpv6_retransmission_test.cpp
     tests/dhcpv6_server_test.cpp
+    tests/ethernet_switch_test.cpp
     tests/dns_packet_test.cpp
     tests/ddr_discovery_test.cpp
     tests/dns_authoritative_test.cpp
@@ -486,6 +511,8 @@ if(ROUTER_BUILD_TESTS)
     tests/icmpv6_statistics_test.cpp
     tests/ies_service_test.cpp
     tests/ies_cli_configuration_test.cpp
+    tests/ospf_cli_configuration_test.cpp
+    tests/ospf_area_coordinator_test.cpp
     tests/ipv6_path_mtu_test.cpp
     tests/ipv4_path_mtu_test.cpp
     tests/ipv6_neighbor_cache_test.cpp
@@ -517,6 +544,23 @@ if(ROUTER_BUILD_TESTS)
     tests/mld_import_policy_test.cpp
     tests/mld_listener_test.cpp
     tests/mld_router_test.cpp
+    tests/ospf_fsm_test.cpp
+    tests/ospf_configuration_test.cpp
+    tests/ospf_interface_test.cpp
+    tests/ospf_database_exchange_test.cpp
+    tests/ospf_lsdb_test.cpp
+    tests/ospf_lsa_test.cpp
+    tests/ospf_lsa_builder_test.cpp
+    tests/ospf_packet_test.cpp
+    tests/ospf_authentication_test.cpp
+    tests/ospf_keychain_test.cpp
+    tests/ospf_process_test.cpp
+    tests/ospf_route_calculator_test.cpp
+    tests/ospf_packet_channel_test.cpp
+    tests/ospf_route_channel_test.cpp
+    tests/ospf_spf_test.cpp
+    tests/ospf_topology_test.cpp
+    tests/route_policy_test.cpp
     tests/multi_device_fabric_test.cpp
     tests/multi_device_routing_test.cpp
     tests/module_test_main.cpp

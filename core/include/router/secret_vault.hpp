@@ -30,7 +30,8 @@ enum class SecretKind : std::uint8_t {
   stable_ipv6_interface_identifier = 7U,
   dhcpv6_transaction_entropy = 8U,
   dhcpv6_allocation_entropy = 9U,
-  ipsec_static_authentication_key = 10U
+  ipsec_static_authentication_key = 10U,
+  ospf_authentication_key = 11U
 };
 
 struct SealedRecord {

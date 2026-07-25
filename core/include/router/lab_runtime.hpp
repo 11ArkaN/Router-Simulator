@@ -315,6 +315,7 @@ private:
     tls_profile::Configuration tls;
     ipsec::configuration::Configuration ipsec;
     service::Configuration ies;
+    ospf::RouterConfiguration ospf;
     std::array<CardConfigurationIntent, device_catalog::maximum_card_slots>
         cards;
     std::vector<PortIntent> ports;
@@ -347,6 +348,7 @@ private:
     tls_profile::Configuration tls;
     ipsec::configuration::Configuration ipsec;
     service::Configuration ies;
+    ospf::RouterConfiguration ospf;
     ConfigurationIntent global_candidate;
     bool global_candidate_initialized{};
   };
@@ -365,6 +367,14 @@ private:
     bool ipv6_autoconfiguration{};
     host::Ipv6InterfaceIdentifierConfiguration ipv6_identifier{};
     crypto::Sha256Digest transport_secret{};
+  };
+
+  struct SwitchIntent {
+    SwitchHandle handle{};
+    std::string node_id;
+    std::string name;
+    std::string profile_id;
+    std::vector<SwitchPortIntent> ports;
   };
 
   struct SessionIntent {
@@ -390,6 +400,14 @@ private:
       std::uint32_t requested{profile::default_ping_count};
       std::uint32_t sent{};
       std::uint32_t received{};
+      // SR OS prints aggregate round-trip statistics after successful probes.
+      // Microseconds preserve the documented three-decimal millisecond
+      // precision while keeping the bounded maximum count and five-second
+      // timeout safe in 64-bit sums, including the sum of squares.
+      std::uint64_t rtt_min_microseconds{};
+      std::uint64_t rtt_max_microseconds{};
+      std::uint64_t rtt_sum_microseconds{};
+      std::uint64_t rtt_squared_sum_microseconds{};
       bool dont_fragment{};
       bool ipv6{};
       bool waiting{};
@@ -416,6 +434,7 @@ private:
   [[nodiscard]] RouterIntent *router(std::string_view id) noexcept;
   [[nodiscard]] const RouterIntent *router(std::string_view id) const noexcept;
   [[nodiscard]] HostIntent *host(std::string_view id) noexcept;
+  [[nodiscard]] SwitchIntent *ethernet_switch(std::string_view id) noexcept;
   [[nodiscard]] SessionIntent *session(std::string_view id) noexcept;
   [[nodiscard]] const SessionIntent *
   session(std::string_view id) const noexcept;
@@ -424,6 +443,9 @@ private:
   [[nodiscard]] bool
   replace_router_configuration(std::span<const std::string_view> fields);
   [[nodiscard]] bool create_host(std::span<const std::string_view> fields);
+  [[nodiscard]] bool create_switch(std::span<const std::string_view> fields);
+  [[nodiscard]] bool
+  configure_switch_port(std::span<const std::string_view> fields);
   [[nodiscard]] bool set_card(std::span<const std::string_view> fields);
   [[nodiscard]] bool set_mda(std::span<const std::string_view> fields);
   [[nodiscard]] bool configure_port(std::span<const std::string_view> fields);
@@ -470,6 +492,7 @@ private:
   std::optional<vault::SecretVault> secret_vault_;
   std::vector<RouterIntent> routers_;
   std::vector<HostIntent> hosts_;
+  std::vector<SwitchIntent> switches_;
   std::vector<SessionIntent> sessions_;
   std::vector<CaptureIntent> capture_intents_;
   // Monotonic within one live runtime. Deselected intent rows are erased, but

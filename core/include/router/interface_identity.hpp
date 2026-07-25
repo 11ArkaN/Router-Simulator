@@ -17,9 +17,40 @@ namespace router::lab {
 // interfaces, making the two sources collision-free without a central table.
 inline constexpr std::uint64_t physical_interface_namespace{1ULL << 63U};
 
+// The system loopback belongs to the native-interface namespace but has no
+// hardware ordinal.  Reserve the first value immediately after the complete
+// generated port domain.  This keeps it collision-free with physical and
+// service interfaces without a global allocator or a fabricated port zero.
+inline constexpr std::uint16_t system_interface_port_ordinal{
+    device_catalog::maximum_ports_per_router};
+inline constexpr std::uint64_t system_interface_id{
+    physical_interface_namespace | system_interface_port_ordinal};
+
 [[nodiscard]] constexpr std::uint64_t
 physical_interface_id(std::uint16_t port_ordinal) noexcept {
   return physical_interface_namespace | port_ordinal;
+}
+
+[[nodiscard]] constexpr std::uint32_t
+ospf_physical_interface_id(std::uint16_t port_ordinal) noexcept {
+  // RFC 5340 sections 3.1.2 and 4.2 require a nonzero, router-local Interface
+  // ID that stays unchanged while the interface remains operational. The
+  // immutable hardware ordinal already has exactly that ownership and
+  // lifetime. Converting its zero-based storage index to the positive wire
+  // domain is therefore the router's actual allocation policy, not a topology
+  // editor value or an SR OS hardware-limit claim.
+  return static_cast<std::uint32_t>(port_ordinal) + 1U;
+}
+
+[[nodiscard]] constexpr std::uint32_t
+ospf_virtual_interface_id(std::uint32_t virtual_ordinal) noexcept {
+  // Virtual interfaces share the RFC 5340 router-local Interface ID domain,
+  // but have no hardware ordinal. Allocate them immediately after the complete
+  // generated physical-port domain so adding or removing a card cannot collide
+  // with an already valid physical Interface ID.
+  return static_cast<std::uint32_t>(
+             device_catalog::maximum_ports_per_router) +
+         1U + virtual_ordinal;
 }
 
 [[nodiscard]] constexpr std::optional<std::uint16_t>

@@ -135,7 +135,9 @@ timing:
   equipment_poll_milliseconds: 250
   worker_shutdown_milliseconds: 250
   worker_startup_poll_milliseconds: 10
-  worker_startup_attempts: 200
+  # This is only the browser pthread readiness deadline. It never advances a
+  # protocol timer or network clock and a missing owner still aborts startup.
+  worker_startup_attempts: 1000
   telemetry_read_attempts: 4
   autosave_debounce_milliseconds: 400
 limits:
@@ -159,15 +161,16 @@ cli_defaults:
   ping_max_count: 100000
   history_entries: 50
 abi:
-  # Snapshot ABI 6 adds complete dual-stack host and interface intent.
-  runtime_snapshot: 6
+  # Snapshot ABI 8 adds canonical OSPF configuration intent after ABI 7 added
+  # profile-bound Ethernet switch forwarding state.
+  runtime_snapshot: 8
   # Telemetry ABI 6 adds IPv6 host operational state to the shared directory.
   telemetry: 6
   # Protocol 4 adds dual-stack host identity and rejects older field graphs.
   runtime_messages: 4
-  # ABI 6 adds dual-stack RIB/FIB, NUD state and relative IPv6 deadlines. Old
+  # ABI 7 adds switch ports, FDB entries and queued Ethernet frames. Old
   # checkpoint images are intentionally not accepted by this WIP project.
-  checkpoint: 6
+  checkpoint: 7
 link_defaults:
   # Propagation belongs to the cable or circuit, not to the Nokia port. The
   # project copies this value into each new physical link and may override it

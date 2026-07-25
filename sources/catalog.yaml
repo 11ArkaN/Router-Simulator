@@ -1,5 +1,355 @@
 schema_version: 1
 records:
+  - id: ieee.802_1q.learning_bridge
+    kind: ethernet-bridge-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ieee-standard
+    source_url: https://standards.ieee.org/ieee/802.1Q/6844/
+    section: Filtering database, learning and forwarding process
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-24
+    implementation: [profiles/catalog/26.7.R1.yaml, core/include/router/ethernet_switch.hpp, core/src/ethernet_switch.cpp, core/src/network_plane.cpp]
+    tests: [core/tests/ethernet_switch_test.cpp, core/tests/network_plane_test.cpp]
+    status: implemented
+    notes: The link owner learns source MAC addresses, ages dynamic FDB entries on steady_clock, forwards known unicast to one eligible port and replicates unknown unicast, broadcast and multicast through reference-counted immutable packet buffers. Port count, rate, MTU and queue capacity come from the generated switch profile.
+  - id: nokia.sros.26_7.ospf.configuration_model
+    kind: routing-protocol-configuration
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/unicast-routing-protocols/ospf.html
+    section: OSPF and OSPF3 configuration
+    rfc_refs: [RFC2328, RFC3101, RFC5340]
+    yang_path: /configure/router/ospf
+    last_verified_at: 2026-07-24
+    implementation: [profiles/catalog/26.7.R1.yaml, schemas/cli/26.7.R1.yaml, core/include/router/ospf_configuration.hpp, core/src/ospf_configuration.cpp, core/src/ospf_cli_configuration.hpp, core/src/ospf_cli_configuration.cpp, core/src/lab_runtime.cpp]
+    tests: [core/tests/ospf_configuration_test.cpp, core/tests/ospf_cli_configuration_test.cpp, core/tests/lab_runtime_test.cpp]
+    status: implemented
+    notes: Canonical intent and validation cover release-backed instance, area, interface, NBMA, virtual-link, timer, preference, authentication-reference and administrative fields. SR OS defaults OSPF and OSPF3 interfaces bound to Ethernet or an unknown physical type to broadcast. Explicit point-to-point configuration remains available for two-router Ethernet links. The generated profile does not advertise a SONET medium, so no unsupported medium default is exposed.
+  - id: nokia.sros.26_7.ospf.neighbor_detail
+    kind: cli-operational-report
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-n-commands.html
+    section: show router ospf and ospf3 neighbor detail
+    rfc_refs: [RFC2328, RFC5340]
+    yang_path: null
+    last_verified_at: 2026-07-25
+    implementation: [schemas/cli/26.7.R1.yaml, core/src/lab_runtime.cpp]
+    tests: [core/tests/lab_runtime_test.cpp]
+    status: implemented
+    notes: Both terminal engines expose the documented detail suffix. The report reads Router ID, transport address, local interface address, area, FSM state, priority and DR or BDR identities from protocol-owner snapshots.
+  - id: nokia.sros.26_7.ospf.database_detail
+    kind: cli-operational-report
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-d-commands.html
+    section: show router ospf and ospf3 database detail
+    rfc_refs: [RFC2328, RFC5340]
+    yang_path: null
+    last_verified_at: 2026-07-25
+    implementation: [schemas/cli/26.7.R1.yaml, core/src/lab_runtime.cpp]
+    tests: [core/tests/lab_runtime_test.cpp]
+    status: implemented
+    notes: Both terminal engines expose the documented detail suffix. Every displayed age, type, Link State ID, Advertising Router, sequence number, checksum and length is read from the live protocol-owned LSDB header.
+  - id: nokia.sros.26_7.ospf.interface_detail
+    kind: cli-operational-report
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-i-commands.html
+    section: show router ospf and ospf3 interface detail
+    rfc_refs: [RFC2328, RFC5340]
+    yang_path: null
+    last_verified_at: 2026-07-25
+    implementation: [schemas/cli/26.7.R1.yaml, core/src/lab_runtime.cpp]
+    tests: [core/tests/lab_runtime_test.cpp]
+    status: implemented
+    notes: The optional detail modifier and interface-name filter are release-schema capabilities. Output values are copied from the protocol-owned interface snapshot and canonical running configuration.
+  - id: nokia.sros.26_7.ospf.virtual_link
+    kind: routing-protocol-virtual-link
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-v-commands.html
+    section: virtual-link
+    rfc_refs: [RFC2328, RFC5340]
+    yang_path: /configure/router/ospf/area/virtual-link
+    last_verified_at: 2026-07-24
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/ospf_process.hpp, core/src/ospf_process.cpp, core/include/router/ospf_control_worker.hpp, core/src/ospf_control_worker.cpp, core/src/lab_runtime.cpp]
+    tests: [core/tests/ospf_configuration_test.cpp, core/tests/ospf_cli_configuration_test.cpp, core/tests/ospf_process_test.cpp, core/tests/network_plane_test.cpp]
+    status: implemented
+    notes: Both OSPF versions configure the remote ABR and non-backbone transit area. The owner derives viability, output cost, source address, peer address and physical egress from the transit-area LSDB and SPF tree. OSPFv3 advertises and discovers the standards-required global LA /128. Encoded protocol packets traverse the ordinary FIB, ARP or ND, physical queue and link.
+  - id: nokia.sros.26_7.ospf.keychain
+    kind: routing-protocol-authentication-keychain
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-e-commands-ends-2.html
+    section: entry under configure system security keychain direction bi
+    rfc_refs: [RFC2328, RFC5709, RFC7166]
+    yang_path: /configure/system/security/keychains/keychain/bidirectional/entry
+    last_verified_at: 2026-07-24
+    implementation: [core/include/router/ospf_authentication.hpp, core/src/ospf_authentication.cpp, core/include/router/ospf_keychain.hpp, core/src/ospf_keychain.cpp]
+    tests: [core/tests/ospf_authentication_test.cpp, core/tests/ospf_keychain_test.cpp]
+    status: implemented
+    notes: The keychain owner selects the youngest active send key, accepts receive keys through their configured tolerance and resolves key material only through the per-router secret vault. OSPFv2 implements password, MD5, HMAC-SHA-1 and HMAC-SHA-256 authentication. OSPFv3 implements RFC 7166 authentication trailers. MD-CLI and classic CLI configure the same canonical keychain state without exposing cleartext operationally.
+  - id: nokia.sros.26_7.ospf3.ipsec_authentication
+    kind: routing-protocol-ipsec-authentication
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-a-commands-app--3.html
+    section: authentication under OSPF3 interface and virtual-link
+    rfc_refs: [RFC4302, RFC2403, RFC2404, RFC5340]
+    yang_path: /configure/router/ospf3/area/interface/authentication
+    last_verified_at: 2026-07-24
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/ospf_configuration.hpp, core/include/router/ospf_authentication.hpp, core/include/router/ospf_process.hpp, core/src/ospf_configuration.cpp, core/src/ospf_authentication.cpp, core/src/ospf_process.cpp, core/src/ospf_control_worker.cpp, core/src/ospf_cli_configuration.cpp, core/src/lab_runtime.cpp]
+    tests: [core/tests/ospf_authentication_test.cpp, core/tests/ospf_process_test.cpp, core/tests/ospf_cli_configuration_test.cpp, core/tests/network_plane_test.cpp]
+    status: implemented
+    notes: OSPF3 interface and virtual-link authentication names independent inbound and outbound manual IPsec SAs. The protocol path emits and validates IPv6 transport-mode AH with HMAC-MD5-96 or HMAC-SHA-1-96, verifies the ICV before committing the anti-replay sequence and rejects an unprotected packet on an IPsec-protected interface.
+  - id: ietf.ospf.graceful_restart_helper.rfc3623_rfc5187
+    kind: routing-protocol-restart-assistance
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc3623
+    section: RFC 3623 sections 2 and 3, RFC 5187 sections 2 and 3
+    rfc_refs: [RFC3623, RFC5187]
+    yang_path: /configure/router/ospf/graceful-restart
+    last_verified_at: 2026-07-24
+    implementation: [core/include/router/ospf_lsa.hpp, core/include/router/ospf_interface.hpp, core/include/router/ospf_process.hpp, core/src/ospf_lsa.cpp, core/src/ospf_interface.cpp, core/src/ospf_process.cpp]
+    tests: [core/tests/ospf_lsa_test.cpp, core/tests/ospf_process_test.cpp]
+    status: implemented
+    notes: The helper validates link-scoped Grace-LSAs, an existing Full adjacency, remaining grace time and version-specific interface-address rules. It preserves advertised adjacency and DR state only until Grace-LSA flush, expiry or a changed topology LSA. Refusing helper mode still acknowledges and floods a structurally valid Grace-LSA. Restarting-router behavior is not advertised or implemented.
+  - id: ietf.ospf.router_information.rfc7770
+    kind: routing-protocol-capability-advertisement
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc7770
+    section: Sections 2.1 through 2.7
+    rfc_refs: [RFC7770, RFC5250]
+    yang_path: null
+    last_verified_at: 2026-07-24
+    implementation: [core/include/router/ospf_lsa.hpp, core/include/router/ospf_lsa_builder.hpp, core/src/ospf_lsa.cpp, core/src/ospf_lsa_builder.cpp, core/src/ospf_process.cpp]
+    tests: [core/tests/ospf_lsa_test.cpp, core/tests/ospf_lsa_builder_test.cpp, core/tests/ospf_process_test.cpp]
+    status: implemented
+    notes: OSPFv2 area-scoped Opaque Type 4 Instance 0 and OSPFv3 area-scoped U-bit Function 12 Instance 0 carry a structurally validated Type 1 informational capability TLV. The process advertises only implemented helper and stub-router bits, stores and floods unknown structurally valid opaque extensions by encoded scope, and applies normal self-originated sequence and fight-back rules.
+  - id: ietf.ospfv2.packet_formats.rfc2328
+    kind: routing-protocol-wire-format
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-internet-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc2328
+    section: Appendix A.1 through A.4
+    rfc_refs: [RFC2328]
+    yang_path: null
+    last_verified_at: 2026-07-23
+    implementation: [core/include/router/ospf_packet.hpp, core/src/ospf_packet.cpp]
+    tests: [core/tests/ospf_packet_test.cpp]
+    status: implemented
+    notes: The allocation-free codec validates and emits the common OSPFv2 header, Hello, Database Description, Link State Request, Link State Update and Link State Acknowledgment packet envelopes. Packet checksum calculation excludes the authentication field exactly as specified. Cryptographic digest generation and LSA body semantics remain separate protocol-owner capabilities and are not claimed by this record.
+  - id: ietf.ospfv3.packet_formats.rfc5340
+    kind: routing-protocol-wire-format
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-proposed-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc5340
+    section: Appendix A.1 through A.4
+    rfc_refs: [RFC5340, RFC8200]
+    yang_path: null
+    last_verified_at: 2026-07-23
+    implementation: [core/include/router/ospf_packet.hpp, core/src/ospf_packet.cpp]
+    tests: [core/tests/ospf_packet_test.cpp]
+    status: implemented
+    notes: The codec implements the sixteen-octet OSPFv3 header, 24-bit Options fields, version-specific Hello and Database Description layouts, all packet list envelopes, LSA header typing and the IPv6 pseudo-header checksum. Address-family and LSA body semantics remain with later separately sourced capabilities.
+  - id: ietf.ospfv3.ipv4_address_family.rfc5838
+    kind: routing-protocol-address-family
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-proposed-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc5838
+    section: Sections 2.1 through 2.5
+    rfc_refs: [RFC5838, RFC5340, RFC826]
+    yang_path: null
+    last_verified_at: 2026-07-23
+    implementation: [core/include/router/ospf_packet.hpp, core/include/router/ospf_lsa.hpp, core/src/ospf_interface.cpp, core/src/ospf_lsa.cpp, core/src/ospf_process.cpp, core/src/ospf_route_calculator.cpp, core/src/lab_runtime.cpp]
+    tests: [core/tests/ospf_interface_test.cpp, core/tests/ospf_lsa_builder_test.cpp, core/tests/ospf_process_test.cpp, core/tests/network_plane_test.cpp]
+    status: implemented
+    notes: IPv4-unicast OSPFv3 instances use the assigned 64 through 95 Instance ID range, advertise and require the AF bit, encode the IPv4 Direct Interface Address in the first 32 Link-LSA bits with zero trailing bits and publish the decoded IPv4 next hop to RIB. Database Description processing preserves and validates M6, packet parsing recognizes the LLS envelope, and the production packet path carries address-family routes through the scoped next-hop and ordinary adjacency owners.
+  - id: ietf.ospf.interface_neighbor_fsm.rfc2328
+    kind: routing-protocol-state-machine
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-internet-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc2328
+    section: Sections 9.3, 9.4 and 10.3
+    rfc_refs: [RFC2328, RFC5340, RFC4007, RFC4861]
+    yang_path: null
+    last_verified_at: 2026-07-25
+    implementation: [core/include/router/ospf_fsm.hpp, core/include/router/ospf_interface.hpp, core/include/router/ospf_database_exchange.hpp, core/include/router/router_forwarder.hpp, core/src/ospf_fsm.cpp, core/src/ospf_interface.cpp, core/src/ospf_database_exchange.cpp, core/src/router_forwarder.cpp]
+    tests: [core/tests/ospf_fsm_test.cpp, core/tests/ospf_interface_test.cpp, core/tests/ospf_database_exchange_test.cpp, core/tests/router_forwarder_test.cpp]
+    status: implemented
+    notes: Pure interface and neighbor state machines cover startup, waiting, DR and BDR election with non-preemption, adjacency formation, database exchange failures, one-way regression and teardown. The owner-local interface validates area, instance, mask, E-bit and timer compatibility before mutation, schedules Hello and inactivity deadlines on steady_clock and emits version-specific Hello bodies. Each neighbor owns bounded, atomic database summary, request, retransmission and delayed-acknowledgment lists with exact LSA generation matching and no borrowed LSDB pointers. Owners supply events and local adjacency eligibility explicitly, so the FSM has no cross-router or topology dependency. Neighbor-unicast transmission retains the protocol-selected interface, scopes IPv6 link-local resolution to that zone and uses ordinary ARP or Neighbor Discovery instead of deriving a MAC from topology or received OSPF traffic.
+  - id: ietf.ospf.spf.rfc2328
+    kind: routing-protocol-path-selection
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-internet-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc2328
+    section: Sections 16 and 16.1.1
+    rfc_refs: [RFC2328, RFC5340]
+    yang_path: null
+    last_verified_at: 2026-07-23
+    implementation: [core/include/router/ospf_spf.hpp, core/include/router/ospf_topology.hpp, core/include/router/ospf_route_calculator.hpp, core/src/ospf_spf.cpp, core/src/ospf_topology.cpp, core/src/ospf_route_calculator.cpp]
+    tests: [core/tests/ospf_spf_test.cpp, core/tests/ospf_topology_test.cpp, core/tests/ospf_route_calculator_test.cpp]
+    status: implemented
+    notes: The translator derives router and transit-network vertices, reciprocal arcs and local first-hop tokens only from one area LSDB, rejecting one-way descriptions. A persistent allocation-free calculation workspace runs Dijkstra over that graph, propagates deterministic equal-cost first-hop sets and atomically publishes only a complete generation. Inter-area and external route phases remain separately sourced work and are not claimed by this record.
+  - id: ietf.ospf.lsdb.rfc2328
+    kind: routing-protocol-link-state-database
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-internet-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc2328
+    section: Sections 12.1.6, 12.1.7, 13 and 14
+    rfc_refs: [RFC2328, RFC5340]
+    yang_path: null
+    last_verified_at: 2026-07-23
+    implementation: [core/include/router/ospf_lsdb.hpp, core/include/router/ospf_database_exchange.hpp, core/include/router/ospf_process.hpp, core/src/ospf_lsdb.cpp, core/src/ospf_database_exchange.cpp, core/src/ospf_process.cpp]
+    tests: [core/tests/ospf_lsdb_test.cpp, core/tests/ospf_database_exchange_test.cpp, core/tests/ospf_process_test.cpp]
+    status: implemented
+    notes: The control owner validates LSA length, Fletcher checksum, sequence interval and age, applies sequence, checksum, MaxAge and MaxAgeDiff recency, enforces the release MinLSArrival, stores OSPFv3 unknown U-bit LSAs at their normative scope and discards reserved scope. Reliable retransmission uses exact generation keys. LSRefreshTime, CheckAge, natural and premature MaxAge flooding, safe removal, self-originated fight-back and MaxSequenceNumber flush-before-restart run from per-instance steady-clock deadlines.
+  - id: ietf.ospf.lsa_bodies.rfc2328_rfc5340
+    kind: routing-protocol-wire-format
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc5340
+    section: RFC 2328 Appendix A.4 and RFC 5340 Appendix A.4
+    rfc_refs: [RFC2328, RFC5340]
+    yang_path: null
+    last_verified_at: 2026-07-23
+    implementation: [core/include/router/ospf_lsa.hpp, core/include/router/ospf_lsa_builder.hpp, core/src/ospf_lsa.cpp, core/src/ospf_lsa_builder.cpp]
+    tests: [core/tests/ospf_lsa_test.cpp, core/tests/ospf_lsa_builder_test.cpp]
+    status: implemented
+    notes: Allocation-free typed views validate complete OSPFv2 Router, Network, Summary, ASBR Summary, External and NSSA bodies including variable TOS records. OSPFv3 views cover Router, Network, Inter-Area Prefix, Inter-Area Router, External, NSSA, Link and Intra-Area-Prefix records, canonical 32-bit-padded IPv6 and IPv4-AF prefixes, optional forwarding addresses, route tags and referenced LSAs. Opaque and Router Information TLV semantics remain a separate extensibility capability.
+  - id: iso.ospf.lsa_fletcher_checksum
+    kind: routing-protocol-wire-format
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc905
+    section: Annex B, Checksum Algorithms
+    rfc_refs: [RFC2328, RFC5340, RFC905]
+    yang_path: null
+    last_verified_at: 2026-07-23
+    implementation: [core/include/router/ospf_lsdb.hpp, core/src/ospf_lsdb.cpp]
+    tests: [core/tests/ospf_lsdb_test.cpp, core/tests/ospf_lsa_builder_test.cpp]
+    status: implemented
+    notes: LSA generation and verification apply signed modulo-255 arithmetic to the contents after LS age. Tests cover a linked OSPFv3 Router-LSA whose negative intermediate detects accidental unsigned promotion.
+  - id: ietf.ospf.route_selection.rfc2328
+    kind: routing-protocol-route-selection
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-internet-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc2328
+    section: Sections 11 and 16.4
+    rfc_refs: [RFC2328, RFC3101, RFC5340]
+    yang_path: null
+    last_verified_at: 2026-07-23
+    implementation: [core/include/router/multi_device_routing.hpp, core/include/router/ospf_process.hpp, core/include/router/ospf_route_calculator.hpp, core/src/multi_device_routing.cpp, core/src/ospf_process.cpp, core/src/ospf_route_calculator.cpp, core/src/network_plane.cpp]
+    tests: [core/tests/multi_device_routing_test.cpp, core/tests/ospf_process_test.cpp, core/tests/ospf_route_calculator_test.cpp, core/tests/network_plane_test.cpp]
+    status: implemented
+    notes: OSPF and OSPF3 remain distinct route sources. RIB selection prefers intra-area, inter-area, Type 1 and Type 2 path classes in standards order, compares Type 2 external metric before internal ASBR cost, retains equal winners up to the configured ECMP width and publishes compact provenance into FIB and checkpoint state.
+  - id: ietf.ospf.abr_nssa.rfc2328_rfc3101
+    kind: routing-protocol-area-coordination
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc3101
+    section: RFC 2328 sections 12.4.3 and 16.2, RFC 3101 sections 2.2, 3.1 and 3.2
+    rfc_refs: [RFC2328, RFC3101, RFC5340]
+    yang_path: null
+    last_verified_at: 2026-07-23
+    implementation: [core/include/router/ospf_area_coordinator.hpp, core/src/ospf_area_coordinator.cpp, core/include/router/ospf_process.hpp, core/src/ospf_process.cpp, core/src/ospf_route_calculator.cpp]
+    tests: [core/tests/ospf_area_coordinator_test.cpp, core/tests/ospf_process_test.cpp, core/tests/ospf_route_calculator_test.cpp]
+    status: implemented
+    notes: The sole protocol owner coordinates area calculations after complete SPF generations, originates and withdraws inter-area prefix and ASBR summaries, applies most-specific area ranges, suppresses configured summaries, originates stub defaults, elects the NSSA translator by router ID and translates only P-bit Type 7 LSAs with valid nonzero forwarding addresses. Learned external routes never set the local ASBR bit.
+  - id: ietf.ospf.ip_lfa.rfc5286
+    kind: routing-protocol-fast-reroute
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc5286
+    section: Sections 3.1 and 3.2
+    rfc_refs: [RFC5286, RFC2328, RFC5340]
+    yang_path: /configure/router/ospf/loopfree-alternates
+    last_verified_at: 2026-07-23
+    implementation: [core/include/router/ospf_route_calculator.hpp, core/src/ospf_route_calculator.cpp, core/include/router/multi_device_routing.hpp, core/src/multi_device_routing.cpp, core/src/router_forwarder.cpp]
+    tests: [core/tests/ospf_route_calculator_test.cpp, core/tests/multi_device_routing_test.cpp, core/tests/router_forwarder_test.cpp]
+    status: implemented
+    notes: Each direct neighbor is evaluated from the local synchronized LSDB with the strict RFC 5286 loop-free inequality. Repair next hops remain outside primary ECMP, consume the same generated FIB resource and become eligible only after forwarding observes all matching primary egresses unavailable.
+  - id: ietf.ospf.stub_router.rfc6987
+    kind: routing-protocol-overload-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc6987
+    section: Sections 2, 2.1 and 3
+    rfc_refs: [RFC6987, RFC2328, RFC5340]
+    yang_path: /configure/router/ospf/overload
+    last_verified_at: 2026-07-23
+    implementation: [core/include/router/ospf_configuration.hpp, core/include/router/ospf_process.hpp, core/src/ospf_process.cpp, core/src/ospf_cli_configuration.cpp]
+    tests: [core/tests/ospf_cli_configuration_test.cpp, core/tests/ospf_process_test.cpp]
+    status: implemented
+    notes: OSPFv2 overload advertises MaxLinkMetric on transit-capable Router-LSA links while retaining attached stub reachability. OSPFv3 overload clears the Router bit in the Router-LSA options. Both changes use paced self-origination and normal reliable flooding.
+  - id: emscripten.ospf.spsc_packet_buffers
+    kind: runtime-concurrency
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: official-tool-documentation
+    source_url: https://emscripten.org/docs/porting/pthreads.html
+    section: Shared WebAssembly Memory and pthread worker model
+    rfc_refs: [RFC2328, RFC5340]
+    yang_path: null
+    last_verified_at: 2026-07-23
+    implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, core/include/router/shard_policy.hpp, core/include/router/telemetry.hpp, core/include/router/ospf_packet_channel.hpp, core/include/router/ospf_route_channel.hpp, core/include/router/ospf_control_worker.hpp, core/include/router/spsc_ring.hpp, core/src/ospf_control_worker.cpp, core/src/network_plane.cpp, core/src/lab_runtime.cpp]
+    tests: [core/tests/shard_policy_test.cpp, core/tests/ospf_packet_channel_test.cpp, core/tests/ospf_route_channel_test.cpp, core/tests/network_plane_test.cpp, core/tests/lab_runtime_test.cpp]
+    status: implemented
+    notes: The dedicated OSPF owner is created during runtime construction and consumes one generated Emscripten pthread-pool entry at every CPU tier, so the first protocol command never attempts late thread creation. Telemetry reports its distinct owner identity as part of the startup gate. Each forwarding and OSPF control shard pair exchanges fixed shared packet-buffer handles through one ready and one return SPSC ring. A separate two-slot SPSC ownership channel publishes complete per-router route generations from the protocol pthread to the sole RIB owner. Producers retain unpublished state under backpressure, consumers explicitly release borrowed slots and no partial generation reaches FIB.
+  - id: nokia.sros.26_7.route_policy.ospf_export
+    kind: routing-policy
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/unicast-routing-protocols/route-policies.html
+    section: Route policy entries, matching and OSPF export policy actions
+    rfc_refs: [RFC2328, RFC3101, RFC5340]
+    yang_path: /configure/policy-options/policy-statement
+    last_verified_at: 2026-07-23
+    implementation: [core/include/router/route_policy.hpp, core/src/route_policy.cpp]
+    tests: [core/tests/route_policy_test.cpp]
+    status: implemented
+    notes: The reusable immutable program evaluates ordered entries against IPv4 or IPv6 prefixes, source protocol, instance and tag. It applies metric, external metric type and tag actions to a value copy, supports continue semantics and defaults to rejection, allowing protocol owners to require explicit acceptance before redistribution.
+  - id: nokia.sros.26_7.ospf.redistribution
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/unicast-routing-protocols/route-policies.html
+    section: OSPF export policies and policy-statement match and action entries
+    rfc_refs: [RFC2328, RFC3101, RFC5340]
+    yang_path: /configure/policy-options/policy-statement
+    last_verified_at: 2026-07-23
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/route_policy.hpp, core/src/route_policy.cpp, core/src/lab_runtime.cpp]
+    tests: [core/tests/route_policy_test.cpp, core/tests/ospf_cli_configuration_test.cpp]
+    status: implemented
+    notes: Generated MD-CLI and classic CLI rows configure prefix-list, source protocol, protocol instance, route tag, metric, external metric type and tag actions. The canonical program preserves ordered entry and expanded prefix-list term semantics and rejects unmatched routes unless policy intent explicitly accepts them.
   - id: ietf.dns.master-file-unknown-rdata.rfc3597
     kind: application-data-format
     release: 26.7.R1
@@ -23,7 +373,7 @@ records:
     section: 5 Master Files
     rfc_refs: [RFC1035, RFC1010, RFC2308, RFC3597]
     yang_path: null
-    last_verified_at: 2026-07-21
+    last_verified_at: 2026-07-24
     implementation: [core/include/router/dns_packet.hpp, core/include/router/dns_authoritative.hpp, core/include/router/dns_master_file.hpp, core/src/dns_packet.cpp, core/src/dns_authoritative.cpp, core/src/dns_master_file.cpp]
     tests: [core/tests/dns_packet_test.cpp, core/tests/dns_master_file_test.cpp]
     status: implemented
@@ -37,8 +387,8 @@ records:
     section: 5.3 A resolver algorithm
     rfc_refs: [RFC1034, RFC1035, RFC2308]
     yang_path: null
-    last_verified_at: 2026-07-21
-    implementation: [schemas/checkpoint/6.yaml, core/include/router/dns_resolver.hpp, core/include/router/dns_endpoint_checkpoint.hpp, core/include/router/network_plane.hpp, core/src/dns_resolver.cpp, core/src/dns_endpoint_service.hpp, core/src/dns_endpoint_service.cpp, core/src/network_plane.cpp, core/src/lab_checkpoint.cpp]
+    last_verified_at: 2026-07-24
+    implementation: [schemas/checkpoint/7.yaml, core/include/router/dns_resolver.hpp, core/include/router/dns_endpoint_checkpoint.hpp, core/include/router/network_plane.hpp, core/src/dns_resolver.cpp, core/src/dns_endpoint_service.hpp, core/src/dns_endpoint_service.cpp, core/src/network_plane.cpp, core/src/lab_checkpoint.cpp]
     tests: [core/tests/dns_resolver_test.cpp, core/tests/dns_endpoint_service_test.cpp, core/tests/network_plane_test.cpp, core/tests/runtime_supervisor_test.cpp]
     status: implemented
     notes: The owner-affine transaction engine starts from project root hints, follows encoded referrals, admits only in-bailiwick glue for named servers, resolves out-of-bailiwick NS targets through nested iterative AAAA and A subqueries, retries selected servers, caches canonical answer data and never calls another simulated endpoint directly. A host may serve recursive clients over UDP or pipelined TCP port 53; RD selects recursion, RA advertises availability, and client identifiers and flags remain transaction-local. UDP and TCP integration sends complete messages through endpoint sockets, ARP or ND, IP and Ethernet queues, and starts resolver timeouts only after transport admission. Active transactions, recursive clients, nested referrals, retry deadlines and cache TTLs support exact checkpoint transfer.
@@ -66,7 +416,7 @@ records:
     rfc_refs: [RFC7766, RFC1035, RFC6891]
     yang_path: null
     last_verified_at: 2026-07-22
-    implementation: [schemas/checkpoint/6.yaml, core/include/router/dns_packet.hpp, core/include/router/dns_resolver.hpp, core/include/router/dns_endpoint_checkpoint.hpp, core/include/router/network_plane.hpp, core/src/dns_packet.cpp, core/src/dns_resolver.cpp, core/src/dns_endpoint_service.hpp, core/src/dns_endpoint_service.cpp, core/src/network_plane.cpp, core/src/lab_checkpoint.cpp]
+    implementation: [schemas/checkpoint/7.yaml, core/include/router/dns_packet.hpp, core/include/router/dns_resolver.hpp, core/include/router/dns_endpoint_checkpoint.hpp, core/include/router/network_plane.hpp, core/src/dns_packet.cpp, core/src/dns_resolver.cpp, core/src/dns_endpoint_service.hpp, core/src/dns_endpoint_service.cpp, core/src/network_plane.cpp, core/src/lab_checkpoint.cpp]
     tests: [core/tests/dns_packet_test.cpp, core/tests/dns_resolver_test.cpp, core/tests/dns_endpoint_service_test.cpp, core/tests/network_plane_test.cpp, core/tests/runtime_supervisor_test.cpp]
     status: implemented
     notes: The codec handles the two-octet stream length, the resolver retries a truncated UDP question against the same server over TCP, and endpoint services retain reusable connections. Authoritative and recursive server receive buffers accept pipelined messages and keep independent outstanding resolver transactions. Client response matching uses source, transport, question and identifier rather than arrival order, and accepted stream bytes remain transport-owned under egress backpressure. Closed generations are removed before reuse, listener teardown releases port 53, and partial application streams survive checkpoint ABI 6.
@@ -318,7 +668,7 @@ records:
     rfc_refs: [RFC9915]
     yang_path: null
     last_verified_at: 2026-07-21
-    implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, schemas/checkpoint/6.yaml, schemas/runtime/4.yaml, core/include/router/dhcpv6_packet.hpp, core/include/router/dhcpv6_retransmission.hpp, core/include/router/dhcpv6_lease.hpp, core/include/router/dhcpv6_relay.hpp, core/include/router/dhcpv6_client.hpp, core/include/router/dhcpv6_server.hpp, core/include/router/router_forwarder.hpp, core/include/router/network_plane.hpp, core/include/router/network_plane_messages.hpp, core/include/router/network_plane_worker.hpp, core/include/router/runtime_supervisor.hpp, core/src/dhcpv6_packet.cpp, core/src/dhcpv6_retransmission.cpp, core/src/dhcpv6_lease.cpp, core/src/dhcpv6_relay.cpp, core/src/dhcpv6_client.cpp, core/src/dhcpv6_server.cpp, core/src/dhcpv6_endpoint_service.cpp, core/src/network_endpoint.cpp, core/src/router_forwarder.cpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/runtime_supervisor.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp, packages/contracts/src/lab-project-v4.ts, apps/web/src/runtime/multi-router-client.ts]
+    implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, schemas/checkpoint/7.yaml, schemas/runtime/4.yaml, core/include/router/dhcpv6_packet.hpp, core/include/router/dhcpv6_retransmission.hpp, core/include/router/dhcpv6_lease.hpp, core/include/router/dhcpv6_relay.hpp, core/include/router/dhcpv6_client.hpp, core/include/router/dhcpv6_server.hpp, core/include/router/router_forwarder.hpp, core/include/router/network_plane.hpp, core/include/router/network_plane_messages.hpp, core/include/router/network_plane_worker.hpp, core/include/router/runtime_supervisor.hpp, core/src/dhcpv6_packet.cpp, core/src/dhcpv6_retransmission.cpp, core/src/dhcpv6_lease.cpp, core/src/dhcpv6_relay.cpp, core/src/dhcpv6_client.cpp, core/src/dhcpv6_server.cpp, core/src/dhcpv6_endpoint_service.cpp, core/src/network_endpoint.cpp, core/src/router_forwarder.cpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/runtime_supervisor.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp, packages/contracts/src/lab-project-v4.ts, apps/web/src/runtime/multi-router-client.ts]
     tests: [core/tests/dhcpv6_packet_test.cpp, core/tests/dhcpv6_retransmission_test.cpp, core/tests/dhcpv6_lease_test.cpp, core/tests/dhcpv6_relay_test.cpp, core/tests/dhcpv6_client_test.cpp, core/tests/dhcpv6_server_test.cpp, core/tests/network_endpoint_ipv6_test.cpp, core/tests/network_plane_test.cpp, core/tests/runtime_supervisor_test.cpp, core/tests/lab_runtime_test.cpp, packages/contracts/tests/project-v4.test.ts, apps/web/src/persistence-v4.test.ts]
     status: implemented
     notes: Client-server and nested relay headers, lossless option iteration, typed IA_NA, IA_PD, IAADDR, IAPREFIX and Status Code encoding and validation are implemented. IA_TA, Server Unicast and UseMulticast are recognized as obsolete wire values but are never generated or used for allocation. The owner-affine reliability primitive implements every Table 1 timeout, randomized initial delays and backoff, Elapsed Time saturation, MRC or MRD termination, mutable SOL_MAX_RT and INF_MAX_RT and exact checkpoint continuation. Advertise control-option overrides remain effective only while every advertising server that supplied the option agrees, and that consensus survives checkpoint restore. Transaction IDs are derived with HMAC-SHA-256 from a persisted per-interface secret and monotonic checkpointed counter. The client owner implements preference collection, preference 255, distinct Request transactions, Rapid Commit validation, multiple requested IA types, multiple resources per received IA, earliest T1/T2 Renew and Rebind transitions, Confirm, Release, Decline, DNS server receipt, Information-request refresh, infinity, active checkpoint continuation and a generated per-interface token bucket that persists across exchange restarts. The server lease repository provides non-committing offers, secret-derived non-predictable allocation, independent IA namespaces, Renew, Rebind, Release, Decline quarantine, Confirm, infinity, checkpoint restore and finite pool exhaustion. The server processes direct and relayed Solicit, Advertise, Request, Reply, Rapid Commit, Release, Decline, Confirm and Information-request exchanges with ORO, DNS server delivery, Information Refresh Time, SOL_MAX_RT and INF_MAX_RT. Host client and server services and router relay services bind real UDP 546 or 547 sockets, retain pending datagrams across Neighbor Discovery or backpressure, traverse IPv6 FIB, source selection, packet queues and the encoded fabric, and survive complete checkpoint restore. Project intent carries DUIDs, secrets, IA requests, ORO, DNS, lease pools and IES relay configuration through rollback-safe replacement transactions. Generated MD and classic service-interface commands configure the same relay owner, while operational show and clear commands project and mutate its real lease state.
@@ -346,7 +696,7 @@ records:
     rfc_refs: [RFC9915]
     yang_path: configure service ies interface ipv6 dhcp6 relay
     last_verified_at: 2026-07-21
-    implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, schemas/checkpoint/6.yaml, core/include/router/dhcpv6_relay.hpp, core/include/router/router_forwarder.hpp, core/include/router/network_plane.hpp, core/include/router/network_plane_messages.hpp, core/include/router/network_plane_worker.hpp, core/src/dhcpv6_relay.cpp, core/src/router_forwarder.cpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/lab_checkpoint.cpp]
+    implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, schemas/checkpoint/7.yaml, core/include/router/dhcpv6_relay.hpp, core/include/router/router_forwarder.hpp, core/include/router/network_plane.hpp, core/include/router/network_plane_messages.hpp, core/include/router/network_plane_worker.hpp, core/src/dhcpv6_relay.cpp, core/src/router_forwarder.cpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/lab_checkpoint.cpp]
     tests: [core/tests/dhcpv6_relay_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/network_plane_test.cpp, core/tests/network_plane_worker_test.cpp]
     status: implemented
     notes: The generated release profile records the documented maximum of eight upstream DHCPv6 servers. SR OS relay policy requires an explicit server list and does not inherit the generic RFC ff05::1:3 default. The forwarding owner binds real UDP 547, accepts ff02::1:2 only on relay-enabled ingress, performs exact Interface-Id return routing and sends every Relay-forward and Relay-reply through IPv6 FIB, source selection, ND, whole-fragment-batch admission, port queues and the encoded fabric. Variable Interface-Id values use lossless Begin, chunk and commit transactions across both control-to-network and network-to-forwarding SPSC boundaries; the chunk size is not a protocol length limit. UDP, lease, route-population and relay return-path state survives checkpoint restore. Portable IES intent, admin-state, source-address, configurable link-address, neighbor resolution, route population and generated MD and classic CLI are connected to the same runtime owner. VPRN and subscriber-management branches are separate capabilities and are not exposed by this IES profile.
@@ -444,7 +794,7 @@ records:
     rfc_refs: [RFC1122]
     yang_path: null
     last_verified_at: 2026-07-14
-    implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, schemas/checkpoint/6.yaml, core/include/router/ipv4_path_mtu.hpp, core/include/router/ipv4_reassembly.hpp, core/include/router/packet.hpp, core/include/router/routing.hpp, core/src/ipv4_path_mtu.cpp, core/src/ipv4_reassembly.cpp, core/src/network_endpoint.cpp, core/src/packet.cpp, core/src/multi_device_routing.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp, packages/contracts/src/lab-project-v4.ts]
+    implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, schemas/checkpoint/7.yaml, core/include/router/ipv4_path_mtu.hpp, core/include/router/ipv4_reassembly.hpp, core/include/router/packet.hpp, core/include/router/routing.hpp, core/src/ipv4_path_mtu.cpp, core/src/ipv4_reassembly.cpp, core/src/network_endpoint.cpp, core/src/packet.cpp, core/src/multi_device_routing.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp, packages/contracts/src/lab-project-v4.ts]
     tests: [core/tests/ipv4_path_mtu_test.cpp, core/tests/ipv4_reassembly_test.cpp, core/tests/network_endpoint_ipv4_test.cpp, core/tests/packet_test.cpp, core/tests/routing_test.cpp, core/tests/multi_device_routing_test.cpp, core/tests/lab_runtime_test.cpp, packages/contracts/tests/project-v4.test.ts]
     status: implemented
     notes: For the cited outbound-routing and reassembly sections, the endpoint selects an on-link destination or configured gateway before ARP. Source fragmentation spans the complete IPv4 Total Length domain and uses one monotonically advanced identification per original datagram. The bounded reassembly repository accepts out-of-order fragments, persists its exact receipt bitmap and expires on the generated 60-second deadline. Completion feeds ordinary UDP, TCP or ICMP local delivery. Expiry emits ICMP Time Exceeded code 1 only when fragment zero is available. A destination and interface keyed PMTU cache validates quoted DF probes, honors advertised next-hop MTU, applies RFC plateau fallback for zero MTU, expires increases conservatively and causes TCP to resegment unacknowledged data.
@@ -476,6 +826,34 @@ records:
     tests: [core/tests/cli_test.cpp, core/tests/session_workflows_test.cpp, core/tests/lab_runtime_test.cpp, apps/web/src/ui/terminal-model.test.ts, apps/web/src/persistence-v4.test.ts]
     status: implemented
     notes: MD-CLI retains its working context and implements slash, closing-brace, back with an optional level count, exit, exit all, top, editing keys, separate operational and configuration histories, engine-switch messages and prompt markers for the exposed tree. Navigation above /configure exits implicit mode and dirty exits preserve context until confirmed.
+  - id: nokia.sros.26_7.md_cli.info
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/_global.html
+    section: info
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-24
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/lab_runtime.cpp]
+    tests: [core/tests/lab_runtime_test.cpp]
+    status: implemented
+    notes: The global info command resolves against the saved MD present working context and reads the session's private or shared candidate when an editor is active. Output is relative to that context, keeps braces around nested containers and lists, preserves model order, and uses explicit leaf presence for plain output while info detail adds effective release defaults.
+  - id: nokia.sros.26_7.classic_cli.info
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/interface-configuration/configuring-physical-ports-with-cli.html
+    section: Configuring physical ports with CLI
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-24
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/lab_runtime.cpp]
+    tests: [core/tests/lab_runtime_test.cpp]
+    status: implemented
+    notes: Classic info and info detail display running configuration relative to the saved classic context, use indentation and exit delimiters instead of MD braces, and retain the documented classic shutdown and no shutdown spellings.
   - id: nokia.sros.26_7.classic_cli.navigation
     kind: cli-behavior
     release: 26.7.R1
@@ -499,11 +877,11 @@ records:
     section: Implicit and explicit configuration workflows
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-07-21
-    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/include/router/session_workflows.hpp, core/src/cli.cpp, core/src/cli_md.cpp, core/src/session_workflows.cpp, core/src/lab_checkpoint.cpp]
+    last_verified_at: 2026-07-23
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/include/router/session_workflows.hpp, core/src/cli.cpp, core/src/cli_md.cpp, core/src/session_workflows.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp]
     tests: [core/tests/cli_test.cpp, core/tests/session_workflows_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
-    notes: The multi-session datastore and terminal grammar implement global visibility, exclusive running locks, private baselines, read-only rejection, path-level merge conflicts, classic interaction with locks and dirty-exit policy. Operational monitoring and troubleshooting commands remain available from MD configuration mode and resolve from the operational root before relative configuration paths.
+    notes: The multi-session datastore and terminal grammar implement global visibility, exclusive running locks, private baselines, read-only rejection, path-level merge conflicts, classic interaction with locks and dirty-exit policy. Operational monitoring and troubleshooting commands remain available from MD configuration mode and resolve from the operational root before relative configuration paths. Operational sessions cannot navigate into a configuration-looking path without first acquiring a candidate datastore.
   - id: nokia.sros.26_7.md_cli.command_completion
     kind: cli-behavior
     release: 26.7.R1
@@ -527,7 +905,7 @@ records:
     section: Navigating output using the pager
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-07-15
+    last_verified_at: 2026-07-23
     implementation: [apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts, apps/web/src/ui/terminal-contract.ts, packages/contracts/src/terminal-presentation-v2.ts]
     tests: [apps/web/src/ui/terminal-model.test.ts, packages/contracts/tests/terminal-presentation-v2.test.ts]
     status: implemented
@@ -539,13 +917,13 @@ records:
     source_type: nokia-official-doc
     source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/_global.html
     section: ping and count number
-    rfc_refs: [RFC792, RFC1191]
+    rfc_refs: [RFC792, RFC1191, RFC4443, RFC8200]
     yang_path: null
-    last_verified_at: 2026-07-21
+    last_verified_at: 2026-07-24
     implementation: [schemas/cli/26.7.R1.yaml, core/src/cli.cpp, core/src/lab_runtime.cpp, core/src/network_plane.cpp, core/src/router_forwarder.cpp, core/src/packet.cpp]
     tests: [core/tests/cli_test.cpp, core/tests/packet_test.cpp, core/tests/network_plane_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
-    notes: Default count is five, count accepts 1 to 100000, data size defaults to 56 octets, the first untagged endpoint profile accepts 12 to 1472 octets, do-not-fragment controls DF, every command starts its displayed ICMP sequence at one, probes use one-second host-clock intervals, and Ctrl-C reaches both runtime shards through one atomic cancellation word.
+    notes: Default count is five, count accepts 1 to 100000, data size defaults to 56 octets, the first untagged endpoint profile accepts 12 to 1472 octets, do-not-fragment controls DF, every command starts its displayed ICMP sequence at one, probes use one-second host-clock intervals, and Ctrl-C reaches both runtime shards through one atomic cancellation word. Detail output uses the documented PING Statistics capitalization, two-decimal loss, received packet TTL or Hop Limit, forwarding-owner RTT and population min, average, max and standard deviation rather than browser polling time or Linux formatting.
   - id: ieee.802_3.ethernet_frame_timing
     kind: link-behavior
     release: 2022
@@ -598,7 +976,7 @@ records:
     rfc_refs: [RFC791]
     yang_path: null
     last_verified_at: 2026-07-20
-    implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, schemas/checkpoint/6.yaml, core/include/router/ipv4_reassembly.hpp, core/include/router/packet.hpp, core/include/router/router_forwarder.hpp, core/include/router/udp_packet.hpp, core/include/router/udp_transport.hpp, core/src/ipv4_reassembly.cpp, core/src/lab_checkpoint.cpp, core/src/network_endpoint.cpp, core/src/packet.cpp, core/src/router_forwarder.cpp, core/src/routing.cpp, core/src/udp_packet.cpp, core/src/udp_transport.cpp]
+    implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, schemas/checkpoint/7.yaml, core/include/router/ipv4_reassembly.hpp, core/include/router/packet.hpp, core/include/router/router_forwarder.hpp, core/include/router/udp_packet.hpp, core/include/router/udp_transport.hpp, core/src/ipv4_reassembly.cpp, core/src/lab_checkpoint.cpp, core/src/network_endpoint.cpp, core/src/packet.cpp, core/src/router_forwarder.cpp, core/src/routing.cpp, core/src/udp_packet.cpp, core/src/udp_transport.cpp]
     tests: [core/tests/ipv4_reassembly_test.cpp, core/tests/network_endpoint_ipv4_test.cpp, core/tests/packet_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/routing_test.cpp, core/tests/udp_packet_test.cpp, core/tests/udp_transport_test.cpp]
     status: implemented
     notes: For the cited header, fragmentation and reassembly scope, the packet boundary validates version, IHL, Total Length and checksum before exposing any field. A source-owned byte image covers the complete 65,535-octet Total Length domain and streams any number of MTU-sized fragments through an owner sink after whole-batch admission. Router fragmentation preserves reserved flag bits, copies only options carrying the copy bit into non-first fragments and never reassembles transit traffic. Host and router destination reassembly use the RFC four-field key, accept out-of-order delivery and later-arrival overlap precedence, retain options from fragment zero and have profile-bounded storage. Upper layers consume the full reassembled span without a Frame-sized copy, and a fixed timeout produces ICMP Time Exceeded code 1 when fragment zero exists.
@@ -612,7 +990,7 @@ records:
     rfc_refs: [RFC1812]
     yang_path: null
     last_verified_at: 2026-07-20
-    implementation: [schemas/checkpoint/6.yaml, core/include/router/ipv4_reassembly.hpp, core/include/router/multi_device_routing.hpp, core/include/router/network_plane.hpp, core/include/router/router_forwarder.hpp, core/src/ipv4_reassembly.cpp, core/src/lab_checkpoint.cpp, core/src/multi_device_routing.cpp, core/src/network_endpoint.cpp, core/src/multi_device_fabric.cpp, core/src/network_plane.cpp, core/src/packet.cpp, core/src/router_forwarder.cpp, core/src/routing.cpp]
+    implementation: [schemas/checkpoint/7.yaml, core/include/router/ipv4_reassembly.hpp, core/include/router/multi_device_routing.hpp, core/include/router/network_plane.hpp, core/include/router/router_forwarder.hpp, core/src/ipv4_reassembly.cpp, core/src/lab_checkpoint.cpp, core/src/multi_device_routing.cpp, core/src/network_endpoint.cpp, core/src/multi_device_fabric.cpp, core/src/network_plane.cpp, core/src/packet.cpp, core/src/router_forwarder.cpp, core/src/routing.cpp]
     tests: [core/tests/ipv4_reassembly_test.cpp, core/tests/multi_device_routing_test.cpp, core/tests/network_plane_test.cpp, core/tests/packet_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/routing_test.cpp]
     status: implemented
     notes: For the cited unicast forwarding scope, the router validates the header before lookup, separates local delivery from transit, performs longest-prefix connected and static selection, resolves the selected next hop through per-interface ARP and decrements TTL exactly once. Missing routes, TTL expiry, closed protocols or ports and DF MTU failures emit the corresponding encoded ICMP errors through an independent reverse FIB and ARP path. Egress MTU enforcement fragments only transit packets that permit it and never reassembles transit traffic. Router-owned destinations use a separate bounded reassembly table. RFC 2644 directed broadcasts are disabled, while limited broadcasts terminate only on the receiving interface. Same-interface better-next-hop forwarding generates rate-limited Host Redirect code 1 unless a source-route option is present.
@@ -625,8 +1003,8 @@ records:
     section: Router and host Path MTU Discovery behavior
     rfc_refs: [RFC1191]
     yang_path: null
-    last_verified_at: 2026-07-15
-    implementation: [profiles/catalog/26.7.R1.yaml, schemas/checkpoint/6.yaml, core/include/router/ipv4_path_mtu.hpp, core/include/router/packet.hpp, core/src/ipv4_path_mtu.cpp, core/src/packet.cpp, core/src/router_forwarder.cpp, core/src/network_endpoint.cpp, core/src/lab_checkpoint.cpp, packages/contracts/src/lab-project-v4.ts]
+    last_verified_at: 2026-07-24
+    implementation: [profiles/catalog/26.7.R1.yaml, schemas/checkpoint/7.yaml, core/include/router/ipv4_path_mtu.hpp, core/include/router/packet.hpp, core/src/ipv4_path_mtu.cpp, core/src/packet.cpp, core/src/router_forwarder.cpp, core/src/network_endpoint.cpp, core/src/lab_checkpoint.cpp, packages/contracts/src/lab-project-v4.ts]
     tests: [core/tests/ipv4_path_mtu_test.cpp, core/tests/network_endpoint_ipv4_test.cpp, core/tests/packet_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/network_plane_test.cpp]
     status: implemented
     notes: Oversized DF datagrams return ICMP type 3 code 4 with the egress IP MTU after translating the SR OS Ethernet MTU unit. The error traverses the reverse route as encoded bytes. Host and router originated DF probes update a destination and interface keyed cache only after the quote matches retained transmitted bytes and the route still resolves through the same next hop. Zero advertised MTU uses the RFC plateau table, estimates age before increase, larger positive values do not raise a cached estimate and a smaller TCP estimate resegments unacknowledged data.
@@ -682,7 +1060,7 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-16
-    implementation: [core/CMakeLists.txt, profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, schemas/runtime/4.yaml, schemas/checkpoint/6.yaml, core/include/router/control_projection_worker.hpp, core/include/router/generated_lab_runtime_protocol.hpp, core/include/router/network_plane_messages.hpp, core/include/router/network_plane_worker.hpp, core/include/router/shard_policy.hpp, core/include/router/telemetry.hpp, core/src/control_projection_worker.cpp, core/src/lab_checkpoint.cpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/runtime_memory_budget.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp, core/src/wasm_api.cpp, apps/web/src/runtime/runtime.worker.ts, apps/web/src/runtime/multi-router-client.ts, apps/web/src/runtime/telemetry-contract.ts]
+    implementation: [core/CMakeLists.txt, profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, schemas/runtime/4.yaml, schemas/checkpoint/7.yaml, core/include/router/control_projection_worker.hpp, core/include/router/generated_lab_runtime_protocol.hpp, core/include/router/network_plane_messages.hpp, core/include/router/network_plane_worker.hpp, core/include/router/shard_policy.hpp, core/include/router/telemetry.hpp, core/src/control_projection_worker.cpp, core/src/lab_checkpoint.cpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/runtime_memory_budget.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp, core/src/wasm_api.cpp, apps/web/src/runtime/runtime.worker.ts, apps/web/src/runtime/multi-router-client.ts, apps/web/src/runtime/telemetry-contract.ts]
     tests: [core/tests/control_projection_worker_test.cpp, core/tests/network_plane_worker_test.cpp, core/tests/runtime_supervisor_test.cpp, core/tests/shard_policy_test.cpp, core/tests/lab_runtime_test.cpp, core/tools/runtime_benchmark.cpp, apps/web/src/runtime/telemetry-contract.test.ts, apps/web/src/persistence-v4.test.ts, apps/web/src/ui/terminal-model.test.ts]
     status: implemented
     notes: The generated host policy uses 1, 3 or 5 pre-created pthreads in addition to the browser control Worker. High-CPU hosts run two control, three forwarding and one link owner. There is no single-thread fallback. Telemetry ABI 6 publishes the actual owner directory, per-device sequence locks, bounded port bitsets and per-session cancellation words at a generated 4 Hz display cadence.
@@ -728,6 +1106,20 @@ records:
     tests: [apps/web/src/persistence-v4.test.ts, packages/contracts/tests/project-v4.test.ts]
     status: implemented
     notes: Structured project state is schema-validated on load and import before it is applied to the runtime.
+  - id: nist.webcrypto.portable_project_encryption
+    kind: encrypted-project-storage
+    release: 4.0
+    platforms: [browser]
+    source_type: nist-recommendation
+    source_url: https://csrc.nist.gov/pubs/sp/800/132/final
+    section: Sections 5.1 and 5.2
+    rfc_refs: [RFC8018]
+    yang_path: null
+    last_verified_at: 2026-07-24
+    implementation: [apps/web/src/persistence.ts, apps/web/src/runtime/project-secret-vault.ts, apps/web/src/runtime/multi-router-client.ts, apps/web/src/ui/App.tsx]
+    tests: [apps/web/src/persistence-v4.test.ts]
+    status: implemented
+    notes: The complete portable manifest and project wrapping key are encrypted with AES-256-GCM using a random 128-bit salt, random 96-bit nonce and PBKDF2-HMAC-SHA-256. The authenticated header binds the format, KDF parameters and cipher parameters. The 600000-iteration work factor follows the current OWASP PBKDF2-HMAC-SHA-256 recommendation. Decryption authenticates before parsing or replacing runtime state, and the imported project key is persisted under the device-bound non-extractable AES-KW key only after the replacement runtime and checkpoint validate.
   - id: ecma.number.max_safe_integer
     kind: project-data-boundary
     release: ECMA-262
@@ -774,7 +1166,7 @@ records:
   - id: nokia.sros.26_7.router_interface.configuration
     kind: cli-behavior
     release: 26.7.R1
-    platforms: [7750 SR-7]
+    platforms: [all-supported]
     source_type: nokia-official-doc
     source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/classic-cli-command-reference/classic-a-commands-aa-a-1.html
     section: Configuring the router interface
@@ -784,7 +1176,7 @@ records:
     implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/src/cli.cpp, core/src/cli_md.cpp, core/src/cli_classic.cpp, core/src/lab_runtime.cpp, core/src/runtime_supervisor.cpp, packages/contracts/src/lab-project-v4.ts, apps/web/src/ui/WorkspaceViews.tsx]
     tests: [core/tests/cli_test.cpp, core/tests/runtime_supervisor_test.cpp, core/tests/lab_runtime_test.cpp, packages/contracts/tests/project-v4.test.ts, apps/web/src/ui/WorkspaceViews.test.tsx]
     status: implemented
-    notes: The profile-owned Base router interface names support independent physical-port association, primary IPv4 prefix, administrative state, connected-route selection and atomic project persistence in both terminal engines. Classic no address, no port and no interface plus the corresponding MD delete leaves and list deletion withdraw exactly the selected configuration. Leaf removal preserves IPv6, ND, RA and MLD children on the shared routed interface and reprograms forwarding through the ordinary transactional diff.
+    notes: The profile-owned Base router interface names support independent physical-port association, primary IPv4 prefix, administrative state, connected-route selection and atomic project persistence in both terminal engines. Entering a new keyed interface context in an MD candidate creates the list instance with release defaults, while physical association and addressing remain independent leaves. Classic no address, no port and no interface plus the corresponding MD delete leaves and list deletion withdraw exactly the selected configuration. Leaf removal preserves IPv6, ND, RA and MLD children on the shared routed interface and reprograms forwarding through the ordinary transactional diff.
   - id: nokia.sros.26_7.system_interface.ipv4
     kind: cli-behavior
     release: 26.7.R1
@@ -795,7 +1187,7 @@ records:
     rfc_refs: [RFC1812]
     yang_path: /configure/router/interface[interface-name='system']/ipv4/primary
     last_verified_at: 2026-07-20
-    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/multi_device_routing.hpp, core/include/router/runtime_supervisor.hpp, core/src/multi_device_routing.cpp, core/src/runtime_supervisor.cpp, core/src/router_forwarder.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp, packages/contracts/src/lab-project-v4.ts, schemas/checkpoint/6.yaml]
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/multi_device_routing.hpp, core/include/router/runtime_supervisor.hpp, core/src/multi_device_routing.cpp, core/src/runtime_supervisor.cpp, core/src/router_forwarder.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp, packages/contracts/src/lab-project-v4.ts, schemas/checkpoint/7.yaml]
     tests: [core/tests/multi_device_routing_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/runtime_supervisor_test.cpp, core/tests/lab_runtime_test.cpp, packages/contracts/tests/project-v4.test.ts]
     status: implemented
     notes: The immutable Base router interface named system accepts an IPv4 /32 without a physical port. Its administrative state controls a local RIB and FIB host route, local ICMP terminates without Ethernet or ARP, received echo requests return through an independently resolved reverse path, and physical carrier changes do not withdraw the route. Router ID fallback remains owned by future routing protocol implementations rather than this interface feature.
@@ -1022,7 +1414,7 @@ records:
     implementation: [core/src/cli.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp, packages/contracts/src/lab-runtime-v6.ts]
     tests: [core/tests/cli_test.cpp, core/tests/runtime_supervisor_test.cpp, core/tests/lab_runtime_test.cpp, packages/contracts/tests/project-v4.test.ts]
     status: partially-implemented
-    notes: Summary and exact port selection are derived from equipped inventory and running port configuration. Reports distinguish administrative state, physical link presence, operational state, MTU and configured speed. PHY, optics and manufacturing fields remain absent until their hardware owners exist.
+    notes: Summary, exact port selection and the documented detail suffix are derived from equipped inventory and running port configuration. Reports distinguish administrative state, physical link presence, operational state, MTU and configured speed. PHY, optics and manufacturing fields remain absent until their hardware owners exist.
   - id: nokia.sros.26_7.show.chassis
     kind: cli-output
     release: 26.7.R1
@@ -1064,7 +1456,7 @@ records:
     implementation: [core/include/router/device.hpp, core/src/multi_device_routing.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp, core/src/cli.cpp]
     tests: [core/tests/cli_test.cpp, core/tests/multi_device_routing_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
-    notes: The implemented Base IPv4 and IPv6 unicast reports display connected, system-interface local IPv4 /32 and active directly resolved static routes from the forwarding-owned selected RIB. The explicit ipv6 selector reads the IPv6 RIB and resolves native or IES interface names from stable router-local interface identities. Route selection age uses monotonic time and is preserved as a relative checkpoint duration.
+    notes: The implemented Base IPv4 and IPv6 unicast reports display connected, system-interface local IPv4 /32, static, OSPF and OSPF3 routes from the forwarding-owned selected RIB. The explicit ipv6 selector reads the IPv6 RIB and resolves native or IES interface names from stable router-local interface identities. The documented protocol ospf and protocol ospf3 selectors filter that same installed generation and never read a daemon-private candidate table. Route selection age uses monotonic time and is preserved as a relative checkpoint duration.
   - id: nokia.sros.26_7.show.fib
     kind: cli-output
     release: 26.7.R1
@@ -1299,7 +1691,7 @@ records:
     rfc_refs: [RFC792, RFC4293]
     yang_path: /reset/router/icmp
     last_verified_at: 2026-07-20
-    implementation: [schemas/cli/26.7.R1.yaml, schemas/checkpoint/6.yaml, core/include/router/icmpv4_statistics.hpp, core/include/router/router_forwarder.hpp, core/include/router/network_plane.hpp, core/include/router/network_plane_messages.hpp, core/include/router/runtime_supervisor.hpp, core/src/icmpv4_statistics.cpp, core/src/router_forwarder.cpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp, core/src/lab_checkpoint.cpp]
+    implementation: [schemas/cli/26.7.R1.yaml, schemas/checkpoint/7.yaml, core/include/router/icmpv4_statistics.hpp, core/include/router/router_forwarder.hpp, core/include/router/network_plane.hpp, core/include/router/network_plane_messages.hpp, core/include/router/runtime_supervisor.hpp, core/src/icmpv4_statistics.cpp, core/src/router_forwarder.cpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp, core/src/lab_checkpoint.cpp]
     tests: [core/tests/icmpv4_statistics_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/network_plane_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
     notes: Global and configured-interface Received and Sent counters are owned by forwarding, saturate instead of wrapping, survive checkpoints and are cleared independently. Both terminal engines use the sourced show layout. Classic CLI uses clear router icmp while MD-CLI uses reset router Base icmp with all, global and interface scopes.
@@ -1313,7 +1705,7 @@ records:
     rfc_refs: [RFC792, RFC1812]
     yang_path: /configure/router/interface/icmp/redirects
     last_verified_at: 2026-07-20
-    implementation: [profiles/catalog/26.7.R1.yaml, schemas/cli/26.7.R1.yaml, schemas/checkpoint/6.yaml, core/include/router/packet.hpp, core/include/router/router_forwarder.hpp, core/include/router/lab_runtime.hpp, core/include/router/runtime_supervisor.hpp, core/src/packet.cpp, core/src/router_forwarder.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp, core/src/lab_checkpoint.cpp]
+    implementation: [profiles/catalog/26.7.R1.yaml, schemas/cli/26.7.R1.yaml, schemas/checkpoint/7.yaml, core/include/router/packet.hpp, core/include/router/router_forwarder.hpp, core/include/router/lab_runtime.hpp, core/include/router/runtime_supervisor.hpp, core/src/packet.cpp, core/src/router_forwarder.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp, core/src/lab_checkpoint.cpp]
     tests: [core/tests/packet_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
     notes: MD-CLI and classic CLI configure the per-interface forwarding path. The profile owns the enabled default, 100 messages per 10 seconds default, 10 to 1000 message range and 1 to 60 second range. Forwarding emits Host Redirect code 1 only when ingress and egress are the same interface, the source and better next hop share that interface subnet and no source-route option is present. The limiter window is owned and checkpointed by forwarding.
@@ -1817,7 +2209,7 @@ records:
     rfc_refs: [RFC3810]
     yang_path: /configure/router/mld/interface/import-policy
     last_verified_at: 2026-07-21
-    implementation: [schemas/cli/26.7.R1.yaml, schemas/checkpoint/6.yaml, core/include/router/ip_address.hpp, core/include/router/mld_import_policy.hpp, core/include/router/lab_runtime.hpp, core/include/router/runtime_supervisor.hpp, core/src/ip_address.cpp, core/src/mld_import_policy.cpp, core/src/router_forwarder.cpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp, core/src/lab_checkpoint.cpp]
+    implementation: [schemas/cli/26.7.R1.yaml, schemas/checkpoint/7.yaml, core/include/router/ip_address.hpp, core/include/router/mld_import_policy.hpp, core/include/router/lab_runtime.hpp, core/include/router/runtime_supervisor.hpp, core/src/ip_address.cpp, core/src/mld_import_policy.cpp, core/src/router_forwarder.cpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp, core/src/lab_checkpoint.cpp]
     tests: [core/tests/ip_address_test.cpp, core/tests/mld_import_policy_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/runtime_supervisor_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
     notes: MD candidate edits and classic policy-options begin, commit and abort build dual-stack named prefix lists and ordered policy statements. MLD compiles IPv6 group and source rows while preserving IPv4 rows for the shared policy-options datastore. Group and source prefix-list references, exact IPv6 sources, protocol mld, entry actions and default actions compile to an immutable first-match forwarding program. Interface attachment is validated against the running policy graph. A failed validation or cross-shard programming operation preserves the preceding candidate, running configuration and forwarding generation.
@@ -2517,7 +2909,7 @@ records:
     rfc_refs: []
     yang_path: /nokia-conf:configure/service/ies
     last_verified_at: 2026-07-20
-    implementation: [schemas/cli/26.7.R1.yaml, schemas/checkpoint/6.yaml, core/include/router/ies_service.hpp, core/src/ies_service.cpp, core/src/ies_cli_configuration.hpp, core/src/ies_cli_configuration.cpp, core/include/router/sap_forwarding.hpp, core/src/sap_forwarding.cpp, core/include/router/packet.hpp, core/src/packet.cpp, core/include/router/router_forwarder.hpp, core/src/router_forwarder.cpp, core/include/router/network_plane.hpp, core/include/router/network_plane_messages.hpp, core/include/router/network_plane_worker.hpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp, core/src/lab_checkpoint.cpp]
+    implementation: [schemas/cli/26.7.R1.yaml, schemas/checkpoint/7.yaml, core/include/router/ies_service.hpp, core/src/ies_service.cpp, core/src/ies_cli_configuration.hpp, core/src/ies_cli_configuration.cpp, core/include/router/sap_forwarding.hpp, core/src/sap_forwarding.cpp, core/include/router/packet.hpp, core/src/packet.cpp, core/include/router/router_forwarder.hpp, core/src/router_forwarder.cpp, core/include/router/network_plane.hpp, core/include/router/network_plane_messages.hpp, core/include/router/network_plane_worker.hpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp, core/src/lab_checkpoint.cpp]
     tests: [core/tests/ies_service_test.cpp, core/tests/ies_cli_configuration_test.cpp, core/tests/sap_forwarding_test.cpp, core/tests/packet_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/network_plane_test.cpp, core/tests/network_plane_worker_test.cpp, core/tests/runtime_supervisor_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
     notes: The control graph validates named customer ownership, independent service interface identities, inventory-derived physical port modes, exact null, dot1q and QinQ SAP attachment, and multiple tagged SAPs per access or hybrid port. MD candidate and immediate classic edits use generated command rows and one atomic editor. The immutable classifier and routed IPv6 interface preserve profiled TPIDs, PCP, DEI and stable logical identities across both SPSC boundaries and checkpoint ABI 6. Service-interface forwarding, IPv6 routing and DHCPv6 lease operation are inspected through their separately sourced operational commands.
@@ -2545,7 +2937,7 @@ records:
     rfc_refs: [RFC9915, RFC4007]
     yang_path: /nokia-conf:configure/service/ies/interface/ipv6/dhcp6/relay
     last_verified_at: 2026-07-20
-    implementation: [schemas/cli/26.7.R1.yaml, schemas/checkpoint/6.yaml, core/include/router/ies_service.hpp, core/src/ies_service.cpp, core/src/ies_cli_configuration.hpp, core/src/ies_cli_configuration.cpp, core/include/router/dhcpv6_relay.hpp, core/src/dhcpv6_relay.cpp, core/include/router/router_forwarder.hpp, core/src/router_forwarder.cpp, core/include/router/network_plane.hpp, core/include/router/network_plane_messages.hpp, core/include/router/network_plane_worker.hpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp, core/src/lab_checkpoint.cpp]
+    implementation: [schemas/cli/26.7.R1.yaml, schemas/checkpoint/7.yaml, core/include/router/ies_service.hpp, core/src/ies_service.cpp, core/src/ies_cli_configuration.hpp, core/src/ies_cli_configuration.cpp, core/include/router/dhcpv6_relay.hpp, core/src/dhcpv6_relay.cpp, core/include/router/router_forwarder.hpp, core/src/router_forwarder.cpp, core/include/router/network_plane.hpp, core/include/router/network_plane_messages.hpp, core/include/router/network_plane_worker.hpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp, core/src/lab_checkpoint.cpp]
     tests: [core/tests/ies_service_test.cpp, core/tests/ies_cli_configuration_test.cpp, core/tests/dhcpv6_relay_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/network_plane_test.cpp, core/tests/network_plane_worker_test.cpp, core/tests/runtime_supervisor_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
     notes: Server count, RFC 4007 link-local zone identity, Relay-Forward link address, outer source address, ASCII tuple, SAP ID, explicit string, lease population and route population dependencies are validated. Generated MD and classic configuration commands update one atomic model. Relay configuration and opaque Interface-Id bytes cross both SPSC boundaries transactionally, and Relay-reply resolves a stable logical interface to its separately stored physical egress without ordinal arithmetic. Lease, neighbor and route population are implemented by separately sourced operational owners. The ifindex representation is absent from completion and tracked independently because the release documentation does not specify its opaque option bytes and no release-matched capture is available.
@@ -2573,7 +2965,7 @@ records:
     rfc_refs: [RFC9915, RFC6603]
     yang_path: /nokia-conf:configure/service/ies/interface/ipv6/dhcp6/relay/lease-populate
     last_verified_at: 2026-07-20
-    implementation: [schemas/cli/26.7.R1.yaml, schemas/checkpoint/6.yaml, core/include/router/ies_service.hpp, core/src/ies_service.cpp, core/src/ies_cli_configuration.cpp, core/include/router/dhcpv6_relay_lease.hpp, core/src/dhcpv6_relay_lease.cpp, core/include/router/dhcpv6_relay_route.hpp, core/src/dhcpv6_relay_route.cpp, core/include/router/router_forwarder.hpp, core/src/router_forwarder.cpp, core/include/router/network_plane.hpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/runtime_supervisor.cpp, core/src/lab_checkpoint.cpp]
+    implementation: [schemas/cli/26.7.R1.yaml, schemas/checkpoint/7.yaml, core/include/router/ies_service.hpp, core/src/ies_service.cpp, core/src/ies_cli_configuration.cpp, core/include/router/dhcpv6_relay_lease.hpp, core/src/dhcpv6_relay_lease.cpp, core/include/router/dhcpv6_relay_route.hpp, core/src/dhcpv6_relay_route.cpp, core/include/router/router_forwarder.hpp, core/src/router_forwarder.cpp, core/include/router/network_plane.hpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/src/runtime_supervisor.cpp, core/src/lab_checkpoint.cpp]
     tests: [core/tests/ies_service_test.cpp, core/tests/ies_cli_configuration_test.cpp, core/tests/dhcpv6_relay_lease_test.cpp, core/tests/dhcpv6_relay_route_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/network_plane_test.cpp, core/tests/network_plane_worker_test.cpp, core/tests/runtime_supervisor_test.cpp]
     status: implemented
     notes: The omitted count defaults to one and the accepted range is 1 through 8000. A Reply that would exceed the final per-interface lease-state count is discarded atomically. IA_NA, IA_TA and IA_PD routes retain distinct documented protocol identities, and an enabled exclude leaf creates a blackhole for OPTION_PD_EXCLUDE. Renewals replace lifetimes, zero valid lifetime and expiry withdraw derived state, and checkpoint restore preserves relative lifetime.
@@ -2587,7 +2979,7 @@ records:
     rfc_refs: [RFC4861, RFC9915]
     yang_path: /nokia-conf:configure/service/ies/interface/ipv6/dhcp6/relay/neighbor-resolution
     last_verified_at: 2026-07-20
-    implementation: [schemas/cli/26.7.R1.yaml, schemas/checkpoint/6.yaml, core/include/router/ies_service.hpp, core/src/ies_service.cpp, core/src/ies_cli_configuration.cpp, core/include/router/dhcpv6_relay_lease.hpp, core/src/dhcpv6_relay_lease.cpp, core/include/router/ipv6_neighbor_cache.hpp, core/src/ipv6_neighbor_cache.cpp, core/src/router_forwarder.cpp, core/src/lab_checkpoint.cpp]
+    implementation: [schemas/cli/26.7.R1.yaml, schemas/checkpoint/7.yaml, core/include/router/ies_service.hpp, core/src/ies_service.cpp, core/src/ies_cli_configuration.cpp, core/include/router/dhcpv6_relay_lease.hpp, core/src/dhcpv6_relay_lease.cpp, core/include/router/ipv6_neighbor_cache.hpp, core/src/ipv6_neighbor_cache.cpp, core/src/router_forwarder.cpp, core/src/lab_checkpoint.cpp]
     tests: [core/tests/ies_service_test.cpp, core/tests/ies_cli_configuration_test.cpp, core/tests/dhcpv6_relay_lease_test.cpp, core/tests/ipv6_neighbor_cache_test.cpp, core/tests/router_forwarder_test.cpp]
     status: implemented
     notes: A snooped address inside the configured client subnet is associated with the actual adjacent Ethernet source observed on the client request. DUID bytes are never interpreted as a MAC address. The resulting dynamic Neighbor Cache entry, lease and populated routes are admitted or withdrawn as one prevalidated forwarding-shard transaction.
@@ -2601,7 +2993,7 @@ records:
     rfc_refs: [RFC9915]
     yang_path: null
     last_verified_at: 2026-07-20
-    implementation: [schemas/cli/26.7.R1.yaml, schemas/checkpoint/6.yaml, core/include/router/dhcpv6_relay_lease.hpp, core/src/dhcpv6_relay_lease.cpp, core/include/router/router_forwarder.hpp, core/src/router_forwarder.cpp, core/include/router/network_plane.hpp, core/include/router/network_plane_messages.hpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/include/router/runtime_supervisor.hpp, core/src/runtime_supervisor.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp]
+    implementation: [schemas/cli/26.7.R1.yaml, schemas/checkpoint/7.yaml, core/include/router/dhcpv6_relay_lease.hpp, core/src/dhcpv6_relay_lease.cpp, core/include/router/router_forwarder.hpp, core/src/router_forwarder.cpp, core/include/router/network_plane.hpp, core/include/router/network_plane_messages.hpp, core/src/network_plane.cpp, core/src/network_plane_worker.cpp, core/include/router/runtime_supervisor.hpp, core/src/runtime_supervisor.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp]
     tests: [core/tests/dhcpv6_relay_lease_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/network_plane_test.cpp, core/tests/network_plane_worker_test.cpp, core/tests/runtime_supervisor_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
     notes: Summary and detail output are projected from forwarding-owner lease checkpoints and can be filtered by service interface, prefix or actual client MAC. Clear supports all, exact IPv6 value and length, actual client MAC, SAP and no-dhcp-release. Without suppression it sends an RFC 9915 Release on behalf of the client only when at least five minutes remain, through ordinary FIB, ND, UDP, queue and link processing. Wholesaler, subscriber-session and router-advertisement-policy selectors belong to subscriber-management owners not exposed by the IES interface profile.

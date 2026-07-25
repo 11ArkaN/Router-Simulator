@@ -24,12 +24,19 @@ RouterIpv6AddressProgramStatus RouterIpv6AddressTable::program(
     // Validate the caller's generation before touching live bytes. Apart from
     // preventing partial updates, this ensures a malformed SPSC command cannot
     // turn an address into an implicit prefix through silent normalization.
-    std::array<std::size_t, device_catalog::maximum_ports_per_router>
+    std::array<std::size_t, device_catalog::maximum_ports_per_router + 1U>
         per_port{};
     for (const auto &record : next) {
+      const bool system = record.interface_id == system_interface_id;
       if (!record.interface_id ||
-          record.port_ordinal >= device_catalog::maximum_ports_per_router ||
+          (system
+               ? record.port_ordinal != system_interface_port_ordinal
+               : record.port_ordinal >=
+                         device_catalog::maximum_ports_per_router ||
+                     record.interface_id !=
+                         physical_interface_id(record.port_ordinal)) ||
           record.prefix_length > ip::ipv6_address_bits ||
+          (system && record.prefix_length != ip::ipv6_address_bits) ||
           ip::is_unspecified(record.address) ||
           ip::is_multicast(record.address) ||
           ip::is_link_local(record.address) ||
@@ -115,7 +122,10 @@ std::size_t RouterIpv6AddressTable::interface_count(
 void RouterIpv6AddressTable::remove_physical_port(
     std::uint16_t port_ordinal) noexcept {
   std::erase_if(records_, [&](const auto &record) {
-    return record.port_ordinal == port_ordinal;
+    // The system loopback uses the sentinel immediately above the physical
+    // domain and therefore survives every chassis removal.
+    return record.interface_id != system_interface_id &&
+           record.port_ordinal == port_ordinal;
   });
 }
 

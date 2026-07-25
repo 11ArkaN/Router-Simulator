@@ -3,10 +3,24 @@
 // boundary for later project, device and capture URLs without coupling C++ to
 // navigation state.
 
-import { createRootRoute, createRoute, createRouter } from "@tanstack/react-router";
+import { useEffect } from "react";
+import { createRootRoute, createRoute, createRouter,
+  type ErrorComponentProps } from "@tanstack/react-router";
 import { App } from "./ui/App";
 
-const rootRoute = createRootRoute();
+function RecoverRoute({ reset }: ErrorComponentProps) {
+  useEffect(() => {
+    // Route-level fallback pages expose implementation failures as a second,
+    // unrelated interface and discard the topology workspace. Resetting the
+    // failed render boundary lets App restore its last durable checkpoint
+    // through its normal startup path. Operational failures are handled by
+    // App's inline notification state and never reach this boundary.
+    reset();
+  }, [reset]);
+  return null;
+}
+
+const rootRoute = createRootRoute({ errorComponent: RecoverRoute });
 const labRoute = createRoute({ getParentRoute: () => rootRoute, path: "/", component: App });
 const routeTree = rootRoute.addChildren([labRoute]);
 

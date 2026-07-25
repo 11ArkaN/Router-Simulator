@@ -1,8 +1,14 @@
 version: 4
-snapshot_abi: 6
-# The ABI remains the sixth value-graph format. This revision changes its
-# schema hash because forwarding-owner Echo timestamps are now persisted.
-checkpoint_layout_revision: 2
+snapshot_abi: 8
+# Telemetry is a separate shared-memory structure. Its revision changes only
+# when offsets, widths or publication semantics change, not whenever the
+# structural runtime snapshot gains another configuration domain.
+telemetry_abi: 6
+checkpoint_abi: 7
+# ABI 8 adds canonical OSPF configuration intent to every router projection.
+# Runtime protocol framing remains version 4 because operation messages are
+# extended independently and older project formats are intentionally rejected.
+checkpoint_layout_revision: 1
 
 # Protocol 4 routes every operation by stable project identity. The operation
 # name is the first netstring; every following field is length framed so user
@@ -18,6 +24,10 @@ operations:
   host_delete: host-delete
   host_name_set: host-name-set
   host_update: host-update
+  switch_create: switch-create
+  switch_delete: switch-delete
+  switch_name_set: switch-name-set
+  switch_port_configure: switch-port-configure
   hardware_card_set: hardware-card-set
   hardware_mda_set: hardware-mda-set
   hardware_card_admin_set: hardware-card-admin-set

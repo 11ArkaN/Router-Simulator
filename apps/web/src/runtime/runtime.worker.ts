@@ -253,10 +253,11 @@ async function loadRuntime(): Promise<WasmModule> {
         const layoutText = module.ccall("telemetry_get_layout", "string", [], []);
         if (typeof layoutText !== "string") throw new Error("Telemetry layout ABI is unavailable");
         const layout = JSON.parse(layoutText) as TelemetryLayout;
-        // The telemetry page intentionally shares the snapshot ABI revision.
-        // Reading the generated contract prevents a C++ ABI bump from leaving
-        // this startup gate on a stale literal and rejecting every valid lab.
-        if (layout.abi !== LAB_RUNTIME_PROTOCOL.snapshotAbi ||
+        // Telemetry and the structural snapshot evolve independently. The
+        // generated runtime schema publishes both revisions so an OSPF or
+        // service field added to the snapshot cannot invalidate an unchanged
+        // shared-memory counter layout.
+        if (layout.abi !== LAB_RUNTIME_PROTOCOL.telemetryAbi ||
             layout.size !== size) {
           throw new Error("Telemetry layout ABI does not match the active profile");
         }
@@ -398,11 +399,30 @@ self.onmessage = async ({ data }: MessageEvent<RuntimeRequest>) => {
       await ensureCaptureStorage();
       if (!captureAccess || !module._capture_clear())
         throw new Error("Capture session could not be cleared");
+      // The C++ owner has already atomically rotated to a fresh PCAPNG
+      // generation. Mirror that boundary in OPFS before draining its Section
+      // Header Block. Keeping the old extent and merely overwriting its prefix
+      // would leave valid trailing EPBs from the previous session, which
+      // Wireshark correctly interprets as part of the new export.
       captureAccess.truncate(0);
+      captureAccess.flush();
+      if (captureAccess.getSize() !== 0)
+        throw new Error("Capture storage did not truncate the previous session");
       captureOffset = 0;
       capturePending = undefined;
       capturePendingWritten = 0;
       drainCaptureToStorage(module);
+      // A clean session always begins with the PCAPNG Section Header Block.
+      // Verify both the persisted extent and its magic through the same
+      // exclusive handle before reporting success to React. This converts a
+      // browser storage anomaly into a visible failed start instead of a file
+      // that silently combines two capture sessions.
+      const header = new Uint8Array(4);
+      if (captureAccess.getSize() < 28 ||
+          captureAccess.read(header, { at: 0 }) !== header.byteLength ||
+          header[0] !== 0x0a || header[1] !== 0x0d ||
+          header[2] !== 0x0d || header[3] !== 0x0a)
+        throw new Error("Fresh capture storage has no PCAPNG section header");
       captureAccess.flush();
       self.postMessage({ id: data.id, ok: true,
         value: "capture cleared" } satisfies RuntimeResponse);

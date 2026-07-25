@@ -142,8 +142,29 @@ void capture_store_tests() {
   capture.encode();
   require(read32(capture.prepared(), 0U) == 0x0a0d0d0aU &&
               find_block(capture.prepared(), 1U) < capture.prepared().size() &&
+              find_block(capture.prepared(), 6U) ==
+                  capture.prepared().size() &&
               capture.size() == 0U,
-          "capture clear did not create a clean section with live interfaces");
+          "capture clear retained an EPB from the previous session");
+  // Record one distinguishable frame in the replacement session. Its prepared
+  // generation must contain exactly one EPB, proving that clear neither
+  // resurrects the old prepared vector nor appends the old stream after the
+  // first post-reset packet.
+  frame.length = 64U;
+  std::fill_n(frame.bytes.begin(), frame.length, std::uint8_t{0xa5U});
+  require(capture.record(selected, frame, 9'999U),
+          "fresh capture session rejected its first packet");
+  capture.encode();
+  const auto fresh_epb = find_block(capture.prepared(), 6U);
+  require(fresh_epb < capture.prepared().size() &&
+              find_block(capture.prepared(), 6U,
+                         fresh_epb + read32(capture.prepared(),
+                                            fresh_epb + 4U)) ==
+                  capture.prepared().size() &&
+              std::equal(frame.view().begin(), frame.view().end(),
+                         capture.prepared().begin() +
+                             static_cast<std::ptrdiff_t>(fresh_epb + 28U)),
+          "fresh capture generation mixed old and new packet blocks");
 
   // Cross the removed 32 MiB session boundary with real maximum-size EPBs.
   // This is intentionally a byte-volume regression, not a capacity constant:

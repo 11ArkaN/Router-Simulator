@@ -13,6 +13,11 @@ struct ShardPolicy {
   std::size_t control{};
   std::size_t forwarding{};
   std::size_t link{};
+  // OSPF owns mutable neighbor, LSDB and SPF state on a dedicated protocol
+  // pthread. Keeping that owner in the startup policy prevents a first CLI
+  // command from attempting to create a thread after Emscripten's fixed pool
+  // has already been consumed by forwarding and link owners.
+  std::size_t ospf{1U};
 
   // A zero link count means the sole forwarding pthread also owns the medium.
   // This preserves two physical domains on hosts with at most four logical
@@ -22,7 +27,7 @@ struct ShardPolicy {
   }
 
   [[nodiscard]] constexpr std::size_t worker_domains() const noexcept {
-    return control + forwarding + link;
+    return control + forwarding + link + ospf;
   }
 
   // The primary control owner is the calling browser Worker. Every other
@@ -47,9 +52,9 @@ select_shard_policy(std::size_t logical_cpus) noexcept {
           device_catalog::high_link_shards};
 }
 
-static_assert(select_shard_policy(1).pthreads() == 1U);
-static_assert(select_shard_policy(5).pthreads() == 3U);
-static_assert(select_shard_policy(9).pthreads() == 5U);
+static_assert(select_shard_policy(1).pthreads() == 2U);
+static_assert(select_shard_policy(5).pthreads() == 4U);
+static_assert(select_shard_policy(9).pthreads() == 6U);
 static_assert(select_shard_policy(9).worker_domains() <=
               device_catalog::maximum_worker_domains);
 

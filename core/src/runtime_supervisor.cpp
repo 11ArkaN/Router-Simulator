@@ -6,6 +6,7 @@
 #include "router/multi_device_routing.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <limits>
 #include <new>
 #include <thread>
@@ -67,12 +68,15 @@ namespace {
 bool build_native_ipv6_connected(
     std::span<const RouterIpv6Address> addresses,
     std::span<const ForwardPort> ports,
+    bool system_operational,
     std::vector<routing::Ipv6ConnectedInput> &output) noexcept {
   try {
     std::vector<routing::Ipv6ConnectedInput> candidate;
     candidate.reserve(addresses.size());
     for (const auto &address : addresses) {
-      if (address.port_ordinal >= ports.size())
+      const bool system = address.interface_id == system_interface_id;
+      if (system ? address.port_ordinal != system_interface_port_ordinal
+                 : address.port_ordinal >= ports.size())
         return false;
       // Multiple addresses in one subnet install one connected prefix. Local
       // address ownership remains per-address in RouterIpv6AddressTable, while
@@ -88,7 +92,9 @@ bool build_native_ipv6_connected(
         continue;
       candidate.push_back(
           {.configured = true,
-           .operational = ports[address.port_ordinal].operational,
+           .operational =
+               system ? system_operational
+                      : ports[address.port_ordinal].operational,
            .network = address.network,
            .interface_id = address.interface_id,
            .physical_port_ordinal = address.port_ordinal,
@@ -208,8 +214,17 @@ RuntimeSupervisor::dispatch(NetworkCommand &command) noexcept {
   // RuntimeSupervisor is confined to one control shard, making command IDs and
   // the producer side of this SPSC ring single-writer without another lock.
   command.id = next_network_command_id_++;
-  if (!network_worker_->submit(command))
+  const auto id = command.id;
+  const auto kind = command.kind;
+  const bool sensitive =
+      kind == NetworkCommandKind::add_ospf_authentication;
+  if (!network_worker_->submit(command)) {
+    if (sensitive)
+      spsc_secure_clear(command);
     return std::nullopt;
+  }
+  if (sensitive)
+    spsc_secure_clear(command);
 
   NetworkResult result;
   while (!network_worker_->read(result)) {
@@ -221,7 +236,7 @@ RuntimeSupervisor::dispatch(NetworkCommand &command) noexcept {
   // Synchronous dispatch permits exactly one outstanding command. Any other
   // identity indicates corrupted ordering and cannot be treated as success.
   if (result.version != network_plane_message_version ||
-      result.id != command.id || result.kind != command.kind)
+      result.id != id || result.kind != kind)
     return std::nullopt;
   return result;
 }
@@ -274,7 +289,7 @@ RuntimeSupervisor::create_router(std::string_view node_id,
                                  std::string_view profile_id,
                                  std::string_view system_name) {
   // Cross-kind identity is checked before DeviceRegistry reserves a slot.
-  if (hosts_.find(node_id))
+  if (hosts_.find(node_id) || switches_.find(node_id))
     return std::nullopt;
   const auto handle = devices_.create(node_id, profile_id, system_name);
   if (!handle)
@@ -302,7 +317,7 @@ std::optional<HostHandle>
 RuntimeSupervisor::create_host(std::string_view node_id,
                                std::string_view name) {
   // The reciprocal check makes stable identity unique regardless of node kind.
-  if (devices_.find(node_id))
+  if (devices_.find(node_id) || switches_.find(node_id))
     return std::nullopt;
   const auto handle = hosts_.create(node_id, name);
   std::optional<NetworkResult> admitted;
@@ -314,6 +329,30 @@ RuntimeSupervisor::create_host(std::string_view node_id,
   if (handle && (!admitted || !admitted->success)) {
     // Host protocol ownership is admitted with the identity or not at all.
     static_cast<void>(hosts_.erase(*handle));
+    return std::nullopt;
+  }
+  return handle;
+}
+
+std::optional<SwitchHandle>
+RuntimeSupervisor::create_switch(std::string_view node_id,
+                                 std::string_view profile_id,
+                                 std::string_view name) {
+  if (devices_.find(node_id) || hosts_.find(node_id))
+    return std::nullopt;
+  const auto profile_index =
+      device_catalog::ethernet_switch_profile_index(profile_id);
+  if (!profile_index)
+    return std::nullopt;
+  const auto handle = switches_.create(node_id, profile_id, name);
+  if (!handle)
+    return std::nullopt;
+  auto &add = prepare(NetworkCommandKind::add_switch);
+  add.ethernet_switch = *handle;
+  add.switch_profile_index = *profile_index;
+  const auto admitted = dispatch(add);
+  if (!admitted || !admitted->success) {
+    static_cast<void>(switches_.erase(*handle));
     return std::nullopt;
   }
   return handle;
@@ -346,6 +385,48 @@ bool RuntimeSupervisor::set_host_name(HostHandle host, std::string_view name) {
   }
 }
 
+bool RuntimeSupervisor::set_switch_name(SwitchHandle handle,
+                                        std::string_view name) {
+  auto *record = switches_.get(handle);
+  if (!record || name.empty() || name.size() > 64U)
+    return false;
+  try {
+    record->name.assign(name);
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
+bool RuntimeSupervisor::configure_switch_port(
+    SwitchHandle handle, std::uint16_t port, std::uint32_t speed_mbps,
+    std::uint16_t mtu, bool admin_enabled) noexcept {
+  const auto *record = switches_.get(handle);
+  if (!record || port >= record->profile->port_count)
+    return false;
+  auto &command = prepare(NetworkCommandKind::configure_switch_port);
+  command.ethernet_switch = handle;
+  command.switch_port = port;
+  command.switch_port_configuration = {
+      .speed_mbps = speed_mbps,
+      .mtu = mtu,
+      .admin_enabled = admin_enabled,
+      // Carrier remains network-owner state and is ignored by the edit.
+      .carrier = false};
+  const auto result = dispatch(command);
+  if (!result || !result->success)
+    return false;
+  auto *mutable_record = switches_.get(handle);
+  mutable_record->ports[port] = {
+      .speed_mbps = speed_mbps,
+      .mtu = mtu,
+      .admin_enabled = admin_enabled};
+  // Rate or administration changes can make an existing cable compatible or
+  // incompatible. Reconciliation derives carrier again from both endpoints.
+  reconcile(node(handle));
+  return true;
+}
+
 RouterHardwareInventory *
 RuntimeSupervisor::hardware(DeviceHandle device) noexcept {
   // Registry validation prevents a stale handle from accessing replacement
@@ -375,12 +456,40 @@ RuntimeSupervisor::resolve(const LinkEndpoint &endpoint) noexcept {
     auto *port = inventory->find(endpoint.port_id);
     if (!port_handle || !port || !port->present)
       return std::nullopt;
-    return ResolvedEndpoint{*port_handle, inventory, port, false};
+    return ResolvedEndpoint{
+        .handle = *port_handle,
+        .router = inventory,
+        .router_port = port};
   }
-  const HostHandle host{endpoint.node.index, endpoint.node.generation};
-  if (!hosts_.get(host) || endpoint.port_id != "eth0")
+  if (endpoint.node.kind == NodeKind::host) {
+    const HostHandle host{endpoint.node.index, endpoint.node.generation};
+    if (!hosts_.get(host) || endpoint.port_id != "eth0")
+      return std::nullopt;
+    return ResolvedEndpoint{
+        .handle = PortHandle{node(host), 0, 1}, .host = true};
+  }
+  if (endpoint.node.kind != NodeKind::ethernet_switch)
     return std::nullopt;
-  return ResolvedEndpoint{PortHandle{node(host), 0, 1}, nullptr, nullptr, true};
+  const SwitchHandle handle{endpoint.node.index, endpoint.node.generation};
+  const auto *record = switches_.get(handle);
+  std::uint16_t displayed_port{};
+  const auto parsed =
+      std::from_chars(endpoint.port_id.data(),
+                      endpoint.port_id.data() + endpoint.port_id.size(),
+                      displayed_port);
+  // User-facing switch ports are numbered one through profile.port_count.
+  // Compact runtime ordinals remain zero-based and are never accepted as
+  // textual port zero.
+  if (!record || parsed.ec != std::errc{} ||
+      parsed.ptr != endpoint.port_id.data() + endpoint.port_id.size() ||
+      displayed_port == 0U || displayed_port > record->profile->port_count)
+    return std::nullopt;
+  const auto ordinal = static_cast<std::uint16_t>(displayed_port - 1U);
+  return ResolvedEndpoint{
+      .handle = PortHandle{node(handle), ordinal, 1U},
+      .switch_profile = record->profile,
+      .switch_port_intent = &record->ports[ordinal],
+      .switch_port = ordinal};
 }
 
 void RuntimeSupervisor::deactivate(LinkHandle link) noexcept {
@@ -428,18 +537,27 @@ void RuntimeSupervisor::reconcile(LinkHandle link) noexcept {
     return;
 
   std::uint32_t speed_mbps{};
-  if (first->router_port && second->router_port) {
+  const auto physical_speed = [](const ResolvedEndpoint &endpoint) {
+    if (endpoint.router_port)
+      return endpoint.router_port->speed_mbps;
+    if (endpoint.switch_port_intent)
+      return endpoint.switch_port_intent->speed_mbps;
+    return std::uint32_t{};
+  };
+  const auto first_speed = physical_speed(*first);
+  const auto second_speed = physical_speed(*second);
+  if (first_speed && second_speed) {
     // Selected rates must match. The runtime does not fabricate a negotiation
     // result outside the two configured port capabilities.
-    if (first->router_port->speed_mbps != second->router_port->speed_mbps)
+    if (first_speed != second_speed)
       return;
-    speed_mbps = first->router_port->speed_mbps;
-  } else if (first->router_port) {
+    speed_mbps = first_speed;
+  } else if (first_speed) {
     // A project host is a protocol endpoint, not a claimed NIC hardware model.
-    // On a router-host link it adopts the one physical peer's rate.
-    speed_mbps = first->router_port->speed_mbps;
-  } else if (second->router_port) {
-    speed_mbps = second->router_port->speed_mbps;
+    // On a host-to-profiled-device link it adopts the physical peer's rate.
+    speed_mbps = first_speed;
+  } else if (second_speed) {
+    speed_mbps = second_speed;
   } else {
     // Host endpoints have no hardware profile from which IEEE autonegotiation
     // capabilities can be derived. A direct cable therefore needs explicit
@@ -566,12 +684,61 @@ std::optional<LinkHandle> RuntimeSupervisor::create_link(
   // Node identity must exist, while absent port hardware is valid retained link
   // intent and will reconcile when compatible inventory appears.
   const auto exists = [this](NodeHandle handle) {
-    return handle.kind == NodeKind::router
-               ? devices_.get({handle.index, handle.generation}) != nullptr
-               : hosts_.get({handle.index, handle.generation}) != nullptr;
+    switch (handle.kind) {
+    case NodeKind::router:
+      return devices_.get({handle.index, handle.generation}) != nullptr;
+    case NodeKind::host:
+      return hosts_.get({handle.index, handle.generation}) != nullptr;
+    case NodeKind::ethernet_switch:
+      return switches_.get({handle.index, handle.generation}) != nullptr;
+    }
+    return false;
   };
   if (!exists(first.node) || !exists(second.node) || propagation.count() < 0)
     return std::nullopt;
+
+  if (first.node.kind == NodeKind::ethernet_switch &&
+      second.node.kind == NodeKind::ethernet_switch) {
+    // The initial bridge profile has no spanning-tree process. IEEE 802.1Q
+    // transparent forwarding would therefore circulate broadcasts forever
+    // when switch-to-switch links close a cycle. Reject exactly that physical
+    // L2 condition while still permitting arbitrary routed cycles between
+    // router nodes.
+    std::array<bool, device_catalog::maximum_switches> visited{};
+    std::array<bool, device_catalog::maximum_switches> queued{};
+    std::array<NodeHandle, device_catalog::maximum_switches> pending{};
+    std::size_t pending_size{1U};
+    pending[0] = first.node;
+    queued[first.node.index] = true;
+    const auto current = topology_.checkpoint();
+    while (pending_size) {
+      const auto candidate = pending[--pending_size];
+      if (candidate.index >= visited.size() || visited[candidate.index])
+        continue;
+      if (candidate == second.node)
+        return std::nullopt;
+      visited[candidate.index] = true;
+      for (const auto &entry : current.entries) {
+        const auto &left = entry.record.endpoints[0].node;
+        const auto &right = entry.record.endpoints[1].node;
+        if (left.kind != NodeKind::ethernet_switch ||
+            right.kind != NodeKind::ethernet_switch)
+          continue;
+        const auto neighbor =
+            left == candidate ? std::optional{right}
+            : right == candidate ? std::optional{left}
+                                 : std::nullopt;
+        if (neighbor && neighbor->index < visited.size() &&
+            !queued[neighbor->index]) {
+          // Each live switch generation enters the bounded stack once, so its
+          // capacity is proven by maximum_switches rather than handled by a
+          // lossy overflow branch.
+          queued[neighbor->index] = true;
+          pending[pending_size++] = *neighbor;
+        }
+      }
+    }
+  }
   const auto link = topology_.create(
       link_id, first, second, static_cast<std::uint64_t>(propagation.count()),
       configured_speed_mbps);
@@ -702,6 +869,56 @@ bool RuntimeSupervisor::remove_system_interface(DeviceHandle device) noexcept {
   return state.rib.last_rebuild_valid();
 }
 
+bool RuntimeSupervisor::configure_system_ipv6_addresses(
+    DeviceHandle device, std::span<const RouterIpv6Address> addresses,
+    bool admin_enabled) noexcept {
+  if (!devices_.get(device) || device.index >= router_network_.size() ||
+      !router_network_[device.index] ||
+      addresses.size() > device_catalog::network_interface_ip_addresses)
+    return false;
+  if (std::any_of(addresses.begin(), addresses.end(), [](const auto &entry) {
+        return entry.interface_id != system_interface_id ||
+               entry.port_ordinal != system_interface_port_ordinal ||
+               entry.prefix_length != ip::ipv6_address_bits ||
+               ip::is_unspecified(entry.address) ||
+               ip::is_multicast(entry.address) ||
+               entry.network != entry.address;
+      }))
+    return false;
+
+  auto &state = *router_network_[device.index];
+  try {
+    auto candidate_addresses = state.native_ipv6_addresses;
+    std::erase_if(candidate_addresses, [](const auto &entry) {
+      return entry.interface_id == system_interface_id;
+    });
+    candidate_addresses.insert(candidate_addresses.end(), addresses.begin(),
+                               addresses.end());
+
+    std::vector<routing::Ipv6ConnectedInput> candidate_connected;
+    if (!build_native_ipv6_connected(candidate_addresses, state.ports,
+                                     admin_enabled, candidate_connected))
+      return false;
+    auto candidate_rib = std::unique_ptr<routing::Ipv6RouteTable>{
+        new (std::nothrow) routing::Ipv6RouteTable{}};
+    if (!candidate_rib)
+      return false;
+    static_cast<void>(candidate_rib->rebuild(
+        candidate_connected, state.ipv6_statics, state.ies_ipv6_connected,
+        {}, state.maximum_ecmp_paths));
+    if (!candidate_rib->last_rebuild_valid() ||
+        !program_ipv6_address_generation(device, candidate_addresses))
+      return false;
+
+    state.native_ipv6_addresses.swap(candidate_addresses);
+    state.native_ipv6_connected.swap(candidate_connected);
+    rebuild_routes(device);
+    return state.ipv6_rib.last_rebuild_valid();
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
 bool RuntimeSupervisor::configure_ipv6_interface(
     DeviceHandle device, std::string_view port_id, packet::Mac mac,
     const packet::Ipv6 &address, std::uint8_t prefix_length,
@@ -759,7 +976,14 @@ bool RuntimeSupervisor::configure_ipv6_interface(
          .port_ordinal = ordinal,
          .prefix_length = prefix_length});
     std::vector<routing::Ipv6ConnectedInput> candidate_connected;
+    const bool system_operational = std::any_of(
+        network.native_ipv6_connected.begin(),
+        network.native_ipv6_connected.end(), [](const auto &entry) {
+          return entry.interface_id == system_interface_id &&
+                 entry.operational;
+        });
     if (!build_native_ipv6_connected(candidate_addresses, network.ports,
+                                     system_operational,
                                      candidate_connected))
       return false;
     for (auto &connected : candidate_connected)
@@ -835,7 +1059,14 @@ bool RuntimeSupervisor::configure_ipv6_address(
       *existing = replacement;
 
     std::vector<routing::Ipv6ConnectedInput> candidate_connected;
+    const bool system_operational = std::any_of(
+        state.native_ipv6_connected.begin(),
+        state.native_ipv6_connected.end(), [](const auto &entry) {
+          return entry.interface_id == system_interface_id &&
+                 entry.operational;
+        });
     if (!build_native_ipv6_connected(candidate_addresses, state.ports,
+                                     system_operational,
                                      candidate_connected))
       return false;
     auto candidate_rib = std::unique_ptr<routing::Ipv6RouteTable>{
@@ -897,7 +1128,14 @@ bool RuntimeSupervisor::remove_ipv6_address(
                                       }))
       return false;
     std::vector<routing::Ipv6ConnectedInput> candidate_connected;
+    const bool system_operational = std::any_of(
+        state.native_ipv6_connected.begin(),
+        state.native_ipv6_connected.end(), [](const auto &entry) {
+          return entry.interface_id == system_interface_id &&
+                 entry.operational;
+        });
     if (!build_native_ipv6_connected(candidate, state.ports,
+                                     system_operational,
                                      candidate_connected))
       return false;
     auto candidate_rib = std::unique_ptr<routing::Ipv6RouteTable>{
@@ -1214,6 +1452,136 @@ bool RuntimeSupervisor::configure_mld_interface(
                                     .import_policy = {},
                                     .configured = true};
   return true;
+}
+
+bool RuntimeSupervisor::configure_ospf_generation(
+    DeviceHandle device, std::span<const OspfProcessProgram> processes,
+    std::span<const OspfInterfaceProgram> interfaces,
+    std::span<const OspfAuthenticationProgram> authentications,
+    std::span<const OspfNbmaNeighborProgram> nbma_neighbors,
+    std::span<const OspfVirtualLinkProgram> virtual_links,
+    std::span<const OspfAreaRangeProgram> ranges,
+    std::span<const OspfExternalRouteProgram> external_routes) noexcept {
+  if (!devices_.get(device) ||
+      processes.size() > std::numeric_limits<std::uint32_t>::max() ||
+      interfaces.size() > std::numeric_limits<std::uint32_t>::max() ||
+      authentications.size() > std::numeric_limits<std::uint32_t>::max() ||
+      nbma_neighbors.size() > std::numeric_limits<std::uint32_t>::max() ||
+      virtual_links.size() > std::numeric_limits<std::uint32_t>::max() ||
+      ranges.size() > std::numeric_limits<std::uint32_t>::max() ||
+      external_routes.size() > std::numeric_limits<std::uint32_t>::max())
+    return false;
+
+  auto &begin = prepare(NetworkCommandKind::begin_ospf_generation);
+  begin.device = device;
+  begin.fib = NetworkOspfGenerationBegin{
+      .expected_processes =
+          static_cast<std::uint32_t>(processes.size()),
+      .expected_interfaces =
+          static_cast<std::uint32_t>(interfaces.size()),
+      .expected_authentications =
+          static_cast<std::uint32_t>(authentications.size()),
+      .expected_nbma_neighbors =
+          static_cast<std::uint32_t>(nbma_neighbors.size()),
+      .expected_virtual_links =
+          static_cast<std::uint32_t>(virtual_links.size()),
+      .expected_ranges =
+          static_cast<std::uint32_t>(ranges.size()),
+      .expected_external_routes =
+          static_cast<std::uint32_t>(external_routes.size())};
+  auto result = dispatch(begin);
+  for (const auto &process : processes) {
+    if (!result || !result->success || process.device != device)
+      break;
+    auto &add = prepare(NetworkCommandKind::add_ospf_process);
+    add.device = device;
+    add.fib = process;
+    result = dispatch(add);
+  }
+  for (const auto &interface : interfaces) {
+    if (!result || !result->success ||
+        interface.process.device != device)
+      break;
+    auto &add = prepare(NetworkCommandKind::add_ospf_interface);
+    add.device = device;
+    add.fib = interface;
+    result = dispatch(add);
+  }
+  for (const auto &authentication : authentications) {
+    if (!result || !result->success ||
+        authentication.process.device != device)
+      break;
+    auto &add =
+        prepare(NetworkCommandKind::add_ospf_authentication);
+    add.device = device;
+    add.fib = authentication;
+    result = dispatch(add);
+  }
+  for (const auto &neighbor : nbma_neighbors) {
+    if (!result || !result->success ||
+        neighbor.process.device != device)
+      break;
+    auto &add = prepare(NetworkCommandKind::add_ospf_nbma_neighbor);
+    add.device = device;
+    add.fib = neighbor;
+    result = dispatch(add);
+  }
+  for (const auto &virtual_link : virtual_links) {
+    if (!result || !result->success ||
+        virtual_link.process.device != device)
+      break;
+    auto &add = prepare(NetworkCommandKind::add_ospf_virtual_link);
+    add.device = device;
+    add.fib = virtual_link;
+    result = dispatch(add);
+  }
+  for (const auto &range : ranges) {
+    if (!result || !result->success ||
+        range.process.device != device)
+      break;
+    auto &add = prepare(NetworkCommandKind::add_ospf_area_range);
+    add.device = device;
+    add.fib = range;
+    result = dispatch(add);
+  }
+  for (const auto &external : external_routes) {
+    if (!result || !result->success ||
+        external.process.device != device)
+      break;
+    auto &add = prepare(NetworkCommandKind::add_ospf_external_route);
+    add.device = device;
+    add.fib = external;
+    result = dispatch(add);
+  }
+  if (result && result->success) {
+    auto &commit = prepare(NetworkCommandKind::commit_ospf_generation);
+    commit.device = device;
+    result = dispatch(commit);
+    if (result && result->success)
+      return true;
+  }
+
+  // Abort is idempotent and never touches the active generation. The result is
+  // deliberately ignored because the original rejected transaction is the
+  // caller-visible failure.
+  auto &abort = prepare(NetworkCommandKind::abort_ospf_generation);
+  abort.device = device;
+  static_cast<void>(dispatch(abort));
+  return false;
+}
+
+std::optional<ospf::ControlResult>
+RuntimeSupervisor::query_ospf(
+    DeviceHandle device, const OspfOperationalQuery &query) noexcept {
+  if (!devices_.get(device))
+    return std::nullopt;
+  auto &command = prepare(NetworkCommandKind::query_ospf);
+  command.device = device;
+  command.fib = query;
+  const auto result = dispatch(command);
+  return result && result->success
+             ? std::optional<ospf::ControlResult>{result->ospf}
+             : std::nullopt;
 }
 
 bool RuntimeSupervisor::remove_mld_interface(
@@ -2688,6 +3056,19 @@ void RuntimeSupervisor::rebuild_routes(DeviceHandle device) noexcept {
   if (device.index >= router_network_.size() || !router_network_[device.index])
     return;
   auto &state = *router_network_[device.index];
+  // Publish unresolved static intent before either base FIB. The network
+  // route-manager is the sole owner that can later resolve an indirect static
+  // next hop through an OSPF route without asking control to poll protocol
+  // state or letting OSPF bypass RIB selection.
+  auto &policy_command = prepare(NetworkCommandKind::program_route_policy);
+  policy_command.device = device;
+  policy_command.fib =
+      RoutePolicyProgram{.ipv4_statics = state.statics,
+                         .ipv6_statics = state.ipv6_statics,
+                         .maximum_ecmp_paths = state.maximum_ecmp_paths};
+  const auto policy_result = dispatch(policy_command);
+  if (!policy_result || !policy_result->success)
+    return;
   const bool changed = state.rib.rebuild(state.connected, state.statics, {},
                                          state.maximum_ecmp_paths);
   if (!state.rib.last_rebuild_valid())
@@ -3342,6 +3723,18 @@ bool RuntimeSupervisor::delete_host(HostHandle host) noexcept {
   return hosts_.erase(host);
 }
 
+bool RuntimeSupervisor::delete_switch(SwitchHandle handle) noexcept {
+  if (!switches_.get(handle))
+    return false;
+  const auto links = topology_.attached(node(handle));
+  for (std::size_t index{}; index < links.count; ++index)
+    static_cast<void>(delete_link(links.handles[index]));
+  auto &remove = prepare(NetworkCommandKind::remove_switch);
+  remove.ethernet_switch = handle;
+  const auto removed = dispatch(remove);
+  return removed && removed->success && switches_.erase(handle);
+}
+
 std::size_t RuntimeSupervisor::active_links() noexcept {
   auto &query = prepare(NetworkCommandKind::active_link_count);
   const auto result = dispatch(query);
@@ -3428,6 +3821,7 @@ std::unique_ptr<RuntimeSupervisorCheckpoint> RuntimeSupervisor::checkpoint() {
     auto state = std::make_unique<RuntimeSupervisorCheckpoint>();
     state->devices = devices_.checkpoint();
     state->hosts = hosts_.checkpoint();
+    state->switches = switches_.checkpoint();
     state->topology = topology_.checkpoint();
     state->sessions = sessions_.checkpoint();
     state->workflows = session_workflows_.checkpoint();
@@ -3480,30 +3874,119 @@ std::unique_ptr<RuntimeSupervisorCheckpoint> RuntimeSupervisor::checkpoint() {
   }
 }
 
+bool checkpoint_validation::base_fib_preserved(
+    const routing::FibProgram &base,
+    const routing::FibProgram &selected) noexcept {
+      // The route manager checkpoint owns connected and static intent. OSPF
+      // routes are owned and validated by the network-plane checkpoint below,
+      // so rebuilding only the base RIB cannot legitimately be byte-equal to
+      // a selected FIB that contains converged dynamic routes. Require every
+      // independently rebuilt base route and permit only typed OSPF additions.
+      if (base.generation != selected.generation ||
+          base.count > selected.count)
+        return false;
+      const auto equal_route = [](const auto &a, const auto &b) {
+        return a.network == b.network && a.next_hop == b.next_hop &&
+               a.port_ordinal == b.port_ordinal &&
+               a.prefix_length == b.prefix_length &&
+               a.preference == b.preference && a.metric == b.metric &&
+               a.source == b.source && a.local_system == b.local_system;
+      };
+      const auto selected_end =
+          selected.routes.begin() + selected.count;
+      for (auto route = base.routes.begin();
+           route != base.routes.begin() + base.count; ++route)
+        if (std::find_if(selected.routes.begin(), selected_end,
+                         [&](const auto &candidate) {
+                           return equal_route(*route, candidate);
+                         }) == selected_end)
+          return false;
+      return std::all_of(
+          selected.routes.begin(), selected_end, [&](const auto &route) {
+            return route.source == routing::RouteSource::ospf ||
+                   route.source == routing::RouteSource::ospf3 ||
+                   std::find_if(base.routes.begin(),
+                                base.routes.begin() + base.count,
+                                [&](const auto &candidate) {
+                                  return equal_route(route, candidate);
+                                }) != base.routes.begin() + base.count;
+          });
+}
+
+bool checkpoint_validation::base_fib_preserved(
+    const routing::Ipv6FibProgram &base,
+    const routing::Ipv6FibProgram &selected) noexcept {
+      // IPv6 follows the same ownership split as IPv4. The exact saved FIB is
+      // later checked by RouterForwarder and NetworkWorker restore; this check
+      // proves that protocol routes did not replace required local intent.
+      if (base.generation != selected.generation ||
+          base.count > selected.count)
+        return false;
+      const auto equal_route = [](const auto &a, const auto &b) {
+        return a.network == b.network && a.next_hop == b.next_hop &&
+               a.interface_id == b.interface_id &&
+               a.physical_port_ordinal == b.physical_port_ordinal &&
+               a.prefix_length == b.prefix_length &&
+               a.preference == b.preference && a.metric == b.metric &&
+               a.source == b.source;
+      };
+      const auto selected_end =
+          selected.routes.begin() + selected.count;
+      for (auto route = base.routes.begin();
+           route != base.routes.begin() + base.count; ++route)
+        if (std::find_if(selected.routes.begin(), selected_end,
+                         [&](const auto &candidate) {
+                           return equal_route(*route, candidate);
+                         }) == selected_end)
+          return false;
+      return std::all_of(
+          selected.routes.begin(), selected_end, [&](const auto &route) {
+            return route.source == routing::RouteSource::ospf ||
+                   route.source == routing::RouteSource::ospf3 ||
+                   std::find_if(base.routes.begin(),
+                                base.routes.begin() + base.count,
+                                [&](const auto &candidate) {
+                                  return equal_route(route, candidate);
+                                }) != base.routes.begin() + base.count;
+          });
+}
+
 bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
   try {
     auto devices = std::make_unique<DeviceRegistry>();
     auto hosts = std::make_unique<HostRegistry>();
+    auto switches = std::make_unique<SwitchRegistry>();
     auto topology = std::make_unique<TopologyRegistry>();
     auto sessions = std::make_unique<SessionRegistry>();
     if (!devices->restore(state.devices) || !hosts->restore(state.hosts) ||
+        !switches->restore(state.switches) ||
         !topology->restore(state.topology) ||
         !sessions->restore(state.sessions))
       return false;
     for (const auto &device : state.devices.entries)
-      if (hosts->find(device.node_id))
+      if (hosts->find(device.node_id) || switches->find(device.node_id))
+        return false;
+    for (const auto &host : state.hosts.entries)
+      if (switches->find(host.node_id))
         return false;
     for (const auto &session : state.sessions.entries)
       if (!devices->get(session.record.device))
         return false;
     for (const auto &link : state.topology.entries)
       for (const auto &endpoint : link.record.endpoints) {
-        const bool exists =
-            endpoint.node.kind == NodeKind::router
-                ? devices->get({endpoint.node.index,
-                                endpoint.node.generation}) != nullptr
-                : hosts->get({endpoint.node.index, endpoint.node.generation}) !=
-                      nullptr;
+        bool exists{};
+        if (endpoint.node.kind == NodeKind::router)
+          exists = devices->get(
+                       {endpoint.node.index, endpoint.node.generation}) !=
+                   nullptr;
+        else if (endpoint.node.kind == NodeKind::host)
+          exists =
+              hosts->get({endpoint.node.index, endpoint.node.generation}) !=
+              nullptr;
+        else if (endpoint.node.kind == NodeKind::ethernet_switch)
+          exists = switches->get(
+                       {endpoint.node.index, endpoint.node.generation}) !=
+                   nullptr;
         if (!exists)
           return false;
       }
@@ -3524,37 +4007,6 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
       (*hardware)[source.device.index] = std::move(*restored);
       hardware_seen[source.device.index] = true;
     }
-    const auto same_fib = [](const routing::FibProgram &left,
-                             const routing::FibProgram &right) {
-      return left.generation == right.generation && left.count == right.count &&
-             std::equal(left.routes.begin(), left.routes.begin() + left.count,
-                        right.routes.begin(), [](const auto &a, const auto &b) {
-                          return a.network == b.network &&
-                                 a.next_hop == b.next_hop &&
-                                 a.port_ordinal == b.port_ordinal &&
-                                 a.prefix_length == b.prefix_length &&
-                                 a.preference == b.preference &&
-                                 a.metric == b.metric &&
-                                 a.source == b.source &&
-                                 a.local_system == b.local_system;
-                        });
-    };
-    const auto same_ipv6_fib = [](const routing::Ipv6FibProgram &left,
-                                  const routing::Ipv6FibProgram &right) {
-      return left.generation == right.generation && left.count == right.count &&
-             std::equal(left.routes.begin(), left.routes.begin() + left.count,
-                        right.routes.begin(), [](const auto &a, const auto &b) {
-                          return a.network == b.network &&
-                                 a.next_hop == b.next_hop &&
-                                 a.interface_id == b.interface_id &&
-                                 a.physical_port_ordinal ==
-                                     b.physical_port_ordinal &&
-                                 a.prefix_length == b.prefix_length &&
-                                 a.preference == b.preference &&
-                                 a.metric == b.metric &&
-                                 a.source == b.source;
-                        });
-    };
     for (const auto &source : state.control) {
       if (!devices->get(source.device) ||
           source.device.index >= control_seen.size() ||
@@ -3679,16 +4131,18 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
           restored->rib.rebuild(restored->connected, restored->statics, {},
                                 restored->maximum_ecmp_paths));
       if (!restored->rib.last_rebuild_valid() ||
-          !same_fib(restored->rib.compile(source.fib_generation),
-                    source.selected_rib))
+          !checkpoint_validation::base_fib_preserved(
+              restored->rib.compile(source.fib_generation),
+              source.selected_rib))
         return false;
       static_cast<void>(restored->ipv6_rib.rebuild(
           restored->native_ipv6_connected, restored->ipv6_statics,
           restored->ies_ipv6_connected, {},
           restored->maximum_ecmp_paths));
       if (!restored->ipv6_rib.last_rebuild_valid() ||
-          !same_ipv6_fib(restored->ipv6_rib.compile(source.ipv6_fib_generation),
-                         source.selected_ipv6_rib))
+          !checkpoint_validation::base_fib_preserved(
+              restored->ipv6_rib.compile(source.ipv6_fib_generation),
+              source.selected_ipv6_rib))
         return false;
       RouterForwarderCheckpoint forwarding_validation;
       forwarding_validation.fib = source.selected_rib;
@@ -3734,7 +4188,8 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
         return false;
 
     if (state.network.routers.size() != state.devices.entries.size() ||
-        state.network.hosts.size() != state.hosts.entries.size())
+        state.network.hosts.size() != state.hosts.entries.size() ||
+        state.network.switches.size() != state.switches.entries.size())
       return false;
     for (const auto &router : state.network.routers) {
       if (!devices->get(router.device) ||
@@ -3742,11 +4197,28 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
           !(*control)[router.device.index])
         return false;
       const auto &intent = *(*control)[router.device.index];
-      if (router.forwarding.sap_attachments != intent.ies_sap_attachments ||
-          router.forwarding.service_ipv6_interfaces !=
-              intent.ies_ipv6_interfaces ||
-          router.forwarding.native_ipv6_addresses !=
-              intent.native_ipv6_addresses)
+      if (router.forwarding.sap_attachments != intent.ies_sap_attachments)
+        return false;
+      if (router.forwarding.service_ipv6_interfaces !=
+          intent.ies_ipv6_interfaces)
+        return false;
+      // Control preserves operator insertion order because that order is part
+      // of configuration presentation. The forwarding owner deliberately
+      // canonicalizes the same generation by interface, primary preference and
+      // address for contiguous packet-path lookup. Comparing the two vectors
+      // byte-for-byte therefore rejects a valid multi-interface router merely
+      // because the owners use different orderings. Reuse the forwarding
+      // table's atomic validator and canonicalizer before comparing values, so
+      // malformed records are still rejected without requiring identical
+      // presentation order across ownership domains.
+      RouterIpv6AddressTable canonical_addresses;
+      if (canonical_addresses.program(intent.native_ipv6_addresses) !=
+              RouterIpv6AddressProgramStatus::accepted ||
+          router.forwarding.native_ipv6_addresses.size() !=
+              canonical_addresses.records().size() ||
+          !std::equal(router.forwarding.native_ipv6_addresses.begin(),
+                      router.forwarding.native_ipv6_addresses.end(),
+                      canonical_addresses.records().begin()))
         return false;
       for (const auto &relay : intent.ies_dhcpv6_relays)
         if (std::find(router.forwarding.dhcpv6_relay_interfaces.begin(),
@@ -3757,6 +4229,27 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
     for (const auto &host : state.network.hosts)
       if (!hosts->get(host.host))
         return false;
+    for (const auto &saved : state.network.switches) {
+      const auto *record = switches->get(saved.handle);
+      const auto profile_index =
+          record ? device_catalog::ethernet_switch_profile_index(
+                       record->profile->id)
+                 : std::nullopt;
+      if (!record || !profile_index ||
+          *profile_index != saved.profile_index ||
+          saved.forwarding.ports.size() != record->ports.size())
+        return false;
+      for (std::size_t port{}; port < record->ports.size(); ++port) {
+        const auto &intent = record->ports[port];
+        const auto &operational =
+            saved.forwarding.ports[port].configuration;
+        if (!saved.forwarding.ports[port].configured ||
+            intent.speed_mbps != operational.speed_mbps ||
+            intent.mtu != operational.mtu ||
+            intent.admin_enabled != operational.admin_enabled)
+          return false;
+      }
+    }
     for (const auto &workflow : state.workflows.routers)
       if (!devices->get(workflow.device))
         return false;
@@ -3772,11 +4265,56 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
       return false;
     }
 
+    // NetworkPlane intentionally reconstructs route managers without a second
+    // checkpoint copy of control-owned policy, connected routes or static
+    // intent. Republish those already validated values now. The restored OSPF
+    // owner independently republishes its LSDB-derived generation; whichever
+    // arrives first is retained, and the second input triggers one complete
+    // RIB selection. Without this handoff, a browser reload could restore a
+    // Full adjacency and 34 calculated routes while leaving the manager
+    // permanently unconfigured and the forwarding table empty.
+    //
+    // Network restore above is the owner commit point. Every command below is
+    // infallible for the validated, preallocated records staged in `control`;
+    // failure is therefore an internal invariant violation, just like a
+    // post-swap forwarder restore failure inside NetworkPlane.
+    for (const auto &device : state.devices.entries) {
+      const auto &router = (*control)[device.handle.index];
+      if (!router)
+        std::terminate();
+      auto &policy = prepare(NetworkCommandKind::program_route_policy);
+      policy.device = device.handle;
+      policy.fib =
+          RoutePolicyProgram{.ipv4_statics = router->statics,
+                             .ipv6_statics = router->ipv6_statics,
+                             .maximum_ecmp_paths =
+                                 router->maximum_ecmp_paths};
+      const auto policy_result = dispatch(policy);
+      if (!policy_result || !policy_result->success)
+        std::terminate();
+
+      auto &ipv4 = prepare(NetworkCommandKind::program_fib);
+      ipv4.device = device.handle;
+      ipv4.fib = router->rib.compile(router->fib_generation);
+      const auto ipv4_result = dispatch(ipv4);
+      if (!ipv4_result || !ipv4_result->success)
+        std::terminate();
+
+      auto &ipv6 = prepare(NetworkCommandKind::program_ipv6_fib);
+      ipv6.device = device.handle;
+      ipv6.fib =
+          router->ipv6_rib.compile(router->ipv6_fib_generation);
+      const auto ipv6_result = dispatch(ipv6);
+      if (!ipv6_result || !ipv6_result->success)
+        std::terminate();
+    }
+
     // All allocating and fallible work completed before this commit. Registry
     // object addresses stay stable, preserving the workflow controller's
     // reference to sessions_ while their validated contents are replaced.
     devices_ = std::move(*devices);
     hosts_ = std::move(*hosts);
+    switches_ = std::move(*switches);
     topology_ = std::move(*topology);
     sessions_ = std::move(*sessions);
     for (std::size_t index = 0; index < hardware_.size(); ++index) {

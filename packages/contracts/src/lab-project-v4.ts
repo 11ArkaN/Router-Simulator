@@ -1,17 +1,19 @@
-// Project format 4 stores portable dual-stack multi-device intent. This module owns all
+// Project format 5 stores portable dual-stack multi-device intent. This module owns all
 // structural validation and has no browser, persistence or runtime dependency.
 
 import { PROFILE_CATALOG, PROFILE_CATALOG_COMPILED } from "./generated-device-catalog";
 import { dnssecAlgorithms } from "./generated-dnssec-policy";
 
-export const LAB_PROJECT_VERSION = 4 as const;
-export const LAB_MANIFEST_VERSION = 3 as const;
+export const LAB_PROJECT_VERSION = 5 as const;
+export const LAB_MANIFEST_VERSION = 4 as const;
 export const LAB_RELEASE = PROFILE_CATALOG.release;
 
 export type NodeId = string;
 export type LinkId = string;
 export type SessionId = string;
 export type DeviceProfileId = typeof PROFILE_CATALOG.profiles[number]["id"];
+export type SwitchProfileId =
+  typeof PROFILE_CATALOG.switch_profiles[number]["id"];
 type MdaProfileId = keyof typeof PROFILE_CATALOG.mdas;
 
 export interface RouterPortIntent {
@@ -63,6 +65,119 @@ export interface RouterRunningIntent {
     nextHop: string;
     outgoingPortId: string;
     indirect: boolean;
+  }>;
+  policyOptions: RouterPolicyOptionsIntent;
+  ospf: RouterOspfIntent;
+}
+
+export type RoutePolicyAction =
+  "accept" | "reject" | "drop" | "next-entry" | "next-policy";
+export type RoutePolicySource = "direct" | "static" | "ospf" | "ospf3";
+export type RoutePolicyMetricType = "type-1" | "type-2";
+
+export interface RouterPolicyOptionsIntent {
+  prefixLists: Array<{ name: string; prefixes: string[] }>;
+  statements: Array<{
+    name: string;
+    defaultAction: RoutePolicyAction | null;
+    entries: Array<{
+      number: number;
+      groupPrefixList: string;
+      sourceAddress: string | null;
+      sourcePrefixList: string;
+      protocolMld: boolean;
+      routePrefixList: string;
+      routeSource: RoutePolicySource | null;
+      protocolInstance: number | null;
+      routeTag: number | null;
+      action: RoutePolicyAction | null;
+      setMetric: number | null;
+      setMetricType: RoutePolicyMetricType | null;
+      setRouteTag: number | null;
+    }>;
+  }>;
+}
+
+export type OspfAddressFamily = "ipv4" | "ipv6" | "ipv4-over-ospfv3";
+export type OspfAreaType = "normal" | "stub" | "totally-stub" | "nssa";
+export type OspfNetworkType =
+  "point-to-point" | "broadcast" | "non-broadcast" | "point-to-multipoint";
+export type OspfAuthenticationMode =
+  "none" | "simple-password" | "message-digest" | "keychain" |
+  "authentication-trailer" | "ipsec-security-association";
+
+export interface RouterOspfIntent {
+  instances: Array<{
+    instanceId: number;
+    addressFamily: OspfAddressFamily;
+    routerId: string | null;
+    exportPolicy: string;
+    asbr: boolean;
+    asbrTracePathDomainId: number | null;
+    referenceBandwidthKbps: number;
+    routerPreference: number;
+    externalPreference: number;
+    spfTimersMilliseconds: {
+      initial: number;
+      second: number;
+      maximum: number;
+    };
+    lsaTimersMilliseconds: {
+      initial: number;
+      second: number;
+      maximum: number;
+    };
+    gracefulRestartHelper: boolean;
+    loopfreeAlternates: boolean;
+    overload: boolean;
+    admin: "up" | "down";
+    areas: Array<{
+      areaId: string;
+      type: OspfAreaType;
+      defaultMetric: number;
+      summaries: boolean;
+      nssaTranslateAlways: boolean;
+      ranges: Array<{
+        prefix: string;
+        advertisedMetric: number | null;
+        advertise: boolean;
+      }>;
+      interfaces: Array<{
+        interfaceName: string;
+        cost: number;
+        helloIntervalSeconds: number;
+        deadIntervalSeconds: number;
+        retransmitIntervalSeconds: number;
+        transmitDelaySeconds: number;
+        priority: number;
+        networkType: OspfNetworkType;
+        authentication: OspfAuthenticationMode;
+        keychain: string;
+        ipsecSaInbound: string;
+        ipsecSaOutbound: string;
+        passive: boolean;
+        mtuMismatchIgnore: boolean;
+        admin: "up" | "down";
+        nbmaNeighbors: Array<{
+          address: string;
+          priority: number;
+          pollIntervalSeconds: number;
+        }>;
+      }>;
+      virtualLinks: Array<{
+        transitAreaId: string;
+        remoteRouterId: string;
+        helloIntervalSeconds: number;
+        deadIntervalSeconds: number;
+        retransmitIntervalSeconds: number;
+        transmitDelaySeconds: number;
+        authentication: OspfAuthenticationMode;
+        keychain: string;
+        ipsecSaInbound: string;
+        ipsecSaOutbound: string;
+        admin: "up" | "down";
+      }>;
+    }>;
   }>;
 }
 
@@ -116,6 +231,21 @@ export interface HostProjectV4 {
       dhcpv6: HostDhcpv6Intent;
     };
   };
+}
+
+export interface SwitchProjectV5 {
+  id: NodeId;
+  kind: "switch";
+  profileId: SwitchProfileId;
+  name: string;
+  ports: Array<{
+    // Physical presentation uses one-based decimal port names. The runtime
+    // converts them to compact zero-based ordinals only after validation.
+    id: string;
+    admin: "up" | "down";
+    speedMbps: number;
+    mtu: number;
+  }>;
 }
 
 export interface HostDhcpv6ClientIntent {
@@ -279,6 +409,7 @@ export interface LabProjectV4 {
   name: string;
   routers: RouterProjectV4[];
   hosts: HostProjectV4[];
+  switches: SwitchProjectV5[];
   links: LinkProjectV4[];
   annotations: TopologyAnnotationV4[];
   notes: string;
@@ -291,11 +422,11 @@ export interface LabProjectV4 {
   updatedAt: string;
 }
 
-export interface ProjectManifestV3 {
+export interface ProjectManifestV4 {
   formatVersion: typeof LAB_MANIFEST_VERSION;
   mode: "project" | "checkpoint";
   project: LabProjectV4;
-  checkpointAbi: 6;
+  checkpointAbi: 7;
   checkpointBase64?: string;
   captureBase64?: string;
   terminalPresentation?: import("./terminal-presentation-v2").TerminalPresentationV2;
@@ -319,7 +450,7 @@ const maximumUint32 = 0xffffffff;
 export function hostInterfaceId(nodeId: NodeId): string {
   // FNV-1a is used only to create a stable nonzero local interface identity,
   // never as the RFC 7217 secret or cryptographic PRF. The resulting value is
-  // stored in project format 4, so later renames do not change timer ownership.
+  // stored in project format 5, so later renames do not change timer ownership.
   const offsetBasis = 14_695_981_039_346_656_037n;
   const prime = 1_099_511_628_211n;
   let value = offsetBasis;
@@ -787,12 +918,30 @@ export function createRouterProjectV4(id: NodeId, profileId: DeviceProfileId,
     id, kind: "router", profileId, release: LAB_RELEASE, systemName,
     hardware: emptyHardware(profile),
     running: { systemName, maximumEcmpPaths: 1, ports: [], interfaces: [], staticRoutes: [],
-      ipv6StaticRoutes: [] }
+      ipv6StaticRoutes: [], policyOptions: { prefixLists: [], statements: [] },
+      ospf: { instances: [] } }
   };
   // Fixed platforms receive their real derived inventory now. Modular routers
   // remain at zero ports until the user provisions and equips hardware.
   router.running.ports = equippedRouterPorts(router);
   return router;
+}
+
+export function createSwitchProjectV5(id: NodeId, profileId: SwitchProfileId,
+  name = id.toUpperCase()): SwitchProjectV5 {
+  assert(identifierPattern.test(id), "Switch ID is invalid");
+  const profile = PROFILE_CATALOG.switch_profiles.find(
+    (candidate) => candidate.id === profileId);
+  assert(profile, "Switch profile is not supported");
+  return {
+    id, kind: "switch", profileId, name,
+    ports: Array.from({ length: profile.port_count }, (_, index) => ({
+      id: String(index + 1),
+      admin: profile.default_admin_enabled ? "up" as const : "down" as const,
+      speedMbps: profile.default_speed_mbps,
+      mtu: profile.default_mtu
+    }))
+  };
 }
 
 export function createEmptyProjectV4(now = new Date()): LabProjectV4 {
@@ -803,7 +952,8 @@ export function createEmptyProjectV4(now = new Date()): LabProjectV4 {
     `lab-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   return {
     format: "router-simulator-project", version: LAB_PROJECT_VERSION,
-    projectId: random, name: "Untitled lab", routers: [], hosts: [], links: [],
+    projectId: random, name: "Untitled lab", routers: [], hosts: [],
+    switches: [], links: [],
     annotations: [], notes: "",
     layout: { nodes: {}, sidebarWidth: 194, inspectorWidth: 324,
       terminalHeight: 360 }, updatedAt: timestamp
@@ -882,6 +1032,9 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
     "Project exceeds the router limit");
   assert(Array.isArray(project.hosts) && project.hosts.length <= PROFILE_CATALOG.limits.hosts,
     "Project exceeds the host limit");
+  assert(Array.isArray(project.switches) &&
+    project.switches.length <= PROFILE_CATALOG.limits.switches,
+    "Project exceeds the switch limit");
   assert(Array.isArray(project.links) && project.links.length <= PROFILE_CATALOG.limits.links,
     "Project exceeds the link limit");
   assert(typeof project.notes === "string" && encoder.encode(project.notes).length <= 65536,
@@ -889,7 +1042,7 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
   assert(typeof project.updatedAt === "string" && Number.isFinite(Date.parse(project.updatedAt)),
     "Project update time is invalid");
 
-  const nodes = new Map<NodeId, "router" | "host">();
+  const nodes = new Map<NodeId, "router" | "host" | "switch">();
   // Address uniqueness spans router interfaces and hosts. Separate local
   // validators would miss conflicts between those two node classes.
   const macs = new Set<string>();
@@ -907,7 +1060,10 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
     validateHardware(router, profile);
     assert(router.running?.systemName === router.systemName && Array.isArray(router.running.ports) &&
       Array.isArray(router.running.interfaces) && Array.isArray(router.running.staticRoutes) &&
-      Array.isArray(router.running.ipv6StaticRoutes),
+      Array.isArray(router.running.ipv6StaticRoutes) &&
+      Array.isArray(router.running.policyOptions?.prefixLists) &&
+      Array.isArray(router.running.policyOptions?.statements) &&
+      Array.isArray(router.running.ospf?.instances),
       `${router.id} running configuration is invalid`);
     // Physical inventory bounds ports, while the Base router also owns one
     // portless system interface. Keep the portable validator aligned with the
@@ -952,12 +1108,15 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
         Array.isArray(item.ipv6Addresses) &&
         item.ipv6Addresses.length + (item.address ? 1 : 0) <=
           PROFILE_CATALOG.runtime.network_interface_ip_addresses &&
-        // The reserved Base-router loopback has neither a physical connector
-        // nor an Ethernet neighbor zone. Until its IPv6 owner is implemented,
-        // reject those leaves instead of restoring configuration as a no-op.
+        // The Base-router system interface is a protocol loopback, not an
+        // Ethernet attachment. It may own IPv4 and IPv6 host addresses, but
+        // never a port, ARP timers or any other data-link neighbor state.
+        // Address-level validation below enforces /128 and disables EUI-64 for
+        // its IPv6 rows because there is no link MAC from which to derive an
+        // interface identifier.
         (!systemInterface || (item.portId === "" &&
           (!parsedIpv4 || parsedIpv4.length === 32) &&
-          item.ipv6Addresses.length === 0 && item.arpTimeoutSeconds === null &&
+          item.arpTimeoutSeconds === null &&
           item.arpRetryTimerDeciseconds === null)) &&
         (item.admin === "up" || item.admin === "down"),
         `${router.id} interface configuration is invalid`);
@@ -980,6 +1139,8 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
           (!configured.eui64 ||
             (parsed.length === 64 && parsed.address ===
               (parsed.address >> 64n << 64n))) &&
+          (!systemInterface ||
+            (parsed.length === 128 && !configured.eui64)) &&
           Number.isSafeInteger(configured.primaryPreference) &&
           configured.primaryPreference >= 0 &&
           configured.primaryPreference <= maximumUint32 &&
@@ -1035,6 +1196,204 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
       `${router.id} duplicate IPv6 static route`);
       ipv6RouteKeys.add(`${route.prefix}|${route.nextHop}|${route.indirect}`);
     }
+    const prefixListNames = new Set<string>();
+    for (const list of router.running.policyOptions.prefixLists) {
+      assert(list && typeof list.name === "string" && list.name.length > 0 &&
+        encoder.encode(list.name).length <= 64 && !prefixListNames.has(list.name) &&
+        Array.isArray(list.prefixes) &&
+        list.prefixes.every((item) => canonicalPrefix(item) ||
+          parseIpv6Prefix(item) !== undefined),
+      `${router.id} policy prefix list is invalid`);
+      prefixListNames.add(list.name);
+    }
+    const policyNames = new Set<string>();
+    const policyActions = ["accept", "reject", "drop", "next-entry",
+      "next-policy"];
+    const routeSources = ["direct", "static", "ospf", "ospf3"];
+    for (const statement of router.running.policyOptions.statements) {
+      assert(statement && typeof statement.name === "string" &&
+        statement.name.length > 0 && encoder.encode(statement.name).length <= 64 &&
+        !policyNames.has(statement.name) &&
+        (statement.defaultAction === null ||
+          policyActions.includes(statement.defaultAction)) &&
+        Array.isArray(statement.entries),
+      `${router.id} policy statement is invalid`);
+      policyNames.add(statement.name);
+      let prior = 0;
+      for (const entry of statement.entries) {
+        assert(entry && Number.isSafeInteger(entry.number) &&
+          entry.number > prior &&
+          (entry.groupPrefixList === "" ||
+            prefixListNames.has(entry.groupPrefixList)) &&
+          (entry.sourceAddress === null ||
+            isIpv6AddressText(entry.sourceAddress)) &&
+          (entry.sourcePrefixList === "" ||
+            prefixListNames.has(entry.sourcePrefixList)) &&
+          typeof entry.protocolMld === "boolean" &&
+          (entry.routePrefixList === "" ||
+            prefixListNames.has(entry.routePrefixList)) &&
+          (entry.routeSource === null ||
+            routeSources.includes(entry.routeSource)) &&
+          (entry.protocolInstance === null ||
+            (Number.isSafeInteger(entry.protocolInstance) &&
+             entry.protocolInstance >= 0 && entry.protocolInstance <= 255)) &&
+          (entry.routeTag === null ||
+            (Number.isSafeInteger(entry.routeTag) && entry.routeTag >= 0 &&
+             entry.routeTag <= maximumUint32)) &&
+          (entry.action === null || policyActions.includes(entry.action)) &&
+          (entry.setMetric === null ||
+            (Number.isSafeInteger(entry.setMetric) && entry.setMetric >= 0 &&
+             entry.setMetric <= maximumUint32)) &&
+          (entry.setMetricType === null ||
+            entry.setMetricType === "type-1" ||
+            entry.setMetricType === "type-2") &&
+          (entry.setRouteTag === null ||
+            (Number.isSafeInteger(entry.setRouteTag) &&
+             entry.setRouteTag >= 0 &&
+             entry.setRouteTag <= maximumUint32)),
+        `${router.id} policy statement entry is invalid`);
+        prior = entry.number;
+      }
+    }
+    const ospfInstances = new Set<string>();
+    for (const instance of router.running.ospf.instances) {
+      const familyRange = instance.addressFamily === "ipv4"
+        ? [PROFILE_CATALOG.runtime.ospf_v2_instance_first,
+          PROFILE_CATALOG.runtime.ospf_v2_instance_last]
+        : instance.addressFamily === "ipv6"
+          ? [PROFILE_CATALOG.runtime.ospf_v3_ipv6_instance_first,
+            PROFILE_CATALOG.runtime.ospf_v3_ipv6_instance_last]
+          : [PROFILE_CATALOG.runtime.ospf_v3_ipv4_instance_first,
+            PROFILE_CATALOG.runtime.ospf_v3_ipv4_instance_last];
+      const key = `${instance.addressFamily}|${instance.instanceId}`;
+      const routerId = instance.routerId === null
+        ? undefined : parseIpv4(instance.routerId);
+      assert(Number.isSafeInteger(instance.instanceId) &&
+        instance.instanceId >= familyRange[0] &&
+        instance.instanceId <= familyRange[1] &&
+        !ospfInstances.has(key) &&
+        (instance.routerId === null ||
+          (routerId !== undefined && routerId !== 0)) &&
+        typeof instance.exportPolicy === "string" &&
+        encoder.encode(instance.exportPolicy).length <= 64 &&
+        (instance.exportPolicy === "" ||
+          policyNames.has(instance.exportPolicy)) &&
+        typeof instance.asbr === "boolean" &&
+        (instance.asbrTracePathDomainId === null ||
+          (instance.addressFamily === "ipv4" && instance.asbr &&
+           Number.isSafeInteger(instance.asbrTracePathDomainId) &&
+           instance.asbrTracePathDomainId >= 0 &&
+           instance.asbrTracePathDomainId <= 31)) &&
+        Number.isSafeInteger(instance.referenceBandwidthKbps) &&
+        instance.referenceBandwidthKbps > 0 &&
+        Number.isSafeInteger(instance.routerPreference) &&
+        instance.routerPreference >= 0 && instance.routerPreference <= 255 &&
+        Number.isSafeInteger(instance.externalPreference) &&
+        instance.externalPreference >= 0 &&
+        instance.externalPreference <= 255 &&
+        (instance.admin === "up" || instance.admin === "down") &&
+        Array.isArray(instance.areas),
+      `${router.id} OSPF instance is invalid`);
+      ospfInstances.add(key);
+      const areas = new Set<string>();
+      const attachedInterfaces = new Set<string>();
+      for (const area of instance.areas) {
+        const areaId = parseIpv4(area.areaId);
+        assert(areaId !== undefined && !areas.has(area.areaId) &&
+          ["normal", "stub", "totally-stub", "nssa"].includes(area.type) &&
+          Number.isSafeInteger(area.defaultMetric) &&
+          area.defaultMetric >= 0 &&
+          typeof area.summaries === "boolean" &&
+          typeof area.nssaTranslateAlways === "boolean" &&
+          Array.isArray(area.ranges) && Array.isArray(area.interfaces) &&
+          Array.isArray(area.virtualLinks),
+        `${router.id} OSPF area is invalid`);
+        areas.add(area.areaId);
+        for (const range of area.ranges)
+          assert((instance.addressFamily === "ipv6"
+            ? parseIpv6Prefix(range.prefix) !== undefined
+            : canonicalPrefix(range.prefix)) &&
+            (range.advertisedMetric === null ||
+              (Number.isSafeInteger(range.advertisedMetric) &&
+               range.advertisedMetric >= 0)) &&
+            typeof range.advertise === "boolean",
+          `${router.id} OSPF area range is invalid`);
+        for (const attached of area.interfaces) {
+          assert(interfaceNames.has(attached.interfaceName) &&
+            !attachedInterfaces.has(attached.interfaceName) &&
+            Number.isSafeInteger(attached.cost) && attached.cost >= 0 &&
+            attached.cost <=
+              PROFILE_CATALOG.protocol_defaults.ospf_interface_metric_maximum &&
+            Number.isSafeInteger(attached.helloIntervalSeconds) &&
+            attached.helloIntervalSeconds > 0 &&
+            Number.isSafeInteger(attached.deadIntervalSeconds) &&
+            attached.deadIntervalSeconds > attached.helloIntervalSeconds &&
+            Number.isSafeInteger(attached.retransmitIntervalSeconds) &&
+            attached.retransmitIntervalSeconds > 0 &&
+            Number.isSafeInteger(attached.transmitDelaySeconds) &&
+            attached.transmitDelaySeconds > 0 &&
+            Number.isSafeInteger(attached.priority) &&
+            attached.priority >= 0 && attached.priority <= 255 &&
+            ["point-to-point", "broadcast", "non-broadcast",
+              "point-to-multipoint"].includes(attached.networkType) &&
+            ["none", "simple-password", "message-digest", "keychain",
+              "authentication-trailer",
+              "ipsec-security-association"].includes(
+                attached.authentication) &&
+            typeof attached.keychain === "string" &&
+            encoder.encode(attached.keychain).length <= 32 &&
+            typeof attached.ipsecSaInbound === "string" &&
+            encoder.encode(attached.ipsecSaInbound).length <= 32 &&
+            typeof attached.ipsecSaOutbound === "string" &&
+            encoder.encode(attached.ipsecSaOutbound).length <= 32 &&
+            (attached.authentication === "ipsec-security-association"
+              ? attached.ipsecSaInbound.length > 0 &&
+                attached.ipsecSaOutbound.length > 0 &&
+                attached.keychain.length === 0
+              : attached.ipsecSaInbound.length === 0 &&
+                attached.ipsecSaOutbound.length === 0) &&
+            (attached.admin === "up" || attached.admin === "down") &&
+            Array.isArray(attached.nbmaNeighbors) &&
+            (attached.networkType === "non-broadcast" ||
+              attached.nbmaNeighbors.length === 0),
+          `${router.id} OSPF interface is invalid`);
+          attachedInterfaces.add(attached.interfaceName);
+        }
+        for (const virtualLink of area.virtualLinks) {
+          assert(parseIpv4(virtualLink.transitAreaId) !== undefined &&
+            parseIpv4(virtualLink.remoteRouterId) !== undefined &&
+            virtualLink.remoteRouterId !== "0.0.0.0" &&
+            Number.isSafeInteger(virtualLink.helloIntervalSeconds) &&
+            virtualLink.helloIntervalSeconds > 0 &&
+            Number.isSafeInteger(virtualLink.deadIntervalSeconds) &&
+            virtualLink.deadIntervalSeconds >
+              virtualLink.helloIntervalSeconds &&
+            Number.isSafeInteger(virtualLink.retransmitIntervalSeconds) &&
+            virtualLink.retransmitIntervalSeconds > 0 &&
+            Number.isSafeInteger(virtualLink.transmitDelaySeconds) &&
+            virtualLink.transmitDelaySeconds > 0 &&
+            ["none", "simple-password", "message-digest", "keychain",
+              "authentication-trailer",
+              "ipsec-security-association"].includes(
+                virtualLink.authentication) &&
+            typeof virtualLink.keychain === "string" &&
+            encoder.encode(virtualLink.keychain).length <= 32 &&
+            typeof virtualLink.ipsecSaInbound === "string" &&
+            encoder.encode(virtualLink.ipsecSaInbound).length <= 32 &&
+            typeof virtualLink.ipsecSaOutbound === "string" &&
+            encoder.encode(virtualLink.ipsecSaOutbound).length <= 32 &&
+            (virtualLink.authentication === "ipsec-security-association"
+              ? virtualLink.ipsecSaInbound.length > 0 &&
+                virtualLink.ipsecSaOutbound.length > 0 &&
+                virtualLink.keychain.length === 0
+              : virtualLink.ipsecSaInbound.length === 0 &&
+                virtualLink.ipsecSaOutbound.length === 0) &&
+            (virtualLink.admin === "up" ||
+             virtualLink.admin === "down"),
+          `${router.id} OSPF virtual link is invalid`);
+        }
+      }
+    }
     nodes.set(router.id, "router");
   }
 
@@ -1083,8 +1442,41 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
     nodes.set(host.id, "host");
   }
 
+  for (const ethernetSwitch of project.switches) {
+    assert(ethernetSwitch?.kind === "switch" &&
+      identifierPattern.test(ethernetSwitch.id) &&
+      !nodes.has(ethernetSwitch.id) &&
+      typeof ethernetSwitch.name === "string" &&
+      ethernetSwitch.name.length > 0 &&
+      encoder.encode(ethernetSwitch.name).length <= 64,
+    "Switch identity is invalid or duplicated");
+    const profile = PROFILE_CATALOG.switch_profiles.find(
+      (candidate) => candidate.id === ethernetSwitch.profileId);
+    assert(profile && Array.isArray(ethernetSwitch.ports) &&
+      ethernetSwitch.ports.length === profile.port_count,
+    `${ethernetSwitch.id} switch profile or port count is invalid`);
+    for (let index = 0; index < ethernetSwitch.ports.length; ++index) {
+      const port = ethernetSwitch.ports[index];
+      assert(port.id === String(index + 1) &&
+        (port.admin === "up" || port.admin === "down") &&
+        Number.isSafeInteger(port.speedMbps) &&
+        // Generated catalog arrays intentionally preserve literal members so
+        // editors can offer exact profile values. The imported project value
+        // is still an arbitrary number until this predicate proves membership,
+        // hence `some` is preferable to widening the generated contract.
+        profile.supported_speeds_mbps.some((speed) => speed === port.speedMbps) &&
+        Number.isSafeInteger(port.mtu) &&
+        port.mtu >= profile.minimum_mtu && port.mtu <= profile.maximum_mtu,
+      `${ethernetSwitch.id} switch port configuration is invalid`);
+    }
+    nodes.set(ethernetSwitch.id, "switch");
+  }
+
   const linkIds = new Set<string>();
   const boundPorts = new Set<string>();
+  const bridgeAdjacency = new Map<string, Set<string>>();
+  for (const ethernetSwitch of project.switches)
+    bridgeAdjacency.set(ethernetSwitch.id, new Set());
   for (const link of project.links) {
     // Validate the complete link header before reserving either endpoint in the
     // local bound-port set. A malformed link cannot poison following checks.
@@ -1106,15 +1498,43 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
       // equipped hardware leaves carrier down but does not delete the cable.
       const kind = nodes.get(endpoint.nodeId);
       assert(kind, `${link.id} contains a dangling endpoint`);
-      const router = kind === "router" ? project.routers.find((item) => item.id === endpoint.nodeId) : undefined;
+      const router = kind === "router" ?
+        project.routers.find((item) => item.id === endpoint.nodeId) : undefined;
+      const ethernetSwitch = kind === "switch" ?
+        project.switches.find((item) => item.id === endpoint.nodeId) : undefined;
       assert(kind === "host" ? endpoint.portId === "eth0" :
-        Boolean(router && isPossibleRouterPort(router.profileId, endpoint.portId)),
+        kind === "switch" ?
+          Boolean(ethernetSwitch &&
+            ethernetSwitch.ports.some((port) => port.id === endpoint.portId)) :
+          Boolean(router &&
+            isPossibleRouterPort(router.profileId, endpoint.portId)),
         `${link.id} references an invalid port`);
       const key = `${endpoint.nodeId}\u0000${endpoint.portId}`;
       // NUL cannot occur in either validated identifier, so this compound key
       // has no ambiguous concatenations such as ab+c versus a+bc.
       assert(!boundPorts.has(key), `${endpoint.nodeId} ${endpoint.portId} is already connected`);
       boundPorts.add(key);
+    }
+    if (nodes.get(link.endpoints[0].nodeId) === "switch" &&
+        nodes.get(link.endpoints[1].nodeId) === "switch") {
+      const source = link.endpoints[0].nodeId;
+      const destination = link.endpoints[1].nodeId;
+      const pending = [source];
+      const visited = new Set<string>();
+      while (pending.length) {
+        const current = pending.pop()!;
+        if (current === destination) {
+          throw new Error(`${link.id} creates an unsupported physical L2 loop`);
+        }
+        if (visited.has(current)) continue;
+        visited.add(current);
+        for (const neighbor of bridgeAdjacency.get(current) ?? [])
+          if (!visited.has(neighbor)) pending.push(neighbor);
+      }
+      // The graph is updated only after proving this edge acyclic. A rejected
+      // project therefore cannot influence validation of a later object.
+      bridgeAdjacency.get(source)!.add(destination);
+      bridgeAdjacency.get(destination)!.add(source);
     }
     linkIds.add(link.id);
   }

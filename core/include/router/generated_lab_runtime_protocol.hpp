@@ -17,6 +17,10 @@ inline constexpr std::string_view host_create_configured{"host-create-configured
 inline constexpr std::string_view host_delete{"host-delete"};
 inline constexpr std::string_view host_name_set{"host-name-set"};
 inline constexpr std::string_view host_update{"host-update"};
+inline constexpr std::string_view switch_create{"switch-create"};
+inline constexpr std::string_view switch_delete{"switch-delete"};
+inline constexpr std::string_view switch_name_set{"switch-name-set"};
+inline constexpr std::string_view switch_port_configure{"switch-port-configure"};
 inline constexpr std::string_view hardware_card_set{"hardware-card-set"};
 inline constexpr std::string_view hardware_mda_set{"hardware-mda-set"};
 inline constexpr std::string_view hardware_card_admin_set{"hardware-card-admin-set"};

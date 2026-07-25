@@ -135,16 +135,57 @@ parameters:
   static_sa_name: { display: "<sa-name>", description: "IPsec manual security association name" }
   static_sa_key: { display: "<authentication-key>", description: "Manual security association authentication key" }
   static_sa_spi: { display: "<spi>", description: "Manual security association SPI" }
+  ospf_instance: { display: "<ospf-instance>", description: "OSPF protocol instance identifier" }
+  ospf_area_id: { display: "<area-id>", description: "OSPF area identifier in dotted-decimal or unsigned form" }
+  ospf_transit_area_id: { display: "<transit-area-id>", description: "Non-backbone OSPF transit area identifier" }
+  ospf_interface_type: { display: "<point-to-point|broadcast|non-broadcast|point-to-multipoint>", description: "OSPF network type" }
+  ospf_metric: { display: "<metric>", description: "OSPF interface metric" }
+  ospf_priority: { display: "<priority>", description: "OSPF DR election priority" }
+  ospf_interval: { display: "<seconds>", description: "OSPF protocol interval in seconds" }
+  ospf_timer_milliseconds: { display: "<milliseconds>", description: "OSPF adaptive timer in milliseconds" }
+  ospf_reference_bandwidth: { display: "<bandwidth-in-kbps>", description: "OSPF reference bandwidth in kilobits per second" }
+  ospf_preference: { display: "<preference>", description: "OSPF route preference from 1 through 255" }
+  ospf_domain_id: { display: "<domain-id>", description: "OSPF redistribution trace-path domain bit from 1 through 31" }
+  policy_route_tag: { display: "<tag>", description: "Route tag from 1 through 4294967295" }
+  ospf_metric_type: { display: "<1|2>", description: "OSPF external metric type" }
+  ospf_authentication_key: { display: "<authentication-key>", description: "OSPF authentication key material" }
+  ospf_key_id: { display: "<key-id>", description: "OSPF key identifier from 0 through 63" }
+  ospf_keychain_name: { display: "<keychain-name>", description: "System security keychain name" }
+  ospf_ipsec_sa_outbound: { display: "<sa-name>", description: "Outbound OSPF3 IPsec security association name" }
+  ospf_keychain_time: { display: "<date-and-time>", description: "UTC key activation time in RFC 3339 form" }
+  ospf_tolerance: { display: "<seconds>", description: "Receive-key overlap from 0 through 4294967294 seconds" }
 
 # Question-mark help descriptions are release data. The renderer receives them
 # from generated TokenSpec rows and never invents help text in React.
 literals:
   chassis: "Display chassis status and hardware summary"
+  info: "Show information under the present working context"
   '"Base"': "Base router instance"
   '/': "Navigate to the root context"
   '//': "Switch to the other CLI engine"
   '\': "Navigate to the classic operational root"
   static-sa: "Configure or display a manual IPsec security association"
+  stub: "Configure an OSPF stub area"
+  nssa: "Configure an OSPF not-so-stubby area"
+  summaries: "Control inter-area summary advertisements"
+  default-metric: "Configure the stub-area default route metric"
+  area-range: "Configure ABR prefix summarization or suppression"
+  virtual-link: "Configure an OSPF backbone virtual link"
+  transit-area: "Select the non-backbone area traversed by the virtual link"
+  advertise: "Advertise the configured address range"
+  not-advertise: "Suppress the configured address range"
+  external-preference: "Configure preference for OSPF external routes"
+  export: "Select the route policy used for redistribution"
+  export-policy: "Select the route policy used for redistribution"
+  asbr: "Enable autonomous system boundary router behavior"
+  direct: "Match routes owned by a directly connected interface"
+  type: "Configure the OSPF external metric type"
+  set: "Replace the route metric with the supplied value"
+  trace-path: "Mark and reject routes using the OSPF domain bit"
+  overload: "Advertise the router as overloaded"
+  graceful-restart: "Configure graceful restart helper behavior"
+  helper: "Assist a gracefully restarting OSPF neighbor"
+  loopfree-alternates: "Enable local loop-free alternate calculation"
   tag: "Configure an IPv6 address policy tag"
   authentication: "Configure the manual security association authenticator"
   algorithm: "Select the authentication algorithm"
@@ -517,10 +558,347 @@ literals:
   'true': "Enable the configured behavior"
   'false': "Disable the configured behavior"
   '2': "Use IKE version 2"
+  ospf: "Configure or display OSPFv2"
+  ospf3: "Configure or display OSPFv3"
+  area: "Configure or select an OSPF area"
+  router-id: "Configure the OSPF router identifier"
+  reference-bandwidth: "Configure OSPF automatic interface costing"
+  interface-type: "Configure the OSPF network type"
+  point-to-point: "Use an OSPF point-to-point network"
+  broadcast: "Use an OSPF broadcast network"
+  non-broadcast: "Use an OSPF non-broadcast multi-access network"
+  point-to-multipoint: "Use an OSPF point-to-multipoint network"
+  priority: "Configure the OSPF DR election priority"
+  passive: "Suppress OSPF packets while advertising the interface prefix"
+  mtu-ignore: "Allow database exchange despite an interface MTU mismatch"
+  hello-interval: "Configure the OSPF Hello interval"
+  dead-interval: "Configure the OSPF RouterDeadInterval"
+  retransmit-interval: "Configure the OSPF retransmission interval"
+  transit-delay: "Configure the estimated LSA transmission delay"
+  timers: "Configure OSPF protocol timers"
+  spf-wait: "Configure adaptive SPF calculation delays"
+  lsa-generate: "Configure adaptive LSA generation delays"
+  spf-initial-wait: "Configure the initial SPF calculation delay"
+  spf-second-wait: "Configure the second SPF calculation delay"
+  spf-max-wait: "Configure the maximum SPF calculation delay"
+  lsa-initial-wait: "Configure the initial LSA generation delay"
+  lsa-second-wait: "Configure the second LSA generation delay"
+  max-lsa-wait: "Configure the maximum LSA generation delay"
+  routes: "Display routes calculated by OSPF"
+  authentication-type: "Select OSPF interface authentication"
+  password: "Use the OSPF simple password algorithm"
+  message-digest: "Use the OSPF MD5 message digest algorithm"
+  authentication-key: "Configure protected authentication key material"
+  message-digest-key: "Configure an OSPF MD5 key and Key ID"
+  authentication-keychain: "Associate a system security keychain"
+  auth-keychain: "Associate a system security keychain"
+  sa-name: "Select the named security association"
+  keychains: "Configure system security keychains"
+  keychain: "Configure a named system security keychain"
+  hmac-sha-1: "Use the HMAC-SHA-1 algorithm"
+  hmac-sha-256: "Use the HMAC-SHA-256 algorithm"
+  begin-time: "Configure the key activation time"
+  now: "Activate the key at the current system time"
+  tolerance: "Configure receive-key overlap"
+  bi: "Configure bidirectional key entries"
 
 # The schema contains grammar, never a startup transcript. Execution handlers
 # are selected by stable IDs while tokens and parameter providers remain data.
 commands:
+  # OSPF configuration is generated release grammar. MD leaves edit a
+  # candidate; classic leaves apply immediately to the same canonical intent.
+  - { id: md_ospf_admin_enable, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, admin-state, enable] }
+  - { id: md_ospf_admin_disable, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, admin-state, disable] }
+  - { id: md_ospf_router_id, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, router-id, { parameter: ipv4 }] }
+  - { id: md_ospf_reference_bandwidth, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, reference-bandwidth, { parameter: ospf_reference_bandwidth }] }
+  - { id: md_ospf_preference, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, preference, { parameter: ospf_preference }] }
+  - { id: md_ospf_external_preference, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, external-preference, { parameter: ospf_preference }] }
+  - { id: md_ospf_export_policy, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, export-policy, { parameter: policy_name }] }
+  - { id: md_ospf_asbr, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, asbr] }
+  - { id: md_ospf_asbr_trace_path, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, asbr, trace-path, { parameter: ospf_domain_id }] }
+  - { id: md_delete_ospf_asbr, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }, asbr] }
+  - { id: md_ospf_overload, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, overload, { parameter: boolean }] }
+  - { id: md_ospf_graceful_restart, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, graceful-restart, { parameter: boolean }] }
+  - { id: md_ospf_loopfree_alternates, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, loopfree-alternates, { parameter: boolean }] }
+  - { id: md_ospf_spf_initial_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, timers, spf-wait, spf-initial-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: md_ospf_spf_second_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, timers, spf-wait, spf-second-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: md_ospf_spf_max_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, timers, spf-wait, spf-max-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: md_ospf_lsa_initial_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, timers, lsa-generate, lsa-initial-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: md_ospf_lsa_second_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, timers, lsa-generate, lsa-second-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: md_ospf_lsa_max_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, timers, lsa-generate, max-lsa-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: md_ospf_area_stub, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, stub] }
+  - { id: md_delete_ospf_area_stub, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, stub] }
+  - { id: md_ospf_area_nssa, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, nssa] }
+  - { id: md_delete_ospf_area_nssa, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, nssa] }
+  - { id: md_ospf_area_summaries, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, summaries, { parameter: boolean }] }
+  - { id: md_ospf_area_default_metric, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, default-metric, { parameter: ospf_metric }] }
+  - { id: md_ospf_area_range_advertise, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, area-range, { parameter: ip_prefix }, advertise] }
+  - { id: md_ospf_area_range_suppress, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, area-range, { parameter: ip_prefix }, not-advertise] }
+  - { id: md_delete_ospf_area_range, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, area-range, { parameter: ip_prefix }] }
+  - { id: md_ospf_virtual_link, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }] }
+  - { id: md_delete_ospf_virtual_link, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }] }
+  - { id: md_ospf_virtual_link_hello, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, hello-interval, { parameter: ospf_interval }] }
+  - { id: md_delete_ospf_virtual_link_hello, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, hello-interval] }
+  - { id: md_ospf_virtual_link_dead, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, dead-interval, { parameter: ospf_interval }] }
+  - { id: md_delete_ospf_virtual_link_dead, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, dead-interval] }
+  - { id: md_ospf_virtual_link_retransmit, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, retransmit-interval, { parameter: ospf_interval }] }
+  - { id: md_delete_ospf_virtual_link_retransmit, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, retransmit-interval] }
+  - { id: md_ospf_virtual_link_transit_delay, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, transit-delay, { parameter: ospf_interval }] }
+  - { id: md_delete_ospf_virtual_link_transit_delay, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, transit-delay] }
+  - { id: md_ospf_interface_type, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, interface-type, { parameter: ospf_interface_type }] }
+  - { id: md_ospf_interface_admin_enable, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, admin-state, enable] }
+  - { id: md_ospf_interface_admin_disable, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, admin-state, disable] }
+  - { id: md_ospf_interface_metric, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, metric, { parameter: ospf_metric }] }
+  - { id: md_ospf_interface_priority, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, priority, { parameter: ospf_priority }] }
+  - { id: md_ospf_interface_passive, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, passive, { parameter: boolean }] }
+  - { id: md_ospf_interface_mtu_ignore, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, mtu-ignore, { parameter: boolean }] }
+  - { id: md_ospf_interface_hello, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, hello-interval, { parameter: ospf_interval }] }
+  - { id: md_ospf_interface_dead, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, dead-interval, { parameter: ospf_interval }] }
+  - { id: md_ospf_interface_retransmit, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, retransmit-interval, { parameter: ospf_interval }] }
+  - { id: md_ospf_interface_transit_delay, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, transit-delay, { parameter: ospf_interval }] }
+  - { id: md_ospf_interface_neighbor, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, neighbor, { parameter: ipv4 }] }
+  - { id: md_delete_ospf_interface_neighbor, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, neighbor, { parameter: ipv4 }] }
+  - { id: md_delete_ospf_interface, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }] }
+  - { id: md_delete_ospf_area, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }] }
+  - { id: md_delete_ospf, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }] }
+
+  - { id: md_ospf3_admin_enable, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, admin-state, enable] }
+  - { id: md_ospf3_admin_disable, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, admin-state, disable] }
+  - { id: md_ospf3_router_id, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, router-id, { parameter: ipv4 }] }
+  - { id: md_ospf3_reference_bandwidth, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, reference-bandwidth, { parameter: ospf_reference_bandwidth }] }
+  - { id: md_ospf3_preference, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, preference, { parameter: ospf_preference }] }
+  - { id: md_ospf3_external_preference, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, external-preference, { parameter: ospf_preference }] }
+  - { id: md_ospf3_export_policy, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, export-policy, { parameter: policy_name }] }
+  - { id: md_ospf3_asbr, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, asbr] }
+  - { id: md_delete_ospf3_asbr, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, asbr] }
+  - { id: md_ospf3_overload, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, overload, { parameter: boolean }] }
+  - { id: md_ospf3_graceful_restart, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, graceful-restart, { parameter: boolean }] }
+  - { id: md_ospf3_loopfree_alternates, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, loopfree-alternates, { parameter: boolean }] }
+  - { id: md_ospf3_spf_initial_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, timers, spf-wait, spf-initial-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: md_ospf3_spf_second_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, timers, spf-wait, spf-second-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: md_ospf3_spf_max_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, timers, spf-wait, spf-max-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: md_ospf3_lsa_initial_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, timers, lsa-generate, lsa-initial-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: md_ospf3_lsa_second_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, timers, lsa-generate, lsa-second-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: md_ospf3_lsa_max_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, timers, lsa-generate, max-lsa-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: md_ospf3_area_stub, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, stub] }
+  - { id: md_delete_ospf3_area_stub, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, stub] }
+  - { id: md_ospf3_area_nssa, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, nssa] }
+  - { id: md_delete_ospf3_area_nssa, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, nssa] }
+  - { id: md_ospf3_area_summaries, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, summaries, { parameter: boolean }] }
+  - { id: md_ospf3_area_default_metric, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, default-metric, { parameter: ospf_metric }] }
+  - { id: md_ospf3_area_range_advertise, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, area-range, { parameter: ip_prefix }, advertise] }
+  - { id: md_ospf3_area_range_suppress, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, area-range, { parameter: ip_prefix }, not-advertise] }
+  - { id: md_delete_ospf3_area_range, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, area-range, { parameter: ip_prefix }] }
+  - { id: md_ospf3_virtual_link, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }] }
+  - { id: md_delete_ospf3_virtual_link, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }] }
+  - { id: md_ospf3_virtual_link_hello, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, hello-interval, { parameter: ospf_interval }] }
+  - { id: md_delete_ospf3_virtual_link_hello, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, hello-interval] }
+  - { id: md_ospf3_virtual_link_dead, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, dead-interval, { parameter: ospf_interval }] }
+  - { id: md_delete_ospf3_virtual_link_dead, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, dead-interval] }
+  - { id: md_ospf3_virtual_link_retransmit, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, retransmit-interval, { parameter: ospf_interval }] }
+  - { id: md_delete_ospf3_virtual_link_retransmit, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, retransmit-interval] }
+  - { id: md_ospf3_virtual_link_transit_delay, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, transit-delay, { parameter: ospf_interval }] }
+  - { id: md_delete_ospf3_virtual_link_transit_delay, engines: [md], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, transit-delay] }
+  - { id: md_ospf3_virtual_link_auth_bidirectional, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, authentication, bidirectional, sa-name, { parameter: static_sa_name }] }
+  - { id: md_ospf3_virtual_link_auth_directional, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, authentication, inbound, { parameter: static_sa_name }, outbound, { parameter: ospf_ipsec_sa_outbound }] }
+  - { id: md_delete_ospf3_virtual_link_authentication, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, authentication] }
+  - { id: md_ospf3_interface_type, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, interface-type, { parameter: ospf_interface_type }] }
+  - { id: md_ospf3_interface_admin_enable, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, admin-state, enable] }
+  - { id: md_ospf3_interface_admin_disable, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, admin-state, disable] }
+  - { id: md_ospf3_interface_metric, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, metric, { parameter: ospf_metric }] }
+  - { id: md_ospf3_interface_priority, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, priority, { parameter: ospf_priority }] }
+  - { id: md_ospf3_interface_passive, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, passive, { parameter: boolean }] }
+  - { id: md_ospf3_interface_mtu_ignore, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, mtu-ignore, { parameter: boolean }] }
+  - { id: md_ospf3_interface_hello, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, hello-interval, { parameter: ospf_interval }] }
+  - { id: md_ospf3_interface_dead, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, dead-interval, { parameter: ospf_interval }] }
+  - { id: md_ospf3_interface_retransmit, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, retransmit-interval, { parameter: ospf_interval }] }
+  - { id: md_ospf3_interface_transit_delay, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, transit-delay, { parameter: ospf_interval }] }
+  - { id: md_ospf3_interface_neighbor, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, neighbor, { parameter: ipv6 }] }
+  - { id: md_delete_ospf3_interface_neighbor, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, neighbor, { parameter: ipv6 }] }
+  - { id: md_delete_ospf3_interface, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }] }
+  - { id: md_delete_ospf3_area, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }] }
+  - { id: md_delete_ospf3, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }] }
+
+  - { id: classic_ospf_create, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }] }
+  - { id: classic_ospf_create_router_id, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, { parameter: ipv4 }] }
+  - { id: classic_no_ospf, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, no, ospf, { parameter: ospf_instance }] }
+  - { id: classic_ospf_shutdown, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, shutdown] }
+  - { id: classic_ospf_no_shutdown, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, no, shutdown] }
+  - { id: classic_ospf_reference_bandwidth, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, reference-bandwidth, { parameter: ospf_reference_bandwidth }] }
+  - { id: classic_ospf_preference, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, preference, { parameter: ospf_preference }] }
+  - { id: classic_ospf_external_preference, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, external-preference, { parameter: ospf_preference }] }
+  - { id: classic_ospf_export_policy, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, export, { parameter: policy_name }] }
+  - { id: classic_ospf_asbr, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, asbr] }
+  - { id: classic_ospf_asbr_trace_path, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, asbr, trace-path, { parameter: ospf_domain_id }] }
+  - { id: classic_ospf_no_asbr, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, no, asbr] }
+  - { id: classic_ospf_overload, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, overload] }
+  - { id: classic_ospf_no_overload, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, no, overload] }
+  - { id: classic_ospf_graceful_restart, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, graceful-restart, helper] }
+  - { id: classic_ospf_no_graceful_restart, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, no, graceful-restart, helper] }
+  - { id: classic_ospf_loopfree_alternates, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, loopfree-alternates] }
+  - { id: classic_ospf_no_loopfree_alternates, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, no, loopfree-alternates] }
+  - { id: classic_ospf_spf_initial_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, timers, spf-wait, spf-initial-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: classic_ospf_spf_second_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, timers, spf-wait, spf-second-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: classic_ospf_spf_max_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, timers, spf-wait, spf-max-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: classic_ospf_lsa_initial_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, timers, lsa-generate, lsa-initial-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: classic_ospf_lsa_second_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, timers, lsa-generate, lsa-second-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: classic_ospf_lsa_max_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, timers, lsa-generate, max-lsa-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: classic_ospf_area_stub, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, stub] }
+  - { id: classic_ospf_area_no_stub, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, no, stub] }
+  - { id: classic_ospf_area_nssa, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, nssa] }
+  - { id: classic_ospf_area_no_nssa, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, no, nssa] }
+  - { id: classic_ospf_area_no_summaries, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, no, summaries] }
+  - { id: classic_ospf_area_summaries, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, summaries] }
+  - { id: classic_ospf_area_default_metric, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, default-metric, { parameter: ospf_metric }] }
+  - { id: classic_ospf_area_range_advertise, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, area-range, { parameter: ip_prefix }, advertise] }
+  - { id: classic_ospf_area_range_suppress, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, area-range, { parameter: ip_prefix }, not-advertise] }
+  - { id: classic_ospf_area_no_range, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, no, area-range, { parameter: ip_prefix }] }
+  - { id: classic_ospf_virtual_link, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }] }
+  - { id: classic_ospf_no_virtual_link, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, no, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }] }
+  - { id: classic_ospf_virtual_link_hello, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, hello-interval, { parameter: ospf_interval }] }
+  - { id: classic_ospf_virtual_link_no_hello, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, no, hello-interval] }
+  - { id: classic_ospf_virtual_link_dead, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, dead-interval, { parameter: ospf_interval }] }
+  - { id: classic_ospf_virtual_link_no_dead, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, no, dead-interval] }
+  - { id: classic_ospf_virtual_link_retransmit, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, retransmit-interval, { parameter: ospf_interval }] }
+  - { id: classic_ospf_virtual_link_no_retransmit, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, no, retransmit-interval] }
+  - { id: classic_ospf_virtual_link_transit_delay, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, transit-delay, { parameter: ospf_interval }] }
+  - { id: classic_ospf_virtual_link_no_transit_delay, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, no, transit-delay] }
+  - { id: classic_ospf_interface_type, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, interface-type, { parameter: ospf_interface_type }] }
+  - { id: classic_ospf_interface_metric, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, metric, { parameter: ospf_metric }] }
+  - { id: classic_ospf_interface_priority, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, priority, { parameter: ospf_priority }] }
+  - { id: classic_ospf_interface_passive, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, passive] }
+  - { id: classic_ospf_interface_no_passive, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, no, passive] }
+  - { id: classic_ospf_interface_neighbor, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, neighbor, { parameter: ipv4 }] }
+  - { id: classic_ospf_interface_no_neighbor, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, no, neighbor, { parameter: ipv4 }] }
+  - { id: classic_ospf_no_interface, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, no, interface, { parameter: interface_name }] }
+
+  - { id: classic_ospf3_create, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }] }
+  - { id: classic_ospf3_create_router_id, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, { parameter: ipv4 }] }
+  - { id: classic_no_ospf3, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, no, ospf3, { parameter: ospf_instance }] }
+  - { id: classic_ospf3_shutdown, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, shutdown] }
+  - { id: classic_ospf3_no_shutdown, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, no, shutdown] }
+  - { id: classic_ospf3_reference_bandwidth, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, reference-bandwidth, { parameter: ospf_reference_bandwidth }] }
+  - { id: classic_ospf3_preference, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, preference, { parameter: ospf_preference }] }
+  - { id: classic_ospf3_external_preference, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, external-preference, { parameter: ospf_preference }] }
+  - { id: classic_ospf3_export_policy, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, export, { parameter: policy_name }] }
+  - { id: classic_ospf3_asbr, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, asbr] }
+  - { id: classic_ospf3_no_asbr, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, no, asbr] }
+  - { id: classic_ospf3_overload, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, overload] }
+  - { id: classic_ospf3_no_overload, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, no, overload] }
+  - { id: classic_ospf3_graceful_restart, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, graceful-restart, helper] }
+  - { id: classic_ospf3_no_graceful_restart, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, no, graceful-restart, helper] }
+  - { id: classic_ospf3_loopfree_alternates, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, loopfree-alternates] }
+  - { id: classic_ospf3_no_loopfree_alternates, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, no, loopfree-alternates] }
+  - { id: classic_ospf3_spf_initial_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, timers, spf-wait, spf-initial-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: classic_ospf3_spf_second_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, timers, spf-wait, spf-second-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: classic_ospf3_spf_max_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, timers, spf-wait, spf-max-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: classic_ospf3_lsa_initial_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, timers, lsa-generate, lsa-initial-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: classic_ospf3_lsa_second_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, timers, lsa-generate, lsa-second-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: classic_ospf3_lsa_max_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, timers, lsa-generate, max-lsa-wait, { parameter: ospf_timer_milliseconds }] }
+  - { id: classic_ospf3_area_stub, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, stub] }
+  - { id: classic_ospf3_area_no_stub, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, no, stub] }
+  - { id: classic_ospf3_area_nssa, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, nssa] }
+  - { id: classic_ospf3_area_no_nssa, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, no, nssa] }
+  - { id: classic_ospf3_area_no_summaries, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, no, summaries] }
+  - { id: classic_ospf3_area_summaries, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, summaries] }
+  - { id: classic_ospf3_area_default_metric, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, default-metric, { parameter: ospf_metric }] }
+  - { id: classic_ospf3_area_range_advertise, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, area-range, { parameter: ip_prefix }, advertise] }
+  - { id: classic_ospf3_area_range_suppress, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, area-range, { parameter: ip_prefix }, not-advertise] }
+  - { id: classic_ospf3_area_no_range, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, no, area-range, { parameter: ip_prefix }] }
+  - { id: classic_ospf3_virtual_link, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }] }
+  - { id: classic_ospf3_no_virtual_link, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, no, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }] }
+  - { id: classic_ospf3_virtual_link_hello, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, hello-interval, { parameter: ospf_interval }] }
+  - { id: classic_ospf3_virtual_link_no_hello, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, no, hello-interval] }
+  - { id: classic_ospf3_virtual_link_dead, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, dead-interval, { parameter: ospf_interval }] }
+  - { id: classic_ospf3_virtual_link_no_dead, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, no, dead-interval] }
+  - { id: classic_ospf3_virtual_link_retransmit, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, retransmit-interval, { parameter: ospf_interval }] }
+  - { id: classic_ospf3_virtual_link_no_retransmit, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, no, retransmit-interval] }
+  - { id: classic_ospf3_virtual_link_transit_delay, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, transit-delay, { parameter: ospf_interval }] }
+  - { id: classic_ospf3_virtual_link_no_transit_delay, engines: [classic], source_id: nokia.sros.26_7.ospf.virtual_link, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, no, transit-delay] }
+  - { id: classic_ospf3_virtual_link_auth_bidirectional, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, authentication, bidirectional, { parameter: static_sa_name }] }
+  - { id: classic_ospf3_virtual_link_auth_directional, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, authentication, inbound, { parameter: static_sa_name }, outbound, { parameter: ospf_ipsec_sa_outbound }] }
+  - { id: classic_ospf3_virtual_link_no_authentication, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, virtual-link, { parameter: ipv4 }, transit-area, { parameter: ospf_transit_area_id }, no, authentication] }
+  - { id: classic_ospf3_interface_type, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, interface-type, { parameter: ospf_interface_type }] }
+  - { id: classic_ospf3_interface_metric, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, metric, { parameter: ospf_metric }] }
+  - { id: classic_ospf3_interface_priority, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, priority, { parameter: ospf_priority }] }
+  - { id: classic_ospf3_interface_passive, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, passive] }
+  - { id: classic_ospf3_interface_no_passive, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, no, passive] }
+  - { id: classic_ospf3_interface_neighbor, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, neighbor, { parameter: ipv6 }] }
+  - { id: classic_ospf3_interface_no_neighbor, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, no, neighbor, { parameter: ipv6 }] }
+  - { id: classic_ospf3_no_interface, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, no, interface, { parameter: interface_name }] }
+
+  # Authentication syntax remains schema data. Execution replaces every
+  # clear key with a purpose-bound vault handle before editing intent.
+  - { id: md_ospf_interface_auth_password, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, authentication-type, password] }
+  - { id: md_ospf_interface_auth_message_digest, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, authentication-type, message-digest] }
+  - { id: md_ospf_interface_authentication_key, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, authentication-key, { parameter: ospf_authentication_key }] }
+  - { id: md_ospf_interface_message_digest_key, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, message-digest-key, { parameter: ospf_key_id }, md5, { parameter: ospf_authentication_key }] }
+  - { id: md_ospf_interface_auth_keychain, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, authentication-keychain, { parameter: ospf_keychain_name }] }
+  - { id: md_delete_ospf_interface_authentication, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, authentication-type] }
+  - { id: md_ospf3_interface_auth_keychain, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, authentication, bidirectional, sa-name, { parameter: static_sa_name }] }
+  - { id: md_ospf3_interface_auth_directional, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, authentication, inbound, { parameter: static_sa_name }, outbound, { parameter: ospf_ipsec_sa_outbound }] }
+  - { id: md_delete_ospf3_interface_authentication, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, authentication] }
+  - { id: classic_ospf_interface_auth_password, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, authentication-type, password] }
+  - { id: classic_ospf_interface_auth_message_digest, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, authentication-type, message-digest] }
+  - { id: classic_ospf_interface_authentication_key, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, authentication-key, { parameter: ospf_authentication_key }] }
+  - { id: classic_ospf_interface_message_digest_key, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, message-digest-key, { parameter: ospf_key_id }, md5, { parameter: ospf_authentication_key }] }
+  - { id: classic_ospf_interface_auth_keychain, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, auth-keychain, { parameter: ospf_keychain_name }] }
+  - { id: classic_ospf_interface_no_authentication, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, no, authentication-type] }
+  - { id: classic_ospf3_interface_auth_keychain, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, authentication, bidirectional, { parameter: static_sa_name }] }
+  - { id: classic_ospf3_interface_auth_directional, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, authentication, inbound, { parameter: static_sa_name }, outbound, { parameter: ospf_ipsec_sa_outbound }] }
+  - { id: classic_ospf3_interface_no_authentication, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, no, authentication] }
+
+  - { id: md_keychain_entry_password, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychains, keychain, { parameter: ospf_keychain_name }, bidirectional, entry, { parameter: ospf_key_id }, algorithm, password] }
+  - { id: md_keychain_entry_message_digest, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychains, keychain, { parameter: ospf_keychain_name }, bidirectional, entry, { parameter: ospf_key_id }, algorithm, message-digest] }
+  - { id: md_keychain_entry_hmac_sha1, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychains, keychain, { parameter: ospf_keychain_name }, bidirectional, entry, { parameter: ospf_key_id }, algorithm, hmac-sha-1] }
+  - { id: md_keychain_entry_hmac_sha256, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychains, keychain, { parameter: ospf_keychain_name }, bidirectional, entry, { parameter: ospf_key_id }, algorithm, hmac-sha-256] }
+  - { id: md_keychain_entry_key, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychains, keychain, { parameter: ospf_keychain_name }, bidirectional, entry, { parameter: ospf_key_id }, authentication-key, { parameter: ospf_authentication_key }] }
+  - { id: md_keychain_entry_begin_now, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychains, keychain, { parameter: ospf_keychain_name }, bidirectional, entry, { parameter: ospf_key_id }, begin-time, now] }
+  - { id: md_keychain_entry_begin_time, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychains, keychain, { parameter: ospf_keychain_name }, bidirectional, entry, { parameter: ospf_key_id }, begin-time, { parameter: ospf_keychain_time }] }
+  - { id: md_keychain_entry_tolerance, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychains, keychain, { parameter: ospf_keychain_name }, bidirectional, entry, { parameter: ospf_key_id }, tolerance, { parameter: ospf_tolerance }] }
+  - { id: md_delete_keychain_entry, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [delete, system, security, keychains, keychain, { parameter: ospf_keychain_name }, bidirectional, entry, { parameter: ospf_key_id }] }
+  - { id: md_delete_keychain, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [delete, system, security, keychains, keychain, { parameter: ospf_keychain_name }] }
+  - { id: classic_keychain_entry_password, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychain, { parameter: ospf_keychain_name }, direction, bi, entry, { parameter: ospf_key_id }, key, { parameter: ospf_authentication_key }, algorithm, password] }
+  - { id: classic_keychain_entry_message_digest, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychain, { parameter: ospf_keychain_name }, direction, bi, entry, { parameter: ospf_key_id }, key, { parameter: ospf_authentication_key }, algorithm, message-digest] }
+  - { id: classic_keychain_entry_hmac_sha1, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychain, { parameter: ospf_keychain_name }, direction, bi, entry, { parameter: ospf_key_id }, key, { parameter: ospf_authentication_key }, algorithm, hmac-sha-1] }
+  - { id: classic_keychain_entry_hmac_sha256, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychain, { parameter: ospf_keychain_name }, direction, bi, entry, { parameter: ospf_key_id }, key, { parameter: ospf_authentication_key }, algorithm, hmac-sha-256] }
+  - { id: classic_keychain_entry_begin_now, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychain, { parameter: ospf_keychain_name }, direction, bi, entry, { parameter: ospf_key_id }, begin-time, now] }
+  - { id: classic_keychain_entry_tolerance, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychain, { parameter: ospf_keychain_name }, direction, bi, entry, { parameter: ospf_key_id }, tolerance, { parameter: ospf_tolerance }] }
+  - { id: classic_keychain_no_entry, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychain, { parameter: ospf_keychain_name }, direction, bi, no, entry, { parameter: ospf_key_id }] }
+  - { id: classic_no_keychain, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, no, keychain, { parameter: ospf_keychain_name }] }
+
+  - { id: show_router_ospf_status, engines: [md, classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [show, router, ospf, status] }
+  - { id: show_router_ospf_interface, engines: [md, classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [show, router, ospf, interface] }
+  - { id: show_router_ospf_interface_named, engines: [md, classic], source_id: nokia.sros.26_7.ospf.interface_detail, tokens: [show, router, ospf, interface, { parameter: interface_name }] }
+  - { id: show_router_ospf_interface_detail, engines: [md, classic], modifier: detail, source_id: nokia.sros.26_7.ospf.interface_detail, tokens: [show, router, ospf, interface, detail] }
+  - { id: show_router_ospf_interface_named_detail, engines: [md, classic], modifier: detail, source_id: nokia.sros.26_7.ospf.interface_detail, tokens: [show, router, ospf, interface, { parameter: interface_name }, detail] }
+  - { id: show_router_ospf_neighbor, engines: [md, classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [show, router, ospf, neighbor] }
+  - { id: show_router_ospf_neighbor_detail, engines: [md, classic], modifier: detail, source_id: nokia.sros.26_7.ospf.neighbor_detail, tokens: [show, router, ospf, neighbor, detail] }
+  - { id: show_router_ospf_database, engines: [md, classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [show, router, ospf, database] }
+  - { id: show_router_ospf_database_detail, engines: [md, classic], modifier: detail, source_id: nokia.sros.26_7.ospf.database_detail, tokens: [show, router, ospf, database, detail] }
+  - { id: show_router_ospf_routes, engines: [md, classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [show, router, ospf, routes] }
+  - { id: show_router_ospf3_status, engines: [md, classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [show, router, ospf3, status] }
+  - { id: show_router_ospf3_interface, engines: [md, classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [show, router, ospf3, interface] }
+  - { id: show_router_ospf3_interface_named, engines: [md, classic], source_id: nokia.sros.26_7.ospf.interface_detail, tokens: [show, router, ospf3, interface, { parameter: interface_name }] }
+  - { id: show_router_ospf3_interface_detail, engines: [md, classic], modifier: detail, source_id: nokia.sros.26_7.ospf.interface_detail, tokens: [show, router, ospf3, interface, detail] }
+  - { id: show_router_ospf3_interface_named_detail, engines: [md, classic], modifier: detail, source_id: nokia.sros.26_7.ospf.interface_detail, tokens: [show, router, ospf3, interface, { parameter: interface_name }, detail] }
+  - { id: show_router_ospf3_neighbor, engines: [md, classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [show, router, ospf3, neighbor] }
+  - { id: show_router_ospf3_neighbor_detail, engines: [md, classic], modifier: detail, source_id: nokia.sros.26_7.ospf.neighbor_detail, tokens: [show, router, ospf3, neighbor, detail] }
+  - { id: show_router_ospf3_database, engines: [md, classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [show, router, ospf3, database] }
+  - { id: show_router_ospf3_database_detail, engines: [md, classic], modifier: detail, source_id: nokia.sros.26_7.ospf.database_detail, tokens: [show, router, ospf3, database, detail] }
+  - { id: show_router_ospf3_routes, engines: [md, classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [show, router, ospf3, routes] }
+  - { id: reset_router_ospf_neighbor, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [reset, router, '"Base"', ospf, { parameter: ospf_instance }, neighbor] }
+  - { id: reset_router_ospf_neighbor_router_id, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [reset, router, '"Base"', ospf, { parameter: ospf_instance }, neighbor, router-id, { parameter: ipv4 }] }
+  - { id: reset_router_ospf_database, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [reset, router, '"Base"', ospf, { parameter: ospf_instance }, database] }
+  - { id: reset_router_ospf3_neighbor, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [reset, router, '"Base"', ospf3, { parameter: ospf_instance }, neighbor] }
+  - { id: reset_router_ospf3_neighbor_router_id, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [reset, router, '"Base"', ospf3, { parameter: ospf_instance }, neighbor, router-id, { parameter: ipv4 }] }
+  - { id: reset_router_ospf3_database, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [reset, router, '"Base"', ospf3, { parameter: ospf_instance }, database] }
+  - { id: clear_router_ospf_neighbor, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [clear, router, ospf, { parameter: ospf_instance }, neighbor] }
+  - { id: clear_router_ospf_neighbor_router_id, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [clear, router, ospf, { parameter: ospf_instance }, neighbor, { parameter: ipv4 }] }
+  - { id: clear_router_ospf_database, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [clear, router, ospf, { parameter: ospf_instance }, database] }
+  - { id: clear_router_ospf3_neighbor, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [clear, router, ospf3, { parameter: ospf_instance }, neighbor] }
+  - { id: clear_router_ospf3_neighbor_router_id, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [clear, router, ospf3, { parameter: ospf_instance }, neighbor, { parameter: ipv4 }] }
+  - { id: clear_router_ospf3_database, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [clear, router, ospf3, { parameter: ospf_instance }, database] }
   # IES is a service graph, not a set of terminal-only aliases. MD rows edit
   # candidate list keys and leaves. Classic rows below create complete parent
   # objects and apply every accepted mutation immediately.
@@ -678,6 +1056,26 @@ commands:
     engines: [md]
     source_id: nokia.sros.26_7.md_cli.configuration_workflow
     tokens: [quit-config]
+  # `info` is a global MD-CLI report: its input is parsed at the operational
+  # root while its data scope remains the saved present working context.
+  - id: md_info
+    engines: [md]
+    source_id: nokia.sros.26_7.md_cli.info
+    tokens: [info]
+  - id: md_info_detail
+    engines: [md]
+    modifier: detail
+    source_id: nokia.sros.26_7.md_cli.info
+    tokens: [info, detail]
+  - id: classic_info
+    engines: [classic]
+    source_id: nokia.sros.26_7.classic_cli.info
+    tokens: [info]
+  - id: classic_info_detail
+    engines: [classic]
+    modifier: detail
+    source_id: nokia.sros.26_7.classic_cli.info
+    tokens: [info, detail]
   # Question mark is an input action, not a command submitted with Enter. The
   # browser sends it through completion and therefore it must not be executable.
   - id: md_configure_exclusive
@@ -740,6 +1138,11 @@ commands:
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.port
     tokens: [show, port, { parameter: port_id }]
+  - id: show_port_detail
+    engines: [md, classic]
+    modifier: detail
+    source_id: nokia.sros.26_7.show.port
+    tokens: [show, port, { parameter: port_id }, detail]
   - id: show_router_interface
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.router_interface
@@ -754,16 +1157,33 @@ commands:
     tokens: [show, router, interface, { parameter: interface_name }]
   - id: show_router_interface_detail
     engines: [md, classic]
+    modifier: detail
     source_id: nokia.sros.26_7.show.router_interface
     tokens: [show, router, interface, { parameter: interface_name }, detail]
   - id: show_router_route_table
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.route_table
     tokens: [show, router, route-table]
+  - id: show_router_route_table_protocol_ospf
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.show.route_table
+    tokens: [show, router, route-table, protocol, ospf]
+  - id: show_router_route_table_protocol_ospf3
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.show.route_table
+    tokens: [show, router, route-table, protocol, ospf3]
   - id: show_router_route_table_ipv6
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.route_table
     tokens: [show, router, route-table, ipv6]
+  - id: show_router_route_table_ipv6_protocol_ospf
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.show.route_table
+    tokens: [show, router, route-table, ipv6, protocol, ospf]
+  - id: show_router_route_table_ipv6_protocol_ospf3
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.show.route_table
+    tokens: [show, router, route-table, ipv6, protocol, ospf3]
   - id: show_router_fib
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.fib
@@ -888,6 +1308,7 @@ commands:
     tokens: [show, service, id, { parameter: service_id }, dhcp6, lease-state]
   - id: show_service_dhcp6_lease_state_detail
     engines: [md, classic]
+    modifier: detail
     source_id: nokia.sros.26_7.ies.dhcpv6_lease_operational
     tokens: [show, service, id, { parameter: service_id }, dhcp6, lease-state, detail]
   - id: show_service_dhcp6_lease_state_interface
@@ -1132,6 +1553,7 @@ commands:
     tokens: [show, router, mld, interface, { parameter: interface_name }, group, { parameter: ipv6 }]
   - id: show_mld_interface_detail
     engines: [md, classic]
+    modifier: detail
     source_id: nokia.sros.26_7.mld.configuration
     tokens: [show, router, mld, interface, { parameter: interface_name }, detail]
   - id: clear_mld_database
@@ -2591,6 +3013,20 @@ commands:
   - { id: md_policy_source_prefix_list, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, source-address, prefix-list, { parameter: prefix_list_name }] }
   - { id: md_delete_policy_source_address, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, source-address] }
   - { id: md_policy_protocol_mld, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, name, mld] }
+  - { id: md_policy_route_prefix_list, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, prefix-list, { parameter: prefix_list_name }] }
+  - { id: md_policy_protocol_direct, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, name, direct] }
+  - { id: md_policy_protocol_static, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, name, static] }
+  - { id: md_policy_protocol_ospf, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, name, ospf] }
+  - { id: md_policy_protocol_ospf3, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, name, ospf3] }
+  - { id: md_policy_route_tag, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, tag, { parameter: policy_route_tag }] }
+  - { id: md_policy_action_metric, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, metric, set, { parameter: ospf_metric }] }
+  - { id: md_policy_action_type, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, type, { parameter: ospf_metric_type }] }
+  - { id: md_policy_action_tag, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, tag, { parameter: policy_route_tag }] }
+  - { id: md_delete_policy_route_prefix_list, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, prefix-list] }
+  - { id: md_delete_policy_route_tag, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, tag] }
+  - { id: md_delete_policy_action_metric, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, metric] }
+  - { id: md_delete_policy_action_type, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, type] }
+  - { id: md_delete_policy_action_tag, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, tag] }
   - { id: md_delete_policy_protocol, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol] }
   - { id: md_policy_entry_action, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, action-type, { parameter: policy_action }] }
   - { id: md_delete_policy_entry_action, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action] }
@@ -2613,6 +3049,20 @@ commands:
   - { id: classic_policy_source_prefix_list, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, source-address, prefix-list, { parameter: prefix_list_name }] }
   - { id: classic_policy_no_source_address, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, no, source-address] }
   - { id: classic_policy_protocol_mld, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, mld] }
+  - { id: classic_policy_route_prefix_list, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, prefix-list, { parameter: prefix_list_name }] }
+  - { id: classic_policy_protocol_direct, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, direct] }
+  - { id: classic_policy_protocol_static, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, static] }
+  - { id: classic_policy_protocol_ospf, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, ospf] }
+  - { id: classic_policy_protocol_ospf3, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, ospf3] }
+  - { id: classic_policy_route_tag, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, tag, { parameter: policy_route_tag }] }
+  - { id: classic_policy_action_metric, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, metric, set, { parameter: ospf_metric }] }
+  - { id: classic_policy_action_type, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, type, { parameter: ospf_metric_type }] }
+  - { id: classic_policy_action_tag, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, tag, { parameter: policy_route_tag }] }
+  - { id: classic_policy_no_route_prefix_list, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, no, prefix-list] }
+  - { id: classic_policy_no_route_tag, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, no, tag] }
+  - { id: classic_policy_no_action_metric, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, no, metric] }
+  - { id: classic_policy_no_action_type, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, no, type] }
+  - { id: classic_policy_no_action_tag, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, no, tag] }
   - { id: classic_policy_no_protocol, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, no, protocol] }
   - { id: classic_policy_entry_action, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, { parameter: policy_action }] }
   - { id: classic_policy_no_entry_action, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, no, action] }

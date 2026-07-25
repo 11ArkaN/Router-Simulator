@@ -1,6 +1,6 @@
 // React Flow projection of the user-owned project topology. The visual DOM and
 // CSS classes retain the approved interface while node, link and port identity
-// now come exclusively from project format 4 and runtime snapshot ABI 6.
+// now come exclusively from project format 5 and runtime snapshot ABI 8.
 // Free-form text annotations share the same canvas but never reach the runtime:
 // they are browser presentation intent, like node coordinates and panel sizes.
 
@@ -18,7 +18,7 @@ import { Cpu, Maximize2, Scan, Type } from "lucide-react";
 import { edgePortLabelPoints, radialHandleSide, radialLinkAnchors,
   type RadialLinkAnchor } from "./topology-anchors";
 
-type DeviceData = { kind: "host" | "router"; title: string; subtitle: string;
+type DeviceData = { kind: "host" | "router" | "switch"; title: string; subtitle: string;
   diameter: number; anchors: readonly RadialLinkAnchor[] };
 
 const HANDLE_POSITION = {
@@ -37,7 +37,9 @@ function DeviceNode({ id, data, selected }: NodeProps<Node<DeviceData>>) {
     updateNodeInternals(id);
   }, [data.anchors, id, updateNodeInternals]);
   const router = data.kind === "router";
-  return <div className={`device-node ${router ? "router-node" : "host-node"} ${selected ? "selected" : ""}`}
+  const ethernetSwitch = data.kind === "switch";
+  return <div className={`device-node ${router ? "router-node" :
+    ethernetSwitch ? "switch-node" : "host-node"} ${selected ? "selected" : ""}`}
     style={{ width: data.diameter, height: data.diameter }}>
     {/* Link creation owns one small rim target instead of covering the symbol.
         This separation lets the symbol drag the device while the target starts
@@ -56,7 +58,9 @@ function DeviceNode({ id, data, selected }: NodeProps<Node<DeviceData>>) {
         below the attachment handles. A new device class can select another
         asset without changing edge routing or the physical-port model. */}
     <img className="device-icon" aria-hidden alt="" draggable={false}
-      src={router ? "/assets/topology/router-diagram.png" : "/assets/topology/host-diagram.png"} />
+      src={router ? "/assets/topology/router-diagram.png" :
+        ethernetSwitch ? "/assets/topology/switch-diagram.png" :
+          "/assets/topology/host-diagram.png"} />
     <div className="device-copy"><strong>{data.title}</strong><span>{data.subtitle}</span></div>
   </div>;
 }
@@ -151,12 +155,13 @@ const edgeTypes = { physical: PhysicalLinkEdge };
 
 export type TopologyTool = "select" | "link" | "text";
 
-const DEVICE_DIAMETER = { host: 98, router: 112 } as const;
+const DEVICE_DIAMETER = { host: 98, router: 112, switch: 112 } as const;
 const DEVICE_ANCHOR_RADIUS = {
   // The values follow the non-transparent alpha bounds of the generated PNGs,
   // with a small outward allowance so the solid port marker stays readable.
   host: { xPercent: 40, yPercent: 37 },
   router: { xPercent: 43, yPercent: 30 },
+  switch: { xPercent: 43, yPercent: 30 },
 } as const;
 
 interface Props {
@@ -166,7 +171,8 @@ interface Props {
   onSelect(id: string): void;
   onLayoutChange(id: string, position: { x: number; y: number }): void;
   onConnect(firstNodeId: string, secondNodeId: string): void;
-  onDropDevice(kind: "router" | "host", position: { x: number; y: number }): void;
+  onDropDevice(kind: "router" | "host" | "switch",
+    position: { x: number; y: number }): void;
   onOpenHardware(): void;
   onAnnotationCreate(position: { x: number; y: number }): void;
   onAnnotationMove(id: string, position: { x: number; y: number }): void;
@@ -222,7 +228,11 @@ export function Topology({ project, snapshot, selected, onSelect,
       project.layout.nodes[host.id] ?? { x: 100, y: 160 + index * 130 }] as const),
     ...project.routers.map((router, index) => [router.id,
       project.layout.nodes[router.id] ?? { x: 340 + index * 210, y: 240 }] as const),
-  ]), [project.hosts, project.routers, project.layout.nodes]);
+    ...project.switches.map((ethernetSwitch, index) => [ethernetSwitch.id,
+      project.layout.nodes[ethernetSwitch.id] ??
+        { x: 340 + index * 210, y: 420 }] as const),
+  ]), [project.hosts, project.routers, project.switches,
+    project.layout.nodes]);
   const deviceCenters = useMemo(() => Object.fromEntries([
     ...project.hosts.map((host) => [host.id, {
       x: devicePositions[host.id].x + DEVICE_DIAMETER.host / 2,
@@ -232,7 +242,11 @@ export function Topology({ project, snapshot, selected, onSelect,
       x: devicePositions[router.id].x + DEVICE_DIAMETER.router / 2,
       y: devicePositions[router.id].y + DEVICE_DIAMETER.router / 2,
     }] as const),
-  ]), [project.hosts, project.routers, devicePositions]);
+    ...project.switches.map((ethernetSwitch) => [ethernetSwitch.id, {
+      x: devicePositions[ethernetSwitch.id].x + DEVICE_DIAMETER.switch / 2,
+      y: devicePositions[ethernetSwitch.id].y + DEVICE_DIAMETER.switch / 2,
+    }] as const),
+  ]), [project.hosts, project.routers, project.switches, devicePositions]);
 
   const nodes = useMemo<Node[]>(() => [
     ...project.hosts.map((host) => ({
@@ -256,6 +270,17 @@ export function Topology({ project, snapshot, selected, onSelect,
         anchors: radialLinkAnchors(router.id, deviceCenters, project.links,
           DEVICE_ANCHOR_RADIUS.router) }
     })),
+    ...project.switches.map((ethernetSwitch) => ({
+      id: ethernetSwitch.id,
+      type: "device",
+      position: devicePositions[ethernetSwitch.id],
+      selected: selected === ethernetSwitch.id,
+      data: { kind: "switch" as const, title: ethernetSwitch.name,
+        subtitle: ethernetSwitch.profileId,
+        diameter: DEVICE_DIAMETER.switch,
+        anchors: radialLinkAnchors(ethernetSwitch.id, deviceCenters,
+          project.links, DEVICE_ANCHOR_RADIUS.switch) }
+    })),
     // Annotations render on top of devices so a label stays readable. They are
     // never connectable. Editing temporarily owns pointer input; otherwise a
     // label remains draggable under the same always-on canvas interaction.
@@ -272,7 +297,8 @@ export function Topology({ project, snapshot, selected, onSelect,
         onCommit: commitText, onCancel: cancelEdit, onResize: onAnnotationResize
       } satisfies AnnotationData
     }))
-  ], [project.hosts, project.routers, project.annotations, project.links,
+  ], [project.hosts, project.routers, project.switches, project.annotations,
+    project.links,
     devicePositions, deviceCenters,
     selected, snapshot?.routers, tool, editingId, commitText, cancelEdit,
     onAnnotationResize]);
@@ -327,7 +353,8 @@ export function Topology({ project, snapshot, selected, onSelect,
     }}
     onDrop={(event) => {
       const kind = event.dataTransfer.getData("application/x-router-lab-device");
-      if ((kind === "router" || kind === "host") && flowRef.current) {
+      if ((kind === "router" || kind === "host" || kind === "switch") &&
+          flowRef.current) {
         event.preventDefault();
         // React Flow owns zoom and pan transforms. Converting through its API
         // prevents dropped nodes from shifting when the canvas is not at 100%.

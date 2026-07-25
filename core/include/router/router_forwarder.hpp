@@ -24,6 +24,7 @@
 #include "router/multi_device_routing.hpp"
 #include "router/neighbor_discovery_packet.hpp"
 #include "router/packet.hpp"
+#include "router/ospf_packet.hpp"
 #include "router/router_ipv6_address_table.hpp"
 #include "router/sap_forwarding.hpp"
 #include "router/udp_transport.hpp"
@@ -282,12 +283,19 @@ struct RouterForwarderCheckpoint {
   packet::Ipv4 echo_request_destination{};
   std::uint64_t echo_request_age_nanoseconds{};
   std::uint64_t echo_reply_rtt_nanoseconds{};
+  // The received IPv4 TTL is packet evidence, not a display default. Keeping
+  // it beside the correlated reply lets a restored CLI operation render the
+  // same SR OS detail line that it would have rendered before checkpointing.
+  std::uint8_t echo_reply_ttl{};
   std::uint16_t echo_request_sequence{};
   bool echo_request_valid{};
   std::uint16_t ipv6_echo_reply_sequence{};
   bool ipv6_echo_reply_valid{};
   std::uint64_t ipv6_probe_age_nanoseconds{};
   std::uint64_t ipv6_echo_reply_rtt_nanoseconds{};
+  // IPv6 reports the received Hop Limit in the same `ttl=` output field used
+  // by SR OS. This value therefore comes from the decoded reply header.
+  std::uint8_t ipv6_echo_reply_hop_limit{};
   std::uint32_t ipv6_echo_error_parameter{};
   std::uint16_t ipv6_echo_error_sequence{};
   std::uint8_t ipv6_echo_error_type{};
@@ -324,6 +332,18 @@ public:
                                 const packet::Frame &frame);
 
   [[nodiscard]] bool configure_port(const ForwardPort &port) noexcept;
+  // OSPF multicast is local only on explicitly configured protocol
+  // interfaces. Programming this bitset lets forwarding punt protocol 89
+  // without parsing or borrowing the protocol datastore.
+  [[nodiscard]] bool configure_ospf_punt(std::uint16_t port_ordinal,
+                                         bool version_two,
+                                         bool version_three) noexcept;
+  // The OSPF shard returns a complete local Ethernet/IP image. Multicast is
+  // emitted on the configured physical interface; unicast re-enters ordinary
+  // FIB and neighbor resolution so no protocol daemon learns a peer MAC.
+  [[nodiscard]] bool originate_ospf(
+      std::uint16_t port_ordinal, const packet::Frame &frame, void *context,
+      EgressSink sink, Clock::time_point now = Clock::now()) noexcept;
   // Producer: forwarding-shard command handler. Consumer: the same shard's
   // packet path. A complete generation is copied, validated and committed in
   // one owner turn; failure leaves address, DAD and port-primary state intact.
@@ -502,18 +522,21 @@ public:
   received_echo_reply(std::uint16_t sequence) const noexcept {
     return echo_reply_valid_ && echo_reply_sequence_ == sequence;
   }
-  // Low byte 1 denotes a correlated IPv4 Echo Reply. Remaining bits contain
-  // the forwarding-owner RTT in nanoseconds, independent of control polling.
+  // Low byte 1 denotes a correlated IPv4 Echo Reply. The next byte carries
+  // the received IP TTL and the upper 48 bits carry the forwarding-owner RTT
+  // in nanoseconds. The compact value crosses the existing owner-affine query
+  // ring without sharing forwarding state with the CLI worker.
   [[nodiscard]] std::uint64_t
   echo_outcome(std::uint16_t sequence) const noexcept;
   [[nodiscard]] bool
   received_ipv6_echo_reply(std::uint16_t sequence) const noexcept {
     return ipv6_echo_reply_valid_ && ipv6_echo_reply_sequence_ == sequence;
   }
-  // Low byte 1 denotes Reply. Low byte 2 denotes an error, followed by type,
-  // code and the 32-bit message parameter. Zero means no outcome for this
-  // sequence. The packed scalar crosses the existing SPSC query without a
-  // pointer or an additional mutable result owner.
+  // Low byte 1 denotes Reply, followed by Hop Limit and a 48-bit nanosecond
+  // RTT. Low byte 2 denotes an error, followed by type, code and the 32-bit
+  // message parameter. Zero means no outcome for this sequence. The packed
+  // scalar crosses the existing SPSC query without a pointer or an additional
+  // mutable result owner.
   [[nodiscard]] std::uint64_t
   ipv6_echo_outcome(std::uint16_t sequence) const noexcept;
   [[nodiscard]] std::size_t ipv6_neighbor_entries() const noexcept {
@@ -643,6 +666,18 @@ private:
                      Clock::time_point now) noexcept;
   void send(packet::Frame frame, std::uint32_t destination, bool transit,
             void *context, EgressSink sink, Clock::time_point now) noexcept;
+  // OSPF already selected its outgoing protocol interface. Link-local IPv6
+  // destinations are zone-scoped, and equal connected IPv4 prefixes may also
+  // exist on several ports, so these paths must not repeat a global FIB lookup.
+  // They still use the ordinary ARP and ND owners and bounded pending queues.
+  [[nodiscard]] bool send_ospf_ipv4_unicast(
+      const ForwardPort &egress, packet::Frame frame,
+      std::uint32_t destination, void *context, EgressSink sink,
+      Clock::time_point now) noexcept;
+  [[nodiscard]] bool send_ospf_ipv6_unicast(
+      const ForwardPort &egress, packet::Frame frame,
+      const packet::Ipv6 &destination, void *context, EgressSink sink,
+      Clock::time_point now) noexcept;
   void send_resolved(const packet::Frame &input, const ForwardPort &egress,
                      packet::Mac destination_mac, bool transit, void *context,
                      EgressSink sink, Clock::time_point now) noexcept;
@@ -722,6 +757,13 @@ private:
   [[nodiscard]] bool emit(std::uint16_t port_ordinal,
                           const packet::Frame &frame, void *context,
                           EgressSink sink) noexcept;
+  // Selects an operational primary ECMP member before consulting the LFA
+  // table. This is forwarding-owner logic because only this shard owns current
+  // carrier and hardware state.
+  [[nodiscard]] bool lookup_ipv4_route(std::uint32_t destination,
+                                       routing::Route &selected,
+                                       std::uint64_t flow_hash = 0U) const
+      noexcept;
   // Lookup combines the configured RIB projection with DHCPv6 protocol routes.
   // Longest prefix is evaluated across both owners. An equal prefix keeps the
   // configured route because direct and static routes have better documented
@@ -758,6 +800,14 @@ private:
   [[nodiscard]] bool
   accepts_ipv6_multicast(const ForwardPort &port,
                          const packet::Ipv6 &destination) const noexcept;
+  // A system address has no data-link attachment and therefore cannot enter
+  // RFC 4862 Duplicate Address Detection. Physical addresses remain owned by
+  // the DAD table. Keeping this distinction behind one predicate prevents
+  // local delivery and source selection from treating an absent DAD record as
+  // a tentative loopback address.
+  [[nodiscard]] bool
+  ipv6_address_preferred(std::uint64_t interface_id,
+                         const packet::Ipv6 &address) const noexcept;
   void maybe_send_ipv6_redirect(const ForwardPort &ingress,
                                 const packet::EthernetView &ethernet,
                                 const packet::Ipv6View &ipv6,
@@ -851,6 +901,8 @@ private:
       ipv6_reachable_times_{};
   routing::FibProgram fib_{};
   routing::Ipv6FibProgram ipv6_fib_{};
+  std::array<bool, device_catalog::maximum_ports_per_router> ospf_v2_punt_{};
+  std::array<bool, device_catalog::maximum_ports_per_router> ospf_v3_punt_{};
   std::array<Adjacency, device_catalog::arp_entries_per_router> adjacencies_{};
   // Both families share the same unresolved-frame arena, matching a physical
   // buffer resource and preventing a second 75 MiB worst-case frame envelope
@@ -879,12 +931,14 @@ private:
   packet::Ipv4 echo_request_destination_{};
   Clock::time_point echo_request_sent_at_{};
   std::chrono::nanoseconds echo_reply_rtt_{};
+  std::uint8_t echo_reply_ttl_{};
   std::uint16_t echo_request_sequence_{};
   bool echo_request_valid_{};
   std::uint16_t ipv6_echo_reply_sequence_{};
   bool ipv6_echo_reply_valid_{};
   Clock::time_point ipv6_probe_sent_at_{};
   std::chrono::nanoseconds ipv6_echo_reply_rtt_{};
+  std::uint8_t ipv6_echo_reply_hop_limit_{};
   std::uint32_t ipv6_echo_error_parameter_{};
   std::uint16_t ipv6_echo_error_sequence_{};
   std::uint8_t ipv6_echo_error_type_{};

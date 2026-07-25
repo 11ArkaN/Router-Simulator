@@ -30,14 +30,16 @@ template <typename Tag> struct Handle {
 
 struct DeviceTag;
 struct HostTag;
+struct SwitchTag;
 struct LinkTag;
 struct SessionTag;
 using DeviceHandle = Handle<DeviceTag>;
 using HostHandle = Handle<HostTag>;
+using SwitchHandle = Handle<SwitchTag>;
 using LinkHandle = Handle<LinkTag>;
 using SessionHandle = Handle<SessionTag>;
 
-enum class NodeKind : std::uint8_t { router, host };
+enum class NodeKind : std::uint8_t { router, host, ethernet_switch };
 
 struct NodeHandle {
   NodeKind kind{};
@@ -73,6 +75,25 @@ struct DeviceRecord {
 struct HostRecord {
   std::string node_id;
   std::string name;
+};
+
+struct SwitchPortIntent {
+  std::uint32_t speed_mbps{};
+  std::uint16_t mtu{};
+  bool admin_enabled{};
+  bool operator==(const SwitchPortIntent &) const = default;
+};
+
+struct SwitchRecord {
+  // Profile identity remains immutable for one handle generation. Operational
+  // FDB and queue state belongs exclusively to the link shard and is never
+  // borrowed through this control-owned record.
+  std::string node_id;
+  std::string name;
+  const device_catalog::EthernetSwitchProfile *profile{};
+  // Control owns desired hardware values. Carrier, queues and FDB remain on
+  // the link shard and are deliberately absent from this vector.
+  std::vector<SwitchPortIntent> ports;
 };
 
 struct LinkEndpoint {
@@ -132,6 +153,14 @@ struct HostRegistryCheckpointEntry {
   std::string name;
 };
 
+struct SwitchRegistryCheckpointEntry {
+  SwitchHandle handle{};
+  std::string node_id;
+  std::string name;
+  std::string profile_id;
+  std::vector<SwitchPortIntent> ports;
+};
+
 struct TopologyRegistryCheckpointEntry {
   LinkHandle handle{};
   LinkRecord record;
@@ -149,6 +178,10 @@ struct DeviceRegistryCheckpoint {
 struct HostRegistryCheckpoint {
   std::array<std::uint16_t, device_catalog::maximum_hosts> generations{};
   std::vector<HostRegistryCheckpointEntry> entries;
+};
+struct SwitchRegistryCheckpoint {
+  std::array<std::uint16_t, device_catalog::maximum_switches> generations{};
+  std::vector<SwitchRegistryCheckpointEntry> entries;
 };
 struct TopologyRegistryCheckpoint {
   std::array<std::uint16_t, device_catalog::maximum_links> generations{};
@@ -211,6 +244,32 @@ private:
     HostRecord value;
   };
   std::array<Slot, device_catalog::maximum_hosts> slots_{};
+  std::size_t size_{};
+};
+
+class SwitchRegistry final {
+public:
+  // The profile supplies every physical port and capability. Created links do
+  // not expand the switch or synthesize an implicit port.
+  [[nodiscard]] std::optional<SwitchHandle>
+  create(std::string_view node_id, std::string_view profile_id,
+         std::string_view name);
+  [[nodiscard]] bool erase(SwitchHandle handle) noexcept;
+  [[nodiscard]] SwitchRecord *get(SwitchHandle handle) noexcept;
+  [[nodiscard]] const SwitchRecord *get(SwitchHandle handle) const noexcept;
+  [[nodiscard]] std::optional<SwitchHandle>
+  find(std::string_view node_id) const noexcept;
+  [[nodiscard]] std::size_t size() const noexcept { return size_; }
+  [[nodiscard]] SwitchRegistryCheckpoint checkpoint() const;
+  [[nodiscard]] bool restore(const SwitchRegistryCheckpoint &state);
+
+private:
+  struct Slot {
+    std::uint16_t generation{1};
+    bool occupied{};
+    SwitchRecord value;
+  };
+  std::array<Slot, device_catalog::maximum_switches> slots_{};
   std::size_t size_{};
 };
 
@@ -296,6 +355,9 @@ private:
 }
 [[nodiscard]] constexpr NodeHandle node(HostHandle handle) noexcept {
   return {NodeKind::host, handle.index, handle.generation};
+}
+[[nodiscard]] constexpr NodeHandle node(SwitchHandle handle) noexcept {
+  return {NodeKind::ethernet_switch, handle.index, handle.generation};
 }
 
 } // namespace router::lab

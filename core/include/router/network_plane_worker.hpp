@@ -87,6 +87,9 @@ public:
   forwarding_owner_turns(std::size_t index) const noexcept {
     return plane_.forwarding_owner_turns(index);
   }
+  [[nodiscard]] std::uint64_t ospf_owner_thread_id() const noexcept {
+    return plane_.ospf_owner_thread_id();
+  }
 
 private:
   static void wake_link_owner(void *context) noexcept;
@@ -197,6 +200,37 @@ private:
   std::array<std::optional<Ipv6AddressGenerationStaging>,
              device_catalog::maximum_routers>
       ipv6_address_generation_staging_{};
+  struct OspfGenerationStaging {
+    // Variable configuration is assembled only on the network owner. The
+    // eventual NetworkPlane call performs a second atomic publication to the
+    // dedicated OSPF owner and its forwarding punt projection.
+    std::vector<OspfProcessProgram> processes;
+    std::vector<OspfInterfaceProgram> interfaces;
+    std::vector<OspfAuthenticationProgram> authentications;
+    std::vector<OspfNbmaNeighborProgram> nbma_neighbors;
+    std::vector<OspfVirtualLinkProgram> virtual_links;
+    std::vector<OspfAreaRangeProgram> ranges;
+    std::vector<OspfExternalRouteProgram> external_routes;
+    std::uint32_t expected_processes{};
+    std::uint32_t expected_interfaces{};
+    std::uint32_t expected_authentications{};
+    std::uint32_t expected_nbma_neighbors{};
+    std::uint32_t expected_virtual_links{};
+    std::uint32_t expected_ranges{};
+    std::uint32_t expected_external_routes{};
+
+    OspfGenerationStaging() = default;
+    OspfGenerationStaging(const OspfGenerationStaging &) = delete;
+    OspfGenerationStaging &
+    operator=(const OspfGenerationStaging &) = delete;
+    OspfGenerationStaging(OspfGenerationStaging &&) noexcept = default;
+    OspfGenerationStaging &
+    operator=(OspfGenerationStaging &&) noexcept = default;
+    ~OspfGenerationStaging();
+  };
+  std::array<std::optional<OspfGenerationStaging>,
+             device_catalog::maximum_routers>
+      ospf_generation_staging_{};
   // Declared last so it is destroyed first. Its forwarding pthreads may use
   // the wake callback and therefore must join while the mutex and condition
   // variable above are still alive.

@@ -513,6 +513,7 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
       // maximum happens to be equal.
       return bounded_name(value, 32U);
     case static_sa_name:
+    case ospf_ipsec_sa_outbound:
       // A static-SA name is a list key, not an arbitrary description. Nokia's
       // 26.7 model permits 1..32 characters and the editor performs the same
       // check before materializing the candidate list entry.
@@ -759,8 +760,26 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case ppk_ascii_value:
   case ppk_hex_value:
   case static_sa_name:
+  case ospf_ipsec_sa_outbound:
   case static_sa_key:
   case static_sa_spi:
+  case ospf_instance:
+  case ospf_area_id:
+  case ospf_transit_area_id:
+  case ospf_domain_id:
+  case policy_route_tag:
+  case ospf_metric_type:
+  case ospf_metric:
+  case ospf_priority:
+  case ospf_interval:
+  case ospf_timer_milliseconds:
+  case ospf_reference_bandwidth:
+  case ospf_preference:
+  case ospf_authentication_key:
+  case ospf_key_id:
+  case ospf_keychain_name:
+  case ospf_keychain_time:
+  case ospf_tolerance:
   case ipsec_pre_shared_key:
   case tunnel_mss:
   case tunnel_rate_interval:
@@ -796,6 +815,15 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
     // must not manufacture a preferred rate value that SR OS does not suggest.
     add_candidate(items, std::string{token.display}, false, false, partial,
                   token.description, context);
+    break;
+  case ospf_interface_type:
+    // The network type is a closed SR OS enumeration. Supplying the four real
+    // values makes Tab and question-mark help useful without teaching the
+    // parser any command path or runtime behavior.
+    for (const auto value : {"point-to-point", "broadcast", "non-broadcast",
+                             "point-to-multipoint"})
+      add_candidate(items, value, true, false, partial, token.description,
+                    context);
     break;
   case ipsec_protocol_id:
     // Classic accepts either the documented names or a decimal protocol ID.
@@ -1109,22 +1137,59 @@ bool navigable_command_prefix(const CliSession &session,
 std::string canonical_command_prefix(const CliSession &session,
                                      std::string_view input) {
   // Every descendant row of one real context has the same canonical tokens up
-  // to that context. Comparing generated results makes abbreviation ambiguity
-  // explicit without introducing a second handwritten command tree.
+  // to that context. Prefix matching must use the same specificity ordering as
+  // complete-command matching. In particular, the exact `ospf` keyword wins
+  // over `ospf3`, for which the same bytes are merely an abbreviation. Without
+  // this ordering a perfectly valid keyed container became ambiguous even
+  // though both its help output and every executable descendant were present
+  // in the generated schema.
   const auto line = tokenize(trim_view(input), false);
   if (!line.valid || !line.count)
     return {};
   std::string canonical;
   bool found = false;
+  std::uint8_t best_literal_count{};
+  std::uint8_t best_exact_literal_count{};
+  std::uint8_t best_address_parameter_count{};
   for (const auto &spec : cli_schema::commands) {
     if (!available(spec, session) || spec.token_count <= line.count)
       continue;
     bool matches = true;
     std::string candidate;
+    std::uint8_t literal_count{};
+    std::uint8_t exact_literal_count{};
+    std::uint8_t address_parameter_count{};
     for (std::size_t index = 0; index < line.count; ++index) {
       if (!accepts(spec.tokens[index], line.tokens[index])) {
         matches = false;
         break;
+      }
+      if (spec.tokens[index].kind == cli_schema::TokenKind::literal) {
+        ++literal_count;
+        if (spec.tokens[index].display == line.tokens[index])
+          ++exact_literal_count;
+      } else {
+        // Constrained address parameters outrank unconstrained list keys when
+        // the same input shape can match both. This mirrors parse_command and
+        // keeps entering a context consistent with executing its leaves.
+        using enum cli_schema::TokenKind;
+        switch (spec.tokens[index].kind) {
+        case ipv4:
+        case ipv4_key:
+        case ipv4_prefix:
+        case ipv6:
+        case ipv6_with_zone:
+        case ipv6_key:
+        case ipv6_prefix:
+        case ipv6_address_prefix:
+        case ip_address:
+        case ip_prefix:
+        case mac_address:
+          ++address_parameter_count;
+          break;
+        default:
+          break;
+        }
       }
       if (!candidate.empty())
         candidate += ' ';
@@ -1145,10 +1210,29 @@ std::string canonical_command_prefix(const CliSession &session,
     }
     if (!matches)
       continue;
-    if (found && candidate != canonical)
-      return {};
-    canonical = std::move(candidate);
-    found = true;
+
+    const bool more_specific =
+        !found || literal_count > best_literal_count ||
+        (literal_count == best_literal_count &&
+         exact_literal_count > best_exact_literal_count) ||
+        (literal_count == best_literal_count &&
+         exact_literal_count == best_exact_literal_count &&
+         address_parameter_count > best_address_parameter_count);
+    const bool equally_specific =
+        found && literal_count == best_literal_count &&
+        exact_literal_count == best_exact_literal_count &&
+        address_parameter_count == best_address_parameter_count;
+    if (more_specific) {
+      canonical = std::move(candidate);
+      best_literal_count = literal_count;
+      best_exact_literal_count = exact_literal_count;
+      best_address_parameter_count = address_parameter_count;
+      found = true;
+    } else if (equally_specific && candidate != canonical) {
+      // Two different canonical paths at the same best rank are genuinely
+      // ambiguous. Schema order must never decide which context owns the PWC.
+      canonical.clear();
+    }
   }
   return canonical;
 }

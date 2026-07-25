@@ -1,10 +1,11 @@
-// Runtime snapshot ABI 6 for protocol 4. This validator is the browser trust
+// Runtime snapshot ABI 8 for protocol 4. This validator is the browser trust
 // boundary for C++ JSON and contains no UI defaults or selected-router state.
 
 import { PROFILE_CATALOG, PROFILE_CATALOG_COMPILED } from "./generated-device-catalog";
 import { LAB_RUNTIME_PROTOCOL } from "./generated-lab-runtime-protocol";
 import { isCanonicalIpv6PrefixText, isIpv6AddressText,
-  isIpv6InterfacePrefixText, type RouterIpv6AddressIntent } from "./lab-project-v4";
+  isIpv6InterfacePrefixText, type RouterIpv6AddressIntent,
+  type RouterOspfIntent, type RouterPolicyOptionsIntent } from "./lab-project-v4";
 
 export interface RuntimeHandleV6 {
   index: number;
@@ -51,6 +52,8 @@ export interface RuntimeRouterV6 {
   staticRoutes: Array<{ prefix: string; nextHop: string; indirect: boolean }>;
   ipv6StaticRoutes: Array<{ prefix: string; nextHop: string;
     outgoingPortId: string; indirect: boolean }>;
+  policyOptions: RouterPolicyOptionsIntent;
+  ospf: RouterOspfIntent;
 }
 
 export interface RuntimeHostV6 {
@@ -64,6 +67,19 @@ export interface RuntimeHostV6 {
   interfaceId: string;
   ipv6Autoconfiguration: boolean;
   ipv6InterfaceIdentifierMode: "modified-eui64" | "stable-opaque";
+}
+
+export interface RuntimeSwitchV6 {
+  id: string;
+  name: string;
+  profileId: string;
+  handle: RuntimeHandleV6;
+  ports: Array<{
+    id: string;
+    admin: boolean;
+    mtu: number;
+    speedMbps: number;
+  }>;
 }
 
 export interface RuntimeLinkV6 {
@@ -102,6 +118,7 @@ export interface LabRuntimeSnapshotV6 {
   status: "ready";
   routers: RuntimeRouterV6[];
   hosts: RuntimeHostV6[];
+  switches: RuntimeSwitchV6[];
   links: RuntimeLinkV6[];
   sessions: RuntimeSessionV6[];
   capturePoints: RuntimeCapturePointV6[];
@@ -140,6 +157,8 @@ export function parseLabRuntimeSnapshotV6(input: unknown): LabRuntimeSnapshotV6 
     "Runtime snapshot ABI is incompatible");
   assert(Array.isArray(value.routers) && value.routers.length <= PROFILE_CATALOG.limits.routers &&
     Array.isArray(value.hosts) && value.hosts.length <= PROFILE_CATALOG.limits.hosts &&
+    Array.isArray(value.switches) &&
+      value.switches.length <= PROFILE_CATALOG.limits.switches &&
     Array.isArray(value.links) && value.links.length <= PROFILE_CATALOG.limits.links &&
     Array.isArray(value.sessions) && value.sessions.length <=
       PROFILE_CATALOG.limits.routers * PROFILE_CATALOG.limits.sessions_per_router &&
@@ -163,7 +182,11 @@ export function parseLabRuntimeSnapshotV6(input: unknown): LabRuntimeSnapshotV6 
       Array.isArray(router.ports) && router.ports.length <=
         PROFILE_CATALOG_COMPILED.maximumPortsPerRouter &&
       Array.isArray(router.interfaces) && Array.isArray(router.staticRoutes) &&
-      Array.isArray(router.ipv6StaticRoutes),
+      Array.isArray(router.ipv6StaticRoutes) &&
+      router.policyOptions &&
+      Array.isArray(router.policyOptions.prefixLists) &&
+      Array.isArray(router.policyOptions.statements) &&
+      router.ospf && Array.isArray(router.ospf.instances),
     "Runtime router projection is invalid");
     const handleKey = `r:${router.handle.index}:${router.handle.generation}`;
     assert(!handles.has(handleKey), "Runtime router handle is duplicated");
@@ -183,7 +206,16 @@ export function parseLabRuntimeSnapshotV6(input: unknown): LabRuntimeSnapshotV6 
     for (const port of router.ports) {
       assert(port && portId.test(port.id) && !ports.has(port.id) &&
         typeof port.admin === "boolean" && typeof port.carrier === "boolean" &&
-        typeof port.oper === "boolean" && port.oper === (port.admin && port.carrier) &&
+        typeof port.oper === "boolean" &&
+        // Administration and carrier are necessary, but they are not the
+        // complete SR OS operational-state equation. The C++ hardware owner
+        // also gates a port on the card and MDA hierarchy plus retained-speed
+        // compatibility with the installed MDA. A card transition can
+        // therefore truthfully publish admin=true, carrier=true, oper=false.
+        // The browser does not receive those private hardware flags, so its
+        // trust boundary can enforce only the implication that is observable:
+        // an operational port must have both administration and carrier.
+        (!port.oper || (port.admin && port.carrier)) &&
         Number.isInteger(port.mtu) && port.mtu >= PROFILE_CATALOG.ethernet.minimum_network_mtu &&
         port.mtu <= PROFILE_CATALOG.ethernet.maximum_network_mtu &&
         Number.isSafeInteger(port.speedMbps) && port.speedMbps > 0 &&
@@ -252,6 +284,29 @@ export function parseLabRuntimeSnapshotV6(input: unknown): LabRuntimeSnapshotV6 
     handles.add(handleKey);
     nodes.add(host.id);
   }
+  for (const ethernetSwitch of value.switches) {
+    const profile = PROFILE_CATALOG.switch_profiles.find(
+      (item) => item.id === ethernetSwitch?.profileId);
+    assert(ethernetSwitch && identifier.test(ethernetSwitch.id) &&
+      !nodes.has(ethernetSwitch.id) && typeof ethernetSwitch.name === "string" &&
+      profile && validHandle(ethernetSwitch.handle) &&
+      Array.isArray(ethernetSwitch.ports) &&
+      ethernetSwitch.ports.length === profile.port_count,
+    "Runtime switch projection is invalid");
+    const handleKey =
+      `s:${ethernetSwitch.handle.index}:${ethernetSwitch.handle.generation}`;
+    assert(!handles.has(handleKey) &&
+      ethernetSwitch.ports.every((port, index) => port &&
+        port.id === String(index + 1) && typeof port.admin === "boolean" &&
+        Number.isInteger(port.mtu) && port.mtu >= profile.minimum_mtu &&
+        port.mtu <= profile.maximum_mtu &&
+        Number.isSafeInteger(port.speedMbps) &&
+        profile.supported_speeds_mbps.some(
+          (speed) => speed === port.speedMbps)),
+    "Runtime switch port projection is invalid");
+    handles.add(handleKey);
+    nodes.add(ethernetSwitch.id);
+  }
   const links = new Set<string>();
   for (const link of value.links) {
     assert(link && identifier.test(link.id) && !links.has(link.id) &&
@@ -259,7 +314,8 @@ export function parseLabRuntimeSnapshotV6(input: unknown): LabRuntimeSnapshotV6 
       finiteCounter(link.speedMbps) && finiteCounter(link.propagationDelayNs) &&
       Array.isArray(link.endpoints) && link.endpoints.length === 2 &&
       link.endpoints.every((endpoint) => endpoint && nodes.has(endpoint.nodeId) &&
-        (endpoint.portId === "eth0" || portId.test(endpoint.portId))),
+        (endpoint.portId === "eth0" || portId.test(endpoint.portId) ||
+         /^\d+$/.test(endpoint.portId))),
     "Runtime link projection is invalid");
     links.add(link.id);
   }

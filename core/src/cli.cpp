@@ -1030,6 +1030,8 @@ bool global_action(cli_schema::CommandId id, CliEngine engine) noexcept {
   case md_edit_config_global:
   case md_edit_config_private:
   case md_edit_config_read_only:
+  case md_info:
+  case md_info_detail:
   case md_compare:
   case md_commit:
   case md_discard:
@@ -1252,7 +1254,12 @@ std::string classic_context_marker(std::string_view path) {
     else if (token == "interface") {
       token = "if";
       skip_key = true;
-    } else if (token == "card" || token == "mda" || token == "port") {
+    } else if (token == "card" || token == "mda" || token == "port" ||
+               token == "ospf" || token == "ospf3" || token == "area") {
+      // Classic prompts name a keyed configuration node but do not append its
+      // selected key as another `>` component. OSPF instance and area keys
+      // follow the same reduced prompt convention as interface, card and port
+      // list keys; command parsing still retains their complete saved path.
       skip_key = true;
     }
     result += '>' + token;
@@ -1268,6 +1275,15 @@ std::string resolve_session_input(const CliSession &session,
   // fixed-size, NUL-terminated path invariant owned by CliSession. This
   // wrapper exposes only the resulting value and cannot leak path storage.
   return effective_input(session, input);
+}
+
+bool enter_classic_context(CliSession &session,
+                           std::string_view path) noexcept {
+  if (session.engine != CliEngine::classic ||
+      path.size() >= session.classic_path.size())
+    return false;
+  move_session_path(session, path);
+  return true;
 }
 
 void synchronize_candidate(ConfigurationState &configuration,
@@ -1382,6 +1398,13 @@ std::string execute_cli(DeviceState &state, CliSession &session,
       const auto visible_target_prompt = target_prompt.starts_with('\n')
                                              ? target_prompt.substr(1U)
                                              : target_prompt;
+      // Operational reports are free to omit a trailing line feed because an
+      // ordinary command appends its prompt immediately. Inline engine
+      // execution appends a second transcript record first, so normalize that
+      // boundary here. Otherwise a table rule such as "====" and CLI #2052
+      // become one overlong terminal row.
+      if (!foreign_output.empty() && foreign_output.back() != '\n')
+        foreign_output.push_back('\n');
       output = std::string{entering} + '\n' + visible_target_prompt + '/' +
                foreign_input + '\n' + foreign_output + leaving;
       return output + cli_detail::prompt(state.configuration.running, session);
@@ -1404,16 +1427,28 @@ std::string execute_cli(DeviceState &state, CliSession &session,
   }
 
   // An exact container prefix navigates without fabricating an executable
-  // command. MD operational mode treats configure specially because it must
-  // first be followed by an explicit candidate mode.
+  // command. The configuration tree does not exist in the operational
+  // workflow: `configure [mode]` must first acquire a candidate datastore.
+  // Reject every longer configuration prefix here as well. Previously only
+  // the bare `configure` token was guarded, so a line such as
+  // `configure router "Base" interface "system"` moved the prompt into a
+  // configuration-looking path while the session remained operational. Every
+  // following leaf was then rejected and `show router interface` remained
+  // empty, which was both misleading and unlike SR OS.
   if (!command &&
-      !(session.engine == CliEngine::md &&
-        session.md_workflow == MdCliWorkflow::operational &&
-        input == "configure") &&
       cli_detail::navigable_command_prefix(session, effective)) {
     const auto canonical =
         cli_detail::canonical_command_prefix(session, effective);
     if (!canonical.empty()) {
+      if (session.engine == CliEngine::md &&
+          session.md_workflow == MdCliWorkflow::operational &&
+          (canonical == "configure" ||
+           std::string_view{canonical}.starts_with("configure "))) {
+        output = "MINOR: CLI #2069: Operation not allowed - currently in "
+                 "operational mode";
+        return output +
+               cli_detail::prompt(state.configuration.running, session);
+      }
       if (session.engine == CliEngine::md &&
           cli_detail::implicit_workflow(session.md_workflow) &&
           canonical != "configure" &&
@@ -1666,6 +1701,29 @@ std::string execute_cli(DeviceState &state, CliSession &session,
   } else {
     output =
         cli_detail::execute_classic(state.configuration, session, *command);
+    // In classic CLI, selecting an OSPF instance is both an immediate
+    // configuration operation and a context transition. The schema therefore
+    // contains an executable row for the exact same token sequence that is
+    // also the parent of area and interface commands. Prefix-only navigation
+    // cannot handle this overlap because the complete command wins parsing.
+    //
+    // Move only after successful execution. This preserves the current prompt
+    // when instance creation or validation fails and prevents a context that
+    // has no corresponding running configuration from being fabricated.
+    using enum cli_schema::CommandId;
+    if (output.empty() &&
+        (command->spec->id == classic_ospf_create ||
+         command->spec->id == classic_ospf3_create)) {
+      cli_detail::move_session_path(session, effective);
+    } else if (output.empty() &&
+               (command->spec->id == classic_ospf_create_router_id ||
+                command->spec->id == classic_ospf3_create_router_id)) {
+      // The optional router ID is a creation argument, not a context key.
+      // Strip it from the canonical command before storing the classic PWC.
+      const auto separator = effective.find_last_of(' ');
+      if (separator != std::string::npos)
+        cli_detail::move_session_path(session, effective.substr(0, separator));
+    }
   }
   return output + cli_detail::prompt(state.configuration.running, session);
 }

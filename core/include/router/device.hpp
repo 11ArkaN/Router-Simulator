@@ -6,6 +6,7 @@
 
 #include "router/cli_session.hpp"
 #include "router/generated_profile.hpp"
+#include "router/ospf_configuration.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace router {
 
@@ -91,6 +93,10 @@ struct DeviceConfiguration {
   std::uint8_t interface_count{};
   std::array<StaticRouteConfiguration, profile::static_route_capacity>
       static_routes{};
+  // OSPF instances are sparse configuration objects. Dynamic storage avoids
+  // embedding all 96 release instance identifiers and every area in each
+  // candidate copy while preserving ordinary value semantics at commit.
+  ospf::RouterConfiguration ospf{};
 
   DeviceConfiguration() noexcept {
     std::copy_n(profile::default_system_name,

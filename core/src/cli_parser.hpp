@@ -18,6 +18,16 @@ struct ParsedCommand {
   const cli_schema::CommandSpec *spec{};
   std::array<std::string_view, cli_schema::maximum_tokens> tokens{};
   std::uint8_t token_count{};
+
+  // Modifiers are release-schema metadata rather than suffix guesses. A
+  // renderer can therefore share one semantic branch for `detail` while the
+  // generated grammar remains the authority on which commands accept it.
+  [[nodiscard]] bool
+  has_modifier(cli_schema::OutputModifier modifier) const noexcept {
+    return spec != nullptr &&
+           (spec->output_modifier_mask &
+            static_cast<std::uint8_t>(modifier)) != 0U;
+  }
 };
 
 [[nodiscard]] std::optional<ParsedCommand>

@@ -13,10 +13,23 @@
 
 namespace router::lab {
 
-// Version 22 adds streamed DNS resolver, authoritative and managed-signing
-// programs. An older worker cannot accept those transactions, so version
-// mismatch must reject the command rather than publish a partial service.
-inline constexpr std::uint32_t network_plane_message_version = 22;
+// Version 25 adds unresolved static-route intent and ECMP policy to the sole
+// network RIB owner. An older worker would bypass OSPF next-hop resolution, so
+// version mismatch must reject the command rather than install a partial RIB.
+inline constexpr std::uint32_t network_plane_message_version = 31;
+
+struct NetworkOspfGenerationBegin {
+  // These are exact item counts for one configuration transaction. They are
+  // not protocol limits and are validated against the generated runtime
+  // capacity before staging allocates.
+  std::uint32_t expected_processes{};
+  std::uint32_t expected_interfaces{};
+  std::uint32_t expected_authentications{};
+  std::uint32_t expected_nbma_neighbors{};
+  std::uint32_t expected_virtual_links{};
+  std::uint32_t expected_ranges{};
+  std::uint32_t expected_external_routes{};
+};
 
 struct NetworkSigningVaultInitialize {
   // Producer: control shard. Consumer: network owner. Capacity is one live
@@ -120,8 +133,23 @@ enum class NetworkCommandKind : std::uint8_t {
   remove_router,
   add_host,
   remove_host,
+  add_switch,
+  remove_switch,
+  configure_switch_port,
+  begin_ospf_generation,
+  add_ospf_process,
+  add_ospf_interface,
+  add_ospf_authentication,
+  add_ospf_nbma_neighbor,
+  add_ospf_virtual_link,
+  add_ospf_area_range,
+  add_ospf_external_route,
+  commit_ospf_generation,
+  abort_ospf_generation,
+  query_ospf,
   configure_port,
   remove_port,
+  program_route_policy,
   program_fib,
   program_ipv6_fib,
   begin_ipv6_address_generation,
@@ -234,13 +262,18 @@ struct NetworkCommand {
   NetworkCommandKind kind{};
   DeviceHandle device{};
   HostHandle host{};
+  SwitchHandle ethernet_switch{};
+  std::uint16_t switch_profile_index{};
+  std::uint16_t switch_port{};
+  SwitchPortConfiguration switch_port_configuration{};
   LinkHandle link{};
   ForwardPort port{};
   // FIB and RA programming are mutually exclusive command payloads. A variant
   // keeps the fixed SPSC slot at the largest program instead of adding the RA
   // option arrays to every route, ping and query message.
   std::variant<
-      routing::FibProgram, routing::Ipv6FibProgram, Ipv6AddressGenerationBegin,
+      routing::FibProgram, routing::Ipv6FibProgram, RoutePolicyProgram,
+      Ipv6AddressGenerationBegin,
       RouterIpv6Address, StaticIpv6NeighborProgram, StaticIpv4NeighborProgram,
       RouterAdvertisementProgram, MldInterfaceProgram, SapGenerationBegin,
       service::SapAttachment, service::ServiceIpv6Interface, Dhcpv6RelayBegin,
@@ -251,7 +284,12 @@ struct NetworkCommand {
       dns::ServerAddress, NetworkDnsTrustAnchorBegin,
       NetworkDnsAuthoritativeBegin, NetworkDnsZoneBegin,
       NetworkDnsSigningKeyDefinition, NetworkDnsRecordBegin,
-      NetworkDnsRdataChunk>
+      NetworkDnsRdataChunk, NetworkOspfGenerationBegin, OspfProcessProgram,
+      OspfInterfaceProgram, OspfAuthenticationProgram,
+      OspfNbmaNeighborProgram, OspfVirtualLinkProgram,
+      OspfAreaRangeProgram,
+      OspfExternalRouteProgram,
+      OspfOperationalQuery>
       fib{};
   HostNetworkProgram host_program{};
   NetworkLinkProgram link_program{};
@@ -298,6 +336,10 @@ struct NetworkResult {
   // describe command validity. This avoids overloading false as both an absent
   // reply and a stale handle error.
   std::uint64_t value{};
+  // Rich OSPF rows are still fixed, pointer-free values. A dedicated field
+  // avoids encoding protocol state into unrelated scalar counters and keeps
+  // the synchronous control result self-describing through `kind`.
+  ospf::ControlResult ospf{};
 };
 
 struct NetworkPlaneChannels {

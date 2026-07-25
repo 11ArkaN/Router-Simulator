@@ -99,4 +99,24 @@ void secret_vault_tests() {
       vault->erase(ppk_handle) != Result::applied ||
       vault->erase(ppk_handle) != Result::not_found)
     throw std::runtime_error("vault pruning or erasure violated handle ownership");
+
+  // OSPF keychain configuration uses a distinct authenticated purpose, so a
+  // valid encrypted routing key cannot be reopened as an IPsec credential.
+  auto ospf_vault = SecretVault::create(first_key, first_context, 1U);
+  const std::array<std::uint8_t, 16U> ospf_key{
+      0x10U, 0x11U, 0x12U, 0x13U, 0x14U, 0x15U, 0x16U, 0x17U,
+      0x18U, 0x19U, 0x1aU, 0x1bU, 0x1cU, 0x1dU, 0x1eU, 0x1fU};
+  if (!ospf_vault)
+    throw std::runtime_error("OSPF vault fixture was rejected");
+  const auto [ospf_result, ospf_handle] = ospf_vault->seal(
+      SecretKind::ospf_authentication_key, ospf_key);
+  auto [ospf_open_result, opened_ospf] = ospf_vault->open(
+      ospf_handle, SecretKind::ospf_authentication_key);
+  if (ospf_result != Result::applied ||
+      ospf_open_result != Result::applied || !opened_ospf ||
+      !std::ranges::equal(opened_ospf->bytes(), ospf_key) ||
+      ospf_vault->open(ospf_handle,
+                       SecretKind::ipsec_static_authentication_key)
+              .first != Result::wrong_kind)
+    throw std::runtime_error("OSPF secret purpose binding was not enforced");
 }

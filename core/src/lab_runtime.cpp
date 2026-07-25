@@ -7,9 +7,11 @@
 #include "cli_internal.hpp"
 #include "ies_cli_configuration.hpp"
 #include "ipsec_cli_configuration.hpp"
+#include "ospf_cli_configuration.hpp"
 #include "router/cli.hpp"
 #include "router/dns_master_file.hpp"
 #include "router/generated_lab_runtime_protocol.hpp"
+#include "router/interface_identity.hpp"
 #include "router/sha256.hpp"
 #include "router/shard_policy.hpp"
 #include "tls_cli_configuration.hpp"
@@ -18,12 +20,16 @@
 #include <array>
 #include <atomic>
 #include <charconv>
+#include <cmath>
 #include <functional>
 #include <iomanip>
 #include <iterator>
 #include <limits>
 #include <sstream>
 #include <thread>
+
+#include <openssl/rand.h>
+#include <openssl/crypto.h>
 
 namespace router::lab {
 namespace {
@@ -32,6 +38,59 @@ namespace {
 // the vendor-defined identifier in one conformance boundary so comparisons do
 // not drift into unrelated UI or packet modules.
 inline constexpr std::string_view system_interface_name{"system"};
+
+[[nodiscard]] std::string ping_milliseconds(long double microseconds) {
+  // Current SR OS examples retain at least hundredth-millisecond precision
+  // and add a third digit when it is significant. Rendering from integer
+  // microseconds avoids exposing binary floating-point tails in the terminal.
+  std::ostringstream out;
+  out << std::fixed << std::setprecision(3)
+      << static_cast<double>(microseconds / 1000.0L);
+  auto text = out.str();
+  while (text.size() > 3U && text.back() == '0' &&
+         text[text.size() - 3U] != '.')
+    text.pop_back();
+  return text;
+}
+
+[[nodiscard]] std::string ping_loss_percent(std::uint32_t lost,
+                                            std::uint32_t sent) {
+  // SR OS prints packet loss with two decimal places. Compute the ratio before
+  // formatting so non-integral loss, such as one of three probes, is not
+  // silently truncated to an integer percentage.
+  std::ostringstream out;
+  const auto percentage =
+      sent ? static_cast<long double>(lost) * 100.0L / sent : 0.0L;
+  out << std::fixed << std::setprecision(2) << static_cast<double>(percentage);
+  return out.str();
+}
+
+[[nodiscard]] std::optional<std::uint32_t>
+ospf_database_description_sequence() noexcept {
+  // RFC 2328 section 10.6 requires a unique sequence for a new Database
+  // Description exchange but assigns no fixed initial value. OpenSSL obtains
+  // this process value from the browser or native operating-system entropy
+  // provider. Failure is propagated so configuration never substitutes an
+  // editor-derived or constant sequence.
+  std::uint32_t sequence{};
+  return RAND_bytes(reinterpret_cast<unsigned char *>(&sequence),
+                    static_cast<int>(sizeof(sequence))) == 1
+             ? std::optional<std::uint32_t>{sequence}
+             : std::nullopt;
+}
+
+[[nodiscard]] std::optional<std::uint64_t>
+ospf_authentication_sequence() noexcept {
+  // RFC 7166 requires a monotonically increasing 64-bit sequence and RFC
+  // 5709 requires a nondecreasing OSPFv2 sequence. A fresh unpredictable
+  // starting point prevents a restarted process from deterministically
+  // reusing authenticated packets. Failure aborts the configuration publish.
+  std::uint64_t sequence{};
+  return RAND_bytes(reinterpret_cast<unsigned char *>(&sequence),
+                    static_cast<int>(sizeof(sequence))) == 1
+             ? std::optional<std::uint64_t>{sequence}
+             : std::nullopt;
+}
 
 class IpsecVaultSink final : public ipsec_cli::SecretSink {
 public:
@@ -67,6 +126,54 @@ private:
   // The adapter borrows the Worker-owned vault only for one serialized CLI
   // edit. It is never retained by a candidate or sent to another shard.
   vault::SecretVault *owner_{};
+};
+
+class OspfVaultSink final : public ospf_cli::SecretSink {
+public:
+  explicit OspfVaultSink(vault::SecretVault *owner) noexcept : owner_(owner) {}
+
+  std::optional<vault::SecretHandle>
+  seal(std::span<const std::uint8_t> plaintext) noexcept override {
+    // Authentication text is converted to an opaque, purpose-bound handle at
+    // the CLI ownership boundary. Neither candidate configuration nor command
+    // history may retain the plaintext after this serialized control turn.
+    if (!owner_)
+      return std::nullopt;
+    const auto [result, handle] =
+        owner_->seal(vault::SecretKind::ospf_authentication_key, plaintext);
+    return result == vault::Result::applied
+               ? std::optional<vault::SecretHandle>{handle}
+               : std::nullopt;
+  }
+
+private:
+  // LabRuntime owns the vault and invokes this adapter synchronously. The
+  // borrowed pointer therefore never crosses a shard or outlives the edit.
+  vault::SecretVault *owner_{};
+};
+
+class OspfProgramCleaner final {
+public:
+  explicit OspfProgramCleaner(
+      std::vector<OspfAuthenticationProgram> *programs) noexcept
+      : programs_(programs) {}
+
+  ~OspfProgramCleaner() {
+    if (!programs_)
+      return;
+    // LabRuntime is the first plaintext-copy owner after SecretVault. Every
+    // success and early return passes through this destructor, so temporary
+    // generation storage is erased even when a later interface is invalid.
+    for (auto &program : *programs_)
+      OPENSSL_cleanse(program.authentication.key.data(),
+                      program.authentication.key.size());
+  }
+
+  OspfProgramCleaner(const OspfProgramCleaner &) = delete;
+  OspfProgramCleaner &operator=(const OspfProgramCleaner &) = delete;
+
+private:
+  std::vector<OspfAuthenticationProgram> *programs_{};
 };
 
 struct MessageFields {
@@ -601,12 +708,16 @@ bool valid_mld_import_policies(
       if (!entry.number || entry.number <= previous_number ||
           !has_prefix_list(entry.group_prefix_list) ||
           !has_prefix_list(entry.source_prefix_list) ||
+          !has_prefix_list(entry.route_prefix_list) ||
           (entry.source_address && !entry.source_prefix_list.empty()) ||
           (entry.source_address && (ip::is_unspecified(*entry.source_address) ||
                                     ip::is_multicast(*entry.source_address))) ||
           entry.action > mld::ImportPolicyAction::next_policy ||
           (!entry.action_configured &&
-           entry.action != mld::ImportPolicyAction::next_entry))
+           entry.action != mld::ImportPolicyAction::next_entry) ||
+          (entry.set_metric_type &&
+           *entry.set_metric_type != routing::OspfPathType::external_type_1 &&
+           *entry.set_metric_type != routing::OspfPathType::external_type_2))
         return false;
       previous_number = entry.number;
     }
@@ -616,6 +727,95 @@ bool valid_mld_import_policies(
       return false;
   }
   return true;
+}
+
+std::optional<routing::RoutePolicyProgram> compile_route_policy(
+    std::span<const MldPolicyPrefixListIntent> prefix_lists,
+    std::span<const MldNamedImportPolicyIntent> policies,
+    std::string_view policy_name) noexcept {
+  // A missing export policy has a precise meaning in SR OS: no route is
+  // redistributed. Returning an empty default-reject program preserves that
+  // behavior without a special allow-list name or hidden default clause.
+  routing::RoutePolicyProgram program;
+  if (policy_name.empty())
+    return program;
+  const auto policy = std::find_if(
+      policies.begin(), policies.end(),
+      [&](const auto &candidate) { return candidate.name == policy_name; });
+  if (policy == policies.end())
+    return std::nullopt;
+  const auto prefix_list =
+      [&](std::string_view name) -> const MldPolicyPrefixListIntent * {
+    if (name.empty())
+      return nullptr;
+    const auto found =
+        std::find_if(prefix_lists.begin(), prefix_lists.end(),
+                     [&](const auto &candidate) {
+                       return candidate.name == name;
+                     });
+    return found == prefix_lists.end() ? nullptr : &*found;
+  };
+  try {
+    std::vector<routing::PolicyEntry> compiled;
+    for (const auto &entry : policy->entries) {
+      const auto *destinations = prefix_list(entry.route_prefix_list);
+      if (!entry.route_prefix_list.empty() && !destinations)
+        return std::nullopt;
+      const std::size_t terms = destinations ? destinations->prefixes.size()
+                                             : 1U;
+      for (std::size_t term{}; term < terms; ++term) {
+        routing::PolicyEntry output{
+            .number = entry.number,
+            .term = static_cast<std::uint32_t>(term),
+            .destination = std::nullopt,
+            .source = entry.route_source,
+            .protocol_instance = entry.protocol_instance,
+            .tag = entry.route_tag,
+            .decision =
+                entry.action == mld::ImportPolicyAction::accept
+                    ? routing::PolicyDecision::accept
+                    : entry.action == mld::ImportPolicyAction::reject ||
+                              entry.action == mld::ImportPolicyAction::drop
+                          ? routing::PolicyDecision::reject
+                          : routing::PolicyDecision::next_entry,
+            .set_metric = entry.set_metric,
+            .set_metric_type = entry.set_metric_type,
+            .set_tag = entry.set_route_tag};
+        if (destinations) {
+          const auto &prefix = destinations->prefixes[term];
+          output.destination =
+              routing::PolicyPrefix{.ipv6 =
+                                        prefix.network.family ==
+                                        ip::AddressFamily::ipv6,
+                                    .length = prefix.length};
+          if (output.destination->ipv6) {
+            output.destination->ipv6_network = prefix.network.bytes;
+          } else {
+            output.destination->ipv4_network =
+                static_cast<std::uint32_t>(prefix.network.bytes[0U]) << 24U |
+                static_cast<std::uint32_t>(prefix.network.bytes[1U]) << 16U |
+                static_cast<std::uint32_t>(prefix.network.bytes[2U]) << 8U |
+                prefix.network.bytes[3U];
+          }
+        }
+        compiled.push_back(std::move(output));
+      }
+    }
+    // SR OS route policies reject unmatched routes unless an explicit default
+    // action accepts them. next-entry at the default clause has no later entry
+    // and therefore also falls through as reject for this single policy.
+    const auto default_decision =
+        policy->default_action_configured &&
+                policy->default_action == mld::ImportPolicyAction::accept
+            ? routing::PolicyDecision::accept
+            : routing::PolicyDecision::reject;
+    return program.replace(compiled, default_decision)
+               ? std::optional<routing::RoutePolicyProgram>{
+                     std::move(program)}
+               : std::nullopt;
+  } catch (const std::bad_alloc &) {
+    return std::nullopt;
+  }
 }
 
 std::optional<mld::ImportPolicyCheckpoint> compile_mld_import_policy(
@@ -740,6 +940,28 @@ policy_action(std::string_view text) noexcept {
     return mld::ImportPolicyAction::next_entry;
   if (text == "next-policy")
     return mld::ImportPolicyAction::next_policy;
+  return std::nullopt;
+}
+
+std::optional<routing::RouteSource>
+route_policy_source(std::string_view text) noexcept {
+  if (text == "direct")
+    return routing::RouteSource::connected;
+  if (text == "static")
+    return routing::RouteSource::static_route;
+  if (text == "ospf")
+    return routing::RouteSource::ospf;
+  if (text == "ospf3")
+    return routing::RouteSource::ospf3;
+  return std::nullopt;
+}
+
+std::optional<routing::OspfPathType>
+route_policy_metric_type(std::string_view text) noexcept {
+  if (text == "type-1")
+    return routing::OspfPathType::external_type_1;
+  if (text == "type-2")
+    return routing::OspfPathType::external_type_2;
   return std::nullopt;
 }
 
@@ -878,7 +1100,14 @@ bool edit_mld_import_policy(Configuration &configuration,
                                .source_prefix_list = {},
                                .action = mld::ImportPolicyAction::next_entry,
                                .action_configured = false,
-                               .protocol_mld = false});
+                               .protocol_mld = false,
+                               .route_prefix_list = {},
+                               .route_source = std::nullopt,
+                               .protocol_instance = std::nullopt,
+                               .route_tag = std::nullopt,
+                               .set_metric = std::nullopt,
+                               .set_metric_type = std::nullopt,
+                               .set_route_tag = std::nullopt});
     std::sort(policy->entries.begin(), policy->entries.end(),
               [](const auto &left, const auto &right) {
                 return left.number < right.number;
@@ -934,10 +1163,117 @@ bool edit_mld_import_policy(Configuration &configuration,
     entry->protocol_mld = true;
     return true;
   }
+  if (id == md_policy_route_prefix_list ||
+      id == classic_policy_route_prefix_list) {
+    const auto name = clean_name(cli_schema::TokenKind::prefix_list_name,
+                                 mld::maximum_policy_name_octets);
+    if (!name)
+      return false;
+    entry->route_prefix_list.assign(*name);
+    return true;
+  }
+  if (id == md_delete_policy_route_prefix_list ||
+      id == classic_policy_no_route_prefix_list) {
+    if (entry->route_prefix_list.empty())
+      return false;
+    entry->route_prefix_list.clear();
+    return true;
+  }
+  const auto route_source_for =
+      [&](cli_schema::CommandId command)
+      -> std::optional<routing::RouteSource> {
+    if (command == md_policy_protocol_direct ||
+        command == classic_policy_protocol_direct)
+      return routing::RouteSource::connected;
+    if (command == md_policy_protocol_static ||
+        command == classic_policy_protocol_static)
+      return routing::RouteSource::static_route;
+    if (command == md_policy_protocol_ospf ||
+        command == classic_policy_protocol_ospf)
+      return routing::RouteSource::ospf;
+    if (command == md_policy_protocol_ospf3 ||
+        command == classic_policy_protocol_ospf3)
+      return routing::RouteSource::ospf3;
+    return std::nullopt;
+  };
+  if (const auto source = route_source_for(id)) {
+    entry->route_source = *source;
+    return true;
+  }
+  const auto route_number =
+      [&](cli_schema::TokenKind kind) -> std::optional<std::uint32_t> {
+    const auto text = argument(kind);
+    std::uint32_t value{};
+    if (!text || !decimal(*text, value))
+      return std::nullopt;
+    return value;
+  };
+  if (id == md_policy_route_tag || id == classic_policy_route_tag) {
+    const auto value = route_number(cli_schema::TokenKind::policy_route_tag);
+    if (!value || *value == 0U)
+      return false;
+    entry->route_tag = *value;
+    return true;
+  }
+  if (id == md_delete_policy_route_tag ||
+      id == classic_policy_no_route_tag) {
+    if (!entry->route_tag)
+      return false;
+    entry->route_tag.reset();
+    return true;
+  }
+  if (id == md_policy_action_metric ||
+      id == classic_policy_action_metric) {
+    const auto value = route_number(cli_schema::TokenKind::ospf_metric);
+    if (!value || *value > 0x00ffffffU)
+      return false;
+    entry->set_metric = *value;
+    return true;
+  }
+  if (id == md_delete_policy_action_metric ||
+      id == classic_policy_no_action_metric) {
+    if (!entry->set_metric)
+      return false;
+    entry->set_metric.reset();
+    return true;
+  }
+  if (id == md_policy_action_type || id == classic_policy_action_type) {
+    const auto value =
+        route_number(cli_schema::TokenKind::ospf_metric_type);
+    if (!value || (*value != 1U && *value != 2U))
+      return false;
+    entry->set_metric_type =
+        *value == 1U ? routing::OspfPathType::external_type_1
+                     : routing::OspfPathType::external_type_2;
+    return true;
+  }
+  if (id == md_delete_policy_action_type ||
+      id == classic_policy_no_action_type) {
+    if (!entry->set_metric_type)
+      return false;
+    entry->set_metric_type.reset();
+    return true;
+  }
+  if (id == md_policy_action_tag || id == classic_policy_action_tag) {
+    const auto value = route_number(cli_schema::TokenKind::policy_route_tag);
+    if (!value || *value == 0U)
+      return false;
+    entry->set_route_tag = *value;
+    return true;
+  }
+  if (id == md_delete_policy_action_tag ||
+      id == classic_policy_no_action_tag) {
+    if (!entry->set_route_tag)
+      return false;
+    entry->set_route_tag.reset();
+    return true;
+  }
   if (id == md_delete_policy_protocol || id == classic_policy_no_protocol) {
-    if (!entry->protocol_mld)
+    if (!entry->protocol_mld && !entry->route_source)
       return false;
     entry->protocol_mld = false;
+    entry->route_source.reset();
+    entry->protocol_instance.reset();
     return true;
   }
   if (id == md_policy_entry_action || id == classic_policy_entry_action) {
@@ -1468,6 +1804,20 @@ bool classic_policy_options_command(cli_schema::CommandId id) noexcept {
   case classic_policy_source_prefix_list:
   case classic_policy_no_source_address:
   case classic_policy_protocol_mld:
+  case classic_policy_route_prefix_list:
+  case classic_policy_protocol_direct:
+  case classic_policy_protocol_static:
+  case classic_policy_protocol_ospf:
+  case classic_policy_protocol_ospf3:
+  case classic_policy_route_tag:
+  case classic_policy_action_metric:
+  case classic_policy_action_type:
+  case classic_policy_action_tag:
+  case classic_policy_no_route_prefix_list:
+  case classic_policy_no_route_tag:
+  case classic_policy_no_action_metric:
+  case classic_policy_no_action_type:
+  case classic_policy_no_action_tag:
   case classic_policy_no_protocol:
   case classic_policy_entry_action:
   case classic_policy_no_entry_action:
@@ -1493,6 +1843,20 @@ bool md_policy_options_command(cli_schema::CommandId id) noexcept {
   case md_policy_source_prefix_list:
   case md_delete_policy_source_address:
   case md_policy_protocol_mld:
+  case md_policy_route_prefix_list:
+  case md_policy_protocol_direct:
+  case md_policy_protocol_static:
+  case md_policy_protocol_ospf:
+  case md_policy_protocol_ospf3:
+  case md_policy_route_tag:
+  case md_policy_action_metric:
+  case md_policy_action_type:
+  case md_policy_action_tag:
+  case md_delete_policy_route_prefix_list:
+  case md_delete_policy_route_tag:
+  case md_delete_policy_action_metric:
+  case md_delete_policy_action_type:
+  case md_delete_policy_action_tag:
   case md_delete_policy_protocol:
   case md_policy_entry_action:
   case md_delete_policy_entry_action:
@@ -1584,6 +1948,8 @@ bool md_mld_configuration_command(cli_schema::CommandId id) noexcept {
 
 bool classic_configuration_command(cli_schema::CommandId id) noexcept {
   using enum cli_schema::CommandId;
+  if (ospf_cli::is_classic_command(id))
+    return true;
   if (ipsec_cli::is_classic_command(id))
     return true;
   if (tls_cli::is_classic_command(id))
@@ -1740,6 +2106,8 @@ bool classic_configuration_command(cli_schema::CommandId id) noexcept {
 
 bool md_configuration_command(cli_schema::CommandId id) noexcept {
   using enum cli_schema::CommandId;
+  if (ospf_cli::is_md_command(id))
+    return true;
   if (ipsec_cli::is_md_command(id))
     return true;
   if (tls_cli::is_md_command(id))
@@ -1969,6 +2337,932 @@ void json_string(std::ostringstream &out, std::string_view text) {
   out << '"';
 }
 
+std::string_view ospf_family_text(ospf::AddressFamily family) noexcept {
+  switch (family) {
+  case ospf::AddressFamily::ipv4:
+    return "ipv4";
+  case ospf::AddressFamily::ipv6:
+    return "ipv6";
+  case ospf::AddressFamily::ipv4_over_ospfv3:
+    return "ipv4-over-ospfv3";
+  }
+  return {};
+}
+
+std::string_view ospf_area_type_text(ospf::AreaType type) noexcept {
+  switch (type) {
+  case ospf::AreaType::normal:
+    return "normal";
+  case ospf::AreaType::stub:
+    return "stub";
+  case ospf::AreaType::totally_stub:
+    return "totally-stub";
+  case ospf::AreaType::nssa:
+    return "nssa";
+  }
+  return {};
+}
+
+std::string_view ospf_network_type_text(ospf::NetworkType type) noexcept {
+  switch (type) {
+  case ospf::NetworkType::point_to_point:
+    return "point-to-point";
+  case ospf::NetworkType::broadcast:
+    return "broadcast";
+  case ospf::NetworkType::non_broadcast:
+    return "non-broadcast";
+  case ospf::NetworkType::point_to_multipoint:
+    return "point-to-multipoint";
+  case ospf::NetworkType::virtual_link:
+    return "virtual-link";
+  }
+  return {};
+}
+
+std::string_view
+ospf_authentication_text(ospf::AuthenticationMode mode) noexcept {
+  switch (mode) {
+  case ospf::AuthenticationMode::none:
+    return "none";
+  case ospf::AuthenticationMode::simple_password:
+    return "simple-password";
+  case ospf::AuthenticationMode::message_digest:
+    return "message-digest";
+  case ospf::AuthenticationMode::keychain:
+    return "keychain";
+  case ospf::AuthenticationMode::authentication_trailer:
+    return "authentication-trailer";
+  case ospf::AuthenticationMode::ipsec_security_association:
+    return "ipsec-security-association";
+  }
+  return {};
+}
+
+std::optional<std::vector<std::string>>
+md_context_tokens(std::string_view path) {
+  // CliSession retains the canonical MD path, including quotes around list
+  // keys that contain spaces. `info` scopes output to that path, so this small
+  // reader preserves every quoted byte while removing only the surrounding
+  // delimiters. It is deliberately not an execution parser: the navigation
+  // engine already validated and canonicalized the path before storing it.
+  std::vector<std::string> tokens;
+  try {
+    for (std::size_t cursor{}; cursor < path.size();) {
+      while (cursor < path.size() && path[cursor] == ' ')
+        ++cursor;
+      if (cursor == path.size())
+        break;
+      std::string token;
+      if (path[cursor] == '"') {
+        ++cursor;
+        const auto end = path.find('"', cursor);
+        if (end == std::string_view::npos)
+          return std::nullopt;
+        token.assign(path.substr(cursor, end - cursor));
+        cursor = end + 1U;
+        if (cursor < path.size() && path[cursor] != ' ')
+          return std::nullopt;
+      } else {
+        const auto end = path.find(' ', cursor);
+        token.assign(path.substr(
+            cursor, end == std::string_view::npos ? path.size() - cursor
+                                                  : end - cursor));
+        cursor = end == std::string_view::npos ? path.size() : end;
+      }
+      tokens.push_back(std::move(token));
+    }
+  } catch (const std::bad_alloc &) {
+    return std::nullopt;
+  }
+  return tokens;
+}
+
+std::optional<std::uint32_t>
+ospf_area_identifier(std::string_view text) noexcept {
+  // Nokia accepts the area list key in unsigned or dotted-decimal notation.
+  // The canonical model uses the 32-bit wire value, so info must resolve both
+  // textual spellings exactly as configuration does.
+  if (text.find('.') != std::string_view::npos)
+    return ipv4(text);
+  std::uint32_t value{};
+  const auto result =
+      std::from_chars(text.data(), text.data() + text.size(), value);
+  return !text.empty() && result.ec == std::errc{} &&
+                 result.ptr == text.data() + text.size()
+             ? std::optional{value}
+             : std::nullopt;
+}
+
+void md_indent(std::ostringstream &out, std::size_t depth) {
+  for (std::size_t index{}; index < depth; ++index)
+    out << "    ";
+}
+
+void md_ospf_interface_info(
+    std::ostringstream &out,
+    const ospf::InterfaceConfigurationIntent &interface, std::size_t depth,
+    bool detail) {
+  // Plain info prints configured effective intent. The OSPF model predates
+  // per-leaf presence bits, so list creation currently materializes release
+  // defaults. Those values are still real candidate data, not presentation
+  // constants. `detail` is accepted now and will become distinguishable when
+  // the configuration model gains explicit default-origin metadata.
+  static_cast<void>(detail);
+  const auto leaf = [&](std::string_view name, const auto &value) {
+    md_indent(out, depth);
+    out << name << ' ' << value << '\n';
+  };
+  leaf("admin-state", interface.admin_enabled ? "enable" : "disable");
+  leaf("interface-type", ospf_network_type_text(interface.network_type));
+  leaf("metric", interface.cost);
+  leaf("priority", static_cast<unsigned>(interface.priority));
+  leaf("passive", interface.passive ? "true" : "false");
+  leaf("mtu-ignore", interface.mtu_mismatch_ignore ? "true" : "false");
+  leaf("hello-interval", interface.hello_interval_seconds);
+  leaf("dead-interval", interface.dead_interval_seconds);
+  leaf("retransmit-interval", interface.retransmit_interval_seconds);
+  leaf("transit-delay", interface.transmit_delay_seconds);
+  if (interface.authentication != ospf::AuthenticationMode::none)
+    leaf("authentication", ospf_authentication_text(interface.authentication));
+  if (!interface.keychain.empty()) {
+    md_indent(out, depth);
+    out << "keychain \"" << interface.keychain << "\"\n";
+  }
+  if (!interface.ipsec_sa_inbound.empty()) {
+    md_indent(out, depth);
+    out << "ipsec-sa-inbound \"" << interface.ipsec_sa_inbound << "\"\n";
+  }
+  if (!interface.ipsec_sa_outbound.empty()) {
+    md_indent(out, depth);
+    out << "ipsec-sa-outbound \"" << interface.ipsec_sa_outbound << "\"\n";
+  }
+  for (const auto &neighbor : interface.nbma_neighbors) {
+    md_indent(out, depth);
+    out << "neighbor " << ip::format_ip_address(neighbor.address) << " {\n";
+    md_indent(out, depth + 1U);
+    out << "priority " << static_cast<unsigned>(neighbor.priority) << '\n';
+    md_indent(out, depth + 1U);
+    out << "poll-interval " << neighbor.poll_interval_seconds << '\n';
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+void md_ospf_area_info(std::ostringstream &out,
+                       const ospf::AreaConfiguration &area,
+                       std::size_t depth, bool detail) {
+  const auto leaf = [&](std::string_view name, const auto &value) {
+    md_indent(out, depth);
+    out << name << ' ' << value << '\n';
+  };
+  if (area.type == ospf::AreaType::stub ||
+      area.type == ospf::AreaType::totally_stub) {
+    md_indent(out, depth);
+    out << "stub\n";
+  } else if (area.type == ospf::AreaType::nssa) {
+    md_indent(out, depth);
+    out << "nssa\n";
+  }
+  leaf("summaries", area.summaries ? "true" : "false");
+  leaf("default-metric", area.default_metric);
+  if (area.type == ospf::AreaType::nssa)
+    leaf("nssa-translate-always",
+         area.nssa_translate_always ? "true" : "false");
+  for (const auto &range : area.ranges) {
+    md_indent(out, depth);
+    out << "area-range " << ip::format_ip_prefix(range.prefix) << ' '
+        << (range.advertise ? "advertise" : "not-advertise");
+    if (range.advertised_metric)
+      out << " metric " << *range.advertised_metric;
+    out << '\n';
+  }
+  for (const auto &interface : area.interfaces) {
+    md_indent(out, depth);
+    out << "interface \"" << interface.interface_name << "\" {\n";
+    md_ospf_interface_info(out, interface, depth + 1U, detail);
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+void md_ospf_instance_info(std::ostringstream &out,
+                           const ospf::InstanceConfiguration &instance,
+                           std::size_t depth, bool detail) {
+  const auto leaf = [&](std::string_view name, const auto &value) {
+    md_indent(out, depth);
+    out << name << ' ' << value << '\n';
+  };
+  leaf("admin-state", instance.admin_enabled ? "enable" : "disable");
+  if (instance.configured_router_id)
+    leaf("router-id", ipv4_text(*instance.configured_router_id));
+  leaf("reference-bandwidth", instance.reference_bandwidth_kbps);
+  leaf("preference", instance.router_preference);
+  leaf("external-preference", instance.external_preference);
+  if (!instance.export_policy.empty()) {
+    md_indent(out, depth);
+    out << "export-policy \"" << instance.export_policy << "\"\n";
+  }
+  if (instance.asbr) {
+    md_indent(out, depth);
+    out << "asbr\n";
+  }
+  if (instance.asbr_trace_path_domain_id)
+    leaf("asbr trace-path",
+         static_cast<unsigned>(*instance.asbr_trace_path_domain_id));
+  leaf("overload", instance.overload ? "true" : "false");
+  leaf("graceful-restart",
+       instance.graceful_restart_helper ? "true" : "false");
+  leaf("loopfree-alternates",
+       instance.loopfree_alternates ? "true" : "false");
+  leaf("timers spf-wait spf-initial-wait",
+       instance.spf_initial_wait_milliseconds);
+  leaf("timers spf-wait spf-second-wait",
+       instance.spf_second_wait_milliseconds);
+  leaf("timers spf-wait spf-max-wait",
+       instance.spf_maximum_wait_milliseconds);
+  leaf("timers lsa-generate lsa-initial-wait",
+       instance.lsa_initial_wait_milliseconds);
+  leaf("timers lsa-generate lsa-second-wait",
+       instance.lsa_second_wait_milliseconds);
+  leaf("timers lsa-generate max-lsa-wait",
+       instance.lsa_maximum_wait_milliseconds);
+  for (const auto &area : instance.areas) {
+    md_indent(out, depth);
+    out << "area " << ipv4_text(area.area_id) << " {\n";
+    md_ospf_area_info(out, area, depth + 1U, detail);
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+std::optional<std::string>
+md_ospf_info(const ospf::RouterConfiguration &configuration,
+             std::string_view path, bool detail) {
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->size() < 4U || (*tokens)[0] != "configure" ||
+      (*tokens)[1] != "router" || (*tokens)[2] != "Base" ||
+      ((*tokens)[3] != "ospf" && (*tokens)[3] != "ospf3"))
+    return std::nullopt;
+
+  std::ostringstream out;
+  if (tokens->size() == 4U) {
+    for (const auto &instance : configuration.instances) {
+      const bool version_matches =
+          (*tokens)[3] == "ospf"
+              ? instance.address_family == ospf::AddressFamily::ipv4
+              : instance.address_family != ospf::AddressFamily::ipv4;
+      if (!version_matches)
+        continue;
+      out << (*tokens)[3] << ' '
+          << static_cast<unsigned>(instance.instance_id) << " {\n";
+      md_ospf_instance_info(out, instance, 1U, detail);
+      out << "}\n";
+    }
+    return out.str();
+  }
+  if (tokens->size() < 5U)
+    return std::nullopt;
+  unsigned instance_id{};
+  const auto parsed_instance =
+      std::from_chars((*tokens)[4].data(),
+                      (*tokens)[4].data() + (*tokens)[4].size(), instance_id);
+  if (parsed_instance.ec != std::errc{} ||
+      parsed_instance.ptr != (*tokens)[4].data() + (*tokens)[4].size() ||
+      instance_id > std::numeric_limits<std::uint8_t>::max())
+    return std::nullopt;
+  const auto instance = std::find_if(
+      configuration.instances.begin(), configuration.instances.end(),
+      [&](const auto &candidate) {
+        const bool version_matches =
+            (*tokens)[3] == "ospf"
+                ? candidate.address_family == ospf::AddressFamily::ipv4
+                : candidate.address_family != ospf::AddressFamily::ipv4;
+        return version_matches && candidate.instance_id == instance_id;
+      });
+  if (instance == configuration.instances.end())
+    return std::string{};
+  if (tokens->size() == 5U) {
+    // `info` is relative to the present working context. Nokia's MD-CLI omits
+    // the current list key and prints its children at column one; only nested
+    // descendants retain braces. `info full-context` is the distinct command
+    // that would include the complete path to this instance.
+    md_ospf_instance_info(out, *instance, 0U, detail);
+    return out.str();
+  }
+  if (tokens->size() < 7U || (*tokens)[5] != "area")
+    return std::nullopt;
+  const auto area_id = ospf_area_identifier((*tokens)[6]);
+  if (!area_id)
+    return std::nullopt;
+  const auto area = std::find_if(
+      instance->areas.begin(), instance->areas.end(),
+      [&](const auto &candidate) { return candidate.area_id == *area_id; });
+  if (area == instance->areas.end())
+    return std::string{};
+  if (tokens->size() == 7U) {
+    md_ospf_area_info(out, *area, 0U, detail);
+    return out.str();
+  }
+  if (tokens->size() != 9U || (*tokens)[7] != "interface")
+    return std::nullopt;
+  const auto interface = std::find_if(
+      area->interfaces.begin(), area->interfaces.end(),
+      [&](const auto &candidate) {
+        return candidate.interface_name == (*tokens)[8];
+      });
+  if (interface == area->interfaces.end())
+    return std::string{};
+  md_ospf_interface_info(out, *interface, 0U, detail);
+  return out.str();
+}
+
+std::string_view
+router_preference_text(packet::nd::RouterPreference preference) noexcept {
+  switch (preference) {
+  case packet::nd::RouterPreference::low:
+    return "low";
+  case packet::nd::RouterPreference::medium:
+    return "medium";
+  case packet::nd::RouterPreference::high:
+    return "high";
+  }
+  return {};
+}
+
+template <typename Interface>
+void md_ra_prefix_info(std::ostringstream &out, const Interface &interface,
+                       std::size_t index, std::size_t depth, bool detail) {
+  const auto &prefix = interface.router_advertisement.prefixes[index];
+  const auto presence =
+      interface.router_advertisement_prefix_leaf_presence[index];
+  const auto present = [&](RouterAdvertisementPrefixLeaf leaf) noexcept {
+    return presence_has(presence, leaf);
+  };
+  const auto leaf = [&](std::string_view name, const auto &value) {
+    md_indent(out, depth);
+    out << name << ' ' << value << '\n';
+  };
+
+  if (detail || present(RouterAdvertisementPrefixLeaf::autonomous))
+    leaf("autonomous", prefix.autonomous ? "true" : "false");
+  if (detail || present(RouterAdvertisementPrefixLeaf::on_link))
+    leaf("on-link", prefix.on_link ? "true" : "false");
+  if (detail || present(RouterAdvertisementPrefixLeaf::preferred_lifetime))
+    leaf("preferred-lifetime", prefix.preferred_lifetime_seconds);
+  if (detail || present(RouterAdvertisementPrefixLeaf::valid_lifetime))
+    leaf("valid-lifetime", prefix.valid_lifetime_seconds);
+}
+
+template <typename Dns>
+void md_ra_dns_info(std::ostringstream &out, const Dns &dns,
+                    bool lifetime_configured, std::size_t depth,
+                    bool detail) {
+  // RFC 8106 server order is configuration order. Preserve it in `info` so a
+  // copied block produces the same on-wire option ordering after commit.
+  for (std::size_t index{}; index < dns.rdnss.count; ++index) {
+    md_indent(out, depth);
+    out << "server " << ip::format_ipv6(dns.rdnss.servers[index].address)
+        << '\n';
+  }
+  if (detail || lifetime_configured) {
+    md_indent(out, depth);
+    out << "rdnss-lifetime " << dns.rdnss_lifetime_seconds << '\n';
+  }
+}
+
+template <typename Interface>
+void md_ra_interface_info(std::ostringstream &out, const Interface &interface,
+                          std::size_t depth, bool detail) {
+  const auto &config = interface.router_advertisement;
+  const auto present = [&](RouterAdvertisementLeaf leaf) noexcept {
+    return presence_has(interface.router_advertisement_leaf_presence, leaf);
+  };
+  const auto leaf = [&](std::string_view name, const auto &value) {
+    md_indent(out, depth);
+    out << name << ' ' << value << '\n';
+  };
+
+  // Nokia orders admin-state before all other non-key leaves, then emits the
+  // remaining children alphabetically. Plain `info` respects explicit leaf
+  // presence; `info detail` additionally exposes effective release defaults.
+  if (detail || present(RouterAdvertisementLeaf::admin_state))
+    leaf("admin-state",
+         interface.router_advertisement_enabled ? "enable" : "disable");
+  if (detail || present(RouterAdvertisementLeaf::current_hop_limit))
+    leaf("current-hop-limit", static_cast<unsigned>(config.current_hop_limit));
+  if (detail || present(RouterAdvertisementLeaf::managed_configuration))
+    leaf("managed-configuration",
+         config.managed_configuration ? "true" : "false");
+  if (detail || present(RouterAdvertisementLeaf::maximum_interval))
+    leaf("max-advertisement-interval",
+         config.max_advertisement_interval_seconds);
+  if (detail || present(RouterAdvertisementLeaf::minimum_interval))
+    leaf("min-advertisement-interval",
+         config.min_advertisement_interval_seconds);
+  if (detail || present(RouterAdvertisementLeaf::mtu))
+    leaf("mtu", config.advertised_mtu);
+  if (detail || present(RouterAdvertisementLeaf::preference))
+    leaf("nd-router-preference", router_preference_text(config.preference));
+  if (detail || present(RouterAdvertisementLeaf::other_configuration))
+    leaf("other-stateful-configuration",
+         config.other_configuration ? "true" : "false");
+
+  if (config.rdnss.count ||
+      interface.router_advertisement_rdnss_lifetime_configured ||
+      interface.router_advertisement_include_dns_configured || detail) {
+    md_indent(out, depth);
+    out << "dns-options {\n";
+    md_ra_dns_info(out, config,
+                   interface.router_advertisement_rdnss_lifetime_configured,
+                   depth + 1U, detail);
+    if (detail || interface.router_advertisement_include_dns_configured) {
+      md_indent(out, depth + 1U);
+      out << "include-dns "
+          << (interface.router_advertisement_include_dns ? "true" : "false")
+          << '\n';
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+
+  for (std::size_t index{}; index < config.prefix_count; ++index) {
+    md_indent(out, depth);
+    out << "prefix " << ip::format_ipv6_prefix(config.prefixes[index].prefix)
+        << " {\n";
+    md_ra_prefix_info(out, interface, index, depth + 1U, detail);
+    md_indent(out, depth);
+    out << "}\n";
+  }
+
+  if (detail || present(RouterAdvertisementLeaf::reachable_time))
+    leaf("reachable-time", config.reachable_time_milliseconds);
+  if (detail || present(RouterAdvertisementLeaf::retransmit_time))
+    leaf("retransmit-time", config.retrans_timer_milliseconds);
+  if (detail || present(RouterAdvertisementLeaf::router_lifetime))
+    leaf("router-lifetime", config.router_lifetime_seconds);
+}
+
+template <typename Configuration>
+std::optional<std::string>
+md_router_advertisement_info(const Configuration &configuration,
+                             std::string_view path, bool detail) {
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->size() < 5U || (*tokens)[0] != "configure" ||
+      (*tokens)[1] != "router" || (*tokens)[2] != "Base" ||
+      (*tokens)[3] != "ipv6" || (*tokens)[4] != "router-advertisement")
+    return std::nullopt;
+
+  std::ostringstream out;
+  if (tokens->size() == 5U) {
+    const auto &dns = configuration.router_advertisement_dns;
+    if (dns.rdnss.count || dns.rdnss_lifetime_configured || detail) {
+      out << "dns-options {\n";
+      md_ra_dns_info(out, dns, dns.rdnss_lifetime_configured, 1U, detail);
+      out << "}\n";
+    }
+    for (const auto &interface : configuration.interfaces) {
+      if (!interface.router_advertisement_configured)
+        continue;
+      out << "interface \"" << interface.name << "\" {\n";
+      md_ra_interface_info(out, interface, 1U, detail);
+      out << "}\n";
+    }
+    return out.str();
+  }
+
+  if ((*tokens)[5] == "dns-options") {
+    if (tokens->size() != 6U)
+      return std::string{};
+    const auto &dns = configuration.router_advertisement_dns;
+    md_ra_dns_info(out, dns, dns.rdnss_lifetime_configured, 0U, detail);
+    return out.str();
+  }
+  if ((*tokens)[5] != "interface" || tokens->size() < 7U)
+    return std::string{};
+
+  const auto interface = std::find_if(
+      configuration.interfaces.begin(), configuration.interfaces.end(),
+      [&](const auto &candidate) { return candidate.name == (*tokens)[6]; });
+  if (interface == configuration.interfaces.end() ||
+      !interface->router_advertisement_configured)
+    return std::string{};
+  if (tokens->size() == 7U) {
+    md_ra_interface_info(out, *interface, 0U, detail);
+    return out.str();
+  }
+  if (tokens->size() == 8U && (*tokens)[7] == "dns-options") {
+    md_ra_dns_info(out, interface->router_advertisement,
+                   interface->router_advertisement_rdnss_lifetime_configured,
+                   0U, detail);
+    if (detail || interface->router_advertisement_include_dns_configured)
+      out << "include-dns "
+          << (interface->router_advertisement_include_dns ? "true" : "false")
+          << '\n';
+    return out.str();
+  }
+  if (tokens->size() != 9U || (*tokens)[7] != "prefix")
+    return std::string{};
+  const auto requested = ip::parse_ipv6_prefix((*tokens)[8]);
+  if (!requested)
+    return std::string{};
+  const auto &config = interface->router_advertisement;
+  for (std::size_t index{}; index < config.prefix_count; ++index) {
+    if (config.prefixes[index].prefix != *requested)
+      continue;
+    md_ra_prefix_info(out, *interface, index, 0U, detail);
+    break;
+  }
+  return out.str();
+}
+
+std::optional<std::string>
+md_path_from_classic(std::string_view classic_path) {
+  const auto tokens = md_context_tokens(classic_path);
+  if (!tokens || tokens->empty())
+    return std::nullopt;
+
+  std::ostringstream out;
+  for (std::size_t index{}; index < tokens->size(); ++index) {
+    if (index)
+      out << ' ';
+    const auto &token = (*tokens)[index];
+    const bool quote = token.find(' ') != std::string::npos;
+    out << (quote ? "\"" : "") << token << (quote ? "\"" : "");
+    if (index == 1U && (*tokens)[0] == "configure" && token == "router") {
+      // Classic omits the Base router list key and places RA directly below
+      // router. The canonical datastore follows the MD YANG path, so insert
+      // only those model nodes that classic intentionally elides.
+      out << " \"Base\"";
+      if (tokens->size() > 2U && (*tokens)[2] == "router-advertisement")
+        out << " ipv6";
+    }
+  }
+  return out.str();
+}
+
+std::string classic_info_text(std::string_view md_text) {
+  std::ostringstream out;
+  out << "----------------------------------------------\n";
+  std::istringstream lines(std::string{md_text});
+  std::string line;
+  std::size_t depth{};
+  while (std::getline(lines, line)) {
+    const auto first = line.find_first_not_of(' ');
+    if (first == std::string::npos)
+      continue;
+    auto content = line.substr(first);
+    if (content == "}") {
+      if (depth)
+        --depth;
+      md_indent(out, depth);
+      out << "exit\n";
+      continue;
+    }
+    if (content.size() >= 2U &&
+        content.compare(content.size() - 2U, 2U, " {") == 0) {
+      content.resize(content.size() - 2U);
+      md_indent(out, depth);
+      out << content << '\n';
+      ++depth;
+      continue;
+    }
+
+    // The two engines share one typed datastore but not leaf spelling.
+    // Translate the classic administrative and presence forms here instead
+    // of leaking MD/YANG terms into classic output.
+    if (content == "admin-state enable")
+      content = "no shutdown";
+    else if (content == "admin-state disable")
+      content = "shutdown";
+    else if (content == "passive true")
+      content = "passive";
+    else if (content == "passive false")
+      content = "no passive";
+    else if (content == "mtu-ignore true")
+      content = "mtu-ignore";
+    else if (content == "mtu-ignore false")
+      content = "no mtu-ignore";
+    md_indent(out, depth);
+    out << content << '\n';
+  }
+  out << "----------------------------------------------\n";
+  return out.str();
+}
+
+template <typename Configuration>
+std::optional<std::string>
+classic_configuration_info(const Configuration &configuration,
+                           std::string_view classic_path, bool detail) {
+  const auto md_path = md_path_from_classic(classic_path);
+  if (!md_path)
+    return std::nullopt;
+  auto rendered =
+      md_router_advertisement_info(configuration, *md_path, detail);
+  if (!rendered)
+    rendered = md_ospf_info(configuration.ospf, *md_path, detail);
+  if (!rendered) {
+    const auto tokens = md_context_tokens(*md_path);
+    if (!tokens || tokens->empty() || (*tokens)[0] != "configure")
+      return std::nullopt;
+    rendered = std::string{};
+  }
+  return classic_info_text(*rendered);
+}
+
+std::string_view policy_action_text(mld::ImportPolicyAction action) noexcept {
+  switch (action) {
+  case mld::ImportPolicyAction::accept:
+    return "accept";
+  case mld::ImportPolicyAction::drop:
+    return "drop";
+  case mld::ImportPolicyAction::reject:
+    return "reject";
+  case mld::ImportPolicyAction::next_entry:
+    return "next-entry";
+  case mld::ImportPolicyAction::next_policy:
+    return "next-policy";
+  }
+  return {};
+}
+
+std::string_view
+route_policy_source_text(routing::RouteSource source) noexcept {
+  switch (source) {
+  case routing::RouteSource::connected:
+    return "direct";
+  case routing::RouteSource::static_route:
+    return "static";
+  case routing::RouteSource::ospf:
+    return "ospf";
+  case routing::RouteSource::ospf3:
+    return "ospf3";
+  }
+  return {};
+}
+
+template <typename PrefixLists, typename Policies>
+void json_policy_options(std::ostringstream &out,
+                         const PrefixLists &prefix_lists,
+                         const Policies &policies) {
+  // Policy references remain canonical names in this projection. Expanded
+  // protocol programs and selected RIB rows are owner-local runtime state and
+  // must never be serialized back into project intent.
+  out << "{\"prefixLists\":[";
+  for (std::size_t index{}; index < prefix_lists.size(); ++index) {
+    if (index)
+      out << ',';
+    const auto &list = prefix_lists[index];
+    out << "{\"name\":";
+    json_string(out, list.name);
+    out << ",\"prefixes\":[";
+    for (std::size_t prefix_index{}; prefix_index < list.prefixes.size();
+         ++prefix_index) {
+      if (prefix_index)
+        out << ',';
+      json_string(out, ip::format_ip_prefix(list.prefixes[prefix_index]));
+    }
+    out << "]}";
+  }
+  out << "],\"statements\":[";
+  for (std::size_t index{}; index < policies.size(); ++index) {
+    if (index)
+      out << ',';
+    const auto &policy = policies[index];
+    out << "{\"name\":";
+    json_string(out, policy.name);
+    out << ",\"defaultAction\":";
+    if (policy.default_action_configured)
+      json_string(out, policy_action_text(policy.default_action));
+    else
+      out << "null";
+    out << ",\"entries\":[";
+    for (std::size_t entry_index{}; entry_index < policy.entries.size();
+         ++entry_index) {
+      if (entry_index)
+        out << ',';
+      const auto &entry = policy.entries[entry_index];
+      out << "{\"number\":" << entry.number << ",\"groupPrefixList\":";
+      json_string(out, entry.group_prefix_list);
+      out << ",\"sourceAddress\":";
+      if (entry.source_address)
+        json_string(out, ip::format_ipv6(*entry.source_address));
+      else
+        out << "null";
+      out << ",\"sourcePrefixList\":";
+      json_string(out, entry.source_prefix_list);
+      out << ",\"protocolMld\":"
+          << (entry.protocol_mld ? "true" : "false")
+          << ",\"routePrefixList\":";
+      json_string(out, entry.route_prefix_list);
+      out << ",\"routeSource\":";
+      if (entry.route_source)
+        json_string(out, route_policy_source_text(*entry.route_source));
+      else
+        out << "null";
+      out << ",\"protocolInstance\":";
+      if (entry.protocol_instance)
+        out << static_cast<unsigned>(*entry.protocol_instance);
+      else
+        out << "null";
+      out << ",\"routeTag\":";
+      if (entry.route_tag)
+        out << *entry.route_tag;
+      else
+        out << "null";
+      out << ",\"action\":";
+      if (entry.action_configured)
+        json_string(out, policy_action_text(entry.action));
+      else
+        out << "null";
+      out << ",\"setMetric\":";
+      if (entry.set_metric)
+        out << *entry.set_metric;
+      else
+        out << "null";
+      out << ",\"setMetricType\":";
+      if (entry.set_metric_type)
+        json_string(
+            out, *entry.set_metric_type ==
+                         routing::OspfPathType::external_type_1
+                     ? "type-1"
+                     : "type-2");
+      else
+        out << "null";
+      out << ",\"setRouteTag\":";
+      if (entry.set_route_tag)
+        out << *entry.set_route_tag;
+      else
+        out << "null";
+      out << '}';
+    }
+    out << "]}";
+  }
+  out << "]}";
+}
+
+void json_ospf_configuration(std::ostringstream &out,
+                             const ospf::RouterConfiguration &configuration) {
+  // This is the canonical low-frequency configuration projection. It contains
+  // no neighbors, LSAs or calculated routes, so the browser can persist CLI
+  // edits without becoming an owner of protocol state.
+  out << "{\"instances\":[";
+  for (std::size_t instance_index{}; instance_index <
+                                         configuration.instances.size();
+       ++instance_index) {
+    if (instance_index)
+      out << ',';
+    const auto &instance = configuration.instances[instance_index];
+    out << "{\"instanceId\":" << static_cast<unsigned>(instance.instance_id)
+        << ",\"addressFamily\":";
+    json_string(out, ospf_family_text(instance.address_family));
+    out << ",\"routerId\":";
+    if (instance.configured_router_id)
+      json_string(out, ipv4_text(*instance.configured_router_id));
+    else
+      out << "null";
+    out << ",\"asbr\":" << (instance.asbr ? "true" : "false")
+        << ",\"asbrTracePathDomainId\":";
+    if (instance.asbr_trace_path_domain_id)
+      out << static_cast<unsigned>(*instance.asbr_trace_path_domain_id);
+    else
+      out << "null";
+    out << ",\"referenceBandwidthKbps\":"
+        << instance.reference_bandwidth_kbps
+        << ",\"routerPreference\":" << instance.router_preference
+        << ",\"externalPreference\":" << instance.external_preference
+        << ",\"spfTimersMilliseconds\":{\"initial\":"
+        << instance.spf_initial_wait_milliseconds << ",\"second\":"
+        << instance.spf_second_wait_milliseconds << ",\"maximum\":"
+        << instance.spf_maximum_wait_milliseconds
+        << "},\"lsaTimersMilliseconds\":{\"initial\":"
+        << instance.lsa_initial_wait_milliseconds << ",\"second\":"
+        << instance.lsa_second_wait_milliseconds << ",\"maximum\":"
+        << instance.lsa_maximum_wait_milliseconds
+        << "},\"exportPolicy\":";
+    json_string(out, instance.export_policy);
+    out << ",\"gracefulRestartHelper\":"
+        << (instance.graceful_restart_helper ? "true" : "false")
+        << ",\"loopfreeAlternates\":"
+        << (instance.loopfree_alternates ? "true" : "false")
+        << ",\"overload\":" << (instance.overload ? "true" : "false")
+        << ",\"admin\":"
+        << (instance.admin_enabled ? "\"up\"" : "\"down\"")
+        << ",\"areas\":[";
+    for (std::size_t area_index{}; area_index < instance.areas.size();
+         ++area_index) {
+      if (area_index)
+        out << ',';
+      const auto &area = instance.areas[area_index];
+      out << "{\"areaId\":";
+      json_string(out, ipv4_text(area.area_id));
+      out << ",\"type\":";
+      json_string(out, ospf_area_type_text(area.type));
+      out << ",\"defaultMetric\":" << area.default_metric
+          << ",\"summaries\":" << (area.summaries ? "true" : "false")
+          << ",\"nssaTranslateAlways\":"
+          << (area.nssa_translate_always ? "true" : "false")
+          << ",\"ranges\":[";
+      for (std::size_t range_index{}; range_index < area.ranges.size();
+           ++range_index) {
+        if (range_index)
+          out << ',';
+        const auto &range = area.ranges[range_index];
+        out << "{\"prefix\":";
+        json_string(out, ip::format_ip_prefix(range.prefix));
+        out << ",\"advertisedMetric\":";
+        if (range.advertised_metric)
+          out << *range.advertised_metric;
+        else
+          out << "null";
+        out << ",\"advertise\":"
+            << (range.advertise ? "true" : "false") << '}';
+      }
+      out << "],\"interfaces\":[";
+      for (std::size_t interface_index{};
+           interface_index < area.interfaces.size(); ++interface_index) {
+        if (interface_index)
+          out << ',';
+        const auto &interface = area.interfaces[interface_index];
+        out << "{\"interfaceName\":";
+        json_string(out, interface.interface_name);
+        out << ",\"cost\":" << interface.cost
+            << ",\"helloIntervalSeconds\":"
+            << interface.hello_interval_seconds
+            << ",\"deadIntervalSeconds\":"
+            << interface.dead_interval_seconds
+            << ",\"retransmitIntervalSeconds\":"
+            << interface.retransmit_interval_seconds
+            << ",\"transmitDelaySeconds\":"
+            << interface.transmit_delay_seconds
+            << ",\"priority\":" << static_cast<unsigned>(interface.priority)
+            << ",\"networkType\":";
+        json_string(out, ospf_network_type_text(interface.network_type));
+        out << ",\"authentication\":";
+        json_string(out, ospf_authentication_text(interface.authentication));
+        out << ",\"keychain\":";
+        json_string(out, interface.keychain);
+        out << ",\"ipsecSaInbound\":";
+        json_string(out, interface.ipsec_sa_inbound);
+        out << ",\"ipsecSaOutbound\":";
+        json_string(out, interface.ipsec_sa_outbound);
+        out << ",\"passive\":"
+            << (interface.passive ? "true" : "false")
+            << ",\"mtuMismatchIgnore\":"
+            << (interface.mtu_mismatch_ignore ? "true" : "false")
+            << ",\"admin\":"
+            << (interface.admin_enabled ? "\"up\"" : "\"down\"")
+            << ",\"nbmaNeighbors\":[";
+        for (std::size_t neighbor_index{};
+             neighbor_index < interface.nbma_neighbors.size();
+             ++neighbor_index) {
+          if (neighbor_index)
+            out << ',';
+          const auto &neighbor = interface.nbma_neighbors[neighbor_index];
+          out << "{\"address\":";
+          json_string(out, ip::format_ip_address(neighbor.address));
+          out << ",\"priority\":"
+              << static_cast<unsigned>(neighbor.priority)
+              << ",\"pollIntervalSeconds\":"
+              << neighbor.poll_interval_seconds << '}';
+        }
+        out << "]}";
+      }
+      out << "],\"virtualLinks\":[";
+      for (std::size_t link_index{}; link_index < area.virtual_links.size();
+           ++link_index) {
+        if (link_index)
+          out << ',';
+        const auto &link = area.virtual_links[link_index];
+        out << "{\"transitAreaId\":";
+        json_string(out, ipv4_text(link.transit_area_id));
+        out << ",\"remoteRouterId\":";
+        json_string(out, ipv4_text(link.remote_router_id));
+        out << ",\"helloIntervalSeconds\":"
+            << link.hello_interval_seconds
+            << ",\"deadIntervalSeconds\":"
+            << link.dead_interval_seconds
+            << ",\"retransmitIntervalSeconds\":"
+            << link.retransmit_interval_seconds
+            << ",\"transmitDelaySeconds\":"
+            << link.transmit_delay_seconds
+            << ",\"authentication\":";
+        json_string(out, ospf_authentication_text(link.authentication));
+        out << ",\"keychain\":";
+        json_string(out, link.keychain);
+        out << ",\"ipsecSaInbound\":";
+        json_string(out, link.ipsec_sa_inbound);
+        out << ",\"ipsecSaOutbound\":";
+        json_string(out, link.ipsec_sa_outbound);
+        out << ",\"admin\":"
+            << (link.admin_enabled ? "\"up\"" : "\"down\"") << '}';
+      }
+      out << "]}";
+    }
+    out << "]}";
+  }
+  out << "]}";
+}
+
 std::string netstrings(std::initializer_list<std::string_view> fields) {
   std::string result;
   for (const auto field : fields) {
@@ -1987,6 +3281,7 @@ LabRuntime::LabRuntime() {
   // keeps later device creation from reallocating unrelated object records.
   routers_.reserve(device_catalog::maximum_routers);
   hosts_.reserve(device_catalog::maximum_hosts);
+  switches_.reserve(device_catalog::maximum_switches);
   sessions_.reserve(device_catalog::maximum_routers *
                     device_catalog::maximum_sessions_per_router);
   // RuntimeSupervisor has already started the network owners. The generated
@@ -2050,6 +3345,14 @@ LabRuntime::HostIntent *LabRuntime::host(std::string_view id) noexcept {
   return found == hosts_.end() ? nullptr : &*found;
 }
 
+LabRuntime::SwitchIntent *
+LabRuntime::ethernet_switch(std::string_view id) noexcept {
+  const auto found =
+      std::find_if(switches_.begin(), switches_.end(),
+                   [id](const auto &item) { return item.node_id == id; });
+  return found == switches_.end() ? nullptr : &*found;
+}
+
 LabRuntime::ConfigurationIntent
 LabRuntime::running_configuration(const RouterIntent &router_intent) const {
   ConfigurationIntent value;
@@ -2069,6 +3372,7 @@ LabRuntime::running_configuration(const RouterIntent &router_intent) const {
   value.tls = router_intent.tls;
   value.ipsec = router_intent.ipsec;
   value.ies = router_intent.ies;
+  value.ospf = router_intent.ospf;
   value.ports = router_intent.ports;
   value.interfaces = router_intent.interfaces;
   value.routes = router_intent.routes;
@@ -2138,6 +3442,7 @@ LabRuntime::portable_configuration(const ConfigurationIntent &source) const {
   target.tls = source.tls;
   target.ipsec = source.ipsec;
   target.ies = source.ies;
+  target.ospf = source.ospf;
   for (std::size_t card = 0; card < source.cards.size(); ++card) {
     target.cards[card].provisioned = source.cards[card].provisioned;
     target.cards[card].admin_enabled = source.cards[card].admin_enabled;
@@ -2340,7 +3645,10 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
                                  value.mld_import_policies)) {
     return false;
   }
-  if (!value.mld.valid() || tls_profile::validate(value.tls) ||
+  if (!value.mld.valid() ||
+      ospf::validate(value.ospf, true) !=
+          ospf::ConfigurationStatus::valid ||
+      tls_profile::validate(value.tls) ||
       !ipsec::configuration::validate(value.ipsec) ||
       service::validate(value.ies) != service::ValidationError::none ||
       !valid_router_advertisement_dns(
@@ -2432,14 +3740,13 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
   for (std::size_t interface_index = 0;
        interface_index < value.interfaces.size(); ++interface_index) {
     const auto &interface = value.interfaces[interface_index];
-    // The immutable system loopback has no Ethernet attachment. This IPv4
-    // milestone accepts only the supported /32 child and administrative leaf;
-    // rejecting other children is preferable to committing inert state that
-    // show output or forwarding cannot honor yet.
+    // The immutable system loopback has no Ethernet attachment. It owns host
+    // addresses for both families, but cannot own neighbor discovery, MLD or
+    // redirect behavior because those protocols require a data-link medium.
+    // Reject only medium-dependent children rather than conflating "no port"
+    // with "IPv4-only loopback".
     const bool system = interface.name == system_interface_name;
     const bool unsupported_system_children =
-        interface.ipv6_address_configured ||
-        !interface.ipv6_addresses.empty() ||
         !interface.static_ipv4_neighbors.empty() ||
         !interface.static_ipv6_neighbors.empty() ||
         interface.router_advertisement_configured ||
@@ -2499,6 +3806,8 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
           ip::is_multicast(*effective) || ip::is_link_local(*effective) ||
           address.prefix_length < 4U ||
           address.prefix_length > ip::ipv6_address_bits ||
+          (system &&
+           (address.prefix_length != ip::ipv6_address_bits || address.eui64)) ||
           (address.eui64 &&
            (address.prefix_length != 64U ||
             address.address != ip::mask(address.address, 64U) ||
@@ -2842,6 +4151,40 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
        old_system->admin_enabled != next_system->admin_enabled))
     applied = supervisor_.configure_system_interface(
         router_intent.handle, next_system->address, next_system->admin_enabled);
+  if (applied && (old_system || next_system)) {
+    // System IPv6 addresses use the same complete-generation transaction as
+    // physical interfaces. A dedicated sentinel identity represents the
+    // absence of a port without manufacturing carrier, MAC or DAD state.
+    std::vector<RouterIpv6Address> system_addresses;
+    if (next_system) {
+      try {
+        system_addresses.reserve(next_system->ipv6_addresses.size());
+        for (const auto &address : next_system->ipv6_addresses) {
+          const auto effective = effective_ipv6_address(*next_system, address);
+          if (!effective) {
+            applied = false;
+            break;
+          }
+          system_addresses.push_back(
+              {.address = *effective,
+               .network = *effective,
+               .interface_id = system_interface_id,
+               .primary_preference = address.primary_preference,
+               .tag = address.tag,
+               .port_ordinal = system_interface_port_ordinal,
+               .prefix_length = ip::ipv6_address_bits,
+               .duplicate_address_detection = false,
+               .tag_configured = address.tag_configured});
+        }
+      } catch (const std::bad_alloc &) {
+        applied = false;
+      }
+    }
+    if (applied)
+      applied = supervisor_.configure_system_ipv6_addresses(
+          router_intent.handle, system_addresses,
+          next_system && next_system->admin_enabled);
+  }
 
   // Hardware edits above can withdraw only the affected forwarding ports.
   // Re-read the operational projection after those edits so unchanged intent
@@ -3359,6 +4702,873 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
       applied = supervisor_.add_ipv6_static_route(
           router_intent.handle, route.network, route.prefix_length,
           route.next_hop, route.outgoing_port_id, route.indirect);
+  if (applied &&
+      (router_intent.ospf != value.ospf ||
+       router_intent.mld_prefix_lists != value.mld_prefix_lists ||
+       router_intent.mld_import_policies != value.mld_import_policies ||
+       router_intent.routes != value.routes ||
+       router_intent.ipv6_routes != value.ipv6_routes ||
+       router_intent.interfaces != value.interfaces)) {
+    std::vector<OspfProcessProgram> processes;
+    std::vector<OspfInterfaceProgram> ospf_interfaces;
+    std::vector<OspfAuthenticationProgram> ospf_authentications;
+    OspfProgramCleaner ospf_authentication_cleaner{
+        &ospf_authentications};
+    std::vector<OspfNbmaNeighborProgram> ospf_nbma_neighbors;
+    std::vector<OspfVirtualLinkProgram> ospf_virtual_links;
+    std::vector<OspfAreaRangeProgram> ospf_ranges;
+    std::vector<OspfExternalRouteProgram> ospf_external_routes;
+
+    const auto system = named_interface(value.interfaces,
+                                        system_interface_name);
+    const auto chassis_mac = inventory->chassis_base_mac();
+    const std::uint32_t chassis_router_id =
+        static_cast<std::uint32_t>(chassis_mac[2U]) << 24U |
+        static_cast<std::uint32_t>(chassis_mac[3U]) << 16U |
+        static_cast<std::uint32_t>(chassis_mac[4U]) << 8U |
+        static_cast<std::uint32_t>(chassis_mac[5U]);
+    const auto routed_interface =
+        [&](std::string_view name) -> const InterfaceIntent * {
+      return named_interface(value.interfaces, name);
+    };
+    const auto policy_prefix = [](const ip::IpPrefix &prefix) {
+      routing::PolicyPrefix result{
+          .ipv6 = prefix.network.family == ip::AddressFamily::ipv6,
+          .length = prefix.length};
+      if (result.ipv6) {
+        result.ipv6_network = prefix.network.bytes;
+      } else {
+        result.ipv4_network =
+            static_cast<std::uint32_t>(prefix.network.bytes[0U]) << 24U |
+            static_cast<std::uint32_t>(prefix.network.bytes[1U]) << 16U |
+            static_cast<std::uint32_t>(prefix.network.bytes[2U]) << 8U |
+            prefix.network.bytes[3U];
+      }
+      return result;
+    };
+
+    for (const auto &instance : value.ospf.instances) {
+      // A failed earlier validation aborts the transaction. An intentionally
+      // disabled instance is different: it contributes no running process but
+      // must not prevent a later enabled instance from being materialized.
+      // Configuration order is not protocol priority and cannot decide which
+      // OSPF instances are operational.
+      if (!applied)
+        break;
+      if (!instance.admin_enabled)
+        continue;
+      const bool version_two =
+          instance.address_family == ospf::AddressFamily::ipv4;
+      const bool base_instance =
+          version_two
+              ? instance.instance_id ==
+                    device_catalog::ospf_v2_instance_first
+              : instance.address_family == ospf::AddressFamily::ipv6
+                    ? instance.instance_id ==
+                          device_catalog::ospf_v3_ipv6_instance_first
+                    : instance.instance_id ==
+                          device_catalog::ospf_v3_ipv4_instance_first;
+      const auto inherited_router_id =
+          system && system->address_configured
+              ? system->address
+              : chassis_router_id;
+      const auto router_id =
+          instance.configured_router_id
+              ? *instance.configured_router_id
+              : base_instance ? inherited_router_id : 0U;
+      // Nokia 26.7 requires an explicit per-instance router ID outside the
+      // base instance. The base instance inherits the system /32, then the
+      // final 32 chassis MAC bits when no system address exists.
+      if (router_id == 0U) {
+        applied = false;
+        break;
+      }
+      const auto export_policy =
+          compile_route_policy(value.mld_prefix_lists,
+                               value.mld_import_policies,
+                               instance.export_policy);
+      if (!export_policy) {
+        applied = false;
+        break;
+      }
+
+      std::uint32_t virtual_interface_ordinal{};
+      for (const auto &area : instance.areas) {
+        if (!applied)
+          break;
+        std::vector<OspfInterfaceProgram> area_interfaces;
+        area_interfaces.reserve(area.interfaces.size());
+        const std::uint32_t options =
+            (version_two
+                 ? packet::ospf::option_opaque_capability
+                 : packet::ospf::option_ospfv3_router |
+                       (instance.address_family == ospf::AddressFamily::ipv6
+                            ? packet::ospf::option_ipv6_forwarding
+                            : packet::ospf::option_address_family)) |
+            (area.type == ospf::AreaType::normal
+                 ? packet::ospf::option_external_routing_capability
+                 : area.type == ospf::AreaType::nssa
+                       ? packet::ospf::option_nssa_capability
+                       : 0U);
+        const auto sequence = ospf_database_description_sequence();
+        if (!sequence) {
+          applied = false;
+          break;
+        }
+        OspfProcessProgram process{
+            .device = router_intent.handle,
+            .router_id = router_id,
+            .area_id = area.area_id,
+            .initial_dd_sequence = *sequence,
+            .maximum_interfaces =
+                static_cast<std::uint32_t>(
+                    area.interfaces.size() +
+                    area.virtual_links.size()),
+            .default_metric = area.default_metric,
+            .router_preference = instance.router_preference,
+            .external_preference = instance.external_preference,
+            .spf_initial_wait_milliseconds =
+                instance.spf_initial_wait_milliseconds,
+            .spf_second_wait_milliseconds =
+                instance.spf_second_wait_milliseconds,
+            .spf_maximum_wait_milliseconds =
+                instance.spf_maximum_wait_milliseconds,
+            .lsa_initial_wait_milliseconds =
+                instance.lsa_initial_wait_milliseconds,
+            .lsa_second_wait_milliseconds =
+                instance.lsa_second_wait_milliseconds,
+            .lsa_maximum_wait_milliseconds =
+                instance.lsa_maximum_wait_milliseconds,
+            .area_type = area.type,
+            .version = version_two ? packet::ospf::version_two
+                                   : packet::ospf::version_three,
+            .instance_id = instance.instance_id,
+            .summaries = area.summaries,
+            .nssa_translate_always = area.nssa_translate_always,
+            .asbr = instance.asbr,
+            .graceful_restart_helper =
+                instance.graceful_restart_helper,
+            .loopfree_alternates = instance.loopfree_alternates,
+            .overload = instance.overload};
+        const auto append_authentication =
+            [&](std::uint32_t interface_id, vault::SecretHandle handle,
+                std::uint16_t key_id,
+                ospf::KeychainAlgorithm algorithm, bool send,
+                std::int64_t begin_utc_seconds = 0,
+                std::optional<std::int64_t> end_utc_seconds =
+                    std::nullopt,
+                std::uint32_t tolerance_seconds = 0U,
+                bool timed = false, bool ipsec_ah = false,
+                vault::SecretKind secret_kind =
+                    vault::SecretKind::ospf_authentication_key,
+                bool receive = true) {
+              if (!secret_vault_)
+                return false;
+              const auto [status, opened] = secret_vault_->open(
+                  handle, secret_kind);
+              if (status != vault::Result::applied || !opened ||
+                  opened->bytes().empty() ||
+                  opened->bytes().size() >
+                      ospf::ProcessAuthentication{}.key.size())
+                return false;
+              const auto sequence = ospf_authentication_sequence();
+              if (!sequence)
+                return false;
+              ospf::ProcessAuthentication authentication{
+                  .initial_sequence = *sequence,
+                  .secret_handle = handle,
+                  .key_size = static_cast<std::uint16_t>(
+                      opened->bytes().size()),
+                  .key_id = key_id,
+                  .algorithm = algorithm,
+                  .secret_kind =
+                      static_cast<std::uint8_t>(secret_kind),
+                  .ipsec_ah = ipsec_ah,
+                  .begin_utc_seconds = begin_utc_seconds,
+                  .end_utc_seconds = end_utc_seconds,
+                  .tolerance_seconds = tolerance_seconds,
+                  .timed = timed};
+              std::copy(opened->bytes().begin(), opened->bytes().end(),
+                        authentication.key.begin());
+              try {
+                ospf_authentications.push_back(
+                    {.process = process,
+                     .authentication = authentication,
+                     .interface_id = interface_id,
+                     .receive = receive,
+                     .send = send});
+              } catch (const std::bad_alloc &) {
+                OPENSSL_cleanse(authentication.key.data(),
+                                authentication.key.size());
+                return false;
+              }
+              // The SPSC program owns its copied key now. Erase this local
+              // staging copy before OpenedSecret performs its own cleanse.
+              OPENSSL_cleanse(authentication.key.data(),
+                              authentication.key.size());
+              return true;
+            };
+        for (const auto &ospf_interface : area.interfaces) {
+          const auto *routed =
+              routed_interface(ospf_interface.interface_name);
+          if (!routed) {
+            // The OSPF interface key is a leafref to a Base router interface.
+            // Reaching this branch means candidate validation and canonical
+            // interface ownership diverged, so publishing any part of the
+            // protocol generation would create a configuration that SR OS
+            // cannot represent.
+            applied = false;
+            break;
+          }
+          const auto resolved_ordinal =
+              routed->port_configured
+                  ? inventory->coordinate_ordinal(routed->port_id)
+                  : std::optional<std::uint16_t>{};
+          if (routed->port_configured && !resolved_ordinal) {
+            applied = false;
+            break;
+          }
+
+          ospf::ProcessInterfaceConfiguration compiled;
+          compiled.protocol = {
+              .router_id = router_id,
+              .area_id = area.area_id,
+              .interface_id =
+                  routed->port_configured
+                      ? ospf_physical_interface_id(*resolved_ordinal)
+                      : 0U,
+              .network_mask =
+                  routed->prefix_length == 0U
+                      ? 0U
+                      : std::numeric_limits<std::uint32_t>::max()
+                            << (32U - routed->prefix_length),
+              .options = options,
+              .hello_interval_seconds =
+                  ospf_interface.hello_interval_seconds,
+              .dead_interval_seconds =
+                  ospf_interface.dead_interval_seconds,
+              .router_priority = ospf_interface.priority,
+              .version = version_two ? packet::ospf::version_two
+                                     : packet::ospf::version_three,
+              .instance_id = instance.instance_id,
+              .network_type = ospf_interface.network_type,
+              .passive = ospf_interface.passive ||
+                         !routed->port_configured,
+              .enabled = ospf_interface.admin_enabled &&
+                         routed->admin_enabled};
+          compiled.retransmit_interval_seconds =
+              ospf_interface.retransmit_interval_seconds;
+          compiled.transmit_delay_seconds =
+              ospf_interface.transmit_delay_seconds;
+
+          if (routed->port_configured) {
+            const auto mac = inventory->physical_mac(routed->port_id);
+            const auto port = std::find_if(
+                value.ports.begin(), value.ports.end(),
+                [&](const auto &candidate) {
+                  return candidate.id == routed->port_id;
+                });
+            if (!mac || port == value.ports.end() || port->speed_mbps == 0U) {
+              // A configured port key must resolve to one equipped hardware
+              // owner. Unlike a missing IP address, this is not an ordinary
+              // OSPF Down state: accepting it would point protocol output at
+              // an object that cannot exist in the forwarding shard.
+              applied = false;
+              break;
+            }
+            if ((version_two && !routed->address_configured) ||
+                (!version_two && !routed->ipv6_address_configured)) {
+              // SR OS accepts OSPF configuration before an address is added
+              // to the referenced router interface. The protocol interface is
+              // operationally absent until its address family becomes usable;
+              // rejecting the entire candidate here incorrectly made command
+              // ordering part of configuration validity.
+              continue;
+            }
+            compiled.physical_port_ordinal = *resolved_ordinal;
+            compiled.source_mac = *mac;
+            compiled.protocol.interface_mtu = port->mtu;
+            // SR OS uses an explicitly configured interface metric when
+            // present. Zero means absent, so the operational metric is the
+            // reference bandwidth divided by actual link speed, clamped to
+            // the RFC 2328 sixteen-bit link metric domain.
+            const auto calculated_metric =
+                ospf_interface.cost != 0U
+                    ? ospf_interface.cost
+                    : std::clamp<std::uint32_t>(
+                          instance.reference_bandwidth_kbps /
+                              (static_cast<std::uint64_t>(port->speed_mbps) *
+                               1000U),
+                          device_catalog::ospf_interface_metric_minimum,
+                          device_catalog::ospf_interface_metric_maximum);
+            compiled.metric =
+                static_cast<std::uint16_t>(calculated_metric);
+            compiled.prefix_length = version_two
+                                         ? routed->prefix_length
+                                         : routed->ipv6_prefix_length;
+            compiled.ipv4_source = ipv4_bytes(routed->address);
+            // A link-local address is derived from the physical MAC during
+            // interface publication. OSPF may be configured in the same MD
+            // transaction, so derive the identical value here instead of
+            // depending on an earlier commit to have cached it in intent.
+            compiled.ipv6_source =
+                ip::is_unspecified(routed->ipv6_link_local)
+                    ? ip::link_local_from_mac(*mac)
+                    : routed->ipv6_link_local;
+            compiled.ipv6_prefix = routed->ipv6_address;
+          } else {
+            // The system interface contributes reachability but owns neither
+            // an OSPFv3 wire Interface ID nor an Ethernet transmitter. Zero
+            // denotes that absence only inside this passive owner and is never
+            // encoded into a packet. The separate no-port value is the typed
+            // absence marker for the physical-port field.
+            const bool family_configured =
+                version_two ? routed->address_configured
+                            : routed->ipv6_address_configured;
+            if (routed->name != system_interface_name || !family_configured)
+              // An ordinary unbound router interface is valid candidate
+              // configuration but is operationally Down. It must remain in
+              // intent and in future show output without being fabricated as
+              // a packet-producing interface with synthetic port identity.
+              continue;
+            compiled.physical_port_ordinal = ospf::no_physical_port;
+            compiled.protocol.interface_mtu =
+                device_catalog::default_network_mtu;
+            // The SR OS system interface reports operational metric zero and
+            // advertises its host prefix as a passive stub.
+            compiled.metric = 0U;
+            compiled.prefix_length =
+                version_two ? routed->prefix_length
+                            : routed->ipv6_prefix_length;
+            if (version_two)
+              compiled.ipv4_source = ipv4_bytes(routed->address);
+            else
+              compiled.ipv6_prefix = routed->ipv6_address;
+          }
+
+          if (ospf_interface.authentication ==
+                  ospf::AuthenticationMode::simple_password ||
+              ospf_interface.authentication ==
+                  ospf::AuthenticationMode::message_digest) {
+            const auto algorithm =
+                ospf_interface.authentication ==
+                        ospf::AuthenticationMode::simple_password
+                    ? ospf::KeychainAlgorithm::password
+                    : ospf::KeychainAlgorithm::message_digest;
+            if (!append_authentication(
+                    compiled.protocol.interface_id,
+                    ospf_interface.authentication_secret,
+                    ospf_interface.authentication_key_id, algorithm, true)) {
+              applied = false;
+              break;
+            }
+          } else if (ospf_interface.authentication ==
+                         ospf::AuthenticationMode::keychain ||
+                     ospf_interface.authentication ==
+                         ospf::AuthenticationMode::
+                             authentication_trailer) {
+            const auto keychain = std::find_if(
+                value.ospf.keychains.begin(), value.ospf.keychains.end(),
+                [&](const auto &candidate) {
+                  return candidate.name == ospf_interface.keychain;
+                });
+            if (keychain == value.ospf.keychains.end()) {
+              applied = false;
+              break;
+            }
+            std::size_t compatible_entries{};
+            for (const auto &entry : keychain->bidirectional) {
+              const bool compatible =
+                  version_two ||
+                  entry.algorithm == ospf::KeychainAlgorithm::hmac_sha1 ||
+                  entry.algorithm == ospf::KeychainAlgorithm::hmac_sha256;
+              if (!compatible)
+                continue;
+              if (!append_authentication(
+                                         compiled.protocol.interface_id,
+                                         entry.secret, entry.id,
+                                         entry.algorithm, false,
+                                         entry.begin_utc_seconds,
+                                         entry.end_utc_seconds,
+                                         entry.tolerance_seconds, true)) {
+                applied = false;
+                break;
+              }
+              ++compatible_entries;
+            }
+            if (!applied || compatible_entries == 0U) {
+              applied = false;
+              break;
+            }
+          } else if (
+              ospf_interface.authentication ==
+              ospf::AuthenticationMode::ipsec_security_association) {
+            const auto find_sa = [&](std::string_view name) {
+              return std::find_if(
+                  value.ipsec.static_sas.begin(),
+                  value.ipsec.static_sas.end(),
+                  [&](const auto &candidate) {
+                    return candidate.name == name;
+                  });
+            };
+            const auto inbound = find_sa(
+                ospf_interface.ipsec_sa_inbound);
+            const auto outbound = find_sa(
+                ospf_interface.ipsec_sa_outbound);
+            const auto permits_inbound = [](const auto &association) {
+              return association.direction ==
+                         ipsec::configuration::StaticSaDirection::inbound ||
+                     association.direction ==
+                         ipsec::configuration::StaticSaDirection::
+                             bidirectional;
+            };
+            const auto permits_outbound = [](const auto &association) {
+              return association.direction ==
+                         ipsec::configuration::StaticSaDirection::outbound ||
+                     association.direction ==
+                         ipsec::configuration::StaticSaDirection::
+                             bidirectional;
+            };
+            if (version_two || inbound == value.ipsec.static_sas.end() ||
+                outbound == value.ipsec.static_sas.end() ||
+                inbound->protocol != ipsec::SecurityProtocol::ah ||
+                outbound->protocol != ipsec::SecurityProtocol::ah ||
+                !inbound->spi_configured || !outbound->spi_configured ||
+                !inbound->authentication_container_configured ||
+                !outbound->authentication_container_configured ||
+                !inbound->authentication_configured ||
+                !outbound->authentication_configured ||
+                !inbound->authentication_key_handle ||
+                !outbound->authentication_key_handle ||
+                !permits_inbound(*inbound) ||
+                !permits_outbound(*outbound)) {
+              applied = false;
+              break;
+            }
+            const auto algorithm = [](const auto &association) {
+              return association.authentication ==
+                             ipsec::configuration::
+                                 StaticSaAuthentication::md5
+                         ? ospf::KeychainAlgorithm::message_digest
+                         : ospf::KeychainAlgorithm::hmac_sha1;
+            };
+            if (!append_authentication(
+                    compiled.protocol.interface_id,
+                    inbound->authentication_key_handle,
+                    static_cast<std::uint16_t>(inbound->spi),
+                    algorithm(*inbound), false, 0, std::nullopt, 0U,
+                    false, true,
+                    vault::SecretKind::
+                        ipsec_static_authentication_key,
+                    true) ||
+                !append_authentication(
+                    compiled.protocol.interface_id,
+                    outbound->authentication_key_handle,
+                    static_cast<std::uint16_t>(outbound->spi),
+                    algorithm(*outbound), true, 0, std::nullopt, 0U,
+                    false, true,
+                    vault::SecretKind::
+                        ipsec_static_authentication_key,
+                    false)) {
+              applied = false;
+              break;
+            }
+          }
+          area_interfaces.push_back(
+              {.process = process,
+               .interface = compiled});
+        }
+        if (!applied ||
+            (area_interfaces.empty() &&
+             area.virtual_links.empty()))
+          continue;
+        for (auto &interface : area_interfaces)
+          interface.process = process;
+        processes.push_back(process);
+
+        for (const auto &link : area.virtual_links) {
+          if (!link.admin_enabled)
+            continue;
+          const auto virtual_interface_id =
+              ospf_virtual_interface_id(virtual_interface_ordinal++);
+          ospf_virtual_links.push_back(
+              {.process = process,
+               .link =
+                   {.interface_id = virtual_interface_id,
+                    .transit_area_id = link.transit_area_id,
+                    .remote_router_id = link.remote_router_id,
+                    .hello_interval_seconds =
+                        link.hello_interval_seconds,
+                    .dead_interval_seconds =
+                        link.dead_interval_seconds,
+                    .retransmit_interval_seconds =
+                        link.retransmit_interval_seconds,
+                    .transmit_delay_seconds =
+                        link.transmit_delay_seconds,
+                    .options = options,
+                    .authentication = link.authentication,
+                    .admin_enabled = true}});
+
+          if (link.authentication ==
+                  ospf::AuthenticationMode::simple_password ||
+              link.authentication ==
+                  ospf::AuthenticationMode::message_digest) {
+            const auto algorithm =
+                link.authentication ==
+                        ospf::AuthenticationMode::simple_password
+                    ? ospf::KeychainAlgorithm::password
+                    : ospf::KeychainAlgorithm::message_digest;
+            if (!append_authentication(
+                    virtual_interface_id, link.authentication_secret,
+                    link.authentication_key_id, algorithm, true)) {
+              applied = false;
+              break;
+            }
+          } else if (
+              link.authentication == ospf::AuthenticationMode::keychain ||
+              link.authentication ==
+                  ospf::AuthenticationMode::authentication_trailer) {
+            const auto keychain = std::find_if(
+                value.ospf.keychains.begin(), value.ospf.keychains.end(),
+                [&](const auto &candidate) {
+                  return candidate.name == link.keychain;
+                });
+            if (keychain == value.ospf.keychains.end()) {
+              applied = false;
+              break;
+            }
+            std::size_t compatible_entries{};
+            for (const auto &entry : keychain->bidirectional) {
+              const bool compatible =
+                  version_two ||
+                  entry.algorithm == ospf::KeychainAlgorithm::hmac_sha1 ||
+                  entry.algorithm == ospf::KeychainAlgorithm::hmac_sha256;
+              if (!compatible)
+                continue;
+              if (!append_authentication(
+                      virtual_interface_id, entry.secret, entry.id,
+                      entry.algorithm, false, entry.begin_utc_seconds,
+                      entry.end_utc_seconds, entry.tolerance_seconds,
+                      true)) {
+                applied = false;
+                break;
+              }
+              ++compatible_entries;
+            }
+            if (!applied || compatible_entries == 0U) {
+              applied = false;
+              break;
+            }
+          } else if (
+              link.authentication ==
+              ospf::AuthenticationMode::ipsec_security_association) {
+            const auto find_sa = [&](std::string_view name) {
+              return std::find_if(
+                  value.ipsec.static_sas.begin(),
+                  value.ipsec.static_sas.end(),
+                  [&](const auto &candidate) {
+                    return candidate.name == name;
+                  });
+            };
+            const auto inbound = find_sa(link.ipsec_sa_inbound);
+            const auto outbound = find_sa(link.ipsec_sa_outbound);
+            const auto valid_sa = [&](const auto &association,
+                                      bool inbound_direction) {
+              const auto direction = association.direction;
+              const bool direction_valid =
+                  direction ==
+                      ipsec::configuration::StaticSaDirection::
+                          bidirectional ||
+                  direction ==
+                      (inbound_direction
+                           ? ipsec::configuration::
+                                 StaticSaDirection::inbound
+                           : ipsec::configuration::
+                                 StaticSaDirection::outbound);
+              return association.protocol ==
+                         ipsec::SecurityProtocol::ah &&
+                     association.spi_configured &&
+                     association.authentication_container_configured &&
+                     association.authentication_configured &&
+                     association.authentication_key_handle != 0U &&
+                     direction_valid;
+            };
+            if (version_two ||
+                inbound == value.ipsec.static_sas.end() ||
+                outbound == value.ipsec.static_sas.end() ||
+                !valid_sa(*inbound, true) ||
+                !valid_sa(*outbound, false)) {
+              applied = false;
+              break;
+            }
+            const auto algorithm = [](const auto &association) {
+              return association.authentication ==
+                             ipsec::configuration::
+                                 StaticSaAuthentication::md5
+                         ? ospf::KeychainAlgorithm::message_digest
+                         : ospf::KeychainAlgorithm::hmac_sha1;
+            };
+            if (!append_authentication(
+                    virtual_interface_id,
+                    inbound->authentication_key_handle,
+                    static_cast<std::uint16_t>(inbound->spi),
+                    algorithm(*inbound), false, 0, std::nullopt, 0U,
+                    false, true,
+                    vault::SecretKind::
+                        ipsec_static_authentication_key,
+                    true) ||
+                !append_authentication(
+                    virtual_interface_id,
+                    outbound->authentication_key_handle,
+                    static_cast<std::uint16_t>(outbound->spi),
+                    algorithm(*outbound), true, 0, std::nullopt, 0U,
+                    false, true,
+                    vault::SecretKind::
+                        ipsec_static_authentication_key,
+                    false)) {
+              applied = false;
+              break;
+            }
+          }
+        }
+        if (!applied)
+          break;
+
+        // Compile configured NBMA peers only after the process identity and
+        // every operational interface ID are final. Matching through the
+        // canonical interface name avoids positional coupling: an addressless
+        // interface may legitimately remain configured while being omitted
+        // from the running protocol generation.
+        for (const auto &configured : area.interfaces) {
+          const auto *routed =
+              routed_interface(configured.interface_name);
+          if (!routed || !routed->port_configured)
+            continue;
+          const auto ordinal =
+              inventory->coordinate_ordinal(routed->port_id);
+          if (!ordinal)
+            continue;
+          const auto interface_id =
+              ospf_physical_interface_id(*ordinal);
+          const auto running = std::find_if(
+              area_interfaces.begin(), area_interfaces.end(),
+              [&](const auto &candidate) {
+                return candidate.interface.protocol.interface_id ==
+                       interface_id;
+              });
+          if (running == area_interfaces.end())
+            continue;
+          for (const auto &neighbor : configured.nbma_neighbors)
+            ospf_nbma_neighbors.push_back(
+                {.process = process,
+                 .interface_id = interface_id,
+                 .neighbor =
+                     {.address = neighbor.address,
+                      .poll_interval_seconds =
+                          neighbor.poll_interval_seconds,
+                      .priority = neighbor.priority}});
+        }
+
+        const auto append_external =
+            [&](routing::PolicyCandidate candidate,
+                const ip::IpPrefix &prefix) {
+          if (!instance.asbr || instance.export_policy.empty() ||
+              area.type == ospf::AreaType::stub ||
+              area.type == ospf::AreaType::totally_stub)
+            return true;
+          const auto evaluated = export_policy->evaluate(candidate);
+          if (evaluated.decision != routing::PolicyDecision::accept)
+            return true;
+          ospf::CoordinatorAdvertisement advertisement{
+              .prefix = prefix,
+              .metric = evaluated.candidate.metric,
+              .tag = evaluated.candidate.tag,
+              .kind =
+                  area.type == ospf::AreaType::nssa
+                      ? ospf::CoordinatorAdvertisementKind::nssa_external
+                      : ospf::CoordinatorAdvertisementKind::
+                            translated_external,
+              .type_two =
+                  evaluated.candidate.ospf_path_type !=
+                  routing::OspfPathType::external_type_1};
+          if (area.type == ospf::AreaType::nssa) {
+            // RFC 3101 requires a nonzero forwarding address for a Type 7
+            // route that asks an ABR to translate it. Select it only from an
+            // actual interface in this area, never from editor topology.
+            const auto usable = std::find_if(
+                area.interfaces.begin(), area.interfaces.end(),
+                [&](const auto &membership) {
+                  const auto *configured =
+                      routed_interface(membership.interface_name);
+                  return configured && configured->admin_enabled &&
+                         (version_two ||
+                                  instance.address_family ==
+                                      ospf::AddressFamily::ipv4_over_ospfv3
+                              ? configured->address_configured
+                              : configured->ipv6_address_configured);
+                });
+            // The concrete forwarding address is selected below from the
+            // configured area interface collection. An NSSA with no usable
+            // address cannot originate a translatable Type 7.
+            if (usable == area.interfaces.end())
+              return true;
+            const auto *forwarding =
+                routed_interface(usable->interface_name);
+            if (!forwarding)
+              return false;
+            if (version_two) {
+              advertisement.forwarding_address_v4 =
+                  forwarding->address;
+            } else if (instance.address_family ==
+                       ospf::AddressFamily::ipv4_over_ospfv3) {
+              const auto bytes = ipv4_bytes(forwarding->address);
+              advertisement.forwarding_address_v6[0U] =
+                  bytes[0U];
+              advertisement.forwarding_address_v6[1U] =
+                  bytes[1U];
+              advertisement.forwarding_address_v6[2U] =
+                  bytes[2U];
+              advertisement.forwarding_address_v6[3U] =
+                  bytes[3U];
+              advertisement.ipv4_forwarding_address = true;
+            } else {
+              advertisement.forwarding_address_v6 =
+                  forwarding->ipv6_address;
+            }
+          }
+          try {
+            ospf_external_routes.push_back(
+                {.process = process,
+                 .source = evaluated.candidate,
+                 .advertisement = advertisement});
+            return true;
+          } catch (const std::bad_alloc &) {
+            return false;
+          }
+        };
+
+        const bool ipv4_family =
+            version_two ||
+            instance.address_family ==
+                ospf::AddressFamily::ipv4_over_ospfv3;
+        if (ipv4_family) {
+          for (const auto &interface : value.interfaces) {
+            if (!interface.address_configured ||
+                !interface.admin_enabled)
+              continue;
+            const auto mask =
+                interface.prefix_length == 0U
+                    ? 0U
+                    : 0xffffffffU << (32U - interface.prefix_length);
+            const auto network = interface.address & mask;
+            ip::IpPrefix prefix;
+            prefix.network.family = ip::AddressFamily::ipv4;
+            const auto bytes = ipv4_bytes(network);
+            std::copy(bytes.begin(), bytes.end(),
+                      prefix.network.bytes.begin());
+            prefix.length = interface.prefix_length;
+            routing::PolicyCandidate candidate{
+                .destination = policy_prefix(prefix),
+                .source = routing::RouteSource::connected,
+                .ospf_path_type =
+                    routing::OspfPathType::external_type_2};
+            if (!append_external(candidate, prefix)) {
+              applied = false;
+              break;
+            }
+          }
+          for (const auto &route : value.routes) {
+            ip::IpPrefix prefix;
+            prefix.network.family = ip::AddressFamily::ipv4;
+            const auto bytes = ipv4_bytes(route.network);
+            std::copy(bytes.begin(), bytes.end(),
+                      prefix.network.bytes.begin());
+            prefix.length = route.prefix_length;
+            routing::PolicyCandidate candidate{
+                .destination = policy_prefix(prefix),
+                .source = routing::RouteSource::static_route,
+                .ospf_path_type =
+                    routing::OspfPathType::external_type_2};
+            if (!append_external(candidate, prefix)) {
+              applied = false;
+              break;
+            }
+          }
+        } else {
+          for (const auto &interface : value.interfaces) {
+            if (!interface.ipv6_address_configured ||
+                !interface.admin_enabled)
+              continue;
+            const auto add_candidate =
+                [&](const packet::Ipv6 &address,
+                    std::uint8_t length) {
+              ip::IpPrefix prefix{
+                  .network =
+                      {.family = ip::AddressFamily::ipv6,
+                       .bytes = ip::mask(address, length)},
+                  .length = length};
+              routing::PolicyCandidate candidate{
+                  .destination = policy_prefix(prefix),
+                  .source = routing::RouteSource::connected,
+                  .ospf_path_type =
+                      routing::OspfPathType::external_type_2};
+              return append_external(candidate, prefix);
+            };
+            if (interface.ipv6_addresses.empty()) {
+              if (!add_candidate(interface.ipv6_address,
+                                 interface.ipv6_prefix_length)) {
+                applied = false;
+                break;
+              }
+            } else {
+              for (const auto &address : interface.ipv6_addresses) {
+                const auto concrete =
+                    effective_ipv6_address(interface, address);
+                if (!concrete ||
+                    !add_candidate(*concrete, address.prefix_length)) {
+                  applied = false;
+                  break;
+                }
+              }
+            }
+          }
+          for (const auto &route : value.ipv6_routes) {
+            ip::IpPrefix prefix{
+                .network = {.family = ip::AddressFamily::ipv6,
+                            .bytes = route.network},
+                .length = route.prefix_length};
+            routing::PolicyCandidate candidate{
+                .destination = policy_prefix(prefix),
+                .source = routing::RouteSource::static_route,
+                .ospf_path_type =
+                    routing::OspfPathType::external_type_2};
+            if (!append_external(candidate, prefix)) {
+              applied = false;
+              break;
+            }
+          }
+        }
+        for (const auto &range : area.ranges)
+          ospf_ranges.push_back(
+              {.process = process,
+               .prefix = range.prefix,
+               .advertised_metric =
+                   range.advertised_metric.value_or(0U),
+               .has_advertised_metric =
+                   range.advertised_metric.has_value(),
+               .advertise = range.advertise});
+        ospf_interfaces.insert(ospf_interfaces.end(),
+                               area_interfaces.begin(),
+                               area_interfaces.end());
+      }
+    }
+    if (applied)
+      applied = supervisor_.configure_ospf_generation(
+          router_intent.handle, processes, ospf_interfaces,
+          ospf_authentications,
+          ospf_nbma_neighbors, ospf_virtual_links, ospf_ranges,
+          ospf_external_routes);
+  }
   if (applied && router_intent.ies != value.ies) {
     // IES is published after physical port and native-interface edits because
     // its SAP generation validates both hardware coordinates and carrier
@@ -3402,6 +5612,7 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
   router_intent.tls = value.tls;
   router_intent.ipsec = value.ipsec;
   router_intent.ies = value.ies;
+  router_intent.ospf = value.ospf;
   return true;
 }
 
@@ -3462,6 +5673,7 @@ bool LabRuntime::create_router(std::span<const std::string_view> fields) {
                         .tls = {},
                         .ipsec = {},
                         .ies = {},
+                        .ospf = {},
                         .global_candidate = {},
                         .global_candidate_initialized = false});
     return true;
@@ -3488,6 +5700,7 @@ bool LabRuntime::replace_router_configuration(
   next.interfaces.clear();
   next.routes.clear();
   next.ipv6_routes.clear();
+  next.ospf.instances.clear();
   auto payload = fields[1];
   std::string_view value;
   if (!next_netstring(payload, value) || value.empty() || value.size() > 64U)
@@ -3739,13 +5952,531 @@ bool LabRuntime::replace_router_configuration(
                                 std::string{outgoing_port_id},
                                 destination->length, indirect});
   }
+
+  // policy-options precedes OSPF in the portable transaction because every
+  // export-policy is a leafref into this same candidate generation. Parsing
+  // the complete graph before validating OSPF prevents project restore from
+  // temporarily publishing a dangling policy name.
+  if (!next_netstring(payload, value) || !decimal(value, count) ||
+      count > device_catalog::ospf_lsas_per_instance)
+    return false;
+  next.mld_prefix_lists.reserve(count);
+  for (std::size_t index{}; index < count; ++index) {
+    std::string_view name;
+    std::string_view prefix_count_text;
+    std::size_t prefix_count{};
+    if (!next_netstring(payload, name) ||
+        !next_netstring(payload, prefix_count_text) ||
+        !decimal(prefix_count_text, prefix_count) ||
+        name.empty() || name.size() > mld::maximum_policy_name_octets ||
+        prefix_count > device_catalog::ospf_lsas_per_instance)
+      return false;
+    MldPolicyPrefixListIntent list{.name = std::string{name},
+                                   .prefixes = {}};
+    list.prefixes.reserve(prefix_count);
+    for (std::size_t prefix_index{}; prefix_index < prefix_count;
+         ++prefix_index) {
+      std::string_view prefix_text;
+      if (!next_netstring(payload, prefix_text))
+        return false;
+      const auto parsed = ip::parse_ip_prefix(prefix_text);
+      if (!parsed)
+        return false;
+      list.prefixes.push_back(*parsed);
+    }
+    next.mld_prefix_lists.push_back(std::move(list));
+  }
+  if (!next_netstring(payload, value) || !decimal(value, count) ||
+      count > device_catalog::ospf_lsas_per_instance)
+    return false;
+  next.mld_import_policies.reserve(count);
+  for (std::size_t policy_index{}; policy_index < count; ++policy_index) {
+    std::string_view name;
+    std::string_view default_action_text;
+    std::string_view entry_count_text;
+    std::size_t entry_count{};
+    if (!next_netstring(payload, name) ||
+        !next_netstring(payload, default_action_text) ||
+        !next_netstring(payload, entry_count_text) ||
+        !decimal(entry_count_text, entry_count) || name.empty() ||
+        name.size() > mld::maximum_policy_name_octets ||
+        entry_count > device_catalog::ospf_lsas_per_instance)
+      return false;
+    MldNamedImportPolicyIntent policy{
+        .name = std::string{name},
+        .entries = {},
+        .default_action = mld::ImportPolicyAction::accept,
+        .default_action_configured = !default_action_text.empty()};
+    if (policy.default_action_configured) {
+      const auto parsed = policy_action(default_action_text);
+      if (!parsed)
+        return false;
+      policy.default_action = *parsed;
+    }
+    policy.entries.reserve(entry_count);
+    for (std::size_t entry_index{}; entry_index < entry_count; ++entry_index) {
+      std::array<std::string_view, 13U> field{};
+      for (auto &item : field)
+        if (!next_netstring(payload, item))
+          return false;
+      std::uint32_t number{};
+      bool protocol_mld{};
+      if (!decimal(field[0U], number) ||
+          !boolean(field[4U], protocol_mld))
+        return false;
+      MldImportPolicyEntryIntent entry{
+          .number = number,
+          .group_prefix_list = std::string{field[1U]},
+          .source_address = std::nullopt,
+          .source_prefix_list = std::string{field[3U]},
+          .action = mld::ImportPolicyAction::next_entry,
+          .action_configured = !field[9U].empty(),
+          .protocol_mld = protocol_mld,
+          .route_prefix_list = std::string{field[5U]},
+          .route_source = std::nullopt,
+          .protocol_instance = std::nullopt,
+          .route_tag = std::nullopt,
+          .set_metric = std::nullopt,
+          .set_metric_type = std::nullopt,
+          .set_route_tag = std::nullopt};
+      if (!field[2U].empty()) {
+        const auto parsed = ip::parse_ipv6(field[2U]);
+        if (!parsed)
+          return false;
+        entry.source_address = *parsed;
+      }
+      if (!field[6U].empty()) {
+        const auto parsed = route_policy_source(field[6U]);
+        if (!parsed)
+          return false;
+        entry.route_source = *parsed;
+      }
+      unsigned protocol_instance{};
+      if (!field[7U].empty() &&
+          (!decimal(field[7U], protocol_instance) ||
+           protocol_instance > std::numeric_limits<std::uint8_t>::max()))
+        return false;
+      if (!field[7U].empty())
+        entry.protocol_instance =
+            static_cast<std::uint8_t>(protocol_instance);
+      std::uint32_t scalar{};
+      if (!field[8U].empty() && !decimal(field[8U], scalar))
+        return false;
+      if (!field[8U].empty())
+        entry.route_tag = scalar;
+      if (entry.action_configured) {
+        const auto parsed = policy_action(field[9U]);
+        if (!parsed)
+          return false;
+        entry.action = *parsed;
+      }
+      if (!field[10U].empty() && !decimal(field[10U], scalar))
+        return false;
+      if (!field[10U].empty())
+        entry.set_metric = scalar;
+      if (!field[11U].empty()) {
+        const auto parsed = route_policy_metric_type(field[11U]);
+        if (!parsed)
+          return false;
+        entry.set_metric_type = *parsed;
+      }
+      if (!field[12U].empty() && !decimal(field[12U], scalar))
+        return false;
+      if (!field[12U].empty())
+        entry.set_route_tag = scalar;
+      policy.entries.push_back(std::move(entry));
+    }
+    next.mld_import_policies.push_back(std::move(policy));
+  }
+  if (!valid_mld_import_policies(next.mld_prefix_lists,
+                                 next.mld_import_policies))
+    return false;
+
+  if (!next_netstring(payload, value) || !decimal(value, count) ||
+      count > device_catalog::ospf_v2_instances_per_router +
+                  device_catalog::ospf_v3_instances_per_router)
+    return false;
+  next.ospf.instances.reserve(count);
+  for (std::size_t instance_index{}; instance_index < count;
+       ++instance_index) {
+    std::string_view instance_id_text;
+    std::string_view family_text;
+    std::string_view router_id_text;
+    std::string_view export_policy;
+    std::string_view asbr_domain_id_text;
+    std::array<std::string_view, 9U> numeric{};
+    std::string_view asbr_text;
+    std::string_view graceful_text;
+    std::string_view loopfree_text;
+    std::string_view overload_text;
+    std::string_view admin_text;
+    std::string_view area_count_text;
+    bool graceful{};
+    bool asbr{};
+    bool loopfree{};
+    bool overload{};
+    bool admin{};
+    unsigned instance_id{};
+    std::array<std::uint32_t, numeric.size()> numbers{};
+    if (!next_netstring(payload, instance_id_text) ||
+        !next_netstring(payload, family_text) ||
+        !next_netstring(payload, router_id_text) ||
+        !next_netstring(payload, export_policy) ||
+        !next_netstring(payload, asbr_domain_id_text))
+      return false;
+    for (auto &item : numeric)
+      if (!next_netstring(payload, item))
+        return false;
+    if (!next_netstring(payload, asbr_text) ||
+        !next_netstring(payload, graceful_text) ||
+        !next_netstring(payload, loopfree_text) ||
+        !next_netstring(payload, overload_text) ||
+        !next_netstring(payload, admin_text) ||
+        !next_netstring(payload, area_count_text) ||
+        !decimal(instance_id_text, instance_id) ||
+        !std::equal(numeric.begin(), numeric.end(), numbers.begin(),
+                    [&](std::string_view text, std::uint32_t &number) {
+                      return decimal(text, number);
+                    }) ||
+        !boolean(asbr_text, asbr) ||
+        !boolean(graceful_text, graceful) ||
+        !boolean(loopfree_text, loopfree) ||
+        !boolean(overload_text, overload) ||
+        !boolean(admin_text, admin) || export_policy.size() > 64U)
+      return false;
+    std::size_t area_count{};
+    if (!decimal(area_count_text, area_count) ||
+        area_count > device_catalog::ospf_lsas_per_instance)
+      return false;
+    const auto family =
+        family_text == "ipv4"
+            ? std::optional<ospf::AddressFamily>{
+                  ospf::AddressFamily::ipv4}
+        : family_text == "ipv6"
+            ? std::optional<ospf::AddressFamily>{
+                  ospf::AddressFamily::ipv6}
+        : family_text == "ipv4-over-ospfv3"
+            ? std::optional<ospf::AddressFamily>{
+                  ospf::AddressFamily::ipv4_over_ospfv3}
+            : std::nullopt;
+    const auto configured_router_id =
+        router_id_text.empty()
+            ? std::optional<std::uint32_t>{}
+            : ipv4(router_id_text);
+    unsigned asbr_domain_id{};
+    if (!family || instance_id > std::numeric_limits<std::uint8_t>::max() ||
+        (!router_id_text.empty() &&
+         (!configured_router_id || *configured_router_id == 0U)) ||
+        (!asbr_domain_id_text.empty() &&
+         (!decimal(asbr_domain_id_text, asbr_domain_id) ||
+          asbr_domain_id > 31U)))
+      return false;
+
+    ospf::InstanceConfiguration instance{
+        .export_policy = std::string{export_policy},
+        .configured_router_id = configured_router_id,
+        .asbr_trace_path_domain_id =
+            asbr_domain_id_text.empty()
+                ? std::optional<std::uint8_t>{}
+                : std::optional<std::uint8_t>{
+                      static_cast<std::uint8_t>(asbr_domain_id)},
+        .reference_bandwidth_kbps = numbers[0U],
+        .router_preference = numbers[1U],
+        .external_preference = numbers[2U],
+        .spf_initial_wait_milliseconds = numbers[3U],
+        .spf_second_wait_milliseconds = numbers[4U],
+        .spf_maximum_wait_milliseconds = numbers[5U],
+        .lsa_initial_wait_milliseconds = numbers[6U],
+        .lsa_second_wait_milliseconds = numbers[7U],
+        .lsa_maximum_wait_milliseconds = numbers[8U],
+        .instance_id = static_cast<std::uint8_t>(instance_id),
+        .address_family = *family,
+        .asbr = asbr,
+        .graceful_restart_helper = graceful,
+        .loopfree_alternates = loopfree,
+        .overload = overload,
+        .admin_enabled = admin};
+    instance.areas.reserve(area_count);
+    for (std::size_t area_index{}; area_index < area_count; ++area_index) {
+      std::string_view area_id_text;
+      std::string_view area_type_text;
+      std::string_view default_metric_text;
+      std::string_view summaries_text;
+      std::string_view translate_text;
+      std::string_view range_count_text;
+      bool summaries{};
+      bool translate{};
+      std::uint32_t default_metric{};
+      std::size_t range_count{};
+      const auto area_id_value =
+          [&]() -> std::optional<std::uint32_t> {
+        if (!next_netstring(payload, area_id_text))
+          return std::nullopt;
+        return ipv4(area_id_text);
+      }();
+      if (!area_id_value ||
+          !next_netstring(payload, area_type_text) ||
+          !next_netstring(payload, default_metric_text) ||
+          !next_netstring(payload, summaries_text) ||
+          !next_netstring(payload, translate_text) ||
+          !next_netstring(payload, range_count_text) ||
+          !decimal(default_metric_text, default_metric) ||
+          !boolean(summaries_text, summaries) ||
+          !boolean(translate_text, translate) ||
+          !decimal(range_count_text, range_count) ||
+          range_count > device_catalog::ospf_lsas_per_instance)
+        return false;
+      const auto area_type =
+          area_type_text == "normal"
+              ? std::optional<ospf::AreaType>{ospf::AreaType::normal}
+          : area_type_text == "stub"
+              ? std::optional<ospf::AreaType>{ospf::AreaType::stub}
+          : area_type_text == "totally-stub"
+              ? std::optional<ospf::AreaType>{
+                    ospf::AreaType::totally_stub}
+          : area_type_text == "nssa"
+              ? std::optional<ospf::AreaType>{ospf::AreaType::nssa}
+              : std::nullopt;
+      if (!area_type)
+        return false;
+      ospf::AreaConfiguration area{
+          .area_id = *area_id_value,
+          .type = *area_type,
+          .default_metric = default_metric,
+          .summaries = summaries,
+          .nssa_translate_always = translate};
+      area.ranges.reserve(range_count);
+      for (std::size_t range_index{}; range_index < range_count;
+           ++range_index) {
+        std::string_view prefix_text;
+        std::string_view metric_text;
+        std::string_view advertise_text;
+        bool advertise{};
+        std::uint32_t metric{};
+        if (!next_netstring(payload, prefix_text) ||
+            !next_netstring(payload, metric_text) ||
+            !next_netstring(payload, advertise_text) ||
+            !boolean(advertise_text, advertise) ||
+            (!metric_text.empty() && !decimal(metric_text, metric)))
+          return false;
+        const auto parsed = ip::parse_ip_prefix(prefix_text);
+        if (!parsed ||
+            ((*family == ospf::AddressFamily::ipv6) !=
+             (parsed->network.family == ip::AddressFamily::ipv6)))
+          return false;
+        area.ranges.push_back(
+            {.prefix = *parsed,
+             .advertised_metric =
+                 metric_text.empty()
+                     ? std::optional<std::uint32_t>{}
+                     : std::optional<std::uint32_t>{metric},
+             .advertise = advertise});
+      }
+
+      std::string_view interface_count_text;
+      std::size_t interface_count{};
+      if (!next_netstring(payload, interface_count_text) ||
+          !decimal(interface_count_text, interface_count) ||
+          interface_count > device_catalog::maximum_ports_per_router + 1U)
+        return false;
+      area.interfaces.reserve(interface_count);
+      for (std::size_t interface_index{}; interface_index < interface_count;
+           ++interface_index) {
+        std::array<std::string_view, 16U> field{};
+        for (auto &item : field)
+          if (!next_netstring(payload, item))
+            return false;
+        std::uint32_t cost{};
+        unsigned hello{};
+        unsigned dead{};
+        unsigned retransmit{};
+        unsigned transmit_delay{};
+        unsigned priority{};
+        bool passive{};
+        bool mtu_ignore{};
+        bool interface_admin{};
+        std::size_t neighbor_count{};
+        if (!decimal(field[1U], cost) || !decimal(field[2U], hello) ||
+            !decimal(field[3U], dead) ||
+            !decimal(field[4U], retransmit) ||
+            !decimal(field[5U], transmit_delay) ||
+            !decimal(field[6U], priority) ||
+            !boolean(field[12U], passive) ||
+            !boolean(field[13U], mtu_ignore) ||
+            !boolean(field[14U], interface_admin) ||
+            !decimal(field[15U], neighbor_count) ||
+            hello > std::numeric_limits<std::uint16_t>::max() ||
+            dead > std::numeric_limits<std::uint16_t>::max() ||
+            retransmit > std::numeric_limits<std::uint16_t>::max() ||
+            transmit_delay > std::numeric_limits<std::uint16_t>::max() ||
+            priority > std::numeric_limits<std::uint8_t>::max() ||
+            neighbor_count >
+                device_catalog::ospf_neighbors_per_interface)
+          return false;
+        const auto network_type =
+            field[7U] == "point-to-point"
+                ? std::optional<ospf::NetworkType>{
+                      ospf::NetworkType::point_to_point}
+            : field[7U] == "broadcast"
+                ? std::optional<ospf::NetworkType>{
+                      ospf::NetworkType::broadcast}
+            : field[7U] == "non-broadcast"
+                ? std::optional<ospf::NetworkType>{
+                      ospf::NetworkType::non_broadcast}
+            : field[7U] == "point-to-multipoint"
+                ? std::optional<ospf::NetworkType>{
+                      ospf::NetworkType::point_to_multipoint}
+                : std::nullopt;
+        const auto authentication =
+            field[8U] == "none"
+                ? std::optional<ospf::AuthenticationMode>{
+                      ospf::AuthenticationMode::none}
+            : field[8U] == "simple-password"
+                ? std::optional<ospf::AuthenticationMode>{
+                      ospf::AuthenticationMode::simple_password}
+            : field[8U] == "message-digest"
+                ? std::optional<ospf::AuthenticationMode>{
+                      ospf::AuthenticationMode::message_digest}
+            : field[8U] == "keychain"
+                ? std::optional<ospf::AuthenticationMode>{
+                      ospf::AuthenticationMode::keychain}
+            : field[8U] == "authentication-trailer"
+                ? std::optional<ospf::AuthenticationMode>{
+                      ospf::AuthenticationMode::authentication_trailer}
+            : field[8U] == "ipsec-security-association"
+                ? std::optional<ospf::AuthenticationMode>{
+                      ospf::AuthenticationMode::ipsec_security_association}
+                : std::nullopt;
+        if (!network_type || !authentication || field[0U].empty() ||
+            field[0U].size() > 64U || field[9U].size() > 64U ||
+            field[10U].size() > 64U || field[11U].size() > 64U)
+          return false;
+        ospf::InterfaceConfigurationIntent interface{
+            .interface_name = std::string{field[0U]},
+            .keychain = std::string{field[9U]},
+            .ipsec_sa_inbound = std::string{field[10U]},
+            .ipsec_sa_outbound = std::string{field[11U]},
+            .cost = cost,
+            .hello_interval_seconds = static_cast<std::uint16_t>(hello),
+            .dead_interval_seconds = static_cast<std::uint16_t>(dead),
+            .retransmit_interval_seconds =
+                static_cast<std::uint16_t>(retransmit),
+            .transmit_delay_seconds =
+                static_cast<std::uint16_t>(transmit_delay),
+            .priority = static_cast<std::uint8_t>(priority),
+            .network_type = *network_type,
+            .authentication = *authentication,
+            .passive = passive,
+            .mtu_mismatch_ignore = mtu_ignore,
+            .admin_enabled = interface_admin};
+        interface.nbma_neighbors.reserve(neighbor_count);
+        for (std::size_t neighbor_index{}; neighbor_index < neighbor_count;
+             ++neighbor_index) {
+          std::string_view address_text;
+          std::string_view neighbor_priority_text;
+          std::string_view poll_text;
+          unsigned neighbor_priority{};
+          unsigned poll{};
+          if (!next_netstring(payload, address_text) ||
+              !next_netstring(payload, neighbor_priority_text) ||
+              !next_netstring(payload, poll_text) ||
+              !decimal(neighbor_priority_text, neighbor_priority) ||
+              !decimal(poll_text, poll) ||
+              neighbor_priority > std::numeric_limits<std::uint8_t>::max() ||
+              poll > std::numeric_limits<std::uint16_t>::max())
+            return false;
+          const auto address = ip::parse_ip_address(address_text);
+          if (!address)
+            return false;
+          interface.nbma_neighbors.push_back(
+              {.address = *address,
+               .priority = static_cast<std::uint8_t>(neighbor_priority),
+               .poll_interval_seconds = static_cast<std::uint16_t>(poll)});
+        }
+        area.interfaces.push_back(std::move(interface));
+      }
+
+      std::string_view virtual_count_text;
+      std::size_t virtual_count{};
+      if (!next_netstring(payload, virtual_count_text) ||
+          !decimal(virtual_count_text, virtual_count) ||
+          virtual_count > device_catalog::ospf_lsas_per_instance)
+        return false;
+      area.virtual_links.reserve(virtual_count);
+      for (std::size_t link_index{}; link_index < virtual_count;
+           ++link_index) {
+        std::array<std::string_view, 11U> field{};
+        for (auto &item : field)
+          if (!next_netstring(payload, item))
+            return false;
+        const auto transit_area = ipv4(field[0U]);
+        const auto remote_router = ipv4(field[1U]);
+        unsigned hello{};
+        unsigned dead{};
+        unsigned retransmit{};
+        unsigned transmit_delay{};
+        bool link_admin{};
+        const auto authentication =
+            field[6U] == "none"
+                ? std::optional<ospf::AuthenticationMode>{
+                      ospf::AuthenticationMode::none}
+            : field[6U] == "simple-password"
+                ? std::optional<ospf::AuthenticationMode>{
+                      ospf::AuthenticationMode::simple_password}
+            : field[6U] == "message-digest"
+                ? std::optional<ospf::AuthenticationMode>{
+                      ospf::AuthenticationMode::message_digest}
+            : field[6U] == "keychain"
+                ? std::optional<ospf::AuthenticationMode>{
+                      ospf::AuthenticationMode::keychain}
+            : field[6U] == "authentication-trailer"
+                ? std::optional<ospf::AuthenticationMode>{
+                      ospf::AuthenticationMode::authentication_trailer}
+            : field[6U] == "ipsec-security-association"
+                ? std::optional<ospf::AuthenticationMode>{
+                      ospf::AuthenticationMode::ipsec_security_association}
+                : std::nullopt;
+        if (!transit_area || !remote_router || !*remote_router ||
+            !decimal(field[2U], hello) || !decimal(field[3U], dead) ||
+            !decimal(field[4U], retransmit) ||
+            !decimal(field[5U], transmit_delay) || !authentication ||
+            field[7U].size() > 64U || field[8U].size() > 64U ||
+            field[9U].size() > 64U ||
+            !boolean(field[10U], link_admin) ||
+            hello > std::numeric_limits<std::uint16_t>::max() ||
+            dead > std::numeric_limits<std::uint16_t>::max() ||
+            retransmit > std::numeric_limits<std::uint16_t>::max() ||
+            transmit_delay > std::numeric_limits<std::uint16_t>::max())
+          return false;
+        area.virtual_links.push_back(
+            {.transit_area_id = *transit_area,
+             .remote_router_id = *remote_router,
+             .hello_interval_seconds = static_cast<std::uint16_t>(hello),
+             .dead_interval_seconds = static_cast<std::uint16_t>(dead),
+             .retransmit_interval_seconds =
+                 static_cast<std::uint16_t>(retransmit),
+             .transmit_delay_seconds =
+                 static_cast<std::uint16_t>(transmit_delay),
+             .authentication = *authentication,
+             .keychain = std::string{field[7U]},
+             .ipsec_sa_inbound = std::string{field[8U]},
+             .ipsec_sa_outbound = std::string{field[9U]},
+             .admin_enabled = link_admin});
+      }
+      instance.areas.push_back(std::move(area));
+    }
+    next.ospf.instances.push_back(std::move(instance));
+  }
   // Exact exhaustion rejects appended fields from a newer or corrupted
   // payload instead of silently applying only the prefix understood here.
-  return payload.empty() && apply_configuration(*device, next);
+  if (!payload.empty())
+    return false;
+  return apply_configuration(*device, next);
 }
 
 bool LabRuntime::create_host(std::span<const std::string_view> fields) {
-  if (fields.size() != 2U || router(fields[0]) || host(fields[0]))
+  if (fields.size() != 2U || router(fields[0]) || host(fields[0]) ||
+      ethernet_switch(fields[0]))
     return false;
   const auto handle = supervisor_.create_host(fields[0], fields[1]);
   if (!handle)
@@ -3759,6 +6490,62 @@ bool LabRuntime::create_host(std::span<const std::string_view> fields) {
     static_cast<void>(supervisor_.delete_host(*handle));
     return false;
   }
+}
+
+bool LabRuntime::create_switch(std::span<const std::string_view> fields) {
+  if (fields.size() != 3U || router(fields[0]) || host(fields[0]) ||
+      ethernet_switch(fields[0]))
+    return false;
+  const auto *profile =
+      device_catalog::find_ethernet_switch_profile(fields[1]);
+  const auto handle =
+      profile ? supervisor_.create_switch(fields[0], fields[1], fields[2])
+              : std::nullopt;
+  if (!profile || !handle)
+    return false;
+  try {
+    switches_.push_back(
+        {.handle = *handle,
+         .node_id = std::string{fields[0]},
+         .name = std::string{fields[2]},
+         .profile_id = std::string{fields[1]},
+         .ports = std::vector<SwitchPortIntent>(
+             profile->port_count,
+             {.speed_mbps = profile->default_speed_mbps,
+              .mtu = profile->default_mtu,
+              .admin_enabled = profile->default_admin_enabled})});
+    return true;
+  } catch (const std::bad_alloc &) {
+    static_cast<void>(supervisor_.delete_switch(*handle));
+    return false;
+  }
+}
+
+bool LabRuntime::configure_switch_port(
+    std::span<const std::string_view> fields) {
+  unsigned displayed_port{};
+  unsigned mtu{};
+  std::uint32_t speed{};
+  bool admin{};
+  auto *device = fields.size() == 5U ? ethernet_switch(fields[0]) : nullptr;
+  const auto *profile =
+      device ? device_catalog::find_ethernet_switch_profile(device->profile_id)
+             : nullptr;
+  if (!device || !profile || !decimal(fields[1], displayed_port) ||
+      !displayed_port || displayed_port > profile->port_count ||
+      !boolean(fields[2], admin) || !decimal(fields[3], speed) ||
+      !decimal(fields[4], mtu) || mtu > 0xffffU)
+    return false;
+  const auto ordinal = static_cast<std::uint16_t>(displayed_port - 1U);
+  if (!supervisor_.configure_switch_port(
+          device->handle, ordinal, speed, static_cast<std::uint16_t>(mtu),
+          admin))
+    return false;
+  device->ports[ordinal] = {
+      .speed_mbps = speed,
+      .mtu = static_cast<std::uint16_t>(mtu),
+      .admin_enabled = admin};
+  return true;
 }
 
 bool LabRuntime::set_card(std::span<const std::string_view> fields) {
@@ -3964,6 +6751,8 @@ bool LabRuntime::create_link(std::span<const std::string_view> fields) {
       return LinkEndpoint{node(device->handle), std::string{port_id}};
     if (const auto *endpoint_host = host(node_id))
       return LinkEndpoint{node(endpoint_host->handle), std::string{port_id}};
+    if (const auto *bridge = ethernet_switch(node_id))
+      return LinkEndpoint{node(bridge->handle), std::string{port_id}};
     return std::nullopt;
   };
   const auto first = endpoint(fields[1], fields[2]);
@@ -4642,6 +7431,82 @@ std::string LabRuntime::execute_session(std::string_view session_id,
   view.configuration.running.system_name.fill('\0');
   std::copy(device->system_name.begin(), device->system_name.end(),
             view.configuration.running.system_name.begin());
+
+  // `//command` is not merely a renderer-side engine toggle. Nokia executes
+  // the remainder as an absolute command in the other CLI engine, then
+  // restores the originating engine and its independently saved context. The
+  // standalone CLI state machine can do that for DeviceState-owned commands,
+  // but this live runtime owns interfaces, OSPF, RIB and forwarding state in
+  // RouterIntent and RuntimeSupervisor. Delegating the foreign command to the
+  // presentation-only DeviceState view would therefore render empty or reject
+  // otherwise supported operational reports.
+  //
+  // Execute the foreign line recursively through this same router-bound
+  // session. The leading slash makes the command absolute in the target
+  // engine, so its saved context cannot qualify the command. Recursion is
+  // bounded to one level because the rewritten input cannot begin with `//`.
+  // The session remains bound to the same DeviceHandle throughout, which is
+  // the key invariant preventing an inline engine command from observing
+  // another router.
+  const auto trimmed_input = cli_detail::trim(input);
+  if (trimmed_input.starts_with("//") && trimmed_input.size() > 2U) {
+    const auto foreign_input = cli_detail::trim(trimmed_input.substr(2U));
+    if (!foreign_input.empty()) {
+      const auto source_engine = terminal->cli.engine;
+      const auto target_engine =
+          source_engine == CliEngine::md ? CliEngine::classic : CliEngine::md;
+      terminal->cli.engine = target_engine;
+      static_cast<void>(
+          supervisor_.set_cli_session(terminal->handle, terminal->cli));
+
+      const auto entering =
+          target_engine == CliEngine::md
+              ? "INFO: CLI #2052: Switching to the MD-CLI engine"
+              : "INFO: CLI #2051: Switching to the classic CLI engine";
+      const auto target_prompt = cli_prompt(view, terminal->cli);
+
+      auto foreign_output =
+          execute_session(session_id, "/" + std::string{foreign_input});
+
+      // execute_session appends the versioned terminal-state netstrings used
+      // by the browser bridge. That transport suffix belongs only to the outer
+      // request. Remove the exact current suffix before composing the visible
+      // inline transcript, rather than parsing or guessing its byte lengths.
+      const auto foreign_state = session_state(session_id);
+      if (foreign_output.ends_with(foreign_state))
+        foreign_output.resize(foreign_output.size() - foreign_state.size());
+
+      // The target prompt is displayed before the absolute command in Nokia's
+      // inline transcript. The recursive execution also appends that prompt,
+      // so remove only the exact suffix to avoid duplicating it or trimming
+      // command output that happens to contain prompt-like text.
+      const auto returned_prompt = cli_prompt(view, terminal->cli);
+      if (foreign_output.ends_with(returned_prompt))
+        foreign_output.resize(foreign_output.size() -
+                              returned_prompt.size());
+
+      terminal->cli.engine = source_engine;
+      static_cast<void>(
+          supervisor_.set_cli_session(terminal->handle, terminal->cli));
+      const auto leaving =
+          source_engine == CliEngine::md
+              ? "INFO: CLI #2052: Switching to the MD-CLI engine"
+              : "INFO: CLI #2051: Switching to the classic CLI engine";
+      const auto visible_target_prompt = target_prompt.starts_with('\n')
+                                             ? target_prompt.substr(1U)
+                                             : target_prompt;
+      // The recursive report owns no knowledge of the outer inline-engine
+      // transcript. Separate its last row from CLI #2051 or #2052 even when
+      // the formatter intentionally omitted a final newline before its prompt.
+      if (!foreign_output.empty() && foreign_output.back() != '\n')
+        foreign_output.push_back('\n');
+      return std::string{entering} + '\n' +
+             std::string{visible_target_prompt} + '/' +
+             std::string{foreign_input} + '\n' + foreign_output + leaving +
+             cli_prompt(view, terminal->cli) + session_state(session_id);
+    }
+  }
+
   const auto initialize_candidate = [&](CandidateMode mode) {
     if (mode == CandidateMode::private_candidate) {
       terminal->private_candidate = running_configuration(*intent);
@@ -4676,6 +7541,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         intent->tls = state.tls;
         intent->ipsec = state.ipsec;
         intent->ies = state.ies;
+        intent->ospf = state.ospf;
         intent->ports = state.ports;
         intent->interfaces = state.interfaces;
         intent->routes = state.routes;
@@ -4750,10 +7616,72 @@ std::string LabRuntime::execute_session(std::string_view session_id,
   if (!parsed) {
     // Container navigation, incomplete syntax help and bad-command wording are
     // semantic CLI behavior. Running the proven session engine here cannot
-    // mutate product configuration because no executable schema row matched.
+    // execute a leaf because no complete schema row matched. Entering a keyed
+    // MD list is the one intentional datastore effect: SR OS creates that list
+    // instance when the operator enters its context with a key.
     const auto before = terminal->cli;
     output = execute_cli(view, terminal->cli, std::string{input}, {});
-    static_cast<void>(reconcile_workflow(before, output));
+    const bool workflow_applied = reconcile_workflow(before, output);
+
+    if (workflow_applied && terminal->cli.engine == CliEngine::md &&
+        candidate_mode(terminal->cli.md_workflow) !=
+            CandidateMode::operational &&
+        candidate_mode(terminal->cli.md_workflow) != CandidateMode::read_only) {
+      const std::string_view path{terminal->cli.md_path.data()};
+      constexpr std::string_view interface_prefix{
+          "configure router \"Base\" interface "};
+      if (path.starts_with(interface_prefix)) {
+        const auto raw_name = path.substr(interface_prefix.size());
+        const bool quoted =
+            raw_name.size() >= 2U && raw_name.front() == '"' &&
+            raw_name.back() == '"';
+        const bool one_context =
+            quoted ? raw_name.find('"', 1U) == raw_name.size() - 1U
+                   : raw_name.find(' ') == std::string_view::npos;
+        const auto name =
+            one_context ? cli_detail::unquote(raw_name) : std::string_view{};
+        auto *candidate =
+            candidate_mode(terminal->cli.md_workflow) ==
+                    CandidateMode::private_candidate
+                ? &terminal->private_candidate
+                : &intent->global_candidate;
+        const auto existing = std::find_if(
+            candidate->interfaces.begin(), candidate->interfaces.end(),
+            [&](const auto &entry) { return entry.name == name; });
+        if (!name.empty() && name.size() <= 64U && one_context &&
+            cli_detail::valid_cli_string(raw_name) &&
+            existing == candidate->interfaces.end()) {
+          // The list key itself is configuration. Create only the canonical
+          // aggregate with release defaults; port, address and admin state
+          // remain absent or disabled until their own commands are entered.
+          // This makes a bare interface instance visible after commit without
+          // inventing a physical binding or address.
+          candidate->interfaces.emplace_back();
+          candidate->interfaces.back().name.assign(name);
+          const auto recorded = supervisor_.record_session_edit(
+              terminal->handle,
+              configuration_key(cli_schema::CommandId::md_delete_interface,
+                                name));
+          if (recorded != SessionWorkflowResult::applied) {
+            candidate->interfaces.pop_back();
+            output = "MINOR: MGMT_CORE #2069: Operation not allowed";
+          }
+
+          // execute_cli rendered its prompt before the runtime-owned candidate
+          // edit. Refresh the markers from the workflow owner so the first
+          // prompt in the new context already exposes the real dirty state.
+          const auto stale_prompt = cli_prompt(view, terminal->cli);
+          if (output.ends_with(stale_prompt))
+            output.resize(output.size() - stale_prompt.size());
+          const auto status = supervisor_.session_status(terminal->handle);
+          terminal->cli.candidate_dirty =
+              status.has_value() && status->candidate_dirty;
+          terminal->cli.candidate_outdated =
+              status.has_value() && status->baseline_outdated;
+          output += cli_prompt(view, terminal->cli);
+        }
+      }
+    }
     static_cast<void>(
         supervisor_.set_cli_session(terminal->handle, terminal->cli));
     return output + session_state(session_id);
@@ -5864,6 +8792,63 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     static_cast<void>(reconcile_workflow(before, output));
     static_cast<void>(
         supervisor_.set_cli_session(terminal->handle, terminal->cli));
+  } else if (parsed->spec->id == cli_schema::CommandId::md_info ||
+             parsed->spec->id == cli_schema::CommandId::md_info_detail) {
+    // Nokia documents info as a global command whose data scope is the saved
+    // present working context. Parsing the raw line above keeps it global;
+    // reading md_path here keeps its output contextual. Candidate selection
+    // follows the session workflow and never leaks another private editor.
+    const auto mode = candidate_mode(terminal->cli.md_workflow);
+    const auto *configuration =
+        mode == CandidateMode::private_candidate
+            ? &terminal->private_candidate
+        : mode == CandidateMode::global || mode == CandidateMode::exclusive
+            ? &intent->global_candidate
+            : nullptr;
+    // Running intent is assembled only when the session is operational or
+    // read-only. Candidate sessions borrow their own value snapshot directly,
+    // so `info` cannot accidentally display another editor's uncommitted
+    // changes or mutate either datastore while formatting it.
+    std::optional<ConfigurationIntent> running;
+    if (!configuration)
+      running = running_configuration(*intent);
+    const auto &selected = configuration ? *configuration : *running;
+    const auto path = std::string_view{terminal->cli.md_path.data()};
+    const auto detail =
+        parsed->has_modifier(cli_schema::OutputModifier::detail);
+    auto rendered =
+        md_router_advertisement_info(selected, path, detail);
+    if (!rendered)
+      rendered = md_ospf_info(selected.ospf, path, detail);
+    if (!rendered) {
+      // `info` is a global configuration-mode command on SR OS. A valid
+      // configured context with no present children returns an empty body,
+      // never an "unsupported" error. Renderers above contribute typed state
+      // for modeled subtrees; this fallback covers empty presence containers
+      // and keeps command availability independent of the current depth.
+      const auto tokens = md_context_tokens(path);
+      output = tokens && !tokens->empty() && (*tokens)[0] == "configure"
+                   ? std::string{}
+                   : "MINOR: CLI #2001: Command is not supported in this context";
+    } else {
+      output = *rendered;
+    }
+    output += cli_prompt(view, terminal->cli);
+  } else if (parsed->spec->id == cli_schema::CommandId::classic_info ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::classic_info_detail) {
+    // Classic configuration edits are already running configuration, so info
+    // reads a fresh value snapshot instead of any MD candidate. Its path is
+    // independently retained on the same terminal session and its formatter
+    // emits classic indentation and exit delimiters rather than MD braces.
+    const auto running = running_configuration(*intent);
+    const auto rendered = classic_configuration_info(
+        running, std::string_view{terminal->cli.classic_path.data()},
+        parsed->has_modifier(cli_schema::OutputModifier::detail));
+    output = rendered
+                 ? *rendered
+                 : "MINOR: CLI #2001: Command is not supported in this context";
+    output += cli_prompt(view, terminal->cli);
   } else if (ipv6_ping_command(parsed->spec->id)) {
     const auto destination_text =
         cli_detail::argument(*parsed, cli_schema::TokenKind::ipv6);
@@ -5902,6 +8887,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       operation.requested = count;
       operation.sent = 0;
       operation.received = 0;
+      operation.rtt_min_microseconds = 0U;
+      operation.rtt_max_microseconds = 0U;
+      operation.rtt_sum_microseconds = 0U;
+      operation.rtt_squared_sum_microseconds = 0U;
       operation.dont_fragment = false;
       operation.ipv6 = true;
       operation.waiting = false;
@@ -5944,6 +8933,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       operation.requested = count;
       operation.sent = 0;
       operation.received = 0;
+      operation.rtt_min_microseconds = 0U;
+      operation.rtt_max_microseconds = 0U;
+      operation.rtt_sum_microseconds = 0U;
+      operation.rtt_squared_sum_microseconds = 0U;
       operation.dont_fragment =
           parsed->spec->id == cli_schema::CommandId::ping_do_not_fragment ||
           parsed->spec->id ==
@@ -6111,6 +9104,16 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               ? ies_cli::EditResult{}
               : ies_cli::edit(candidate->ies, *parsed, CliEngine::md,
                               *ies_inventory, candidate->system_name);
+      const auto ospf_edit =
+          ipsec_edit.recognized || tls_edit.recognized ||
+                  ies_edit.recognized
+              ? ospf_cli::EditResult{}
+              : [&] {
+                  OspfVaultSink secrets{
+                      secret_vault_ ? &*secret_vault_ : nullptr};
+                  return ospf_cli::edit(candidate->ospf, *parsed,
+                                        CliEngine::md, &secrets);
+                }();
       if (ipsec_edit.recognized) {
         valid = ipsec_edit.changed;
         instance = ipsec_edit.instance;
@@ -6120,6 +9123,9 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       } else if (ies_edit.recognized) {
         valid = ies_edit.changed;
         instance = ies_edit.instance;
+      } else if (ospf_edit.recognized) {
+        valid = ospf_edit.valid;
+        instance = ospf_edit.instance;
       } else if (id == configure_system_name) {
         const auto raw = argument(cli_schema::TokenKind::system_name);
         const auto name = raw ? cli_detail::unquote(*raw) : std::string_view{};
@@ -6274,11 +9280,21 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         const auto name =
             raw_name ? cli_detail::unquote(*raw_name) : std::string_view{};
         valid = raw_name && !name.empty() && name.size() <= 64U;
-        const bool system_supported_edit =
-            id == md_interface_enable || id == md_interface_disable ||
-            id == md_interface_ipv4_primary ||
-            id == md_delete_interface_ipv4_primary;
-        if (valid && name == system_interface_name && !system_supported_edit)
+        // The system interface is a real loopback interface, so SR OS accepts
+        // IPv4 /32 and IPv6 host addresses on it.  It differs from a network
+        // interface only in that it cannot own a physical port.  The previous
+        // allow-list accidentally rejected every IPv6 address leaf, including
+        // the documented /128 loopback form, while still exposing those leaves
+        // through generated completion.  Keep the invariant narrow: reject
+        // only physical-port attachment and permit the common address editor
+        // to enforce the normal IPv6 ranges and per-address semantics.
+        //
+        // Conformance:
+        // https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/
+        // classic-cli-command-reference/classic-a-commands-aa-a-1.html
+        const bool system_forbidden_edit =
+            id == md_interface_port || id == md_delete_interface_port;
+        if (valid && name == system_interface_name && system_forbidden_edit)
           valid = false;
         auto current = std::find_if(
             candidate->interfaces.begin(), candidate->interfaces.end(),
@@ -7770,6 +10786,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         applied = ies_edit.recognized && ies_edit.changed &&
                   apply_configuration(*intent, next);
         instance = ies_edit.instance;
+      } else if (applied && ospf_cli::is_classic_command(id)) {
+        auto next = before_running;
+        OspfVaultSink ospf_secrets{
+            secret_vault_ ? &*secret_vault_ : nullptr};
+        const auto ospf_edit = ospf_cli::edit(
+            next.ospf, *parsed, CliEngine::classic, &ospf_secrets);
+        applied = ospf_edit.recognized && ospf_edit.valid &&
+                  (!ospf_edit.changed || apply_configuration(*intent, next));
+        instance = ospf_edit.instance;
       } else if (applied && id == configure_system_name) {
         const auto raw = argument(cli_schema::TokenKind::system_name);
         const auto name = raw ? cli_detail::unquote(*raw) : std::string_view{};
@@ -9187,6 +12212,33 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       } else if (changed) {
         terminal->cli.classic_unsaved = true;
       }
+
+      // Classic OSPF instance selection is not merely a write. Nokia's
+      // command enters the selected process context even when the process
+      // already exists and the immediate edit is therefore idempotent. The
+      // runtime owns the real configuration transaction, while this narrow
+      // postcondition updates only the same terminal session's PWC after that
+      // transaction succeeds.
+      if (applied &&
+          (id == classic_ospf_create || id == classic_ospf3_create ||
+           id == classic_ospf_create_router_id ||
+           id == classic_ospf3_create_router_id)) {
+        auto context =
+            cli_detail::resolve_session_input(terminal->cli, input);
+        if (id == classic_ospf_create_router_id ||
+            id == classic_ospf3_create_router_id) {
+          // The optional router ID initializes a leaf but is not a list key.
+          const auto separator = context.find_last_of(' ');
+          if (separator != std::string::npos)
+            context.resize(separator);
+        }
+        if (!cli_detail::enter_classic_context(terminal->cli, context)) {
+          output = "Error: Bad command.";
+        } else {
+          static_cast<void>(
+              supervisor_.set_cli_session(terminal->handle, terminal->cli));
+        }
+      }
     }
     output += cli_prompt(view, terminal->cli);
   } else if (dhcpv6_lease_clear_command(parsed->spec->id)) {
@@ -9411,7 +12463,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       }
 
       if (output.empty()) {
-        const bool detail = id == show_service_dhcp6_lease_state_detail;
+        const bool detail =
+            parsed->has_modifier(cli_schema::OutputModifier::detail);
         std::ostringstream out;
         out << table_rule << "\nDHCP lease states for service " << service_id
             << '\n'
@@ -10453,7 +13506,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                         ? ip::format_ipv6(state->protocol.querier_address)
                         : std::string{"n/a"});
 
-            if (id == show_mld_interface_detail || requested_group) {
+            if (parsed->has_modifier(cli_schema::OutputModifier::detail) ||
+                requested_group) {
               out << "\n  Querier Address             : "
                   << (state->running
                           ? ip::format_ipv6(state->protocol.querier_address)
@@ -11261,6 +14315,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
              parsed->spec->id == cli_schema::CommandId::show_mda ||
              parsed->spec->id == cli_schema::CommandId::show_port ||
              parsed->spec->id == cli_schema::CommandId::show_port_named ||
+             parsed->spec->id == cli_schema::CommandId::show_port_detail ||
              parsed->spec->id == cli_schema::CommandId::show_system_alarms) {
     const auto *inventory = supervisor_.hardware(intent->handle);
     auto hardware = std::make_unique<RouterHardwareCheckpoint>();
@@ -11345,9 +14400,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         }
         out << '\n' << table_rule;
       } else if (id == cli_schema::CommandId::show_port ||
-                 id == cli_schema::CommandId::show_port_named) {
+                 id == cli_schema::CommandId::show_port_named ||
+                 id == cli_schema::CommandId::show_port_detail) {
         const auto requested_text =
-            id == cli_schema::CommandId::show_port_named
+            id == cli_schema::CommandId::show_port_named ||
+                    id == cli_schema::CommandId::show_port_detail
                 ? cli_detail::argument(*parsed, cli_schema::TokenKind::port_id)
                 : std::nullopt;
         const auto requested = requested_text
@@ -11370,8 +14427,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           const auto configured = std::find_if(
               intent->ports.begin(), intent->ports.end(),
               [&](const auto &item) { return item.id == requested; });
-          const bool operational = port.admin_enabled && port.link_signal &&
-                                   port.configuration_compatible;
+          // A physical carrier alone cannot make a port operational when its
+          // owning card or MDA is administratively disabled or still absent.
+          // The hardware supervisor already folds the complete chassis
+          // hierarchy into `hierarchy_enabled`; using the same gate here keeps
+          // `show port` consistent with interface reconciliation and prevents
+          // an impossible "Oper Up" report for a disabled line card.
+          const bool operational =
+              port.admin_enabled && port.link_signal &&
+              port.configuration_compatible && port.hierarchy_enabled;
           // The 26.7 detail report contains many PHY and transceiver leaves.
           // Emit only values owned by the current hardware model. Omitting an
           // unavailable sensor is safer than presenting a made-up optical or
@@ -11415,7 +14479,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 << (port.admin_enabled ? "Up" : "Down") << std::setw(6)
                 << (port.link_signal ? "Up" : "Down") << std::setw(6)
                 << (port.admin_enabled && port.link_signal &&
-                            port.configuration_compatible
+                            port.configuration_compatible &&
+                            port.hierarchy_enabled
                         ? "Up"
                         : "Down")
                 << std::setw(7) << port.mtu << std::setw(12)
@@ -11526,6 +14591,76 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                    ? "Error: Bad command."
                    : "MINOR: MGMT_CORE #2301: Invalid element value";
     output += cli_prompt(view, terminal->cli);
+  } else if (parsed->spec->id ==
+                 cli_schema::CommandId::reset_router_ospf_neighbor ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::reset_router_ospf_neighbor_router_id ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::reset_router_ospf_database ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::reset_router_ospf3_neighbor ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::reset_router_ospf3_neighbor_router_id ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::reset_router_ospf3_database ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::clear_router_ospf_neighbor ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::clear_router_ospf_neighbor_router_id ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::clear_router_ospf_database ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::clear_router_ospf3_neighbor ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::clear_router_ospf3_neighbor_router_id ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::clear_router_ospf3_database) {
+    using enum cli_schema::CommandId;
+    const auto id = parsed->spec->id;
+    const bool version_three =
+        id == reset_router_ospf3_neighbor ||
+        id == reset_router_ospf3_neighbor_router_id ||
+        id == reset_router_ospf3_database ||
+        id == clear_router_ospf3_neighbor ||
+        id == clear_router_ospf3_neighbor_router_id ||
+        id == clear_router_ospf3_database;
+    const bool database =
+        id == reset_router_ospf_database ||
+        id == reset_router_ospf3_database ||
+        id == clear_router_ospf_database ||
+        id == clear_router_ospf3_database;
+    const auto instance_text =
+        cli_detail::argument(*parsed, cli_schema::TokenKind::ospf_instance);
+    unsigned instance{};
+    const auto router_id_text =
+        cli_detail::argument(*parsed, cli_schema::TokenKind::ipv4);
+    const auto neighbor_router_id =
+        router_id_text ? ipv4(*router_id_text)
+                       : std::optional<std::uint32_t>{0U};
+    if (!instance_text || !decimal(*instance_text, instance) ||
+        instance > std::numeric_limits<std::uint8_t>::max() ||
+        !neighbor_router_id) {
+      output = terminal->cli.engine == CliEngine::classic
+                   ? "Error: Bad command."
+                   : "MINOR: MGMT_CORE #2301: Invalid element value";
+    } else {
+      const auto result = supervisor_.query_ospf(
+          intent->handle,
+          {.kind = database
+                       ? ospf::ControlCommandKind::reset_database
+                       : ospf::ControlCommandKind::reset_neighbors,
+           .neighbor_router_id = *neighbor_router_id,
+           .version = version_three
+                          ? packet::ospf::version_three
+                          : packet::ospf::version_two,
+           .instance_id = static_cast<std::uint8_t>(instance)});
+      if (!result)
+        output = terminal->cli.engine == CliEngine::classic
+                     ? "Error: Bad command."
+                     : "MINOR: MGMT_CORE #2203: Invalid element - currently "
+                       "not allowed";
+    }
+    output += cli_prompt(view, terminal->cli);
   } else if (parsed->spec->id == cli_schema::CommandId::show_router_interface ||
              parsed->spec->id ==
                  cli_schema::CommandId::show_router_interface_summary ||
@@ -11534,9 +14669,62 @@ std::string LabRuntime::execute_session(std::string_view session_id,
              parsed->spec->id ==
                  cli_schema::CommandId::show_router_interface_detail ||
              parsed->spec->id ==
+                 cli_schema::CommandId::show_router_ospf_status ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_ospf_interface ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_ospf_interface_named ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_ospf_interface_detail ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::
+                      show_router_ospf_interface_named_detail ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::show_router_ospf_neighbor ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::show_router_ospf_neighbor_detail ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::show_router_ospf_database ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::show_router_ospf_database_detail ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::show_router_ospf_routes ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::show_router_ospf3_status ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_ospf3_interface ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_ospf3_interface_named ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_ospf3_interface_detail ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::
+                      show_router_ospf3_interface_named_detail ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::show_router_ospf3_neighbor ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::show_router_ospf3_neighbor_detail ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::show_router_ospf3_database ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::show_router_ospf3_database_detail ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::show_router_ospf3_routes ||
+             parsed->spec->id ==
                  cli_schema::CommandId::show_router_route_table ||
              parsed->spec->id ==
+                 cli_schema::CommandId::show_router_route_table_protocol_ospf ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::
+                     show_router_route_table_protocol_ospf3 ||
+             parsed->spec->id ==
                  cli_schema::CommandId::show_router_route_table_ipv6 ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::
+                     show_router_route_table_ipv6_protocol_ospf ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::
+                     show_router_route_table_ipv6_protocol_ospf3 ||
              parsed->spec->id == cli_schema::CommandId::show_router_fib ||
              parsed->spec->id == cli_schema::CommandId::show_router_arp ||
              parsed->spec->id ==
@@ -11578,6 +14766,30 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           [](const auto &item) { return item.name == system_interface_name; });
       const auto *system_interface =
           system_entry == intent->interfaces.end() ? nullptr : &*system_entry;
+      using enum cli_schema::CommandId;
+      const auto id = parsed->spec->id;
+      const bool ospf_v2_report =
+          id == show_router_ospf_status ||
+          id == show_router_ospf_interface ||
+          id == show_router_ospf_interface_named ||
+          id == show_router_ospf_interface_detail ||
+          id == show_router_ospf_interface_named_detail ||
+          id == show_router_ospf_neighbor ||
+          id == show_router_ospf_neighbor_detail ||
+          id == show_router_ospf_database ||
+          id == show_router_ospf_database_detail ||
+          id == show_router_ospf_routes;
+      const bool ospf_v3_report =
+          id == show_router_ospf3_status ||
+          id == show_router_ospf3_interface ||
+          id == show_router_ospf3_interface_named ||
+          id == show_router_ospf3_interface_detail ||
+          id == show_router_ospf3_interface_named_detail ||
+          id == show_router_ospf3_neighbor ||
+          id == show_router_ospf3_neighbor_detail ||
+          id == show_router_ospf3_database ||
+          id == show_router_ospf3_database_detail ||
+          id == show_router_ospf3_routes;
 
       // DAD belongs to the forwarding shard. A configured address is not an
       // operational IPv6 address until that owner publishes it as preferred.
@@ -11596,8 +14808,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                : dad_enabled                        ? Ipv6DadState::tentative
                                                     : Ipv6DadState::preferred;
       };
-      const auto ipv6_interface_up = [&](std::uint16_t ordinal) noexcept {
-        const auto interface_id = physical_interface_id(ordinal);
+      const auto ipv6_interface_up = [&](std::uint64_t interface_id) noexcept {
         return std::any_of(
             operational->native_ipv6_addresses.begin(),
             operational->native_ipv6_addresses.end(), [&](const auto &entry) {
@@ -11618,7 +14829,578 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         }
         return "TENTATIVE";
       };
-      if (parsed->spec->id == cli_schema::CommandId::show_router_interface ||
+      if (ospf_v2_report || ospf_v3_report) {
+        const auto version = ospf_v2_report ? packet::ospf::version_two
+                                            : packet::ospf::version_three;
+        const auto protocol_name = ospf_v2_report ? "OSPF" : "OSPF3";
+        const auto interface_state_text = [](ospf::InterfaceState state) {
+          switch (state) {
+          case ospf::InterfaceState::down:
+            return "Down";
+          case ospf::InterfaceState::loopback:
+            return "Loopback";
+          case ospf::InterfaceState::waiting:
+            return "Waiting";
+          case ospf::InterfaceState::point_to_point:
+            return "PointToPoint";
+          case ospf::InterfaceState::dr_other:
+            return "DR Other";
+          case ospf::InterfaceState::backup:
+            return "Backup";
+          case ospf::InterfaceState::designated:
+            return "Designated";
+          }
+          return "Down";
+        };
+        const auto neighbor_state_text = [](ospf::NeighborState state) {
+          switch (state) {
+          case ospf::NeighborState::down:
+            return "Down";
+          case ospf::NeighborState::attempt:
+            return "Attempt";
+          case ospf::NeighborState::init:
+            return "Init";
+          case ospf::NeighborState::two_way:
+            return "2-Way";
+          case ospf::NeighborState::exstart:
+            return "ExStart";
+          case ospf::NeighborState::exchange:
+            return "Exchange";
+          case ospf::NeighborState::loading:
+            return "Loading";
+          case ospf::NeighborState::full:
+            return "Full";
+          }
+          return "Down";
+        };
+        const auto identity_text = [](std::uint32_t value) {
+          return value == 0U ? std::string{"0.0.0.0"} : ipv4_text(value);
+        };
+        const auto configured_interface =
+            [&](std::uint8_t instance_id, std::uint32_t area_id,
+                std::uint32_t interface_id,
+                std::uint16_t physical_port) -> std::string {
+          if (physical_port != ospf::no_physical_port) {
+            if (const auto *value = interface_for(physical_port))
+              return value->name;
+          }
+          for (const auto &instance : intent->ospf.instances) {
+            if (instance.instance_id != instance_id)
+              continue;
+            for (const auto &area : instance.areas) {
+              if (area.area_id != area_id)
+                continue;
+              for (const auto &entry : area.interfaces) {
+                const auto routed = std::find_if(
+                    intent->interfaces.begin(), intent->interfaces.end(),
+                    [&](const auto &candidate) {
+                      return candidate.name == entry.interface_name;
+                    });
+                if (routed == intent->interfaces.end())
+                  continue;
+                if ((!routed->port_configured && interface_id == 0U) ||
+                    (routed->port_configured &&
+                     physical_interface_id(physical_port) == interface_id))
+                  return entry.interface_name;
+              }
+            }
+          }
+          return {};
+        };
+
+        std::vector<ospf::ControlResult> processes;
+        const auto first = supervisor_.query_ospf(
+            intent->handle,
+            {.kind = ospf::ControlCommandKind::query_process,
+             .process_ordinal = 0U});
+        if (!first) {
+          output =
+              "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+        } else {
+          for (std::uint32_t ordinal{}; ordinal < first->process_count;
+               ++ordinal) {
+            const auto row = ordinal == 0U
+                                 ? first
+                                 : supervisor_.query_ospf(
+                                       intent->handle,
+                                       {.kind = ospf::ControlCommandKind::
+                                                    query_process,
+                                        .process_ordinal = ordinal});
+            if (!row || !row->present) {
+              output =
+                  "MINOR: MGMT_CORE #2203: Operational query interrupted";
+              break;
+            }
+            if (row->process.version == version)
+              processes.push_back(*row);
+          }
+        }
+
+        if (output.empty() &&
+            (id == show_router_ospf_status ||
+             id == show_router_ospf3_status)) {
+          out << table_rule << '\n' << protocol_name
+              << " Status (Router: Base)\n" << table_rule
+              << "\nInstance  Router Id       Area Id         Interfaces  LSAs  "
+                 "Routes\n"
+              << row_rule;
+          std::vector<std::string> operational_areas;
+          for (const auto &process : processes) {
+            out << '\n' << std::left << std::setw(10)
+                << static_cast<unsigned>(process.process.instance_id)
+                << std::setw(16) << identity_text(process.router_id)
+                << std::setw(16) << identity_text(process.process.area_id)
+                << std::setw(12) << process.interface_count << std::setw(6)
+                << process.lsa_count << process.route_count;
+            operational_areas.push_back(
+                std::to_string(process.process.instance_id) + '/' +
+                std::to_string(process.process.area_id));
+          }
+          std::size_t area_count = processes.size();
+          for (const auto &instance : intent->ospf.instances) {
+            const bool matching_version =
+                version == packet::ospf::version_two
+                    ? instance.address_family == ospf::AddressFamily::ipv4
+                    : instance.address_family != ospf::AddressFamily::ipv4;
+            if (!matching_version)
+              continue;
+            for (const auto &area : instance.areas) {
+              const auto key = std::to_string(instance.instance_id) + '/' +
+                               std::to_string(area.area_id);
+              if (std::find(operational_areas.begin(),
+                            operational_areas.end(),
+                            key) != operational_areas.end())
+                continue;
+              // No protocol-owner row means every configured interface in
+              // this area currently lacks the prerequisites for packet
+              // operation. Report the configured process identity and zero
+              // operational resources without inventing LSDB or SPF state.
+              out << '\n' << std::left << std::setw(10)
+                  << static_cast<unsigned>(instance.instance_id)
+                  << std::setw(16)
+                  << identity_text(instance.configured_router_id.value_or(0U))
+                  << std::setw(16) << identity_text(area.area_id)
+                  << std::setw(12) << 0U << std::setw(6) << 0U << 0U;
+              ++area_count;
+            }
+          }
+          out << '\n' << row_rule << "\nNo. of Areas: " << area_count
+              << '\n' << table_rule;
+        } else if (output.empty() &&
+                   (id == show_router_ospf_interface ||
+                    id == show_router_ospf_interface_named ||
+                    id == show_router_ospf_interface_detail ||
+                    id == show_router_ospf_interface_named_detail ||
+                    id == show_router_ospf3_interface ||
+                    id == show_router_ospf3_interface_named ||
+                    id == show_router_ospf3_interface_detail ||
+                    id == show_router_ospf3_interface_named_detail)) {
+          const bool detail =
+              parsed->has_modifier(cli_schema::OutputModifier::detail);
+          const auto requested_argument =
+              cli_detail::argument(*parsed,
+                                   cli_schema::TokenKind::interface_name);
+          const auto requested_name =
+              requested_argument
+                  ? cli_detail::unquote(*requested_argument)
+                  : std::string_view{};
+          if (!detail)
+            out << table_rule << '\n' << protocol_name
+                << " Interfaces (Router: Base)\n" << table_rule
+                << "\nInterface                       Area Id         State       "
+                   "Metric  Nbrs\n"
+                << row_rule;
+
+          // Detailed OSPF interface output consumes a copy made by the
+          // protocol owner. The renderer never reconstructs election state,
+          // timers or neighbor counts from topology links. That keeps `detail`
+          // an output modifier without weakening state ownership.
+          const auto render_detail =
+              [&](const ospf::ControlResult &row,
+                  std::string_view name) {
+                const auto &configuration = row.interface.configuration;
+                out << table_rule << "\nRtr Base " << protocol_name
+                    << " Instance "
+                    << static_cast<unsigned>(row.process.instance_id)
+                    << " Interface \"" << name << "\" (detail)\n"
+                    << table_rule << "\nConfiguration\n" << row_rule
+                    << "\nIP Address       : ";
+                if (version == packet::ospf::version_two)
+                  out << ipv4_text(
+                      static_cast<std::uint32_t>(configuration.ipv4_source[0U])
+                          << 24U |
+                      static_cast<std::uint32_t>(configuration.ipv4_source[1U])
+                          << 16U |
+                      static_cast<std::uint32_t>(configuration.ipv4_source[2U])
+                          << 8U |
+                      configuration.ipv4_source[3U]);
+                else
+                  out << ip::format_ipv6(configuration.ipv6_source);
+                out << "\nArea Id          : "
+                    << identity_text(row.process.area_id)
+                    << "              Priority         : "
+                    << static_cast<unsigned>(
+                           configuration.protocol.router_priority)
+                    << "\nHello Intrvl     : "
+                    << configuration.protocol.hello_interval_seconds
+                    << " sec               Rtr Dead Intrvl  : "
+                    << configuration.protocol.dead_interval_seconds
+                    << " sec\nRetrans Intrvl   : "
+                    << configuration.retransmit_interval_seconds
+                    << " sec                Trans Delay     : "
+                    << configuration.transmit_delay_seconds
+                    << " sec\nCfg Metric       : " << configuration.metric
+                    << "                    Passive         : "
+                    << (configuration.protocol.passive ? "True" : "False")
+                    << "\nInterface Type   : "
+                    << ospf_network_type_text(
+                           configuration.protocol.network_type)
+                    << "          Interface MTU    : "
+                    << configuration.protocol.interface_mtu
+                    << "\nAdmin State      : "
+                    << (configuration.protocol.enabled ? "Up" : "Down")
+                    << "                  Oper State       : "
+                    << interface_state_text(row.interface.state)
+                    << "\nDesignated Rtr   : "
+                    << identity_text(row.interface.designated_router)
+                    << "             Bkup Desig Rtr  : "
+                    << identity_text(row.interface.backup_designated_router)
+                    << "\nNo. of Neighbors : "
+                    << row.interface.neighbor_count << '\n' << table_rule;
+              };
+          std::size_t count{};
+          std::vector<std::string> operational_keys;
+          for (std::uint32_t process_ordinal{};
+               process_ordinal < first->process_count; ++process_ordinal) {
+            const auto process = supervisor_.query_ospf(
+                intent->handle,
+                {.kind = ospf::ControlCommandKind::query_process,
+                 .process_ordinal = process_ordinal});
+            if (!process || !process->present ||
+                process->process.version != version)
+              continue;
+            for (std::uint32_t interface_ordinal{};
+                 interface_ordinal < process->interface_count;
+                 ++interface_ordinal) {
+              const auto row = supervisor_.query_ospf(
+                  intent->handle,
+                  {.kind = ospf::ControlCommandKind::query_interface,
+                   .process_ordinal = process_ordinal,
+                   .interface_ordinal = interface_ordinal});
+              if (!row || !row->present)
+                continue;
+               const auto name = configured_interface(
+                   row->process.instance_id, row->process.area_id,
+                   row->interface.configuration.protocol.interface_id,
+                   row->interface.configuration.physical_port_ordinal);
+               if (requested_argument && name != requested_name)
+                 continue;
+               operational_keys.push_back(
+                   std::to_string(row->process.instance_id) + '/' +
+                   std::to_string(row->process.area_id) + '/' + name);
+               if (detail)
+                 render_detail(*row, name);
+               else
+                 out << '\n' << std::left << std::setw(32) << name
+                     << std::setw(16) << identity_text(row->process.area_id)
+                     << std::setw(12)
+                     << interface_state_text(row->interface.state)
+                     << std::setw(8) << row->interface.configuration.metric
+                     << row->interface.neighbor_count;
+               ++count;
+            }
+          }
+          // A configured OSPF interface whose Base interface has no usable
+          // address or physical attachment has no packet-producing process
+          // child. It remains a real operational Down row, however. Merge
+          // that absence with running configuration explicitly instead of
+          // either hiding the row or fabricating an owner-local FSM state.
+          for (const auto &instance : intent->ospf.instances) {
+            const bool matching_version =
+                version == packet::ospf::version_two
+                    ? instance.address_family == ospf::AddressFamily::ipv4
+                    : instance.address_family != ospf::AddressFamily::ipv4;
+            if (!matching_version)
+              continue;
+            for (const auto &area : instance.areas)
+              for (const auto &entry : area.interfaces) {
+                if (requested_argument &&
+                    entry.interface_name != requested_name)
+                  continue;
+                const auto key = std::to_string(instance.instance_id) + '/' +
+                                 std::to_string(area.area_id) + '/' +
+                                 entry.interface_name;
+                if (std::find(operational_keys.begin(),
+                              operational_keys.end(),
+                              key) != operational_keys.end())
+                  continue;
+                if (detail) {
+                  // An interface absent from the protocol process has no
+                  // runtime snapshot. Report only the canonical configured
+                  // facts and an explicit Down state instead of manufacturing
+                  // DR identities, an address or active timer state.
+                  out << table_rule << "\nRtr Base " << protocol_name
+                      << " Instance "
+                      << static_cast<unsigned>(instance.instance_id)
+                      << " Interface \"" << entry.interface_name
+                      << "\" (detail)\n" << table_rule
+                      << "\nConfiguration\n" << row_rule
+                      << "\nArea Id          : " << identity_text(area.area_id)
+                      << "\nCfg Metric       : "
+                      << (entry.cost ? std::to_string(entry.cost) : "n/a")
+                      << "\nAdmin State      : "
+                      << (entry.admin_enabled ? "Up" : "Down")
+                      << "\nOper State       : Down\n" << table_rule;
+                } else {
+                  out << '\n' << std::left << std::setw(32)
+                      << entry.interface_name << std::setw(16)
+                      << identity_text(area.area_id) << std::setw(12) << "Down"
+                      << std::setw(8)
+                      << (entry.cost ? std::to_string(entry.cost) : "n/a")
+                      << 0U;
+                }
+                ++count;
+              }
+          }
+          if (!detail)
+            out << '\n' << row_rule << "\nNo. of Interfaces: " << count
+                << '\n' << table_rule;
+          if (requested_argument && count == 0U)
+            output = "MINOR: MGMT_CORE #2301: Invalid element value";
+        } else if (output.empty() &&
+                   (id == show_router_ospf_neighbor ||
+                    id == show_router_ospf_neighbor_detail ||
+                    id == show_router_ospf3_neighbor ||
+                    id == show_router_ospf3_neighbor_detail)) {
+          const bool detail =
+              parsed->has_modifier(cli_schema::OutputModifier::detail);
+          if (!detail)
+            out << table_rule << '\n' << protocol_name
+                << " Neighbors (Router: Base)\n" << table_rule
+                << "\nNeighbor Id      Address                         Interface"
+                   "               State\n"
+                << row_rule;
+          else
+            out << table_rule << "\nRtr Base " << protocol_name
+                << " Neighbors (detail)\n" << table_rule;
+          std::size_t count{};
+          for (std::uint32_t process_ordinal{};
+               process_ordinal < first->process_count; ++process_ordinal) {
+            const auto process = supervisor_.query_ospf(
+                intent->handle,
+                {.kind = ospf::ControlCommandKind::query_process,
+                 .process_ordinal = process_ordinal});
+            if (!process || !process->present ||
+                process->process.version != version)
+              continue;
+            for (std::uint32_t interface_ordinal{};
+                 interface_ordinal < process->interface_count;
+                 ++interface_ordinal) {
+              const auto interface = supervisor_.query_ospf(
+                  intent->handle,
+                  {.kind = ospf::ControlCommandKind::query_interface,
+                   .process_ordinal = process_ordinal,
+                   .interface_ordinal = interface_ordinal});
+              if (!interface || !interface->present)
+                continue;
+              for (std::uint32_t neighbor_ordinal{};
+                   neighbor_ordinal < interface->interface.neighbor_count;
+                   ++neighbor_ordinal) {
+                const auto row = supervisor_.query_ospf(
+                    intent->handle,
+                    {.kind = ospf::ControlCommandKind::query_neighbor,
+                     .process_ordinal = process_ordinal,
+                     .interface_ordinal = interface_ordinal,
+                     .row_ordinal = neighbor_ordinal});
+                if (!row || !row->present)
+                  continue;
+                const auto name = configured_interface(
+                    row->process.instance_id, row->process.area_id,
+                    row->neighbor.local_interface_id,
+                    interface->interface.configuration.physical_port_ordinal);
+                const auto neighbor_address =
+                    version == packet::ospf::version_two
+                        ? ipv4_text(
+                              static_cast<std::uint32_t>(
+                                  row->neighbor.ipv4_address[0U])
+                                  << 24U |
+                              static_cast<std::uint32_t>(
+                                  row->neighbor.ipv4_address[1U])
+                                  << 16U |
+                              static_cast<std::uint32_t>(
+                                  row->neighbor.ipv4_address[2U])
+                                  << 8U |
+                              row->neighbor.ipv4_address[3U])
+                        : ip::format_ipv6(row->neighbor.ipv6_address);
+                if (!detail) {
+                  out << '\n' << std::left << std::setw(17)
+                      << identity_text(row->neighbor.runtime.router_id)
+                      << std::setw(32) << neighbor_address
+                      << std::setw(24) << name
+                      << neighbor_state_text(row->neighbor.runtime.state);
+                } else {
+                  // The detailed report is built only from the protocol
+                  // owner's neighbor and interface snapshots. Values such as
+                  // state, election identities and transport address are never
+                  // inferred from the topology editor or another router.
+                  const auto local_address =
+                      version == packet::ospf::version_two
+                          ? ipv4_text(
+                                static_cast<std::uint32_t>(
+                                    interface->interface.configuration
+                                        .ipv4_source[0U])
+                                    << 24U |
+                                static_cast<std::uint32_t>(
+                                    interface->interface.configuration
+                                        .ipv4_source[1U])
+                                    << 16U |
+                                static_cast<std::uint32_t>(
+                                    interface->interface.configuration
+                                        .ipv4_source[2U])
+                                    << 8U |
+                                interface->interface.configuration
+                                    .ipv4_source[3U])
+                          : ip::format_ipv6(
+                                interface->interface.configuration.ipv6_source);
+                  out << '\n'
+                      << row_rule << "\nNeighbor Rtr Id : "
+                      << identity_text(row->neighbor.runtime.router_id)
+                      << "  Interface: " << name
+                      << "\nNeighbor IP Addr : " << neighbor_address
+                      << "\nLocal IF IP Addr : " << local_address
+                      << "\nArea Id          : "
+                      << identity_text(row->process.area_id)
+                      << "  State: "
+                      << neighbor_state_text(row->neighbor.runtime.state)
+                      << "\nPriority         : "
+                      << static_cast<unsigned>(
+                             row->neighbor.runtime.priority)
+                      << "\nDesignated Rtr   : "
+                      << identity_text(
+                             row->neighbor.runtime.designated_router)
+                      << "\nBackup Desig Rtr : "
+                      << identity_text(
+                             row->neighbor.runtime.backup_designated_router);
+                }
+                ++count;
+              }
+            }
+          }
+          if (!detail)
+            out << '\n' << row_rule;
+          out << "\nNo. of Neighbors: " << count << '\n' << table_rule;
+        } else if (output.empty() &&
+                   (id == show_router_ospf_database ||
+                    id == show_router_ospf_database_detail ||
+                    id == show_router_ospf3_database ||
+                    id == show_router_ospf3_database_detail)) {
+          const bool detail =
+              parsed->has_modifier(cli_schema::OutputModifier::detail);
+          out << table_rule << '\n' << protocol_name
+              << " Link State Database"
+              << (detail ? " (detail)\n" : "\n") << table_rule;
+          if (!detail)
+            out << "\nArea Id         Type    Link State Id   Adv Router      "
+                   "Age   Sequence\n"
+                << row_rule;
+          std::size_t count{};
+          for (std::uint32_t process_ordinal{};
+               process_ordinal < first->process_count; ++process_ordinal) {
+            const auto process = supervisor_.query_ospf(
+                intent->handle,
+                {.kind = ospf::ControlCommandKind::query_process,
+                 .process_ordinal = process_ordinal});
+            if (!process || !process->present ||
+                process->process.version != version)
+              continue;
+            for (std::uint32_t lsa_ordinal{};
+                 lsa_ordinal < process->lsa_count; ++lsa_ordinal) {
+              const auto row = supervisor_.query_ospf(
+                  intent->handle,
+                  {.kind = ospf::ControlCommandKind::query_lsa,
+                   .process_ordinal = process_ordinal,
+                   .row_ordinal = lsa_ordinal});
+              if (!row || !row->present)
+                continue;
+              if (detail) {
+                // `detail` is a live LSDB report, not a differently styled
+                // copy of configuration intent. Every field below originates
+                // in the validated LSA header retained by the protocol owner;
+                // effective age is advanced against steady_clock at query
+                // time so a stopped UI cannot freeze the displayed lifetime.
+                out << "\n\nArea Id          : "
+                    << identity_text(row->process.area_id)
+                    << "\nLSA Type         : " << row->lsa.type
+                    << "\nLink State Id    : "
+                    << identity_text(row->lsa.link_state_id)
+                    << "\nAdvertising Rtr  : "
+                    << identity_text(row->lsa.advertising_router)
+                    << "\nLS Age           : " << row->effective_lsa_age
+                    << "\nLS Sequence      : 0x" << std::hex
+                    << static_cast<std::uint32_t>(
+                           row->lsa.sequence_number)
+                    << "\nLS Checksum      : 0x"
+                    << static_cast<std::uint32_t>(row->lsa.checksum)
+                    << std::dec
+                    << "\nLS Length        : " << row->lsa.length;
+                if (version == packet::ospf::version_two)
+                  out << "\nOptions          : 0x" << std::hex
+                      << row->lsa.options << std::dec;
+              } else {
+                out << '\n' << std::left << std::setw(16)
+                    << identity_text(row->process.area_id) << std::setw(8)
+                    << row->lsa.type << std::setw(16)
+                    << identity_text(row->lsa.link_state_id) << std::setw(16)
+                    << identity_text(row->lsa.advertising_router)
+                    << std::setw(6) << row->effective_lsa_age << "0x"
+                    << std::hex << static_cast<std::uint32_t>(
+                           row->lsa.sequence_number)
+                    << std::dec;
+              }
+              ++count;
+            }
+          }
+          out << '\n' << row_rule << "\nNo. of LSAs: " << count << '\n'
+              << table_rule;
+        } else if (output.empty()) {
+          const bool v3 = version == packet::ospf::version_three;
+          out << table_rule << '\n' << protocol_name
+              << " Routes (Router: Base)\n" << table_rule
+              << "\nDestination                                      Metric  "
+                 "Next Hop\n"
+              << row_rule;
+          std::size_t count{};
+          if (v3) {
+            for (std::size_t index{}; index < operational->ipv6_fib.count;
+                 ++index) {
+              const auto &route = operational->ipv6_fib.routes[index];
+              if (route.source != routing::RouteSource::ospf3)
+                continue;
+              out << '\n' << std::left << std::setw(49)
+                  << (ip::format_ipv6(route.network) + '/' +
+                      std::to_string(route.prefix_length))
+                  << std::setw(8) << route.metric
+                  << ip::format_ipv6(route.next_hop);
+              ++count;
+            }
+          } else {
+            for (std::size_t index{}; index < operational->fib.count;
+                 ++index) {
+              const auto &route = operational->fib.routes[index];
+              if (route.source != routing::RouteSource::ospf)
+                continue;
+              out << '\n' << std::left << std::setw(49)
+                  << (ipv4_text(route.network) + '/' +
+                      std::to_string(route.prefix_length))
+                  << std::setw(8) << route.metric
+                  << ipv4_text(route.next_hop);
+              ++count;
+            }
+          }
+          out << '\n' << row_rule << "\nNo. of Routes: " << count << '\n'
+              << table_rule;
+        }
+      } else if (parsed->spec->id == cli_schema::CommandId::show_router_interface ||
           parsed->spec->id ==
               cli_schema::CommandId::show_router_interface_summary ||
           parsed->spec->id ==
@@ -11664,10 +15446,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 (port != operational->ports.end() && port->operational);
             const bool ipv4_up = interface.admin_enabled && physical_up &&
                                  interface.address_configured;
-            const bool ipv6_up = !system && interface.admin_enabled &&
-                                 physical_up &&
-                                 port != operational->ports.end() &&
-                                 ipv6_interface_up(port->ordinal);
+            const auto ipv6_interface_id =
+                system ? system_interface_id
+                       : port != operational->ports.end()
+                             ? physical_interface_id(port->ordinal)
+                             : 0U;
+            const bool ipv6_up =
+                interface.admin_enabled && physical_up &&
+                ipv6_interface_id != 0U &&
+                ipv6_interface_up(ipv6_interface_id);
             if (ipv4_up || ipv6_up)
               ++oper_up;
           }
@@ -11685,8 +15472,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           // allowed to synthesize a row for an interface that is absent from
           // running configuration.
           output = "MINOR: MGMT_CORE #2301: Invalid element value";
-        } else if (parsed->spec->id ==
-                   cli_schema::CommandId::show_router_interface_detail) {
+        } else if (parsed->has_modifier(
+                       cli_schema::OutputModifier::detail)) {
           const auto &interface = *selected;
           const bool system = interface.name == system_interface_name;
           const auto port =
@@ -11698,10 +15485,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               system || (port != operational->ports.end() && port->operational);
           const bool ipv4_up = interface.admin_enabled && physical_up &&
                                interface.address_configured;
-          const bool ipv6_up = !system && interface.admin_enabled &&
-                               physical_up &&
-                               port != operational->ports.end() &&
-                               ipv6_interface_up(port->ordinal);
+          const auto ipv6_interface_id =
+              system ? system_interface_id
+                     : port != operational->ports.end()
+                           ? physical_interface_id(port->ordinal)
+                           : 0U;
+          const bool ipv6_up =
+              interface.admin_enabled && physical_up &&
+              ipv6_interface_id != 0U &&
+              ipv6_interface_up(ipv6_interface_id);
           const auto port_label = system ? std::string{system_interface_name}
                                   : interface.port_configured
                                       ? interface.port_id
@@ -11727,6 +15519,24 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                       ? ipv4_text(interface.address) + '/' +
                             std::to_string(interface.prefix_length)
                       : "Not Assigned")
+              << "\nIPv6 Addr        : ";
+          bool first_ipv6_address = true;
+          for (const auto &address : operational->native_ipv6_addresses) {
+            if (address.interface_id != ipv6_interface_id)
+              continue;
+            if (!first_ipv6_address)
+              out << "\n                   ";
+            out << ip::format_ipv6(address.address) << '/'
+                << static_cast<unsigned>(address.prefix_length) << " ("
+                << ipv6_state_text(
+                       ipv6_state(address.interface_id, address.address,
+                                  address.duplicate_address_detection))
+                << ')';
+            first_ipv6_address = false;
+          }
+          if (first_ipv6_address)
+            out << "Not Assigned";
+          out
               << "\n"
               << row_rule << "\nDetails\n"
               << row_rule << "\nPort Id          : " << port_label
@@ -11760,10 +15570,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 (port != operational->ports.end() && port->operational);
             const bool ipv4_up = interface.admin_enabled && physical_up &&
                                  interface.address_configured;
-            const bool ipv6_up = !system && interface.admin_enabled &&
-                                 physical_up &&
-                                 port != operational->ports.end() &&
-                                 ipv6_interface_up(port->ordinal);
+            const auto ipv6_interface_id =
+                system ? system_interface_id
+                       : port != operational->ports.end()
+                             ? physical_interface_id(port->ordinal)
+                             : 0U;
+            const bool ipv6_up =
+                interface.admin_enabled && physical_up &&
+                ipv6_interface_id != 0U &&
+                ipv6_interface_up(ipv6_interface_id);
             out << '\n'
                 << std::left << std::setw(33) << interface.name << std::setw(10)
                 << (interface.admin_enabled ? "Up" : "Down") << std::setw(12)
@@ -11779,19 +15594,18 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                               std::to_string(interface.prefix_length)
                         : "n/a")
                 << "n/a";
-            if (!system && port != operational->ports.end()) {
-              const auto interface_id = physical_interface_id(port->ordinal);
+            if (ipv6_interface_id != 0U) {
               // Render the complete forwarding-owned generation. This avoids
               // hiding secondary addresses and prevents an uncommitted MD
               // candidate from leaking into operational output.
               for (const auto &address : operational->native_ipv6_addresses) {
-                if (address.interface_id != interface_id)
+                if (address.interface_id != ipv6_interface_id)
                   continue;
                 out << "\n   " << std::setw(61)
                     << (ip::format_ipv6(address.address) + '/' +
                         std::to_string(address.prefix_length))
                     << ipv6_state_text(
-                           ipv6_state(interface_id, address.address,
+                           ipv6_state(ipv6_interface_id, address.address,
                                       address.duplicate_address_detection));
               }
             }
@@ -11805,9 +15619,40 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       } else if (parsed->spec->id ==
                      cli_schema::CommandId::show_router_route_table ||
                  parsed->spec->id ==
-                     cli_schema::CommandId::show_router_route_table_ipv6) {
-        const bool ipv6 = parsed->spec->id ==
-                          cli_schema::CommandId::show_router_route_table_ipv6;
+                     cli_schema::CommandId::
+                         show_router_route_table_protocol_ospf ||
+                 parsed->spec->id ==
+                     cli_schema::CommandId::
+                         show_router_route_table_protocol_ospf3 ||
+                 parsed->spec->id ==
+                     cli_schema::CommandId::show_router_route_table_ipv6 ||
+                 parsed->spec->id ==
+                     cli_schema::CommandId::
+                         show_router_route_table_ipv6_protocol_ospf ||
+                 parsed->spec->id ==
+                     cli_schema::CommandId::
+                         show_router_route_table_ipv6_protocol_ospf3) {
+        using enum cli_schema::CommandId;
+        const auto route_table_id = parsed->spec->id;
+        const bool ipv6 =
+            route_table_id == show_router_route_table_ipv6 ||
+            route_table_id == show_router_route_table_ipv6_protocol_ospf ||
+            route_table_id == show_router_route_table_ipv6_protocol_ospf3;
+        const bool ospf_only =
+            route_table_id == show_router_route_table_protocol_ospf ||
+            route_table_id == show_router_route_table_ipv6_protocol_ospf;
+        const bool ospf3_only =
+            route_table_id == show_router_route_table_protocol_ospf3 ||
+            route_table_id == show_router_route_table_ipv6_protocol_ospf3;
+        // Filtering is applied to the forwarding-owned RIB projection, not to
+        // the OSPF daemon's candidate routes. The report therefore uses the
+        // same installed-route authority as an unfiltered route-table command.
+        const auto selected_protocol = [&](routing::RouteSource source) {
+          return (!ospf_only && !ospf3_only) ||
+                 (ospf_only && source == routing::RouteSource::ospf) ||
+                 (ospf3_only && source == routing::RouteSource::ospf3);
+        };
+        std::size_t route_count{};
         out << table_rule << '\n'
             << (ipv6 ? "IPv6 Route Table" : "Route Table")
             << " (Router: Base)\n"
@@ -11820,6 +15665,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         if (ipv6) {
           const auto routed_interface_name = [&](std::uint64_t interface_id,
                                                  std::uint16_t ordinal) {
+            // The system loopback deliberately has no physical ordinal. Match
+            // its typed interface identity before attempting physical or IES
+            // resolution so show output never exposes the internal sentinel.
+            if (interface_id == system_interface_id)
+              return std::string{system_interface_name};
             if (const auto physical =
                     physical_port_from_interface_id(interface_id)) {
               if (const auto *interface = interface_for(*physical))
@@ -11839,12 +15689,18 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           for (std::size_t index = 0; index < operational->ipv6_fib.count;
                ++index) {
             const auto &route = operational->ipv6_fib.routes[index];
+            if (!selected_protocol(route.source))
+              continue;
+            ++route_count;
             const bool connected =
-                route.source == routing::Route::Source::connected;
+                route.source == routing::RouteSource::connected;
             const auto protocol =
-                route.source == routing::Route::Source::static_route
+                route.source == routing::RouteSource::static_route
                     ? "Static"
-                    : connected ? "Local" : "Dynamic";
+                : route.source == routing::RouteSource::ospf ? "OSPF"
+                : route.source == routing::RouteSource::ospf3
+                    ? "OSPF3"
+                    : "Local";
             out << '\n'
                 << std::left << std::setw(47)
                 << (ip::format_ipv6(route.network) + '/' +
@@ -11861,12 +15717,18 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         } else {
           for (std::size_t index = 0; index < operational->fib.count; ++index) {
             const auto &route = operational->fib.routes[index];
+            if (!selected_protocol(route.source))
+              continue;
+            ++route_count;
             const bool connected =
-                route.source == routing::Route::Source::connected;
+                route.source == routing::RouteSource::connected;
             const auto protocol =
-                route.source == routing::Route::Source::static_route
+                route.source == routing::RouteSource::static_route
                     ? "Static"
-                    : connected ? "Local" : "Dynamic";
+                : route.source == routing::RouteSource::ospf ? "OSPF"
+                : route.source == routing::RouteSource::ospf3
+                    ? "OSPF3"
+                    : "Local";
             const auto *interface = route.local_system
                                         ? system_interface
                                         : interface_for(route.port_ordinal);
@@ -11885,9 +15747,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           }
         }
         out << '\n'
-            << row_rule << "\nNo. of Routes: "
-            << (ipv6 ? operational->ipv6_fib.count : operational->fib.count)
-            << '\n'
+            << row_rule << "\nNo. of Routes: " << route_count << '\n'
             << table_rule;
       } else if (parsed->spec->id == cli_schema::CommandId::show_router_fib) {
         const auto slot =
@@ -12073,13 +15933,31 @@ std::string LabRuntime::poll_session(std::string_view session_id) {
     ping.active = false;
     ping.waiting = false;
     const auto lost = ping.sent - ping.received;
-    const auto loss = ping.sent ? lost * 100U / ping.sent : 0U;
     const auto destination = ping.ipv6 ? ip::format_ipv6(ping.destination_ipv6)
                                        : ipv4_text(ping.destination);
-    return "--- " + destination + " ping statistics ---\n" +
-           std::to_string(ping.sent) + " packets transmitted, " +
-           std::to_string(ping.received) + " packets received, " +
-           std::to_string(loss) + "% packet loss\n";
+    std::string statistics =
+        "---- " + destination + " PING Statistics ----\n" +
+        std::to_string(ping.sent) + " packets transmitted, " +
+        std::to_string(ping.received) + " packets received, " +
+        ping_loss_percent(lost, ping.sent) + "% packet loss\n";
+    if (ping.received != 0U) {
+      // Nokia reports population standard deviation. Integer microsecond
+      // sufficient statistics keep this calculation bounded and make the
+      // result independent of terminal polling and checkpoint restoration.
+      const auto count = static_cast<long double>(ping.received);
+      const auto mean =
+          static_cast<long double>(ping.rtt_sum_microseconds) / count;
+      const auto mean_square =
+          static_cast<long double>(ping.rtt_squared_sum_microseconds) / count;
+      const auto variance = std::max(0.0L, mean_square - mean * mean);
+      statistics +=
+          "round-trip min = " +
+          ping_milliseconds(ping.rtt_min_microseconds) +
+          "ms, avg = " + ping_milliseconds(mean) +
+          "ms, max = " + ping_milliseconds(ping.rtt_max_microseconds) +
+          "ms, stddev = " + ping_milliseconds(std::sqrt(variance)) + "ms\n";
+    }
+    return statistics;
   };
 
   std::string output;
@@ -12099,9 +15977,28 @@ std::string LabRuntime::poll_session(std::string_view session_id) {
     // The forwarding shard timestamps receipt at the encoded Echo Reply. The
     // remaining bits cross the existing status ring, so a 25 ms browser poll
     // cannot inflate a sub-millisecond link RTT into the displayed result.
-    const auto elapsed_nanoseconds = static_cast<std::int64_t>(
-        (ping.ipv6 ? ipv6_outcome : ipv4_outcome) >> 8U);
+    const auto packed_outcome = ping.ipv6 ? ipv6_outcome : ipv4_outcome;
+    const auto received_ttl =
+        static_cast<std::uint8_t>((packed_outcome >> 8U) & 0xffU);
+    const auto elapsed_nanoseconds =
+        static_cast<std::int64_t>(packed_outcome >> 16U);
+    // Round to the nearest microsecond because the SR OS output contract
+    // carries millisecond values to at most three fractional digits.
+    const auto elapsed_microseconds = static_cast<std::uint64_t>(
+        std::max<std::int64_t>(0, elapsed_nanoseconds + 500) / 1000);
     ++ping.received;
+    if (ping.received == 1U) {
+      ping.rtt_min_microseconds = elapsed_microseconds;
+      ping.rtt_max_microseconds = elapsed_microseconds;
+    } else {
+      ping.rtt_min_microseconds =
+          std::min(ping.rtt_min_microseconds, elapsed_microseconds);
+      ping.rtt_max_microseconds =
+          std::max(ping.rtt_max_microseconds, elapsed_microseconds);
+    }
+    ping.rtt_sum_microseconds += elapsed_microseconds;
+    ping.rtt_squared_sum_microseconds +=
+        elapsed_microseconds * elapsed_microseconds;
     ping.waiting = false;
     const auto destination = ping.ipv6 ? ip::format_ipv6(ping.destination_ipv6)
                                        : ipv4_text(ping.destination);
@@ -12109,7 +16006,8 @@ std::string LabRuntime::poll_session(std::string_view session_id) {
         std::to_string(ping.payload_octets + packet::icmp_echo_header_octets) +
         " bytes from " + destination +
         ": icmp_seq=" + std::to_string(ping.sequence) +
-        " time=" + std::to_string(elapsed_nanoseconds / 1'000'000.0) + " ms\n";
+        " ttl=" + std::to_string(received_ttl) +
+        " time=" + ping_milliseconds(elapsed_microseconds) + "ms.\n";
     if (ping.sent == ping.requested)
       output += finish();
     else {
@@ -12157,7 +16055,7 @@ std::string LabRuntime::poll_session(std::string_view session_id) {
   } else if (ping.waiting && now >= ping.reply_deadline) {
     ping.waiting = false;
     output =
-        "Request timeout for icmp_seq " + std::to_string(ping.sequence) + "\n";
+        "Request timed out. icmp_seq=" + std::to_string(ping.sequence) + ".\n";
     if (ping.sent == ping.requested)
       output += finish();
     else {
@@ -12268,19 +16166,20 @@ std::string LabRuntime::complete_session(std::string_view session_id,
       : session_record->mode == CandidateMode::private_candidate
           ? &terminal->private_candidate.ipsec
           : &intent->global_candidate.ipsec;
-  // Classic MLD attachment is configured outside a policy-options edit and
-  // therefore completes names from running state. During `begin`, policy
-  // object references must instead resolve against the isolated edit graph,
-  // including objects created earlier in the same transaction.
-  std::optional<ConfigurationIntent> classic_running_policy_configuration;
-  if (terminal->cli.engine == CliEngine::classic &&
-      !terminal->classic_policy_edit_active)
-    classic_running_policy_configuration = running_configuration(*intent);
+  // Classic completion normally reads policy keys directly from RouterIntent,
+  // which is already the owner of the running configuration. Materializing a
+  // complete ConfigurationIntent here used to copy the fixed card inventory,
+  // TLS/IPsec state and every interface merely to inspect two name vectors.
+  // Besides wasting work on every Tab press, that large automatic object could
+  // exhaust WebAssembly's bounded native stack as the configuration model
+  // grew. An active classic policy edit and both MD candidate modes still
+  // point at their isolated candidate graph, because names created earlier in
+  // the transaction must be visible before commit.
   const auto *policy_configuration =
       terminal->cli.engine == CliEngine::classic
           ? (terminal->classic_policy_edit_active
                  ? &terminal->classic_policy_candidate
-                 : &*classic_running_policy_configuration)
+                 : nullptr)
       : session_record->mode == CandidateMode::private_candidate
           ? &terminal->private_candidate
           : &intent->global_candidate;
@@ -12456,16 +16355,24 @@ std::string LabRuntime::complete_session(std::string_view session_id,
         add(item.name);
       break;
     case policy_name:
-      if (policy_configuration)
+      if (policy_configuration) {
         for (const auto &policy : policy_configuration->mld_import_policies)
           add(policy.name);
+      } else {
+        for (const auto &policy : intent->mld_import_policies)
+          add(policy.name);
+      }
       if (trigger == "question")
         add(next.display);
       break;
     case prefix_list_name:
-      if (policy_configuration)
+      if (policy_configuration) {
         for (const auto &list : policy_configuration->mld_prefix_lists)
           add(list.name);
+      } else {
+        for (const auto &list : intent->mld_prefix_lists)
+          add(list.name);
+      }
       if (trigger == "question")
         add(next.display);
       break;
@@ -12544,6 +16451,7 @@ std::string LabRuntime::complete_session(std::string_view session_id,
         add(next.display);
       break;
     case static_sa_name:
+    case ospf_ipsec_sa_outbound:
       // Existing list keys are valid references for show, delete and leaf
       // edits. Question-mark help retains the parameter placeholder because
       // MD configuration may also create a new keyed list instance.
@@ -12742,11 +16650,18 @@ bool LabRuntime::configure_capture(std::span<const std::string_view> fields) {
           return std::nullopt;
         return "router:" + device->node_id + "@" + intent->system_name;
       }
-      const auto *endpoint =
-          supervisor_.hosts().get({handle.index, handle.generation});
-      if (!endpoint)
+      if (handle.kind == NodeKind::host) {
+        const auto *endpoint =
+            supervisor_.hosts().get({handle.index, handle.generation});
+        if (!endpoint)
+          return std::nullopt;
+        return "host:" + endpoint->node_id + "@" + endpoint->name;
+      }
+      const auto *bridge =
+          supervisor_.switches().get({handle.index, handle.generation});
+      if (!bridge)
         return std::nullopt;
-      return "host:" + endpoint->node_id + "@" + endpoint->name;
+      return "switch:" + bridge->node_id + "@" + bridge->name;
     };
     const auto source_index = direction == 0U ? 0U : 1U;
     const auto target_index = 1U - source_index;
@@ -12895,13 +16810,16 @@ bool LabRuntime::replace_capture_selection(
 std::string LabRuntime::snapshot() {
   const auto devices = supervisor_.devices().checkpoint();
   const auto hosts = supervisor_.hosts().checkpoint();
+  const auto switches = supervisor_.switches().checkpoint();
   const auto links = supervisor_.topology().checkpoint();
   const auto sessions = supervisor_.sessions().checkpoint();
   std::ostringstream out;
-  // Capability output is derived from the same constants that guard the
-  // shared page and command decoder. A protocol or layout revision therefore
-  // cannot leave an apparently compatible literal in the browser handshake.
-  out << "{\"abiVersion\":" << telemetry_page_v6_abi
+  // The structural snapshot has its own revision. Telemetry is an independent
+  // shared-memory layout and may remain byte-for-byte compatible while this
+  // JSON graph gains a configuration domain such as OSPF. Publishing the
+  // telemetry revision here worked only while both revisions happened to be
+  // six and caused every router creation to fail after snapshot ABI 8.
+  out << "{\"abiVersion\":" << profile::runtime_snapshot_abi
       << ",\"protocolVersion\":" << lab_runtime_protocol::version
       << ",\"status\":\"ready\",\"routers\":[";
   bool comma{};
@@ -13092,7 +17010,18 @@ std::string LabRuntime::snapshot() {
         out << '}';
       }
     }
-    out << "]}";
+    out << "],\"policyOptions\":";
+    if (intent)
+      json_policy_options(out, intent->mld_prefix_lists,
+                          intent->mld_import_policies);
+    else
+      out << "{\"prefixLists\":[],\"statements\":[]}";
+    out << ",\"ospf\":";
+    if (intent)
+      json_ospf_configuration(out, intent->ospf);
+    else
+      out << "{\"instances\":[]}";
+    out << '}';
   }
   out << "],\"hosts\":[";
   comma = false;
@@ -13154,6 +17083,34 @@ std::string LabRuntime::snapshot() {
                          : "modified-eui64");
     out << '}';
   }
+  out << "],\"switches\":[";
+  comma = false;
+  for (const auto &entry : switches.entries) {
+    if (comma)
+      out << ',';
+    comma = true;
+    out << "{\"id\":";
+    json_string(out, entry.node_id);
+    out << ",\"name\":";
+    json_string(out, entry.name);
+    out << ",\"profileId\":";
+    json_string(out, entry.profile_id);
+    out << ",\"handle\":{\"index\":" << entry.handle.index
+        << ",\"generation\":" << entry.handle.generation << "},\"ports\":[";
+    for (std::size_t ordinal{}; ordinal < entry.ports.size(); ++ordinal) {
+      if (ordinal)
+        out << ',';
+      const auto &port = entry.ports[ordinal];
+      // Port identity is a property of the selected bridge profile. It is
+      // derived from the ordinal instead of copied from a browser payload.
+      out << "{\"id\":";
+      json_string(out, std::to_string(ordinal + 1U));
+      out << ",\"admin\":" << (port.admin_enabled ? "true" : "false")
+          << ",\"mtu\":" << port.mtu
+          << ",\"speedMbps\":" << port.speed_mbps << '}';
+    }
+    out << "]}";
+  }
   out << "],\"links\":[";
   comma = false;
   const auto node_id = [&](NodeHandle node_handle) -> std::string_view {
@@ -13162,8 +17119,13 @@ std::string LabRuntime::snapshot() {
           {node_handle.index, node_handle.generation});
       return record ? std::string_view{record->node_id} : std::string_view{};
     }
-    const auto *record =
-        supervisor_.hosts().get({node_handle.index, node_handle.generation});
+    if (node_handle.kind == NodeKind::host) {
+      const auto *record =
+          supervisor_.hosts().get({node_handle.index, node_handle.generation});
+      return record ? std::string_view{record->node_id} : std::string_view{};
+    }
+    const auto *record = supervisor_.switches().get(
+        {node_handle.index, node_handle.generation});
     return record ? std::string_view{record->node_id} : std::string_view{};
   };
   for (const auto &entry : links.entries) {
@@ -13252,11 +17214,12 @@ void LabRuntime::publish_telemetry() noexcept {
   sequence.store(generation + 1U, std::memory_order_release);
   telemetry_.abi_version = telemetry_page_v6_abi;
   telemetry_.status = 1;
-  // The browser Worker owns control, NetworkPlaneWorker owns the link domain,
-  // and larger hosts add generated forwarding pthreads. Telemetry reports only
-  // owners that actually exist, never reserved pool capacity.
+  // The browser Worker owns primary control, NetworkPlaneWorker owns the link
+  // domain, OSPF owns protocol state, and larger hosts add generated control
+  // and forwarding pthreads. Telemetry reports only owners that actually
+  // exist, never unused Emscripten pool capacity.
   telemetry_.worker_count =
-      static_cast<std::uint32_t>(2U + (secondary_control_ ? 1U : 0U) +
+      static_cast<std::uint32_t>(3U + (secondary_control_ ? 1U : 0U) +
                                  supervisor_.forwarding_owner_count());
   auto control = static_cast<std::uint64_t>(
       std::hash<std::thread::id>{}(std::this_thread::get_id()));
@@ -13291,6 +17254,16 @@ void LabRuntime::publish_telemetry() noexcept {
       .running =
           static_cast<std::uint8_t>(supervisor_.network_thread_id() != 0),
       .thread_id = supervisor_.network_thread_id(),
+  };
+  // OSPF follows the link owner in the stable directory. It is a protocol
+  // owner, not a forwarding shard, and its distinct thread ID proves that
+  // LSDB mutation cannot execute on the browser-facing control Worker.
+  const auto ospf_owner_id = supervisor_.ospf_owner_thread_id();
+  telemetry_.workers[directory++] = {
+      .role = static_cast<std::uint8_t>(WorkerRoleV6::ospf),
+      .shard_index = 0,
+      .running = static_cast<std::uint8_t>(ospf_owner_id != 0),
+      .thread_id = ospf_owner_id,
   };
   for (std::size_t index = 0; index < supervisor_.forwarding_owner_count();
        ++index) {
@@ -13486,6 +17459,17 @@ std::string_view LabRuntime::command(std::string_view message) {
       endpoint->name.assign(fields[1]);
       changed = true;
     }
+  } else if (operation == lab_runtime_protocol::switch_create) {
+    changed = create_switch(fields);
+  } else if (operation == lab_runtime_protocol::switch_name_set &&
+             fields.size() == 2U) {
+    auto *bridge = ethernet_switch(fields[0]);
+    if (bridge && supervisor_.set_switch_name(bridge->handle, fields[1])) {
+      bridge->name.assign(fields[1]);
+      changed = true;
+    }
+  } else if (operation == lab_runtime_protocol::switch_port_configure) {
+    changed = configure_switch_port(fields);
   } else if (operation == lab_runtime_protocol::hardware_card_set)
     changed = set_card(fields);
   else if (operation == lab_runtime_protocol::hardware_mda_set)
@@ -13565,6 +17549,16 @@ std::string_view LabRuntime::command(std::string_view message) {
           std::find_if(hosts_.begin(), hosts_.end(), [&](const auto &item) {
             return item.handle == handle;
           }));
+      changed = true;
+    }
+  } else if (operation == lab_runtime_protocol::switch_delete &&
+             fields.size() == 1U) {
+    auto *bridge = ethernet_switch(fields[0]);
+    if (bridge && supervisor_.delete_switch(bridge->handle)) {
+      const auto handle = bridge->handle;
+      switches_.erase(std::find_if(
+          switches_.begin(), switches_.end(),
+          [&](const auto &item) { return item.handle == handle; }));
       changed = true;
     }
   } else if (operation == lab_runtime_protocol::link_delete &&
@@ -13776,6 +17770,7 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
       value.tls = router.tls;
       value.ipsec = router.ipsec;
       value.ies = router.ies;
+      value.ospf = router.ospf;
       value.ports.reserve(router.ports.size());
       for (const auto &port : router.ports)
         value.ports.push_back({port.id, port.admin_enabled, port.mtu,
@@ -13972,6 +17967,11 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
       value.ping_requested = session.ping.requested;
       value.ping_sent = session.ping.sent;
       value.ping_received = session.ping.received;
+      value.ping_rtt_min_microseconds = session.ping.rtt_min_microseconds;
+      value.ping_rtt_max_microseconds = session.ping.rtt_max_microseconds;
+      value.ping_rtt_sum_microseconds = session.ping.rtt_sum_microseconds;
+      value.ping_rtt_squared_sum_microseconds =
+          session.ping.rtt_squared_sum_microseconds;
       value.ping_next_send_ns = relative_ns(session.ping.next_send);
       value.ping_reply_deadline_ns = relative_ns(session.ping.reply_deadline);
       value.ping_dont_fragment = session.ping.dont_fragment;
@@ -13999,12 +17999,12 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
     checkpoint_bytes_.clear();
     return {};
   }
-  checkpoint_bytes_ = checkpoint_v6::encode(*checkpoint);
+  checkpoint_bytes_ = checkpoint_v7::encode(*checkpoint);
   return checkpoint_bytes_;
 }
 
 bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
-  auto checkpoint = checkpoint_v6::decode(bytes);
+  auto checkpoint = checkpoint_v7::decode(bytes);
   if (!checkpoint)
     return false;
   try {
@@ -14019,6 +18019,44 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
       // browser-unwrapped project key. Never discard the records and continue
       // with dangling configuration handles.
       return false;
+    }
+    // OSPF operational checkpoints contain only opaque vault identities and
+    // sequence metadata. Rehydrate their short-lived protocol copies from the
+    // already authenticated staged vault before the supervisor can hand the
+    // snapshot to ControlWorker. No clear key byte was present in the file.
+    const auto hydrate_ospf_authentication =
+        [&](ospf::ProcessAuthentication &authentication) {
+          const auto kind =
+              static_cast<vault::SecretKind>(authentication.secret_kind);
+          if (!staged_vault || authentication.secret_handle == 0U ||
+              (kind != vault::SecretKind::ospf_authentication_key &&
+               kind !=
+                   vault::SecretKind::ipsec_static_authentication_key))
+            return false;
+          const auto [status, opened] = staged_vault->open(
+              authentication.secret_handle, kind);
+          if (status != vault::Result::applied || !opened ||
+              opened->bytes().size() != authentication.key_size ||
+              opened->bytes().size() > authentication.key.size())
+            return false;
+          std::copy(opened->bytes().begin(), opened->bytes().end(),
+                    authentication.key.begin());
+          return true;
+        };
+    for (auto &owned : checkpoint->network.ospf.processes) {
+      for (auto &interface : owned.process.interfaces) {
+        if (interface.send_authentication &&
+            !hydrate_ospf_authentication(
+                *interface.send_authentication))
+          return false;
+        for (auto &authentication :
+             interface.receive_authentications)
+          if (!hydrate_ospf_authentication(authentication))
+            return false;
+      }
+      for (auto &command : owned.authentications)
+        if (!hydrate_ospf_authentication(command.authentication))
+          return false;
     }
     const auto configuration_intent = [](const PortableConfigurationCheckpoint
                                              &source) {
@@ -14044,6 +18082,7 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
       target.tls = source.tls;
       target.ipsec = source.ipsec;
       target.ies = source.ies;
+      target.ospf = source.ospf;
       for (std::size_t card = 0; card < source.cards.size(); ++card) {
         target.cards[card].provisioned = source.cards[card].provisioned;
         target.cards[card].admin_enabled = source.cards[card].admin_enabled;
@@ -14220,6 +18259,7 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
     // otherwise the import fails without changing the active laboratory.
     std::vector<RouterIntent> routers;
     std::vector<HostIntent> hosts;
+    std::vector<SwitchIntent> switches;
     std::vector<SessionIntent> sessions;
     std::vector<CaptureIntent> captures;
     if (checkpoint->portable_routers.size() !=
@@ -14230,6 +18270,7 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
       return false;
     routers.reserve(checkpoint->devices.entries.size());
     hosts.reserve(checkpoint->hosts.entries.size());
+    switches.reserve(checkpoint->switches.entries.size());
     sessions.reserve(checkpoint->sessions.entries.size());
     captures.reserve(checkpoint->portable_capture_points.size());
     for (const auto &device : checkpoint->devices.entries) {
@@ -14268,6 +18309,7 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
           .tls = portable->tls,
           .ipsec = portable->ipsec,
           .ies = portable->ies,
+          .ospf = portable->ospf,
           .global_candidate = {},
           .global_candidate_initialized = false};
       value.ports.reserve(portable->ports.size());
@@ -14461,6 +18503,16 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
            .ipv6_identifier = portable->ipv6_identifier,
            .transport_secret = portable->transport_secret});
     }
+    for (const auto &bridge : checkpoint->switches.entries) {
+      // All switch intent is already owned by the validated control registry.
+      // Rebuilding this facade projection avoids a duplicate portable record
+      // that could disagree with the operational bridge checkpoint.
+      switches.push_back({.handle = bridge.handle,
+                          .node_id = bridge.node_id,
+                          .name = bridge.name,
+                          .profile_id = bridge.profile_id,
+                          .ports = bridge.ports});
+    }
     const auto restore_now = std::chrono::steady_clock::now();
     for (const auto &terminal : checkpoint->sessions.entries) {
       SessionIntent restored{.handle = terminal.handle,
@@ -14498,6 +18550,14 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
       restored.ping.requested = portable_candidate->ping_requested;
       restored.ping.sent = portable_candidate->ping_sent;
       restored.ping.received = portable_candidate->ping_received;
+      restored.ping.rtt_min_microseconds =
+          portable_candidate->ping_rtt_min_microseconds;
+      restored.ping.rtt_max_microseconds =
+          portable_candidate->ping_rtt_max_microseconds;
+      restored.ping.rtt_sum_microseconds =
+          portable_candidate->ping_rtt_sum_microseconds;
+      restored.ping.rtt_squared_sum_microseconds =
+          portable_candidate->ping_rtt_squared_sum_microseconds;
       restored.ping.dont_fragment = portable_candidate->ping_dont_fragment;
       restored.ping.ipv6 = portable_candidate->ping_ipv6;
       restored.ping.waiting = portable_candidate->ping_waiting;
@@ -14533,6 +18593,7 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
       secret_vault_ = std::move(*staged_vault);
     routers_.swap(routers);
     hosts_.swap(hosts);
+    switches_.swap(switches);
     sessions_.swap(sessions);
     capture_intents_.swap(captures);
     next_capture_id_ = 0;

@@ -123,9 +123,39 @@ MultiDeviceFabric::enqueue(LinkHandle link, std::uint8_t endpoint,
     ++dropped_frames_;
     return DropReason::packet_pool_full;
   }
+  return enqueue_owned_reference(link, endpoint, *handle);
+}
+
+MultiDeviceFabric::DropReason
+MultiDeviceFabric::enqueue_shared(LinkHandle link, std::uint8_t endpoint,
+                                  PacketHandle frame) noexcept {
+  // Retain before publishing to TX. A failure below releases only this new
+  // ownership unit, leaving the switch queue's original reference untouched.
+  if (!pool_.retain(frame)) {
+    ++dropped_frames_;
+    return DropReason::packet_pool_full;
+  }
+  return enqueue_owned_reference(link, endpoint, frame);
+}
+
+MultiDeviceFabric::DropReason
+MultiDeviceFabric::enqueue_owned_reference(LinkHandle link,
+                                            std::uint8_t endpoint,
+                                            PacketHandle frame) noexcept {
+  auto *slot = find(link);
+  if (!slot || endpoint > 1U) {
+    pool_.release(frame);
+    ++dropped_frames_;
+    return DropReason::stale_link;
+  }
+  if (!slot->carrier) {
+    pool_.release(frame);
+    ++dropped_frames_;
+    return DropReason::carrier_down;
+  }
   auto &direction = slot->directions[endpoint];
-  if (!direction.tx.try_push(*handle)) {
-    pool_.release(*handle);
+  if (!direction.tx.try_push(frame)) {
+    pool_.release(frame);
     ++dropped_frames_;
     return DropReason::transmit_queue_full;
   }

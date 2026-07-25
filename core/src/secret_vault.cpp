@@ -89,7 +89,7 @@ bool valid_kind(SecretKind kind) noexcept {
   const auto value = static_cast<std::uint8_t>(kind);
   return value >= static_cast<std::uint8_t>(SecretKind::ipsec_ppk_ascii) &&
          value <= static_cast<std::uint8_t>(
-                      SecretKind::ipsec_static_authentication_key);
+                      SecretKind::ospf_authentication_key);
 }
 
 void write_u32(std::span<std::uint8_t> output, std::size_t offset,

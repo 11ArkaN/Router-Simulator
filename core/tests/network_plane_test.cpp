@@ -4,12 +4,15 @@
 #include "router/network_plane.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <numeric>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -26,6 +29,14 @@ void require(bool condition, const char *message) {
   // The shared module runner preserves the first ownership-boundary failure.
   if (!condition)
     throw std::runtime_error(message);
+}
+
+void count_network_wakeup(void *context) noexcept {
+  // The callback is intentionally payload-free. Packet bytes and metadata
+  // remain owned by their SPSC ring; this counter proves only that release
+  // publication wakes a potentially sleeping network owner.
+  static_cast<std::atomic_size_t *>(context)->fetch_add(
+      1U, std::memory_order_relaxed);
 }
 
 router::crypto::Sha256Digest transport_secret(std::uint8_t seed) {
@@ -100,6 +111,82 @@ void network_plane_tests() {
               plane->program_fib(second, second_rib.compile(1)),
           "network plane rejected connected FIB programs");
   const LinkHandle link{0, 1};
+  // One physical interface may simultaneously host OSPFv2 and OSPFv3. The
+  // complete generation test catches the former bug where programming one
+  // address family cleared the other family's punt bit.
+  const auto ospf_interface =
+      [&](std::uint8_t version, std::uint8_t instance_id,
+          std::uint32_t router_id, const packet::Mac &mac,
+          const packet::Ipv4 &ipv4, const packet::Ipv6 &ipv6) {
+        OspfInterfaceProgram program;
+        program.process = {
+            .device = first,
+            .router_id = router_id,
+            .area_id = 0U,
+            .initial_dd_sequence = router_id,
+            .maximum_interfaces = 1U,
+            .version = version,
+            .instance_id = instance_id};
+        program.interface = {
+            .protocol =
+                {.router_id = router_id,
+                 .area_id = 0U,
+                 .interface_id =
+                     version == packet::ospf::version_two ? 1U : 2U,
+                 .network_mask = 0xfffffffcU,
+                 .options = packet::ospf::option_external_routing_capability,
+                 .hello_interval_seconds = 10U,
+                 .dead_interval_seconds = 40U,
+                 .interface_mtu = 1514U,
+                 .router_priority = 1U,
+                 .version = version,
+                 .instance_id = instance_id,
+                 .network_type = ospf::NetworkType::point_to_point,
+                 .passive = false,
+                 .enabled = true},
+            .ipv4_source = ipv4,
+            .ipv6_source = ipv6,
+            .source_mac = mac,
+            .physical_port_ordinal = 0U,
+            .retransmit_interval_seconds = 5U,
+            .transmit_delay_seconds = 1U};
+        return program;
+      };
+  const packet::Ipv6 first_link_local{
+      0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+  const auto ospfv2 =
+      ospf_interface(packet::ospf::version_two, 0U, 0x0a000001U,
+                     first_mac, packet::Ipv4{10U, 0U, 0U, 1U}, {});
+  const auto ospfv3 =
+      ospf_interface(packet::ospf::version_three, 0U, 0x0a000001U,
+                     first_mac, {}, first_link_local);
+  const std::array ospf_processes{ospfv2.process, ospfv3.process};
+  const std::array ospf_interfaces{ospfv2, ospfv3};
+  require(plane->replace_ospf_generation(first, ospf_processes,
+                                         ospf_interfaces, {}, {}, {}, {}),
+          "network plane rejected complete dual-stack OSPF generation");
+  const auto ospf_process_query = plane->query_ospf(
+      first, {.kind = ospf::ControlCommandKind::query_process,
+              .process_ordinal = 0U});
+  require(ospf_process_query && ospf_process_query->present &&
+              ospf_process_query->process_count == 2U &&
+              ospf_process_query->router_id == 0x0a000001U &&
+              ospf_process_query->interface_count == 1U,
+          "OSPF owner did not return its live process projection");
+  const auto ospf_interface_query = plane->query_ospf(
+      first, {.kind = ospf::ControlCommandKind::query_interface,
+              .process_ordinal = 0U,
+              .interface_ordinal = 0U});
+  require(ospf_interface_query && ospf_interface_query->present &&
+              ospf_interface_query->interface.configuration.protocol
+                      .interface_id == 1U,
+          "OSPF owner did not return its live interface projection");
+  require(plane->replace_ospf_generation(first, {}, {}, {}, {}, {}, {}),
+          "network plane did not atomically withdraw OSPF generation");
+  // Withdrawal is ordered after the OSPF owner processed the prior generation.
+  // Drain any already released Hello before creating a physical link so the
+  // later capture assertions observe only their explicitly selected traffic.
+  plane->pump(NetworkPlane::Clock::now());
   require(plane->configure_link({link,
                                  {node(first), 0, 1},
                                  {node(second), 0, 1},
@@ -237,6 +324,366 @@ void network_plane_tests() {
           "checkpoint omitted an explicit cross-owner drop counter");
   require(!plane->program_fib(second, second_rib.compile(2)),
           "stale router generation accepted a FIB program after deletion");
+
+  // This scenario crosses every production owner used by OSPFv2: protocol
+  // pthread, packet channels, forwarding, physical fabric, route-generation
+  // channel, RIB selection and final FIB programming. Only encoded packets
+  // cross between the two routers.
+  // Exercise the production split-owner topology rather than the combined
+  // single-shard test mode. Checkpoint restore must wake OSPF, drain its SPSC
+  // packet channels through physical forwarding shards and reconverge without
+  // a management-plane configuration touch.
+  auto ospf_plane = std::make_unique<NetworkPlane>(4);
+  std::atomic_size_t ospf_network_wakeups{};
+  ospf_plane->set_link_wakeup(&ospf_network_wakeups,
+                              count_network_wakeup);
+  const DeviceHandle ospf_first{4U, 1U};
+  const DeviceHandle ospf_second{5U, 1U};
+  const packet::Mac ospf_first_mac{0x02U, 0U, 0U, 0U, 0x40U, 1U};
+  const packet::Mac ospf_second_mac{0x02U, 0U, 0U, 0U, 0x40U, 2U};
+  constexpr std::uint16_t integration_hello_seconds = 1U;
+  require(
+      ospf_plane->add_router(ospf_first) &&
+          ospf_plane->add_router(ospf_second) &&
+          ospf_plane->configure_port(
+              ospf_first,
+              {.configured = true,
+               .operational = true,
+               .ordinal = 0U,
+               .mtu = 1514U,
+               .address = 0xc0000201U,
+               .network = 0xc0000200U,
+               .speed_mbps = 10'000U,
+               .prefix_length = 30U,
+               .mac = ospf_first_mac}) &&
+          ospf_plane->configure_port(
+              ospf_second,
+              {.configured = true,
+               .operational = true,
+               .ordinal = 0U,
+               .mtu = 1514U,
+               .address = 0xc0000202U,
+               .network = 0xc0000200U,
+               .speed_mbps = 10'000U,
+               .prefix_length = 30U,
+               .mac = ospf_second_mac}),
+      "OSPF integration fixture rejected routers or physical ports");
+
+  const router::lab::RoutePolicyProgram route_policy{
+      .maximum_ecmp_paths = 4U};
+  RouteTable ospf_first_base;
+  RouteTable ospf_second_base;
+  const std::array ospf_first_connected{
+      ConnectedInput{true, true, 0xc0000200U, 0U, 30U},
+      ConnectedInput{true, true, 0xc6336401U, 0U, 32U, true}};
+  const std::array ospf_second_connected{
+      ConnectedInput{true, true, 0xc0000200U, 0U, 30U},
+      ConnectedInput{true, true, 0xc6336402U, 0U, 32U, true}};
+  require(
+      ospf_first_base.rebuild(ospf_first_connected, {}) &&
+          ospf_second_base.rebuild(ospf_second_connected, {}) &&
+          ospf_plane->program_route_policy(ospf_first, route_policy) &&
+          ospf_plane->program_route_policy(ospf_second, route_policy) &&
+          ospf_plane->program_fib(ospf_first,
+                                  ospf_first_base.compile(1U)) &&
+          ospf_plane->program_fib(ospf_second,
+                                  ospf_second_base.compile(1U)) &&
+          ospf_plane->configure_link(
+              {{4U, 1U},
+               {node(ospf_first), 0U, 1U},
+               {node(ospf_second), 0U, 1U},
+               10'000'000'000ULL,
+               std::chrono::nanoseconds{100U},
+               true}),
+      "OSPF integration fixture rejected base RIB or physical link");
+  CapturePointProgram ospf_capture;
+  ospf_capture.id = 400U;
+  ospf_capture.kind = CapturePointKind::link_direction;
+  ospf_capture.link = {4U, 1U};
+  ospf_capture.link_endpoint = 0U;
+  ospf_capture.selected = true;
+  constexpr std::string_view ospf_capture_name{"ospf-wire"};
+  ospf_capture.name_size =
+      static_cast<std::uint16_t>(ospf_capture_name.size());
+  std::copy(ospf_capture_name.begin(), ospf_capture_name.end(),
+            ospf_capture.name.begin());
+  require(ospf_plane->configure_capture_point(ospf_capture),
+          "OSPF integration fixture rejected wire capture");
+  CapturePointProgram ospf_punt_capture;
+  ospf_punt_capture.id = 401U;
+  ospf_punt_capture.kind = CapturePointKind::cpm_punt;
+  ospf_punt_capture.node = node(ospf_second);
+  ospf_punt_capture.selected = true;
+  constexpr std::string_view ospf_punt_name{"ospf-second-cpm"};
+  ospf_punt_capture.name_size =
+      static_cast<std::uint16_t>(ospf_punt_name.size());
+  std::copy(ospf_punt_name.begin(), ospf_punt_name.end(),
+            ospf_punt_capture.name.begin());
+  require(ospf_plane->configure_capture_point(ospf_punt_capture),
+          "OSPF integration fixture rejected CPM capture");
+
+  const auto ospf_program = [&](DeviceHandle device, std::uint32_t router_id,
+                                std::uint32_t physical_address,
+                                std::uint32_t system_address,
+                                const packet::Mac &mac) {
+    OspfProcessProgram process{.device = device,
+                               .router_id = router_id,
+                               .area_id = 0U,
+                               .initial_dd_sequence = router_id,
+                               .maximum_interfaces = 2U,
+                               .version = packet::ospf::version_two,
+                               .instance_id = 0U};
+    OspfInterfaceProgram physical{
+        .process = process,
+        .interface =
+            {.protocol =
+                 {.router_id = router_id,
+                  .area_id = 0U,
+                  .interface_id = 1U,
+                  .network_mask = 0xfffffffcU,
+                  .options = packet::ospf::option_external_routing_capability,
+                  .hello_interval_seconds = integration_hello_seconds,
+                  .dead_interval_seconds = 4U,
+                  .interface_mtu = 1514U,
+                  .router_priority = 1U,
+                  .version = packet::ospf::version_two,
+                  .network_type = ospf::NetworkType::point_to_point,
+                  .enabled = true},
+             .ipv4_source =
+                 {{static_cast<std::uint8_t>(physical_address >> 24U),
+                   static_cast<std::uint8_t>(physical_address >> 16U),
+                   static_cast<std::uint8_t>(physical_address >> 8U),
+                   static_cast<std::uint8_t>(physical_address)}},
+             .source_mac = mac,
+             .physical_port_ordinal = 0U,
+             .metric = 10U,
+             .retransmit_interval_seconds = 1U,
+             .transmit_delay_seconds = 1U,
+             .prefix_length = 30U}};
+    auto passive = physical;
+    passive.interface.protocol.interface_id = 2U;
+    passive.interface.protocol.network_mask = 0xffffffffU;
+    passive.interface.protocol.passive = true;
+    passive.interface.ipv4_source = {
+        {static_cast<std::uint8_t>(system_address >> 24U),
+         static_cast<std::uint8_t>(system_address >> 16U),
+         static_cast<std::uint8_t>(system_address >> 8U),
+         static_cast<std::uint8_t>(system_address)}};
+    passive.interface.physical_port_ordinal = ospf::no_physical_port;
+    passive.interface.metric = 0U;
+    passive.interface.prefix_length = 32U;
+    return std::pair{process, std::array{physical, passive}};
+  };
+  const auto [ospf_first_process, ospf_first_interfaces] =
+      ospf_program(ospf_first, 0x01010101U, 0xc0000201U, 0xc6336401U,
+                   ospf_first_mac);
+  const auto [ospf_second_process, ospf_second_interfaces] =
+      ospf_program(ospf_second, 0x02020202U, 0xc0000202U, 0xc6336402U,
+                   ospf_second_mac);
+  require(
+      ospf_plane->replace_ospf_generation(
+          ospf_first, std::span{&ospf_first_process, 1U},
+          ospf_first_interfaces, {}, {}, {}, {}) &&
+          ospf_plane->replace_ospf_generation(
+              ospf_second, std::span{&ospf_second_process, 1U},
+              ospf_second_interfaces, {}, {}, {}, {}),
+      "OSPF integration fixture rejected complete process generations");
+
+  bool learned{};
+  const auto convergence_deadline =
+      std::chrono::steady_clock::now() +
+      device_catalog::ospf_min_lsa_interval +
+      device_catalog::ospf_spf_maximum_wait +
+      std::chrono::seconds{integration_hello_seconds};
+  while (!learned && std::chrono::steady_clock::now() <
+                         convergence_deadline) {
+    ospf_plane->pump(NetworkPlane::Clock::now());
+    const auto state =
+        ospf_plane->router_checkpoint(ospf_first, NetworkPlane::Clock::now());
+    learned =
+        state && std::any_of(
+                     state->fib.routes.begin(),
+                     state->fib.routes.begin() + state->fib.count,
+                     [](const auto &route) {
+                       return route.network == 0xc6336402U &&
+                              route.prefix_length == 32U &&
+                              route.source == RouteSource::ospf &&
+                              route.next_hop == 0xc0000202U;
+                     });
+    if (!learned)
+      std::this_thread::sleep_for(std::chrono::milliseconds{1U});
+  }
+  if (!learned) {
+    ospf_plane->prepare_capture();
+    const auto capture_bytes = ospf_plane->prepared_capture();
+    std::array<std::size_t, 6U> packet_types{};
+    std::size_t last_hello_neighbors{};
+    for (std::size_t offset{}; offset + 12U <= capture_bytes.size();) {
+      const auto block_length = capture_u32(capture_bytes, offset + 4U);
+      if (block_length < 12U || offset + block_length > capture_bytes.size())
+        break;
+      if (capture_u32(capture_bytes, offset) == 6U &&
+          block_length >= 28U + packet::ethernet_header_octets +
+                              packet::ipv4_minimum_header_octets +
+                              packet::ospf::version_two_header_octets) {
+        packet::Frame frame;
+        const auto captured =
+            std::min<std::size_t>(capture_u32(capture_bytes, offset + 20U),
+                                  frame.bytes.size());
+        std::copy_n(capture_bytes.begin() +
+                        static_cast<std::ptrdiff_t>(offset + 28U),
+                    captured, frame.bytes.begin());
+        frame.length = static_cast<std::uint16_t>(captured);
+        const auto ipv4 = packet::parse_ipv4(frame);
+        if (ipv4) {
+          const auto payload_offset =
+              packet::ethernet_header_octets + ipv4->header_length;
+          const auto decoded = packet::ospf::parse_packet(
+              frame.view().subspan(payload_offset));
+          if (decoded) {
+            const auto type = static_cast<std::size_t>(decoded->type);
+            if (type < packet_types.size())
+              ++packet_types[type];
+            if (decoded->type == packet::ospf::PacketType::hello)
+              if (const auto hello = packet::ospf::parse_hello(*decoded))
+                last_hello_neighbors = hello->neighbors.size() / 4U;
+          }
+        }
+      }
+      offset += block_length;
+    }
+    const auto state =
+        ospf_plane->router_checkpoint(ospf_first, NetworkPlane::Clock::now());
+    const auto route_diagnostics =
+        ospf_plane->ospf_route_diagnostics(ospf_first);
+    std::string detail =
+        "encoded OSPF adjacency and LSDB did not install the remote route; "
+        "drops=" +
+        std::to_string(ospf_plane->dropped_packets()) + " frames=" +
+        std::to_string(ospf_plane->captured_frames()) + " hello=" +
+        std::to_string(packet_types[1U]) + " hello-neighbors=" +
+        std::to_string(last_hello_neighbors) + " dd=" +
+        std::to_string(packet_types[2U]) + " lsr=" +
+        std::to_string(packet_types[3U]) + " lsu=" +
+        std::to_string(packet_types[4U]) + " ack=" +
+        std::to_string(packet_types[5U]) + " fib=" +
+        std::to_string(state ? state->fib.count : 0U) + " route-gen=" +
+        std::to_string(route_diagnostics ? route_diagnostics->generation
+                                         : 0U) +
+        " candidates=" +
+        std::to_string(route_diagnostics
+                           ? route_diagnostics->ipv4_candidates
+                           : 0U);
+    if (state)
+      for (std::size_t index{}; index < state->fib.count; ++index) {
+        const auto &route = state->fib.routes[index];
+        detail += " " + std::to_string(route.network) + "/" +
+                  std::to_string(route.prefix_length) + " src=" +
+                  std::to_string(static_cast<unsigned>(route.source)) +
+                  " nh=" + std::to_string(route.next_hop);
+      }
+    throw std::runtime_error(detail);
+  }
+  const auto ospf_continuity_time = NetworkPlane::Clock::now();
+  auto ospf_checkpoint =
+      network_checkpoint(*ospf_plane, ospf_continuity_time);
+  const auto restored_first = std::find_if(
+      ospf_checkpoint.routers.begin(), ospf_checkpoint.routers.end(),
+      [&](const auto &router) { return router.device == ospf_first; });
+  require(restored_first != ospf_checkpoint.routers.end(),
+          "OSPF checkpoint omitted its first forwarding owner");
+  // Reproduce a browser reload whose persisted forwarding generation is newer
+  // than the canonical configuration generation while its bytes contain only
+  // the base connected RIB. The restored LSDB must republish learned routes
+  // above this high-water mark. Otherwise the forwarder correctly rejects the
+  // reconstructed FIB as stale and `show router ospf status` can report routes
+  // while the route table remains empty.
+  constexpr std::uint64_t restored_generation_floor = 10'000U;
+  restored_first->forwarding.fib =
+      ospf_first_base.compile(restored_generation_floor);
+  require(ospf_checkpoint.ospf.processes.size() == 2U &&
+              ospf_plane->restore(ospf_checkpoint,
+                                  NetworkPlane::Clock::now()) &&
+              ospf_plane->program_route_policy(ospf_first, route_policy) &&
+              ospf_plane->program_route_policy(ospf_second, route_policy) &&
+              ospf_plane->program_fib(ospf_first,
+                                      ospf_first_base.compile(1U)) &&
+              ospf_plane->program_fib(ospf_second,
+                                      ospf_second_base.compile(1U)),
+          "network checkpoint did not restore both live OSPF owners");
+  const auto restored_route_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds{1U};
+  bool restored_remote_route{};
+  while (std::chrono::steady_clock::now() < restored_route_deadline) {
+    ospf_plane->pump(NetworkPlane::Clock::now());
+    const auto restored =
+        ospf_plane->router_checkpoint(ospf_first,
+                                      NetworkPlane::Clock::now());
+    if (restored &&
+        std::any_of(restored->fib.routes.begin(),
+                    restored->fib.routes.begin() + restored->fib.count,
+                    [](const auto &route) {
+                      return route.network == 0xc6336402U &&
+                             route.prefix_length == 32U &&
+                             route.source == RouteSource::ospf;
+                    }) &&
+        restored->fib.generation > restored_generation_floor) {
+      restored_remote_route = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{1U});
+  }
+  require(restored_remote_route,
+          "restored OSPF generation did not advance beyond the forwarding "
+          "high-water mark");
+  require(ospf_plane->start_router_ping(
+              ospf_first, 0xc6336402U, 81U, NetworkPlane::Clock::now()),
+          "learned OSPF route did not originate a router ping");
+  const auto ping_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds{1U};
+  while (!ospf_plane->router_ping_reply(ospf_first, 81U) &&
+         std::chrono::steady_clock::now() < ping_deadline) {
+    ospf_plane->pump(NetworkPlane::Clock::now());
+    std::this_thread::sleep_for(std::chrono::milliseconds{1U});
+  }
+  require(ospf_plane->router_ping_reply(ospf_first, 81U),
+          "IPv4 data traffic did not cross the learned OSPF route");
+  require(ospf_network_wakeups.load(std::memory_order_relaxed) != 0U,
+          "release-published OSPF egress did not wake the network owner");
+
+  // A restored Full adjacency can make a shallow checkpoint test pass even
+  // when the replacement forwarder has lost its derived OSPF punt mask. Wait
+  // beyond the four-second inactivity interval so only newly encoded and
+  // delivered Hellos can keep both neighbors alive. This verifies continuity
+  // across the real protocol, forwarding, fabric and peer protocol owners,
+  // rather than merely observing stale serialized neighbor state.
+  const auto restored_adjacency_deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds{5U};
+  while (std::chrono::steady_clock::now() <
+         restored_adjacency_deadline) {
+    ospf_plane->pump(NetworkPlane::Clock::now());
+    std::this_thread::sleep_for(std::chrono::milliseconds{1U});
+  }
+  const auto restored_first_neighbor = ospf_plane->query_ospf(
+      ospf_first,
+      {.kind = ospf::ControlCommandKind::query_neighbor,
+       .process_ordinal = 0U,
+       .interface_ordinal = 0U,
+       .row_ordinal = 0U});
+  const auto restored_second_neighbor = ospf_plane->query_ospf(
+      ospf_second,
+      {.kind = ospf::ControlCommandKind::query_neighbor,
+       .process_ordinal = 0U,
+       .interface_ordinal = 0U,
+       .row_ordinal = 0U});
+  require(restored_first_neighbor && restored_first_neighbor->present &&
+              restored_first_neighbor->neighbor.runtime.state ==
+                  ospf::NeighborState::full &&
+              restored_second_neighbor && restored_second_neighbor->present &&
+              restored_second_neighbor->neighbor.runtime.state ==
+                  ospf::NeighborState::full,
+          "restored forwarding owners did not sustain OSPF adjacency through "
+          "post-restore Hello packets");
 
   const HostHandle host_a{0, 1};
   const HostHandle host_b{1, 1};
@@ -933,4 +1380,78 @@ void network_plane_tests() {
       dns_plane->initialize_signing_vault(dnssec_vault_key, dnssec_context) &&
           dns_plane->restore(dns_checkpoint, NetworkPlane::Clock::now()),
       "network-plane restore rejected DNS service checkpoint");
+
+  // Three independent host links meet only inside the bridge. Successful ARP
+  // resolution proves broadcast replication crossed encoded Ethernet frames
+  // and did not consult the editor topology or call a peer endpoint directly.
+  auto switch_plane = std::make_unique<NetworkPlane>(1);
+  const SwitchHandle bridge{0U, 1U};
+  const auto bridge_profile =
+      device_catalog::ethernet_switch_profile_index("generic-ethernet-24");
+  const std::array<HostHandle, 3> bridge_hosts{
+      HostHandle{0U, 1U}, HostHandle{1U, 1U}, HostHandle{2U, 1U}};
+  const std::array<packet::Mac, 3> bridge_macs{
+      packet::Mac{0x02U, 0U, 0U, 0U, 0x30U, 1U},
+      packet::Mac{0x02U, 0U, 0U, 0U, 0x30U, 2U},
+      packet::Mac{0x02U, 0U, 0U, 0U, 0x30U, 3U}};
+  require(bridge_profile &&
+              switch_plane->add_switch(bridge, *bridge_profile),
+          "network plane rejected generated Ethernet switch profile");
+  for (std::size_t index{}; index < bridge_hosts.size(); ++index) {
+    const auto last = static_cast<std::uint8_t>(index + 1U);
+    require(
+        switch_plane->add_host(bridge_hosts[index]) &&
+            switch_plane->configure_host(
+                {.host = bridge_hosts[index],
+                 .mac = bridge_macs[index],
+                 .address = {198U, 51U, 100U, last},
+                 .gateway = {},
+                 .prefix_length = 29U,
+                 .mtu = 1500U,
+                 .transport_secret =
+                     transport_secret(static_cast<std::uint8_t>(40U + index))}),
+        "network plane rejected a broadcast-domain host");
+    require(
+        switch_plane->configure_link(
+            {{static_cast<std::uint16_t>(index), 1U},
+             {node(bridge_hosts[index]), 0U, 1U},
+             {node(bridge), static_cast<std::uint16_t>(index), 1U},
+             10'000'000'000ULL,
+             std::chrono::nanoseconds{100},
+             true}),
+        "network plane rejected a switch access link");
+  }
+  const auto bridge_origin = NetworkPlane::Clock::now();
+  require(switch_plane->start_host_ping(
+              bridge_hosts.front(), {198U, 51U, 100U, 3U}, 71U),
+          "broadcast-domain host did not originate ping");
+  for (std::size_t turn = 1U;
+       turn <= 100U &&
+       !switch_plane->host_ping_reply(bridge_hosts.front(), 71U);
+       ++turn)
+    switch_plane->pump(bridge_origin +
+                       std::chrono::microseconds{turn * 10U});
+  require(switch_plane->host_ping_reply(bridge_hosts.front(), 71U),
+          "learning bridge did not carry encoded ARP and ICMP traffic");
+  const auto bridge_checkpoint = network_checkpoint(
+      *switch_plane, bridge_origin + std::chrono::milliseconds{2});
+  require(bridge_checkpoint.switches.size() == 1U &&
+              bridge_checkpoint.fabric.links.size() == 3U &&
+              bridge_checkpoint.switches.front().forwarding.fdb.size() >= 2U,
+          "network checkpoint omitted bridge identity, links or learned FDB");
+  switch_plane.reset();
+  switch_plane = std::make_unique<NetworkPlane>(1);
+  const auto bridge_restore = NetworkPlane::Clock::now();
+  require(switch_plane->restore(bridge_checkpoint, bridge_restore) &&
+              switch_plane->start_host_ping(
+                  bridge_hosts[1], {198U, 51U, 100U, 1U}, 72U),
+          "restored bridge could not resume host traffic");
+  for (std::size_t turn = 1U;
+       turn <= 100U &&
+       !switch_plane->host_ping_reply(bridge_hosts[1], 72U);
+       ++turn)
+    switch_plane->pump(bridge_restore +
+                       std::chrono::microseconds{turn * 10U});
+  require(switch_plane->host_ping_reply(bridge_hosts[1], 72U),
+          "restored bridge did not retain a valid packet path");
 }

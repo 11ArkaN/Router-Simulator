@@ -4,7 +4,8 @@
 import { describe, expect, it } from "vitest";
 import { ANNOTATION_LIMITS, createAnnotationV4, createEmptyProjectV4,
   createRouterProjectV4, equippedRouterPorts,
-  createFourRouterReferenceLabV4, hostInterfaceId, parseLabProjectV4, PROFILE_CATALOG, type HostProjectV4,
+  createFourRouterReferenceLabV4, createSwitchProjectV5, hostInterfaceId,
+  parseLabProjectV4, PROFILE_CATALOG, type HostProjectV4,
   type LabProjectV4, type TopologyAnnotationV4 } from "../src";
 
 function host(id: string, octet: number): HostProjectV4 {
@@ -72,12 +73,19 @@ describe("multi-router project format", () => {
     expect(() => parseLabProjectV4(excessive)).toThrow("maximumEcmpPaths");
   });
 
-  it("persists the reserved IPv4 system interface without a physical port", () => {
+  it("persists dual-stack system host addresses without a physical port", () => {
     const project = createEmptyProjectV4();
     const router = createRouterProjectV4("r1", "7750-sr-1", "R1");
     router.running.interfaces.push({ name: "system", admin: "up",
       portId: "", address: "10.255.0.1/32", arpTimeoutSeconds: null,
-      arpRetryTimerDeciseconds: null, ipv6Addresses: [] });
+      arpRetryTimerDeciseconds: null, ipv6Addresses: [{
+        address: "2001:db8:ffff::1/128",
+        duplicateAddressDetection: false,
+        eui64: false,
+        eui64SourceMac: null,
+        primaryPreference: 0,
+        tag: null
+      }] });
     project.routers.push(router);
     project.layout.nodes.r1 = { x: 0, y: 0 };
     expect(parseLabProjectV4(project).routers[0].running.interfaces[0])
@@ -89,6 +97,48 @@ describe("multi-router project format", () => {
     const subnet = structuredClone(project);
     subnet.routers[0].running.interfaces[0].address = "10.255.0.0/31";
     expect(() => parseLabProjectV4(subnet)).toThrow("interface configuration");
+    const ipv6Subnet = structuredClone(project);
+    ipv6Subnet.routers[0].running.interfaces[0].ipv6Addresses[0].address =
+      "2001:db8:ffff::/64";
+    expect(() => parseLabProjectV4(ipv6Subnet)).toThrow(
+      "IPv6 interface address attributes");
+  });
+
+  it("round-trips complete route-policy intent referenced by OSPF export", () => {
+    const project = createEmptyProjectV4();
+    const router = createRouterProjectV4("r1", "7750-sr-1", "R1");
+    router.running.policyOptions = {
+      prefixLists: [{ name: "exported-v4", prefixes: ["198.51.100.0/24",
+        "203.0.113.0/24"] }],
+      statements: [{
+        name: "redistribute-selected",
+        defaultAction: "reject",
+        entries: [{
+          number: 10, groupPrefixList: "", sourceAddress: null,
+          sourcePrefixList: "", protocolMld: false,
+          routePrefixList: "exported-v4", routeSource: "static",
+          protocolInstance: null, routeTag: null, action: "accept",
+          setMetric: 25, setMetricType: "type-1", setRouteTag: 65001
+        }]
+      }]
+    };
+    router.running.ospf.instances.push({
+      instanceId: 0, addressFamily: "ipv4", routerId: "10.255.0.1",
+      exportPolicy: "redistribute-selected", asbr: true,
+      asbrTracePathDomainId: 7, referenceBandwidthKbps: 100000000,
+      routerPreference: 10, externalPreference: 150,
+      spfTimersMilliseconds: { initial: 1000, second: 1000, maximum: 10000 },
+      lsaTimersMilliseconds: { initial: 5000, second: 5000, maximum: 5000 },
+      gracefulRestartHelper: false, loopfreeAlternates: false,
+      overload: false, admin: "down", areas: []
+    });
+    project.routers.push(router);
+    project.layout.nodes.r1 = { x: 0, y: 0 };
+
+    const restored = parseLabProjectV4(project).routers[0].running;
+    expect(restored.policyOptions).toEqual(router.running.policyOptions);
+    expect(restored.ospf.instances[0].exportPolicy)
+      .toBe("redistribute-selected");
   });
 
   it("persists router IPv6 interfaces and scoped static routes", () => {
@@ -135,14 +185,38 @@ describe("multi-router project format", () => {
     expect(() => parseLabProjectV4(hostBits)).toThrow("static route");
   });
 
-  it("opens as an empty version 3 laboratory", () => {
+  it("opens as an empty version 5 laboratory", () => {
     // Empty is a valid product state. A hidden default router would couple UI
     // startup to one topology and violate user-owned node creation.
     const project = createEmptyProjectV4(new Date("2026-07-16T10:00:00Z"));
-    expect(parseLabProjectV4(project).version).toBe(4);
+    expect(parseLabProjectV4(project).version).toBe(5);
     expect(project.routers).toEqual([]);
     expect(project.hosts).toEqual([]);
+    expect(project.switches).toEqual([]);
     expect(project.links).toEqual([]);
+  });
+
+  it("accepts profile-backed switches and rejects physical L2 loops", () => {
+    const project = createEmptyProjectV4();
+    for (let index = 1; index <= 3; ++index) {
+      const id = `s${index}`;
+      project.switches.push(
+        createSwitchProjectV5(id, "generic-ethernet-24", id.toUpperCase()));
+      project.layout.nodes[id] = { x: index * 100, y: 100 };
+    }
+    project.links.push(
+      { id: "s1-s2", endpoints: [{ nodeId: "s1", portId: "1" },
+        { nodeId: "s2", portId: "1" }], admin: "up",
+        configuredSpeedMbps: null, propagationDelayNs: 100 },
+      { id: "s2-s3", endpoints: [{ nodeId: "s2", portId: "2" },
+        { nodeId: "s3", portId: "1" }], admin: "up",
+        configuredSpeedMbps: null, propagationDelayNs: 100 });
+    expect(parseLabProjectV4(project).switches).toHaveLength(3);
+    project.links.push(
+      { id: "s3-s1", endpoints: [{ nodeId: "s3", portId: "2" },
+        { nodeId: "s1", portId: "2" }], admin: "up",
+        configuredSpeedMbps: null, propagationDelayNs: 100 });
+    expect(() => parseLabProjectV4(project)).toThrow("physical L2 loop");
   });
 
   it("constructs fixed SR-1 inventory without user-provisioned cards", () => {

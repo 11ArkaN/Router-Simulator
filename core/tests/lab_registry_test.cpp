@@ -1,5 +1,7 @@
-// Registry tests exercise capacity, stale handle rejection, point-to-point
-// port ownership and confirmed device deletion cleanup.
+// Registry tests exercise capacity, stale handle rejection, physical port
+// ownership and confirmed node deletion cleanup. Switch identity is tested
+// beside routers and hosts because all three node classes share topology
+// handles while retaining separate, profile-validated control owners.
 
 #include "router/lab_registry.hpp"
 
@@ -21,19 +23,26 @@ void lab_registry_tests() {
   using namespace router::lab;
   DeviceRegistry devices;
   HostRegistry hosts;
+  SwitchRegistry switches;
   TopologyRegistry topology;
   SessionRegistry sessions;
 
   const auto r1 = devices.create("r1", "7750-sr-1", "R1");
   const auto r2 = devices.create("r2", "7750-sr-12", "R2");
   const auto h1 = hosts.create("h1", "Host 1");
-  require(r1 && r2 && h1, "registry rejected valid nodes");
+  const auto s1 =
+      switches.create("s1", "generic-ethernet-24", "Switch 1");
+  require(r1 && r2 && h1 && s1, "registry rejected valid nodes");
   // Stable project identity and display/system name have different lifetimes.
   // Reusing r1 is invalid even when the proposed system name differs.
   require(!devices.create("r1", "7750-sr-7", "duplicate"),
           "registry accepted duplicate node identity");
   require(!devices.create("bad", "unsupported", "Bad"),
           "registry accepted unknown profile");
+  require(!switches.create("s1", "generic-ethernet-24", "duplicate"),
+          "switch registry accepted duplicate node identity");
+  require(!switches.create("bad-switch", "unsupported", "Bad"),
+          "switch registry accepted an unknown physical profile");
 
   for (std::size_t index = 0;
        index < router::device_catalog::maximum_sessions_per_router; ++index) {
@@ -49,13 +58,13 @@ void lab_registry_tests() {
   const LinkEndpoint r2p1{node(*r2), "1/1/1"};
   const LinkEndpoint r1p2{node(*r1), "1/1/2"};
   const LinkEndpoint h1p{node(*h1), "eth0"};
+  const LinkEndpoint s1p1{node(*s1), "1"};
   require(topology.create("r1-r2", r1p1, r2p1, 100).has_value(),
           "topology rejected router link");
   require(topology.create("r1-h1", r1p2, h1p, 100).has_value(),
           "topology rejected host link");
   require(!topology.create("duplicate-port", r1p1, h1p, 100),
           "topology accepted an already bound physical port");
-
   const auto stale = *r1;
   // Deletion order mirrors supervisor ownership: detach network references,
   // close terminal state, then invalidate the device identity itself.
@@ -73,6 +82,10 @@ void lab_registry_tests() {
   require(replacement && replacement->index == stale.index &&
               replacement->generation != stale.generation,
           "reused slot did not advance its generation");
+  require(topology.create("switch-uplink", {node(*replacement), "1/1/4"},
+                          s1p1, 100)
+              .has_value(),
+          "topology rejected a profile-backed switch endpoint");
 
   const auto restored_link = topology.create(
       "r3-r2", {node(*replacement), "1/1/3"}, {node(*r2), "1/1/2"}, 250);
@@ -81,19 +94,27 @@ void lab_registry_tests() {
           "registry checkpoint fixture could not be created");
   const auto device_image = devices.checkpoint();
   const auto host_image = hosts.checkpoint();
+  const auto switch_image = switches.checkpoint();
   const auto topology_image = topology.checkpoint();
   const auto session_image = sessions.checkpoint();
   DeviceRegistry device_copy;
   HostRegistry host_copy;
+  SwitchRegistry switch_copy;
   TopologyRegistry topology_copy;
   SessionRegistry session_copy;
   require(device_copy.restore(device_image) && host_copy.restore(host_image) &&
+              switch_copy.restore(switch_image) &&
               topology_copy.restore(topology_image) &&
               session_copy.restore(session_image) &&
               device_copy.get(*replacement) && host_copy.get(*h1) &&
+              switch_copy.get(*s1) &&
               topology_copy.get(*restored_link) &&
               session_copy.get(*restored_session),
           "registry checkpoint did not preserve stable handles and records");
+  auto invalid_switches = switch_image;
+  invalid_switches.entries.front().profile_id = "unsupported";
+  require(!switch_copy.restore(invalid_switches) && switch_copy.get(*s1),
+          "invalid switch checkpoint partially replaced live identities");
   auto invalid_devices = device_image;
   invalid_devices.generations[replacement->index] = 0;
   require(!device_copy.restore(invalid_devices) &&

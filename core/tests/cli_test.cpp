@@ -134,6 +134,71 @@ void cli_tests() {
               !contains(explicit_transition, "Entering exclusive"),
           "Implicit-to-explicit transition discarded or re-created candidate");
 
+  // OSPF configuration contains three successive keyed containers: protocol
+  // instance, area and router interface. Each key is a parameter token rather
+  // than a literal, so this path catches context traversal defects that simple
+  // hardware branches such as `card 1` cannot expose. The read-only workflow
+  // is intentional: navigation and reports remain legal there while writes
+  // must be rejected by the datastore owner, exactly as on SR OS.
+  router::DeviceState ospf_context_state;
+  router::CliSession ospf_context_session;
+  router::execute_cli(ospf_context_state, ospf_context_session,
+                      "edit-config read-only", no_ping);
+  require(contains(router::execute_cli(ospf_context_state,
+                                       ospf_context_session, "configure",
+                                       no_ping),
+                   "(ro)[/configure]"),
+          "MD read-only workflow could not enter configure context");
+  require(contains(router::execute_cli(ospf_context_state,
+                                       ospf_context_session, "router \"Base\"",
+                                       no_ping),
+                   "(ro)[/configure router \"Base\"]"),
+          "MD context could not enter the Base router container");
+  const auto ospf_process_context = router::execute_cli(
+      ospf_context_state, ospf_context_session, "ospf 0", no_ping);
+  if (!contains(ospf_process_context,
+                "(ro)[/configure router \"Base\" ospf 0]"))
+    throw std::runtime_error(
+        "MD context could not enter a keyed OSPF process: " +
+        ospf_process_context + " help=" +
+        router::complete_cli(ospf_context_state, ospf_context_session, "ospf ",
+                             router::CliCompletionTrigger::question));
+  require(contains(router::execute_cli(ospf_context_state,
+                                       ospf_context_session, "area 1", no_ping),
+                   "(ro)[/configure router \"Base\" ospf 0 area 1]"),
+          "MD context could not enter a keyed OSPF area");
+  require(
+      contains(router::execute_cli(ospf_context_state, ospf_context_session,
+                                   "interface \"edge\"", no_ping),
+               "(ro)[/configure router \"Base\" ospf 0 area 1 interface "
+               "\"edge\"]"),
+      "MD context could not enter a keyed OSPF interface");
+  const auto invalid_ospf_child = router::execute_cli(
+      ospf_context_state, ospf_context_session, "not-a-child", no_ping);
+  require(contains(invalid_ospf_child, "Unknown element - 'not-a-child'") &&
+              contains(invalid_ospf_child,
+                       "(ro)[/configure router \"Base\" ospf 0 area 1 "
+                       "interface \"edge\"]"),
+          "Invalid OSPF child changed or escaped the current context");
+  require(contains(router::execute_cli(ospf_context_state,
+                                       ospf_context_session, "back 2", no_ping),
+                   "(ro)[/configure router \"Base\" ospf 0]"),
+          "MD back did not traverse both keyed OSPF child contexts");
+  require(contains(router::execute_cli(ospf_context_state,
+                                       ospf_context_session, "ospf3 0", no_ping),
+                   "Unknown element - 'ospf3'"),
+          "MD incorrectly treated sibling OSPF3 as a child of OSPF");
+  router::execute_cli(ospf_context_state, ospf_context_session, "back",
+                      no_ping);
+  require(contains(router::execute_cli(ospf_context_state,
+                                       ospf_context_session, "ospf3 0", no_ping),
+                   "(ro)[/configure router \"Base\" ospf3 0]"),
+          "MD context could not enter a keyed OSPF3 process");
+  require(contains(router::execute_cli(ospf_context_state,
+                                       ospf_context_session, "area 2", no_ping),
+                   "(ro)[/configure router \"Base\" ospf3 0 area 2]"),
+          "MD context could not enter an OSPF3 non-backbone area");
+
   // Configuration strings follow the shared SR OS 7-bit printable rule. The
   // parser must reject UTF-8 bytes instead of accepting a value that a real
   // router cannot store and later emitting it through a different encoding.
@@ -209,6 +274,23 @@ void cli_tests() {
           contains(information, "System Up Time (64-bit):") &&
           contains(information, "Changes Since Last Save: Yes"),
       "System information was not derived from the device profile and state");
+
+  // A configuration-shaped path must never move an operational MD session
+  // into a fake configuration context. SR OS requires `configure [mode]` or
+  // `edit-config [mode]` to acquire a candidate first. Keeping both workflow
+  // and PWC unchanged makes the error recoverable and prevents later leaf
+  // commands from appearing to succeed against no datastore.
+  router::CliSession operational_navigation{};
+  const auto forbidden_configuration_path = router::execute_cli(
+      state, operational_navigation,
+      "configure router \"Base\" interface \"system\"", no_ping);
+  require(contains(forbidden_configuration_path,
+                   "Operation not allowed - currently in operational mode") &&
+              operational_navigation.md_workflow ==
+                  router::MdCliWorkflow::operational &&
+              router::cli_prompt(state, operational_navigation) ==
+                  "\n[/]\nA:admin@R1# ",
+          "Operational MD navigation entered a configuration-looking context");
   const auto alarms = [&] {
     // The report test needs one explicit control-plane reconciliation so
     // that active alarms reflect the deliberately absent card and MDA.
@@ -335,8 +417,11 @@ void cli_tests() {
   require(
       contains(foreign, "INFO: CLI #2052: Switching to the MD-CLI engine") &&
           contains(foreign, "MDA Summary") &&
+          contains(foreign,
+                   "\nINFO: CLI #2051: Switching to the classic CLI engine") &&
           session.engine == router::CliEngine::classic,
-      "Inline other-engine command did not restore the classic session");
+      "Inline other-engine command did not delimit or restore the classic "
+      "session");
 
   // Classic provisioning starts shut down. Administrative intent is legal on
   // a child while its parent is down, but operational state still depends on

@@ -8,6 +8,7 @@
 #include "router/lab_registry.hpp"
 #include "router/network_plane_worker.hpp"
 #include "router/router_hardware_inventory.hpp"
+#include "router/route_policy.hpp"
 #include "router/secret_vault.hpp"
 #include "router/session_workflows.hpp"
 #include "router/tls_profile.hpp"
@@ -158,6 +159,17 @@ struct MldImportPolicyEntryIntent {
   mld::ImportPolicyAction action{mld::ImportPolicyAction::next_entry};
   bool action_configured{};
   bool protocol_mld{};
+  // policy-options is a router-wide datastore. These route attributes share
+  // the same ordered entry as multicast matches, while each consumer compiles
+  // only the leaves meaningful to that protocol. This prevents OSPF export
+  // from inventing a second policy namespace with divergent commit semantics.
+  std::string route_prefix_list;
+  std::optional<routing::RouteSource> route_source;
+  std::optional<std::uint8_t> protocol_instance;
+  std::optional<std::uint32_t> route_tag;
+  std::optional<std::uint32_t> set_metric;
+  std::optional<routing::OspfPathType> set_metric_type;
+  std::optional<std::uint32_t> set_route_tag;
   bool operator==(const MldImportPolicyEntryIntent &) const = default;
 };
 
@@ -426,6 +438,7 @@ struct PortableConfigurationCheckpoint {
   // only the compiled SAP and logical-interface generation, which is not
   // sufficient to reconstruct customer ownership or CLI presence semantics.
   service::Configuration ies;
+  ospf::RouterConfiguration ospf;
   std::array<PortableCardConfigurationCheckpoint,
              device_catalog::maximum_card_slots>
       cards;
@@ -458,6 +471,7 @@ struct PortableRouterIntentCheckpoint {
   tls_profile::Configuration tls;
   ipsec::configuration::Configuration ipsec;
   service::Configuration ies;
+  ospf::RouterConfiguration ospf;
   PortableConfigurationCheckpoint global_candidate;
   bool global_candidate_initialized{};
 };
@@ -476,6 +490,13 @@ struct PortableSessionCandidateCheckpoint {
   std::uint32_t ping_requested{};
   std::uint32_t ping_sent{};
   std::uint32_t ping_received{};
+  // These four integers are the complete sufficient statistics for the
+  // population standard deviation printed by SR OS. They keep a live ping
+  // exactly resumable without storing an unbounded vector of samples.
+  std::uint64_t ping_rtt_min_microseconds{};
+  std::uint64_t ping_rtt_max_microseconds{};
+  std::uint64_t ping_rtt_sum_microseconds{};
+  std::uint64_t ping_rtt_squared_sum_microseconds{};
   std::uint64_t ping_next_send_ns{};
   std::uint64_t ping_reply_deadline_ns{};
   bool ping_dont_fragment{};
@@ -511,6 +532,7 @@ struct PortableCaptureIntentCheckpoint {
 struct RuntimeSupervisorCheckpoint {
   DeviceRegistryCheckpoint devices;
   HostRegistryCheckpoint hosts;
+  SwitchRegistryCheckpoint switches;
   TopologyRegistryCheckpoint topology;
   SessionRegistryCheckpoint sessions;
   std::vector<RouterHardwareCheckpoint> hardware;
@@ -526,6 +548,21 @@ struct RuntimeSupervisorCheckpoint {
   // browser-vault material and is intentionally absent from this structure.
   vault::Checkpoint secret_vault;
 };
+
+namespace checkpoint_validation {
+
+// Preconditions: both programs passed their binary decoder and use the same
+// generation. Postcondition: true means every connected/static route rebuilt
+// by the control owner remains selected and every additional row has an OSPF
+// owner. The function does not mutate either checkpoint image.
+[[nodiscard]] bool base_fib_preserved(
+    const routing::FibProgram &base,
+    const routing::FibProgram &selected) noexcept;
+[[nodiscard]] bool base_fib_preserved(
+    const routing::Ipv6FibProgram &base,
+    const routing::Ipv6FibProgram &selected) noexcept;
+
+} // namespace checkpoint_validation
 
 class RuntimeSupervisor final {
 public:
@@ -548,9 +585,19 @@ public:
                 std::string_view system_name);
   [[nodiscard]] std::optional<HostHandle> create_host(std::string_view node_id,
                                                       std::string_view name);
+  [[nodiscard]] std::optional<SwitchHandle>
+  create_switch(std::string_view node_id, std::string_view profile_id,
+                std::string_view name);
   [[nodiscard]] bool delete_router(DeviceHandle device) noexcept;
   [[nodiscard]] bool delete_host(HostHandle host) noexcept;
+  [[nodiscard]] bool delete_switch(SwitchHandle handle) noexcept;
   [[nodiscard]] bool set_host_name(HostHandle host, std::string_view name);
+  [[nodiscard]] bool set_switch_name(SwitchHandle handle,
+                                     std::string_view name);
+  [[nodiscard]] bool configure_switch_port(
+      SwitchHandle handle, std::uint16_t port,
+      std::uint32_t speed_mbps, std::uint16_t mtu,
+      bool admin_enabled) noexcept;
   [[nodiscard]] bool set_system_name(DeviceHandle device,
                                      std::string_view system_name);
 
@@ -628,6 +675,12 @@ public:
                                                 std::uint32_t address,
                                                 bool admin_enabled) noexcept;
   [[nodiscard]] bool remove_system_interface(DeviceHandle device) noexcept;
+  // The caller supplies one complete loopback-address generation. Control
+  // validates, derives the local /128 routes and publishes the forwarding
+  // address table atomically. Empty input removes the IPv6 system interface.
+  [[nodiscard]] bool configure_system_ipv6_addresses(
+      DeviceHandle device, std::span<const RouterIpv6Address> addresses,
+      bool admin_enabled) noexcept;
   [[nodiscard]] bool configure_ipv6_interface(
       DeviceHandle device, std::string_view port_id, packet::Mac mac,
       const packet::Ipv6 &address, std::uint8_t prefix_length,
@@ -668,6 +721,24 @@ public:
                           const MldRouterConfiguration &configuration) noexcept;
   [[nodiscard]] bool remove_mld_interface(DeviceHandle device,
                                           std::string_view port_id) noexcept;
+  // Publishes one complete, already resolved OSPF generation. Stable CLI
+  // interface names are converted to physical ordinals before this boundary;
+  // the fixed records then cross the control-to-network SPSC transaction.
+  [[nodiscard]] bool configure_ospf_generation(
+      DeviceHandle device, std::span<const OspfProcessProgram> processes,
+      std::span<const OspfInterfaceProgram> interfaces,
+      std::span<const OspfAuthenticationProgram> authentications,
+      std::span<const OspfNbmaNeighborProgram> nbma_neighbors,
+      std::span<const OspfVirtualLinkProgram> virtual_links,
+      std::span<const OspfAreaRangeProgram> ranges,
+      std::span<const OspfExternalRouteProgram> external_routes = {}) noexcept;
+  // Returns one immutable row copied by the dedicated OSPF owner during this
+  // synchronous control turn. An absent optional means a stale device,
+  // malformed selector or failed owner handoff; `present=false` inside a
+  // successful result means the requested ordinal is past the current table.
+  [[nodiscard]] std::optional<ospf::ControlResult>
+  query_ospf(DeviceHandle device,
+             const OspfOperationalQuery &query) noexcept;
   // Replaces the complete customer, access-port, IES, interface, SAP and
   // DHCPv6 relay graph. Validation and forwarding publication are atomic from
   // the caller's perspective: false leaves the previous committed generation
@@ -837,6 +908,9 @@ public:
     return devices_;
   }
   [[nodiscard]] const HostRegistry &hosts() const noexcept { return hosts_; }
+  [[nodiscard]] const SwitchRegistry &switches() const noexcept {
+    return switches_;
+  }
   [[nodiscard]] const TopologyRegistry &topology() const noexcept {
     return topology_;
   }
@@ -869,6 +943,9 @@ public:
     return network_worker_ ? network_worker_->forwarding_owner_turns(index)
                            : 0U;
   }
+  [[nodiscard]] std::uint64_t ospf_owner_thread_id() const noexcept {
+    return network_worker_ ? network_worker_->ospf_owner_thread_id() : 0U;
+  }
   [[nodiscard]] std::unique_ptr<RuntimeSupervisorCheckpoint> checkpoint();
   [[nodiscard]] bool restore(RuntimeSupervisorCheckpoint state);
 
@@ -877,6 +954,9 @@ private:
     PortHandle handle;
     RouterHardwareInventory *router{};
     RouterPortState *router_port{};
+    const device_catalog::EthernetSwitchProfile *switch_profile{};
+    const SwitchPortIntent *switch_port_intent{};
+    std::uint16_t switch_port{};
     bool host{};
   };
   struct RouterNetworkState;
@@ -907,6 +987,7 @@ private:
 
   DeviceRegistry devices_;
   HostRegistry hosts_;
+  SwitchRegistry switches_;
   TopologyRegistry topology_;
   SessionRegistry sessions_;
   SessionWorkflowController session_workflows_;
