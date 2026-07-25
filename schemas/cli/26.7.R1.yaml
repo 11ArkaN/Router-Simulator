@@ -136,6 +136,7 @@ parameters:
   static_sa_key: { display: "<authentication-key>", description: "Manual security association authentication key" }
   static_sa_spi: { display: "<spi>", description: "Manual security association SPI" }
   ospf_instance: { display: "<ospf-instance>", description: "OSPF protocol instance identifier" }
+  global_if_index: { display: "<global-if-index>", description: "Global interface index from 1 through 262144" }
   ospf_area_id: { display: "<area-id>", description: "OSPF area identifier in dotted-decimal or unsigned form" }
   ospf_transit_area_id: { display: "<transit-area-id>", description: "Non-backbone OSPF transit area identifier" }
   ospf_interface_type: { display: "<point-to-point|broadcast|non-broadcast|point-to-multipoint>", description: "OSPF network type" }
@@ -268,6 +269,22 @@ literals:
   database: "Clear learned MLD listener state"
   group: "Select an IPv6 multicast group"
   detail: "Display detailed operational state"
+  longer: "Include the selected prefix and more-specific routes"
+  exact: "Display only an exact prefix match"
+  instance: "Select an IGP protocol instance"
+  mcast-ipv4: "Select the IPv4 multicast route family"
+  mcast-ipv6: "Select the IPv6 multicast route family"
+  next-hop-type: "Select routes by next-hop representation"
+  tunneled: "Select routes whose next hop is a tunnel"
+  qos: "Display QoS active routes"
+  alternative: "Display loop-free alternate and backup routes"
+  accounting-class: "Display route accounting class information"
+  extensive: "Display the extensive route report"
+  exclude-services: "Exclude customer service interfaces"
+  eth-cfm: "Display Ethernet connectivity fault management state"
+  policy-accounting: "Display interface policy accounting state"
+  global-if-index: "Select an interface by global interface index"
+  family: "Select an address family"
   static: "Configure or display static multicast membership"
   statistics: "Display or clear protocol statistics"
   status: "Display protocol status"
@@ -1160,6 +1177,21 @@ commands:
     modifier: detail
     source_id: nokia.sros.26_7.show.router_interface
     tokens: [show, router, interface, { parameter: interface_name }, detail]
+  - { id: show_router_interface_address, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, { parameter: ip_address }] }
+  - { id: show_router_interface_address_detail, engines: [md, classic], modifier: detail, source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, { parameter: ip_address }, detail] }
+  - { id: show_router_interface_ipv4, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, ipv4] }
+  - { id: show_router_interface_ipv6, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, ipv6] }
+  - { id: show_router_interface_named_ipv4, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, { parameter: interface_name }, ipv4] }
+  - { id: show_router_interface_named_ipv6, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, { parameter: interface_name }, ipv6] }
+  - { id: show_router_interface_exclude_services, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, exclude-services] }
+  - { id: show_router_interface_description, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, description] }
+  - { id: show_router_interface_statistics, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, { parameter: interface_name }, statistics] }
+  - { id: show_router_interface_global_index, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, global-if-index, { parameter: global_if_index }] }
+  - { id: show_router_interface_global_index_detail, engines: [md, classic], modifier: detail, source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, global-if-index, { parameter: global_if_index }, detail] }
+  - { id: show_router_interface_mac, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, { parameter: interface_name }, mac] }
+  - { id: show_router_interface_mac_address, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, { parameter: interface_name }, mac, { parameter: mac_address }] }
+  - { id: show_router_interface_eth_cfm, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, { parameter: interface_name }, eth-cfm] }
+  - { id: show_router_interface_policy_accounting, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, { parameter: interface_name }, policy-accounting] }
   - id: show_router_route_table
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.route_table
@@ -1184,6 +1216,44 @@ commands:
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.route_table
     tokens: [show, router, route-table, ipv6, protocol, ospf3]
+  - { id: show_router_route_table_ipv4, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv4] }
+  - { id: show_router_route_table_mcast_ipv4, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, mcast-ipv4] }
+  - { id: show_router_route_table_mcast_ipv6, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, mcast-ipv6] }
+  - { id: show_router_route_table_prefix_ipv4, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, { parameter: ipv4_prefix }] }
+  - { id: show_router_route_table_prefix_ipv4_longer, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, { parameter: ipv4_prefix }, longer] }
+  - { id: show_router_route_table_prefix_ipv4_exact, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, { parameter: ipv4_prefix }, exact] }
+  - { id: show_router_route_table_prefix_ipv4_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, { parameter: ipv4_prefix }, extensive] }
+  - { id: show_router_route_table_prefix_ipv4_longer_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, { parameter: ipv4_prefix }, longer, extensive] }
+  - { id: show_router_route_table_prefix_ipv4_exact_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, { parameter: ipv4_prefix }, exact, extensive] }
+  - { id: show_router_route_table_prefix_ipv6, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, { parameter: ipv6_prefix }] }
+  - { id: show_router_route_table_prefix_ipv6_longer, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, { parameter: ipv6_prefix }, longer] }
+  - { id: show_router_route_table_prefix_ipv6_exact, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, { parameter: ipv6_prefix }, exact] }
+  - { id: show_router_route_table_prefix_ipv6_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, { parameter: ipv6_prefix }, extensive] }
+  - { id: show_router_route_table_prefix_ipv6_longer_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, { parameter: ipv6_prefix }, longer, extensive] }
+  - { id: show_router_route_table_prefix_ipv6_exact_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, { parameter: ipv6_prefix }, exact, extensive] }
+  - { id: show_router_route_table_protocol_static, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, protocol, static] }
+  - { id: show_router_route_table_protocol_local, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, protocol, local] }
+  - { id: show_router_route_table_ipv6_protocol_static, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, protocol, static] }
+  - { id: show_router_route_table_ipv6_protocol_local, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, protocol, local] }
+  - { id: show_router_route_table_protocol_ospf_instance, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, protocol, ospf, instance, { parameter: ospf_instance }] }
+  - { id: show_router_route_table_protocol_ospf3_instance, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, protocol, ospf3, instance, { parameter: ospf_instance }] }
+  - { id: show_router_route_table_ipv6_protocol_ospf3_instance, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, protocol, ospf3, instance, { parameter: ospf_instance }] }
+  - { id: show_router_route_table_protocol_ospf_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, protocol, ospf, extensive] }
+  - { id: show_router_route_table_protocol_ospf_instance_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, protocol, ospf, instance, { parameter: ospf_instance }, extensive] }
+  - { id: show_router_route_table_protocol_ospf3_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, protocol, ospf3, extensive] }
+  - { id: show_router_route_table_protocol_ospf3_instance_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, protocol, ospf3, instance, { parameter: ospf_instance }, extensive] }
+  - { id: show_router_route_table_ipv6_protocol_ospf3_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, protocol, ospf3, extensive] }
+  - { id: show_router_route_table_ipv6_protocol_ospf3_instance_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, protocol, ospf3, instance, { parameter: ospf_instance }, extensive] }
+  - { id: show_router_route_table_all, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, all] }
+  - { id: show_router_route_table_ipv6_all, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, all] }
+  - { id: show_router_route_table_summary, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, summary] }
+  - { id: show_router_route_table_ipv6_summary, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, summary] }
+  - { id: show_router_route_table_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, extensive] }
+  - { id: show_router_route_table_ipv6_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, extensive] }
+  - { id: show_router_route_table_next_hop_tunneled, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, next-hop-type, tunneled] }
+  - { id: show_router_route_table_qos, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, qos] }
+  - { id: show_router_route_table_alternative, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, alternative] }
+  - { id: show_router_route_table_accounting_class, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, accounting-class] }
   - id: show_router_fib
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.fib

@@ -2175,6 +2175,12 @@ void forwarder_state(Writer &out, const RouterForwarderCheckpoint &state) {
     service_ipv6_interface(out, interface);
   fib(out, state.fib);
   ipv6_fib(out, state.ipv6_fib);
+  count(out, state.ipv4_route_ages_seconds);
+  for (const auto value : state.ipv4_route_ages_seconds)
+    out.integer(value);
+  count(out, state.ipv6_route_ages_seconds);
+  for (const auto value : state.ipv6_route_ages_seconds)
+    out.integer(value);
   count(out, state.adjacencies);
   for (const auto &entry : state.adjacencies) {
     out.integer(entry.port_ordinal);
@@ -2308,6 +2314,13 @@ void forwarder_state(Writer &out, const RouterForwarderCheckpoint &state) {
     out.integer(entry.neighbor_solicitation_last_sent_ago_nanoseconds);
     out.integer(entry.neighbor_advertisement_last_sent_ago_nanoseconds);
   }
+  count(out, state.interface_traffic_statistics);
+  for (const auto &entry : state.interface_traffic_statistics) {
+    out.integer(entry.ingress_packets);
+    out.integer(entry.ingress_octets);
+    out.integer(entry.egress_packets);
+    out.integer(entry.egress_octets);
+  }
   count(out, state.ipv6_probe_packets);
   for (const auto &frame : state.ipv6_probe_packets)
     out.frame(frame);
@@ -2395,8 +2408,21 @@ bool forwarder_state(Reader &in, RouterForwarderCheckpoint &state) {
   for (auto &interface : state.service_ipv6_interfaces)
     if (!service_ipv6_interface(in, interface))
       return false;
-  if (!fib(in, state.fib) || !ipv6_fib(in, state.ipv6_fib) ||
-      !count(in, size, device_catalog::arp_entries_per_router))
+  if (!fib(in, state.fib) || !ipv6_fib(in, state.ipv6_fib))
+    return false;
+  if (!count(in, size, device_catalog::maximum_fib_routes_per_router))
+    return false;
+  state.ipv4_route_ages_seconds.resize(size);
+  for (auto &value : state.ipv4_route_ages_seconds)
+    if (!in.integer(value))
+      return false;
+  if (!count(in, size, device_catalog::maximum_fib_routes_per_router))
+    return false;
+  state.ipv6_route_ages_seconds.resize(size);
+  for (auto &value : state.ipv6_route_ages_seconds)
+    if (!in.integer(value))
+      return false;
+  if (!count(in, size, device_catalog::arp_entries_per_router))
     return false;
   state.adjacencies.resize(size);
   for (auto &entry : state.adjacencies)
@@ -2559,6 +2585,15 @@ bool forwarder_state(Reader &in, RouterForwarderCheckpoint &state) {
         !in.integer(entry.router_advertisement_last_sent_ago_nanoseconds) ||
         !in.integer(entry.neighbor_solicitation_last_sent_ago_nanoseconds) ||
         !in.integer(entry.neighbor_advertisement_last_sent_ago_nanoseconds))
+      return false;
+  if (!count(in, size, device_catalog::maximum_ports_per_router))
+    return false;
+  state.interface_traffic_statistics.resize(size);
+  for (auto &entry : state.interface_traffic_statistics)
+    if (!in.integer(entry.ingress_packets) ||
+        !in.integer(entry.ingress_octets) ||
+        !in.integer(entry.egress_packets) ||
+        !in.integer(entry.egress_octets))
       return false;
   if (!count(in, size, packet::Ipv6FragmentBatch::maximum_fragment_count))
     return false;
@@ -4892,10 +4927,25 @@ void ospf_interface_runtime(
     out.integer(neighbor.interface_id);
     out.integer(neighbor.designated_router);
     out.integer(neighbor.backup_designated_router);
+    out.integer(neighbor.options);
     ospf_duration(
         out, std::chrono::duration_cast<std::chrono::milliseconds>(
                  neighbor.inactivity_deadline.time_since_epoch()));
+    ospf_duration(
+        out, std::chrono::duration_cast<std::chrono::milliseconds>(
+                 neighbor.state_since.time_since_epoch()));
+    ospf_duration(
+        out, std::chrono::duration_cast<std::chrono::milliseconds>(
+                 neighbor.last_event_at.time_since_epoch()));
+    ospf_duration(
+        out, std::chrono::duration_cast<std::chrono::milliseconds>(
+                 neighbor.last_restart_at.time_since_epoch()));
     out.integer(neighbor.state);
+    out.integer(neighbor.event_count);
+    out.integer(neighbor.restart_count);
+    out.integer(neighbor.bad_neighbor_states);
+    out.integer(neighbor.bad_sequence_numbers);
+    out.integer(neighbor.bad_link_state_requests);
     out.integer(neighbor.priority);
   }
   ospf_duration(out, value.hello_remaining);
@@ -4914,17 +4964,34 @@ bool ospf_interface_runtime(
   value.neighbors.resize(size);
   for (auto &neighbor : value.neighbors) {
     std::chrono::milliseconds remaining{};
+    std::chrono::milliseconds state_elapsed{};
+    std::chrono::milliseconds event_elapsed{};
+    std::chrono::milliseconds restart_elapsed{};
     if (!in.integer(neighbor.router_id) || neighbor.router_id == 0U ||
         !in.integer(neighbor.election_identity) ||
         !in.integer(neighbor.interface_id) ||
         !in.integer(neighbor.designated_router) ||
         !in.integer(neighbor.backup_designated_router) ||
-        !ospf_duration(in, remaining) || !in.integer(neighbor.state) ||
+        !in.integer(neighbor.options) ||
+        !ospf_duration(in, remaining) ||
+        !ospf_duration(in, state_elapsed) ||
+        !ospf_duration(in, event_elapsed) ||
+        !ospf_duration(in, restart_elapsed) ||
+        !in.integer(neighbor.state) ||
         neighbor.state > ospf::NeighborState::full ||
+        !in.integer(neighbor.event_count) ||
+        !in.integer(neighbor.restart_count) ||
+        !in.integer(neighbor.bad_neighbor_states) ||
+        !in.integer(neighbor.bad_sequence_numbers) ||
+        !in.integer(neighbor.bad_link_state_requests) ||
         !in.integer(neighbor.priority))
       return false;
     neighbor.inactivity_deadline =
         ospf::RuntimeClock::time_point{remaining};
+    neighbor.state_since = ospf::RuntimeClock::time_point{state_elapsed};
+    neighbor.last_event_at = ospf::RuntimeClock::time_point{event_elapsed};
+    neighbor.last_restart_at =
+        ospf::RuntimeClock::time_point{restart_elapsed};
   }
   return ospf_duration(in, value.hello_remaining) &&
          ospf_duration(in, value.wait_remaining) &&
@@ -5093,6 +5160,7 @@ void ospf_process_checkpoint(
       for (const auto seen : exchange.authentication_sequence_seen)
         out.boolean(seen);
       ospf_duration(out, exchange.helper_remaining);
+      ospf_duration(out, exchange.helper_elapsed);
       out.boolean(exchange.local_master);
       out.boolean(exchange.negotiation_complete);
       out.boolean(exchange.pending_database_description);
@@ -5234,6 +5302,7 @@ bool ospf_process_checkpoint(
         if (!in.boolean(seen))
           return false;
       if (!ospf_duration(in, exchange.helper_remaining) ||
+          !ospf_duration(in, exchange.helper_elapsed) ||
           !in.boolean(exchange.local_master) ||
           !in.boolean(exchange.negotiation_complete) ||
           !in.boolean(exchange.pending_database_description) ||

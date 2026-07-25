@@ -601,6 +601,11 @@ void network_plane_tests() {
   constexpr std::uint64_t restored_generation_floor = 10'000U;
   restored_first->forwarding.fib =
       ospf_first_base.compile(restored_generation_floor);
+  // This fixture intentionally replaces the selected FIB generation inside
+  // the detached checkpoint. Route ages are part of that same generation, so
+  // replace them atomically instead of leaving timestamps for removed paths.
+  restored_first->forwarding.ipv4_route_ages_seconds.assign(
+      restored_first->forwarding.fib.count, 0U);
   require(ospf_checkpoint.ospf.processes.size() == 2U &&
               ospf_plane->restore(ospf_checkpoint,
                                   NetworkPlane::Clock::now()) &&

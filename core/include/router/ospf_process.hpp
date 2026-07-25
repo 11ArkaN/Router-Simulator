@@ -164,9 +164,17 @@ struct ProcessNeighborSnapshot {
   // machine failure without reading or exposing the mutable exchange object.
   std::uint32_t dd_sequence{};
   std::uint32_t local_interface_id{};
+  std::uint32_t retransmission_queue_length{};
+  std::uint32_t request_queue_length{};
+  std::uint32_t up_time_seconds{};
+  std::uint32_t time_before_dead_seconds{};
+  std::uint32_t last_event_seconds_ago{};
+  std::uint32_t last_restart_seconds_ago{};
+  std::uint32_t graceful_restart_helper_age_seconds{};
   bool negotiation_complete{};
   bool database_description_pending{};
   bool local_master{};
+  bool graceful_restart_helper{};
 };
 
 static_assert(std::is_trivially_copyable_v<ProcessInterfaceSnapshot>);
@@ -301,6 +309,7 @@ struct NeighborExchangeCheckpoint {
   std::array<std::uint64_t, 5U> authentication_sequences{};
   std::array<bool, 5U> authentication_sequence_seen{};
   std::chrono::milliseconds helper_remaining{};
+  std::chrono::milliseconds helper_elapsed{};
   bool local_master{};
   bool negotiation_complete{};
   bool pending_database_description{};
@@ -638,6 +647,7 @@ private:
     // restart its FSM while the helper continues to advertise the preserved
     // Full relationship until this steady-clock deadline.
     RuntimeClock::time_point helper_deadline{};
+    RuntimeClock::time_point helper_started_at{};
     bool helper_active{};
     bool helper_was_designated_router{};
 

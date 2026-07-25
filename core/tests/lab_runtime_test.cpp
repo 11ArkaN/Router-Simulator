@@ -414,6 +414,30 @@ void lab_runtime_tests() {
               contextual_info_detail.find("hello-interval") !=
                   std::string_view::npos,
           "info detail omitted effective OSPF interface configuration");
+  require(contextual_command("exit all").find("(ex)[/]") !=
+              std::string_view::npos,
+          "MD info fixture could not return to the candidate root");
+  const auto candidate_root_info = contextual_command("info");
+  require(candidate_root_info.find("system {") != std::string_view::npos &&
+              candidate_root_info.find("router \"Base\" {") !=
+                  std::string_view::npos &&
+              candidate_root_info.find("interface \"md-loop\" {") !=
+                  std::string_view::npos &&
+              candidate_root_info.find("MINOR:") == std::string_view::npos,
+          "info did not map the explicit candidate root to /configure");
+  // Return to the deepest context before checking nested quit-config. This
+  // proves that the root renderer did not mutate navigation state and keeps
+  // the following workflow assertion focused on the documented restriction.
+  require(contextual_command("configure router \"Base\"")
+                  .find("router \"Base\"") != std::string_view::npos &&
+              contextual_command("ospf 0").find("ospf 0") !=
+                  std::string_view::npos &&
+              contextual_command("area 0.0.0.0")
+                      .find("area 0.0.0.0") != std::string_view::npos &&
+              contextual_command("interface \"md-loop\"")
+                      .find("interface \"md-loop\"") !=
+                  std::string_view::npos,
+          "candidate root info changed the saved MD navigation state");
 
   // SR OS accepts quit-config only from the operational root. The rejected
   // nested attempt must not damage the working context; otherwise a typo can
@@ -541,7 +565,7 @@ void lab_runtime_tests() {
   // return an empty count rather than misdiagnosing the first `show` token.
   const auto ospf3_neighbor_detail =
       contextual_command("show router ospf3 neighbor detail");
-  require(ospf3_neighbor_detail.find("OSPF3 Neighbors (detail)") !=
+  require(ospf3_neighbor_detail.find("OSPFv3 Instance 0 Neighbors (detail)") !=
                   std::string_view::npos &&
               ospf3_neighbor_detail.find("No. of Neighbors: 0") !=
                   std::string_view::npos &&
@@ -1426,6 +1450,34 @@ void lab_runtime_tests() {
       message(lab_runtime_protocol::session_execute,
               {"r1-console-1",
                "show router route-table ipv6 protocol ospf3"}))};
+  const std::string exact_connected_route{runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1", "show router route-table 192.0.2.0/30 exact"}))};
+  const std::string exact_connected_route_extensive{runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1",
+       "show router route-table 192.0.2.0/30 exact extensive"}))};
+  const std::string longer_connected_routes{runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1", "show router route-table 192.0.0.0/16 longer"}))};
+  const std::string route_summary{runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1", "show router route-table summary"}))};
+  const std::string route_extensive{runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1", "show router route-table extensive"}))};
+  const std::string interface_by_address{runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1", "show router interface 192.0.2.1"}))};
+  const std::string ipv6_interfaces{runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1", "show router interface ipv6"}))};
+  const std::string interface_statistics{runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1", "show router interface edge statistics"}))};
+  const std::string interface_mac{runtime.command(
+      message(lab_runtime_protocol::session_execute,
+              {"r1-console-1", "show router interface edge mac"}))};
   const std::string router_advertisement_report{runtime.command(message(
       lab_runtime_protocol::session_execute,
       {"r1-console-1", "show router rtr-advertisement interface edge"}))};
@@ -1481,6 +1533,44 @@ void lab_runtime_tests() {
         selected_port_report + " routes=" + std::string{system_routes} +
         " ipv6-routes=" + ipv6_routes + " ra=" + router_advertisement_report +
         " fib=" + std::string{system_fib});
+  require(exact_connected_route.find("192.0.2.0/30") !=
+                  std::string_view::npos &&
+              exact_connected_route.find("Age") != std::string_view::npos,
+          "exact route selector omitted the selected route or Age column");
+  require(exact_connected_route_extensive.find(
+              "Dest Prefix             : 192.0.2.0/30") !=
+                  std::string_view::npos &&
+              exact_connected_route_extensive.find("Protocol Instance") !=
+                  std::string_view::npos &&
+              exact_connected_route_extensive.find("Bad command") ==
+                  std::string_view::npos,
+          "the documented exact plus extensive route selector was not "
+          "composed");
+  require(longer_connected_routes.find("192.0.2.0/30") !=
+              std::string_view::npos,
+          "longer route selector omitted a contained connected prefix");
+  require(route_summary.find("Protocol") != std::string_view::npos &&
+              route_summary.find("Local") != std::string_view::npos,
+          "route-table summary did not aggregate installed route sources");
+  require(route_extensive.find("Dest Prefix             :") !=
+                  std::string_view::npos &&
+              route_extensive.find("Protocol Instance") !=
+                  std::string_view::npos,
+          "route-table extensive omitted selected-route attributes");
+  require(interface_by_address.find("edge") != std::string_view::npos,
+          "interface address selector did not resolve the running interface");
+  require(ipv6_interfaces.find("2001:db8:2::1/64") !=
+              std::string_view::npos,
+          "IPv6 family selector omitted a forwarding-owned address");
+  require(interface_statistics.find("Ingress Packets") !=
+                  std::string_view::npos &&
+              interface_statistics.find("Egress Octets") !=
+                  std::string_view::npos,
+          "interface statistics omitted forwarding-owned counters");
+  require(interface_mac.find("Router Interface MAC Information") !=
+                  std::string_view::npos &&
+              interface_mac.find("edge") != std::string_view::npos,
+          "interface MAC report omitted the running interface identity");
   require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1", "show port 5/2/10"}))
                   .find("MGMT_CORE #2301") != std::string_view::npos,

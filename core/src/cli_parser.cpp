@@ -708,6 +708,7 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case arp_timeout_seconds:
   case arp_retry_deciseconds:
   case ecmp_paths:
+  case global_if_index:
   case count:
   case size:
   case mtu:

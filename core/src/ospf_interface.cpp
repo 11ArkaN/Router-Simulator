@@ -32,6 +32,35 @@ void write32(std::span<std::uint8_t> output, std::size_t offset,
   output[offset + 3U] = static_cast<std::uint8_t>(value);
 }
 
+void record_neighbor_event(NeighborRuntime &neighbor, NeighborEvent event,
+                           const NeighborTransition &transition,
+                           RuntimeClock::time_point now) noexcept {
+  // One helper owns all management accounting for the RFC 2328 neighbor FSM.
+  // Keeping accounting beside the accepted transition prevents show output
+  // from guessing counters from the current state and makes every event path
+  // use identical restart semantics.
+  const auto previous = neighbor.state;
+  ++neighbor.event_count;
+  neighbor.last_event_at = now;
+  if (event == NeighborEvent::bad_link_state_request)
+    ++neighbor.bad_link_state_requests;
+  if (event == NeighborEvent::sequence_number_mismatch)
+    ++neighbor.bad_sequence_numbers;
+  if ((event == NeighborEvent::one_way_received ||
+       event == NeighborEvent::inactivity_timer ||
+       event == NeighborEvent::lower_layer_down) &&
+      previous >= NeighborState::exstart)
+    ++neighbor.bad_neighbor_states;
+  if (transition.state != previous)
+    neighbor.state_since = now;
+  if (transition.state == NeighborState::exstart &&
+      previous >= NeighborState::exstart) {
+    ++neighbor.restart_count;
+    neighbor.last_restart_at = now;
+  }
+  neighbor.state = transition.state;
+}
+
 } // namespace
 
 InterfaceRuntime::InterfaceRuntime(InterfaceConfiguration configuration,
@@ -162,7 +191,8 @@ HelloResult InterfaceRuntime::receive_hello(
       return result;
     }
     try {
-      neighbors_.push_back(NeighborRuntime{.router_id = packet.router_id});
+      neighbors_.push_back(NeighborRuntime{.router_id = packet.router_id,
+                                           .state_since = now});
       found = std::prev(neighbors_.end());
     } catch (const std::bad_alloc &) {
       result.disposition = HelloDisposition::neighbor_capacity_exhausted;
@@ -184,6 +214,7 @@ HelloResult InterfaceRuntime::receive_hello(
   found->priority = hello->router_priority;
   found->designated_router = hello->designated_router;
   found->backup_designated_router = hello->backup_designated_router;
+  found->options = hello->options;
   if (state_ == InterfaceState::waiting) {
     // The Hello DR and BDR fields contain an IPv4 interface address in OSPFv2
     // and a Router ID in OSPFv3. Compare against the version-normalized wire
@@ -200,7 +231,8 @@ HelloResult InterfaceRuntime::receive_hello(
   auto transition = neighbor_transition(
       found->state, NeighborEvent::hello_received,
       adjacency_required(*found), false);
-  found->state = transition.state;
+  record_neighbor_event(*found, NeighborEvent::hello_received, transition,
+                        now);
   result.actions = transition.actions;
 
   bool seen_self{};
@@ -215,7 +247,11 @@ HelloResult InterfaceRuntime::receive_hello(
       seen_self ? NeighborEvent::two_way_received
                 : NeighborEvent::one_way_received,
       adjacency_required(*found), false);
-  found->state = transition.state;
+  record_neighbor_event(
+      *found,
+      seen_self ? NeighborEvent::two_way_received
+                : NeighborEvent::one_way_received,
+      transition, now);
   result.actions = result.actions | transition.actions;
   if (!first_hello &&
       (previous_priority != found->priority ||
@@ -248,7 +284,8 @@ bool InterfaceRuntime::process_deadlines(RuntimeClock::time_point now,
         neighbor_transition(neighbor.state,
                             NeighborEvent::inactivity_timer,
                             adjacency_required(neighbor), false);
-    neighbor.state = transition.state;
+    record_neighbor_event(neighbor, NeighborEvent::inactivity_timer,
+                          transition, now);
     neighbor.inactivity_deadline = {};
     output[written++] = {.router_id = neighbor.router_id,
                          .actions = transition.actions};
@@ -337,11 +374,13 @@ bool InterfaceRuntime::reconcile_adjacencies(
   // neighbors use the old DR/BDR result and others use the new one.
   if (output.size() < neighbors_.size())
     return false;
+  const auto now = RuntimeClock::now();
   for (auto &neighbor : neighbors_) {
     const auto transition =
         neighbor_transition(neighbor.state, NeighborEvent::adjacency_ok,
                             adjacency_required(neighbor), false);
-    neighbor.state = transition.state;
+    record_neighbor_event(neighbor, NeighborEvent::adjacency_ok, transition,
+                          now);
     if (transition.actions == NeighborAction::none)
       continue;
     output[written++] = {.router_id = neighbor.router_id,
@@ -436,7 +475,7 @@ InterfaceRuntime::apply_neighbor_event(std::uint32_t router_id,
   const auto transition =
       neighbor_transition(found->state, event, adjacency_required(*found),
                           requests_pending);
-  found->state = transition.state;
+  record_neighbor_event(*found, event, transition, RuntimeClock::now());
   if (has_action(transition.actions, NeighborAction::stop_inactivity_timer))
     found->inactivity_deadline = {};
   return transition;
@@ -502,6 +541,11 @@ InterfaceRuntime::checkpoint(RuntimeClock::time_point now) const {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         deadline - now);
   };
+  const auto elapsed = [now](RuntimeClock::time_point point) {
+    if (point == RuntimeClock::time_point{} || point > now)
+      return std::chrono::milliseconds{};
+    return std::chrono::duration_cast<std::chrono::milliseconds>(now - point);
+  };
   InterfaceRuntimeCheckpoint result{
       .configuration = configuration_,
       .neighbors = neighbors_,
@@ -517,6 +561,12 @@ InterfaceRuntime::checkpoint(RuntimeClock::time_point now) const {
     const auto duration = remaining(neighbor.inactivity_deadline);
     neighbor.inactivity_deadline =
         RuntimeClock::time_point{duration};
+    neighbor.state_since = RuntimeClock::time_point{
+        elapsed(neighbor.state_since)};
+    neighbor.last_event_at = RuntimeClock::time_point{
+        elapsed(neighbor.last_event_at)};
+    neighbor.last_restart_at = RuntimeClock::time_point{
+        elapsed(neighbor.last_restart_at)};
   }
   return result;
 }
@@ -536,7 +586,19 @@ bool InterfaceRuntime::restore(
       const auto remaining =
           std::chrono::duration_cast<std::chrono::milliseconds>(
               neighbor.inactivity_deadline.time_since_epoch());
+      const auto state_elapsed =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              neighbor.state_since.time_since_epoch());
+      const auto event_elapsed =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              neighbor.last_event_at.time_since_epoch());
+      const auto restart_elapsed =
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              neighbor.last_restart_at.time_since_epoch());
       if (remaining < std::chrono::milliseconds{} ||
+          state_elapsed < std::chrono::milliseconds{} ||
+          event_elapsed < std::chrono::milliseconds{} ||
+          restart_elapsed < std::chrono::milliseconds{} ||
           neighbor.router_id == 0U ||
           std::any_of(staged.begin(), staged.begin() +
                                          static_cast<std::ptrdiff_t>(index),
@@ -548,6 +610,18 @@ bool InterfaceRuntime::restore(
           remaining == std::chrono::milliseconds{}
               ? RuntimeClock::time_point{}
               : now + remaining;
+      neighbor.state_since =
+          state_elapsed == std::chrono::milliseconds{}
+              ? RuntimeClock::time_point{}
+              : now - state_elapsed;
+      neighbor.last_event_at =
+          event_elapsed == std::chrono::milliseconds{}
+              ? RuntimeClock::time_point{}
+              : now - event_elapsed;
+      neighbor.last_restart_at =
+          restart_elapsed == std::chrono::milliseconds{}
+              ? RuntimeClock::time_point{}
+              : now - restart_elapsed;
     }
     neighbors_.swap(staged);
     hello_deadline_ =

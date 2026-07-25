@@ -221,6 +221,18 @@ struct Icmpv6InterfaceStatisticsCheckpoint {
   std::int64_t neighbor_advertisement_last_sent_ago_nanoseconds{-1};
 };
 
+struct InterfaceTrafficStatistics {
+  // The router forwarding shard is the sole writer. Packet and octet counters
+  // advance only after an operational ingress accepts a wire frame or an
+  // egress sink accepts it into the physical link queue. This keeps rejected
+  // queue admissions out of transmitted traffic while preserving them in the
+  // router drop counters.
+  std::uint64_t ingress_packets{};
+  std::uint64_t ingress_octets{};
+  std::uint64_t egress_packets{};
+  std::uint64_t egress_octets{};
+};
+
 struct RouterForwarderCheckpoint {
   std::vector<ForwardPort> ports;
   // Native addresses are independent children of a routed interface. Keeping
@@ -234,6 +246,12 @@ struct RouterForwarderCheckpoint {
   std::vector<service::ServiceIpv6Interface> service_ipv6_interfaces;
   routing::FibProgram fib{};
   routing::Ipv6FibProgram ipv6_fib{};
+  // Route age is an operational duration, not a wall-clock timestamp. The
+  // forwarding owner records installation time per selected path and exports
+  // elapsed whole seconds so checkpoint restore remains independent of the
+  // host steady-clock epoch.
+  std::vector<std::uint32_t> ipv4_route_ages_seconds;
+  std::vector<std::uint32_t> ipv6_route_ages_seconds;
   std::vector<ForwarderAdjacencyCheckpoint> adjacencies;
   std::vector<Ipv6NeighborCheckpoint> ipv6_neighbors;
   std::vector<Ipv6DadCheckpoint> ipv6_dad;
@@ -265,6 +283,7 @@ struct RouterForwarderCheckpoint {
   std::vector<Icmpv4InterfaceStatisticsCheckpoint> icmpv4_interface_statistics;
   Icmpv6Statistics icmpv6_global_statistics{};
   std::vector<Icmpv6InterfaceStatisticsCheckpoint> icmpv6_interface_statistics;
+  std::vector<InterfaceTrafficStatistics> interface_traffic_statistics;
   // Packet Too Big is trusted only when its quote matches one of these exact
   // locally transmitted IP packets. Frames are bounded by one source packet's
   // RFC 8200 fragment batch and preserve no pointer into live packet storage.
@@ -895,12 +914,21 @@ private:
   Icmpv6Statistics icmpv6_global_statistics_{};
   std::array<Icmpv6Statistics, device_catalog::maximum_ports_per_router>
       icmpv6_interface_statistics_{};
+  std::array<InterfaceTrafficStatistics,
+             device_catalog::maximum_ports_per_router>
+      interface_traffic_statistics_{};
   std::array<Icmpv6TransmitTimes, device_catalog::maximum_ports_per_router>
       icmpv6_transmit_times_{};
   std::array<Ipv6ReachableTimeState, device_catalog::maximum_ports_per_router>
       ipv6_reachable_times_{};
   routing::FibProgram fib_{};
   routing::Ipv6FibProgram ipv6_fib_{};
+  std::array<Clock::time_point,
+             device_catalog::maximum_fib_routes_per_router>
+      ipv4_route_installed_at_{};
+  std::array<Clock::time_point,
+             device_catalog::maximum_fib_routes_per_router>
+      ipv6_route_installed_at_{};
   std::array<bool, device_catalog::maximum_ports_per_router> ospf_v2_punt_{};
   std::array<bool, device_catalog::maximum_ports_per_router> ospf_v3_punt_{};
   std::array<Adjacency, device_catalog::arp_entries_per_router> adjacencies_{};

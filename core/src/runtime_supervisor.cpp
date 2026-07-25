@@ -4147,6 +4147,13 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
       RouterForwarderCheckpoint forwarding_validation;
       forwarding_validation.fib = source.selected_rib;
       forwarding_validation.ipv6_fib = source.selected_ipv6_rib;
+      // Route age vectors are members of the selected FIB generation. The
+      // control-only validator has no operational installation history, so a
+      // zero age is the sole truthful synthetic value for every selected row.
+      forwarding_validation.ipv4_route_ages_seconds.assign(
+          forwarding_validation.fib.count, 0U);
+      forwarding_validation.ipv6_route_ages_seconds.assign(
+          forwarding_validation.ipv6_fib.count, 0U);
       forwarding_validation.sap_attachments = source.ies_sap_attachments;
       forwarding_validation.service_ipv6_interfaces =
           source.ies_ipv6_interfaces;

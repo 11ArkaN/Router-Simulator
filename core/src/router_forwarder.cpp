@@ -1872,6 +1872,25 @@ void RouterForwarder::checkpoint(RouterForwarderCheckpoint &state,
                                        published_interfaces.end());
   state.fib = fib_;
   state.ipv6_fib = ipv6_fib_;
+  const auto route_age = [now](Clock::time_point installed_at) {
+    if (installed_at.time_since_epoch() == Clock::duration::zero() ||
+        installed_at >= now)
+      return std::uint32_t{};
+    const auto seconds =
+        std::chrono::duration_cast<std::chrono::seconds>(now - installed_at)
+            .count();
+    return static_cast<std::uint32_t>(
+        std::min<std::int64_t>(seconds,
+                               std::numeric_limits<std::uint32_t>::max()));
+  };
+  state.ipv4_route_ages_seconds.reserve(fib_.count);
+  for (std::size_t index{}; index < fib_.count; ++index)
+    state.ipv4_route_ages_seconds.push_back(
+        route_age(ipv4_route_installed_at_[index]));
+  state.ipv6_route_ages_seconds.reserve(ipv6_fib_.count);
+  for (std::size_t index{}; index < ipv6_fib_.count; ++index)
+    state.ipv6_route_ages_seconds.push_back(
+        route_age(ipv6_route_installed_at_[index]));
   state.ipv6_neighbors = ipv6_neighbors_.checkpoint(now);
   state.ipv6_dad = ipv6_dad_.checkpoint(now);
   state.ipv6_router_advertisements =
@@ -1887,6 +1906,9 @@ void RouterForwarder::checkpoint(RouterForwarderCheckpoint &state,
   state.dhcpv6_relay_routes = dhcpv6_relay_routes_.checkpoint();
   state.dhcpv6_relay_socket = dhcpv6_relay_socket_;
   state.icmpv4_global_statistics = icmpv4_global_statistics_;
+  state.interface_traffic_statistics.assign(
+      interface_traffic_statistics_.begin(),
+      interface_traffic_statistics_.end());
   state.icmpv4_interface_statistics.reserve(state.ports.size());
   for (const auto &configured : state.ports)
     state.icmpv4_interface_statistics.push_back(
@@ -2102,6 +2124,10 @@ bool RouterForwarder::validate_checkpoint(
       state.ipv6_fib.count > state.ipv6_fib.routes.size() ||
       state.ipv6_fib.count + state.ipv6_fib.loop_free_alternate_count >
           state.ipv6_fib.routes.size() ||
+      state.ipv4_route_ages_seconds.size() != state.fib.count ||
+      state.ipv6_route_ages_seconds.size() != state.ipv6_fib.count ||
+      state.interface_traffic_statistics.size() >
+          device_catalog::maximum_ports_per_router ||
       state.last_drop < ForwardDrop::none ||
       state.last_drop > ForwardDrop::blackhole ||
       state.mld_service_cursor > state.mld_interfaces.size())
@@ -2698,6 +2724,10 @@ bool RouterForwarder::restore(const RouterForwarderCheckpoint &state,
   adjacencies_.fill({});
   pending_.fill({});
   icmpv4_global_statistics_ = state.icmpv4_global_statistics;
+  interface_traffic_statistics_.fill({});
+  std::copy(state.interface_traffic_statistics.begin(),
+            state.interface_traffic_statistics.end(),
+            interface_traffic_statistics_.begin());
   icmpv4_interface_statistics_.fill({});
   icmpv6_global_statistics_ = state.icmpv6_global_statistics;
   icmpv6_interface_statistics_.fill({});
@@ -2739,6 +2769,16 @@ bool RouterForwarder::restore(const RouterForwarderCheckpoint &state,
     icmpv4_interface_statistics_[entry.port_ordinal] = entry.statistics;
   fib_ = state.fib;
   ipv6_fib_ = state.ipv6_fib;
+  ipv4_route_installed_at_.fill({});
+  ipv6_route_installed_at_.fill({});
+  for (std::size_t index{}; index < state.ipv4_route_ages_seconds.size();
+       ++index)
+    ipv4_route_installed_at_[index] =
+        now - std::chrono::seconds{state.ipv4_route_ages_seconds[index]};
+  for (std::size_t index{}; index < state.ipv6_route_ages_seconds.size();
+       ++index)
+    ipv6_route_installed_at_[index] =
+        now - std::chrono::seconds{state.ipv6_route_ages_seconds[index]};
   // Router-level validation has already checked port scope. The cache repeats
   // its own state-machine validation so it remains safe when used by a host or
   // another future owner outside RouterForwarder.
@@ -2922,7 +2962,33 @@ bool RouterForwarder::program_fib(const routing::FibProgram &program) noexcept {
       return false;
     return true;
   }
+  const auto same_route = [](const auto &left, const auto &right) {
+    return left.network == right.network &&
+           left.next_hop == right.next_hop &&
+           left.port_ordinal == right.port_ordinal &&
+           left.prefix_length == right.prefix_length &&
+           left.preference == right.preference &&
+           left.metric == right.metric && left.source == right.source &&
+           left.local_system == right.local_system &&
+           left.ospf_path_type == right.ospf_path_type &&
+           left.protocol_instance == right.protocol_instance;
+  };
+  std::array<Clock::time_point,
+             device_catalog::maximum_fib_routes_per_router>
+      installed{};
+  const auto now = Clock::now();
+  for (std::size_t next{}; next < program.count; ++next) {
+    const auto prior = std::find_if(
+        fib_.routes.begin(), fib_.routes.begin() + fib_.count,
+        [&](const auto &route) { return same_route(route, program.routes[next]); });
+    installed[next] =
+        prior == fib_.routes.begin() + fib_.count
+            ? now
+            : ipv4_route_installed_at_[static_cast<std::size_t>(
+                  std::distance(fib_.routes.begin(), prior))];
+  }
   fib_ = program;
+  ipv4_route_installed_at_ = installed;
   return true;
 }
 
@@ -2959,7 +3025,34 @@ bool RouterForwarder::program_ipv6_fib(
       return false;
     return true;
   }
+  const auto same_route = [](const auto &left, const auto &right) {
+    return left.network == right.network &&
+           left.next_hop == right.next_hop &&
+           left.interface_id == right.interface_id &&
+           left.physical_port_ordinal == right.physical_port_ordinal &&
+           left.prefix_length == right.prefix_length &&
+           left.preference == right.preference &&
+           left.metric == right.metric && left.source == right.source &&
+           left.ospf_path_type == right.ospf_path_type &&
+           left.protocol_instance == right.protocol_instance;
+  };
+  std::array<Clock::time_point,
+             device_catalog::maximum_fib_routes_per_router>
+      installed{};
+  const auto now = Clock::now();
+  for (std::size_t next{}; next < program.count; ++next) {
+    const auto prior = std::find_if(
+        ipv6_fib_.routes.begin(),
+        ipv6_fib_.routes.begin() + ipv6_fib_.count,
+        [&](const auto &route) { return same_route(route, program.routes[next]); });
+    installed[next] =
+        prior == ipv6_fib_.routes.begin() + ipv6_fib_.count
+            ? now
+            : ipv6_route_installed_at_[static_cast<std::size_t>(
+                  std::distance(ipv6_fib_.routes.begin(), prior))];
+  }
   ipv6_fib_ = program;
+  ipv6_route_installed_at_ = installed;
   return true;
 }
 
@@ -3540,6 +3633,11 @@ bool RouterForwarder::emit(std::uint16_t port_ordinal,
   if (!sink || !sink(context, port_ordinal, frame)) {
     drop(ForwardDrop::egress_queue_full);
     return false;
+  }
+  if (port_ordinal < interface_traffic_statistics_.size()) {
+    auto &statistics = interface_traffic_statistics_[port_ordinal];
+    ++statistics.egress_packets;
+    statistics.egress_octets += frame.size();
   }
   ++forwarded_frames_;
   return true;
@@ -5113,6 +5211,12 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
     drop(ForwardDrop::port_down);
     return;
   }
+  // Count the original wire frame once, before SAP decapsulation or protocol
+  // parsing. SR OS interface statistics describe physical ingress traffic and
+  // therefore include frames that a later L3 validation rejects.
+  auto &ingress_statistics = interface_traffic_statistics_[ingress_port];
+  ++ingress_statistics.ingress_packets;
+  ingress_statistics.ingress_octets += wire_frame.size();
   packet::Frame service_frame;
   const auto classified =
       sap_forwarding_.ingress(ingress_port, wire_frame, service_frame);

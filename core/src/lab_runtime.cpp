@@ -25,6 +25,7 @@
 #include <iomanip>
 #include <iterator>
 #include <limits>
+#include <numeric>
 #include <sstream>
 #include <thread>
 
@@ -2319,6 +2320,87 @@ bool ipv6_ping_command(cli_schema::CommandId id) noexcept {
          id == ping_ipv6_count_size;
 }
 
+bool router_interface_show_command(cli_schema::CommandId id) noexcept {
+  using enum cli_schema::CommandId;
+  switch (id) {
+  case show_router_interface:
+  case show_router_interface_summary:
+  case show_router_interface_named:
+  case show_router_interface_detail:
+  case show_router_interface_address:
+  case show_router_interface_address_detail:
+  case show_router_interface_ipv4:
+  case show_router_interface_ipv6:
+  case show_router_interface_named_ipv4:
+  case show_router_interface_named_ipv6:
+  case show_router_interface_exclude_services:
+  case show_router_interface_description:
+  case show_router_interface_statistics:
+  case show_router_interface_global_index:
+  case show_router_interface_global_index_detail:
+  case show_router_interface_mac:
+  case show_router_interface_mac_address:
+  case show_router_interface_eth_cfm:
+  case show_router_interface_policy_accounting:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool route_table_show_command(cli_schema::CommandId id) noexcept {
+  using enum cli_schema::CommandId;
+  switch (id) {
+  case show_router_route_table:
+  case show_router_route_table_protocol_ospf:
+  case show_router_route_table_protocol_ospf3:
+  case show_router_route_table_ipv6:
+  case show_router_route_table_ipv6_protocol_ospf:
+  case show_router_route_table_ipv6_protocol_ospf3:
+  case show_router_route_table_ipv4:
+  case show_router_route_table_mcast_ipv4:
+  case show_router_route_table_mcast_ipv6:
+  case show_router_route_table_prefix_ipv4:
+  case show_router_route_table_prefix_ipv4_longer:
+  case show_router_route_table_prefix_ipv4_exact:
+  case show_router_route_table_prefix_ipv4_extensive:
+  case show_router_route_table_prefix_ipv4_longer_extensive:
+  case show_router_route_table_prefix_ipv4_exact_extensive:
+  case show_router_route_table_prefix_ipv6:
+  case show_router_route_table_prefix_ipv6_longer:
+  case show_router_route_table_prefix_ipv6_exact:
+  case show_router_route_table_prefix_ipv6_extensive:
+  case show_router_route_table_prefix_ipv6_longer_extensive:
+  case show_router_route_table_prefix_ipv6_exact_extensive:
+  case show_router_route_table_protocol_static:
+  case show_router_route_table_protocol_local:
+  case show_router_route_table_ipv6_protocol_static:
+  case show_router_route_table_ipv6_protocol_local:
+  case show_router_route_table_protocol_ospf_instance:
+  case show_router_route_table_protocol_ospf3_instance:
+  case show_router_route_table_ipv6_protocol_ospf3_instance:
+  case show_router_route_table_protocol_ospf_extensive:
+  case show_router_route_table_protocol_ospf_instance_extensive:
+  case show_router_route_table_protocol_ospf3_extensive:
+  case show_router_route_table_protocol_ospf3_instance_extensive:
+  case show_router_route_table_ipv6_protocol_ospf3_extensive:
+  case show_router_route_table_ipv6_protocol_ospf3_instance_extensive:
+  case show_router_route_table_all:
+  case show_router_route_table_ipv6_all:
+  case show_router_route_table_summary:
+  case show_router_route_table_ipv6_summary:
+  case show_router_route_table_extensive:
+  case show_router_route_table_ipv6_extensive:
+  case show_router_route_table_next_hop_tunneled:
+  case show_router_route_table_qos:
+  case show_router_route_table_alternative:
+  case show_router_route_table_accounting_class:
+    return true;
+  default:
+    return false;
+  }
+}
+
 void json_string(std::ostringstream &out, std::string_view text) {
   // JSON escaping is explicit because system names and descriptions originate
   // from project files. Control characters use \u00XX so a newline cannot
@@ -2875,8 +2957,312 @@ md_router_advertisement_info(const Configuration &configuration,
   return out.str();
 }
 
+std::string_view
+unsolicited_learning_text(Ipv6UnsolicitedLearning value) noexcept {
+  switch (value) {
+  case Ipv6UnsolicitedLearning::none:
+    return "none";
+  case Ipv6UnsolicitedLearning::global:
+    return "global";
+  case Ipv6UnsolicitedLearning::link_local:
+    return "link-local";
+  case Ipv6UnsolicitedLearning::both:
+    return "both";
+  }
+  return {};
+}
+
+template <typename Interface>
+void md_base_interface_info(std::ostringstream &out,
+                            const Interface &interface, std::size_t depth,
+                            bool detail) {
+  // The Base interface is one typed list entry. Render its complete configured
+  // generation here so both terminal engines observe exactly the same
+  // candidate or running value. Presence flags decide whether plain `info`
+  // includes a defaulted leaf. `info detail` adds the effective release
+  // default without changing the datastore.
+  const auto leaf = [&](std::string_view name, const auto &value) {
+    md_indent(out, depth);
+    out << name << ' ' << value << '\n';
+  };
+  leaf("admin-state", interface.admin_enabled ? "enable" : "disable");
+  if (interface.port_configured)
+    leaf("port", interface.port_id);
+
+  if (interface.address_configured || detail) {
+    md_indent(out, depth);
+    out << "ipv4 {\n";
+    if (interface.address_configured) {
+      md_indent(out, depth + 1U);
+      out << "primary {\n";
+      md_indent(out, depth + 2U);
+      out << "address " << ipv4_text(interface.address)
+          << " prefix-length "
+          << static_cast<unsigned>(interface.prefix_length) << '\n';
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    if (detail || interface.arp_timeout_configured ||
+        interface.arp_retry_configured ||
+        !interface.static_ipv4_neighbors.empty()) {
+      md_indent(out, depth + 1U);
+      out << "neighbor-discovery {\n";
+      if (detail || interface.arp_timeout_configured) {
+        md_indent(out, depth + 2U);
+        out << "timeout " << interface.arp_timeout_seconds << '\n';
+      }
+      if (detail || interface.arp_retry_configured) {
+        md_indent(out, depth + 2U);
+        out << "retry-timer " << interface.arp_retry_deciseconds << '\n';
+      }
+      for (const auto &neighbor : interface.static_ipv4_neighbors) {
+        md_indent(out, depth + 2U);
+        out << "static-neighbor " << ipv4_text(neighbor.address)
+            << " mac-address " << mac_text(neighbor.mac) << '\n';
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    if (detail || interface.icmp_redirect_admin_configured ||
+        interface.icmp_redirect_maximum_configured ||
+        interface.icmp_redirect_interval_configured) {
+      md_indent(out, depth + 1U);
+      out << "icmp {\n";
+      if (detail || interface.icmp_redirect_admin_configured) {
+        md_indent(out, depth + 2U);
+        out << "redirects "
+            << (interface.icmp_redirects_enabled ? "true" : "false") << '\n';
+      }
+      if (detail || interface.icmp_redirect_maximum_configured) {
+        md_indent(out, depth + 2U);
+        out << "maximum-redirects " << interface.icmp_redirect_maximum << '\n';
+      }
+      if (detail || interface.icmp_redirect_interval_configured) {
+        md_indent(out, depth + 2U);
+        out << "redirect-timeout "
+            << interface.icmp_redirect_interval_seconds << '\n';
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+
+  const bool ipv6_present =
+      !interface.ipv6_addresses.empty() ||
+      interface.ipv6_unsolicited_learning_configured ||
+      interface.ipv6_nd_reachable_time_configured ||
+      interface.ipv6_nd_stale_time_configured ||
+      interface.ipv6_proactive_refresh_configured ||
+      interface.ipv6_neighbor_limit_configured ||
+      !interface.static_ipv6_neighbors.empty() ||
+      interface.icmp6_redirect_admin_configured ||
+      interface.icmp6_redirect_maximum_configured ||
+      interface.icmp6_redirect_interval_configured;
+  if (ipv6_present || detail) {
+    md_indent(out, depth);
+    out << "ipv6 {\n";
+    for (const auto &address : interface.ipv6_addresses) {
+      md_indent(out, depth + 1U);
+      out << "address " << ip::format_ipv6(address.address)
+          << " prefix-length " << static_cast<unsigned>(address.prefix_length)
+          << " {\n";
+      if (detail || !address.duplicate_address_detection) {
+        md_indent(out, depth + 2U);
+        out << "duplicate-address-detection "
+            << (address.duplicate_address_detection ? "true" : "false")
+            << '\n';
+      }
+      if (detail || address.primary_preference) {
+        md_indent(out, depth + 2U);
+        out << "primary-preference " << address.primary_preference << '\n';
+      }
+      if (address.tag_configured) {
+        md_indent(out, depth + 2U);
+        out << "tag " << address.tag << '\n';
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    if (detail || interface.ipv6_unsolicited_learning_configured ||
+        interface.ipv6_nd_reachable_time_configured ||
+        interface.ipv6_nd_stale_time_configured ||
+        interface.ipv6_proactive_refresh_configured ||
+        interface.ipv6_neighbor_limit_configured ||
+        !interface.static_ipv6_neighbors.empty()) {
+      md_indent(out, depth + 1U);
+      out << "neighbor-discovery {\n";
+      if (detail || interface.ipv6_nd_reachable_time_configured) {
+        md_indent(out, depth + 2U);
+        out << "reachable-time "
+            << interface.ipv6_nd_reachable_time_seconds << '\n';
+      }
+      if (detail || interface.ipv6_nd_stale_time_configured) {
+        md_indent(out, depth + 2U);
+        out << "stale-time " << interface.ipv6_nd_stale_time_seconds << '\n';
+      }
+      if (detail || interface.ipv6_unsolicited_learning_configured) {
+        md_indent(out, depth + 2U);
+        out << "learn-unsolicited "
+            << unsolicited_learning_text(interface.ipv6_unsolicited_learning)
+            << '\n';
+      }
+      if (detail || interface.ipv6_proactive_refresh_configured) {
+        md_indent(out, depth + 2U);
+        out << "proactive-refresh "
+            << unsolicited_learning_text(interface.ipv6_proactive_refresh)
+            << '\n';
+      }
+      if (interface.ipv6_neighbor_limit_configured) {
+        md_indent(out, depth + 2U);
+        out << "limit " << interface.ipv6_neighbor_limit << " {\n";
+        if (detail || interface.ipv6_neighbor_limit_log_only_configured) {
+          md_indent(out, depth + 3U);
+          out << "log-only "
+              << (interface.ipv6_neighbor_limit_log_only ? "true" : "false")
+              << '\n';
+        }
+        if (detail || interface.ipv6_neighbor_limit_threshold_configured) {
+          md_indent(out, depth + 3U);
+          out << "threshold "
+              << static_cast<unsigned>(
+                     interface.ipv6_neighbor_limit_threshold_percent)
+              << '\n';
+        }
+        md_indent(out, depth + 2U);
+        out << "}\n";
+      }
+      for (const auto &neighbor : interface.static_ipv6_neighbors) {
+        md_indent(out, depth + 2U);
+        out << "static-neighbor " << ip::format_ipv6(neighbor.address)
+            << " mac-address " << mac_text(neighbor.mac) << '\n';
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    if (detail || interface.icmp6_redirect_admin_configured ||
+        interface.icmp6_redirect_maximum_configured ||
+        interface.icmp6_redirect_interval_configured) {
+      md_indent(out, depth + 1U);
+      out << "icmp6 {\n";
+      if (detail || interface.icmp6_redirect_admin_configured) {
+        md_indent(out, depth + 2U);
+        out << "redirects "
+            << (interface.icmp6_redirects_enabled ? "true" : "false")
+            << '\n';
+      }
+      if (detail || interface.icmp6_redirect_maximum_configured) {
+        md_indent(out, depth + 2U);
+        out << "maximum-redirects " << interface.icmp6_redirect_maximum
+            << '\n';
+      }
+      if (detail || interface.icmp6_redirect_interval_configured) {
+        md_indent(out, depth + 2U);
+        out << "redirect-timeout "
+            << interface.icmp6_redirect_interval_seconds << '\n';
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+template <typename Configuration>
+std::optional<std::string>
+md_base_configuration_info(const Configuration &configuration,
+                           std::string_view path, bool detail) {
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->empty() || (*tokens)[0] != "configure")
+    return std::nullopt;
+
+  const auto emit_router = [&](std::ostringstream &out, std::size_t depth) {
+    for (const auto &interface : configuration.interfaces) {
+      md_indent(out, depth);
+      out << "interface \"" << interface.name << "\" {\n";
+      md_base_interface_info(out, interface, depth + 1U, detail);
+      md_indent(out, depth);
+      out << "}\n";
+    }
+    for (const auto &route : configuration.routes) {
+      md_indent(out, depth);
+      out << "static-route-entry "
+          << ipv4_text(route.network) << '/'
+          << static_cast<unsigned>(route.prefix_length) << " {\n";
+      md_indent(out, depth + 1U);
+      out << "next-hop \"" << ipv4_text(route.next_hop) << "\" {\n";
+      md_indent(out, depth + 2U);
+      out << "indirect " << (route.indirect ? "true" : "false") << '\n';
+      md_indent(out, depth + 1U);
+      out << "}\n";
+      md_indent(out, depth);
+      out << "}\n";
+    }
+  };
+
+  std::ostringstream out;
+  if (tokens->size() == 1U) {
+    out << "system {\n    name \"" << configuration.system_name << "\"\n}\n";
+    out << "router \"Base\" {\n";
+    emit_router(out, 1U);
+    out << "}\n";
+    return out.str();
+  }
+  if ((*tokens)[1] == "system") {
+    if (tokens->size() == 2U) {
+      out << "name \"" << configuration.system_name << "\"\n";
+      return out.str();
+    }
+    return std::nullopt;
+  }
+  if (tokens->size() < 3U || (*tokens)[1] != "router" ||
+      (*tokens)[2] != "Base")
+    return std::nullopt;
+  if (tokens->size() == 3U) {
+    emit_router(out, 0U);
+    return out.str();
+  }
+  if ((*tokens)[3] != "interface" || tokens->size() < 5U)
+    return std::nullopt;
+  const auto interface = std::find_if(
+      configuration.interfaces.begin(), configuration.interfaces.end(),
+      [&](const auto &candidate) { return candidate.name == (*tokens)[4]; });
+  if (interface == configuration.interfaces.end())
+    return std::string{};
+  if (tokens->size() == 5U) {
+    md_base_interface_info(out, *interface, 0U, detail);
+    return out.str();
+  }
+  // Nested interface renderers are intentionally selected by their canonical
+  // path rather than trimming text after rendering. This preserves list keys,
+  // braces and default-origin behavior at every navigation depth.
+  if (tokens->size() == 6U && (*tokens)[5] == "ipv4") {
+    if (interface->address_configured)
+      out << "primary {\n    address " << ipv4_text(interface->address)
+          << " prefix-length "
+          << static_cast<unsigned>(interface->prefix_length) << "\n}\n";
+    return out.str();
+  }
+  if (tokens->size() == 6U && (*tokens)[5] == "ipv6") {
+    for (const auto &address : interface->ipv6_addresses)
+      out << "address " << ip::format_ipv6(address.address)
+          << " prefix-length " << static_cast<unsigned>(address.prefix_length)
+          << "\n";
+    return out.str();
+  }
+  return std::nullopt;
+}
+
 std::optional<std::string>
 md_path_from_classic(std::string_view classic_path) {
+  // Classic root `info` is a configuration dump. Model it as the MD
+  // `/configure` datastore root before applying classic spelling and `exit`
+  // delimiters. This is a presentation mapping only; both engines continue to
+  // read the same immutable running snapshot.
+  if (classic_path.empty())
+    return std::string{"configure"};
   const auto tokens = md_context_tokens(classic_path);
   if (!tokens || tokens->empty())
     return std::nullopt;
@@ -2960,6 +3346,8 @@ classic_configuration_info(const Configuration &configuration,
       md_router_advertisement_info(configuration, *md_path, detail);
   if (!rendered)
     rendered = md_ospf_info(configuration.ospf, *md_path, detail);
+  if (!rendered)
+    rendered = md_base_configuration_info(configuration, *md_path, detail);
   if (!rendered) {
     const auto tokens = md_context_tokens(*md_path);
     if (!tokens || tokens->empty() || (*tokens)[0] != "configure")
@@ -8813,13 +9201,27 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     if (!configuration)
       running = running_configuration(*intent);
     const auto &selected = configuration ? *configuration : *running;
-    const auto path = std::string_view{terminal->cli.md_path.data()};
+    const auto saved_path =
+        std::string_view{terminal->cli.md_path.data()};
+    // MD-CLI deliberately displays an empty saved path for both the
+    // operational root and the root of an explicit candidate editor. The
+    // workflow, not the prompt text, distinguishes those states. Map only an
+    // active configuration workflow to the canonical datastore root so
+    // `info` at `(ex)[/]` renders `/configure`, while `info` at `[/]` remains
+    // unavailable instead of leaking configuration into operational mode.
+    const auto path =
+        saved_path.empty() &&
+                terminal->cli.md_workflow != MdCliWorkflow::operational
+            ? std::string_view{"configure"}
+            : saved_path;
     const auto detail =
         parsed->has_modifier(cli_schema::OutputModifier::detail);
     auto rendered =
         md_router_advertisement_info(selected, path, detail);
     if (!rendered)
       rendered = md_ospf_info(selected.ospf, path, detail);
+    if (!rendered)
+      rendered = md_base_configuration_info(selected, path, detail);
     if (!rendered) {
       // `info` is a global configuration-mode command on SR OS. A valid
       // configured context with no present children returns an empty body,
@@ -14661,13 +15063,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                        "not allowed";
     }
     output += cli_prompt(view, terminal->cli);
-  } else if (parsed->spec->id == cli_schema::CommandId::show_router_interface ||
-             parsed->spec->id ==
-                 cli_schema::CommandId::show_router_interface_summary ||
-             parsed->spec->id ==
-                 cli_schema::CommandId::show_router_interface_named ||
-             parsed->spec->id ==
-                 cli_schema::CommandId::show_router_interface_detail ||
+  } else if (router_interface_show_command(parsed->spec->id) ||
              parsed->spec->id ==
                  cli_schema::CommandId::show_router_ospf_status ||
               parsed->spec->id ==
@@ -14710,21 +15106,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                  cli_schema::CommandId::show_router_ospf3_database_detail ||
              parsed->spec->id ==
                  cli_schema::CommandId::show_router_ospf3_routes ||
-             parsed->spec->id ==
-                 cli_schema::CommandId::show_router_route_table ||
-             parsed->spec->id ==
-                 cli_schema::CommandId::show_router_route_table_protocol_ospf ||
-             parsed->spec->id ==
-                 cli_schema::CommandId::
-                     show_router_route_table_protocol_ospf3 ||
-             parsed->spec->id ==
-                 cli_schema::CommandId::show_router_route_table_ipv6 ||
-             parsed->spec->id ==
-                 cli_schema::CommandId::
-                     show_router_route_table_ipv6_protocol_ospf ||
-             parsed->spec->id ==
-                 cli_schema::CommandId::
-                     show_router_route_table_ipv6_protocol_ospf3 ||
+             route_table_show_command(parsed->spec->id) ||
              parsed->spec->id == cli_schema::CommandId::show_router_fib ||
              parsed->spec->id == cli_schema::CommandId::show_router_arp ||
              parsed->spec->id ==
@@ -15180,10 +15562,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 << "\nNeighbor Id      Address                         Interface"
                    "               State\n"
                 << row_rule;
-          else
-            out << table_rule << "\nRtr Base " << protocol_name
-                << " Neighbors (detail)\n" << table_rule;
           std::size_t count{};
+          bool detail_header_rendered{};
           for (std::uint32_t process_ordinal{};
                process_ordinal < first->process_count; ++process_ordinal) {
             const auto process = supervisor_.query_ospf(
@@ -15193,6 +15573,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             if (!process || !process->present ||
                 process->process.version != version)
               continue;
+            if (detail) {
+              out << table_rule << "\nRtr Base "
+                  << (version == packet::ospf::version_two ? "OSPFv2"
+                                                           : "OSPFv3")
+                  << " Instance "
+                  << static_cast<unsigned>(process->process.instance_id)
+                  << " Neighbors (detail)\n" << table_rule;
+              detail_header_rendered = true;
+            }
             for (std::uint32_t interface_ordinal{};
                  interface_ordinal < process->interface_count;
                  ++interface_ordinal) {
@@ -15265,26 +15654,84 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                   out << '\n'
                       << row_rule << "\nNeighbor Rtr Id : "
                       << identity_text(row->neighbor.runtime.router_id)
-                      << "  Interface: " << name
+                      << "              Interface        : " << name
                       << "\nNeighbor IP Addr : " << neighbor_address
                       << "\nLocal IF IP Addr : " << local_address
                       << "\nArea Id          : "
                       << identity_text(row->process.area_id)
-                      << "  State: "
+                      << "\nDesignated Rtr   : "
+                      << identity_text(
+                             row->neighbor.runtime.designated_router)
+                      << "              Backup Desig Rtr : "
+                      << identity_text(
+                             row->neighbor.runtime.backup_designated_router)
+                      << "\nNeighbor State   : "
                       << neighbor_state_text(row->neighbor.runtime.state)
                       << "\nPriority         : "
                       << static_cast<unsigned>(
                              row->neighbor.runtime.priority)
-                      << "\nDesignated Rtr   : "
-                      << identity_text(
-                             row->neighbor.runtime.designated_router)
-                      << "\nBackup Desig Rtr : "
-                      << identity_text(
-                             row->neighbor.runtime.backup_designated_router);
+                      << "                    Retrans Q Length : "
+                      << row->neighbor.retransmission_queue_length
+                      << "\nOptions          : 0x" << std::hex
+                      << std::uppercase << row->neighbor.runtime.options
+                      << std::dec << std::nouppercase
+                      << "                   Events           : "
+                      << row->neighbor.runtime.event_count
+                      << "\nLast Event Time  : "
+                      << ra_duration_seconds(
+                             row->neighbor.last_event_seconds_ago)
+                      << "              Up Time          : "
+                      << ra_duration_seconds(row->neighbor.up_time_seconds)
+                      << "\nTime Before Dead : "
+                      << ra_duration_seconds(
+                             row->neighbor.time_before_dead_seconds)
+                      << "\nGR Helper        : "
+                      << (row->neighbor.graceful_restart_helper ? "Yes" : "No");
+                  if (row->neighbor.graceful_restart_helper)
+                    out << "                   GR Helper Age    : "
+                        << ra_duration_seconds(
+                               row->neighbor
+                                   .graceful_restart_helper_age_seconds);
+                  out << "\nBad Nbr States   : "
+                      << row->neighbor.runtime.bad_neighbor_states
+                      << "                    Bad Seq Nums     : "
+                      << row->neighbor.runtime.bad_sequence_numbers
+                      << "\nBad LS Requests  : "
+                      << row->neighbor.runtime.bad_link_state_requests
+                      << "                    Num Restarts     : "
+                      << row->neighbor.runtime.restart_count;
+                  if (row->neighbor.runtime.restart_count)
+                    out << "\nLast Restart at  : "
+                        << ra_duration_seconds(
+                               row->neighbor.last_restart_seconds_ago)
+                        << " ago";
                 }
                 ++count;
               }
             }
+          }
+          if (detail && !detail_header_rendered) {
+            // A configured process can be absent from the protocol shard when
+            // every bound interface is operationally down. The CLI still
+            // identifies the requested protocol instance, but it must not
+            // invent any neighbor row or owner-local timer value.
+            std::uint8_t instance_id{};
+            const auto configured = std::find_if(
+                intent->ospf.instances.begin(), intent->ospf.instances.end(),
+                [&](const auto &instance) {
+                  return version == packet::ospf::version_two
+                             ? instance.address_family ==
+                                   ospf::AddressFamily::ipv4
+                             : instance.address_family !=
+                                   ospf::AddressFamily::ipv4;
+                });
+            if (configured != intent->ospf.instances.end())
+              instance_id = configured->instance_id;
+            out << table_rule << "\nRtr Base "
+                << (version == packet::ospf::version_two ? "OSPFv2"
+                                                         : "OSPFv3")
+                << " Instance " << static_cast<unsigned>(instance_id)
+                << " Neighbors (detail)\n" << table_rule;
           }
           if (!detail)
             out << '\n' << row_rule;
@@ -15400,21 +15847,38 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           out << '\n' << row_rule << "\nNo. of Routes: " << count << '\n'
               << table_rule;
         }
-      } else if (parsed->spec->id == cli_schema::CommandId::show_router_interface ||
-          parsed->spec->id ==
-              cli_schema::CommandId::show_router_interface_summary ||
-          parsed->spec->id ==
-              cli_schema::CommandId::show_router_interface_named ||
-          parsed->spec->id ==
-              cli_schema::CommandId::show_router_interface_detail) {
-        const bool summary =
-            parsed->spec->id ==
-            cli_schema::CommandId::show_router_interface_summary;
+      } else if (router_interface_show_command(parsed->spec->id)) {
+        using enum cli_schema::CommandId;
+        const auto interface_command = parsed->spec->id;
+        const bool summary = interface_command == show_router_interface_summary;
+        const bool description =
+            interface_command == show_router_interface_description;
+        const bool statistics =
+            interface_command == show_router_interface_statistics;
+        const bool mac_report =
+            interface_command == show_router_interface_mac ||
+            interface_command == show_router_interface_mac_address;
+        const bool eth_cfm = interface_command == show_router_interface_eth_cfm;
+        const bool policy_accounting =
+            interface_command == show_router_interface_policy_accounting;
+        const bool ipv4_family =
+            interface_command == show_router_interface_ipv4 ||
+            interface_command == show_router_interface_named_ipv4;
+        const bool ipv6_family =
+            interface_command == show_router_interface_ipv6 ||
+            interface_command == show_router_interface_named_ipv6;
+        const bool address_command =
+            interface_command == show_router_interface_address ||
+            interface_command == show_router_interface_address_detail;
+        const bool index_selected =
+            interface_command == show_router_interface_global_index ||
+            interface_command == show_router_interface_global_index_detail;
         const bool named =
-            parsed->spec->id ==
-                cli_schema::CommandId::show_router_interface_named ||
-            parsed->spec->id ==
-                cli_schema::CommandId::show_router_interface_detail;
+            interface_command == show_router_interface_named ||
+            interface_command == show_router_interface_detail ||
+            interface_command == show_router_interface_named_ipv4 ||
+            interface_command == show_router_interface_named_ipv6 ||
+            statistics || mac_report || eth_cfm || policy_accounting;
         const auto requested_text =
             named ? cli_detail::argument(*parsed,
                                          cli_schema::TokenKind::interface_name)
@@ -15422,13 +15886,106 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         const auto requested = requested_text
                                    ? cli_detail::unquote(*requested_text)
                                    : std::string_view{};
-        const auto selected =
-            named ? std::find_if(intent->interfaces.begin(),
-                                 intent->interfaces.end(),
-                                 [&](const auto &value) {
-                                   return value.name == requested;
-                                 })
-                  : intent->interfaces.end();
+        const auto requested_address_text =
+            address_command
+                ? cli_detail::argument(*parsed,
+                                       cli_schema::TokenKind::ip_address)
+                : std::nullopt;
+        // Interface name and IP address occupy the same documented command
+        // position. The generated trie may select the generic interface-name
+        // row first, so classify a syntactically valid address here before
+        // resolving the running object. This is grammar disambiguation, not a
+        // topology lookup, and preserves arbitrary non-address interface keys.
+        const auto requested_named_address =
+            requested_text ? ip::parse_ip_address(requested)
+                           : std::optional<ip::IpAddress>{};
+        const bool address_selected =
+            address_command || requested_named_address.has_value();
+        const bool name_selected = named && !address_selected;
+        const auto requested_address =
+            requested_address_text
+                ? ip::parse_ip_address(*requested_address_text)
+                : requested_named_address;
+        unsigned requested_index{};
+        const auto requested_index_text =
+            index_selected
+                ? cli_detail::argument(*parsed,
+                                       cli_schema::TokenKind::global_if_index)
+                : std::nullopt;
+        const bool valid_index =
+            !index_selected ||
+            (requested_index_text &&
+             decimal(*requested_index_text, requested_index) &&
+             requested_index >= 1U && requested_index <= 262144U);
+        const auto interface_identity =
+            [&](const auto &interface) -> std::uint32_t {
+          if (interface.name == system_interface_name)
+            return static_cast<std::uint32_t>(
+                       device_catalog::maximum_ports_per_router) +
+                   1U;
+          const auto port = std::find_if(
+              operational->ports.begin(), operational->ports.end(),
+              [&](const auto &value) {
+                return port_id(value.ordinal) == interface.port_id;
+              });
+          return port == operational->ports.end()
+                     ? 0U
+                     : ospf_physical_interface_id(port->ordinal);
+        };
+        const auto address_matches = [&](const auto &interface) {
+          if (!requested_address)
+            return false;
+          if (requested_address->family == ip::AddressFamily::ipv4) {
+            const auto value =
+                static_cast<std::uint32_t>(requested_address->bytes[0U])
+                    << 24U |
+                static_cast<std::uint32_t>(requested_address->bytes[1U])
+                    << 16U |
+                static_cast<std::uint32_t>(requested_address->bytes[2U])
+                    << 8U |
+                requested_address->bytes[3U];
+            return interface.address_configured && interface.address == value;
+          }
+          const auto interface_id =
+              interface.name == system_interface_name
+                  ? system_interface_id
+                  : [&]() -> std::uint64_t {
+                      const auto port = std::find_if(
+                          operational->ports.begin(), operational->ports.end(),
+                          [&](const auto &value) {
+                            return port_id(value.ordinal) == interface.port_id;
+                          });
+                      return port == operational->ports.end()
+                                 ? 0U
+                                 : physical_interface_id(port->ordinal);
+                    }();
+          packet::Ipv6 value{};
+          std::copy_n(requested_address->bytes.begin(), value.size(),
+                      value.begin());
+          return std::any_of(
+              operational->native_ipv6_addresses.begin(),
+              operational->native_ipv6_addresses.end(),
+              [&](const auto &entry) {
+                return entry.interface_id == interface_id &&
+                       entry.address == value;
+              });
+        };
+        const bool single_selected =
+            name_selected || address_selected || index_selected;
+        const auto selected = single_selected
+                                  ? std::find_if(
+                                        intent->interfaces.begin(),
+                                        intent->interfaces.end(),
+                                        [&](const auto &value) {
+                                          return name_selected
+                                                     ? value.name == requested
+                                                 : address_selected
+                                                     ? address_matches(value)
+                                                     : interface_identity(
+                                                           value) ==
+                                                           requested_index;
+                                        })
+                                  : intent->interfaces.end();
         if (summary) {
           std::size_t admin_up{};
           std::size_t oper_up{};
@@ -15467,11 +16024,96 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               << std::setw(12) << intent->interfaces.size() << std::setw(10)
               << admin_up << oper_up << '\n'
               << table_rule;
-        } else if (named && selected == intent->interfaces.end()) {
+        } else if ((address_selected && !requested_address) || !valid_index ||
+                   (single_selected &&
+                    selected == intent->interfaces.end())) {
           // Selection is resolved by the control owner. No display command is
           // allowed to synthesize a row for an interface that is absent from
           // running configuration.
           output = "MINOR: MGMT_CORE #2301: Invalid element value";
+        } else if (description) {
+          out << table_rule << "\nRouter Interface Summary\n" << table_rule
+              << "\nPort/SAP                       Admin Oper   Description\n"
+                 "                                     v4/v6\n"
+              << row_rule;
+          for (const auto &interface : intent->interfaces) {
+            const bool system = interface.name == system_interface_name;
+            const auto port = std::find_if(
+                operational->ports.begin(), operational->ports.end(),
+                [&](const auto &value) {
+                  return port_id(value.ordinal) == interface.port_id;
+                });
+            const bool physical_up =
+                system ||
+                (port != operational->ports.end() && port->operational);
+            const bool ipv4_up = interface.admin_enabled && physical_up &&
+                                 interface.address_configured;
+            const auto ipv6_id =
+                system ? system_interface_id
+                       : port == operational->ports.end()
+                             ? 0U
+                             : physical_interface_id(port->ordinal);
+            const bool ipv6_up =
+                interface.admin_enabled && physical_up && ipv6_id &&
+                ipv6_interface_up(ipv6_id);
+            out << '\n' << std::left << std::setw(31)
+                << (system ? std::string{system_interface_name}
+                           : interface.port_id)
+                << std::setw(6)
+                << (interface.admin_enabled ? "Up" : "Down")
+                << (ipv4_up ? "Up" : "Dn") << '/'
+                << (ipv6_up ? "Up" : "Dn");
+          }
+          out << '\n' << table_rule;
+        } else if (statistics) {
+          const auto &interface = *selected;
+          const auto port = std::find_if(
+              operational->ports.begin(), operational->ports.end(),
+              [&](const auto &value) {
+                return port_id(value.ordinal) == interface.port_id;
+              });
+          const InterfaceTrafficStatistics empty{};
+          const auto &counters =
+              port == operational->ports.end()
+                  ? empty
+                  : operational
+                        ->interface_traffic_statistics[port->ordinal];
+          out << table_rule << "\nInterface Statistics (Router: Base)\n"
+              << table_rule << "\nInterface         : " << interface.name
+              << "\nIngress Packets   : " << counters.ingress_packets
+              << "\nIngress Octets    : " << counters.ingress_octets
+              << "\nEgress Packets    : " << counters.egress_packets
+              << "\nEgress Octets     : " << counters.egress_octets << '\n'
+              << table_rule;
+        } else if (mac_report) {
+          const auto &interface = *selected;
+          const auto requested_mac_text =
+              interface_command == show_router_interface_mac_address
+                  ? cli_detail::argument(*parsed,
+                                         cli_schema::TokenKind::mac_address)
+                  : std::nullopt;
+          const auto requested_mac =
+              requested_mac_text ? mac_address(*requested_mac_text)
+                                 : std::optional<packet::Mac>{};
+          if (requested_mac_text && !requested_mac) {
+            output = "MINOR: MGMT_CORE #2301: Invalid element value";
+          } else {
+            out << table_rule << "\nRouter Interface MAC Information\n"
+                << table_rule << "\nInterface        MAC Address\n" << row_rule;
+            if (!requested_mac || *requested_mac == interface.mac)
+              out << '\n' << std::left << std::setw(17) << interface.name
+                  << mac_text(interface.mac);
+            out << '\n' << table_rule;
+          }
+        } else if (eth_cfm || policy_accounting) {
+          // These reports are valid even when the selected interface has no
+          // configured association. The zero-row result is derived from the
+          // empty running subsystem, not a successful configuration no-op.
+          out << table_rule << '\n'
+              << (eth_cfm ? "Ethernet CFM Interface Information"
+                          : "Interface Policy Accounting")
+              << "\n" << table_rule << "\nInterface : " << selected->name
+              << "\nNo. of Entries: 0\n" << table_rule;
         } else if (parsed->has_modifier(
                        cli_schema::OutputModifier::detail)) {
           const auto &interface = *selected;
@@ -15547,6 +16189,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                      100U
               << "ms"
               << "\nIP Oper MTU      : " << mtu << '\n'
+              << "Global If Index  : " << interface_identity(interface) << '\n'
               << table_rule;
         } else {
           out << table_rule << "\nInterface Table (Router: Base)\n"
@@ -15557,7 +16200,9 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                  "  PfxState\n"
               << row_rule;
           for (const auto &interface : intent->interfaces) {
-            if (named && interface.name != requested)
+            if (single_selected && &interface != &*selected)
+              continue;
+            if (ipv4_family && !interface.address_configured)
               continue;
             const bool system = interface.name == system_interface_name;
             const auto port = std::find_if(
@@ -15579,6 +16224,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 interface.admin_enabled && physical_up &&
                 ipv6_interface_id != 0U &&
                 ipv6_interface_up(ipv6_interface_id);
+            if (ipv6_family && ipv6_interface_id == 0U)
+              continue;
             out << '\n'
                 << std::left << std::setw(33) << interface.name << std::setw(10)
                 << (interface.admin_enabled ? "Up" : "Down") << std::setw(12)
@@ -15589,12 +16236,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                     : interface.port_configured ? interface.port_id
                                                 : "n/a")
                 << "\n   " << std::setw(61)
-                << (interface.address_configured
+                << (!ipv6_family && interface.address_configured
                         ? ipv4_text(interface.address) + '/' +
                               std::to_string(interface.prefix_length)
                         : "n/a")
                 << "n/a";
-            if (ipv6_interface_id != 0U) {
+            if (!ipv4_family && ipv6_interface_id != 0U) {
               // Render the complete forwarding-owned generation. This avoids
               // hiding secondary addresses and prevents an uncommitted MD
               // candidate from leaking into operational output.
@@ -15612,57 +16259,270 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           }
           out << '\n'
               << row_rule
-              << "\nInterfaces : " << (named ? 1U : intent->interfaces.size())
+              << "\nInterfaces : "
+              << (single_selected ? 1U : intent->interfaces.size())
               << '\n'
               << table_rule;
         }
-      } else if (parsed->spec->id ==
-                     cli_schema::CommandId::show_router_route_table ||
-                 parsed->spec->id ==
-                     cli_schema::CommandId::
-                         show_router_route_table_protocol_ospf ||
-                 parsed->spec->id ==
-                     cli_schema::CommandId::
-                         show_router_route_table_protocol_ospf3 ||
-                 parsed->spec->id ==
-                     cli_schema::CommandId::show_router_route_table_ipv6 ||
-                 parsed->spec->id ==
-                     cli_schema::CommandId::
-                         show_router_route_table_ipv6_protocol_ospf ||
-                 parsed->spec->id ==
-                     cli_schema::CommandId::
-                         show_router_route_table_ipv6_protocol_ospf3) {
+      } else if (route_table_show_command(parsed->spec->id)) {
         using enum cli_schema::CommandId;
         const auto route_table_id = parsed->spec->id;
         const bool ipv6 =
             route_table_id == show_router_route_table_ipv6 ||
             route_table_id == show_router_route_table_ipv6_protocol_ospf ||
-            route_table_id == show_router_route_table_ipv6_protocol_ospf3;
+            route_table_id == show_router_route_table_ipv6_protocol_ospf3 ||
+            route_table_id == show_router_route_table_prefix_ipv6 ||
+            route_table_id == show_router_route_table_prefix_ipv6_longer ||
+            route_table_id == show_router_route_table_prefix_ipv6_exact ||
+            route_table_id == show_router_route_table_prefix_ipv6_extensive ||
+            route_table_id ==
+                show_router_route_table_prefix_ipv6_longer_extensive ||
+            route_table_id ==
+                show_router_route_table_prefix_ipv6_exact_extensive ||
+            route_table_id == show_router_route_table_ipv6_protocol_static ||
+            route_table_id == show_router_route_table_ipv6_protocol_local ||
+            route_table_id ==
+                show_router_route_table_ipv6_protocol_ospf3_instance ||
+            route_table_id ==
+                show_router_route_table_ipv6_protocol_ospf3_extensive ||
+            route_table_id ==
+                show_router_route_table_ipv6_protocol_ospf3_instance_extensive ||
+            route_table_id == show_router_route_table_ipv6_all ||
+            route_table_id == show_router_route_table_ipv6_summary ||
+            route_table_id == show_router_route_table_ipv6_extensive;
+        const bool multicast =
+            route_table_id == show_router_route_table_mcast_ipv4 ||
+            route_table_id == show_router_route_table_mcast_ipv6;
         const bool ospf_only =
             route_table_id == show_router_route_table_protocol_ospf ||
-            route_table_id == show_router_route_table_ipv6_protocol_ospf;
+            route_table_id == show_router_route_table_ipv6_protocol_ospf ||
+            route_table_id == show_router_route_table_protocol_ospf_instance ||
+            route_table_id == show_router_route_table_protocol_ospf_extensive ||
+            route_table_id ==
+                show_router_route_table_protocol_ospf_instance_extensive;
         const bool ospf3_only =
             route_table_id == show_router_route_table_protocol_ospf3 ||
-            route_table_id == show_router_route_table_ipv6_protocol_ospf3;
+            route_table_id == show_router_route_table_ipv6_protocol_ospf3 ||
+            route_table_id == show_router_route_table_protocol_ospf3_instance ||
+            route_table_id ==
+                show_router_route_table_ipv6_protocol_ospf3_instance ||
+            route_table_id ==
+                show_router_route_table_protocol_ospf3_extensive ||
+            route_table_id ==
+                show_router_route_table_protocol_ospf3_instance_extensive ||
+            route_table_id ==
+                show_router_route_table_ipv6_protocol_ospf3_extensive ||
+            route_table_id ==
+                show_router_route_table_ipv6_protocol_ospf3_instance_extensive;
+        const bool static_only =
+            route_table_id == show_router_route_table_protocol_static ||
+            route_table_id == show_router_route_table_ipv6_protocol_static;
+        const bool local_only =
+            route_table_id == show_router_route_table_protocol_local ||
+            route_table_id == show_router_route_table_ipv6_protocol_local;
+        const bool all_routes =
+            route_table_id == show_router_route_table_all ||
+            route_table_id == show_router_route_table_ipv6_all;
+        const bool summary =
+            route_table_id == show_router_route_table_summary ||
+            route_table_id == show_router_route_table_ipv6_summary;
+        const bool extensive =
+            route_table_id == show_router_route_table_extensive ||
+            route_table_id == show_router_route_table_ipv6_extensive ||
+            route_table_id ==
+                show_router_route_table_prefix_ipv4_extensive ||
+            route_table_id ==
+                show_router_route_table_prefix_ipv4_longer_extensive ||
+            route_table_id ==
+                show_router_route_table_prefix_ipv4_exact_extensive ||
+            route_table_id ==
+                show_router_route_table_prefix_ipv6_extensive ||
+            route_table_id ==
+                show_router_route_table_prefix_ipv6_longer_extensive ||
+            route_table_id ==
+                show_router_route_table_prefix_ipv6_exact_extensive ||
+            route_table_id ==
+                show_router_route_table_protocol_ospf_extensive ||
+            route_table_id ==
+                show_router_route_table_protocol_ospf_instance_extensive ||
+            route_table_id ==
+                show_router_route_table_protocol_ospf3_extensive ||
+            route_table_id ==
+                show_router_route_table_protocol_ospf3_instance_extensive ||
+            route_table_id ==
+                show_router_route_table_ipv6_protocol_ospf3_extensive ||
+            route_table_id ==
+                show_router_route_table_ipv6_protocol_ospf3_instance_extensive;
+        const bool alternatives =
+            route_table_id == show_router_route_table_alternative;
+        const bool no_matching_capability =
+            route_table_id == show_router_route_table_next_hop_tunneled ||
+            route_table_id == show_router_route_table_qos;
+        const bool accounting =
+            route_table_id == show_router_route_table_accounting_class;
+        const bool longer =
+            route_table_id == show_router_route_table_prefix_ipv4_longer ||
+            route_table_id ==
+                show_router_route_table_prefix_ipv4_longer_extensive ||
+            route_table_id == show_router_route_table_prefix_ipv6_longer ||
+            route_table_id ==
+                show_router_route_table_prefix_ipv6_longer_extensive;
+        const bool ipv4_prefix_query =
+            route_table_id == show_router_route_table_prefix_ipv4 ||
+            route_table_id == show_router_route_table_prefix_ipv4_longer ||
+            route_table_id == show_router_route_table_prefix_ipv4_exact ||
+            route_table_id ==
+                show_router_route_table_prefix_ipv4_extensive ||
+            route_table_id ==
+                show_router_route_table_prefix_ipv4_longer_extensive ||
+            route_table_id ==
+                show_router_route_table_prefix_ipv4_exact_extensive;
+        const bool ipv6_prefix_query =
+            route_table_id == show_router_route_table_prefix_ipv6 ||
+            route_table_id == show_router_route_table_prefix_ipv6_longer ||
+            route_table_id == show_router_route_table_prefix_ipv6_exact ||
+            route_table_id ==
+                show_router_route_table_prefix_ipv6_extensive ||
+            route_table_id ==
+                show_router_route_table_prefix_ipv6_longer_extensive ||
+            route_table_id ==
+                show_router_route_table_prefix_ipv6_exact_extensive;
+        const auto ipv4_prefix_text =
+            ipv4_prefix_query
+                ? cli_detail::argument(*parsed,
+                                       cli_schema::TokenKind::ipv4_prefix)
+                : std::nullopt;
+        const auto selected_ipv4_prefix =
+            ipv4_prefix_text ? prefix(*ipv4_prefix_text)
+                             : std::optional<Prefix>{};
+        const auto ipv6_prefix_text =
+            ipv6_prefix_query
+                ? cli_detail::argument(*parsed,
+                                       cli_schema::TokenKind::ipv6_prefix)
+                : std::nullopt;
+        const auto selected_ipv6_prefix =
+            ipv6_prefix_text ? ip::parse_ipv6_prefix(*ipv6_prefix_text)
+                             : std::optional<ip::Ipv6Prefix>{};
+        unsigned selected_instance{};
+        const bool instance_filter =
+            route_table_id == show_router_route_table_protocol_ospf_instance ||
+            route_table_id == show_router_route_table_protocol_ospf3_instance ||
+            route_table_id ==
+                show_router_route_table_protocol_ospf_instance_extensive ||
+            route_table_id ==
+                show_router_route_table_protocol_ospf3_instance_extensive ||
+            route_table_id ==
+                show_router_route_table_ipv6_protocol_ospf3_instance ||
+            route_table_id ==
+                show_router_route_table_ipv6_protocol_ospf3_instance_extensive;
+        const auto instance_text =
+            instance_filter
+                ? cli_detail::argument(*parsed,
+                                       cli_schema::TokenKind::ospf_instance)
+                : std::nullopt;
+        const bool valid_instance =
+            !instance_filter ||
+            (instance_text && decimal(*instance_text, selected_instance) &&
+             (ospf_only ? selected_instance <= 31U
+              : ipv6    ? selected_instance <= 31U
+                        : selected_instance >= 64U &&
+                              selected_instance <= 95U));
+        const bool valid_ipv4_prefix =
+            !ipv4_prefix_query ||
+            (selected_ipv4_prefix &&
+             (selected_ipv4_prefix->address &
+              routing::prefix_mask(selected_ipv4_prefix->length)) ==
+                 selected_ipv4_prefix->address);
+        if (!valid_instance || !valid_ipv4_prefix ||
+            (ipv6_prefix_query && !selected_ipv6_prefix)) {
+          output = "MINOR: MGMT_CORE #2301: Invalid element value";
+        }
+
         // Filtering is applied to the forwarding-owned RIB projection, not to
         // the OSPF daemon's candidate routes. The report therefore uses the
         // same installed-route authority as an unfiltered route-table command.
         const auto selected_protocol = [&](routing::RouteSource source) {
-          return (!ospf_only && !ospf3_only) ||
+          return (!ospf_only && !ospf3_only && !static_only && !local_only) ||
                  (ospf_only && source == routing::RouteSource::ospf) ||
-                 (ospf3_only && source == routing::RouteSource::ospf3);
+                 (ospf3_only && source == routing::RouteSource::ospf3) ||
+                 (static_only &&
+                  source == routing::RouteSource::static_route) ||
+                 (local_only && source == routing::RouteSource::connected);
+        };
+        const auto selected_instance_matches =
+            [&](std::uint8_t instance) {
+              return !instance_filter || instance == selected_instance;
+            };
+        const auto ipv4_prefix_matches = [&](const routing::Route &route) {
+          if (!selected_ipv4_prefix)
+            return true;
+          const auto mask =
+              routing::prefix_mask(selected_ipv4_prefix->length);
+          const bool within =
+              route.prefix_length >= selected_ipv4_prefix->length &&
+              (route.network & mask) == selected_ipv4_prefix->address;
+          if (longer)
+            return within;
+          return route.prefix_length == selected_ipv4_prefix->length &&
+                 route.network == selected_ipv4_prefix->address;
+        };
+        const auto ipv6_prefix_matches = [&](const routing::Ipv6Route &route) {
+          if (!selected_ipv6_prefix)
+            return true;
+          if (route.prefix_length < selected_ipv6_prefix->length)
+            return false;
+          const auto full = selected_ipv6_prefix->length / 8U;
+          const auto partial = selected_ipv6_prefix->length % 8U;
+          if (!std::equal(route.network.begin(),
+                          route.network.begin() + full,
+                          selected_ipv6_prefix->network.begin()))
+            return false;
+          if (partial) {
+            const auto mask =
+                static_cast<std::uint8_t>(0xffU << (8U - partial));
+            if ((route.network[full] & mask) !=
+                (selected_ipv6_prefix->network[full] & mask))
+              return false;
+          }
+          return longer ||
+                 (route.prefix_length == selected_ipv6_prefix->length &&
+                  route.network == selected_ipv6_prefix->network);
         };
         std::size_t route_count{};
-        out << table_rule << '\n'
+        std::array<std::size_t, 4U> protocol_counts{};
+        if (output.empty())
+          out << table_rule << '\n'
             << (ipv6 ? "IPv6 Route Table" : "Route Table")
+            << (multicast ? " (Multicast)" : "")
             << " (Router: Base)\n"
-            << table_rule
-            << "\nDest Prefix[Flags]                            Type    Proto  "
-               "   Pref\n"
-            << "      Next Hop[Interface Name]                              "
-               "Metric\n"
-            << row_rule;
-        if (ipv6) {
+            << table_rule;
+        if (output.empty() && summary) {
+          const auto count_sources = [&](const auto &fib) {
+            for (std::size_t index{}; index < fib.count; ++index) {
+              const auto source = fib.routes[index].source;
+              ++protocol_counts[static_cast<std::size_t>(source)];
+            }
+          };
+          if (ipv6)
+            count_sources(operational->ipv6_fib);
+          else
+            count_sources(operational->fib);
+          out << "\nProtocol           Active Routes\n" << row_rule
+              << "\nLocal              " << protocol_counts[0U]
+              << "\nStatic             " << protocol_counts[1U]
+              << "\nOSPF               " << protocol_counts[2U]
+              << "\nOSPF3              " << protocol_counts[3U]
+              << "\n" << row_rule << "\nTotal              "
+              << std::accumulate(protocol_counts.begin(),
+                                 protocol_counts.end(), std::size_t{})
+              << '\n' << table_rule;
+        } else if (output.empty()) {
+          if (!extensive)
+            out << "\nDest Prefix[Flags]                            Type    Proto"
+                   "     Age        Pref\n"
+                << "      Next Hop[Interface Name]                         "
+                   "      Metric\n"
+                << row_rule;
           const auto routed_interface_name = [&](std::uint64_t interface_id,
                                                  std::uint16_t ordinal) {
             // The system loopback deliberately has no physical ordinal. Match
@@ -15686,69 +16546,197 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               return interface->name;
             return std::string{};
           };
-          for (std::size_t index = 0; index < operational->ipv6_fib.count;
-               ++index) {
-            const auto &route = operational->ipv6_fib.routes[index];
-            if (!selected_protocol(route.source))
-              continue;
-            ++route_count;
-            const bool connected =
-                route.source == routing::RouteSource::connected;
-            const auto protocol =
-                route.source == routing::RouteSource::static_route
-                    ? "Static"
-                : route.source == routing::RouteSource::ospf ? "OSPF"
-                : route.source == routing::RouteSource::ospf3
-                    ? "OSPF3"
-                    : "Local";
-            out << '\n'
-                << std::left << std::setw(47)
-                << (ip::format_ipv6(route.network) + '/' +
-                    std::to_string(route.prefix_length))
-                << std::setw(8) << (connected ? "Local" : "Remote")
-                << std::setw(10) << protocol << route.preference
-                << "\n      " << std::setw(55)
-                << (!connected
-                        ? ip::format_ipv6(route.next_hop)
-                        : routed_interface_name(route.interface_id,
-                                                route.physical_port_ordinal))
-                << route.metric;
+
+          const auto protocol_text = [](routing::RouteSource source) {
+            switch (source) {
+            case routing::RouteSource::connected:
+              return "Local";
+            case routing::RouteSource::static_route:
+              return "Static";
+            case routing::RouteSource::ospf:
+              return "OSPF";
+            case routing::RouteSource::ospf3:
+              return "OSPF3";
+            }
+            return "";
+          };
+          if (!multicast && !no_matching_capability && ipv6) {
+            const std::size_t begin =
+                alternatives ? operational->ipv6_fib.count : 0U;
+            const std::size_t end =
+                alternatives
+                    ? operational->ipv6_fib.count +
+                          operational->ipv6_fib.loop_free_alternate_count
+                    : operational->ipv6_fib.count;
+            for (std::size_t index = begin; index < end; ++index) {
+              const auto &route = operational->ipv6_fib.routes[index];
+              if (!selected_protocol(route.source) ||
+                  !selected_instance_matches(route.protocol_instance) ||
+                  !ipv6_prefix_matches(route))
+                continue;
+              ++route_count;
+              const bool connected =
+                  route.source == routing::RouteSource::connected;
+              const auto prefix_text =
+                  ip::format_ipv6(route.network) + '/' +
+                  std::to_string(route.prefix_length);
+              const auto next_hop =
+                  connected
+                      ? routed_interface_name(route.interface_id,
+                                              route.physical_port_ordinal)
+                      : ip::format_ipv6(route.next_hop);
+              const auto age =
+                  index < operational->ipv6_fib.count
+                      ? ra_duration_seconds(
+                            operational->ipv6_route_ages_seconds[index])
+                      : "n/a";
+              if (extensive) {
+                out << '\n' << row_rule << "\nDest Prefix             : "
+                    << prefix_text << "\n  Protocol              : "
+                    << protocol_text(route.source)
+                    << "\n  Age                   : " << age
+                    << "\n  Preference            : " << route.preference
+                    << "\n  "
+                    << (connected ? "Interface             : "
+                                  : "Next-Hop              : ")
+                    << next_hop << "\n  Metric                : "
+                    << route.metric << "\n  Protocol Instance     : "
+                    << static_cast<unsigned>(route.protocol_instance);
+              } else {
+                out << '\n' << std::left << std::setw(47)
+                    << (prefix_text + (alternatives ? "[L]" : ""))
+                    << std::setw(8) << (connected ? "Local" : "Remote")
+                    << std::setw(10) << protocol_text(route.source)
+                    << std::setw(11) << age << route.preference
+                    << "\n      " << std::setw(55) << next_hop
+                    << route.metric;
+                if (accounting)
+                  out << "  Accounting-Class: n/a";
+              }
+            }
+          } else if (!multicast && !no_matching_capability) {
+            const std::size_t begin =
+                alternatives ? operational->fib.count : 0U;
+            const std::size_t end =
+                alternatives
+                    ? operational->fib.count +
+                          operational->fib.loop_free_alternate_count
+                    : operational->fib.count;
+            for (std::size_t index = begin; index < end; ++index) {
+              const auto &route = operational->fib.routes[index];
+              if (!selected_protocol(route.source) ||
+                  !selected_instance_matches(route.protocol_instance) ||
+                  !ipv4_prefix_matches(route))
+                continue;
+              ++route_count;
+              const bool connected =
+                  route.source == routing::RouteSource::connected;
+              const auto *interface =
+                  route.local_system ? system_interface
+                                     : interface_for(route.port_ordinal);
+              const auto prefix_text =
+                  ipv4_text(route.network) + '/' +
+                  std::to_string(route.prefix_length);
+              const auto next_hop =
+                  !connected           ? ipv4_text(route.next_hop)
+                  : route.local_system ? std::string{system_interface_name}
+                  : interface          ? interface->name
+                                       : "";
+              const auto age =
+                  index < operational->fib.count
+                      ? ra_duration_seconds(
+                            operational->ipv4_route_ages_seconds[index])
+                      : "n/a";
+              if (extensive) {
+                out << '\n' << row_rule << "\nDest Prefix             : "
+                    << prefix_text << "\n  Protocol              : "
+                    << protocol_text(route.source)
+                    << "\n  Age                   : " << age
+                    << "\n  Preference            : " << route.preference
+                    << "\n  "
+                    << (connected ? "Interface             : "
+                                  : "Next-Hop              : ")
+                    << next_hop << "\n  Metric                : "
+                    << route.metric << "\n  Protocol Instance     : "
+                    << static_cast<unsigned>(route.protocol_instance);
+              } else {
+                out << '\n' << std::left << std::setw(47)
+                    << (prefix_text + (alternatives ? "[L]" : ""))
+                    << std::setw(8) << (connected ? "Local" : "Remote")
+                    << std::setw(10) << protocol_text(route.source)
+                    << std::setw(11) << age << route.preference
+                    << "\n      " << std::setw(55) << next_hop
+                    << route.metric;
+                if (accounting)
+                  out << "  Accounting-Class: n/a";
+              }
+            }
           }
-        } else {
-          for (std::size_t index = 0; index < operational->fib.count; ++index) {
-            const auto &route = operational->fib.routes[index];
-            if (!selected_protocol(route.source))
-              continue;
-            ++route_count;
-            const bool connected =
-                route.source == routing::RouteSource::connected;
-            const auto protocol =
-                route.source == routing::RouteSource::static_route
-                    ? "Static"
-                : route.source == routing::RouteSource::ospf ? "OSPF"
-                : route.source == routing::RouteSource::ospf3
-                    ? "OSPF3"
-                    : "Local";
-            const auto *interface = route.local_system
-                                        ? system_interface
-                                        : interface_for(route.port_ordinal);
-            out << '\n'
-                << std::left << std::setw(47)
-                << (ipv4_text(route.network) + '/' +
-                    std::to_string(route.prefix_length))
-                << std::setw(8) << (connected ? "Local" : "Remote")
-                << std::setw(10) << protocol << route.preference
-                << "\n      " << std::setw(55)
-                << (!connected           ? ipv4_text(route.next_hop)
-                    : route.local_system ? std::string{system_interface_name}
-                    : interface          ? interface->name
-                                         : "")
-                << route.metric;
+          // `all` includes configured static candidates that are absent from
+          // the selected FIB because their next hop is unresolved. These rows
+          // come from running intent and are explicitly marked inactive; the
+          // report never reconstructs a dynamic candidate from topology.
+          if (all_routes && !ipv6) {
+            for (const auto &candidate : intent->routes) {
+              const bool installed = std::any_of(
+                  operational->fib.routes.begin(),
+                  operational->fib.routes.begin() + operational->fib.count,
+                  [&](const auto &route) {
+                    return route.source ==
+                               routing::RouteSource::static_route &&
+                           route.network == candidate.network &&
+                           route.prefix_length == candidate.prefix_length &&
+                           route.next_hop == candidate.next_hop;
+                  });
+              routing::Route projected{
+                  .network = candidate.network,
+                  .next_hop = candidate.next_hop,
+                  .prefix_length = candidate.prefix_length,
+                  .source = routing::RouteSource::static_route};
+              if (installed || !ipv4_prefix_matches(projected))
+                continue;
+              ++route_count;
+              out << '\n' << std::left << std::setw(47)
+                  << (ipv4_text(candidate.network) + '/' +
+                      std::to_string(candidate.prefix_length) + "[I]")
+                  << std::setw(8) << "Remote" << std::setw(10) << "Static"
+                  << std::setw(11) << "n/a" << 5U << "\n      "
+                  << std::setw(55) << ipv4_text(candidate.next_hop) << "n/a";
+            }
           }
+          if (all_routes && ipv6) {
+            for (const auto &candidate : intent->ipv6_routes) {
+              const bool installed = std::any_of(
+                  operational->ipv6_fib.routes.begin(),
+                  operational->ipv6_fib.routes.begin() +
+                      operational->ipv6_fib.count,
+                  [&](const auto &route) {
+                    return route.source ==
+                               routing::RouteSource::static_route &&
+                           route.network == candidate.network &&
+                           route.prefix_length == candidate.prefix_length &&
+                           route.next_hop == candidate.next_hop;
+                  });
+              routing::Ipv6Route projected{
+                  .network = candidate.network,
+                  .next_hop = candidate.next_hop,
+                  .prefix_length = candidate.prefix_length,
+                  .source = routing::RouteSource::static_route};
+              if (installed || !ipv6_prefix_matches(projected))
+                continue;
+              ++route_count;
+              out << '\n' << std::left << std::setw(47)
+                  << (ip::format_ipv6(candidate.network) + '/' +
+                      std::to_string(candidate.prefix_length) + "[I]")
+                  << std::setw(8) << "Remote" << std::setw(10) << "Static"
+                  << std::setw(11) << "n/a" << 5U << "\n      "
+                  << std::setw(55) << ip::format_ipv6(candidate.next_hop)
+                  << "n/a";
+            }
+          }
+          out << '\n' << row_rule << "\nNo. of Routes: " << route_count
+              << '\n' << table_rule;
         }
-        out << '\n'
-            << row_rule << "\nNo. of Routes: " << route_count << '\n'
-            << table_rule;
       } else if (parsed->spec->id == cli_schema::CommandId::show_router_fib) {
         const auto slot =
             cli_detail::argument(*parsed, cli_schema::TokenKind::card_slot);

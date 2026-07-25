@@ -274,6 +274,9 @@ features:
   cli.classic.session:
     status: implemented
     source_ids: [nokia.sros.26_7.classic_cli.navigation, nokia.sros.26_7.cli.pagination]
+  cli.contextual_info:
+    status: implemented
+    source_ids: [nokia.sros.26_7.md_cli.info, nokia.sros.26_7.classic_cli.info]
   cli.operational_reports:
     status: partially-implemented
     source_ids: [nokia.sros.26_7.show.system_information, nokia.sros.26_7.show.system_alarms, nokia.sros.26_7.facility_alarms, nokia.sros.26_7.hardware_alarm_events, nokia.sros.26_7.show.card, nokia.sros.26_7.show.mda, nokia.sros.26_7.show.port, nokia.sros.26_7.show.router_interface, nokia.sros.26_7.show.route_table, nokia.sros.26_7.show.fib, nokia.sros.26_7.show.arp, nokia.sros.26_7.ipv6.neighbor_operational, nokia.sros.26_7.ipv6.neighbor_reset, nokia.sros.26_7.mld.configuration, nokia.sros.26_7.mld.status, nokia.sros.26_7.mld.statistics, nokia.sros.26_7.tls_operational_show]

@@ -55,7 +55,22 @@ struct NeighborRuntime {
   std::uint32_t interface_id{};
   std::uint32_t designated_router{};
   std::uint32_t backup_designated_router{};
+  // Options is the exact capability bitmap accepted from the latest valid
+  // Hello. The show owner must report peer-advertised capability state rather
+  // than substituting the local interface configuration.
+  std::uint32_t options{};
   RuntimeClock::time_point inactivity_deadline{};
+  // These timestamps and counters belong to the neighbor FSM owner. Keeping
+  // them beside state prevents a show command from fabricating timing data by
+  // observing UI events or the editor topology.
+  RuntimeClock::time_point state_since{};
+  RuntimeClock::time_point last_event_at{};
+  RuntimeClock::time_point last_restart_at{};
+  std::uint64_t event_count{};
+  std::uint64_t restart_count{};
+  std::uint64_t bad_neighbor_states{};
+  std::uint64_t bad_sequence_numbers{};
+  std::uint64_t bad_link_state_requests{};
   NeighborState state{NeighborState::down};
   std::uint8_t priority{};
 };

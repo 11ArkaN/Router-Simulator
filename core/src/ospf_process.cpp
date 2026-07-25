@@ -1175,16 +1175,56 @@ InstanceProcess::neighbor_snapshot(std::size_t interface_index,
   // of inventing an all-zero transport address.
   if (exchange == owner.exchanges.end())
     return std::nullopt;
+  const auto now = RuntimeClock::now();
+  const auto elapsed_seconds =
+      [now](RuntimeClock::time_point point) noexcept -> std::uint32_t {
+    if (point == RuntimeClock::time_point{} || point >= now)
+      return 0U;
+    const auto value = std::chrono::duration_cast<std::chrono::seconds>(
+                           now - point)
+                           .count();
+    return value > std::numeric_limits<std::uint32_t>::max()
+               ? std::numeric_limits<std::uint32_t>::max()
+               : static_cast<std::uint32_t>(value);
+  };
+  const auto remaining_seconds =
+      [now](RuntimeClock::time_point point) noexcept -> std::uint32_t {
+    if (point == RuntimeClock::time_point{} || point <= now)
+      return 0U;
+    const auto value = std::chrono::duration_cast<std::chrono::seconds>(
+                           point - now)
+                           .count();
+    return value > std::numeric_limits<std::uint32_t>::max()
+               ? std::numeric_limits<std::uint32_t>::max()
+               : static_cast<std::uint32_t>(value);
+  };
   return ProcessNeighborSnapshot{
       .runtime = runtime,
       .ipv4_address = exchange->ipv4_address,
       .ipv6_address = exchange->ipv6_address,
       .dd_sequence = exchange->dd_sequence,
       .local_interface_id = owner.configuration.protocol.interface_id,
+      .retransmission_queue_length = static_cast<std::uint32_t>(
+          std::min<std::size_t>(
+              exchange->database.retransmissions().size(),
+              std::numeric_limits<std::uint32_t>::max())),
+      .request_queue_length = static_cast<std::uint32_t>(
+          std::min<std::size_t>(
+              exchange->database.requests().size(),
+              std::numeric_limits<std::uint32_t>::max())),
+      .up_time_seconds = elapsed_seconds(runtime.state_since),
+      .time_before_dead_seconds =
+          remaining_seconds(runtime.inactivity_deadline),
+      .last_event_seconds_ago = elapsed_seconds(runtime.last_event_at),
+      .last_restart_seconds_ago = elapsed_seconds(runtime.last_restart_at),
+      .graceful_restart_helper_age_seconds =
+          elapsed_seconds(exchange->helper_started_at),
       .negotiation_complete = exchange->negotiation_complete,
       .database_description_pending =
           exchange->pending_database_description,
-      .local_master = exchange->local_master};
+      .local_master = exchange->local_master,
+      .graceful_restart_helper =
+          exchange->helper_active && exchange->helper_deadline > now};
 }
 
 InstanceProcess::NeighborExchange *
@@ -3277,6 +3317,8 @@ ReceiveStatus InstanceProcess::receive_validated(
           if (may_help) {
             const auto remaining =
                 grace->grace_period_seconds - header->age_seconds;
+            if (!already_helping)
+              neighbor->helper_started_at = now;
             neighbor->helper_active = true;
             neighbor->helper_deadline =
                 now + std::chrono::seconds{remaining};
@@ -4257,6 +4299,11 @@ InstanceProcess::checkpoint(RuntimeClock::time_point now) const {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         deadline - now);
   };
+  const auto elapsed = [now](RuntimeClock::time_point point) {
+    if (point == RuntimeClock::time_point{} || point > now)
+      return std::chrono::milliseconds{};
+    return std::chrono::duration_cast<std::chrono::milliseconds>(now - point);
+  };
   const auto age = [now](RuntimeClock::time_point started) {
     if (started == RuntimeClock::time_point{} || started >= now)
       return std::chrono::milliseconds{};
@@ -4375,6 +4422,7 @@ InstanceProcess::checkpoint(RuntimeClock::time_point now) const {
            .authentication_sequence_seen =
                neighbor.authentication_sequence_seen,
            .helper_remaining = remaining(neighbor.helper_deadline),
+           .helper_elapsed = elapsed(neighbor.helper_started_at),
            .local_master = neighbor.local_master,
            .negotiation_complete = neighbor.negotiation_complete,
            .pending_database_description =
@@ -4509,6 +4557,10 @@ bool InstanceProcess::restore(
             saved_neighbor.complete_after_reply;
         neighbor.helper_deadline =
             deadline(saved_neighbor.helper_remaining);
+        neighbor.helper_started_at =
+            saved_neighbor.helper_elapsed == std::chrono::milliseconds{}
+                ? RuntimeClock::time_point{}
+                : now - saved_neighbor.helper_elapsed;
         neighbor.helper_active = saved_neighbor.helper_active;
         neighbor.helper_was_designated_router =
             saved_neighbor.helper_was_designated_router;

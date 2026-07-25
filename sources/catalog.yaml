@@ -38,10 +38,10 @@ records:
     rfc_refs: [RFC2328, RFC5340]
     yang_path: null
     last_verified_at: 2026-07-25
-    implementation: [schemas/cli/26.7.R1.yaml, core/src/lab_runtime.cpp]
-    tests: [core/tests/lab_runtime_test.cpp]
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/ospf_interface.hpp, core/include/router/ospf_process.hpp, core/src/ospf_interface.cpp, core/src/ospf_process.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp]
+    tests: [core/tests/ospf_interface_test.cpp, core/tests/ospf_process_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
-    notes: Both terminal engines expose the documented detail suffix. The report reads Router ID, transport address, local interface address, area, FSM state, priority and DR or BDR identities from protocol-owner snapshots.
+    notes: Both terminal engines expose the documented detail suffix. The report reads Router ID, protocol instance, transport address, local interface address, area, FSM state, priority, DR or BDR identities, advertised options, event and restart counters, retransmission queue occupancy, state age, dead-timer remainder, graceful-restart helper state and FSM error counters from protocol-owner snapshots. Relative timer state survives checkpoint restoration without persisting a host steady-clock epoch.
   - id: nokia.sros.26_7.ospf.database_detail
     kind: cli-operational-report
     release: 26.7.R1
@@ -1438,11 +1438,11 @@ records:
     section: show router interface
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-07-20
-    implementation: [schemas/cli/26.7.R1.yaml, core/src/cli.cpp, core/src/lab_runtime.cpp]
-    tests: [core/tests/cli_test.cpp, core/tests/lab_runtime_test.cpp]
+    last_verified_at: 2026-07-25
+    implementation: [schemas/cli/26.7.R1.yaml, core/src/cli.cpp, core/include/router/router_forwarder.hpp, core/src/router_forwarder.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/lab_runtime_test.cpp]
     status: implemented
-    notes: Table, router summary, named selection and named detail are generated from configured interfaces and forwarding-owned operational state. Dual-stack interfaces contribute once to summary counts, and IPv6 operational state and prefix state are taken from forwarding-owned DAD. Detail reports effective ARP timeout in seconds and retry timer in milliseconds. Unsupported subsystems are omitted instead of being rendered as fabricated constants. The system interface is reported as a router-local object without borrowing a physical port identifier.
+    notes: Table, router summary, name, IPv4 or IPv6 address, address-family and global interface index selection are generated from configured interfaces and forwarding-owned operational state. Description, MAC, statistics, Ethernet CFM and policy-accounting reports query the same running object; empty association reports contain no fabricated rows. Dual-stack interfaces contribute once to summary counts, IPv6 state comes from forwarding-owned DAD, and packet and octet counters advance only at accepted wire ingress and accepted link-queue egress. Detail reports effective ARP timers and a stable router-local global interface identity. The system interface never borrows a physical port identifier.
   - id: nokia.sros.26_7.show.route_table
     kind: cli-output
     release: 26.7.R1
@@ -1452,11 +1452,11 @@ records:
     section: show router route-table
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-07-15
-    implementation: [core/include/router/device.hpp, core/src/multi_device_routing.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp, core/src/cli.cpp]
-    tests: [core/tests/cli_test.cpp, core/tests/multi_device_routing_test.cpp, core/tests/lab_runtime_test.cpp]
+    last_verified_at: 2026-07-25
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/include/router/router_forwarder.hpp, core/src/router_forwarder.cpp, core/src/multi_device_routing.cpp, core/src/lab_checkpoint.cpp, core/src/lab_runtime.cpp, core/src/cli.cpp]
+    tests: [core/tests/cli_test.cpp, core/tests/router_forwarder_test.cpp, core/tests/multi_device_routing_test.cpp, core/tests/lab_runtime_test.cpp, core/tests/network_plane_test.cpp]
     status: implemented
-    notes: The implemented Base IPv4 and IPv6 unicast reports display connected, system-interface local IPv4 /32, static, OSPF and OSPF3 routes from the forwarding-owned selected RIB. The explicit ipv6 selector reads the IPv6 RIB and resolves native or IES interface names from stable router-local interface identities. The documented protocol ospf and protocol ospf3 selectors filter that same installed generation and never read a daemon-private candidate table. Route selection age uses monotonic time and is preserved as a relative checkpoint duration.
+    notes: Base IPv4 and IPv6 unicast reports display connected, system-interface local, static, OSPF and OSPF3 routes from the forwarding-owned selected RIB. Family, canonical prefix, longer, exact, protocol and protocol-instance selectors filter that installed generation. The documented prefix and OSPF instance selectors compose with extensive output instead of being treated as mutually exclusive commands. Summary aggregates selected route sources, extensive renders per-route attributes, alternative reads the installed LFA suffix, and all adds unresolved configured static candidates as inactive rows. Multicast, tunneled next-hop and QoS queries truthfully return an empty selected set when their independent RIB owners have no entries. The standard table includes monotonic route age, which is preserved as a relative checkpoint duration.
   - id: nokia.sros.26_7.show.fib
     kind: cli-output
     release: 26.7.R1
