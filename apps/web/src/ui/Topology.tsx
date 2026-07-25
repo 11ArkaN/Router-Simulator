@@ -6,7 +6,7 @@
 
 import { Background, BaseEdge, ConnectionMode, Controls, EdgeLabelRenderer,
   Handle, NodeResizeControl, Position, ReactFlow, ResizeControlVariant,
-  getStraightPath, useUpdateNodeInternals,
+  getStraightPath, useNodesState, useUpdateNodeInternals,
   type Connection, type Edge,
   type EdgeProps, type Node, type NodeProps,
   type ReactFlowInstance } from "@xyflow/react";
@@ -193,6 +193,10 @@ export function Topology({ project, snapshot, selected, onSelect,
   // created annotation edits itself because its text is empty, so this state
   // only tracks re-entering an existing label.
   const [editingId, setEditingId] = useState<string>();
+  // The ref marks the only node whose local React Flow coordinate may override
+  // project input. It does not trigger renders and cannot become another owner
+  // of durable layout state.
+  const draggingNodeId = useRef<string | undefined>(undefined);
   const annotationsRef = useRef(project.annotations);
   annotationsRef.current = project.annotations;
 
@@ -225,9 +229,11 @@ export function Topology({ project, snapshot, selected, onSelect,
 
   const devicePositions = useMemo(() => Object.fromEntries([
     ...project.hosts.map((host, index) => [host.id,
-      project.layout.nodes[host.id] ?? { x: 100, y: 160 + index * 130 }] as const),
+      project.layout.nodes[host.id] ??
+        { x: 100, y: 160 + index * 130 }] as const),
     ...project.routers.map((router, index) => [router.id,
-      project.layout.nodes[router.id] ?? { x: 340 + index * 210, y: 240 }] as const),
+      project.layout.nodes[router.id] ??
+        { x: 340 + index * 210, y: 240 }] as const),
     ...project.switches.map((ethernetSwitch, index) => [ethernetSwitch.id,
       project.layout.nodes[ethernetSwitch.id] ??
         { x: 340 + index * 210, y: 420 }] as const),
@@ -248,7 +254,7 @@ export function Topology({ project, snapshot, selected, onSelect,
     }] as const),
   ]), [project.hosts, project.routers, project.switches, devicePositions]);
 
-  const nodes = useMemo<Node[]>(() => [
+  const projectedNodes = useMemo<Node[]>(() => [
     ...project.hosts.map((host) => ({
       id: host.id,
       type: "device",
@@ -302,6 +308,23 @@ export function Topology({ project, snapshot, selected, onSelect,
     devicePositions, deviceCenters,
     selected, snapshot?.routers, tool, editingId, commitText, cancelEdit,
     onAnnotationResize]);
+
+  const [nodes, setNodes, onNodesChange] = useNodesState(projectedNodes);
+  useEffect(() => {
+    // Project and telemetry renders still refresh labels, hardware subtitles,
+    // selection and link handles. While a node is being dragged, merge those
+    // fields with React Flow's latest pointer coordinate instead of replacing
+    // it with the last persisted drop coordinate.
+    setNodes((current) => {
+      const currentById = new Map(current.map((node) => [node.id, node]));
+      return projectedNodes.map((projected) => {
+        const local = currentById.get(projected.id);
+        return draggingNodeId.current === projected.id && local
+          ? { ...projected, position: local.position }
+          : projected;
+      });
+    });
+  }, [projectedNodes, setNodes]);
 
   const edges = useMemo<Edge[]>(() => project.links.map((link) => {
     // Carrier and effective media rate are link-owned runtime facts. Deriving
@@ -383,10 +406,21 @@ export function Topology({ project, snapshot, selected, onSelect,
       onInit={(instance) => { flowRef.current = instance; }} onConnect={connect}
       onPaneClick={placeAnnotation}
       onMoveStart={() => { if (tool === "text") onToolChange("select"); }}
-      onNodeDragStart={() => onToolChange("select")}
-      onNodeDragStop={(_, node) => node.type === "annotation"
-        ? onAnnotationMove(node.id, node.position)
-        : onLayoutChange(node.id, node.position)}
+      onNodeDragStart={(_, node) => {
+        // From this point onNodesChange owns the live coordinate. Parent
+        // refreshes may update every other node field but preserve this value.
+        draggingNodeId.current = node.id;
+        onToolChange("select");
+      }}
+      onNodeDragStop={(_, node) => {
+        // The stop event is authoritative. The parent becomes the durable
+        // owner with one write, avoiding persistence work at pointer frequency.
+        if (node.type === "annotation")
+          onAnnotationMove(node.id, node.position);
+        else onLayoutChange(node.id, node.position);
+        draggingNodeId.current = undefined;
+      }}
+      onNodesChange={onNodesChange}
       onNodeClick={(_, node) => onSelect(node.id)}
       onNodeDoubleClick={(_, node) => {
         if (node.type === "annotation") setEditingId(node.id);
