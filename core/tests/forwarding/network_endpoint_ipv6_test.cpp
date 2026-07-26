@@ -3,7 +3,7 @@
 // Destination Cache ownership meet at the wire boundary without reading the
 // attached router's state or installing a link-layer address directly.
 
-#include "../src/network_endpoint.hpp"
+#include "forwarding/network_endpoint.hpp"
 
 #include "router/dhcpv6_client.hpp"
 #include "router/dhcpv6_packet.hpp"

@@ -3,7 +3,7 @@
 // these tests therefore verify atomic intent, leafrefs, defaults and deletion
 // constraints without creating forwarding or browser dependencies.
 
-#include "../src/ipsec_cli_configuration.hpp"
+#include "cli/ipsec_cli_configuration.hpp"
 
 #include <cstdint>
 #include <optional>

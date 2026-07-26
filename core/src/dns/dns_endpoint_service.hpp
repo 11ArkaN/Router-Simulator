@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include "network_endpoint.hpp"
+#include "forwarding/network_endpoint.hpp"
 #include "router/dns_authoritative.hpp"
 #include "router/dns_endpoint_checkpoint.hpp"
 #include "router/dns_resolver.hpp"

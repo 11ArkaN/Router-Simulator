@@ -3,9 +3,9 @@
 
 #include "router/network_plane.hpp"
 
-#include "dhcpv6_endpoint_service.hpp"
-#include "dns_endpoint_service.hpp"
-#include "network_endpoint.hpp"
+#include "dhcpv6/dhcpv6_endpoint_service.hpp"
+#include "dns/dns_endpoint_service.hpp"
+#include "forwarding/network_endpoint.hpp"
 #include "router/multi_device_fabric.hpp"
 #include "router/ospf_control_worker.hpp"
 #include "router/shard_policy.hpp"

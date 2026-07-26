@@ -1,7 +1,7 @@
 // OSPF CLI editor tests prove that generated MD and classic syntax converges
 // on one valid configuration model and that rejected timer edits are atomic.
 
-#include "../src/ospf_cli_configuration.hpp"
+#include "cli/ospf_cli_configuration.hpp"
 
 #include <cstdint>
 #include <optional>

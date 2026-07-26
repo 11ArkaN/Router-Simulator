@@ -171,6 +171,10 @@ The public-release check rejects missing legal files, undeclared redistribution 
 ```text
 apps/web/                 React application and browser runtime bridge
 core/                     C++20 device, CLI, dual-stack network, transport, service and runtime modules
+core/include/router/      Stable public C++ headers
+core/src/<domain>/        Implementations grouped by protocol or state owner
+core/tests/<domain>/      Tests mirroring the production domain layout
+core/tests/runners/       Aggregate native and Wasm test entry points
 packages/contracts/       Versioned browser contracts and generated profile, catalog and DNSSEC data
 profiles/                 Hardware, timing, resource, DNSSEC and UI profile values
 schemas/                  CLI, runtime and checkpoint schemas
@@ -181,3 +185,7 @@ benchmarks/               Packet-path baseline and regression thresholds
 docs/                     Implementation plans and architecture decisions
 policies/                 Public redistribution allowlist
 ```
+
+The C++ implementation and tests use the same domain directories: `cli`, `device`, `dhcpv6`, `dns`, `forwarding`, `ip`, `ospf`, `runtime`, `security` and `transport`. Private implementation headers remain with their owner. Public includes keep the stable `router/...` paths.
+
+`pnpm verify` builds the complete C++ graph once during the test gate. The following benchmark and publication gates reuse those exact artifacts. Standalone benchmark and publication commands still perform their own incremental build. Core build processes are serialized around the shared Ninja dependency database, while each build uses all logical processors.

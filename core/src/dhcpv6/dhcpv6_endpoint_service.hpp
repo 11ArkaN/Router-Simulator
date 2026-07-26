@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include "network_endpoint.hpp"
+#include "forwarding/network_endpoint.hpp"
 #include "router/dhcpv6_client.hpp"
 #include "router/dhcpv6_server.hpp"
 

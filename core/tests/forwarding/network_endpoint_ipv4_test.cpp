@@ -1,7 +1,7 @@
 // Endpoint IPv4 UDP integration tests cross ARP, host routing, whole-batch
 // admission, source fragmentation, out-of-order reassembly and socket queues.
 
-#include "../src/network_endpoint.hpp"
+#include "forwarding/network_endpoint.hpp"
 
 #include "router/udp_packet.hpp"
 

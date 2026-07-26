@@ -106,7 +106,9 @@ for (const path of sourceFiles) {
 // Every production C++ translation unit must be reachable from the catalog.
 // Header-only helpers are covered through the records of their consumers.
 const referencedImplementation = new Set(catalog.records.flatMap((record) => record.implementation ?? []));
-for (const name of readdirSync(resolve(root, "core/src")).filter((name) => name.endsWith(".cpp"))) {
+for (const name of readdirSync(resolve(root, "core/src"), { recursive: true })
+  .map((entry) => String(entry).replaceAll("\\", "/"))
+  .filter((entry) => entry.endsWith(".cpp"))) {
   const path = `core/src/${name}`;
   if (!referencedImplementation.has(path)) errors.push(`${path}: production source has no catalog record`);
 }

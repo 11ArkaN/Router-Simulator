@@ -3,7 +3,7 @@
 // only source of physical coordinates and MAC addresses, so these tests also
 // guard against reintroducing fixed two-port or vector-index behavior.
 
-#include "../src/ies_cli_configuration.hpp"
+#include "cli/ies_cli_configuration.hpp"
 #include "router/interface_identity.hpp"
 
 #include <stdexcept>

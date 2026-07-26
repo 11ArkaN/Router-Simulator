@@ -85,7 +85,7 @@ for (const [source, dependencies] of graph) {
 // literal in a handler would silently recreate a second command catalog and
 // make completion, source status and execution drift independently again.
 for (const name of ["cli.cpp", "cli_md.cpp", "cli_classic.cpp"]) {
-  const source = readFileSync(resolve(root, "core/src", name), "utf8");
+  const source = readFileSync(resolve(root, "core/src/cli", name), "utf8");
   // Documentation is intentionally dense in the CLI implementation and may
   // quote a user-visible example while explaining a parser invariant. Remove
   // comments before checking string literals so the guard detects executable

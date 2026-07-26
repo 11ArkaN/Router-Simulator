@@ -3,7 +3,8 @@
 
 param(
   [ValidateSet("build", "test", "manual", "benchmark", "structure-benchmark", "runtime-benchmark", "publish")]
-  [string]$Task = "build"
+  [string]$Task = "build",
+  [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,8 +39,34 @@ if (-not (Test-Path (Join-Path $Build "build.ninja"))) {
   emcmake cmake -S (Join-Path $Root "core") -B $Build -G Ninja
 }
 
-cmake --build $Build
-if ($LASTEXITCODE -ne 0) { throw "Core build failed." }
+if (-not $SkipBuild) {
+  # Ninja's dependency database is shared by every core task. Serializing the
+  # build phase prevents two local commands from interleaving writes and
+  # corrupting the incremental cache. Compilation still uses every logical CPU.
+  $BuildMutex = [System.Threading.Mutex]::new($false, "Local\RouterSimulatorCoreBuild")
+  try {
+    $BuildMutex.WaitOne() | Out-Null
+    cmake --build $Build --parallel ([Environment]::ProcessorCount)
+    if ($LASTEXITCODE -ne 0) { throw "Core build failed." }
+  } finally {
+    $BuildMutex.ReleaseMutex()
+    $BuildMutex.Dispose()
+  }
+} else {
+  $RequiredArtifacts = @{
+    "structure-benchmark" = @("structure_benchmark.js")
+    "runtime-benchmark" = @("runtime_benchmark.js")
+    "publish" = @("simulator.js", "simulator.wasm")
+  }
+  if (-not $RequiredArtifacts.ContainsKey($Task)) {
+    throw "SkipBuild is permitted only for verify consumers with explicit artifacts."
+  }
+  foreach ($Artifact in $RequiredArtifacts[$Task]) {
+    if (-not (Test-Path (Join-Path $Build $Artifact))) {
+      throw "Cached core artifact is missing: $Artifact"
+    }
+  }
+}
 
 switch ($Task) {
   # Each task consumes the same fully built graph, preventing manual and

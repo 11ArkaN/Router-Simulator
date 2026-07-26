@@ -2,7 +2,7 @@
 // an actual UDP query and response after ARP, using only encoded Ethernet
 // frames and endpoint socket queues.
 
-#include "../src/dns_endpoint_service.hpp"
+#include "dns/dns_endpoint_service.hpp"
 
 #include <array>
 #include <memory>

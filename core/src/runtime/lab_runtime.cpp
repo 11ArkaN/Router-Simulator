@@ -4,17 +4,17 @@
 
 #include "router/lab_runtime.hpp"
 
-#include "cli_internal.hpp"
-#include "ies_cli_configuration.hpp"
-#include "ipsec_cli_configuration.hpp"
-#include "ospf_cli_configuration.hpp"
+#include "cli/cli_internal.hpp"
+#include "cli/ies_cli_configuration.hpp"
+#include "cli/ipsec_cli_configuration.hpp"
+#include "cli/ospf_cli_configuration.hpp"
 #include "router/cli.hpp"
 #include "router/dns_master_file.hpp"
 #include "router/generated_lab_runtime_protocol.hpp"
 #include "router/interface_identity.hpp"
 #include "router/sha256.hpp"
 #include "router/shard_policy.hpp"
-#include "tls_cli_configuration.hpp"
+#include "cli/tls_cli_configuration.hpp"
 
 #include <algorithm>
 #include <array>
