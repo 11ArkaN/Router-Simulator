@@ -99,6 +99,8 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
   const profile = useMemo(() => router
     ? PROFILE_CATALOG.profiles.find((item) => item.id === router.profileId)
     : undefined, [router]);
+  const hostPeer = host ? project.hosts.find((item) => item.id !== host.id)
+    : undefined;
   const [hostDraft, setHostDraft] = useState<HostProjectV4>();
   const [switchNameDraft, setSwitchNameDraft] = useState("");
   useEffect(() => {
@@ -113,6 +115,13 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
     // keystroke; blur commits the final value through the switch owner.
     setSwitchNameDraft(ethernetSwitch?.name ?? "");
   }, [ethernetSwitch]);
+  useEffect(() => {
+    // Echo-test output belongs to the current host pair. Demo replacement can
+    // reuse stable node IDs, so clear this local UI state when the addresses
+    // behind those IDs change.
+    setPingResult("");
+    setPingBusy(false);
+  }, [host?.id, host?.eth0.address, hostPeer?.id, hostPeer?.eth0.address]);
   const resizeHandle = <PanelResizeHandle axis="x" className="inspector-resizer"
     defaultValue={324} direction={-1} label="Resize inspector" min={64}
     max={Math.max(64, window.innerWidth - 64)} value={width}
@@ -174,7 +183,7 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
 
   if (host) {
     const editable = hostDraft ?? host;
-    const peer = project.hosts.find((item) => item.id !== host.id);
+    const peer = hostPeer;
     const runPing = async () => {
       if (!peer || pingBusy) return;
       setPingBusy(true);

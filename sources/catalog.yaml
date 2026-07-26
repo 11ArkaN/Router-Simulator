@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: project.router_lab.demo_catalog
+    kind: browser-ui-feature
+    release: 26.7.R1
+    platforms: [browser]
+    source_type: project-documentation
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/master/README.md
+    section: Implemented capabilities
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-07-26
+    implementation: [packages/contracts/src/demo-labs-v5.ts, apps/web/src/ui/demo-catalog.ts, apps/web/src/ui/demo-launch.ts, apps/web/src/ui/WorkspaceViews.tsx, apps/web/src/ui/App.tsx]
+    tests: [packages/contracts/tests/project-v4.test.ts, apps/web/src/ui/WorkspaceViews.test.tsx]
+    status: implemented
+    notes: The workspace demo catalog offers fresh TypeScript-built labs for a static IPv4 path and an OSPF triangle. Launching a demo validates a new project intent, replaces the active runtime through the normal applyProject replay path, clears transient terminal and capture state, selects the primary host and opens the topology workspace.
   - id: ieee.802_1q.learning_bridge
     kind: ethernet-bridge-behavior
     release: 26.7.R1

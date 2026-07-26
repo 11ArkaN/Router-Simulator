@@ -10,8 +10,10 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CaptureWorkspace, ConfigWorkspace, DevicesWorkspace, NotesWorkspace,
-  SettingsWorkspace, SnapshotWorkspace } from "./WorkspaceViews";
+import type { DemoLabOption } from "./demo-catalog";
+import { projectNeedsReplacementConfirmation } from "./demo-launch";
+import { CaptureWorkspace, ConfigWorkspace, DemosWorkspace, DevicesWorkspace,
+  NotesWorkspace, SettingsWorkspace, SnapshotWorkspace } from "./WorkspaceViews";
 
 afterEach(cleanup);
 
@@ -35,6 +37,52 @@ function ConfigHarness({ initial, observed }: {
 }
 
 describe("multi-router workspace controls", () => {
+  it("renders demo launch cards and emits the selected demo identity", async () => {
+    const user = userEvent.setup();
+    const launch = vi.fn();
+    const demos: DemoLabOption[] = [{
+      id: "static-ipv4",
+      title: "Static IPv4 path",
+      eyebrow: "BASIC ROUTING",
+      summary: "Two routers join two hosts.",
+      checkTarget: "Host A reaches 192.0.2.6",
+      primarySelection: "h1",
+      counts: { devices: 4, links: 3 },
+      topology: ["host", "router", "router", "host"],
+      createProject: () => createEmptyProjectV4()
+    }, {
+      id: "ospf-triangle",
+      title: "OSPF triangle",
+      eyebrow: "DYNAMIC ROUTING",
+      summary: "Three routers learn access prefixes.",
+      checkTarget: "Branch host reaches 198.51.100.10",
+      primarySelection: "h1",
+      counts: { devices: 5, links: 5 },
+      topology: ["host", "router", "router", "router", "host"],
+      createProject: () => createEmptyProjectV4()
+    }];
+    render(<DemosWorkspace demos={demos} onLaunch={launch} />);
+
+    expect(screen.getByRole("heading", { name: "Demos" })).toBeTruthy();
+    expect(screen.getByText("Static IPv4 path")).toBeTruthy();
+    expect(screen.getByText("5 devices")).toBeTruthy();
+    await user.click(screen.getAllByRole("button", {
+      name: "Launch demo"
+    })[1]);
+    expect(launch).toHaveBeenCalledWith("ospf-triangle");
+  });
+
+  it("asks before replacing a non-empty lab", () => {
+    const empty = createEmptyProjectV4();
+    expect(projectNeedsReplacementConfirmation(empty, 0)).toBe(false);
+    expect(projectNeedsReplacementConfirmation({ ...empty,
+      notes: "saved intent" }, 0)).toBe(true);
+    expect(projectNeedsReplacementConfirmation(empty, 1)).toBe(true);
+    expect(projectNeedsReplacementConfirmation({ ...empty,
+      routers: [createRouterProjectV4("r1", "7750-sr-1", "R1")] }, 0))
+      .toBe(true);
+  });
+
   it("addresses the selected stable router for inventory and console actions", async () => {
     const user = userEvent.setup();
     const inspect = vi.fn();

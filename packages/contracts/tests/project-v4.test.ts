@@ -3,7 +3,8 @@
 
 import { describe, expect, it } from "vitest";
 import { ANNOTATION_LIMITS, createAnnotationV4, createEmptyProjectV4,
-  createRouterProjectV4, equippedRouterPorts,
+  createOspfTriangleDemoLabV5, createRouterProjectV4,
+  createStaticIpv4DemoLabV5, equippedRouterPorts,
   createFourRouterReferenceLabV4, createSwitchProjectV5, hostInterfaceId,
   parseLabProjectV4, PROFILE_CATALOG, type HostProjectV4,
   type LabProjectV4, type TopologyAnnotationV4 } from "../src";
@@ -24,6 +25,61 @@ function host(id: string, octet: number): HostProjectV4 {
 }
 
 describe("multi-router project format", () => {
+  it("ships the static IPv4 demo as current project intent", () => {
+    const project = createStaticIpv4DemoLabV5(
+      new Date("2026-07-26T00:00:00Z"));
+    expect(project.name).toBe("Static IPv4 two-router demo");
+    expect(project.routers.map((router) => router.id)).toEqual(["r1", "r2"]);
+    expect(project.hosts.map((item) => item.eth0.address)).toEqual([
+      "192.0.2.2/30", "192.0.2.6/30"
+    ]);
+    expect(project.links.map((item) => item.id)).toEqual([
+      "h1-r1", "r1-r2", "r2-h2"
+    ]);
+    expect(project.routers[0].running.staticRoutes).toEqual([
+      { prefix: "192.0.2.4/30", nextHop: "10.0.12.2", indirect: false }
+    ]);
+    expect(project.routers[1].running.staticRoutes).toEqual([
+      { prefix: "192.0.2.0/30", nextHop: "10.0.12.1", indirect: false }
+    ]);
+    expect(parseLabProjectV4(project)).toEqual(project);
+  });
+
+  it("ships the OSPF triangle demo with a higher-cost backup link", () => {
+    const project = createOspfTriangleDemoLabV5(
+      new Date("2026-07-26T00:00:00Z"));
+    expect(project.routers.map((router) => router.id)).toEqual([
+      "r1", "r2", "r3"
+    ]);
+    expect(project.hosts.map((item) => item.eth0.gateway)).toEqual([
+      "198.51.100.1", "198.51.100.9"
+    ]);
+    expect(project.links.map((item) => item.id)).toEqual([
+      "h1-r1", "r1-r2", "r2-r3", "r3-h2", "r1-r3-backup"
+    ]);
+    for (const router of project.routers) {
+      expect(router.running.staticRoutes).toEqual([]);
+      expect(router.running.ospf.instances).toHaveLength(1);
+      expect(router.running.ospf.instances[0]).toMatchObject({
+        instanceId: 0,
+        addressFamily: "ipv4",
+        admin: "up",
+        areas: [{ areaId: "0.0.0.0", type: "normal" }]
+      });
+    }
+    const r1Ospf = project.routers[0].running.ospf.instances[0].areas[0]
+      .interfaces;
+    expect(r1Ospf.find((item) => item.interfaceName === "to-r2"))
+      .toMatchObject({ cost: 10, passive: false,
+        networkType: "point-to-point" });
+    expect(r1Ospf.find((item) => item.interfaceName === "to-r3-backup"))
+      .toMatchObject({ cost: 40, passive: false,
+        networkType: "point-to-point" });
+    expect(r1Ospf.find((item) => item.interfaceName === "to-h1"))
+      .toMatchObject({ passive: true });
+    expect(parseLabProjectV4(project)).toEqual(project);
+  });
+
   it("ships the four-router reference topology as ordinary project intent", () => {
     const project = createFourRouterReferenceLabV4();
     expect(project.routers.map((router) => router.profileId)).toEqual([

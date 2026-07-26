@@ -22,6 +22,8 @@ Above the network layer the runtime carries a real transport and a set of host a
 
 Live traffic can be captured at link, ingress, egress and CPM points and exported as PCAPNG that `tshark` opens cleanly. A project saves to `.netsim` as portable intent or as a full structural checkpoint, and import is locked to the matching profile.
 
+The Workspace sidebar includes a Demos tab with ready-to-run labs. The current catalog ships a static IPv4 two-router path and an OSPF triangle with a higher cost backup link, and each launch replaces the active lab only after confirmation when the current workspace contains user-owned content.
+
 Routers and hosts are dragged onto the canvas, and a link picks its physical ports when you connect it. Device positions and attached links follow the pointer continuously during a drag, while the durable project coordinate is written once when the device is dropped. Device and link graphics remain visually stable while they are hovered or selected. The built-in black theme is declared to the browser before styles load, so native controls and accessibility extensions recognize that the page is already dark. The topology, inspector, sidebar and terminal panels resize on desktop. The terminal recalculates its row and column geometry from the available panel rectangle, so long prompts reflow instead of being clipped when neighboring panels change width. Below 900px the sidebar folds into a drawer and the inspector into an overlay.
 
 ## Architecture

@@ -1,6 +1,9 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  ui.demo_lab_catalog:
+    status: implemented
+    source_ids: [project.router_lab.demo_catalog]
   runtime.cross_origin_isolated_hosting:
     status: implemented
     source_ids: [w3c.webappsec.coop_coep_csp, vercel.static.headers_and_rewrites]

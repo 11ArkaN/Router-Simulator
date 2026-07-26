@@ -10,6 +10,7 @@ export {
   PROFILE_CATALOG_HASH
 } from "./generated-device-catalog";
 export * from "./generated-dnssec-policy";
+export * from "./demo-labs-v5";
 export * from "./lab-project-v4";
 export * from "./reference-lab-v4";
 export * from "./lab-runtime-v6";

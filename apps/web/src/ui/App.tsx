@@ -30,12 +30,15 @@ import {
   persistDurableProject,
   terminalPresentationForSessions
 } from "./durable-project-save";
+import { DEMO_LAB_CATALOG, type DemoLabId } from "./demo-catalog";
+import { projectNeedsReplacementConfirmation } from "./demo-launch";
 import { Topology, type TopologyTool } from "./Topology";
 import { automaticTopologyLayout } from "./topology-layout";
-import { CaptureWorkspace, ConfigWorkspace, DevicesWorkspace, NotesWorkspace,
-  SettingsWorkspace, SnapshotWorkspace, type WorkspaceView } from "./WorkspaceViews";
+import { CaptureWorkspace, ConfigWorkspace, DemosWorkspace, DevicesWorkspace,
+  NotesWorkspace, SettingsWorkspace, SnapshotWorkspace,
+  type WorkspaceView } from "./WorkspaceViews";
 import { Camera, Cable, ChevronDown, CircleUser, Download, EllipsisVertical,
-  Menu, NotebookPen, Radio, Server,
+  Menu, NotebookPen, Radio, Rocket, Server,
   Settings, SlidersHorizontal, Type, Waypoints, X } from "lucide-react";
 
 type CaptureKind = "link-direction" | "router-ingress" | "router-egress" |
@@ -222,6 +225,8 @@ export function App() {
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [confirmNewProject, setConfirmNewProject] = useState(false);
+  const [confirmDemoId, setConfirmDemoId] = useState<DemoLabId>();
+  const [pendingDemoId, setPendingDemoId] = useState<DemoLabId>();
   const [topologyTool, setTopologyTool] = useState<TopologyTool>("select");
   const [routerTab, setRouterTab] = useState<RouterTab>("chassis");
   const [terminalPresentations, setTerminalPresentations] = useState<
@@ -1205,6 +1210,76 @@ export function App() {
     setView(next); setProjectMenuOpen(false); setAccountMenuOpen(false);
     setMoreMenuOpen(false); setSidebarOpen(false);
   };
+  const launchDemo = async (id: DemoLabId) => {
+    const demo = DEMO_LAB_CATALOG.find((item) => item.id === id);
+    if (!demo) return;
+    let replacement: MultiRouterRuntimeClient | undefined;
+    let previous: MultiRouterRuntimeClient | undefined;
+    let storageTransferred = false;
+    setPendingDemoId(id);
+    try {
+      const nextProject = demo.createProject();
+      replacement = new MultiRouterRuntimeClient();
+      const live = await replacement.applyProject(nextProject);
+      previous = runtimeRef.current;
+      await transferCaptureStorage(previous, replacement);
+      storageTransferred = true;
+      await replacement.clearCapture();
+      setRuntime(replacement);
+      runtimeRef.current = replacement;
+      setProject(nextProject);
+      setSnapshot(live);
+      setTelemetrySnapshot(live);
+      setSelected(demo.primarySelection);
+      setView("topology");
+      setCaptureSelections([]);
+      setTerminalOpen(false);
+      setTerminalPresentations({});
+      setActiveSession(undefined);
+      setHiddenTerminalSessions(new Set());
+      setTerminalGeneration((value) => value + 1);
+      setTopologyTool("select");
+      setLinkNodes(undefined);
+      setPendingRouterPosition(undefined);
+      setPendingHost(undefined);
+      setConfirmDemoId(undefined);
+      setProjectLoaded(true);
+      setRuntimeError(undefined);
+      setOperationError(undefined);
+      setContinuityNotice(undefined);
+      setProjectMenuOpen(false);
+      setAccountMenuOpen(false);
+      setMoreMenuOpen(false);
+      setSidebarOpen(false);
+      previous?.close();
+      replacement = undefined;
+    } catch (cause) {
+      if (storageTransferred && replacement && previous) {
+        try {
+          await replacement.releaseCaptureStorage();
+          await previous.activateCaptureStorage();
+        } catch {
+          // Preserve the launch failure. The visible runtime will retry its
+          // storage acquisition on the next explicit capture operation.
+        }
+      }
+      replacement?.close();
+      setOperationError(visibleFailure("operation", cause));
+    } finally {
+      setPendingDemoId((current) => current === id ? undefined : current);
+    }
+  };
+  const requestDemoLaunch = (id: DemoLabId) => {
+    setProjectMenuOpen(false);
+    setAccountMenuOpen(false);
+    setMoreMenuOpen(false);
+    if (projectNeedsReplacementConfirmation(project,
+      snapshot?.sessions.length ?? 0)) {
+      setConfirmDemoId(id);
+      return;
+    }
+    void launchDemo(id);
+  };
   const selectedRouter = project.routers.find((item) => item.id === selected);
   const terminalTabs = (snapshot?.sessions ?? [])
     .filter((session) => !hiddenTerminalSessions.has(session.id))
@@ -1221,6 +1296,8 @@ export function App() {
   const visibleMessageTitle = runtimeError ? "Lab unavailable"
     : operationError ? "Operation failed" : "Lab restored";
   const displaySnapshot = telemetrySnapshot ?? snapshot;
+  const confirmDemo = DEMO_LAB_CATALOG.find((item) =>
+    item.id === confirmDemoId);
   const shellStyle = { "--library-preferred-width": `${project.layout.sidebarWidth}px`,
     "--inspector-preferred-width": `${project.layout.inspectorWidth}px`,
     "--terminal-preferred-height": `${project.layout.terminalHeight}px` } as CSSProperties;
@@ -1231,18 +1308,19 @@ export function App() {
       <div className="top-actions"><button className="icon-action" onClick={() => { setPassphrase(""); setPassphraseConfirmation(""); setProtectedFileAction({ kind: "project" }); }}><Download size={16} /> <span>Export</span></button><div className="more-wrap"><button className="more-action" title="More project actions" aria-expanded={moreMenuOpen} onClick={() => setMoreMenuOpen((value) => !value)}><EllipsisVertical size={18} /></button>{moreMenuOpen && <div className="header-menu more-menu"><button onClick={() => { setMoreMenuOpen(false); setPassphrase(""); setPassphraseConfirmation(""); setProtectedFileAction({ kind: "checkpoint" }); }}>Export checkpoint</button><button onClick={() => navigate("settings")}>Project settings</button></div>}</div><input ref={importRef} hidden type="file" accept=".netsim,application/json" onChange={(event) => { void requestImport(event.target.files?.[0]); event.target.value = ""; }} /></div>
     </header>
     {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
-    <div className="workspace"><aside className="library"><div className="panel-kicker">WORKSPACE</div><nav className="side-nav"><button className={view === "topology" ? "active" : ""} onClick={() => navigate("topology")}><span><Waypoints size={18} /></span>Topology</button><button className={view === "devices" ? "active" : ""} onClick={() => navigate("devices")}><span><Server size={18} /></span>Devices</button><button className={view === "captures" ? "active" : ""} onClick={() => navigate("captures")}><span><Radio size={18} /></span>Captures</button></nav><div className="side-divider" /><div className="panel-kicker">DEVICE PALETTE</div>
+    <div className="workspace"><aside className="library"><div className="panel-kicker">WORKSPACE</div><nav className="side-nav"><button className={view === "topology" ? "active" : ""} onClick={() => navigate("topology")}><span><Waypoints size={18} /></span>Topology</button><button className={view === "demos" ? "active" : ""} onClick={() => navigate("demos")}><span><Rocket size={18} /></span>Demos</button><button className={view === "devices" ? "active" : ""} onClick={() => navigate("devices")}><span><Server size={18} /></span>Devices</button><button className={view === "captures" ? "active" : ""} onClick={() => navigate("captures")}><span><Radio size={18} /></span>Captures</button></nav><div className="side-divider" /><div className="panel-kicker">DEVICE PALETTE</div>
       <section><h3>ENDPOINTS</h3><button className="library-item" draggable onDragStart={(event) => { event.dataTransfer.setData("application/x-router-lab-device", "host"); event.dataTransfer.effectAllowed = "copy"; }} onClick={() => { setSidebarOpen(false); addDevice("host"); }}><span className="mini-icon device-symbol"><img src="/assets/topology/host-diagram.png" alt="" draggable={false} /></span><span><strong>IP Host</strong><small>{project.hosts.length} configured</small></span></button></section>
       <section><h3>ROUTERS</h3><button className="library-item active" draggable onDragStart={(event) => { event.dataTransfer.setData("application/x-router-lab-device", "router"); event.dataTransfer.effectAllowed = "copy"; }} onClick={() => { setSidebarOpen(false); addDevice("router"); }}><span className="mini-icon device-symbol router"><img src="/assets/topology/router-diagram.png" alt="" draggable={false} /></span><span><strong>7750 SR</strong><small>SR OS {PROFILE_CATALOG.release}</small></span></button></section>
       <section><h3>SWITCHES</h3><button className="library-item" draggable onDragStart={(event) => { event.dataTransfer.setData("application/x-router-lab-device", "switch"); event.dataTransfer.effectAllowed = "copy"; }} onClick={() => { setSidebarOpen(false); addDevice("switch"); }}><span className="mini-icon device-symbol switch"><img src="/assets/topology/switch-diagram.png" alt="" draggable={false} /></span><span><strong>Ethernet switch</strong><small>{project.switches.length} configured</small></span></button></section>
       <section><h3>MEDIA</h3><button className={`library-item ${topologyTool === "link" ? "active" : ""}`} onClick={() => { setSidebarOpen(false); setTopologyTool((current) => current === "link" ? "select" : "link"); navigate("topology"); }}><span className="mini-icon link"><Cable size={17} /></span><span><strong>Physical link</strong><small>Drag between free physical ports</small></span></button></section>
       <section><h3>ANNOTATE</h3><button className={`library-item ${topologyTool === "text" ? "active" : ""}`} onClick={() => { setSidebarOpen(false); navigate("topology"); setTopologyTool("text"); }}><span className="mini-icon"><Type size={17} /></span><span><strong>Text label</strong><small>Document addressing on the canvas</small></span></button></section><div className="side-divider" /><div className="panel-kicker">PROJECT</div><nav className="project-nav"><button className={view === "configs" ? "active" : ""} onClick={() => navigate("configs")}><SlidersHorizontal size={16} /> <span>Configuration</span></button><button className={view === "snapshots" ? "active" : ""} onClick={() => navigate("snapshots")}><Camera size={16} /> <span>Snapshots</span></button><button className={view === "notes" ? "active" : ""} onClick={() => navigate("notes")}><NotebookPen size={16} /> <span>Notes</span></button></nav><div className="side-footer"><button className={view === "settings" ? "active" : ""} onClick={() => navigate("settings")}><Settings size={18} /> <span>Settings</span></button><div className="account-wrap"><button aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((value) => !value)}><CircleUser size={18} /> <span>admin</span><b><ChevronDown size={14} /></b></button>{accountMenuOpen && <div className="account-menu"><strong>Local administrator</strong><small>Browser-only session</small><button onClick={() => setAccountMenuOpen(false)}>Close</button></div>}</div></div><PanelResizeHandle axis="x" className="library-resizer" defaultValue={194} direction={1} label="Resize sidebar" min={64} max={Math.max(64, window.innerWidth - 64)} value={project.layout.sidebarWidth} onChange={(value) => resizePanel("sidebarWidth", value)} /></aside>
       <section className="center-stage">{visibleMessage && <div className="runtime-error"><strong>{visibleMessageTitle}</strong><span>{visibleMessage}</span>{!runtimeError && <button onClick={() => { setOperationError(undefined); setContinuityNotice(undefined); }}>Dismiss</button>}</div>}
-        {view === "topology" ? <Topology project={project} snapshot={displaySnapshot} selected={selected} onSelect={selectDevice} onLayoutChange={updateLayout} onConnect={(first, second) => { setLinkNodes([first, second]); setLinkPorts(["", ""]); }} onDropDevice={(kind, position) => addDevice(kind, position)} onOpenHardware={() => { if (selectedRouter) setRouterTab("cards"); }} onAnnotationCreate={createAnnotation} onAnnotationMove={moveAnnotation} onAnnotationResize={resizeAnnotation} onAnnotationCommitText={commitAnnotationText} onAnnotationDelete={deleteAnnotation} tool={topologyTool} onToolChange={setTopologyTool} /> : view === "devices" ? <DevicesWorkspace project={project} snapshot={displaySnapshot} onInspect={selectDevice} onConsole={openConsole} /> : view === "captures" ? <CaptureWorkspace project={project} snapshot={displaySnapshot} selections={captureSelections.map((item) => item.key)} onSelection={(kind, objectId, portId, direction, value) => void setCaptureSelection(kind, objectId, portId, direction, value)} onToggle={() => void toggleCapture()} onExport={() => void exportCaptureNow()} onCheckpoint={() => { setPassphrase(""); setPassphraseConfirmation(""); setProtectedFileAction({ kind: "checkpoint" }); }} /> : view === "configs" ? <ConfigWorkspace router={selectedRouter} onChange={updateRouter} /> : view === "snapshots" ? <SnapshotWorkspace checkpointInput={checkpointRef} onExport={() => { setPassphrase(""); setPassphraseConfirmation(""); setProtectedFileAction({ kind: "checkpoint" }); }} onImport={(event) => void importCheckpointFile(event)} /> : view === "notes" ? <NotesWorkspace value={project.notes} onChange={(notes) => setProject((current) => ({ ...current, notes }))} /> : <SettingsWorkspace project={project} onChange={setProject} onResetLayout={resetLayout} />}
+        {view === "topology" ? <Topology project={project} snapshot={displaySnapshot} selected={selected} onSelect={selectDevice} onLayoutChange={updateLayout} onConnect={(first, second) => { setLinkNodes([first, second]); setLinkPorts(["", ""]); }} onDropDevice={(kind, position) => addDevice(kind, position)} onOpenHardware={() => { if (selectedRouter) setRouterTab("cards"); }} onAnnotationCreate={createAnnotation} onAnnotationMove={moveAnnotation} onAnnotationResize={resizeAnnotation} onAnnotationCommitText={commitAnnotationText} onAnnotationDelete={deleteAnnotation} tool={topologyTool} onToolChange={setTopologyTool} /> : view === "demos" ? <DemosWorkspace demos={DEMO_LAB_CATALOG} pendingDemoId={pendingDemoId} onLaunch={requestDemoLaunch} /> : view === "devices" ? <DevicesWorkspace project={project} snapshot={displaySnapshot} onInspect={selectDevice} onConsole={openConsole} /> : view === "captures" ? <CaptureWorkspace project={project} snapshot={displaySnapshot} selections={captureSelections.map((item) => item.key)} onSelection={(kind, objectId, portId, direction, value) => void setCaptureSelection(kind, objectId, portId, direction, value)} onToggle={() => void toggleCapture()} onExport={() => void exportCaptureNow()} onCheckpoint={() => { setPassphrase(""); setPassphraseConfirmation(""); setProtectedFileAction({ kind: "checkpoint" }); }} /> : view === "configs" ? <ConfigWorkspace router={selectedRouter} onChange={updateRouter} /> : view === "snapshots" ? <SnapshotWorkspace checkpointInput={checkpointRef} onExport={() => { setPassphrase(""); setPassphraseConfirmation(""); setProtectedFileAction({ kind: "checkpoint" }); }} onImport={(event) => void importCheckpointFile(event)} /> : view === "notes" ? <NotesWorkspace value={project.notes} onChange={(notes) => setProject((current) => ({ ...current, notes }))} /> : <SettingsWorkspace project={project} onChange={setProject} onResetLayout={resetLayout} />}
       </section>
       {inspectorOpen && <Inspector selected={selected} tab={routerTab} onTabChange={setRouterTab} project={project} snapshot={displaySnapshot} updateHost={updateHost} updateRouter={updateRouter} setCard={setCard} setMda={setMda} setCardAdmin={setCardAdmin} setMdaAdmin={setMdaAdmin} setSwitchName={setSwitchName} setSwitchPort={setSwitchPort} setLink={(id, up) => void setLink(id, up)} updateLink={updateLink} deleteLink={deleteLink} deleteNode={deleteNode} updateAnnotation={updateAnnotation} deleteAnnotation={deleteAnnotation} ping={ping} width={project.layout.inspectorWidth} onWidthChange={(value) => resizePanel("inspectorWidth", value)} openConsole={openConsole} close={() => setInspectorOpen(false)} />}
     </div>
     {terminalOpen && activeSession && <TerminalPanel key={terminalGeneration} ready={Boolean(runtime && !runtimeError)} systemName={activeTerminalRouter?.systemName ?? "Router"} historyKey={`${project.projectId}:${activeTerminalSession?.routerId ?? "unknown"}:${activeSession}`} execute={execute} complete={complete} cancel={cancelTerminal} state={terminalState} restorePresentation={terminalPresentations[activeSession]} registerCheckpointProvider={registerTerminalCheckpointProvider} tabs={terminalTabs} activeTab={activeSession} selectTab={selectTerminalSession} newTab={() => { if (activeTerminalSession) createConsole(activeTerminalSession.routerId); }} closeTab={closeTerminalSession} height={project.layout.terminalHeight} onHeightChange={(value) => resizePanel("terminalHeight", value)} close={closeTerminal} />}
+    {confirmDemo && <div className="modal-backdrop"><div className="lab-dialog"><header><strong>Replace current lab?</strong><button aria-label="Close dialog" disabled={Boolean(pendingDemoId)} onClick={() => setConfirmDemoId(undefined)}><X size={18} /></button></header><p className="dialog-copy">Launching {confirmDemo.title} will replace the active lab and close open console sessions.</p><div className="dialog-actions"><button disabled={Boolean(pendingDemoId)} onClick={() => setConfirmDemoId(undefined)}>Cancel</button><button className="primary" disabled={Boolean(pendingDemoId)} onClick={() => void launchDemo(confirmDemo.id)}>{pendingDemoId ? "Loading" : "Replace and launch"}</button></div></div></div>}
     {pendingRouterPosition && <div className="modal-backdrop"><div className="lab-dialog"><header><strong>Configure router</strong><button aria-label="Close dialog" onClick={() => setPendingRouterPosition(undefined)}><X size={18} /></button></header><label>System name<input value={pendingRouterPosition.systemName} maxLength={32} onChange={(event) => setPendingRouterPosition({ ...pendingRouterPosition, systemName: event.target.value })} /></label><div className="panel-kicker dialog-kicker">CHASSIS PROFILE</div>{PROFILE_CATALOG.profiles.map((profile) => <button key={profile.id} className="primary" disabled={!pendingRouterPosition.systemName.trim()} onClick={() => addRouter(profile.id as DeviceProfileId)}>{profile.chassis}</button>)}</div></div>}
     {pendingHost && <div className="modal-backdrop"><div className="lab-dialog"><header><strong>Configure host interface</strong><button aria-label="Close dialog" onClick={() => setPendingHost(undefined)}><X size={18} /></button></header>
       <label>Name<input value={pendingHost.name} onChange={(event) => setPendingHost({ ...pendingHost, name: event.target.value })} /></label>

@@ -6,10 +6,32 @@ import { PROFILE_CATALOG, type LabProjectV4, type LabRuntimeSnapshotV6,
   type RouterProjectV4 } from "@router-simulator/contracts";
 import { useEffect, useState, type ChangeEvent, type RefObject } from "react";
 import { VirtualizedList } from "./VirtualizedList";
+import type { DemoLabId, DemoLabOption } from "./demo-catalog";
 import { Monitor, Router as RouterIcon } from "lucide-react";
 
-export type WorkspaceView = "topology" | "devices" | "captures" | "configs" |
-  "snapshots" | "notes" | "settings";
+export type WorkspaceView = "topology" | "demos" | "devices" | "captures" |
+  "configs" | "snapshots" | "notes" | "settings";
+
+export function DemosWorkspace({ demos, pendingDemoId, onLaunch }: {
+  demos: readonly DemoLabOption[];
+  pendingDemoId?: DemoLabId;
+  onLaunch(id: DemoLabId): void;
+}) {
+  const icon = (kind: "host" | "router") =>
+    kind === "host" ? "/assets/topology/host-diagram.png" :
+      "/assets/topology/router-diagram.png";
+  return <section className="workspace-page demos-page" aria-labelledby="demos-title">
+    <header className="workspace-page-head"><div><span>READY LABS</span><h1 id="demos-title">Demos</h1></div></header>
+    <div className="demo-grid">{demos.map((demo) => <article className="demo-card" key={demo.id}>
+      <div className="demo-card-head"><div><span>{demo.eyebrow}</span><h2>{demo.title}</h2></div><b>{demo.counts.devices} devices</b></div>
+      <div className="demo-topology-strip" aria-hidden>{demo.topology.map((kind, index) =>
+        <span className={`demo-symbol ${kind}`} key={`${demo.id}-${index}`}><img src={icon(kind)} alt="" draggable={false} /></span>)}</div>
+      <p>{demo.summary}</p>
+      <dl className="demo-facts"><div><dt>Links</dt><dd>{demo.counts.links}</dd></div><div><dt>Check</dt><dd>{demo.checkTarget}</dd></div></dl>
+      <div className="workspace-actions"><button className="primary" disabled={pendingDemoId === demo.id} onClick={() => onLaunch(demo.id)}>{pendingDemoId === demo.id ? "Loading" : "Launch demo"}</button></div>
+    </article>)}</div>
+  </section>;
+}
 
 export function DevicesWorkspace({ project, snapshot, onInspect, onConsole }: {
   project: LabProjectV4; snapshot?: LabRuntimeSnapshotV6;
