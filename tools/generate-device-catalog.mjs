@@ -673,6 +673,8 @@ inline constexpr std::chrono::milliseconds recovery_checkpoint_interval{
     ${catalog.runtime.recovery_checkpoint_interval_milliseconds}};
 inline constexpr std::chrono::milliseconds continuity_loss_threshold{
     ${catalog.runtime.continuity_loss_threshold_milliseconds}};
+inline constexpr std::size_t facility_alarm_cleared_history_size =
+    ${catalog.runtime.facility_alarm_cleared_history_size};
 inline constexpr std::size_t link_queue_capacity = ${catalog.runtime.link_queue_frames};
 inline constexpr std::size_t fabric_work_budget_frames = ${catalog.runtime.fabric_work_budget_frames};
 inline constexpr std::chrono::nanoseconds immediate_link_deadline{

@@ -46,6 +46,9 @@ parameters:
   arp_timeout_seconds: { display: "<seconds>", description: "Dynamic ARP entry lifetime in seconds" }
   arp_retry_deciseconds: { display: "<deciseconds>", description: "ARP retry interval in 100 ms units" }
   count: { display: "<number>", description: "Number of echo requests" }
+  alarm_count: { display: "<count>", description: "Maximum number of facility alarm rows" }
+  alarm_newer_than_days: { display: "<days>", description: "Facility alarms newer than this number of days" }
+  alarm_severity: { display: "<severity-level>", description: "Facility alarm severity level" }
   ecmp_paths: { display: "<max-ecmp-routes>", description: "Maximum equal-cost paths from 1 through 128" }
   size: { display: "<bytes>", description: "ICMP data field size in bytes" }
   mtu: { display: "<bytes>", description: "Ethernet MTU in bytes" }
@@ -219,6 +222,7 @@ literals:
   back: "Navigate to a parent context"
   card: "Configure or display card information"
   card-type: "Configure the card type"
+  cleared: "Display recently cleared facility alarms"
   commit: "Commit candidate configuration changes"
   compare: "Display candidate configuration changes"
   configure: "Enter or address the configuration branch"
@@ -240,6 +244,7 @@ literals:
   exclusive: "Use exclusive candidate configuration mode"
   private: "Enter private configuration mode"
   read-only: "Enter read-only configuration mode"
+  newer-than: "Filter by age in days"
   exit: "Return to a previous or parent context"
   fib: "Display forwarding information base entries"
   global: "Enter global configuration mode"
@@ -319,6 +324,7 @@ literals:
   redirects: "Configure ICMPv6 Redirect message generation"
   number: "Configure the number of messages per interval"
   seconds: "Configure the rate interval in seconds"
+  severity: "Filter by severity"
   router-alert-check: "Enable or disable MLD Router Alert validation"
   current-hop-limit: "Configure the advertised current hop limit"
   managed-configuration: "Advertise stateful address configuration availability"
@@ -1139,6 +1145,13 @@ commands:
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.system_alarms
     tokens: [show, system, alarms]
+  - { id: show_system_alarms_count, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, count, { parameter: alarm_count }] }
+  - { id: show_system_alarms_newer_than, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, newer-than, { parameter: alarm_newer_than_days }] }
+  - { id: show_system_alarms_severity, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, severity, { parameter: alarm_severity }] }
+  - { id: show_system_alarms_cleared, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, cleared] }
+  - { id: show_system_alarms_cleared_count, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, cleared, count, { parameter: alarm_count }] }
+  - { id: show_system_alarms_cleared_newer_than, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, cleared, newer-than, { parameter: alarm_newer_than_days }] }
+  - { id: show_system_alarms_cleared_severity, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, cleared, severity, { parameter: alarm_severity }] }
   - id: show_card
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.card

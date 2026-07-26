@@ -38,10 +38,10 @@ struct EthernetSwitchProfile {
 // One release owns this entire generated catalog. Runtime capability output
 // consumes this value instead of repeating the release pin in hand-written C++.
 inline constexpr std::string_view release{"26.7.R1"};
-inline constexpr std::uint64_t catalog_hash = 0x6963e703b930a967ULL;
-inline constexpr std::uint64_t checkpoint_schema_hash = 0xafb89f3baf57987dULL;
+inline constexpr std::uint64_t catalog_hash = 0xcb781470f7aa6127ULL;
+inline constexpr std::uint64_t checkpoint_schema_hash = 0x7fccb54e0ce85c26ULL;
 inline constexpr std::uint64_t runtime_protocol_hash = 0x93fe9fe7c895d610ULL;
-inline constexpr std::uint64_t build_hash = 0xae9ae746d44fddcbULL;
+inline constexpr std::uint64_t build_hash = 0xd752418b11155075ULL;
 
 inline constexpr std::size_t maximum_routers = 16;
 inline constexpr std::size_t maximum_hosts = 16;
@@ -88,6 +88,8 @@ inline constexpr std::chrono::milliseconds recovery_checkpoint_interval{
     2000};
 inline constexpr std::chrono::milliseconds continuity_loss_threshold{
     5000};
+inline constexpr std::size_t facility_alarm_cleared_history_size =
+    500;
 inline constexpr std::size_t link_queue_capacity = 256;
 inline constexpr std::size_t fabric_work_budget_frames = 64;
 inline constexpr std::chrono::nanoseconds immediate_link_deadline{

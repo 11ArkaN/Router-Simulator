@@ -401,6 +401,21 @@ struct PortableIpv6StaticRouteIntentCheckpoint {
   bool indirect{};
 };
 
+struct PortableFacilityAlarmCheckpoint {
+  // Facility alarm history belongs to the management facade. The forwarding
+  // and hardware owners publish facts that can raise or clear alarms, but they
+  // must not own CLI indexes, civil timestamps or cleared-history wrapping.
+  std::string key;
+  std::string code;
+  std::string severity;
+  std::string resource;
+  std::string detail;
+  std::uint64_t index{};
+  std::uint64_t raised_at_epoch_ms{};
+  std::uint64_t cleared_at_epoch_ms{};
+  bool masked{};
+};
+
 struct PortableMdaConfigurationCheckpoint {
   std::string provisioned;
   bool admin_enabled{};
@@ -474,6 +489,12 @@ struct PortableRouterIntentCheckpoint {
   ospf::RouterConfiguration ospf;
   PortableConfigurationCheckpoint global_candidate;
   bool global_candidate_initialized{};
+  std::array<bool, device_catalog::maximum_ports_per_router>
+      port_seen_operational{};
+  std::vector<PortableFacilityAlarmCheckpoint> active_facility_alarms;
+  std::vector<PortableFacilityAlarmCheckpoint> cleared_facility_alarms;
+  std::uint64_t next_facility_alarm_index{1U};
+  bool cleared_facility_alarms_wrapped{};
 };
 
 struct PortableSessionCandidateCheckpoint {

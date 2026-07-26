@@ -39,6 +39,7 @@ export const PROFILE_CATALOG = {
     "telemetry_publish_interval_milliseconds": 250,
     "recovery_checkpoint_interval_milliseconds": 2000,
     "continuity_loss_threshold_milliseconds": 5000,
+    "facility_alarm_cleared_history_size": 500,
     "link_queue_frames": 256,
     "fabric_work_budget_frames": 64,
     "immediate_link_deadline_nanoseconds": 74000,
@@ -1100,5 +1101,5 @@ export const PROFILE_CATALOG_COMPILED = {
   "maximumMdaSlotsPerCard": 2,
   "maximumPortsPerMda": 40
 } as const;
-export const PROFILE_CATALOG_HASH = "6963e703b930a967" as const;
-export const LAB_BUILD_HASH = "ae9ae746d44fddcb" as const;
+export const PROFILE_CATALOG_HASH = "cb781470f7aa6127" as const;
+export const LAB_BUILD_HASH = "d752418b11155075" as const;

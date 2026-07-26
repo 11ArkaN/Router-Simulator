@@ -416,6 +416,13 @@ enum class CommandId : std::uint16_t {
   show_system_information,
   show_chassis,
   show_system_alarms,
+  show_system_alarms_count,
+  show_system_alarms_newer_than,
+  show_system_alarms_severity,
+  show_system_alarms_cleared,
+  show_system_alarms_cleared_count,
+  show_system_alarms_cleared_newer_than,
+  show_system_alarms_cleared_severity,
   show_card,
   show_mda,
   show_port,
@@ -1792,6 +1799,9 @@ enum class TokenKind : std::uint8_t {
   arp_timeout_seconds,
   arp_retry_deciseconds,
   count,
+  alarm_count,
+  alarm_newer_than_days,
+  alarm_severity,
   ecmp_paths,
   size,
   mtu,
@@ -1924,7 +1934,7 @@ struct CommandSpec {
   std::string_view source_id{};
 };
 
-inline constexpr std::array<CommandSpec, 1736> commands{{
+inline constexpr std::array<CommandSpec, 1743> commands{{
     {CommandId::md_ospf_admin_enable, 1, 0, 7, {{{TokenKind::literal, "configure", "Enter or address the configuration branch"}, {TokenKind::literal, "router", "Configure or display router information"}, {TokenKind::literal, "\"Base\"", "Base router instance"}, {TokenKind::literal, "ospf", "Configure or display OSPFv2"}, {TokenKind::ospf_instance, "<ospf-instance>", "OSPF protocol instance identifier"}, {TokenKind::literal, "admin-state", "Configure administrative state"}, {TokenKind::literal, "enable", "Set the administrative state to enabled"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.ospf.configuration_model"},
     {CommandId::md_ospf_admin_disable, 1, 0, 7, {{{TokenKind::literal, "configure", "Enter or address the configuration branch"}, {TokenKind::literal, "router", "Configure or display router information"}, {TokenKind::literal, "\"Base\"", "Base router instance"}, {TokenKind::literal, "ospf", "Configure or display OSPFv2"}, {TokenKind::ospf_instance, "<ospf-instance>", "OSPF protocol instance identifier"}, {TokenKind::literal, "admin-state", "Configure administrative state"}, {TokenKind::literal, "disable", "Set the administrative state to disabled"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.ospf.configuration_model"},
     {CommandId::md_ospf_router_id, 1, 0, 7, {{{TokenKind::literal, "configure", "Enter or address the configuration branch"}, {TokenKind::literal, "router", "Configure or display router information"}, {TokenKind::literal, "\"Base\"", "Base router instance"}, {TokenKind::literal, "ospf", "Configure or display OSPFv2"}, {TokenKind::ospf_instance, "<ospf-instance>", "OSPF protocol instance identifier"}, {TokenKind::literal, "router-id", "Configure the OSPF router identifier"}, {TokenKind::ipv4, "<ip-address>", "IPv4 address in dotted-decimal notation"}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.ospf.configuration_model"},
@@ -2330,6 +2340,13 @@ inline constexpr std::array<CommandSpec, 1736> commands{{
     {CommandId::show_system_information, 3, 0, 3, {{{TokenKind::literal, "show", "Display operational information"}, {TokenKind::literal, "system", "Configure or display system information"}, {TokenKind::literal, "information", "Display system information"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.show.system_information"},
     {CommandId::show_chassis, 3, 0, 2, {{{TokenKind::literal, "show", "Display operational information"}, {TokenKind::literal, "chassis", "Display chassis status and hardware summary"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.show.chassis"},
     {CommandId::show_system_alarms, 3, 0, 3, {{{TokenKind::literal, "show", "Display operational information"}, {TokenKind::literal, "system", "Configure or display system information"}, {TokenKind::literal, "alarms", "Display facility alarms"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.show.system_alarms"},
+    {CommandId::show_system_alarms_count, 3, 0, 5, {{{TokenKind::literal, "show", "Display operational information"}, {TokenKind::literal, "system", "Configure or display system information"}, {TokenKind::literal, "alarms", "Display facility alarms"}, {TokenKind::literal, "count", "Configure the number of echo requests"}, {TokenKind::alarm_count, "<count>", "Maximum number of facility alarm rows"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.show.system_alarms"},
+    {CommandId::show_system_alarms_newer_than, 3, 0, 5, {{{TokenKind::literal, "show", "Display operational information"}, {TokenKind::literal, "system", "Configure or display system information"}, {TokenKind::literal, "alarms", "Display facility alarms"}, {TokenKind::literal, "newer-than", "Filter by age in days"}, {TokenKind::alarm_newer_than_days, "<days>", "Facility alarms newer than this number of days"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.show.system_alarms"},
+    {CommandId::show_system_alarms_severity, 3, 0, 5, {{{TokenKind::literal, "show", "Display operational information"}, {TokenKind::literal, "system", "Configure or display system information"}, {TokenKind::literal, "alarms", "Display facility alarms"}, {TokenKind::literal, "severity", "Filter by severity"}, {TokenKind::alarm_severity, "<severity-level>", "Facility alarm severity level"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.show.system_alarms"},
+    {CommandId::show_system_alarms_cleared, 3, 0, 4, {{{TokenKind::literal, "show", "Display operational information"}, {TokenKind::literal, "system", "Configure or display system information"}, {TokenKind::literal, "alarms", "Display facility alarms"}, {TokenKind::literal, "cleared", "Display recently cleared facility alarms"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.show.system_alarms"},
+    {CommandId::show_system_alarms_cleared_count, 3, 0, 6, {{{TokenKind::literal, "show", "Display operational information"}, {TokenKind::literal, "system", "Configure or display system information"}, {TokenKind::literal, "alarms", "Display facility alarms"}, {TokenKind::literal, "cleared", "Display recently cleared facility alarms"}, {TokenKind::literal, "count", "Configure the number of echo requests"}, {TokenKind::alarm_count, "<count>", "Maximum number of facility alarm rows"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.show.system_alarms"},
+    {CommandId::show_system_alarms_cleared_newer_than, 3, 0, 6, {{{TokenKind::literal, "show", "Display operational information"}, {TokenKind::literal, "system", "Configure or display system information"}, {TokenKind::literal, "alarms", "Display facility alarms"}, {TokenKind::literal, "cleared", "Display recently cleared facility alarms"}, {TokenKind::literal, "newer-than", "Filter by age in days"}, {TokenKind::alarm_newer_than_days, "<days>", "Facility alarms newer than this number of days"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.show.system_alarms"},
+    {CommandId::show_system_alarms_cleared_severity, 3, 0, 6, {{{TokenKind::literal, "show", "Display operational information"}, {TokenKind::literal, "system", "Configure or display system information"}, {TokenKind::literal, "alarms", "Display facility alarms"}, {TokenKind::literal, "cleared", "Display recently cleared facility alarms"}, {TokenKind::literal, "severity", "Filter by severity"}, {TokenKind::alarm_severity, "<severity-level>", "Facility alarm severity level"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.show.system_alarms"},
     {CommandId::show_card, 3, 0, 2, {{{TokenKind::literal, "show", "Display operational information"}, {TokenKind::literal, "card", "Configure or display card information"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.show.card"},
     {CommandId::show_mda, 3, 0, 2, {{{TokenKind::literal, "show", "Display operational information"}, {TokenKind::literal, "mda", "Configure or display MDA information"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.show.mda"},
     {CommandId::show_port, 3, 0, 2, {{{TokenKind::literal, "show", "Display operational information"}, {TokenKind::literal, "port", "Configure or display physical ports"}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}}}, "nokia.sros.26_7.show.port"},

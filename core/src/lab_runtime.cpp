@@ -21,10 +21,13 @@
 #include <atomic>
 #include <charconv>
 #include <cmath>
+#include <ctime>
 #include <functional>
 #include <iomanip>
 #include <iterator>
 #include <limits>
+#include <memory>
+#include <new>
 #include <numeric>
 #include <sstream>
 #include <thread>
@@ -1374,6 +1377,122 @@ inline constexpr std::string_view table_rule{
     "=========================================================================="
     "====="};
 
+std::uint64_t epoch_milliseconds() noexcept {
+  // Alarm reports use civil time while protocol timers use steady_clock. The
+  // conversion is intentionally confined to the management renderer so a wall
+  // clock correction cannot advance packet or protocol deadlines.
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
+}
+
+std::string alarm_time(std::uint64_t epoch_ms) {
+  // SR OS examples render alarm timestamps as local calendar time with
+  // centisecond precision. The stored value remains UTC epoch milliseconds so
+  // checkpoint and browser locale choices do not rewrite alarm history.
+  const auto seconds = static_cast<std::time_t>(epoch_ms / 1000U);
+  std::tm local{};
+#ifdef _WIN32
+  localtime_s(&local, &seconds);
+#else
+  localtime_r(&seconds, &local);
+#endif
+  std::ostringstream out;
+  out << std::put_time(&local, "%Y/%m/%d %H:%M:%S") << '.'
+      << std::setfill('0') << std::setw(2) << (epoch_ms % 1000U) / 10U
+      << std::setfill(' ');
+  return out.str();
+}
+
+std::string uppercase_severity(std::string_view value) {
+  if (value == "critical")
+    return "CRITICAL";
+  if (value == "major")
+    return "MAJOR";
+  if (value == "minor")
+    return "MINOR";
+  if (value == "warning")
+    return "WARNING";
+  return "INDETERMINATE";
+}
+
+std::uint64_t stable_hardware_hash(std::string_view profile_id,
+                                   DeviceHandle device,
+                                   const RouterPortState &port,
+                                   std::string_view mda_type) noexcept {
+  // The emulator does not claim a vendor EEPROM. It still needs stable
+  // inventory identity so repeated show commands do not invent new serials.
+  // FNV-1a over release-owned and registry-owned identity changes only when
+  // the modeled hardware coordinate or generation changes.
+  std::uint64_t hash = 1469598103934665603ULL;
+  const auto mix = [&hash](std::uint8_t byte) noexcept {
+    hash ^= byte;
+    hash *= 1099511628211ULL;
+  };
+  for (const auto byte : profile_id)
+    mix(static_cast<std::uint8_t>(byte));
+  for (const auto byte : mda_type)
+    mix(static_cast<std::uint8_t>(byte));
+  for (const auto value :
+       {device.index, device.generation, port.generation, port.card_slot,
+        port.mda_slot, port.port_number}) {
+    mix(static_cast<std::uint8_t>(value >> 8U));
+    mix(static_cast<std::uint8_t>(value));
+  }
+  return hash;
+}
+
+std::string hex_word(std::uint64_t value, unsigned digits) {
+  // Hardware identity is display data, not arithmetic input. Uppercase fixed
+  // width hex gives deterministic strings without accepting user-provided
+  // serial text or relying on process-random seeds.
+  const auto masked =
+      digits >= 16U ? value : value & ((1ULL << (digits * 4U)) - 1ULL);
+  std::ostringstream out;
+  out << std::uppercase << std::hex << std::setfill('0') << std::setw(digits)
+      << masked << std::setfill(' ') << std::dec;
+  return out.str();
+}
+
+std::string_view optic_form_factor(std::string_view mda_type) noexcept {
+  // The MDA catalog gives cage families in the type name. These are form
+  // factor categories only; optical reach, wavelength and DDM readings remain
+  // unavailable until a transceiver owner models a specific inserted optic.
+  if (mda_type.find("qsfpdd") != std::string_view::npos ||
+      mda_type.find("qdd") != std::string_view::npos)
+    return "QSFP-DD";
+  if (mda_type.find("qsfp28") != std::string_view::npos ||
+      mda_type.find("qsfp") != std::string_view::npos)
+    return "QSFP28";
+  if (mda_type.find("cfp2") != std::string_view::npos)
+    return "CFP2";
+  if (mda_type.find("cfp") != std::string_view::npos)
+    return "CFP";
+  if (mda_type.find("sfp112") != std::string_view::npos)
+    return "SFP112";
+  if (mda_type.find("sfp28") != std::string_view::npos)
+    return "SFP28";
+  if (mda_type.find("sfp+") != std::string_view::npos)
+    return "SFP+";
+  if (mda_type.find("sfp") != std::string_view::npos)
+    return "SFP";
+  return "Built-in";
+}
+
+std::uint8_t optic_lanes(std::string_view form_factor,
+                         std::uint32_t speed_mbps) noexcept {
+  // Lane count is derived from the cage family and configured rate. It is
+  // intentionally conservative: if a profile cannot prove a breakout lane
+  // count, the report returns one aggregate lane rather than guessing optics.
+  if (form_factor == "QSFP-DD")
+    return 8U;
+  if (form_factor == "QSFP28" || form_factor == "CFP2" ||
+      form_factor == "CFP")
+    return speed_mbps >= 100000U ? 4U : 1U;
+  return 1U;
+}
+
 std::string elapsed_ra_time(std::int64_t nanoseconds) {
   if (nanoseconds < 0)
     return "N/A";
@@ -2342,6 +2461,23 @@ bool router_interface_show_command(cli_schema::CommandId id) noexcept {
   case show_router_interface_mac_address:
   case show_router_interface_eth_cfm:
   case show_router_interface_policy_accounting:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool system_alarm_show_command(cli_schema::CommandId id) noexcept {
+  using enum cli_schema::CommandId;
+  switch (id) {
+  case show_system_alarms:
+  case show_system_alarms_count:
+  case show_system_alarms_newer_than:
+  case show_system_alarms_severity:
+  case show_system_alarms_cleared:
+  case show_system_alarms_cleared_count:
+  case show_system_alarms_cleared_newer_than:
+  case show_system_alarms_cleared_severity:
     return true;
   default:
     return false;
@@ -6063,7 +6199,12 @@ bool LabRuntime::create_router(std::span<const std::string_view> fields) {
                         .ies = {},
                         .ospf = {},
                         .global_candidate = {},
-                        .global_candidate_initialized = false});
+                        .global_candidate_initialized = false,
+                        .port_seen_operational = {},
+                        .active_facility_alarms = {},
+                        .cleared_facility_alarms = {},
+                        .next_facility_alarm_index = 1U,
+                        .cleared_facility_alarms_wrapped = false});
     return true;
   } catch (...) {
     // Registry creation and model publication form one transaction. If text
@@ -7151,6 +7292,170 @@ bool LabRuntime::create_link(std::span<const std::string_view> fields) {
                           std::chrono::nanoseconds{delay}, admin,
                           configured_speed_mbps)
              .has_value();
+}
+
+void LabRuntime::refresh_facility_alarms(RouterIntent &router) {
+  const auto *inventory = supervisor_.hardware(router.handle);
+  if (!inventory)
+    return;
+
+  auto hardware = std::make_unique<RouterHardwareCheckpoint>();
+  try {
+    inventory->checkpoint(*hardware);
+  } catch (const std::bad_alloc &) {
+    return;
+  }
+
+  struct ObservedAlarm {
+    FacilityAlarmIntent row;
+  };
+
+  try {
+    std::vector<ObservedAlarm> observed;
+    observed.reserve(device_catalog::maximum_card_slots *
+                         (1U + device_catalog::maximum_mda_slots_per_card) +
+                     router.active_facility_alarms.size());
+
+    const auto add_observed = [&](std::string key, std::string code,
+                                  std::string severity, std::string resource,
+                                  std::string detail, bool masked) {
+      observed.push_back({.row = {.key = std::move(key),
+                                  .code = std::move(code),
+                                  .severity = std::move(severity),
+                                  .resource = std::move(resource),
+                                  .detail = std::move(detail),
+                                  .masked = masked}});
+    };
+
+    const auto *profile = inventory->profile();
+    const auto card_slots =
+        profile ? (profile->fixed ? 1U : profile->card_slots) : 0U;
+    for (std::size_t card_index = 0; card_index < card_slots; ++card_index) {
+      const auto &card = hardware->cards[card_index];
+      const auto card_number = std::to_string(card_index + 1U);
+      if (!card.provisioned.empty() && card.provisioned != card.equipped) {
+        // Source: nokia.sros.26_7.facility_alarms. 7-2003-1 is the removed
+        // equipment alarm, and 7-2004-1 is the wrong-type equipment alarm.
+        add_observed("card:" + card_number,
+                     card.equipped.empty() ? "7-2003-1" : "7-2004-1",
+                     card.equipped.empty() ? "major" : "minor",
+                     "Card " + card_number,
+                     card.equipped.empty()
+                         ? "Class IOM Module: removed"
+                         : "Class IOM Module: wrong type inserted",
+                     false);
+      }
+
+      for (std::size_t mda_index = 0;
+           mda_index < device_catalog::maximum_mda_slots_per_card;
+           ++mda_index) {
+        const auto &mda = card.mdas[mda_index];
+        if (mda.provisioned.empty() || mda.provisioned == mda.equipped)
+          continue;
+        const auto mda_number =
+            card_number + '/' + std::to_string(mda_index + 1U);
+        add_observed("mda:" + mda_number,
+                     mda.equipped.empty() ? "7-2003-1" : "7-2004-1",
+                     mda.equipped.empty() ? "major" : "minor",
+                     "MDA " + mda_number,
+                     mda.equipped.empty()
+                         ? "Class MDA Module: removed"
+                         : "Class MDA Module: wrong type inserted",
+                     false);
+      }
+    }
+
+    for (std::size_t ordinal = 0; ordinal < hardware->ports.size();
+         ++ordinal) {
+      const auto &port = hardware->ports[ordinal];
+      const auto name = port_id(static_cast<std::uint16_t>(ordinal));
+      const auto key = "port:" + name;
+      const auto active =
+          std::find_if(router.active_facility_alarms.begin(),
+                       router.active_facility_alarms.end(),
+                       [&](const auto &row) { return row.key == key; });
+      const bool parent_visible = port.present && port.hierarchy_enabled;
+      const bool currently_up = parent_visible && port.admin_enabled &&
+                                port.link_signal &&
+                                port.configuration_compatible;
+      if (!port.admin_enabled) {
+        router.port_seen_operational[ordinal] = false;
+      } else if (currently_up) {
+        router.port_seen_operational[ordinal] = true;
+      } else if (parent_visible && router.port_seen_operational[ordinal]) {
+        // Source: nokia.sros.26_7.facility_alarms. linkDown is raised after
+        // an operational link leaves up state; a never-up port is not enough.
+        add_observed(std::string{key}, "59-2004-1", "warning", "Port " + name,
+                     "Interface " + name + " is not operational", false);
+      } else if (!parent_visible &&
+                 active != router.active_facility_alarms.end()) {
+        // A parent card or MDA alarm masks an already raised child alarm. The
+        // cleared queue must not receive a row until the child condition itself
+        // clears, because SR OS documents masked alarms as distinct from clear.
+        auto masked = *active;
+        masked.masked = true;
+        observed.push_back({.row = std::move(masked)});
+      }
+    }
+
+    std::vector<FacilityAlarmIntent> next_active;
+    next_active.reserve(observed.size());
+    const auto now_ms = epoch_milliseconds();
+    const auto keep_or_raise = [&](const ObservedAlarm &candidate) {
+      const auto existing =
+          std::find_if(router.active_facility_alarms.begin(),
+                       router.active_facility_alarms.end(),
+                       [&](const auto &row) {
+                         return row.key == candidate.row.key;
+                       });
+      auto row = existing == router.active_facility_alarms.end()
+                     ? candidate.row
+                     : *existing;
+      if (existing == router.active_facility_alarms.end()) {
+        if (candidate.row.masked)
+          return;
+        row.index = router.next_facility_alarm_index++;
+        row.raised_at_epoch_ms = now_ms;
+      }
+      row.code = candidate.row.code;
+      row.resource = candidate.row.resource;
+      row.detail = candidate.row.detail;
+      row.masked = candidate.row.masked;
+      // Facility alarm severity is latched when the raising event occurs.
+      // Updating existing rows here would violate event-control semantics once
+      // that wider log owner is added.
+      if (existing == router.active_facility_alarms.end())
+        row.severity = candidate.row.severity;
+      next_active.push_back(std::move(row));
+    };
+    for (const auto &candidate : observed)
+      keep_or_raise(candidate);
+
+    for (const auto &active : router.active_facility_alarms) {
+      const auto still_active =
+          std::find_if(next_active.begin(), next_active.end(),
+                       [&](const auto &row) { return row.key == active.key; });
+      if (still_active != next_active.end())
+        continue;
+      auto cleared = active;
+      cleared.masked = false;
+      cleared.cleared_at_epoch_ms = now_ms;
+      cleared.detail = "Clear " + active.detail + " alarm";
+      router.cleared_facility_alarms.push_back(std::move(cleared));
+      if (router.cleared_facility_alarms.size() >
+          device_catalog::facility_alarm_cleared_history_size) {
+        // The vector is cold management state and capped at release profile
+        // size. Erasing one row per clear keeps write amplification bounded
+        // without storing a second circular index in checkpoint-visible state.
+        router.cleared_facility_alarms.erase(
+            router.cleared_facility_alarms.begin());
+        router.cleared_facility_alarms_wrapped = true;
+      }
+    }
+    router.active_facility_alarms = std::move(next_active);
+  } catch (const std::bad_alloc &) {
+    return;
+  }
 }
 
 bool LabRuntime::configure_host(std::span<const std::string_view> fields) {
@@ -14718,7 +15023,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
              parsed->spec->id == cli_schema::CommandId::show_port ||
              parsed->spec->id == cli_schema::CommandId::show_port_named ||
              parsed->spec->id == cli_schema::CommandId::show_port_detail ||
-             parsed->spec->id == cli_schema::CommandId::show_system_alarms) {
+             system_alarm_show_command(parsed->spec->id)) {
     const auto *inventory = supervisor_.hardware(intent->handle);
     auto hardware = std::make_unique<RouterHardwareCheckpoint>();
     if (!inventory) {
@@ -14854,8 +15159,45 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               << "\nOper State         : " << (operational ? "up" : "down")
               << "\nPhysical Link      : " << (port.link_signal ? "Yes" : "No")
               << "\nMTU                : " << port.mtu
-              << "\nConfig Speed       : " << port.speed_mbps << " Mbps\n"
-              << table_rule;
+              << "\nConfig Speed       : " << port.speed_mbps << " Mbps\n";
+          if (id == cli_schema::CommandId::show_port_detail) {
+            const bool valid_mda_coordinate =
+                port.card_slot > 0U && port.mda_slot > 0U &&
+                port.card_slot <= hardware->cards.size() &&
+                port.mda_slot <=
+                    device_catalog::maximum_mda_slots_per_card;
+            const auto mda_type =
+                valid_mda_coordinate
+                    ? std::string_view{
+                          hardware->cards[port.card_slot - 1U]
+                              .mdas[port.mda_slot - 1U]
+                              .equipped}
+                    : std::string_view{};
+            const auto form_factor = optic_form_factor(mda_type);
+            const auto identity =
+                stable_hardware_hash(hardware->profile_id, hardware->device,
+                                     port, mda_type);
+            // The transceiver identity is deterministic virtual hardware
+            // inventory. Sensor values, reach and wavelength stay unavailable
+            // until a real transceiver module owner exists, because a made-up
+            // optical reading would be worse than an explicit N/A.
+            out << table_rule << "\nTransceiver Data\n"
+                << table_rule << "\nTransceiver Type   : " << form_factor
+                << "\nModel Number       : LAB-" << hex_word(identity >> 8U, 8U)
+                << "\nTX Laser Wavelength: N/A"
+                << "                       Diag Capable     : no"
+                << "\nNumber of Lanes    : "
+                << static_cast<unsigned>(optic_lanes(form_factor,
+                                                     port.speed_mbps))
+                << "\nConnector Code     : N/A"
+                << "                       Vendor OUI       : 02:00:00"
+                << "\nManufacture date   : N/A"
+                << "                       Media            : Ethernet"
+                << "\nSerial Number      : SIM" << hex_word(identity, 12U)
+                << "\nPart Number        : LAB-" << (port.speed_mbps / 1000U)
+                << "G-ETH\n";
+          }
+          out << table_rule;
         } else {
           out << table_rule << "\nPort Summary\n"
               << table_rule
@@ -14896,44 +15238,97 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               << table_rule;
         }
       } else {
-        struct AlarmRow {
-          std::string resource;
-          std::string detail;
-        };
-        std::vector<AlarmRow> alarms;
-        const auto slots =
-            device->profile->fixed ? 1U : device->profile->card_slots;
-        for (std::size_t card = 0; card < slots; ++card) {
-          const auto &value = hardware->cards[card];
-          if (!value.provisioned.empty() && value.provisioned != value.equipped)
-            alarms.push_back(
-                {"Card " + std::to_string(card + 1U),
-                 value.equipped.empty()
-                     ? "Provisioned card is not equipped"
-                     : "Equipped card type does not match provisioning"});
-          for (std::size_t mda = 0;
-               mda < device_catalog::maximum_mda_slots_per_card; ++mda) {
-            const auto &child = value.mdas[mda];
-            if (!child.provisioned.empty() &&
-                child.provisioned != child.equipped)
-              alarms.push_back(
-                  {"MDA " + std::to_string(card + 1U) + '/' +
-                       std::to_string(mda + 1U),
-                   child.equipped.empty()
-                       ? "Provisioned MDA is not equipped"
-                       : "Equipped MDA type does not match provisioning"});
-          }
+        refresh_facility_alarms(*intent);
+        const bool cleared =
+            id == cli_schema::CommandId::show_system_alarms_cleared ||
+            id == cli_schema::CommandId::show_system_alarms_cleared_count ||
+            id == cli_schema::CommandId::
+                      show_system_alarms_cleared_newer_than ||
+            id == cli_schema::CommandId::show_system_alarms_cleared_severity;
+        const auto count_text =
+            cli_detail::argument(*parsed, cli_schema::TokenKind::alarm_count);
+        const auto newer_text = cli_detail::argument(
+            *parsed, cli_schema::TokenKind::alarm_newer_than_days);
+        const auto severity_text =
+            cli_detail::argument(*parsed, cli_schema::TokenKind::alarm_severity);
+        std::uint64_t requested_count{};
+        std::uint64_t newer_days{};
+        const std::size_t maximum_rows =
+            count_text && decimal(*count_text, requested_count)
+                ? static_cast<std::size_t>(std::min<std::uint64_t>(
+                      requested_count,
+                      static_cast<std::uint64_t>(
+                          std::numeric_limits<std::size_t>::max())))
+                : std::numeric_limits<std::size_t>::max();
+        const bool filter_by_age =
+            newer_text && decimal(*newer_text, newer_days);
+        const auto now_ms = epoch_milliseconds();
+        const auto day_ms = 86'400'000ULL;
+        const auto age_span_ms =
+            newer_days > std::numeric_limits<std::uint64_t>::max() / day_ms
+                ? std::numeric_limits<std::uint64_t>::max()
+                : newer_days * day_ms;
+        const auto cutoff_ms = age_span_ms > now_ms ? 0U : now_ms - age_span_ms;
+        const auto wanted_severity =
+            severity_text ? std::optional<std::string_view>{*severity_text}
+                          : std::nullopt;
+        const auto &source_rows = cleared ? intent->cleared_facility_alarms
+                                          : intent->active_facility_alarms;
+        std::vector<const FacilityAlarmIntent *> rows;
+        rows.reserve(source_rows.size());
+        for (auto it = source_rows.rbegin(); it != source_rows.rend(); ++it) {
+          const auto timestamp =
+              cleared ? it->cleared_at_epoch_ms : it->raised_at_epoch_ms;
+          if (!cleared && it->masked)
+            continue;
+          if (wanted_severity && it->severity != *wanted_severity)
+            continue;
+          if (filter_by_age && timestamp < cutoff_ms)
+            continue;
+          rows.push_back(&*it);
+          if (rows.size() == maximum_rows)
+            break;
         }
-        out << table_rule << "\nAlarms [Critical:0 Major:" << alarms.size()
-            << " Minor:0 Warning:0 Total:" << alarms.size() << "]\n"
-            << table_rule
-            << "\nIndex  Severity  Resource              Details\n"
+        std::array<std::size_t, 4> severity_counts{};
+        const auto count_severity = [](std::string_view severity) {
+          if (severity == "critical")
+            return 0U;
+          if (severity == "major")
+            return 1U;
+          if (severity == "minor")
+            return 2U;
+          return 3U;
+        };
+        for (const auto *row : rows)
+          ++severity_counts[count_severity(row->severity)];
+        if (cleared) {
+          out << table_rule << "\nCleared Alarms [Size:"
+              << device_catalog::facility_alarm_cleared_history_size
+              << " Total:" << rows.size() << " ("
+              << (intent->cleared_facility_alarms_wrapped ? "wrapped"
+                                                          : "not wrapped")
+              << ")]\n";
+        } else {
+          out << table_rule << "\nAlarms [Critical:" << severity_counts[0]
+              << " Major:" << severity_counts[1]
+              << " Minor:" << severity_counts[2]
+              << " Warning:" << severity_counts[3] << " Total:"
+              << rows.size() << "]\n";
+        }
+        out << table_rule
+            << "\nIndex  Date/Time                 Severity  Alarm       Resource\n"
+            << "   Details\n"
             << row_rule;
-        for (std::size_t index = 0; index < alarms.size(); ++index)
+        for (const auto *row : rows) {
+          const auto timestamp =
+              cleared ? row->cleared_at_epoch_ms : row->raised_at_epoch_ms;
           out << '\n'
-              << std::left << std::setw(7) << index + 1U << std::setw(10)
-              << "MAJOR" << std::setw(22) << alarms[index].resource
-              << alarms[index].detail;
+              << std::right << std::setw(5) << row->index << "  "
+              << std::left << std::setw(24) << alarm_time(timestamp)
+              << std::setw(10) << uppercase_severity(row->severity)
+              << std::setw(12) << row->code << row->resource << "\n   "
+              << row->detail;
+        }
         out << '\n' << table_rule;
       }
       if (output.empty())
@@ -18926,6 +19321,31 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
       if (router.global_candidate_initialized)
         value.global_candidate =
             portable_configuration(router.global_candidate);
+      value.port_seen_operational = router.port_seen_operational;
+      const auto portable_alarm = [](const FacilityAlarmIntent &alarm) {
+        return PortableFacilityAlarmCheckpoint{.key = alarm.key,
+                                               .code = alarm.code,
+                                               .severity = alarm.severity,
+                                               .resource = alarm.resource,
+                                               .detail = alarm.detail,
+                                               .index = alarm.index,
+                                               .raised_at_epoch_ms =
+                                                   alarm.raised_at_epoch_ms,
+                                               .cleared_at_epoch_ms =
+                                                   alarm.cleared_at_epoch_ms,
+                                               .masked = alarm.masked};
+      };
+      value.active_facility_alarms.reserve(
+          router.active_facility_alarms.size());
+      for (const auto &alarm : router.active_facility_alarms)
+        value.active_facility_alarms.push_back(portable_alarm(alarm));
+      value.cleared_facility_alarms.reserve(
+          router.cleared_facility_alarms.size());
+      for (const auto &alarm : router.cleared_facility_alarms)
+        value.cleared_facility_alarms.push_back(portable_alarm(alarm));
+      value.next_facility_alarm_index = router.next_facility_alarm_index;
+      value.cleared_facility_alarms_wrapped =
+          router.cleared_facility_alarms_wrapped;
       checkpoint->portable_routers.push_back(std::move(value));
     }
     checkpoint->portable_session_candidates.reserve(sessions_.size());
@@ -19299,7 +19719,12 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
           .ies = portable->ies,
           .ospf = portable->ospf,
           .global_candidate = {},
-          .global_candidate_initialized = false};
+          .global_candidate_initialized = false,
+          .port_seen_operational = {},
+          .active_facility_alarms = {},
+          .cleared_facility_alarms = {},
+          .next_facility_alarm_index = 1U,
+          .cleared_facility_alarms_wrapped = false};
       value.ports.reserve(portable->ports.size());
       for (const auto &port : portable->ports)
         value.ports.push_back({port.id, port.admin_enabled, port.mtu,
@@ -19468,6 +19893,32 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
       if (value.global_candidate_initialized)
         value.global_candidate =
             configuration_intent(portable->global_candidate);
+      value.port_seen_operational = portable->port_seen_operational;
+      const auto runtime_alarm = [](const PortableFacilityAlarmCheckpoint
+                                        &alarm) {
+        return FacilityAlarmIntent{.key = alarm.key,
+                                   .code = alarm.code,
+                                   .severity = alarm.severity,
+                                   .resource = alarm.resource,
+                                   .detail = alarm.detail,
+                                   .index = alarm.index,
+                                   .raised_at_epoch_ms =
+                                       alarm.raised_at_epoch_ms,
+                                   .cleared_at_epoch_ms =
+                                       alarm.cleared_at_epoch_ms,
+                                   .masked = alarm.masked};
+      };
+      value.active_facility_alarms.reserve(
+          portable->active_facility_alarms.size());
+      for (const auto &alarm : portable->active_facility_alarms)
+        value.active_facility_alarms.push_back(runtime_alarm(alarm));
+      value.cleared_facility_alarms.reserve(
+          portable->cleared_facility_alarms.size());
+      for (const auto &alarm : portable->cleared_facility_alarms)
+        value.cleared_facility_alarms.push_back(runtime_alarm(alarm));
+      value.next_facility_alarm_index = portable->next_facility_alarm_index;
+      value.cleared_facility_alarms_wrapped =
+          portable->cleared_facility_alarms_wrapped;
       routers.push_back(std::move(value));
     }
     for (const auto &endpoint : checkpoint->hosts.entries) {

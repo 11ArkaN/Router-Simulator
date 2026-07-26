@@ -237,6 +237,43 @@ void lab_runtime_tests() {
               disabled_card_port.find("Oper State         : down") !=
                   std::string_view::npos,
           "show port ignored the disabled card or MDA hierarchy");
+  const auto detailed_card_port = runtime.command(
+      message(lab_runtime_protocol::session_execute,
+              {"r7-console", "show port 1/1/1 detail"}));
+  require(detailed_card_port.find("Transceiver Data") !=
+                  std::string_view::npos &&
+              detailed_card_port.find("Serial Number      : SIM") !=
+                  std::string_view::npos &&
+              detailed_card_port.find("Diag Capable     : no") !=
+                  std::string_view::npos,
+          "show port detail did not expose modeled transceiver identity");
+  require(!runtime
+               .command(message(lab_runtime_protocol::hardware_mda_set,
+                                {"r7", "1", "1", "me10-10gb-sfp+", ""}))
+               .starts_with("ERROR:"),
+          "facility-alarm fixture could not remove an equipped MDA");
+  const auto active_alarm = runtime.command(
+      message(lab_runtime_protocol::session_execute,
+              {"r7-console", "show system alarms severity major"}));
+  require(active_alarm.find("Alarms [Critical:0 Major:1 Minor:0 Warning:0 "
+                            "Total:1]") != std::string_view::npos &&
+              active_alarm.find("7-2003-1") != std::string_view::npos &&
+              active_alarm.find("MDA 1/1") != std::string_view::npos,
+          "show system alarms did not report active equipment removal");
+  require(!runtime
+               .command(message(lab_runtime_protocol::hardware_mda_set,
+                                {"r7", "1", "1", "me10-10gb-sfp+",
+                                 "me10-10gb-sfp+"}))
+               .starts_with("ERROR:"),
+          "facility-alarm fixture could not restore an equipped MDA");
+  const auto cleared_alarm = runtime.command(
+      message(lab_runtime_protocol::session_execute,
+              {"r7-console", "show system alarms cleared count 1"}));
+  require(cleared_alarm.find("Cleared Alarms [Size:500 Total:1 (not wrapped)]") !=
+                  std::string_view::npos &&
+              cleared_alarm.find("Clear Class MDA Module: removed alarm") !=
+                  std::string_view::npos,
+          "show system alarms cleared did not retain the cleared event");
   require(
       !runtime.command(
                   message(lab_runtime_protocol::session_close, {"r7-console"}))

@@ -290,6 +290,23 @@ private:
     bool operator==(const CardConfigurationIntent &) const = default;
   };
 
+  struct FacilityAlarmIntent {
+    // Facility alarms are operational state owned by the control runtime for
+    // this router. The string key is internal and stable across report turns;
+    // the visible alarm code, resource and details remain separate so a later
+    // log event-control owner can change generation policy without rewriting
+    // the renderer.
+    std::string key;
+    std::string code;
+    std::string severity;
+    std::string resource;
+    std::string detail;
+    std::uint64_t index{};
+    std::uint64_t raised_at_epoch_ms{};
+    std::uint64_t cleared_at_epoch_ms{};
+    bool masked{};
+  };
+
   // A candidate is a value snapshot of configurable router intent. Equipped
   // hardware, carrier, queues and counters are deliberately excluded because
   // those are operational state and must never be replaced by a CLI commit.
@@ -351,6 +368,16 @@ private:
     ospf::RouterConfiguration ospf;
     ConfigurationIntent global_candidate;
     bool global_candidate_initialized{};
+    // Link-down alarms are transition based. These latches remember that a
+    // port has been operational at least once and that a later non-admin down
+    // transition still exists while a parent card or MDA may temporarily mask
+    // the child facility alarm.
+    std::array<bool, device_catalog::maximum_ports_per_router>
+        port_seen_operational{};
+    std::vector<FacilityAlarmIntent> active_facility_alarms;
+    std::vector<FacilityAlarmIntent> cleared_facility_alarms;
+    std::uint64_t next_facility_alarm_index{1U};
+    bool cleared_facility_alarms_wrapped{};
   };
 
   struct HostIntent {
@@ -479,6 +506,7 @@ private:
   [[nodiscard]] static packet::nd::RouterAdvertisementConfig
   effective_router_advertisement(const RouterAdvertisementDnsIntent &router_dns,
                                  const InterfaceIntent &interface) noexcept;
+  void refresh_facility_alarms(RouterIntent &router);
   [[nodiscard]] bool
   configure_capture(std::span<const std::string_view> fields);
   [[nodiscard]] std::string snapshot();

@@ -72,6 +72,10 @@ runtime:
   # timers and not SR OS defaults.
   recovery_checkpoint_interval_milliseconds: 2000
   continuity_loss_threshold_milliseconds: 5000
+  # show system alarms cleared reports a bounded cleared-alarm queue. The
+  # documented 26.7 examples show the default queue size as 500 records; the
+  # owner enforces this as release data instead of a renderer literal.
+  facility_alarm_cleared_history_size: 500
   link_queue_frames: 256
   # One owner turn touches a bounded number of frames before returning to its
   # mailbox. Rotation prevents a saturated low-index link from monopolizing it.

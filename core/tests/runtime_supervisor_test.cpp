@@ -1001,7 +1001,12 @@ void runtime_supervisor_tests() {
        .ies = {},
        .ospf = {},
        .global_candidate = std::move(global_candidate),
-       .global_candidate_initialized = true});
+       .global_candidate_initialized = true,
+       .port_seen_operational = {},
+       .active_facility_alarms = {},
+       .cleared_facility_alarms = {},
+       .next_facility_alarm_index = 1U,
+       .cleared_facility_alarms_wrapped = false});
   PortableConfigurationCheckpoint private_candidate;
   private_candidate.system_name = "tls-private";
   private_candidate.tls = tls_fixture;

@@ -305,7 +305,7 @@ features:
     status: partially-implemented
     source_ids: [chrome.page_lifecycle.continuity, emscripten.pthreads.shared_memory]
   cli.port_and_static_configuration:
-    status: partially-implemented
+    status: implemented
     source_ids: [nokia.sros.26_7.port.configuration, nokia.sros.26_7.port.description, nokia.sros.26_7.static_route.configuration, nokia.sros.26_7.system.name]
   cli.router_interface_configuration:
     status: implemented

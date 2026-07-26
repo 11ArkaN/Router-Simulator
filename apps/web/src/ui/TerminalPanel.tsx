@@ -1,7 +1,7 @@
 // xterm renderer and lossless byte-input adapter for one router CLI session.
 // Engine selection and candidate semantics remain in the C++ session owner.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type WheelEvent } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import {
@@ -465,6 +465,41 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
     return () => window.cancelAnimationFrame(frame);
   }, [fontSize]);
 
+  const handleTerminalWheel = (event: WheelEvent<HTMLDivElement>) => {
+    if (historyOpenRef.current || !event.deltaY) return;
+    const terminal = terminalRef.current;
+    const viewport = hostRef.current?.querySelector<HTMLElement>(".xterm-viewport");
+    if (!terminal || !viewport) return;
+    // xterm renders the visible rows above its scrollable viewport. Browser
+    // wheel events can therefore land on renderer layers instead of the native
+    // scrollbar owner. Routing every vertical wheel from the terminal body to
+    // the viewport makes mouse wheels, touchpads and Browser Use hit the same
+    // scrollback without changing the router session or the archived history.
+    const unit =
+      // DOM_DELTA_LINE is 1 and DOM_DELTA_PAGE is 2. Using the numeric values
+      // avoids importing a browser global into the React type namespace.
+      event.deltaMode === 1
+        ? fontSize * 1.35
+        : event.deltaMode === 2
+          ? viewport.clientHeight
+          : 1;
+    const before = viewport.scrollTop;
+    viewport.scrollTop += event.deltaY * unit;
+    const moved = viewport.scrollTop !== before;
+    if (!moved && event.deltaY < 0 &&
+        archive.lineCount > terminal.buffer.active.length) {
+      // When the hot xterm window reaches its first retained row, one more
+      // upward wheel opens the virtualized OPFS transcript. The full-history
+      // reader is explicit UI state; the C++ CLI owner never receives a byte.
+      setHistoryBoundaryRows(terminal.buffer.active.length);
+      setHistoryOpen(true);
+    }
+    if (moved || event.deltaY < 0) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  };
+
   return (
     <section className="terminal-panel" ref={panelRef}>
       <PanelResizeHandle axis="y" className="terminal-resizer"
@@ -484,7 +519,7 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
         </div>
       </div>
       {settingsOpen && <div className="terminal-settings"><label>Font size<input type="range" min="10" max="18" value={fontSize} onChange={(event) => setFontSize(Number(event.target.value))} /><span>{fontSize}px</span></label></div>}
-      <div className="terminal-body">
+      <div className="terminal-body" onWheelCapture={handleTerminalWheel}>
         <div className="terminal-host" ref={hostRef} />
         {historyOpen && <TerminalHistoryView archive={archive} fontSize={fontSize}
           liveRows={historyBoundaryRows}

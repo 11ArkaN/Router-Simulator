@@ -7691,6 +7691,42 @@ bool ospf_configuration(Reader &in,
   return ospf::validate(state) == ospf::ConfigurationStatus::valid;
 }
 
+bool valid_facility_alarm_severity(std::string_view value) noexcept {
+  return value == "critical" || value == "major" || value == "minor" ||
+         value == "warning";
+}
+
+void facility_alarm(Writer &out,
+                    const PortableFacilityAlarmCheckpoint &state) {
+  // Facility alarm indexes and civil timestamps are management presentation
+  // state. Persisting them here keeps `show system alarms` stable after
+  // checkpoint restore without teaching the hardware owner about CLI rows.
+  out.string(state.key);
+  out.string(state.code);
+  out.string(state.severity);
+  out.string(state.resource);
+  out.string(state.detail);
+  out.integer(state.index);
+  out.integer(state.raised_at_epoch_ms);
+  out.integer(state.cleared_at_epoch_ms);
+  out.boolean(state.masked);
+}
+
+bool facility_alarm(Reader &in,
+                    PortableFacilityAlarmCheckpoint &state) noexcept {
+  return in.string(state.key, 96U) && !state.key.empty() &&
+         in.string(state.code, 32U) && !state.code.empty() &&
+         in.string(state.severity, 16U) &&
+         valid_facility_alarm_severity(state.severity) &&
+         in.string(state.resource, 128U) && !state.resource.empty() &&
+         in.string(state.detail, 256U) && !state.detail.empty() &&
+         in.integer(state.index) && state.index != 0U &&
+         in.integer(state.raised_at_epoch_ms) &&
+         state.raised_at_epoch_ms != 0U &&
+         in.integer(state.cleared_at_epoch_ms) &&
+         in.boolean(state.masked);
+}
+
 void portable_router(Writer &out, const PortableRouterIntentCheckpoint &state) {
   // Names and descriptions are management-plane configuration. They are
   // written after forwarding state so restoring a bare checkpoint never has
@@ -7735,6 +7771,16 @@ void portable_router(Writer &out, const PortableRouterIntentCheckpoint &state) {
   out.boolean(state.global_candidate_initialized);
   if (state.global_candidate_initialized)
     portable_configuration(out, state.global_candidate);
+  for (const auto seen : state.port_seen_operational)
+    out.boolean(seen);
+  count(out, state.active_facility_alarms);
+  for (const auto &alarm : state.active_facility_alarms)
+    facility_alarm(out, alarm);
+  count(out, state.cleared_facility_alarms);
+  for (const auto &alarm : state.cleared_facility_alarms)
+    facility_alarm(out, alarm);
+  out.integer(state.next_facility_alarm_index);
+  out.boolean(state.cleared_facility_alarms_wrapped);
 }
 
 bool portable_router(Reader &in, PortableRouterIntentCheckpoint &state) {
@@ -7817,6 +7863,29 @@ bool portable_router(Reader &in, PortableRouterIntentCheckpoint &state) {
     return false;
   if (state.global_candidate_initialized &&
       !portable_configuration(in, state.global_candidate))
+    return false;
+  for (auto &seen : state.port_seen_operational)
+    if (!in.boolean(seen))
+      return false;
+  constexpr auto maximum_active_facility_alarms =
+      device_catalog::maximum_ports_per_router +
+      device_catalog::maximum_card_slots *
+          (1U + device_catalog::maximum_mda_slots_per_card);
+  if (!count(in, size, maximum_active_facility_alarms))
+    return false;
+  state.active_facility_alarms.resize(size);
+  for (auto &alarm : state.active_facility_alarms)
+    if (!facility_alarm(in, alarm) || alarm.cleared_at_epoch_ms != 0U)
+      return false;
+  if (!count(in, size, device_catalog::facility_alarm_cleared_history_size))
+    return false;
+  state.cleared_facility_alarms.resize(size);
+  for (auto &alarm : state.cleared_facility_alarms)
+    if (!facility_alarm(in, alarm) || alarm.cleared_at_epoch_ms == 0U)
+      return false;
+  if (!in.integer(state.next_facility_alarm_index) ||
+      state.next_facility_alarm_index == 0U ||
+      !in.boolean(state.cleared_facility_alarms_wrapped))
     return false;
   return true;
 }

@@ -528,6 +528,12 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
     }
     case ppk_id:
       return bounded_name(value, 64U);
+    case alarm_count:
+    case alarm_newer_than_days:
+      return decimal_text(value) && value != "0";
+    case alarm_severity:
+      return value == "critical" || value == "major" || value == "minor" ||
+             value == "warning";
     case ppk_ascii_value:
     case ipsec_pre_shared_key: {
       // SR OS encrypted-leaf text may be clear input or an opaque protected
@@ -710,6 +716,9 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case ecmp_paths:
   case global_if_index:
   case count:
+  case alarm_count:
+  case alarm_newer_than_days:
+  case alarm_severity:
   case size:
   case mtu:
   case levels:

@@ -1354,25 +1354,25 @@ records:
     section: show system alarms
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-07-15
-    implementation: [core/include/router/device.hpp, core/src/hardware.cpp, core/src/cli.cpp]
-    tests: [core/tests/hardware_test.cpp, core/tests/cli_test.cpp]
+    last_verified_at: 2026-07-26
+    implementation: [schemas/cli/26.7.R1.yaml, schemas/checkpoint/7.yaml, profiles/catalog/26.7.R1.yaml, core/include/router/lab_runtime.hpp, core/include/router/runtime_supervisor.hpp, core/src/lab_runtime.cpp, core/src/lab_checkpoint.cpp]
+    tests: [core/tests/lab_runtime_test.cpp]
     status: partially-implemented
-    notes: Active equipment and link alarms retain raise time and use Nokia alarm IDs. Cleared-alarm history is not exposed.
+    notes: Active and cleared equipment alarms use documented alarm IDs, latched raise time, cleared time, count, severity and newer-than filters. Child linkDown alarms are transition driven and remain masked while parent equipment is absent. Alarm indexes, timestamps and cleared history survive a structural checkpoint restore. Full event-control interaction remains part of the wider logging subsystem.
   - id: nokia.sros.26_7.facility_alarms
     kind: operational-behavior
     release: 26.7.R1
     platforms: [7750 SR-7]
     source_type: nokia-official-doc
-    source_url: https://documentation.nokia.com/html/0_add-h-f/93-0071-10-01/7750_SR_OS_System_Management_Guide/Alarms-Intro.pdf
-    section: Facility Alarm List, alarms 7-2003-1, 7-2004-1 and 59-2004-1
+    source_url: https://documentation.nokia.com/sr/26-7/7x50-shared/system-management/facility-alarms.html
+    section: Facility alarms, alarm masking and alarm transitions
     rfc_refs: [RFC 3418]
     yang_path: null
-    last_verified_at: 2026-07-15
-    implementation: [core/include/router/device.hpp, core/src/hardware.cpp, core/src/cli.cpp]
-    tests: [core/tests/hardware_test.cpp, core/tests/cli_test.cpp]
+    last_verified_at: 2026-07-26
+    implementation: [schemas/checkpoint/7.yaml, core/include/router/lab_runtime.hpp, core/include/router/runtime_supervisor.hpp, core/src/lab_runtime.cpp, core/src/lab_checkpoint.cpp]
+    tests: [core/tests/lab_runtime_test.cpp]
     status: partially-implemented
-    notes: Card and MDA removal or mismatch alarms and transition-driven Ethernet linkDown alarms are implemented. Cleared alarm history and configurable event severities are not yet implemented.
+    notes: Card and MDA removal or mismatch alarms, transition-driven Ethernet linkDown alarms, cleared history, checkpoint persistence and parent masking are implemented. Configurable event severities and log destinations are not yet implemented.
   - id: nokia.sros.26_7.hardware_alarm_events
     kind: operational-behavior
     release: 26.7.R1
@@ -1424,11 +1424,11 @@ records:
     section: show port
     rfc_refs: [RFC2863]
     yang_path: null
-    last_verified_at: 2026-07-21
+    last_verified_at: 2026-07-26
     implementation: [core/src/cli.cpp, core/src/runtime_supervisor.cpp, core/src/lab_runtime.cpp, packages/contracts/src/lab-runtime-v6.ts]
     tests: [core/tests/cli_test.cpp, core/tests/runtime_supervisor_test.cpp, core/tests/lab_runtime_test.cpp, packages/contracts/tests/project-v4.test.ts]
     status: partially-implemented
-    notes: Summary, exact port selection and the documented detail suffix are derived from equipped inventory and running port configuration. Reports distinguish administrative state, physical link presence, operational state, MTU and configured speed. PHY, optics and manufacturing fields remain absent until their hardware owners exist.
+    notes: Summary, exact port selection and the documented detail suffix are derived from equipped inventory and running port configuration. Reports distinguish administrative state, physical link presence, operational state, MTU, configured speed and stable virtual transceiver identity. Live DDM sensor values, optical reach and manufacturing EEPROM fields remain absent until their hardware owners exist.
   - id: nokia.sros.26_7.show.chassis
     kind: cli-output
     release: 26.7.R1
