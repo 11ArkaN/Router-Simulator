@@ -87,7 +87,8 @@ void network_plane_tests() {
   auto plane = std::make_unique<NetworkPlane>(1);
   const DeviceHandle first{0, 1};
   const DeviceHandle second{1, 1};
-  require(plane->add_router(first) && plane->add_router(second),
+  require(plane->add_router(first, transport_secret(0x11U)) &&
+              plane->add_router(second, transport_secret(0x51U)),
           "network plane rejected valid router generations");
 
   const router::packet::Mac first_mac{0x02, 0, 0, 0, 1, 1};
@@ -98,6 +99,94 @@ void network_plane_tests() {
           plane->configure_port(second, {true, true, 0, 1514, 0x0a000002U,
                                          0x0a000000U, 10'000, 30, second_mac}),
       "network plane rejected valid forwarding ports");
+  // BOF timeout is an overall bootstrap deadline owned by the management
+  // endpoint, not an RFC retransmission knob. With no OOB cable or DHCP
+  // server, the client must exist before the deadline and be stopped after it
+  // while the management stack itself remains configured.
+  auto bof_plane = std::make_unique<NetworkPlane>(1);
+  const DeviceHandle bof_router{0U, 1U};
+  const auto bof_mac = packet::Mac{0x02U, 0U, 0U, 0U, 0xb0U, 0x01U};
+  require(
+      bof_plane->add_router(bof_router, transport_secret(0x81U)) &&
+          bof_plane->configure_router_bof_management(
+          {.device = bof_router,
+           .endpoint =
+               {.host = {},
+                .mac = bof_mac,
+                .address = {},
+                .gateway = {},
+                .prefix_length = 0U,
+                .mtu = 1500U,
+                .interface_id = 0x020000fffeb00001ULL,
+                .ipv6_autoconfiguration = true,
+                .transport_secret = transport_secret(0x91U)}}) &&
+          bof_plane->configure_router_bof_dhcpv4_client(
+              {.device = bof_router,
+               .configuration =
+                   {.hardware_address = bof_mac,
+                    .client_identifier = {},
+                    .parameter_request_list = {},
+                    .user_class = {},
+                    .transaction_secret = transport_secret(0xa1U),
+                    .maximum_message_size = 576U,
+                    .broadcast = true},
+               .bootstrap_timeout = std::chrono::seconds{1}}),
+      "network plane rejected valid BOF DHCPv4 bootstrap intent");
+  {
+    const auto bof_before = network_checkpoint(*bof_plane);
+    require(bof_before.routers.front().bof_dhcpv4 &&
+                bof_before.routers.front().bof_dhcpv4->client,
+            "BOF DHCPv4 client was not active before its timeout");
+  }
+  bof_plane->pump(NetworkPlane::Clock::now() + std::chrono::seconds{2});
+  {
+    const auto bof_after =
+        network_checkpoint(*bof_plane, NetworkPlane::Clock::now() +
+                                           std::chrono::seconds{2});
+    require(bof_after.routers.front().management_endpoint &&
+                bof_after.routers.front().bof_dhcpv4 &&
+                !bof_after.routers.front().bof_dhcpv4->client,
+            "BOF timeout removed the endpoint or retained an unbound client");
+  }
+  bof_plane.reset();
+  // SR OS retains declined Base-server bindings according to the configured
+  // per-subnet ceiling rather than inventing a universal expiry interval.
+  // The management projection therefore uses a zero hold duration, which the
+  // RFC lease owner explicitly supports. Exercise the complete network-to-
+  // forwarding transaction so a stricter transport-boundary preflight cannot
+  // make an otherwise valid candidate fail only in the browser runtime.
+  RouterDhcpv4ServerProgram base_dhcpv4_server{
+      .device = first,
+      .name = "access",
+      .configuration =
+          {.server_instance = 1U,
+           .routing_context = 0U,
+           .server_identifier = {10U, 0U, 0U, 1U},
+           .domain_name_servers = {},
+           .offer_hold = std::chrono::seconds{60},
+           .decline_hold = std::chrono::seconds::zero(),
+           .authoritative = true,
+           .force_renews = false},
+      .pools = {{.id = 1U,
+                 .scope =
+                     {.server_instance = 1U,
+                      .routing_context = 0U,
+                      .link_identity = 1U},
+                 .first = {10U, 0U, 0U, 2U},
+                 .last = {10U, 0U, 0U, 2U},
+                 .subnet_mask = {255U, 255U, 255U, 252U},
+                 .router = {10U, 0U, 0U, 1U},
+                 .lease_seconds = 3'600U,
+                 .minimum_lease_seconds = 600U,
+                 .maximum_lease_seconds = 3'600U,
+                 .offer_seconds = 60U,
+                 .enabled = true}},
+      .reservations = {},
+      .exclusions = {}};
+  require(plane->configure_router_dhcpv4_server(base_dhcpv4_server),
+          "network plane rejected zero-duration SR OS declined retention");
+  require(plane->remove_router_dhcpv4_server(first, "access"),
+          "network plane did not release the DHCPv4 server fixture");
   RouteTable first_rib;
   RouteTable second_rib;
   const std::array first_connected{
@@ -343,8 +432,8 @@ void network_plane_tests() {
   const packet::Mac ospf_second_mac{0x02U, 0U, 0U, 0U, 0x40U, 2U};
   constexpr std::uint16_t integration_hello_seconds = 1U;
   require(
-      ospf_plane->add_router(ospf_first) &&
-          ospf_plane->add_router(ospf_second) &&
+      ospf_plane->add_router(ospf_first, transport_secret(0x12U)) &&
+          ospf_plane->add_router(ospf_second, transport_secret(0x52U)) &&
           ospf_plane->configure_port(
               ospf_first,
               {.configured = true,
@@ -732,6 +821,302 @@ void network_plane_tests() {
               host_checkpoint.hosts[1].mtu == 1500,
           "host checkpoint omitted interface MTU ownership");
 
+  // DHCPv4 is exercised on a fresh two-owner network so an unconfigured
+  // client starts at 0.0.0.0 and reaches the server only by the RFC 2131
+  // limited-broadcast path. The test observes the lease through the public
+  // network owner after Discover, Offer, Request and ACK have crossed the
+  // physical fabric. It does not call the client or server objects directly.
+  const HostHandle dhcpv4_client_host{0, 1};
+  const HostHandle dhcpv4_server_host{1, 1};
+  const packet::Mac dhcpv4_client_mac{0x02U, 0U, 0U, 0U, 0x31U, 1U};
+  const packet::Mac dhcpv4_server_mac{0x02U, 0U, 0U, 0U, 0x32U, 1U};
+  require(
+      plane->configure_host(
+              {.host = dhcpv4_client_host,
+               .mac = dhcpv4_client_mac,
+               .mtu = 1500U,
+               .interface_id = 301U,
+               .transport_secret = transport_secret(31U)}) &&
+          plane->configure_host(
+              {.host = dhcpv4_server_host,
+               .mac = dhcpv4_server_mac,
+               .address = {192U, 0U, 2U, 1U},
+               .prefix_length = 24U,
+               .mtu = 1500U,
+               .interface_id = 302U,
+               .transport_secret = transport_secret(32U)}),
+      "DHCPv4 physical fixture could not be configured");
+  HostDhcpv4ClientProgram dhcpv4_client{
+      .host = dhcpv4_client_host, .configuration = {}};
+  dhcpv4_client.configuration.hardware_address = dhcpv4_client_mac;
+  dhcpv4_client.configuration.client_identifier = {
+      1U, 0x02U, 0U, 0U, 0U, 0x31U, 1U};
+  dhcpv4_client.configuration.parameter_request_list = {
+      static_cast<std::uint8_t>(
+          packet::dhcpv4::OptionCode::subnet_mask),
+      static_cast<std::uint8_t>(packet::dhcpv4::OptionCode::router)};
+  dhcpv4_client.configuration.maximum_message_size = 1500U;
+  // A client that can receive Ethernet unicast requests the RFC 2131 direct
+  // response path. This is the stricter integration case because DHCPOFFER
+  // targets yiaddr before the host installs that address.
+  dhcpv4_client.configuration.broadcast = false;
+  for (std::size_t index{};
+       index < dhcpv4_client.configuration.transaction_secret.size(); ++index)
+    dhcpv4_client.configuration.transaction_secret[index] =
+        static_cast<std::uint8_t>(0x40U + index);
+
+  HostDhcpv4ServerProgram dhcpv4_server{
+      .host = dhcpv4_server_host,
+      .configuration = {},
+      .pools = {},
+      .reservations = {},
+      .exclusions = {}};
+  dhcpv4_server.configuration.server_instance = 1U;
+  dhcpv4_server.configuration.server_identifier = {192U, 0U, 2U, 1U};
+  dhcpv4_server.configuration.offer_hold = std::chrono::seconds{60};
+  dhcpv4_server.configuration.decline_hold = std::chrono::hours{1};
+  dhcpv4_server.pools.push_back(
+      {.id = 1U,
+       .scope = {.server_instance = 1U, .link_identity = 302U},
+       .first = {192U, 0U, 2U, 100U},
+       .last = {192U, 0U, 2U, 110U},
+       .subnet_mask = {255U, 255U, 255U, 0U},
+       .router = {192U, 0U, 2U, 1U},
+       .lease_seconds = 3600U,
+       .renewal_seconds = 1800U,
+       .rebinding_seconds = 3150U,
+       .enabled = true});
+  require(
+      plane->configure_host_dhcpv4_server(dhcpv4_server) &&
+          plane->configure_host_dhcpv4_client(dhcpv4_client),
+      "network plane rejected transactional DHCPv4 service programs");
+  const auto dhcpv4_origin = NetworkPlane::Clock::now();
+  for (std::size_t turn = 1U;
+       turn <= 1'500U &&
+       plane->host_dhcpv4_client_lease_count(dhcpv4_client_host)
+               .value_or(0U) == 0U;
+       ++turn)
+    plane->pump(dhcpv4_origin + std::chrono::milliseconds{turn * 10U});
+  if (plane->host_dhcpv4_client_lease_count(dhcpv4_client_host)
+          .value_or(0U) != 1U) {
+    const auto failed = network_checkpoint(
+        *plane, dhcpv4_origin + std::chrono::seconds{16});
+    const auto &host = failed.hosts.front();
+    const auto client_state =
+        host.dhcpv4 && host.dhcpv4->client
+            ? static_cast<unsigned>(host.dhcpv4->client->state)
+            : 255U;
+    const auto offered =
+        host.dhcpv4 && host.dhcpv4->client &&
+        host.dhcpv4->client->offered.has_value();
+    const auto queued =
+        host.endpoint.udp.sockets.empty()
+            ? 0U
+            : host.endpoint.udp.sockets.front().datagrams.size();
+    throw std::runtime_error(
+        "DHCPv4 DORA failed: client-state=" +
+        std::to_string(client_state) + ", offered=" +
+        std::to_string(offered) + ", queued=" + std::to_string(queued));
+  }
+  const auto dhcpv4_checkpoint = network_checkpoint(
+      *plane, dhcpv4_origin + std::chrono::seconds{16});
+
+  // A Base local server uses the router forwarding owner rather than the host
+  // endpoint service. Exercise its direct unicast Offer path separately: the
+  // client has no IPv4 address yet, so delivery depends on the DHCP socket's
+  // narrow pre-address admission and the Ethernet chaddr carried on the wire.
+  auto router_dhcp_plane = std::make_unique<NetworkPlane>(2);
+  const DeviceHandle dhcpv4_router{0U, 1U};
+  const HostHandle dhcpv4_router_client{0U, 1U};
+  const packet::Mac dhcpv4_router_mac{0x02U, 0U, 0U, 0U, 0x41U, 1U};
+  const packet::Mac dhcpv4_router_client_mac{0x02U, 0U, 0U, 0U, 0x42U, 1U};
+  require(
+      router_dhcp_plane->add_router(dhcpv4_router,
+                                    transport_secret(41U)) &&
+          router_dhcp_plane->configure_port(
+              dhcpv4_router,
+              {.configured = true,
+               .operational = true,
+               .ordinal = 0U,
+               .mtu = 1514U,
+               .address = 0xc0000201U,
+               .network = 0xc0000200U,
+               .speed_mbps = 10'000U,
+               .prefix_length = 30U,
+               .mac = dhcpv4_router_mac}) &&
+          router_dhcp_plane->add_host(dhcpv4_router_client) &&
+          router_dhcp_plane->configure_host(
+              {.host = dhcpv4_router_client,
+               .mac = dhcpv4_router_client_mac,
+               .mtu = 1500U,
+               .interface_id = 401U,
+               .transport_secret = transport_secret(42U)}) &&
+          router_dhcp_plane->configure_link(
+              {{0U, 1U},
+               {node(dhcpv4_router_client), 0U, 401U},
+               {node(dhcpv4_router), 0U, 1U},
+               10'000'000'000ULL,
+               std::chrono::nanoseconds::zero(),
+               true}),
+      "router DHCPv4 physical fixture could not be configured");
+  for (std::uint8_t direction{}; direction < 2U; ++direction) {
+    CapturePointProgram point;
+    point.id = 100U + direction;
+    point.kind = CapturePointKind::link_direction;
+    point.link = {0U, 1U};
+    point.link_endpoint = direction;
+    point.selected = true;
+    const std::string name =
+        direction == 0U ? "dhcp:client-router" : "dhcp:router-client";
+    point.name_size = static_cast<std::uint16_t>(name.size());
+    std::ranges::copy(name, point.name.begin());
+    require(router_dhcp_plane->configure_capture_point(point),
+            "router DHCPv4 fixture could not select its wire directions");
+  }
+  RouterDhcpv4ServerProgram router_dhcpv4_server{
+      .device = dhcpv4_router,
+      .name = "access",
+      .configuration =
+          {.server_instance = 1U,
+           .routing_context = 0U,
+           .server_identifier = {192U, 0U, 2U, 1U},
+           .domain_name_servers = {},
+           .offer_hold = std::chrono::seconds{60},
+           .decline_hold = std::chrono::seconds::zero(),
+           .authoritative = true,
+           .force_renews = false},
+      .pools = {{.id = 1U,
+                 .scope =
+                     {.server_instance = 1U,
+                      .routing_context = 0U,
+                      .link_identity = physical_interface_id(0U)},
+                 .first = {192U, 0U, 2U, 2U},
+                 .last = {192U, 0U, 2U, 2U},
+                 .subnet_mask = {255U, 255U, 255U, 252U},
+                 .router = {192U, 0U, 2U, 1U},
+                 .lease_seconds = 3'600U,
+                 .minimum_lease_seconds = 600U,
+                 .maximum_lease_seconds = 3'600U,
+                 .offer_seconds = 60U,
+                 .enabled = true}},
+      .reservations = {},
+      .exclusions = {}};
+  HostDhcpv4ClientProgram router_dhcpv4_client{
+      .host = dhcpv4_router_client, .configuration = {}};
+  router_dhcpv4_client.configuration.hardware_address =
+      dhcpv4_router_client_mac;
+  router_dhcpv4_client.configuration.client_identifier = {
+      1U, 0x02U, 0U, 0U, 0U, 0x42U, 1U};
+  router_dhcpv4_client.configuration.parameter_request_list = {
+      static_cast<std::uint8_t>(packet::dhcpv4::OptionCode::subnet_mask),
+      static_cast<std::uint8_t>(packet::dhcpv4::OptionCode::router)};
+  router_dhcpv4_client.configuration.maximum_message_size = 576U;
+  router_dhcpv4_client.configuration.broadcast = false;
+  for (std::size_t index{};
+       index < router_dhcpv4_client.configuration.transaction_secret.size();
+       ++index)
+    router_dhcpv4_client.configuration.transaction_secret[index] =
+        static_cast<std::uint8_t>(0x80U + index);
+  require(
+      router_dhcp_plane->configure_router_dhcpv4_server(
+          router_dhcpv4_server) &&
+          router_dhcp_plane->configure_host_dhcpv4_client(
+              router_dhcpv4_client),
+      "router DHCPv4 services rejected valid direct-link programs");
+  const auto router_dhcp_origin = NetworkPlane::Clock::now();
+  for (std::size_t turn = 1U;
+       turn <= 1'500U &&
+       router_dhcp_plane
+               ->host_dhcpv4_client_lease_count(dhcpv4_router_client)
+               .value_or(0U) == 0U;
+       ++turn)
+    router_dhcp_plane->pump(router_dhcp_origin +
+                            std::chrono::milliseconds{turn * 10U});
+  if (router_dhcp_plane
+          ->host_dhcpv4_client_lease_count(dhcpv4_router_client)
+          .value_or(0U) != 1U) {
+    const auto failed = network_checkpoint(
+        *router_dhcp_plane,
+        router_dhcp_origin + std::chrono::seconds{16});
+    const auto &host = failed.hosts.front();
+    const auto &router = failed.routers.front();
+    const auto client_state =
+        host.dhcpv4 && host.dhcpv4->client
+            ? static_cast<unsigned>(host.dhcpv4->client->state)
+            : 255U;
+    const auto offered =
+        host.dhcpv4 && host.dhcpv4->client &&
+        host.dhcpv4->client->offered.has_value();
+    const auto discover =
+        router.forwarding.dhcpv4_servers.empty()
+            ? 0U
+            : router.forwarding.dhcpv4_servers.front()
+                  .protocol.statistics.rx_discover;
+    const auto offers =
+        router.forwarding.dhcpv4_servers.empty()
+            ? 0U
+            : router.forwarding.dhcpv4_servers.front()
+                  .protocol.statistics.tx_offer;
+    const auto requests =
+        router.forwarding.dhcpv4_servers.empty()
+            ? 0U
+            : router.forwarding.dhcpv4_servers.front()
+                  .protocol.statistics.rx_request;
+    router_dhcp_plane->prepare_capture();
+    const auto bytes = router_dhcp_plane->prepared_capture();
+    std::uint8_t response_destination_first{};
+    std::uint8_t response_destination_last{};
+    std::uint8_t response_ipv4_last{};
+    std::uint16_t response_udp_port{};
+    for (std::size_t offset{}; offset + 28U <= bytes.size();) {
+      const auto length = capture_u32(bytes, offset + 4U);
+      if (length < 12U || offset + length > bytes.size())
+        break;
+      if (capture_u32(bytes, offset) == 6U) {
+        const auto captured = capture_u32(bytes, offset + 20U);
+        const auto frame_offset = offset + 28U;
+        if (captured >= 42U && frame_offset + captured <= bytes.size() &&
+            bytes[frame_offset + 12U] == 0x08U &&
+            bytes[frame_offset + 13U] == 0x00U &&
+            bytes[frame_offset + 23U] == 17U) {
+          response_destination_first = bytes[frame_offset];
+          response_destination_last = bytes[frame_offset + 5U];
+          response_ipv4_last = bytes[frame_offset + 33U];
+          response_udp_port = static_cast<std::uint16_t>(
+              static_cast<std::uint16_t>(bytes[frame_offset + 36U]) << 8U |
+              bytes[frame_offset + 37U]);
+        }
+      }
+      offset += length;
+    }
+    throw std::runtime_error(
+        "Base DHCPv4 DORA failed: client-state=" +
+        std::to_string(client_state) + ", offered=" +
+        std::to_string(offered) + ", server-discovers=" +
+        std::to_string(discover) + ", server-offers=" +
+        std::to_string(offers) + ", server-requests=" +
+        std::to_string(requests) + ", l2-destination=" +
+        std::to_string(response_destination_first) + ":" +
+        std::to_string(response_destination_last) + ", ipv4-last=" +
+        std::to_string(response_ipv4_last) + ", udp-port=" +
+        std::to_string(response_udp_port) + ", captured=" +
+        std::to_string(router_dhcp_plane->captured_frames()) +
+        ", last-drop=" +
+        std::to_string(static_cast<unsigned>(router.forwarding.last_drop)));
+  }
+  router_dhcp_plane.reset();
+
+  plane.reset();
+  plane = std::make_unique<NetworkPlane>(2);
+  require(
+      plane->restore(dhcpv4_checkpoint, NetworkPlane::Clock::now()) &&
+          plane->host_dhcpv4_client_lease_count(dhcpv4_client_host)
+                  .value_or(0U) == 1U,
+      "DHCPv4 client, server, UDP handles or relative timers were lost");
+  require(plane->remove_host_dhcpv4_client(dhcpv4_client_host) &&
+              plane->remove_host_dhcpv4_server(dhcpv4_server_host),
+          "DHCPv4 roles could not release their UDP sockets before reconfigure");
+
   // Production DHCPv6 services are programmed through NetworkPlane rather
   // than invoking a peer protocol object. Both hosts first complete link-local
   // DAD, then Solicit, Advertise, Request and Reply traverse the same fabric.
@@ -878,8 +1263,8 @@ void network_plane_tests() {
                         .prefix_length = 64U,
                         .tag_configured = true}};
   require(
-      ipv6_plane->add_router(ipv6_first) &&
-          ipv6_plane->add_router(ipv6_second) &&
+      ipv6_plane->add_router(ipv6_first, transport_secret(0x13U)) &&
+          ipv6_plane->add_router(ipv6_second, transport_secret(0x53U)) &&
           ipv6_plane->configure_port(ipv6_first, first_ipv6_port) &&
           ipv6_plane->configure_port(ipv6_second, second_ipv6_port) &&
           // This public call streams an atomic address generation through
@@ -1022,7 +1407,7 @@ void network_plane_tests() {
   std::copy(slaac_network_id.begin(), slaac_network_id.end(),
             slaac_identifier.network_id.begin());
   require(
-      slaac_plane->add_router(slaac_router) &&
+      slaac_plane->add_router(slaac_router, transport_secret(0x14U)) &&
           slaac_plane->add_host(slaac_host) &&
           slaac_plane->configure_port(slaac_router, slaac_router_port) &&
           slaac_rib.rebuild(slaac_connected,

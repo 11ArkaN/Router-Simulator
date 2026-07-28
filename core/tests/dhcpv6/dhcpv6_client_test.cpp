@@ -65,6 +65,7 @@ void dhcpv6_client_tests() {
           {.iaid = 0x11223344U, .kind = LeaseKind::non_temporary}},
       .requested_options = {
           static_cast<std::uint16_t>(OptionCode::dns_recursive_name_server)},
+      .user_class = {},
       .rapid_commit = false};
   std::copy(client_duid.begin(), client_duid.end(),
             client_configuration.duid.begin());

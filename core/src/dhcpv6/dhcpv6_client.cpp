@@ -362,6 +362,8 @@ bool Client::configure(const ClientConfiguration &configuration) {
       !packet::dhcpv6::valid_duid(
           std::span<const std::uint8_t>{configuration.duid}.first(
               configuration.duid_octets)) ||
+      configuration.user_class.size() >
+          packet::dhcpv6::maximum_message_octets - 2U ||
       std::none_of(configuration.transaction_secret.begin(),
                    configuration.transaction_secret.end(),
                    [](std::uint8_t octet) { return octet != 0U; }))
@@ -855,6 +857,16 @@ ClientPollResult Client::build(std::span<std::uint8_t> output,
       static_cast<std::uint8_t>(elapsed)};
   if (!writer->append(code(OptionCode::elapsed_time), elapsed_bytes))
     return {.status = ClientPollStatus::output_too_small};
+  if (!configuration_.user_class.empty()) {
+    std::vector<std::uint8_t> encoded(configuration_.user_class.size() + 2U);
+    encoded[0U] = static_cast<std::uint8_t>(
+        configuration_.user_class.size() >> 8U);
+    encoded[1U] =
+        static_cast<std::uint8_t>(configuration_.user_class.size());
+    std::ranges::copy(configuration_.user_class, encoded.begin() + 2U);
+    if (!writer->append(code(OptionCode::user_class), encoded))
+      return {.status = ClientPollStatus::output_too_small};
+  }
 
   const bool information = state_ == ClientState::information_requesting;
   const bool requests_options =

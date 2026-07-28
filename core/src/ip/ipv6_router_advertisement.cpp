@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 
 namespace router::lab {
 namespace {
@@ -283,10 +284,22 @@ bool Ipv6RouterAdvertisementTable::restore(
     Clock::time_point now) noexcept {
   if (!validate_checkpoint(state))
     return false;
-  Ipv6RouterAdvertisementTable replacement;
+
+  // The table contains one dense slot for every physical port. Building that
+  // atomic replacement on a pthread stack made its cost compose with every
+  // caller's restore staging, so adding an unrelated protocol could overflow
+  // the fixed WebAssembly worker stack. Cold restore may allocate, therefore
+  // keep the complete replacement on the shared heap and publish it only after
+  // every checkpoint row has been reconstructed.
+  std::unique_ptr<Ipv6RouterAdvertisementTable> replacement;
+  try {
+    replacement = std::make_unique<Ipv6RouterAdvertisementTable>();
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
   for (std::size_t index = 0; index < state.size(); ++index) {
     const auto &source = state[index];
-    auto &entry = replacement.entries_[index];
+    auto &entry = replacement->entries_[index];
     entry = {.config = source.config,
              .next = now +
                      std::chrono::nanoseconds{source.remaining_nanoseconds},
@@ -302,7 +315,7 @@ bool Ipv6RouterAdvertisementTable::restore(
              .active = source.active,
              .has_sent = source.has_sent};
   }
-  *this = replacement;
+  *this = std::move(*replacement);
   return true;
 }
 

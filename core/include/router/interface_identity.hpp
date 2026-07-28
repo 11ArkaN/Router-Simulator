@@ -6,7 +6,9 @@
 #pragma once
 
 #include "router/generated_device_catalog.hpp"
+#include "router/sha256.hpp"
 
+#include <array>
 #include <cstdint>
 #include <optional>
 
@@ -16,6 +18,21 @@ namespace router::lab {
 // by the SR OS service model. The high bit is reserved for native routed-port
 // interfaces, making the two sources collision-free without a central table.
 inline constexpr std::uint64_t physical_interface_namespace{1ULL << 63U};
+// Relay-only DHCP allocation links are protocol scopes rather than IP
+// interfaces. Bit 62 keeps them disjoint from both low-domain IES identities
+// and high-domain physical identities without registering fake interfaces.
+inline constexpr std::uint64_t dhcpv4_allocation_scope_namespace{1ULL << 62U};
+
+[[nodiscard]] constexpr std::uint64_t
+dhcpv4_allocation_scope_id(std::uint32_t server_instance,
+                           std::uint64_t local_scope) noexcept {
+  // The generated server ceiling is far below 2^16. Packing the stable server
+  // instance and subnet key makes collision detection arithmetic and portable
+  // instead of relying on a process-specific hash.
+  return dhcpv4_allocation_scope_namespace |
+         (static_cast<std::uint64_t>(server_instance) << 32U) |
+         (local_scope & 0xffffffffULL);
+}
 
 // The system loopback belongs to the native-interface namespace but has no
 // hardware ordinal.  Reserve the first value immediately after the complete
@@ -29,6 +46,17 @@ inline constexpr std::uint64_t system_interface_id{
 [[nodiscard]] constexpr std::uint64_t
 physical_interface_id(std::uint16_t port_ordinal) noexcept {
   return physical_interface_namespace | port_ordinal;
+}
+
+[[nodiscard]] inline crypto::Sha256Digest
+dhcpv6_link_identity(std::uint64_t interface_id) noexcept {
+  // Network byte order gives every owner the same stable RFC link key without
+  // exposing native endianness through checkpoints or allocation HMAC input.
+  std::array<std::uint8_t, 8U> bytes{};
+  for (std::size_t index = 0; index < bytes.size(); ++index)
+    bytes[bytes.size() - 1U - index] =
+        static_cast<std::uint8_t>(interface_id >> (index * 8U));
+  return crypto::sha256(bytes);
 }
 
 [[nodiscard]] constexpr std::uint32_t

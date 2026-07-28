@@ -5,6 +5,9 @@
 #pragma once
 
 #include "router/capture_store.hpp"
+#include "router/dhcpv4_client.hpp"
+#include "router/dhcpv4_relay.hpp"
+#include "router/dhcpv4_server.hpp"
 #include "router/dhcpv6_client.hpp"
 #include "router/dhcpv6_server.hpp"
 #include "router/dns_endpoint_checkpoint.hpp"
@@ -26,6 +29,8 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <type_traits>
 #include <vector>
@@ -221,6 +226,30 @@ static_assert(std::is_trivially_copyable_v<OspfOperationalQuery>);
 // 16-bit length field.
 inline constexpr std::size_t dhcpv6_relay_program_chunk_octets = 256U;
 
+struct Dhcpv4RelayBegin {
+  // Option 82 sub-options have one-octet lengths. Fixed arrays keep pointer
+  // ownership out of the SPSC record while preserving every legal wire value.
+  std::uint64_t interface_id{};
+  std::uint16_t physical_port_ordinal{};
+  packet::Ipv4 gateway_address{};
+  std::array<std::uint8_t, 255U> circuit_id{};
+  std::array<std::uint8_t, 255U> remote_id{};
+  std::array<packet::Ipv4,
+             device_catalog::dhcpv4_relay_servers_per_interface>
+      servers{};
+  std::uint16_t circuit_id_octets{};
+  std::uint16_t remote_id_octets{};
+  std::uint16_t server_count{};
+  dhcpv4::ExistingRelayInformationAction existing_information{
+      dhcpv4::ExistingRelayInformationAction::keep};
+  dhcpv4::RelaySourceAddress source_address{
+      dhcpv4::RelaySourceAddress::automatic};
+  std::uint8_t maximum_hops{4U};
+  bool trusted_ingress{};
+  bool relay_plain_bootp{};
+  bool release_include_gateway_address{};
+};
+
 struct Dhcpv6RelayBegin {
   // Producer: the caller that owns service configuration. Consumer: the
   // forwarding shard that owns RouterForwarder. Commit is accepted only when
@@ -279,12 +308,100 @@ struct HostDhcpv6ClientProgram {
   bool information_only{};
 };
 
+struct RouterBofDhcpv6ClientProgram {
+  // BOF autoconfiguration is bound only to the out-of-band management
+  // endpoint. It deliberately uses a device handle rather than HostHandle so
+  // it cannot be reused as an undocumented Base or IES DHCPv6 client.
+  DeviceHandle device{};
+  dhcpv6::ClientConfiguration configuration{};
+  std::chrono::seconds bootstrap_timeout{};
+  bool information_only{};
+};
+
+struct HostDhcpv4ClientProgram {
+  // Control owns the vectors until the replacement transaction returns. The
+  // network boundary copies them into a fixed begin value so no allocation or
+  // pointer crosses either SPSC queue.
+  HostHandle host{};
+  dhcpv4::ClientConfiguration configuration{};
+};
+
+struct RouterBofDhcpv4ClientProgram {
+  // The configuration is an RFC 2131 client policy. Platform admission and
+  // boot-only application remain control-plane responsibilities.
+  DeviceHandle device{};
+  dhcpv4::ClientConfiguration configuration{};
+  std::chrono::seconds bootstrap_timeout{};
+};
+
+struct RouterBofManagementProgram {
+  // One value transaction creates the protocol identity of the integrated OOB
+  // connector. The endpoint stack owns ARP, ND, RA, UDP and TCP after commit.
+  DeviceHandle device{};
+  HostNetworkProgram endpoint{};
+};
+
+struct HostDhcpv4ServerProgram {
+  // Pools and reservations are streamed individually and published together
+  // by Commit. A rejected item aborts the generation and preserves the
+  // previous live server and lease repository.
+  HostHandle host{};
+  dhcpv4::ServerConfiguration configuration{};
+  std::vector<dhcpv4::Pool> pools;
+  std::vector<dhcpv4::Reservation> reservations;
+  std::vector<dhcpv4::ExcludedRange> exclusions;
+};
+
+struct RouterDhcpv4ServerProgram {
+  // The Base router and dedicated host use the same RFC 2131 server engine,
+  // but management identity belongs only to the router list node. Keeping it
+  // outside ServerConfiguration prevents CLI names from leaking into packet
+  // processing or lease identity.
+  DeviceHandle device{};
+  std::string name;
+  dhcpv4::ServerConfiguration configuration{};
+  std::vector<dhcpv4::Pool> pools;
+  std::vector<dhcpv4::Reservation> reservations;
+  std::vector<dhcpv4::ExcludedRange> exclusions;
+};
+
+struct RouterDhcpv4ServerOperation {
+  // Producer: control shard. Consumer: the router's forwarding owner. The
+  // fixed name buffer and value-only filter are safe to copy through both
+  // SPSC rings and never borrow CLI storage.
+  std::array<char, 32U> name{};
+  dhcpv4::LeaseClearFilter lease_filter{};
+  packet::Ipv4 address{};
+  std::uint8_t name_octets{};
+};
+
 struct HostDhcpv6ServerProgram {
   HostHandle host{};
   dhcpv6::ServerConfiguration configuration{};
   std::vector<dhcpv6::LeasePool> address_pools;
   std::vector<dhcpv6::LeasePool> prefix_pools;
   std::chrono::seconds decline_hold_time{};
+};
+
+struct RouterDhcpv6ServerProgram {
+  // The control owner resolves CLI/YANG configuration into this canonical
+  // value. The name selects the Base list entry, while every packet-semantic
+  // field remains in the shared RFC server configuration and pool types.
+  DeviceHandle device{};
+  std::string name;
+  dhcpv6::ServerConfiguration configuration{};
+  std::vector<dhcpv6::LeasePool> address_pools;
+  std::vector<dhcpv6::LeasePool> prefix_pools;
+  std::chrono::seconds decline_hold_time{};
+};
+
+struct RouterDhcpv6ServerOperation {
+  // Producer: control shard. Consumers: network owner and the selected router
+  // forwarding shard. The fixed record crosses both SPSC rings by value and
+  // cannot retain a CLI token view past the command turn.
+  dhcpv6::LeaseClearFilter lease_filter{};
+  std::array<char, 32U> name{};
+  std::uint8_t name_octets{};
 };
 
 struct HostDnsResolverProgram {
@@ -340,6 +457,33 @@ struct HostDhcpv6PendingCheckpoint {
   bool active{};
 };
 
+struct HostDhcpv4PendingCheckpoint {
+  packet::Ipv4 destination{};
+  packet::Mac destination_mac{};
+  std::vector<std::uint8_t> payload;
+  std::uint16_t destination_port{};
+  std::uint8_t delivery{};
+  bool active{};
+};
+
+struct HostDhcpv4ProbeCheckpoint {
+  packet::Ipv4 candidate{};
+  std::int64_t next_action_remaining_nanoseconds{};
+  std::uint8_t probes_sent{};
+  bool active{};
+};
+
+struct HostDhcpv4ServiceCheckpoint {
+  std::optional<dhcpv4::ClientCheckpoint> client;
+  std::optional<dhcpv4::ServerCheckpoint> server;
+  std::optional<transport::UdpSocketHandle> client_socket;
+  std::optional<transport::UdpSocketHandle> server_socket;
+  HostDhcpv4PendingCheckpoint client_pending;
+  HostDhcpv4PendingCheckpoint server_pending;
+  HostDhcpv4ProbeCheckpoint probe;
+  packet::Ipv4 installed_address{};
+};
+
 struct HostDhcpv6ServiceCheckpoint {
   std::optional<dhcpv6::ClientCheckpoint> client;
   std::optional<dhcpv6::ServerCheckpoint> server;
@@ -371,6 +515,25 @@ struct CapturePointProgram {
 struct NetworkRouterCheckpoint {
   DeviceHandle device{};
   RouterForwarderCheckpoint forwarding;
+  // The BOF management endpoint is a non-forwarding host stack owned by the
+  // router's forwarding shard. Its identity is persisted beside the protocol
+  // checkpoint because EndpointStack deliberately stores mutable runtime
+  // state only, not the project configuration needed to construct a safe
+  // restore target.
+  std::optional<NetworkCheckpointState> management_endpoint;
+  packet::Mac management_mac{};
+  packet::Ipv4 management_address{};
+  packet::Ipv4 management_gateway{};
+  std::uint8_t management_prefix_length{};
+  std::uint16_t management_mtu{device_catalog::default_host_ipv4_mtu};
+  std::uint64_t management_interface_id{};
+  bool management_ipv6_autoconfiguration{};
+  bool management_configured{};
+  bool management_link_signal{};
+  std::optional<HostDhcpv4ServiceCheckpoint> bof_dhcpv4;
+  std::optional<HostDhcpv6ServiceCheckpoint> bof_dhcpv6;
+  std::int64_t bof_dhcpv4_timeout_remaining_nanoseconds{};
+  std::int64_t bof_dhcpv6_timeout_remaining_nanoseconds{};
 };
 
 struct NetworkHostCheckpoint {
@@ -388,6 +551,7 @@ struct NetworkHostCheckpoint {
   bool ping_pending{};
   bool ping_reply{};
   bool ipv6_autoconfiguration{};
+  std::optional<HostDhcpv4ServiceCheckpoint> dhcpv4;
   std::optional<HostDhcpv6ServiceCheckpoint> dhcpv6;
   std::optional<dns::EndpointServiceCheckpoint> dns;
 };
@@ -431,10 +595,23 @@ public:
 
   // Device lifecycle commands are generation-checked. Removing an old handle
   // cannot erase a forwarding instance created later in the same bounded slot.
-  [[nodiscard]] bool add_router(DeviceHandle device) noexcept;
+  [[nodiscard]] bool
+  add_router(DeviceHandle device,
+             const crypto::Sha256Digest &transport_secret,
+             bool transit_forwarding_enabled = true) noexcept;
   [[nodiscard]] bool remove_router(DeviceHandle device) noexcept;
   [[nodiscard]] bool add_host(HostHandle host) noexcept;
   [[nodiscard]] bool remove_host(HostHandle host) noexcept;
+  [[nodiscard]] bool configure_router_bof_management(
+      const RouterBofManagementProgram &program) noexcept;
+  [[nodiscard]] bool configure_router_bof_dhcpv4_client(
+      const RouterBofDhcpv4ClientProgram &program) noexcept;
+  [[nodiscard]] bool remove_router_bof_dhcpv4_client(
+      DeviceHandle device) noexcept;
+  [[nodiscard]] bool configure_router_bof_dhcpv6_client(
+      const RouterBofDhcpv6ClientProgram &program) noexcept;
+  [[nodiscard]] bool remove_router_bof_dhcpv6_client(
+      DeviceHandle device) noexcept;
   // profile_index addresses the immutable generated switch catalog included in
   // the runtime protocol hash. No UI-created port count or default crosses
   // this boundary.
@@ -520,6 +697,24 @@ public:
   // A complete replacement is streamed and committed atomically on the
   // forwarding owner. Failure aborts staging and preserves the previously
   // active relay policy and UDP socket.
+  [[nodiscard]] bool configure_dhcpv4_relay(
+      DeviceHandle device,
+      const dhcpv4::RelayInterfaceConfiguration &configuration) noexcept;
+  [[nodiscard]] bool
+  remove_dhcpv4_relay(DeviceHandle device,
+                      std::uint64_t logical_interface_id) noexcept;
+  [[nodiscard]] bool configure_router_dhcpv4_server(
+      const RouterDhcpv4ServerProgram &program) noexcept;
+  [[nodiscard]] bool remove_router_dhcpv4_server(
+      DeviceHandle device, std::string_view name) noexcept;
+  [[nodiscard]] bool clear_router_dhcpv4_server_statistics(
+      DeviceHandle device, std::string_view name) noexcept;
+  [[nodiscard]] bool clear_router_dhcpv4_server_leases(
+      DeviceHandle device, std::string_view name,
+      const dhcpv4::LeaseClearFilter &filter) noexcept;
+  [[nodiscard]] dhcpv4::ForceRenewStatus send_router_dhcpv4_force_renew(
+      DeviceHandle device, std::string_view name,
+      packet::Ipv4 address) noexcept;
   [[nodiscard]] bool configure_dhcpv6_relay(
       DeviceHandle device,
       const dhcpv6::RelayInterfaceConfig &configuration) noexcept;
@@ -581,11 +776,30 @@ public:
   // committed on one forwarding owner. No vector storage or pointer crosses
   // the SPSC boundary, and a failed transaction keeps the live service.
   [[nodiscard]] bool
+  configure_host_dhcpv4_client(const HostDhcpv4ClientProgram &program) noexcept;
+  [[nodiscard]] bool remove_host_dhcpv4_client(HostHandle host) noexcept;
+  [[nodiscard]] bool
+  configure_host_dhcpv4_server(const HostDhcpv4ServerProgram &program) noexcept;
+  [[nodiscard]] bool remove_host_dhcpv4_server(HostHandle host) noexcept;
+  [[nodiscard]] std::optional<std::size_t>
+  host_dhcpv4_client_lease_count(HostHandle host) noexcept;
+  [[nodiscard]] std::optional<dhcpv4::ClientStatus>
+  host_dhcpv4_client_status(HostHandle host) noexcept;
+  [[nodiscard]] bool
   configure_host_dhcpv6_client(const HostDhcpv6ClientProgram &program) noexcept;
   [[nodiscard]] bool remove_host_dhcpv6_client(HostHandle host) noexcept;
   [[nodiscard]] bool
   configure_host_dhcpv6_server(const HostDhcpv6ServerProgram &program) noexcept;
   [[nodiscard]] bool remove_host_dhcpv6_server(HostHandle host) noexcept;
+  [[nodiscard]] bool configure_router_dhcpv6_server(
+      const RouterDhcpv6ServerProgram &program) noexcept;
+  [[nodiscard]] bool remove_router_dhcpv6_server(
+      DeviceHandle device, std::string_view name) noexcept;
+  [[nodiscard]] bool clear_router_dhcpv6_server_leases(
+      DeviceHandle device, std::string_view name,
+      const dhcpv6::LeaseClearFilter &filter) noexcept;
+  [[nodiscard]] bool clear_router_dhcpv6_server_statistics(
+      DeviceHandle device, std::string_view name) noexcept;
   [[nodiscard]] std::optional<std::size_t>
   host_dhcpv6_client_lease_count(HostHandle host) noexcept;
   [[nodiscard]] bool

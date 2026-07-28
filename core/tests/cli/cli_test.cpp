@@ -291,6 +291,28 @@ void cli_tests() {
               router::cli_prompt(state, operational_navigation) ==
                   "\n[/]\nA:admin@R1# ",
           "Operational MD navigation entered a configuration-looking context");
+  // `edit-config` is a workflow command prefix, not a YANG context. Enter on
+  // the incomplete command must leave the operational PWC untouched. After a
+  // mode is supplied, `configure` becomes ordinary navigation into the
+  // configure region of that explicit candidate.
+  const auto incomplete_edit = router::execute_cli(
+      state, operational_navigation, "edit-config", no_ping);
+  require(!contains(incomplete_edit, "[/edit-config]") &&
+              operational_navigation.md_workflow ==
+                  router::MdCliWorkflow::operational &&
+              router::cli_prompt(state, operational_navigation) ==
+                  "\n[/]\nA:admin@R1# ",
+          "Incomplete edit-config fabricated a configuration context");
+  router::execute_cli(state, operational_navigation, "edit-config exclusive",
+                      no_ping);
+  const auto explicit_configure = router::execute_cli(
+      state, operational_navigation, "configure", no_ping);
+  require(contains(explicit_configure, "(ex)[/configure]") &&
+              operational_navigation.md_workflow ==
+                  router::MdCliWorkflow::explicit_exclusive,
+          "Explicit workflow could not navigate into configure region");
+  router::execute_cli(state, operational_navigation, "exit all", no_ping);
+  router::execute_cli(state, operational_navigation, "quit-config", no_ping);
   const auto alarms = [&] {
     // The report test needs one explicit control-plane reconciliation so
     // that active alarms reflect the deliberately absent card and MDA.

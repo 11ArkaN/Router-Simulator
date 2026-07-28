@@ -105,7 +105,19 @@ void dhcpv6_lease_tests() {
   require(replacement.status == LeaseStatus::assigned &&
               replacement.value != first.value,
           "DHCPv6 reassigned a value while its decline hold was active");
+  const auto observed_client = ip::parse_ipv6("fe80::1");
+  require(observed_client &&
+              repository.note_client_address(first_client, *observed_client),
+          "DHCPv6 repository rejected a real client source address");
   const auto lease_checkpoint = repository.checkpoint(now + 202s);
+  const auto observed_binding = std::find_if(
+      lease_checkpoint.begin(), lease_checkpoint.end(),
+      [&](const auto &lease) {
+        return lease.client == first_client && !lease.declined;
+      });
+  require(observed_binding != lease_checkpoint.end() &&
+              observed_binding->last_client_address == *observed_client,
+          "DHCPv6 checkpoint lost the observed client endpoint");
   LeaseRepository restored;
   require(restored.configure(
               std::span<const LeasePool>{&address_pool, 1U},
@@ -134,6 +146,13 @@ void dhcpv6_lease_tests() {
   require(repository.release(second_client) == LeaseStatus::released &&
               repository.release(second_client) == LeaseStatus::no_binding,
           "DHCPv6 Release did not remove exactly one binding");
+
+  LeaseClearFilter pd_only;
+  pd_only.type = LeaseClearFilter::Type::pd;
+  require(repository.clear(pd_only, now + 34min) == 1U &&
+              repository.renew(delegated_client, now + 34min).status ==
+                  LeaseStatus::no_binding,
+          "DHCPv6 operational type filter removed the wrong binding");
 
   auto invalid_pool = address_pool;
   invalid_pool.t1_seconds = 4000U;

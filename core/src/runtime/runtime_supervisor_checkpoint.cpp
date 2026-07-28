@@ -50,7 +50,12 @@ std::unique_ptr<RuntimeSupervisorCheckpoint> RuntimeSupervisor::checkpoint() {
       router.ies_port_owned = control->ies_port_owned;
       router.router_advertisements = control->router_advertisements;
       router.mld_interfaces = control->mld_interfaces;
-      router.dhcpv6_relays = control->dhcpv6_relays;
+      for (const auto &relay : control->dhcpv4_relays)
+        if (relay)
+          router.dhcpv4_relays.push_back(*relay);
+      for (const auto &relay : control->dhcpv6_relays)
+        if (relay)
+          router.dhcpv6_relays.push_back(*relay);
       router.ies_configuration = control->ies_configuration;
       router.ies_sap_attachments = control->ies_sap_attachments;
       router.ies_ipv6_interfaces = control->ies_ipv6_interfaces;
@@ -228,7 +233,23 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
       restored->ies_port_owned = source.ies_port_owned;
       restored->router_advertisements = source.router_advertisements;
       restored->mld_interfaces = source.mld_interfaces;
-      restored->dhcpv6_relays = source.dhcpv6_relays;
+      if (source.dhcpv4_relays.size() >
+              device_catalog::maximum_ports_per_router ||
+          source.dhcpv6_relays.size() >
+              device_catalog::maximum_ports_per_router)
+        return false;
+      for (const auto &relay : source.dhcpv4_relays) {
+        if (relay.physical_port_ordinal >= restored->dhcpv4_relays.size() ||
+            restored->dhcpv4_relays[relay.physical_port_ordinal])
+          return false;
+        restored->dhcpv4_relays[relay.physical_port_ordinal] = relay;
+      }
+      for (const auto &relay : source.dhcpv6_relays) {
+        if (relay.physical_port_ordinal >= restored->dhcpv6_relays.size() ||
+            restored->dhcpv6_relays[relay.physical_port_ordinal])
+          return false;
+        restored->dhcpv6_relays[relay.physical_port_ordinal] = relay;
+      }
       restored->ies_configuration = source.ies_configuration;
       restored->ies_sap_attachments = source.ies_sap_attachments;
       restored->ies_ipv6_interfaces = source.ies_ipv6_interfaces;
@@ -308,13 +329,37 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
             return false;
         }
       }
-      std::vector<dhcpv6::RelayInterfaceConfig> relay_validation_values;
-      for (std::size_t ordinal = 0; ordinal < source.dhcpv6_relays.size();
-           ++ordinal) {
-        if (!source.dhcpv6_relays[ordinal])
-          continue;
+      std::vector<dhcpv4::RelayInterfaceConfiguration>
+          dhcpv4_relay_validation_values;
+      for (const auto &relay : source.dhcpv4_relays) {
+        const auto ordinal = relay.physical_port_ordinal;
+        if (ordinal >= source.ports.size())
+          return false;
         const auto &port = source.ports[ordinal];
-        const auto &relay = *source.dhcpv6_relays[ordinal];
+        const packet::Ipv4 port_address{
+            static_cast<std::uint8_t>(port.address >> 24U),
+            static_cast<std::uint8_t>(port.address >> 16U),
+            static_cast<std::uint8_t>(port.address >> 8U),
+            static_cast<std::uint8_t>(port.address)};
+        dhcpv4::RelayAgent validation;
+        if (!port.configured || !port.ipv4_configured ||
+            relay.interface_id != physical_interface_id(ordinal) ||
+            relay.physical_port_ordinal != ordinal ||
+            relay.relay.gateway_address != port_address ||
+            !validation.configure(relay.relay))
+          return false;
+        for (const auto &prior : dhcpv4_relay_validation_values)
+          if (prior.interface_id == relay.interface_id ||
+              prior.relay.gateway_address == relay.relay.gateway_address)
+            return false;
+        dhcpv4_relay_validation_values.push_back(relay);
+      }
+      std::vector<dhcpv6::RelayInterfaceConfig> relay_validation_values;
+      for (const auto &relay : source.dhcpv6_relays) {
+        const auto ordinal = relay.physical_port_ordinal;
+        if (ordinal >= source.ports.size())
+          return false;
+        const auto &port = source.ports[ordinal];
         if (!port.configured || !port.ipv6_configured ||
             relay.interface_id == 0U || relay.physical_port_ordinal != ordinal)
           return false;
@@ -427,6 +472,19 @@ bool RuntimeSupervisor::restore(RuntimeSupervisorCheckpoint state) {
         if (std::find(router.forwarding.dhcpv6_relay_interfaces.begin(),
                       router.forwarding.dhcpv6_relay_interfaces.end(),
                       relay) == router.forwarding.dhcpv6_relay_interfaces.end())
+          return false;
+      const auto intended_dhcpv4_relays = static_cast<std::size_t>(std::count_if(
+          intent.dhcpv4_relays.begin(), intent.dhcpv4_relays.end(),
+          [](const auto &relay) { return relay.has_value(); }));
+      if (router.forwarding.dhcpv4_relay_interfaces.size() !=
+          intended_dhcpv4_relays)
+        return false;
+      for (const auto &relay : intent.dhcpv4_relays)
+        if (relay &&
+            std::find(router.forwarding.dhcpv4_relay_interfaces.begin(),
+                      router.forwarding.dhcpv4_relay_interfaces.end(),
+                      *relay) ==
+                router.forwarding.dhcpv4_relay_interfaces.end())
           return false;
     }
     for (const auto &host : state.network.hosts)

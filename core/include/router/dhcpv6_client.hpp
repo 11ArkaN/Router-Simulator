@@ -31,6 +31,9 @@ struct ClientConfiguration {
   // avoids inventing a count below the message wire limit.
   std::vector<RequestedIdentityAssociation> identity_associations;
   std::vector<std::uint16_t> requested_options;
+  // RFC 9915 section 21.15 encodes each opaque class with a two-octet length.
+  // BOF supplies one platform class, while an empty vector omits the option.
+  std::vector<std::uint8_t> user_class;
   // Generated once by the project owner and retained per interface. This
   // secret never enters a packet; it keys transaction ID derivation so an
   // observer cannot predict a later exchange from earlier 24-bit values.

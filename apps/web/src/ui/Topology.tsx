@@ -18,7 +18,8 @@ import { Cpu, Maximize2, Scan, Type } from "lucide-react";
 import { edgePortLabelPoints, radialHandleSide, radialLinkAnchors,
   type RadialLinkAnchor } from "./topology-anchors";
 
-type DeviceData = { kind: "host" | "router" | "switch"; title: string; subtitle: string;
+type DeviceData = { kind: "host" | "router" | "dhcp-server" | "switch";
+  title: string; subtitle: string;
   diameter: number; anchors: readonly RadialLinkAnchor[] };
 
 const HANDLE_POSITION = {
@@ -37,9 +38,11 @@ function DeviceNode({ id, data, selected }: NodeProps<Node<DeviceData>>) {
     updateNodeInternals(id);
   }, [data.anchors, id, updateNodeInternals]);
   const router = data.kind === "router";
+  const dhcpServer = data.kind === "dhcp-server";
   const ethernetSwitch = data.kind === "switch";
   return <div className={`device-node ${router ? "router-node" :
-    ethernetSwitch ? "switch-node" : "host-node"} ${selected ? "selected" : ""}`}
+    ethernetSwitch ? "switch-node" :
+      dhcpServer ? "dhcp-server-node" : "host-node"} ${selected ? "selected" : ""}`}
     style={{ width: data.diameter, height: data.diameter }}>
     {/* Link creation owns one small rim target instead of covering the symbol.
         This separation lets the symbol drag the device while the target starts
@@ -155,12 +158,15 @@ const edgeTypes = { physical: PhysicalLinkEdge };
 
 export type TopologyTool = "select" | "link" | "text";
 
-const DEVICE_DIAMETER = { host: 98, router: 112, switch: 112 } as const;
+const DEVICE_DIAMETER = {
+  host: 98, router: 112, dhcpServer: 104, switch: 112
+} as const;
 const DEVICE_ANCHOR_RADIUS = {
   // The values follow the non-transparent alpha bounds of the generated PNGs,
   // with a small outward allowance so the solid port marker stays readable.
   host: { xPercent: 40, yPercent: 37 },
   router: { xPercent: 43, yPercent: 30 },
+  dhcpServer: { xPercent: 40, yPercent: 37 },
   switch: { xPercent: 43, yPercent: 30 },
 } as const;
 
@@ -171,7 +177,7 @@ interface Props {
   onSelect(id: string): void;
   onLayoutChange(id: string, position: { x: number; y: number }): void;
   onConnect(firstNodeId: string, secondNodeId: string): void;
-  onDropDevice(kind: "router" | "host" | "switch",
+  onDropDevice(kind: "router" | "dhcp-server" | "host" | "switch",
     position: { x: number; y: number }): void;
   onOpenHardware(): void;
   onAnnotationCreate(position: { x: number; y: number }): void;
@@ -234,10 +240,13 @@ export function Topology({ project, snapshot, selected, onSelect,
     ...project.routers.map((router, index) => [router.id,
       project.layout.nodes[router.id] ??
         { x: 340 + index * 210, y: 240 }] as const),
+    ...project.dhcpServers.map((server, index) => [server.id,
+      project.layout.nodes[server.id] ??
+        { x: 340 + index * 210, y: 560 }] as const),
     ...project.switches.map((ethernetSwitch, index) => [ethernetSwitch.id,
       project.layout.nodes[ethernetSwitch.id] ??
         { x: 340 + index * 210, y: 420 }] as const),
-  ]), [project.hosts, project.routers, project.switches,
+  ]), [project.hosts, project.routers, project.dhcpServers, project.switches,
     project.layout.nodes]);
   const deviceCenters = useMemo(() => Object.fromEntries([
     ...project.hosts.map((host) => [host.id, {
@@ -248,11 +257,16 @@ export function Topology({ project, snapshot, selected, onSelect,
       x: devicePositions[router.id].x + DEVICE_DIAMETER.router / 2,
       y: devicePositions[router.id].y + DEVICE_DIAMETER.router / 2,
     }] as const),
+    ...project.dhcpServers.map((server) => [server.id, {
+      x: devicePositions[server.id].x + DEVICE_DIAMETER.dhcpServer / 2,
+      y: devicePositions[server.id].y + DEVICE_DIAMETER.dhcpServer / 2,
+    }] as const),
     ...project.switches.map((ethernetSwitch) => [ethernetSwitch.id, {
       x: devicePositions[ethernetSwitch.id].x + DEVICE_DIAMETER.switch / 2,
       y: devicePositions[ethernetSwitch.id].y + DEVICE_DIAMETER.switch / 2,
     }] as const),
-  ]), [project.hosts, project.routers, project.switches, devicePositions]);
+  ]), [project.hosts, project.routers, project.dhcpServers, project.switches,
+    devicePositions]);
 
   const projectedNodes = useMemo<Node[]>(() => [
     ...project.hosts.map((host) => ({
@@ -275,6 +289,17 @@ export function Topology({ project, snapshot, selected, onSelect,
         diameter: DEVICE_DIAMETER.router,
         anchors: radialLinkAnchors(router.id, deviceCenters, project.links,
           DEVICE_ANCHOR_RADIUS.router) }
+    })),
+    ...project.dhcpServers.map((server) => ({
+      id: server.id,
+      type: "device",
+      position: devicePositions[server.id],
+      selected: selected === server.id,
+      data: { kind: "dhcp-server" as const, title: server.name,
+        subtitle: "Dedicated DHCP server",
+        diameter: DEVICE_DIAMETER.dhcpServer,
+        anchors: radialLinkAnchors(server.id, deviceCenters, project.links,
+          DEVICE_ANCHOR_RADIUS.dhcpServer) }
     })),
     ...project.switches.map((ethernetSwitch) => ({
       id: ethernetSwitch.id,
@@ -303,10 +328,12 @@ export function Topology({ project, snapshot, selected, onSelect,
         onCommit: commitText, onCancel: cancelEdit, onResize: onAnnotationResize
       } satisfies AnnotationData
     }))
-  ], [project.hosts, project.routers, project.switches, project.annotations,
+  ], [project.hosts, project.routers, project.dhcpServers, project.switches,
+    project.annotations,
     project.links,
     devicePositions, deviceCenters,
-    selected, snapshot?.routers, tool, editingId, commitText, cancelEdit,
+    selected, snapshot?.routers, snapshot?.dhcpServers, tool, editingId,
+    commitText, cancelEdit,
     onAnnotationResize]);
 
   const [nodes, setNodes, onNodesChange] = useNodesState(projectedNodes);
@@ -376,7 +403,8 @@ export function Topology({ project, snapshot, selected, onSelect,
     }}
     onDrop={(event) => {
       const kind = event.dataTransfer.getData("application/x-router-lab-device");
-      if ((kind === "router" || kind === "host" || kind === "switch") &&
+       if ((kind === "router" || kind === "dhcp-server" ||
+            kind === "host" || kind === "switch") &&
           flowRef.current) {
         event.preventDefault();
         // React Flow owns zoom and pan transforms. Converting through its API
@@ -398,8 +426,13 @@ export function Topology({ project, snapshot, selected, onSelect,
         changes the coordinate transform underneath the pointer and shifts
         every later placement. Keep the camera under explicit pan/zoom control
         so a drag has one stable screen-to-flow transform from start to stop. */}
+    {/* The camera is user-owned state. The former fitView prop could refit
+        after node initialization changed, making the whole topology appear
+        to move when one device was added. Initial coordinates are already
+        visible in the project layout and explicit fitting remains available
+        through the toolbar button. */}
     <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes}
-      edgeTypes={edgeTypes} fitView
+      edgeTypes={edgeTypes}
       connectionMode={ConnectionMode.Loose} minZoom={0.35} maxZoom={1.8}
       autoPanOnNodeDrag={false} panOnDrag nodesDraggable
       nodesConnectable={tool === "link"}

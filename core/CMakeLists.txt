@@ -63,6 +63,16 @@ add_library(router_primitives STATIC
   src/dns/dnssec_authoritative_response.cpp
   src/dns/dnssec_nsec3_chain.cpp
   src/dns/dnssec_response_validation.cpp
+  src/dhcpv4/dhcpv4_client.cpp
+  src/dhcpv4/dhcpv4_configuration.cpp
+  src/dhcpv4/dhcpv4_failover.cpp
+  src/dhcpv6/dhcpv6_configuration.cpp
+  src/dhcpv6/dhcpv6_failover.cpp
+  src/dhcpv4/dhcpv4_lease.cpp
+  src/dhcpv4/dhcpv4_leasequery.cpp
+  src/dhcpv4/dhcpv4_packet.cpp
+  src/dhcpv4/dhcpv4_relay.cpp
+  src/dhcpv4/dhcpv4_server.cpp
   src/dhcpv6/dhcpv6_client.cpp
   src/dhcpv6/dhcpv6_lease.cpp
   src/dhcpv6/dhcpv6_packet.cpp
@@ -269,6 +279,7 @@ target_link_libraries(router_device PUBLIC router_primitives router_build_option
 
 add_library(router_network STATIC
   src/runtime/capture_store.cpp
+  src/dhcpv4/dhcpv4_endpoint_service.cpp
   src/dhcpv6/dhcpv6_endpoint_service.cpp
   src/dns/dns_endpoint_service.cpp
   src/ip/ipv6_dad.cpp
@@ -298,6 +309,9 @@ add_library(router_management STATIC
   src/cli/cli_md.cpp
   src/cli/cli_parser.cpp
   src/cli/ies_cli_configuration.cpp
+  src/cli/dhcpv4_cli_configuration.cpp
+  src/cli/dhcpv6_cli_configuration.cpp
+  src/cli/bof_cli_configuration.cpp
   src/cli/ipsec_cli_configuration.cpp
   src/cli/ospf_cli_configuration.cpp
   src/runtime/session_workflows.cpp
@@ -491,6 +505,14 @@ if(ROUTER_BUILD_TESTS)
   # would otherwise provide the missing symbol transitively.
   add_executable(module_tests
     tests/runtime/capture_store_test.cpp
+    tests/dhcpv4/dhcpv4_client_test.cpp
+    tests/dhcpv4/dhcpv4_configuration_test.cpp
+    tests/dhcpv4/dhcpv4_failover_test.cpp
+    tests/dhcpv4/dhcpv4_lease_test.cpp
+    tests/dhcpv4/dhcpv4_leasequery_test.cpp
+    tests/dhcpv4/dhcpv4_packet_test.cpp
+    tests/dhcpv4/dhcpv4_relay_test.cpp
+    tests/dhcpv4/dhcpv4_server_test.cpp
     tests/dhcpv6/dhcpv6_client_test.cpp
     tests/dhcpv6/dhcpv6_lease_test.cpp
     tests/dhcpv6/dhcpv6_packet_test.cpp
@@ -499,6 +521,7 @@ if(ROUTER_BUILD_TESTS)
     tests/dhcpv6/dhcpv6_relay_route_test.cpp
     tests/dhcpv6/dhcpv6_retransmission_test.cpp
     tests/dhcpv6/dhcpv6_server_test.cpp
+    tests/dhcpv6/dhcpv6_failover_test.cpp
     tests/forwarding/ethernet_switch_test.cpp
     tests/dns/dns_packet_test.cpp
     tests/dns/ddr_discovery_test.cpp
@@ -523,6 +546,9 @@ if(ROUTER_BUILD_TESTS)
     tests/ip/icmpv6_statistics_test.cpp
     tests/device/ies_service_test.cpp
     tests/cli/ies_cli_configuration_test.cpp
+    tests/cli/dhcpv4_cli_configuration_test.cpp
+    tests/cli/dhcpv6_cli_configuration_test.cpp
+    tests/cli/bof_cli_configuration_test.cpp
     tests/cli/ospf_cli_configuration_test.cpp
     tests/ospf/ospf_area_coordinator_test.cpp
     tests/ip/ipv6_path_mtu_test.cpp

@@ -319,6 +319,7 @@ void network_endpoint_ipv6_tests() {
           {.iaid = 0x10203040U,
            .kind = dhcpv6::LeaseKind::non_temporary}},
       .requested_options = {},
+      .user_class = {},
       .rapid_commit = false};
   std::copy(client_duid.begin(), client_duid.end(),
             dhcp_client_configuration.duid.begin());

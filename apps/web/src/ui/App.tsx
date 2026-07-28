@@ -5,8 +5,10 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { ANNOTATION_LIMITS, createAnnotationV4, createEmptyProjectV4,
   createRouterProjectV4, createSwitchProjectV5, equippedRouterPorts, hostInterfaceId,
+  createDhcpServerProjectV5,
   parseLabProjectV4, PROFILE_CATALOG, type DeviceProfileId,
-  type HostProjectV4, type LabProjectV4, type LabRuntimeSnapshotV6,
+  type DhcpServerProjectV5, type HostProjectV4, type LabProjectV4,
+  type LabRuntimeSnapshotV6,
   type LinkProjectV4, type RouterProjectV4, type RuntimeRouterV6,
   type TopologyAnnotationV4 } from "@router-simulator/contracts";
 import { MultiRouterRuntimeClient, type RouterTerminalState } from "../runtime/multi-router-client";
@@ -82,9 +84,16 @@ function captureSelectionsFromSnapshot(snapshot: LabRuntimeSnapshotV6):
 }
 
 function visibleFailure(area: "startup" | "operation", cause: unknown): string {
+  // Worker and C++ errors describe implementation boundaries and are valuable
+  // in the developer console, but they are not product copy. In particular,
+  // text about owners, transactions, runtime rollback or an unchanged lab
+  // exposes mechanics that do not help a user correct the selected values.
+  // Keep the complete diagnostic here and expose only the outcome and a useful
+  // next action in the page notification.
   console.error(`Lab ${area} failure`, cause);
-  return cause instanceof Error ? cause.message : area === "startup"
-    ? "The lab could not start." : "The operation could not be completed.";
+  return area === "startup"
+    ? "Reload the page or open another project."
+    : "Check the selected values and try again.";
 }
 
 function freeId(prefix: string, values: readonly string[]): string {
@@ -141,6 +150,59 @@ function mergeRuntimeRouter(project: LabProjectV4,
     item.id === router.id ? router : item) };
 }
 
+function mergeRuntimeDhcpServer(project: LabProjectV4,
+  runtimeServer: RuntimeRouterV6): LabProjectV4 {
+  const before = project.dhcpServers.find((server) =>
+    server.id === runtimeServer.id);
+  if (!before) return project;
+  const livePorts = new Map(runtimeServer.ports.map((port) => [port.id, port]));
+  const retained = before.running.ports.filter((port) => !livePorts.has(port.id));
+  const fixedInventory = PROFILE_CATALOG.profiles.find(
+    (profile) => profile.id === before.profileId)?.fixed;
+  const server: DhcpServerProjectV5 = {
+    ...before,
+    name: runtimeServer.systemName,
+    // Fixed server NIC inventory is immutable project intent. The compact
+    // runtime projection may omit child MDA records that have no editable
+    // state, so replacing the canonical fixed record from that projection
+    // would create an impossible zero-MDA device on the next Apply.
+    hardware: fixedInventory ? before.hardware : { cards:
+      runtimeServer.cards.map((card) => ({
+      slot: card.slot, admin: card.admin ? "up" : "down",
+      provisionedType: card.provisionedType,
+      equippedType: card.equippedType,
+      mdas: card.mdas.map((mda) => ({
+        slot: mda.slot, admin: mda.admin ? "up" : "down",
+        provisionedType: mda.provisionedType,
+        equippedType: mda.equippedType
+      }))
+    })) },
+    running: {
+      systemName: runtimeServer.systemName,
+      maximumEcmpPaths: 1,
+      ports: [...retained, ...runtimeServer.ports.map((port) => ({
+        id: port.id, admin: port.admin ? "up" as const : "down" as const,
+        mtu: port.mtu, speedMbps: port.speedMbps,
+        description: port.description
+      }))],
+      interfaces: runtimeServer.interfaces.map((item) => ({
+        name: item.name, portId: item.portId, address: item.address,
+        arpTimeoutSeconds: item.arpTimeoutSeconds,
+        arpRetryTimerDeciseconds: item.arpRetryTimerDeciseconds,
+        ipv6Addresses: item.ipv6Addresses.map((address) => ({ ...address })),
+        admin: item.admin ? "up" as const : "down" as const
+      })),
+      staticRoutes: runtimeServer.staticRoutes.map((route) => ({ ...route })),
+      ipv6StaticRoutes: runtimeServer.ipv6StaticRoutes.map((route) =>
+        ({ ...route })),
+      policyOptions: { prefixLists: [], statements: [] },
+      ospf: { instances: [] }
+    }
+  };
+  return { ...project, dhcpServers: project.dhcpServers.map((item) =>
+    item.id === server.id ? server : item) };
+}
+
 function snapshotMatchesProject(project: LabProjectV4,
   snapshot: LabRuntimeSnapshotV6): boolean {
   // A recovery checkpoint is accepted only for the exact portable object
@@ -150,6 +212,10 @@ function snapshotMatchesProject(project: LabProjectV4,
     `${item.id}:${item.profileId}`).sort();
   const liveRouterKeys = snapshot.routers.map((item) =>
     `${item.id}:${item.profileId}`).sort();
+  const dhcpServerKeys = project.dhcpServers.map((item) =>
+    `${item.id}:${item.profileId}`).sort();
+  const liveDhcpServerKeys = snapshot.dhcpServers.map((item) =>
+    `${item.id}:${item.profileId}`).sort();
   const hostKeys = project.hosts.map((item) => item.id).sort();
   const liveHostKeys = snapshot.hosts.map((item) => item.id).sort();
   const switchKeys = project.switches.map((item) =>
@@ -158,9 +224,11 @@ function snapshotMatchesProject(project: LabProjectV4,
     `${item.id}:${item.profileId}`).sort();
   const linkKeys = project.links.map((item) => item.id).sort();
   const liveLinkKeys = snapshot.links.map((item) => item.id).sort();
-  return JSON.stringify([routerKeys, hostKeys, switchKeys, linkKeys]) ===
+  return JSON.stringify(
+    [routerKeys, dhcpServerKeys, hostKeys, switchKeys, linkKeys]) ===
     JSON.stringify(
-      [liveRouterKeys, liveHostKeys, liveSwitchKeys, liveLinkKeys]);
+      [liveRouterKeys, liveDhcpServerKeys, liveHostKeys, liveSwitchKeys,
+        liveLinkKeys]);
 }
 
 function mergeRuntimeProject(project: LabProjectV4,
@@ -168,6 +236,8 @@ function mergeRuntimeProject(project: LabProjectV4,
   let merged = project;
   for (const router of snapshot.routers)
     merged = mergeRuntimeRouter(merged, router);
+  for (const server of snapshot.dhcpServers)
+    merged = mergeRuntimeDhcpServer(merged, server);
   merged = {
     ...merged,
     hosts: merged.hosts.map((host) => {
@@ -240,6 +310,7 @@ export function App() {
     | undefined>();
   const [pendingHost, setPendingHost] = useState<{
     id: string; position: { x: number; y: number }; name: string; mac: string;
+    ipv4Configuration: "static" | "dhcp";
     address: string; gateway: string; mtu: string; explicitPlacement: boolean;
   }>();
   const [linkNodes, setLinkNodes] = useState<readonly [string, string]>();
@@ -367,7 +438,7 @@ export function App() {
     let active = true;
     const unsubscribe = runtime.onContinuityEvent((event) => {
       if (!event.recovered) {
-        setRuntimeError("The browser paused this lab before a compatible recovery point could be restored. Reload the project to continue.");
+        setRuntimeError("Reload the page to reopen the project.");
         return;
       }
       void runtime.snapshot().then((live) => {
@@ -380,7 +451,7 @@ export function App() {
         setProject((current) => mergeRuntimeProject(current, live));
         setCaptureSelections(captureSelectionsFromSnapshot(live));
         setOperationError(undefined);
-        setContinuityNotice("The browser paused this lab. It was restored from the latest recovery point without advancing network timers.");
+        setContinuityNotice("The project has been reopened from its latest saved state.");
       }).catch((cause) => {
         if (active) setRuntimeError(visibleFailure("startup", cause));
       });
@@ -416,7 +487,8 @@ export function App() {
   }, []);
 
   const addRouter = useCallback((profileId: DeviceProfileId) => {
-    const nodeIds = [...project.routers, ...project.hosts,
+    const nodeIds = [...project.routers, ...project.dhcpServers,
+      ...project.hosts,
       ...project.switches].map((item) => item.id);
     const id = freeId("r", nodeIds);
     // Capture the dialog record once. Besides satisfying React's asynchronous
@@ -427,18 +499,20 @@ export function App() {
     if (!pending || !systemName) return;
     const router = createRouterProjectV4(id, profileId, systemName);
     // A canvas drop is an explicit user coordinate and must never be moved.
-    // A palette click has no geometric intent, so recompute every automatic
-    // coordinate together. Laying out only the new node would eventually
-    // collide with persisted predecessors as the lab grows toward 16 routers.
+    // A palette click has no geometric intent, but the layout still belongs to
+    // the user. The fallback may choose a coordinate for the new node only.
+    // Replacing old coordinates here made every existing cable jump when one
+    // device was added and silently destroyed a carefully arranged topology.
     const automaticNodes = automaticTopologyLayout(
       [...project.routers.map((item) => item.id),
+        ...project.dhcpServers.map((item) => item.id),
         ...project.switches.map((item) => item.id), id],
       project.hosts.map((item) => item.id));
     const next = { ...project, routers: [...project.routers, router], layout: {
       ...project.layout, nodes: pending.explicitPlacement
         ? { ...project.layout.nodes, [id]: { x: pending.x,
           y: pending.y } }
-        : { ...project.layout.nodes, ...automaticNodes } } };
+        : { ...project.layout.nodes, [id]: automaticNodes[id] } } };
     // The node appears only after the C++ owner accepts the generated profile.
     // This avoids a canvas-only router when catalog capacity or validation
     // rejects the operation and keeps project intent aligned with live state.
@@ -447,26 +521,55 @@ export function App() {
       .catch(() => undefined);
   }, [mutate, pendingRouterPosition, project]);
 
-  const addDevice = useCallback((kind: "router" | "host" | "switch",
+  const addDevice = useCallback((
+    kind: "router" | "dhcp-server" | "host" | "switch",
     position?: { x: number; y: number }) => {
     if (kind === "router") {
       // A chassis profile changes slot inventory and resource bounds, so a
       // generic drag cannot silently select one. The drop coordinate is kept
       // until the user confirms a generated catalog entry in the dialog.
-      const nodeIds = [...project.routers, ...project.hosts,
+      const nodeIds = [...project.routers, ...project.dhcpServers,
+        ...project.hosts,
         ...project.switches].map((item) => item.id);
       const suggested = freeId("r", nodeIds).toUpperCase();
       // The temporary coordinate keeps the dialog data complete. It is used
-      // only for a real drop. Palette clicks are laid out as one coherent set
-      // after the chosen chassis has been accepted by the runtime owner.
+          // only for a real drop. Palette clicks receive a fallback coordinate
+          // without changing any coordinate already owned by the project.
       const target = position ?? { x: 0, y: 0 };
       // The first free R1..R16 name is a convenience only. It stays editable
       // because system-name is router configuration and cannot be derived from
       // a registry slot or canvas order.
       setPendingRouterPosition({ ...target, systemName: suggested,
         explicitPlacement: Boolean(position) });
+    } else if (kind === "dhcp-server") {
+      const profile = PROFILE_CATALOG.profiles.find((item) =>
+        item.role === "dhcp-server");
+      if (!profile) return;
+      const nodeIds = [...project.routers, ...project.dhcpServers,
+        ...project.hosts, ...project.switches].map((item) => item.id);
+      const id = freeId("dhcp", nodeIds);
+      const server = createDhcpServerProjectV5(
+        id, profile.id as DeviceProfileId, id.toUpperCase());
+      const automaticNodes = automaticTopologyLayout(
+        [...project.routers.map((item) => item.id),
+          ...project.dhcpServers.map((item) => item.id),
+          ...project.switches.map((item) => item.id), id],
+        project.hosts.map((item) => item.id));
+      const next = {
+        ...project,
+        dhcpServers: [...project.dhcpServers, server],
+        layout: { ...project.layout,
+          nodes: position
+            ? { ...project.layout.nodes, [id]: position }
+            : { ...project.layout.nodes, [id]: automaticNodes[id] } }
+      };
+      void mutate(next, async (client) => {
+        await client.createDhcpServer(id, server.profileId, server.name);
+        return client.replaceRouterConfiguration(server);
+      }).then(() => setSelected(id)).catch(() => undefined);
     } else if (kind === "host") {
-      const nodeIds = [...project.routers, ...project.hosts,
+      const nodeIds = [...project.routers, ...project.dhcpServers,
+        ...project.hosts,
         ...project.switches].map((item) => item.id);
       const id = freeId("h", nodeIds);
       // Addressing and MAC identity are network configuration, not canvas
@@ -474,17 +577,19 @@ export function App() {
       // a complete interface record and project validation accepts it.
       setPendingHost({ id, position: position ?? { x: 0, y: 0 },
         explicitPlacement: Boolean(position), name: id.toUpperCase(), mac: "",
-        address: "", gateway: "", mtu: "" });
+        ipv4Configuration: "static", address: "", gateway: "", mtu: "" });
     } else {
       const profile = PROFILE_CATALOG.switch_profiles[0];
       if (!profile) return;
-      const nodeIds = [...project.routers, ...project.hosts,
+      const nodeIds = [...project.routers, ...project.dhcpServers,
+        ...project.hosts,
         ...project.switches].map((item) => item.id);
       const id = freeId("s", nodeIds);
       const ethernetSwitch = createSwitchProjectV5(id, profile.id,
         id.toUpperCase());
       const automaticNodes = automaticTopologyLayout(
         [...project.routers.map((item) => item.id),
+          ...project.dhcpServers.map((item) => item.id),
           ...project.switches.map((item) => item.id), id],
         project.hosts.map((item) => item.id));
       const next = { ...project,
@@ -492,7 +597,7 @@ export function App() {
         layout: { ...project.layout,
           nodes: position
             ? { ...project.layout.nodes, [id]: position }
-            : { ...project.layout.nodes, ...automaticNodes } } };
+            : { ...project.layout.nodes, [id]: automaticNodes[id] } } };
       void mutate(next, (client) =>
         client.createSwitch(id, profile.id, ethernetSwitch.name))
         .then(() => setSelected(id))
@@ -503,13 +608,25 @@ export function App() {
   const addHost = useCallback(() => {
     if (!pendingHost) return;
     const mtu = Number(pendingHost.mtu);
+    const dynamicIpv4 = pendingHost.ipv4Configuration === "dhcp";
     const host: HostProjectV4 = { id: pendingHost.id, kind: "host",
       name: pendingHost.name, eth0: { mac: pendingHost.mac,
-        address: pendingHost.address, gateway: pendingHost.gateway, mtu,
+        // DHCP begins unnumbered. These sentinel values are part of the host
+        // client contract and never enter the uniqueness set for configured
+        // static addresses.
+        address: dynamicIpv4 ? "0.0.0.0/0" : pendingHost.address,
+        gateway: dynamicIpv4 ? "0.0.0.0" : pendingHost.gateway, mtu,
         mode: "ethernet",
         // The same audited Web Crypto adapter creates independent values for
         // each owner. A transport secret is never reused as an RFC 7217 key.
         transportSecretHex: secureRandomSecretHex(),
+        dhcpv4: { client: dynamicIpv4 ? {
+          clientIdentifierHex: "",
+          transactionSecretHex: secureRandomSecretHex(),
+          parameterRequestList: [1, 3, 6],
+          maximumMessageSize: 576,
+          broadcast: false
+        } : null, server: null },
         dns: { resolver: null, authoritative: null },
         ipv6: { autoconfiguration: true,
           interfaceId: hostInterfaceId(pendingHost.id),
@@ -517,24 +634,35 @@ export function App() {
           stableIidSecret: null, networkId: "",
           dhcpv6: { client: null, server: null } } } };
     // Hosts obey the same ownership rule as routers: a drag owns its drop
-    // coordinate, while a click asks the deterministic layout to make space
-    // for the complete router and endpoint set without disturbing explicit
-    // coordinates that are unrelated to this automatic placement operation.
+    // coordinate and a click receives only the generated coordinate for the
+    // new host. Existing coordinates are never rewritten as a side effect.
     const automaticNodes = automaticTopologyLayout(
       [...project.routers.map((item) => item.id),
+        ...project.dhcpServers.map((item) => item.id),
         ...project.switches.map((item) => item.id)],
       [...project.hosts.map((item) => item.id), host.id]);
     const next = { ...project, hosts: [...project.hosts, host], layout: {
       ...project.layout, nodes: pendingHost.explicitPlacement
         ? { ...project.layout.nodes, [host.id]: pendingHost.position }
-        : { ...project.layout.nodes, ...automaticNodes } } };
-    void mutate(next, (client) => client.createConfiguredHost(host.id,
-      host.name, host.eth0.mac, host.eth0.address, host.eth0.gateway,
-      host.eth0.mtu, host.eth0.ipv6.interfaceId,
-      host.eth0.ipv6.autoconfiguration,
-      host.eth0.ipv6.interfaceIdentifierMode,
-      host.eth0.ipv6.stableIidSecret, host.eth0.ipv6.networkId,
-      host.eth0.transportSecretHex)).then(() => {
+        : { ...project.layout.nodes, [host.id]: automaticNodes[host.id] } } };
+    void mutate(next, async (client) => {
+      await client.createConfiguredHost(host.id,
+        host.name, host.eth0.mac, host.eth0.address, host.eth0.gateway,
+        host.eth0.mtu, host.eth0.ipv6.interfaceId,
+        host.eth0.ipv6.autoconfiguration,
+        host.eth0.ipv6.interfaceIdentifierMode,
+        host.eth0.ipv6.stableIidSecret, host.eth0.ipv6.networkId,
+        host.eth0.transportSecretHex);
+      try {
+        return await client.replaceHostDhcpv4(host.id, host.eth0.dhcpv4);
+      } catch (cause) {
+        // Creation is not published until the application owner accepts the
+        // client. If that second owner rejects, remove the isolated endpoint
+        // so a retry cannot collide with a hidden host or its stable identity.
+        await client.deleteHost(host.id);
+        throw cause;
+      }
+    }).then(() => {
         setSelected(host.id); setPendingHost(undefined);
       })
       .catch(() => undefined);
@@ -556,7 +684,7 @@ export function App() {
   // annotation state; autosave persists them through the project head exactly
   // like node coordinates.
   const createAnnotation = useCallback((position: { x: number; y: number }) => {
-    const used = [...project.routers, ...project.hosts,
+    const used = [...project.routers, ...project.dhcpServers, ...project.hosts,
       ...project.switches].map((item) => item.id)
       .concat(project.links.map((item) => item.id))
       .concat(project.annotations.map((item) => item.id));
@@ -567,7 +695,8 @@ export function App() {
       annotations: [...current.annotations, annotation] }));
     setSelected(id);
     setInspectorOpen(true);
-  }, [project.annotations, project.hosts, project.links, project.routers,
+  }, [project.annotations, project.dhcpServers, project.hosts, project.links,
+    project.routers,
     project.switches]);
 
   const moveAnnotation = useCallback((id: string,
@@ -611,9 +740,11 @@ export function App() {
 
   const availablePorts = (nodeId: string) => {
     const router = project.routers.find((item) => item.id === nodeId);
+    const dhcpServer = project.dhcpServers.find((item) => item.id === nodeId);
     const ethernetSwitch = project.switches.find(
       (item) => item.id === nodeId);
     const ports = router ? equippedRouterPorts(router).map((item) => item.id)
+      : dhcpServer ? equippedRouterPorts(dhcpServer).map((item) => item.id)
       : ethernetSwitch ? ethernetSwitch.ports.map((item) => item.id)
         : ["eth0"];
     const used = new Set(project.links.flatMap((link) => link.endpoints
@@ -667,21 +798,24 @@ export function App() {
 
   const deleteNode = useCallback((nodeId: string) => {
     const router = project.routers.find((item) => item.id === nodeId);
+    const dhcpServer = project.dhcpServers.find((item) => item.id === nodeId);
     const host = project.hosts.find((item) => item.id === nodeId);
     const ethernetSwitch = project.switches.find(
       (item) => item.id === nodeId);
-    if (!router && !host && !ethernetSwitch) return;
+    if (!router && !dhcpServer && !host && !ethernetSwitch) return;
     const nodes = { ...project.layout.nodes };
     delete nodes[nodeId];
     const next = { ...project,
       routers: project.routers.filter((item) => item.id !== nodeId),
+      dhcpServers: project.dhcpServers.filter((item) => item.id !== nodeId),
       hosts: project.hosts.filter((item) => item.id !== nodeId),
       switches: project.switches.filter((item) => item.id !== nodeId),
       links: project.links.filter((link) => !link.endpoints.some(
         (endpoint) => endpoint.nodeId === nodeId)),
       layout: { ...project.layout, nodes } };
     void mutate(next, (client) => router ? client.deleteRouter(nodeId)
-      : host ? client.deleteHost(nodeId)
+      : dhcpServer ? client.deleteDhcpServer(nodeId)
+        : host ? client.deleteHost(nodeId)
         : client.deleteSwitch(nodeId)).then(() => {
         setSelected((current) => current === nodeId ? undefined : current);
         // Router deletion closes every runtime-owned session for that router.
@@ -709,13 +843,24 @@ export function App() {
     const next = { ...project, hosts: project.hosts.map((item) =>
       item.id === resolved.id ? resolved : item) };
     if (JSON.stringify(previous) === JSON.stringify(resolved)) return;
-    void mutate(next, (client) => client.updateHost(resolved.id, resolved.name,
-      resolved.eth0.mac, resolved.eth0.address, resolved.eth0.gateway,
-      resolved.eth0.mtu, resolved.eth0.ipv6.interfaceId,
-      resolved.eth0.ipv6.autoconfiguration,
-      resolved.eth0.ipv6.interfaceIdentifierMode,
-      resolved.eth0.ipv6.stableIidSecret, resolved.eth0.ipv6.networkId,
-      resolved.eth0.transportSecretHex))
+    // Endpoint identity and application protocols are committed together.
+    // This matters when a user switches from static IPv4 to DHCP: publishing
+    // 0.0.0.0/0 without a successfully bound client would strand the host.
+    void mutate(next, (client) => client.replaceHostIpv4(resolved))
+      .catch(() => undefined);
+  }, [mutate, project]);
+
+  const updateDhcpServer = useCallback((server: DhcpServerProjectV5) => {
+    const previous = project.dhcpServers.find((item) => item.id === server.id);
+    if (!previous || JSON.stringify(previous) === JSON.stringify(server))
+      return;
+    const next = { ...project,
+      dhcpServers: project.dhcpServers.map((item) =>
+        item.id === server.id ? server : item) };
+    // Network interfaces and both DHCP families form one runtime transaction.
+    // Publishing the project after only the interface step would make a pool
+    // appear saved even when its control-plane owner rejected the attachment.
+    void mutate(next, (client) => client.replaceDhcpServer(previous, server))
       .catch(() => undefined);
   }, [mutate, project]);
 
@@ -1293,8 +1438,8 @@ export function App() {
   const activeTerminalRouter = project.routers.find((item) =>
     item.id === activeTerminalSession?.routerId);
   const visibleMessage = runtimeError ?? operationError ?? continuityNotice;
-  const visibleMessageTitle = runtimeError ? "Lab unavailable"
-    : operationError ? "Operation failed" : "Lab restored";
+  const visibleMessageTitle = runtimeError ? "Project unavailable"
+    : operationError ? "Changes not applied" : "Project reopened";
   const displaySnapshot = telemetrySnapshot ?? snapshot;
   const confirmDemo = DEMO_LAB_CATALOG.find((item) =>
     item.id === confirmDemoId);
@@ -1309,7 +1454,7 @@ export function App() {
     </header>
     {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
     <div className="workspace"><aside className="library"><div className="panel-kicker">WORKSPACE</div><nav className="side-nav"><button className={view === "topology" ? "active" : ""} onClick={() => navigate("topology")}><span><Waypoints size={18} /></span>Topology</button><button className={view === "demos" ? "active" : ""} onClick={() => navigate("demos")}><span><Rocket size={18} /></span>Demos</button><button className={view === "devices" ? "active" : ""} onClick={() => navigate("devices")}><span><Server size={18} /></span>Devices</button><button className={view === "captures" ? "active" : ""} onClick={() => navigate("captures")}><span><Radio size={18} /></span>Captures</button></nav><div className="side-divider" /><div className="panel-kicker">DEVICE PALETTE</div>
-      <section><h3>ENDPOINTS</h3><button className="library-item" draggable onDragStart={(event) => { event.dataTransfer.setData("application/x-router-lab-device", "host"); event.dataTransfer.effectAllowed = "copy"; }} onClick={() => { setSidebarOpen(false); addDevice("host"); }}><span className="mini-icon device-symbol"><img src="/assets/topology/host-diagram.png" alt="" draggable={false} /></span><span><strong>IP Host</strong><small>{project.hosts.length} configured</small></span></button></section>
+      <section><h3>ENDPOINTS</h3><button className="library-item" draggable onDragStart={(event) => { event.dataTransfer.setData("application/x-router-lab-device", "host"); event.dataTransfer.effectAllowed = "copy"; }} onClick={() => { setSidebarOpen(false); addDevice("host"); }}><span className="mini-icon device-symbol"><img src="/assets/topology/host-diagram.png" alt="" draggable={false} /></span><span><strong>IP Host</strong><small>{project.hosts.length} configured</small></span></button><button className="library-item" draggable onDragStart={(event) => { event.dataTransfer.setData("application/x-router-lab-device", "dhcp-server"); event.dataTransfer.effectAllowed = "copy"; }} onClick={() => { setSidebarOpen(false); addDevice("dhcp-server"); }}><span className="mini-icon"><Server size={17} /></span><span><strong>DHCP server</strong><small>{project.dhcpServers.length} configured</small></span></button></section>
       <section><h3>ROUTERS</h3><button className="library-item active" draggable onDragStart={(event) => { event.dataTransfer.setData("application/x-router-lab-device", "router"); event.dataTransfer.effectAllowed = "copy"; }} onClick={() => { setSidebarOpen(false); addDevice("router"); }}><span className="mini-icon device-symbol router"><img src="/assets/topology/router-diagram.png" alt="" draggable={false} /></span><span><strong>7750 SR</strong><small>SR OS {PROFILE_CATALOG.release}</small></span></button></section>
       <section><h3>SWITCHES</h3><button className="library-item" draggable onDragStart={(event) => { event.dataTransfer.setData("application/x-router-lab-device", "switch"); event.dataTransfer.effectAllowed = "copy"; }} onClick={() => { setSidebarOpen(false); addDevice("switch"); }}><span className="mini-icon device-symbol switch"><img src="/assets/topology/switch-diagram.png" alt="" draggable={false} /></span><span><strong>Ethernet switch</strong><small>{project.switches.length} configured</small></span></button></section>
       <section><h3>MEDIA</h3><button className={`library-item ${topologyTool === "link" ? "active" : ""}`} onClick={() => { setSidebarOpen(false); setTopologyTool((current) => current === "link" ? "select" : "link"); navigate("topology"); }}><span className="mini-icon link"><Cable size={17} /></span><span><strong>Physical link</strong><small>Drag between free physical ports</small></span></button></section>
@@ -1317,16 +1462,23 @@ export function App() {
       <section className="center-stage">{visibleMessage && <div className="runtime-error"><strong>{visibleMessageTitle}</strong><span>{visibleMessage}</span>{!runtimeError && <button onClick={() => { setOperationError(undefined); setContinuityNotice(undefined); }}>Dismiss</button>}</div>}
         {view === "topology" ? <Topology project={project} snapshot={displaySnapshot} selected={selected} onSelect={selectDevice} onLayoutChange={updateLayout} onConnect={(first, second) => { setLinkNodes([first, second]); setLinkPorts(["", ""]); }} onDropDevice={(kind, position) => addDevice(kind, position)} onOpenHardware={() => { if (selectedRouter) setRouterTab("cards"); }} onAnnotationCreate={createAnnotation} onAnnotationMove={moveAnnotation} onAnnotationResize={resizeAnnotation} onAnnotationCommitText={commitAnnotationText} onAnnotationDelete={deleteAnnotation} tool={topologyTool} onToolChange={setTopologyTool} /> : view === "demos" ? <DemosWorkspace demos={DEMO_LAB_CATALOG} pendingDemoId={pendingDemoId} onLaunch={requestDemoLaunch} /> : view === "devices" ? <DevicesWorkspace project={project} snapshot={displaySnapshot} onInspect={selectDevice} onConsole={openConsole} /> : view === "captures" ? <CaptureWorkspace project={project} snapshot={displaySnapshot} selections={captureSelections.map((item) => item.key)} onSelection={(kind, objectId, portId, direction, value) => void setCaptureSelection(kind, objectId, portId, direction, value)} onToggle={() => void toggleCapture()} onExport={() => void exportCaptureNow()} onCheckpoint={() => { setPassphrase(""); setPassphraseConfirmation(""); setProtectedFileAction({ kind: "checkpoint" }); }} /> : view === "configs" ? <ConfigWorkspace router={selectedRouter} onChange={updateRouter} /> : view === "snapshots" ? <SnapshotWorkspace checkpointInput={checkpointRef} onExport={() => { setPassphrase(""); setPassphraseConfirmation(""); setProtectedFileAction({ kind: "checkpoint" }); }} onImport={(event) => void importCheckpointFile(event)} /> : view === "notes" ? <NotesWorkspace value={project.notes} onChange={(notes) => setProject((current) => ({ ...current, notes }))} /> : <SettingsWorkspace project={project} onChange={setProject} onResetLayout={resetLayout} />}
       </section>
-      {inspectorOpen && <Inspector selected={selected} tab={routerTab} onTabChange={setRouterTab} project={project} snapshot={displaySnapshot} updateHost={updateHost} updateRouter={updateRouter} setCard={setCard} setMda={setMda} setCardAdmin={setCardAdmin} setMdaAdmin={setMdaAdmin} setSwitchName={setSwitchName} setSwitchPort={setSwitchPort} setLink={(id, up) => void setLink(id, up)} updateLink={updateLink} deleteLink={deleteLink} deleteNode={deleteNode} updateAnnotation={updateAnnotation} deleteAnnotation={deleteAnnotation} ping={ping} width={project.layout.inspectorWidth} onWidthChange={(value) => resizePanel("inspectorWidth", value)} openConsole={openConsole} close={() => setInspectorOpen(false)} />}
+      {inspectorOpen && <Inspector selected={selected} tab={routerTab} onTabChange={setRouterTab} project={project} snapshot={displaySnapshot} updateHost={updateHost} updateDhcpServer={updateDhcpServer} updateRouter={updateRouter} setCard={setCard} setMda={setMda} setCardAdmin={setCardAdmin} setMdaAdmin={setMdaAdmin} setSwitchName={setSwitchName} setSwitchPort={setSwitchPort} setLink={(id, up) => void setLink(id, up)} updateLink={updateLink} deleteLink={deleteLink} deleteNode={deleteNode} updateAnnotation={updateAnnotation} deleteAnnotation={deleteAnnotation} ping={ping} width={project.layout.inspectorWidth} onWidthChange={(value) => resizePanel("inspectorWidth", value)} openConsole={openConsole} close={() => setInspectorOpen(false)} />}
     </div>
     {terminalOpen && activeSession && <TerminalPanel key={terminalGeneration} ready={Boolean(runtime && !runtimeError)} systemName={activeTerminalRouter?.systemName ?? "Router"} historyKey={`${project.projectId}:${activeTerminalSession?.routerId ?? "unknown"}:${activeSession}`} execute={execute} complete={complete} cancel={cancelTerminal} state={terminalState} restorePresentation={terminalPresentations[activeSession]} registerCheckpointProvider={registerTerminalCheckpointProvider} tabs={terminalTabs} activeTab={activeSession} selectTab={selectTerminalSession} newTab={() => { if (activeTerminalSession) createConsole(activeTerminalSession.routerId); }} closeTab={closeTerminalSession} height={project.layout.terminalHeight} onHeightChange={(value) => resizePanel("terminalHeight", value)} close={closeTerminal} />}
     {confirmDemo && <div className="modal-backdrop"><div className="lab-dialog"><header><strong>Replace current lab?</strong><button aria-label="Close dialog" disabled={Boolean(pendingDemoId)} onClick={() => setConfirmDemoId(undefined)}><X size={18} /></button></header><p className="dialog-copy">Launching {confirmDemo.title} will replace the active lab and close open console sessions.</p><div className="dialog-actions"><button disabled={Boolean(pendingDemoId)} onClick={() => setConfirmDemoId(undefined)}>Cancel</button><button className="primary" disabled={Boolean(pendingDemoId)} onClick={() => void launchDemo(confirmDemo.id)}>{pendingDemoId ? "Loading" : "Replace and launch"}</button></div></div></div>}
-    {pendingRouterPosition && <div className="modal-backdrop"><div className="lab-dialog"><header><strong>Configure router</strong><button aria-label="Close dialog" onClick={() => setPendingRouterPosition(undefined)}><X size={18} /></button></header><label>System name<input value={pendingRouterPosition.systemName} maxLength={32} onChange={(event) => setPendingRouterPosition({ ...pendingRouterPosition, systemName: event.target.value })} /></label><div className="panel-kicker dialog-kicker">CHASSIS PROFILE</div>{PROFILE_CATALOG.profiles.map((profile) => <button key={profile.id} className="primary" disabled={!pendingRouterPosition.systemName.trim()} onClick={() => addRouter(profile.id as DeviceProfileId)}>{profile.chassis}</button>)}</div></div>}
+    {pendingRouterPosition && <div className="modal-backdrop"><div className="lab-dialog"><header><strong>Configure router</strong><button aria-label="Close dialog" onClick={() => setPendingRouterPosition(undefined)}><X size={18} /></button></header><label>System name<input value={pendingRouterPosition.systemName} maxLength={32} onChange={(event) => setPendingRouterPosition({ ...pendingRouterPosition, systemName: event.target.value })} /></label><div className="panel-kicker dialog-kicker">CHASSIS PROFILE</div>{PROFILE_CATALOG.profiles.filter((profile) => profile.role === "router").map((profile) => <button key={profile.id} className="primary" disabled={!pendingRouterPosition.systemName.trim()} onClick={() => addRouter(profile.id as DeviceProfileId)}>{profile.chassis}</button>)}</div></div>}
     {pendingHost && <div className="modal-backdrop"><div className="lab-dialog"><header><strong>Configure host interface</strong><button aria-label="Close dialog" onClick={() => setPendingHost(undefined)}><X size={18} /></button></header>
       <label>Name<input value={pendingHost.name} onChange={(event) => setPendingHost({ ...pendingHost, name: event.target.value })} /></label>
       <label>MAC address<input placeholder="xx:xx:xx:xx:xx:xx" value={pendingHost.mac} onChange={(event) => setPendingHost({ ...pendingHost, mac: event.target.value })} /></label>
-      <label>IPv4 prefix<input placeholder="address/prefix-length" value={pendingHost.address} onChange={(event) => setPendingHost({ ...pendingHost, address: event.target.value })} /></label>
-      <label>Default gateway<input placeholder="IPv4 address" value={pendingHost.gateway} onChange={(event) => setPendingHost({ ...pendingHost, gateway: event.target.value })} /></label>
+      <label>IPv4 configuration<select value={pendingHost.ipv4Configuration}
+        onChange={(event) => setPendingHost({ ...pendingHost,
+          ipv4Configuration: event.target.value as "static" | "dhcp" })}>
+        <option value="static">static</option>
+        <option value="dhcp">DHCP</option></select></label>
+      {pendingHost.ipv4Configuration === "static" && <>
+        <label>IPv4 prefix<input placeholder="address/prefix-length" value={pendingHost.address} onChange={(event) => setPendingHost({ ...pendingHost, address: event.target.value })} /></label>
+        <label>Default gateway<input placeholder="IPv4 address" value={pendingHost.gateway} onChange={(event) => setPendingHost({ ...pendingHost, gateway: event.target.value })} /></label>
+      </>}
       <label>Interface MTU<input inputMode="numeric" placeholder="bytes" value={pendingHost.mtu} onChange={(event) => setPendingHost({ ...pendingHost, mtu: event.target.value })} /></label>
       <button className="primary" onClick={addHost}>Add host</button></div></div>}
     {linkNodes && <div className="modal-backdrop"><div className="lab-dialog"><header><strong>Connect physical ports</strong><button aria-label="Close dialog" onClick={() => { setLinkNodes(undefined); setTopologyTool("select"); }}><X size={18} /></button></header>{linkNodes.map((node, index) => <label key={node}>{node}<select value={linkPorts[index]} onChange={(event) => setLinkPorts(index === 0 ? [event.target.value, linkPorts[1]] : [linkPorts[0], event.target.value])}><option value="">Select a free port</option>{availablePorts(node).map((port) => <option key={port}>{port}</option>)}</select></label>)}<button className="primary" disabled={!linkPorts[0] || !linkPorts[1]} onClick={createLink}>Connect</button></div></div>}

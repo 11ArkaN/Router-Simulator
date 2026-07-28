@@ -445,7 +445,16 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
     case ipsec_certificate_entry_id:
     case history_esp_records:
     case history_ike_records:
+    case bof_timeout_seconds:
       return decimal_text(value);
+    case bof_client_id: {
+      // The BOF model accepts either a quoted character string or an opaque
+      // hexadecimal spelling. Family-specific limits differ, so the grammar
+      // only enforces the largest transport envelope and leaves the exact
+      // IPv4 or IPv6 contract to the BOF configuration owner.
+      const auto identifier = scalar_text(value);
+      return !identifier.empty() && identifier.size() <= 256U;
+    }
     case static_sa_spi: {
       // RFC 4303 reserves ESP SPI values 0 through 255. SR OS further caps a
       // manually configured SPI at 16383, so accepting a wider decimal here
@@ -534,6 +543,20 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
     case alarm_severity:
       return value == "critical" || value == "major" || value == "minor" ||
              value == "warning";
+    case dhcp_lease_state:
+      return value == "offered" || value == "stable" ||
+             value == "force-renew-pending" || value == "remove-pending" ||
+             value == "held" || value == "internal" ||
+             value == "internal-orphan" || value == "internal-offered" ||
+             value == "internal-held" || value == "sticky";
+    case dhcpv6_lease_state:
+      return value == "advertised" || value == "stable" ||
+             value == "remove-pending" || value == "held" ||
+             value == "internal" || value == "internal-orphan" ||
+             value == "internal-offered" || value == "internal-held";
+    case dhcpv6_lease_type:
+      return value == "pd" || value == "slaac" || value == "wan" ||
+             value == "wan-host";
     case ppk_ascii_value:
     case ipsec_pre_shared_key: {
       // SR OS encrypted-leaf text may be clear input or an opaque protected
@@ -724,6 +747,20 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case levels:
   case system_name:
   case description:
+  case dhcp_server_name:
+  case dhcp_pool_name:
+  case dhcp_lease_seconds:
+  case dhcp_offer_seconds:
+  case dhcp_maximum_declined:
+  case dhcp_lease_state:
+  case dhcpv6_lease_state:
+  case dhcpv6_lease_type:
+  case dhcpv6_lifetime_seconds:
+  case dhcpv6_timer_seconds:
+  case dhcpv6_delegated_length:
+  case dhcp_remote_id_ascii:
+  case bof_client_id:
+  case bof_timeout_seconds:
   case seconds:
   case milliseconds:
   case hop_limit:

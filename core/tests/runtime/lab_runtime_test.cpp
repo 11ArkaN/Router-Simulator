@@ -37,6 +37,23 @@ std::string message(std::string_view operation,
   return result;
 }
 
+std::string message(std::string_view operation,
+                    const std::vector<std::string> &fields) {
+  // Dynamic complete-record tests use the public framing itself. This avoids
+  // a test-only shortcut for the variable number of physical ports and DHCP
+  // application records carried by one dedicated-server transaction.
+  std::string result;
+  const auto add = [&](std::string_view value) {
+    result += std::to_string(value.size()) + ':';
+    result.append(value);
+    result += ',';
+  };
+  add(operation);
+  for (const auto &field : fields)
+    add(field);
+  return result;
+}
+
 std::string nested(std::initializer_list<std::string_view> fields) {
   // Atomic form payloads deliberately use the same byte-length framing as the
   // public operation. This fixture therefore exercises spaces and empty leaf
@@ -120,6 +137,113 @@ std::size_t pcapng_enhanced_packet_blocks(
   return packets;
 }
 
+void host_ipv4_atomic_replacement_test(router::lab::LabRuntime &runtime) {
+  using namespace router::lab;
+  const auto dhcpv4 = nested(
+      {"1",
+       "",
+       "4141414141414141414141414141414141414141414141414141414141414141",
+       "576",
+       "0",
+       "3",
+       "1",
+       "3",
+       "6",
+       "0"});
+  const auto host_network = [&](std::string_view address,
+                                std::string_view gateway,
+                                std::string_view ipv4_payload) {
+    return std::string{runtime.command(message(
+        router::lab_runtime_protocol::host_ipv4_replace,
+        {"host-a",
+         "Host A",
+         "02:00:00:00:aa:01",
+         address,
+         gateway,
+         "1500",
+         "1",
+         "1",
+         "stable-opaque",
+         "000102030405060708090a0b0c0d0e0f"
+         "101112131415161718191a1b1c1d1e1f",
+         "edge-link",
+         "0102030405060708090a0b0c0d0e0f10"
+         "1112131415161718191a1b1c1d1e1f20",
+         ipv4_payload}))};
+  };
+
+  require(!host_network("0.0.0.0/0", "0.0.0.0", dhcpv4)
+               .starts_with("ERROR:"),
+          "atomic host IPv4 replacement rejected complete DHCP intent");
+  require(host_network("0.0.0.0/0", "0.0.0.0", nested({"1"}))
+              .starts_with("ERROR:"),
+          "partial DHCP intent was accepted");
+  const std::string after_invalid{
+      runtime.command(message(router::lab_runtime_protocol::snapshot))};
+  require(after_invalid.find(
+              "\"id\":\"host-a\",\"name\":\"Host A\"") !=
+              std::string::npos &&
+              after_invalid.find("\"address\":\"0.0.0.0/0\"") !=
+                  std::string::npos &&
+              after_invalid.find("\"gateway\":\"0.0.0.0\"") !=
+                  std::string::npos,
+          "invalid DHCP intent changed accepted host IPv4 identity");
+  require(!host_network("192.0.2.2/30", "192.0.2.1",
+                        nested({"0", "0"}))
+               .starts_with("ERROR:"),
+          "atomic host IPv4 replacement did not restore static addressing");
+}
+
+void dedicated_dhcp_pool_transaction_test(router::lab::LabRuntime &runtime) {
+  using namespace router::lab;
+  require(!runtime.command(message(
+      router::lab_runtime_protocol::dhcp_server_create,
+      {"dhcp-test", "generic-dhcp-server-8", "DHCP test"}))
+               .starts_with("ERROR:"),
+          "dedicated DHCP transaction fixture could not create its server");
+
+  std::vector<std::string> network{"DHCP test", "1", "8"};
+  for (unsigned port = 1U; port <= 8U; ++port) {
+    network.push_back("1/1/" + std::to_string(port));
+    network.push_back(port == 1U ? "1" : "0");
+    network.push_back("9212");
+    network.push_back("10000");
+    network.emplace_back();
+  }
+  network.insert(network.end(),
+                 {"1", "clients", "1/1/1", "192.0.2.1/24", "", "", "0",
+                  "1", "0", "0", "0", "0", "0"});
+  const auto network_payload = nested(network);
+  const auto valid_server = nested(
+      {"0", "1", "192.0.2.1", "1", "0", "60", "900", "1", "0", "1",
+       "1", "1", "0", "9223372036854775808", "192.0.2.20",
+       "192.0.2.90", "255.255.255.0", "192.0.2.1", "600", "0", "0",
+       "1", "0", "0"});
+  const auto invalid_server = nested(
+      {"0", "1", "192.0.2.1", "1", "0", "60", "900", "1", "0", "1",
+       "1", "1", "0", "9223372036854775808", "192.0.2.90",
+       "192.0.2.20", "255.255.255.0", "192.0.2.1", "600", "0", "0",
+       "1", "0", "0"});
+  require(!runtime.command(message(
+      router::lab_runtime_protocol::dhcp_server_replace,
+      std::vector<std::string>{"dhcp-test", network_payload, "0", "1",
+                               "server-1", valid_server, "0", "0"}))
+               .starts_with("ERROR:"),
+          "dedicated DHCP transaction rejected a valid IPv4 address range");
+  require(runtime.command(message(
+      router::lab_runtime_protocol::dhcp_server_replace,
+      std::vector<std::string>{"dhcp-test", network_payload, "1",
+                               "server-1", "1", "server-1", invalid_server,
+                               "0", "0"}))
+              .starts_with("ERROR:"),
+          "dedicated DHCP transaction accepted a reversed address range");
+  require(!runtime.command(message(
+                                   router::lab_runtime_protocol::dhcp_server_delete,
+                                   {"dhcp-test"}))
+               .starts_with("ERROR:"),
+          "dedicated DHCP transaction fixture did not release its server");
+}
+
 } // namespace
 
 void lab_runtime_tests() {
@@ -145,6 +269,7 @@ void lab_runtime_tests() {
   require(output.find("\"routers\":[]") != std::string_view::npos &&
               output.find("\"hosts\":[]") != std::string_view::npos,
           "protocol 4 runtime invented a default topology");
+  dedicated_dhcp_pool_transaction_test(runtime);
   // Startup must expose every owner selected from the same generated policy
   // as the Emscripten pthread pool. Re-publishing is permitted while pthreads
   // enter their loops, but duplicate IDs or an idle reserved slot are not.
@@ -412,6 +537,32 @@ void lab_runtime_tests() {
               md_interface_show.find("Down/Down") != std::string_view::npos,
           "show router interface hid an unbound MD interface");
 
+  // Classic places DHCP directly below an interface, while the shared model
+  // stores that subtree below ipv4. Drive the real classic PWC one component
+  // at a time and verify that info detail maps the whole context to the
+  // canonical datastore instead of returning only separator lines.
+  require(contextual_command("//").find("classic CLI engine") !=
+                  std::string_view::npos &&
+              contextual_command("configure").find(">config#") !=
+                  std::string_view::npos &&
+              contextual_command("router").find(">config>router#") !=
+                  std::string_view::npos &&
+              contextual_command("interface md-loop")
+                      .find(">config>router>if#") != std::string_view::npos &&
+              contextual_command("dhcp").find(">if>dhcp#") !=
+                  std::string_view::npos,
+          "classic DHCP relay fixture could not enter its documented context");
+  const auto classic_dhcp_detail = contextual_command("info detail");
+  require(classic_dhcp_detail.find("shutdown") != std::string_view::npos &&
+              classic_dhcp_detail.find("src-ip-addr auto") !=
+                  std::string_view::npos &&
+              classic_dhcp_detail.find("--------------------------------") !=
+                  std::string_view::npos,
+          "classic DHCP info detail did not map through the IPv4 model node");
+  require(contextual_command("//").find("MD-CLI engine") !=
+              std::string_view::npos,
+          "classic DHCP info fixture could not restore the MD engine");
+
   // Validate OSPF MD navigation exactly as an interactive operator uses it.
   // A root-relative command can hide a broken saved working context because
   // the parser sees the complete schema path in one input. These individual
@@ -492,6 +643,91 @@ void lab_runtime_tests() {
                       .find("CLI #2064: Exiting exclusive") !=
                   std::string_view::npos,
           "nested quit-config changed context or the documented exit failed");
+
+  // BOF DHCP is a presence container: entering `dhcp` both creates the
+  // container and moves the PWC below it. A complete root-relative command
+  // cannot prove that dual behavior because it never consumes the saved
+  // context. This transcript mirrors xterm input and guards the real failure
+  // where `dhcp` changed the candidate but left subsequent leaves at `ipv4`.
+  require(contextual_command("edit-config exclusive")
+                  .find("(ex)[/]") != std::string_view::npos &&
+              contextual_command("bof").find("(ex)[/bof]") !=
+                  std::string_view::npos &&
+              contextual_command("auto-configure")
+                      .find("(ex)[/bof auto-configure]") !=
+                  std::string_view::npos &&
+              contextual_command("ipv4")
+                      .find("(ex)[/bof auto-configure ipv4]") !=
+                  std::string_view::npos &&
+              contextual_command("dhcp")
+                      .find("(ex)[/bof auto-configure ipv4 dhcp]") !=
+                  std::string_view::npos &&
+              contextual_command("client-id \"browser-oob\"")
+                      .find("MINOR:") == std::string_view::npos &&
+              contextual_command("include-user-class true")
+                      .find("MINOR:") == std::string_view::npos &&
+              contextual_command("timeout 45").find("MINOR:") ==
+                  std::string_view::npos,
+          "contextual BOF DHCPv4 configuration lost its presence-container "
+          "path");
+  const auto bof_info = contextual_command("info detail");
+  require(bof_info.find("client-id \"browser-oob\"") !=
+                  std::string_view::npos &&
+              bof_info.find("include-user-class true") !=
+                  std::string_view::npos &&
+              bof_info.find("timeout 45") != std::string_view::npos,
+          "BOF info detail did not render the contextual DHCPv4 candidate");
+  require(contextual_command("commit").find("MINOR:") ==
+                  std::string_view::npos &&
+              contextual_command("exit all").find("(ex)[/]") !=
+                  std::string_view::npos &&
+              contextual_command("quit-config")
+                      .find("CLI #2064: Exiting exclusive") !=
+                  std::string_view::npos,
+          "BOF DHCPv4 candidate could not commit and leave its workflow");
+
+  // Configure a complete DHCPv6 server through the same one-line-at-a-time
+  // context traversal used by xterm. Parser-only fixtures cannot catch a
+  // candidate that renders correctly but is rejected while the forwarding
+  // owner is programmed. The prefix explicitly enables both SR OS
+  // applications so commit exercises IA_NA and IA_PD compilation together.
+  for (const auto command :
+       {"edit-config exclusive",
+        "configure router \"Base\"",
+        "dhcp-server",
+        "dhcpv6 browser-v6",
+        "description \"Browser DHCPv6\"",
+        "pool users-v6",
+        "prefix 2001:db8:100::/56",
+        "prefix-type pd true",
+        "prefix-type wan-host true",
+        "back 2",
+        "commit",
+        "admin-state enable",
+        "commit"}) {
+    const auto result = contextual_command(command);
+    if (result.find("MINOR:") != std::string_view::npos)
+      throw std::runtime_error(
+          "contextual DHCPv6 server command failed: " +
+          std::string{command} + " output=" + std::string{result});
+  }
+  require(contextual_command("exit all").find("(ex)[/]") !=
+                  std::string_view::npos &&
+              contextual_command("quit-config")
+                      .find("CLI #2064: Exiting exclusive") !=
+                  std::string_view::npos,
+          "DHCPv6 server candidate could not leave its workflow");
+  const auto dhcpv6_server_statistics = contextual_command(
+      "show router \"Base\" dhcp-server dhcpv6 browser-v6 server-stats");
+  if (dhcpv6_server_statistics.find("Statistics for DHCPv6 Server") ==
+          std::string_view::npos ||
+      dhcpv6_server_statistics.find("browser-v6") ==
+          std::string_view::npos ||
+      dhcpv6_server_statistics.find("Unknown element") !=
+          std::string_view::npos)
+    throw std::runtime_error(
+        "committed DHCPv6 server was absent from operational state: " +
+        std::string{dhcpv6_server_statistics});
 
   // Classic CLI owns immediate running edits rather than an MD candidate.
   // Validate the root-relative form because operators commonly paste complete
@@ -727,6 +963,7 @@ void lab_runtime_tests() {
        "0003000102000000aa02",
        "100",
        "1",
+       "1",
        "86400",
        "",
        "",
@@ -752,13 +989,13 @@ void lab_runtime_tests() {
        "64"});
   require(!runtime.command(message(lab_runtime_protocol::host_dhcpv6_replace,
                                    {"host-a", dhcpv6}))
-                  .starts_with("ERROR:") &&
-              runtime
-                  .command(message(lab_runtime_protocol::host_dhcpv6_replace,
-                                   {"host-a", nested({"1"})}))
                   .starts_with("ERROR:"),
-          "protocol 4 DHCPv6 replacement accepted a partial record or rejected "
-          "complete intent");
+          "protocol 4 DHCPv6 replacement rejected complete intent");
+  require(runtime
+              .command(message(lab_runtime_protocol::host_dhcpv6_replace,
+                               {"host-a", nested({"1"})}))
+              .starts_with("ERROR:"),
+          "protocol 4 DHCPv6 replacement accepted a partial record");
   const auto dns_wall_now = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::seconds>(
           std::chrono::system_clock::now().time_since_epoch())
@@ -3502,5 +3739,6 @@ void lab_runtime_tests() {
               restored_ping.find("round-trip min = ") !=
                   std::string_view::npos,
           "checkpoint lost asynchronous ping state or relative deadlines");
+  host_ipv4_atomic_replacement_test(restored);
 
 }

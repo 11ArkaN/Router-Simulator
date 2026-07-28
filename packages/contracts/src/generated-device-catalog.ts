@@ -5,6 +5,8 @@ export const PROFILE_CATALOG = {
   "release": "26.7.R1",
   "limits": {
     "routers": 16,
+    "sr_routers": 16,
+    "dhcp_servers": 4,
     "hosts": 16,
     "switches": 16,
     "links": 64,
@@ -95,7 +97,25 @@ export const PROFILE_CATALOG = {
     "dns_resolver_max_minimise_count": 10,
     "dns_resolver_minimise_one_label_count": 4,
     "dns_resolver_max_alias_hops": 16,
+    "dhcpv4_pools_per_server": 16,
+    "dhcpv4_servers_per_router": 16,
+    "dhcpv4_leases_per_server": 2048,
+    "dhcpv4_leasequery_connections_per_server": 10,
+    "dhcpv4_bulk_leasequery_data_timeout_seconds": 300,
+    "dhcpv4_active_leasequery_idle_seconds": 60,
+    "dhcpv4_active_leasequery_data_timeout_seconds": 120,
+    "dhcp_failover_relationships_per_server": 16,
+    "dhcp_failover_updates_in_flight": 256,
+    "dhcp_failover_options_per_message": 512,
+    "dhcp_failover_connections_per_server": 16,
+    "dhcp_failover_shared_secret_bytes": 1024,
+    "dhcpv4_pending_offers_per_server": 512,
+    "dhcpv4_declined_addresses_per_server": 512,
+    "dhcpv4_relay_servers_per_interface": 8,
+    "dhcpv4_option_occurrences_per_message": 512,
+    "dhcpv4_normalized_option_octets": 65507,
     "dhcpv6_address_pools_per_server": 8,
+    "dhcpv6_servers_per_router": 16,
     "dhcpv6_prefix_pools_per_server": 8,
     "dhcpv6_leases_per_server": 1024,
     "dhcpv6_relay_servers_per_interface": 8,
@@ -111,6 +131,7 @@ export const PROFILE_CATALOG = {
     "ipv6_rdnss_entries_per_host_interface": 8,
     "ipv6_stable_iid_network_id_octets": 64,
     "host_ipv6_work_budget_actions": 8,
+    "host_application_work_budget_datagrams": 8,
     "mld_groups_per_interface": 64,
     "mld_sources_per_group": 64,
     "mld_records_per_report": 64,
@@ -140,7 +161,7 @@ export const PROFILE_CATALOG = {
     "ospf_v3_ipv4_instance_last": 95,
     "candidate_keys_per_router": 16384,
     "candidate_keys_per_session": 128,
-    "maximum_active_capture_points": 25744,
+    "maximum_active_capture_points": 25776,
     "capture_point_name_bytes": 512
   },
   "ethernet": {
@@ -419,6 +440,16 @@ export const PROFILE_CATALOG = {
     ]
   },
   "protocol_defaults": {
+    "dhcpv4_server_name_bytes": 32,
+    "dhcpv4_description_bytes": 80,
+    "dhcpv4_lease_time_minimum_seconds": 10,
+    "dhcpv4_lease_time_maximum_seconds": 315446399,
+    "dhcpv4_minimum_lease_time_seconds": 600,
+    "dhcpv4_maximum_lease_time_seconds": 864000,
+    "dhcpv4_offer_time_minimum_seconds": 10,
+    "dhcpv4_offer_time_maximum_seconds": 600,
+    "dhcpv4_offer_time_seconds": 60,
+    "dhcpv4_maximum_declined_default": 64,
     "ospf_hello_interval_seconds": 10,
     "ospf_dead_interval_seconds": 40,
     "ospf_retransmit_interval_seconds": 5,
@@ -541,7 +572,10 @@ export const PROFILE_CATALOG = {
   "profiles": [
     {
       "id": "7750-sr-1",
+      "role": "router",
       "chassis": "7750 SR-1",
+      "management_port": true,
+      "bof_autoconfigure": true,
       "fixed": true,
       "card_slots": 0,
       "control": {
@@ -580,7 +614,10 @@ export const PROFILE_CATALOG = {
     },
     {
       "id": "7750-sr-7",
+      "role": "router",
       "chassis": "7750 SR-7",
+      "management_port": true,
+      "bof_autoconfigure": true,
       "fixed": false,
       "card_slots": 5,
       "control": {
@@ -683,7 +720,10 @@ export const PROFILE_CATALOG = {
     },
     {
       "id": "7750-sr-12",
+      "role": "router",
       "chassis": "7750 SR-12",
+      "management_port": true,
+      "bof_autoconfigure": false,
       "fixed": false,
       "card_slots": 10,
       "control": {
@@ -785,9 +825,52 @@ export const PROFILE_CATALOG = {
           "me6-100gb-qsfp28"
         ]
       }
+    },
+    {
+      "id": "generic-dhcp-server-8",
+      "role": "dhcp-server",
+      "chassis": "Dedicated DHCP Server",
+      "management_port": false,
+      "bof_autoconfigure": false,
+      "fixed": true,
+      "card_slots": 0,
+      "control": {
+        "slot": "system",
+        "types": [
+          "server-control"
+        ]
+      },
+      "cards": [
+        {
+          "type": "server-nic-8",
+          "fixed": true,
+          "mda_slots": 1,
+          "mdas": [
+            "server-8x10g"
+          ]
+        }
+      ],
+      "default_hardware": {
+        "card": "server-nic-8",
+        "mdas": [
+          "server-8x10g"
+        ]
+      }
     }
   ],
   "mdas": {
+    "server-8x10g": {
+      "ethernet": true,
+      "ports": [
+        {
+          "count": 8,
+          "speeds_mbps": [
+            10000,
+            100000
+          ]
+        }
+      ]
+    },
     "isa2-aa": {
       "ethernet": false,
       "ports": []
@@ -1096,10 +1179,10 @@ export const PROFILE_CATALOG = {
   }
 } as const;
 export const PROFILE_CATALOG_COMPILED = {
-  "maximumPortsPerRouter": 800,
+  "maximumPortsPerRouter": 801,
   "maximumCardSlots": 10,
   "maximumMdaSlotsPerCard": 2,
   "maximumPortsPerMda": 40
 } as const;
-export const PROFILE_CATALOG_HASH = "cb781470f7aa6127" as const;
-export const LAB_BUILD_HASH = "d752418b11155075" as const;
+export const PROFILE_CATALOG_HASH = "beffdbc0ca23127f" as const;
+export const LAB_BUILD_HASH = "4d0354803b7cb5a0" as const;

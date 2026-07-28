@@ -4,9 +4,15 @@
 
 #pragma once
 
+#include "router/dhcpv4_failover.hpp"
+#include "router/dhcpv4_relay.hpp"
+#include "router/dhcpv4_leasequery.hpp"
+#include "router/dhcpv4_server.hpp"
+#include "router/dhcpv6_failover.hpp"
 #include "router/dhcpv6_relay.hpp"
 #include "router/dhcpv6_relay_lease.hpp"
 #include "router/dhcpv6_relay_route.hpp"
+#include "router/dhcpv6_server.hpp"
 #include "router/generated_device_catalog.hpp"
 #include "router/icmpv4_statistics.hpp"
 #include "router/icmpv6_statistics.hpp"
@@ -27,14 +33,17 @@
 #include "router/ospf_packet.hpp"
 #include "router/router_ipv6_address_table.hpp"
 #include "router/sap_forwarding.hpp"
+#include "router/tcp_endpoint.hpp"
 #include "router/udp_transport.hpp"
 
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace router::lab {
@@ -59,7 +68,8 @@ enum class ForwardDrop : std::uint8_t {
   udp_queue_full,
   dhcpv6_lease_limit,
   dhcpv6_lease_state_full,
-  blackhole
+  blackhole,
+  transit_disabled
 };
 
 struct ForwardPort {
@@ -234,6 +244,10 @@ struct InterfaceTrafficStatistics {
 };
 
 struct RouterForwarderCheckpoint {
+  // A dedicated multihomed server uses this owner for shared local routes and
+  // sockets while keeping host forwarding disabled. Router instances retain
+  // the default enabled value.
+  bool transit_forwarding_enabled{true};
   std::vector<ForwardPort> ports;
   // Native addresses are independent children of a routed interface. Keeping
   // the complete generation separate from the selected-primary port cache is
@@ -271,7 +285,48 @@ struct RouterForwarderCheckpoint {
   // stateless protocol intent, while queued datagrams and socket generations
   // are transport state and must be restored together.
   transport::UdpEndpointCheckpoint udp{};
+  // Router-local TCP terminates only configured control-plane services. The
+  // endpoint checkpoint retains TCP sequence, retransmission and receive
+  // queues, while each application session below retains framing progress.
+  std::optional<transport::tcp::EndpointCheckpoint> tcp;
+  std::optional<transport::tcp::EndpointSocketHandle>
+      dhcpv4_leasequery_listener;
+  struct Dhcpv4LeasequerySession {
+    transport::tcp::EndpointSocketHandle socket{};
+    dhcpv4::leasequery::StreamDecoderCheckpoint decoder{};
+    std::optional<dhcpv4::leasequery::RequestView> request;
+    packet::Ipv4 local{};
+    packet::Ipv4 remote{};
+    std::string server_name;
+    std::size_t lease_cursor{};
+    std::size_t pool_cursor{};
+    std::uint32_t address_cursor{};
+    std::uint64_t revision_cursor{};
+    std::uint64_t scan_revision_target{};
+    std::int64_t data_remaining_nanoseconds{};
+    std::int64_t keepalive_remaining_nanoseconds{};
+    bool first_reply{true};
+    bool catch_up_complete{};
+    bool done{};
+  };
+  std::vector<Dhcpv4LeasequerySession> dhcpv4_leasequery_sessions;
   ikev2::UdpServiceCheckpoint ike_udp{};
+  std::vector<dhcpv4::RelayInterfaceConfiguration> dhcpv4_relay_interfaces;
+  struct Dhcpv4Server {
+    // The list key is management identity. Protocol state remains the
+    // server-owned checkpoint and contains no CLI path or presentation data.
+    std::string name;
+    dhcpv4::ServerCheckpoint protocol;
+  };
+  std::vector<Dhcpv4Server> dhcpv4_servers;
+  struct Dhcpv6Server {
+    // The Base list name is management identity only. The protocol checkpoint
+    // owns configuration, pools, bindings and relative lease deadlines.
+    std::string name;
+    dhcpv6::ServerCheckpoint protocol;
+  };
+  std::vector<Dhcpv6Server> dhcpv6_servers;
+  std::optional<transport::UdpSocketHandle> dhcpv4_relay_socket;
   std::vector<dhcpv6::RelayInterfaceConfig> dhcpv6_relay_interfaces;
   std::vector<dhcpv6::RelayLeaseCheckpoint> dhcpv6_relay_leases;
   std::vector<dhcpv6::RelayRouteCheckpoint> dhcpv6_relay_routes;
@@ -335,9 +390,40 @@ struct RouterForwarderCheckpoint {
   bool ipv4_probe_valid{};
 };
 
+struct Dhcpv4FailoverTransportConfiguration {
+  // server_name selects the local Base lease repository. local and partner are
+  // wire endpoints and are resolved by normal IPv4 routing, never by topology
+  // graph inspection.
+  std::string server_name;
+  packet::Ipv4 local{};
+  packet::Ipv4 partner{};
+  dhcpv4::failover::Configuration relationship{};
+  dhcpv4::failover::NegotiationParameters negotiation{};
+  // Reopening a failed application relationship is a deployment policy, not
+  // a TCP retransmission timer. Requiring it explicitly prevents the runtime
+  // from inventing a vendor default and gives maintenance a finite deadline.
+  std::chrono::seconds reconnect_delay{};
+  // draft-ietf-dhc-failover-12 section 11.1 authenticates every application
+  // message with HMAC-MD5 when a shared secret is configured. The relationship
+  // owner retains the secret; it never enters packet telemetry or CLI output.
+  std::vector<std::uint8_t> shared_secret;
+  bool secured_transport{};
+};
+
+struct Dhcpv6FailoverTransportConfiguration {
+  std::string server_name;
+  packet::Ipv6 local{};
+  packet::Ipv6 partner{};
+  dhcpv6::failover::Configuration relationship{};
+  std::uint16_t connect_flags{};
+  std::chrono::seconds reconnect_delay{};
+};
+
 class RouterForwarder final {
 public:
   using Clock = std::chrono::steady_clock;
+  explicit RouterForwarder(crypto::Sha256Digest transport_secret = {},
+                           Clock::time_point now = Clock::now()) noexcept;
   // Producer: this forwarding owner. Consumer: forwarding-to-link bounded
   // queue. false applies explicit tail drop without a direct delivery fallback.
   using EgressSink = bool (*)(void *context, std::uint16_t port_ordinal,
@@ -423,6 +509,75 @@ public:
   configure_mld_interface(const MldRouterConfiguration &configuration,
                           Clock::time_point now = Clock::now()) noexcept;
   [[nodiscard]] bool remove_mld_interface(std::uint16_t port_ordinal) noexcept;
+  // DHCPv4 relay is disabled until a complete interface policy is installed.
+  // The forwarding owner validates giaddr uniqueness and binds one wildcard
+  // UDP 67 socket only after the replacement generation is fully accepted.
+  [[nodiscard]] bool configure_dhcpv4_relay(
+      dhcpv4::RelayInterfaceConfiguration configuration) noexcept;
+  [[nodiscard]] bool
+  remove_dhcpv4_relay(std::uint64_t logical_interface_id) noexcept;
+  // Base local servers and relays share UDP 67 on one routing instance. The
+  // forwarding owner performs one wildcard demultiplex and dispatches the
+  // complete wire payload to the matching protocol owner.
+  [[nodiscard]] bool configure_dhcpv4_server(
+      std::string name, const dhcpv4::ServerConfiguration &configuration,
+      std::span<const dhcpv4::Pool> pools,
+      std::span<const dhcpv4::Reservation> reservations,
+      std::span<const dhcpv4::ExcludedRange> exclusions = {}) noexcept;
+  [[nodiscard]] bool
+  remove_dhcpv4_server(std::string_view name) noexcept;
+  // Base DHCPv6 servers share the wildcard UDP 547 socket with relay agents.
+  // A complete staged protocol instance replaces the named server atomically.
+  [[nodiscard]] bool configure_dhcpv6_server(
+      std::string name, const dhcpv6::ServerConfiguration &configuration,
+      std::span<const dhcpv6::LeasePool> address_pools,
+      std::span<const dhcpv6::LeasePool> prefix_pools,
+      std::chrono::seconds decline_hold_time) noexcept;
+  [[nodiscard]] bool
+  remove_dhcpv6_server(std::string_view name) noexcept;
+  // Failover configuration is an emulator capability, not Nokia MCS. These
+  // methods install only local relationship intent. All partner information
+  // subsequently crosses an encoded TCP/647 connection.
+  [[nodiscard]] bool configure_dhcpv4_failover(
+      Dhcpv4FailoverTransportConfiguration configuration,
+      Clock::time_point now = Clock::now()) noexcept;
+  [[nodiscard]] bool
+  remove_dhcpv4_failover(std::string_view relationship_name) noexcept;
+  // Administrative PARTNER-DOWN is a documented failover state transition,
+  // not a direct mutation of the partner endpoint. The request is accepted
+  // only while the relationship state machine permits it.
+  [[nodiscard]] bool request_dhcpv4_failover_partner_down(
+      std::string_view relationship_name,
+      std::uint32_t absolute_now,
+      Clock::time_point now = Clock::now()) noexcept;
+  [[nodiscard]] bool configure_dhcpv6_failover(
+      Dhcpv6FailoverTransportConfiguration configuration,
+      Clock::time_point now = Clock::now()) noexcept;
+  [[nodiscard]] bool
+  remove_dhcpv6_failover(std::string_view relationship_name) noexcept;
+  [[nodiscard]] bool request_dhcpv6_failover_partner_down(
+      std::string_view relationship_name,
+      std::uint32_t absolute_now,
+      Clock::time_point now = Clock::now()) noexcept;
+  [[nodiscard]] bool
+  clear_dhcpv6_server_leases(
+      std::string_view name, const dhcpv6::LeaseClearFilter &filter,
+      Clock::time_point now = Clock::now()) noexcept;
+  [[nodiscard]] bool
+  clear_dhcpv6_server_statistics(std::string_view name) noexcept;
+  // Operational mutations execute on the same forwarding owner as packet
+  // processing. Clear never races an OFFER/ACK transition, and force-renew
+  // emits through the ordinary UDP, IPv4, ARP and link queues.
+  [[nodiscard]] bool
+  clear_dhcpv4_server_statistics(std::string_view name) noexcept;
+  [[nodiscard]] bool
+  clear_dhcpv4_server_leases(
+      std::string_view name, const dhcpv4::LeaseClearFilter &filter,
+      Clock::time_point now = Clock::now()) noexcept;
+  [[nodiscard]] dhcpv4::ForceRenewStatus send_dhcpv4_force_renew(
+      std::string_view name, packet::Ipv4 address, void *context,
+      EgressSink sink, EgressAdmission admission,
+      Clock::time_point now = Clock::now()) noexcept;
   // A regular SR OS relay is projected from an IES or VPRN service interface.
   // The forwarding owner receives only resolved port identity and wire policy,
   // never CLI context objects or editor nodes.
@@ -535,6 +690,12 @@ public:
     return dropped_frames_;
   }
   [[nodiscard]] ForwardDrop last_drop() const noexcept { return last_drop_; }
+  void set_transit_forwarding(bool enabled) noexcept {
+    transit_forwarding_enabled_ = enabled;
+  }
+  [[nodiscard]] bool transit_forwarding() const noexcept {
+    return transit_forwarding_enabled_;
+  }
   [[nodiscard]] std::size_t arp_entries() const noexcept;
   [[nodiscard]] std::size_t pending_frames() const noexcept;
   [[nodiscard]] bool
@@ -597,6 +758,7 @@ public:
       std::uint16_t port_ordinal) noexcept;
 
 private:
+  struct Dhcpv4ServerState;
   struct Adjacency {
     bool valid{};
     std::uint16_t port_ordinal{};
@@ -683,8 +845,9 @@ private:
   void flush_pending(std::uint16_t port_ordinal, std::uint32_t address,
                      packet::Mac mac, void *context, EgressSink sink,
                      Clock::time_point now) noexcept;
-  void send(packet::Frame frame, std::uint32_t destination, bool transit,
-            void *context, EgressSink sink, Clock::time_point now) noexcept;
+  [[nodiscard]] bool
+  send(packet::Frame frame, std::uint32_t destination, bool transit,
+       void *context, EgressSink sink, Clock::time_point now) noexcept;
   // OSPF already selected its outgoing protocol interface. Link-local IPv6
   // destinations are zone-scoped, and equal connected IPv4 prefixes may also
   // exist on several ports, so these paths must not repeat a global FIB lookup.
@@ -697,9 +860,10 @@ private:
       const ForwardPort &egress, packet::Frame frame,
       const packet::Ipv6 &destination, void *context, EgressSink sink,
       Clock::time_point now) noexcept;
-  void send_resolved(const packet::Frame &input, const ForwardPort &egress,
-                     packet::Mac destination_mac, bool transit, void *context,
-                     EgressSink sink, Clock::time_point now) noexcept;
+  [[nodiscard]] bool
+  send_resolved(const packet::Frame &input, const ForwardPort &egress,
+                packet::Mac destination_mac, bool transit, void *context,
+                EgressSink sink, Clock::time_point now) noexcept;
   bool send_ipv6(packet::Frame frame, const packet::Ipv6 &destination,
                  bool transit, void *context, EgressSink sink,
                  Clock::time_point now,
@@ -852,6 +1016,27 @@ private:
   void count_sent_icmpv6(std::uint16_t port_ordinal,
                          const packet::Frame &frame) noexcept;
   void count_discarded_icmpv6(std::uint16_t port_ordinal) noexcept;
+  void service_dhcpv4_relay(std::uint16_t ingress_port,
+                            std::uint64_t ingress_interface_id, void *context,
+                            EgressSink sink, EgressAdmission admission,
+                            Clock::time_point now) noexcept;
+  void service_dhcpv4_leasequery(void *context, EgressSink sink,
+                                 Clock::time_point now) noexcept;
+  void service_dhcp_failover(void *context, EgressSink sink,
+                             Clock::time_point now) noexcept;
+  [[nodiscard]] bool emit_tcp(
+      const transport::tcp::PreparedEndpointSegment &prepared,
+      transport::tcp::EndpointSocketHandle socket, void *context,
+      EgressSink sink, Clock::time_point now) noexcept;
+  [[nodiscard]] Dhcpv4ServerState *
+  dhcpv4_leasequery_server(std::string_view name) noexcept;
+  [[nodiscard]] bool originate_dhcpv4_relay(
+      const dhcpv4::RelayInterfaceConfiguration &relay,
+      packet::Ipv4 source, packet::Ipv4 destination,
+      packet::Mac destination_mac, std::uint16_t destination_port,
+      std::span<const std::uint8_t> payload, bool direct_link, void *context,
+      EgressSink sink, EgressAdmission admission,
+      Clock::time_point now) noexcept;
   void service_dhcpv6_relay(std::uint16_t ingress_port,
                             std::uint64_t ingress_interface_id, void *context,
                             EgressSink sink, EgressAdmission admission,
@@ -954,6 +1139,7 @@ private:
   std::uint64_t forwarded_frames_{};
   std::uint64_t dropped_frames_{};
   ForwardDrop last_drop_{ForwardDrop::none};
+  bool transit_forwarding_enabled_{true};
   std::uint16_t echo_reply_sequence_{};
   bool echo_reply_valid_{};
   packet::Ipv4 echo_request_destination_{};
@@ -987,8 +1173,120 @@ private:
   // ingress interface remains in datagram metadata, so one socket does not
   // collapse RFC 4007 scope or Interface-Id return routing.
   transport::UdpEndpoint udp_{};
+  // TCP is allocated with per-router entropy at device admission. It remains
+  // transport-only: DHCP Leasequery and failover sessions own framing and
+  // protocol state but never reach into TCP sequence or retransmission data.
+  std::unique_ptr<transport::tcp::TcpEndpoint> tcp_{};
+  // RFC 6926 assigns Bulk Leasequery to TCP port 67. One wildcard listener is
+  // shared by Base server instances because the accepted connection retains
+  // its concrete local address and therefore selects the correct owner.
+  std::optional<transport::tcp::EndpointSocketHandle>
+      dhcpv4_leasequery_listener_{};
+  struct Dhcpv4LeasequerySession {
+    transport::tcp::EndpointSocketHandle socket{};
+    std::unique_ptr<dhcpv4::leasequery::StreamDecoder> decoder;
+    std::optional<dhcpv4::leasequery::RequestView> request;
+    packet::Ipv4 local{};
+    packet::Ipv4 remote{};
+    std::string server_name;
+    std::size_t lease_cursor{};
+    std::size_t pool_cursor{};
+    std::uint32_t address_cursor{};
+    std::uint64_t revision_cursor{};
+    // Active Leasequery takes a finite repository revision snapshot for each
+    // scan. New mutations that arrive while the scan is being streamed remain
+    // above this target and are delivered during the next scan, so no update
+    // can be skipped by advancing the acknowledged cursor too early.
+    std::uint64_t scan_revision_target{};
+    Clock::time_point data_deadline{};
+    Clock::time_point keepalive_deadline{};
+    bool first_reply{true};
+    bool catch_up_complete{};
+    bool done{};
+  };
+  // Producer and consumer are the same forwarding owner. Capacity comes from
+  // the release profile. Overflow is a TCP refusal at listen backlog admission,
+  // never an unbounded application allocation.
+  std::vector<Dhcpv4LeasequerySession> dhcpv4_leasequery_sessions_{};
+  struct Dhcpv4FailoverSession {
+    Dhcpv4FailoverTransportConfiguration configuration;
+    dhcpv4::failover::Session protocol;
+    std::unique_ptr<dhcpv4::failover::StreamDecoder> decoder;
+    std::optional<transport::tcp::EndpointSocketHandle> socket;
+    std::vector<std::uint8_t> output;
+    // Full synchronization owns an immutable repository image until the peer
+    // acknowledges every BNDUPD. Serial transmission is deliberately valid
+    // even when the negotiated window is larger and avoids ambiguous partial
+    // progress after a reconnect.
+    std::vector<dhcpv4::LeaseCheckpoint> synchronization_leases;
+    std::size_t output_offset{};
+    std::size_t synchronization_cursor{};
+    std::uint32_t synchronization_request_transaction_id{};
+    std::uint32_t synchronization_binding_transaction_id{};
+    Clock::time_point reconnect_at{};
+    bool transport_started{};
+  };
+  struct Dhcpv6FailoverSession {
+    Dhcpv6FailoverTransportConfiguration configuration;
+    dhcpv6::failover::Session protocol;
+    std::unique_ptr<dhcpv6::failover::StreamDecoder> decoder;
+    std::optional<transport::tcp::EndpointSocketHandle> socket;
+    std::vector<std::uint8_t> message;
+    std::vector<std::uint8_t> output;
+    std::vector<dhcpv6::LeaseCheckpoint> synchronization_leases;
+    std::size_t output_offset{};
+    std::size_t synchronization_cursor{};
+    std::uint32_t synchronization_request_transaction_id{};
+    std::uint32_t synchronization_binding_transaction_id{};
+    Clock::time_point reconnect_at{};
+    bool transport_started{};
+  };
+  // One listener per IP family is shared by all relationship names. An
+  // accepted tuple is matched by local address, peer address and secondary
+  // role before any CONNECT bytes are dispatched.
+  std::optional<transport::tcp::EndpointSocketHandle>
+      dhcpv4_failover_listener_{};
+  std::optional<transport::tcp::EndpointSocketHandle>
+      dhcpv6_failover_listener_{};
+  std::vector<Dhcpv4FailoverSession> dhcpv4_failover_sessions_{};
+  std::vector<Dhcpv6FailoverSession> dhcpv6_failover_sessions_{};
+  std::array<std::uint8_t, packet::maximum_frame_octets>
+      tcp_segment_scratch_{};
+  std::array<std::uint8_t, packet::maximum_frame_octets>
+      tcp_datagram_scratch_{};
   ikev2::UdpService ike_udp_{};
+  struct Dhcpv4RelayInterfaceState {
+    dhcpv4::RelayInterfaceConfiguration configuration;
+    dhcpv4::RelayAgent agent;
+  };
+  // The vector is mutated only by forwarding-owner configuration commands.
+  // Packet turns perform linear lookup across the profile-bounded interface
+  // count, which avoids a second mutable giaddr index and atomicity hazards.
+  std::vector<Dhcpv4RelayInterfaceState> dhcpv4_relays_{};
+  struct Dhcpv4ServerState {
+    std::string name;
+    dhcpv4::ServerConfiguration configuration;
+    dhcpv4::Server protocol;
+  };
+  // One forwarding shard owns every Base server instance. Configuration
+  // replacement is staged before vector mutation, and packet turns never hold
+  // an iterator across a control command.
+  std::vector<Dhcpv4ServerState> dhcpv4_servers_{};
+  std::optional<transport::UdpSocketHandle> dhcpv4_relay_socket_{};
+  // DHCPv4 relay arenas are allocated only while at least one interface is
+  // configured. RouterForwarder is instantiated for every possible router,
+  // so embedding three 64 KiB arrays would reserve megabytes for labs that do
+  // not use DHCP and would push the fixed shared Wasm heap toward its limit.
+  std::vector<std::uint8_t> dhcpv4_receive_scratch_{};
+  std::vector<std::uint8_t> dhcpv4_relay_scratch_{};
+  std::vector<std::uint8_t> ipv4_udp_datagram_scratch_{};
+  std::uint16_t dhcpv4_identification_{1U};
   dhcpv6::RelayAgent dhcpv6_relay_{};
+  struct Dhcpv6ServerState {
+    std::string name;
+    dhcpv6::Server protocol;
+  };
+  std::vector<Dhcpv6ServerState> dhcpv6_servers_{};
   // The forwarding shard is the only writer. It derives state exclusively
   // from received DHCPv6 wire messages and emits route/neighbor intentions;
   // it never reaches into another router or the editor topology.

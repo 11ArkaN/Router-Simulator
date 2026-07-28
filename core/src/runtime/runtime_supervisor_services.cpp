@@ -353,6 +353,373 @@ bool RuntimeSupervisor::configure_dhcpv6_relay(
   return ordinal && program_dhcpv6_relay(device, *ordinal, configuration);
 }
 
+bool RuntimeSupervisor::configure_dhcpv4_relay(
+    DeviceHandle device, std::string_view port_id,
+    const dhcpv4::RelayInterfaceConfiguration &configuration) noexcept {
+  const auto *inventory = hardware(device);
+  if (!inventory)
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  return ordinal && program_dhcpv4_relay(device, *ordinal, configuration);
+}
+
+bool RuntimeSupervisor::program_dhcpv4_relay(
+    DeviceHandle device, std::uint16_t port_ordinal,
+    const dhcpv4::RelayInterfaceConfiguration &configuration) noexcept {
+  if (device.index >= router_network_.size() ||
+      !router_network_[device.index] ||
+      port_ordinal >= router_network_[device.index]->ports.size())
+    return false;
+  auto &state = *router_network_[device.index];
+  const auto &port = state.ports[port_ordinal];
+  const packet::Ipv4 port_address{
+      static_cast<std::uint8_t>(port.address >> 24U),
+      static_cast<std::uint8_t>(port.address >> 16U),
+      static_cast<std::uint8_t>(port.address >> 8U),
+      static_cast<std::uint8_t>(port.address)};
+  if (!port.configured || !port.ipv4_configured ||
+      configuration.relay.gateway_address != port_address ||
+      configuration.relay.circuit_id.size() > 255U ||
+      configuration.relay.remote_id.size() > 255U ||
+      configuration.relay.servers.size() >
+          device_catalog::dhcpv4_relay_servers_per_interface)
+    return false;
+
+  auto staged = std::optional<dhcpv4::RelayInterfaceConfiguration>{};
+  try {
+    staged = configuration;
+    staged->interface_id = physical_interface_id(port_ordinal);
+    staged->physical_port_ordinal = port_ordinal;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+
+  Dhcpv4RelayBegin begin{
+      .interface_id = staged->interface_id,
+      .physical_port_ordinal = port_ordinal,
+      .gateway_address = staged->relay.gateway_address,
+      .circuit_id_octets =
+          static_cast<std::uint16_t>(staged->relay.circuit_id.size()),
+      .remote_id_octets =
+          static_cast<std::uint16_t>(staged->relay.remote_id.size()),
+      .server_count =
+          static_cast<std::uint16_t>(staged->relay.servers.size()),
+      .existing_information = staged->relay.existing_information,
+      .source_address = staged->relay.source_address,
+      .maximum_hops = staged->relay.maximum_hops,
+      .trusted_ingress = staged->relay.trusted_ingress,
+      .relay_plain_bootp = staged->relay.relay_plain_bootp,
+      .release_include_gateway_address =
+          staged->relay.release_include_gateway_address};
+  std::copy(staged->relay.circuit_id.begin(), staged->relay.circuit_id.end(),
+            begin.circuit_id.begin());
+  std::copy(staged->relay.remote_id.begin(), staged->relay.remote_id.end(),
+            begin.remote_id.begin());
+  for (std::size_t index{}; index < staged->relay.servers.size(); ++index)
+    begin.servers[index] = staged->relay.servers[index].address;
+
+  auto &command = prepare(NetworkCommandKind::configure_dhcpv4_relay);
+  command.device = device;
+  command.fib = begin;
+  const auto result = dispatch(command);
+  if (!result || !result->success)
+    return false;
+  state.dhcpv4_relays[port_ordinal] = std::move(staged);
+  return true;
+}
+
+bool RuntimeSupervisor::remove_dhcpv4_relay(
+    DeviceHandle device, std::string_view port_id) noexcept {
+  const auto *inventory = hardware(device);
+  if (!inventory || device.index >= router_network_.size() ||
+      !router_network_[device.index])
+    return false;
+  const auto ordinal = inventory->coordinate_ordinal(port_id);
+  if (!ordinal)
+    return false;
+  auto &state = *router_network_[device.index];
+  if (!state.dhcpv4_relays[*ordinal])
+    return false;
+  auto &command = prepare(NetworkCommandKind::remove_dhcpv4_relay);
+  command.device = device;
+  command.logical_interface_id =
+      state.dhcpv4_relays[*ordinal]->interface_id;
+  const auto result = dispatch(command);
+  if (!result || !result->success)
+    return false;
+  state.dhcpv4_relays[*ordinal].reset();
+  return true;
+}
+
+bool RuntimeSupervisor::configure_router_dhcpv4_server(
+    const RouterDhcpv4ServerProgram &program) noexcept {
+  if (!program.device || !devices_.get(program.device) ||
+      program.name.empty() || program.name.size() > 32U ||
+      program.configuration.domain_name_servers.size() >
+          packet::dhcpv4::maximum_ipv4_addresses_per_option ||
+      program.pools.size() > device_catalog::dhcpv4_pools_per_server ||
+      program.reservations.size() >
+          device_catalog::dhcpv4_leases_per_server ||
+      program.exclusions.size() >
+          device_catalog::dhcpv4_leases_per_server)
+    return false;
+
+  const auto submit = [&](NetworkCommandKind kind,
+                          const decltype(NetworkCommand{}.fib) *value =
+                              nullptr) noexcept {
+    auto &command = prepare(kind);
+    command.device = program.device;
+    if (value)
+      command.fib = *value;
+    const auto result = dispatch(command);
+    return result && result->success;
+  };
+  const auto &configuration = program.configuration;
+  NetworkDhcpv4ServerBegin begin{
+      .server_identifier = configuration.server_identifier,
+      .offer_hold_seconds =
+          static_cast<std::uint64_t>(configuration.offer_hold.count()),
+      .decline_hold_seconds =
+          static_cast<std::uint64_t>(configuration.decline_hold.count()),
+      .server_instance = configuration.server_instance,
+      .routing_context = configuration.routing_context,
+      .expected_dns_servers = static_cast<std::uint32_t>(
+          configuration.domain_name_servers.size()),
+      .expected_pools = static_cast<std::uint32_t>(program.pools.size()),
+      .expected_reservations =
+          static_cast<std::uint32_t>(program.reservations.size()),
+      .expected_exclusions =
+          static_cast<std::uint32_t>(program.exclusions.size()),
+      .name_octets = static_cast<std::uint8_t>(program.name.size()),
+      .authoritative = configuration.authoritative,
+      .force_renews = configuration.force_renews};
+  std::copy(program.name.begin(), program.name.end(), begin.name.begin());
+  auto begin_value = decltype(NetworkCommand{}.fib){begin};
+  if (!submit(NetworkCommandKind::begin_router_dhcpv4_server, &begin_value))
+    return false;
+  for (const auto &dns : configuration.domain_name_servers) {
+    auto value = decltype(NetworkCommand{}.fib){dns};
+    if (!submit(NetworkCommandKind::add_router_dhcpv4_server_dns, &value))
+      goto abort_router_dhcpv4_server;
+  }
+  for (const auto &pool : program.pools) {
+    auto value = decltype(NetworkCommand{}.fib){pool};
+    if (!submit(NetworkCommandKind::add_router_dhcpv4_server_pool, &value))
+      goto abort_router_dhcpv4_server;
+  }
+  for (const auto &reservation : program.reservations) {
+    auto value = decltype(NetworkCommand{}.fib){reservation};
+    if (!submit(NetworkCommandKind::add_router_dhcpv4_server_reservation,
+                &value))
+      goto abort_router_dhcpv4_server;
+  }
+  for (const auto &excluded : program.exclusions) {
+    auto value = decltype(NetworkCommand{}.fib){excluded};
+    if (!submit(NetworkCommandKind::add_router_dhcpv4_server_exclusion,
+                &value))
+      goto abort_router_dhcpv4_server;
+  }
+  if (submit(NetworkCommandKind::commit_router_dhcpv4_server))
+    return true;
+abort_router_dhcpv4_server:
+  static_cast<void>(submit(NetworkCommandKind::abort_router_dhcpv4_server));
+  return false;
+}
+
+bool RuntimeSupervisor::remove_router_dhcpv4_server(
+    DeviceHandle device, std::string_view name) noexcept {
+  if (!device || !devices_.get(device) || name.empty() ||
+      name.size() > 32U)
+    return false;
+  NetworkDhcpv4ServerBegin begin{
+      .name_octets = static_cast<std::uint8_t>(name.size())};
+  std::copy(name.begin(), name.end(), begin.name.begin());
+  auto &command = prepare(NetworkCommandKind::remove_router_dhcpv4_server);
+  command.device = device;
+  command.fib = begin;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::configure_router_dhcpv6_server(
+    const RouterDhcpv6ServerProgram &program) noexcept {
+  if (!program.device || !devices_.get(program.device) ||
+      program.name.empty() || program.name.size() > 32U ||
+      program.configuration.dns_recursive_servers.size() >
+          std::numeric_limits<std::uint32_t>::max() ||
+      program.address_pools.size() >
+          device_catalog::dhcpv6_address_pools_per_server ||
+      program.prefix_pools.size() >
+          device_catalog::dhcpv6_prefix_pools_per_server)
+    return false;
+  const auto submit = [&](NetworkCommandKind kind,
+                          const decltype(NetworkCommand{}.fib) *value =
+                              nullptr) noexcept {
+    auto &command = prepare(kind);
+    command.device = program.device;
+    if (value)
+      command.fib = *value;
+    const auto result = dispatch(command);
+    return result && result->success;
+  };
+  const auto &configuration = program.configuration;
+  NetworkDhcpv6ServerBegin begin{
+      .duid = configuration.duid,
+      .decline_hold_seconds =
+          static_cast<std::uint64_t>(program.decline_hold_time.count()),
+      .expected_dns_servers = static_cast<std::uint32_t>(
+          configuration.dns_recursive_servers.size()),
+      .expected_address_pools =
+          static_cast<std::uint32_t>(program.address_pools.size()),
+      .expected_prefix_pools =
+          static_cast<std::uint32_t>(program.prefix_pools.size()),
+      .information_refresh_time_seconds =
+          configuration.information_refresh_time_seconds,
+      .solicit_maximum_retransmission_seconds =
+          configuration.solicit_maximum_retransmission_seconds.value_or(0U),
+      .information_maximum_retransmission_seconds =
+          configuration.information_maximum_retransmission_seconds.value_or(0U),
+      .duid_octets = configuration.duid_octets,
+      .name_octets = static_cast<std::uint8_t>(program.name.size()),
+      .preference = configuration.preference,
+      .address_pool_index = configuration.address_pool_index,
+      .prefix_pool_index = configuration.prefix_pool_index,
+      .rapid_commit = configuration.rapid_commit,
+      .lease_query = configuration.lease_query,
+      .has_solicit_maximum_retransmission =
+          configuration.solicit_maximum_retransmission_seconds.has_value(),
+      .has_information_maximum_retransmission =
+          configuration.information_maximum_retransmission_seconds.has_value()};
+  std::copy(program.name.begin(), program.name.end(), begin.name.begin());
+  auto value = decltype(NetworkCommand{}.fib){begin};
+  if (!submit(NetworkCommandKind::begin_router_dhcpv6_server, &value))
+    return false;
+  for (const auto &dns : configuration.dns_recursive_servers) {
+    auto &command =
+        prepare(NetworkCommandKind::add_router_dhcpv6_server_dns);
+    command.device = program.device;
+    command.ipv6_destination = dns;
+    const auto result = dispatch(command);
+    if (!result || !result->success)
+      goto abort_router_dhcpv6_server;
+  }
+  for (const auto &pool : program.address_pools) {
+    value = pool;
+    if (!submit(NetworkCommandKind::add_router_dhcpv6_server_address_pool,
+                &value))
+      goto abort_router_dhcpv6_server;
+  }
+  for (const auto &pool : program.prefix_pools) {
+    value = pool;
+    if (!submit(NetworkCommandKind::add_router_dhcpv6_server_prefix_pool,
+                &value))
+      goto abort_router_dhcpv6_server;
+  }
+  if (submit(NetworkCommandKind::commit_router_dhcpv6_server))
+    return true;
+abort_router_dhcpv6_server:
+  static_cast<void>(submit(NetworkCommandKind::abort_router_dhcpv6_server));
+  return false;
+}
+
+bool RuntimeSupervisor::remove_router_dhcpv6_server(
+    DeviceHandle device, std::string_view name) noexcept {
+  if (!device || !devices_.get(device) || name.empty() || name.size() > 32U)
+    return false;
+  NetworkDhcpv6ServerBegin begin{
+      .name_octets = static_cast<std::uint8_t>(name.size())};
+  std::copy(name.begin(), name.end(), begin.name.begin());
+  auto &command = prepare(NetworkCommandKind::remove_router_dhcpv6_server);
+  command.device = device;
+  command.fib = begin;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_router_dhcpv6_server_leases(
+    DeviceHandle device, std::string_view name,
+    const dhcpv6::LeaseClearFilter &filter) noexcept {
+  if (!device || !devices_.get(device) || name.empty() || name.size() > 32U ||
+      filter.prefix_length > 128U)
+    return false;
+  RouterDhcpv6ServerOperation operation{
+      .lease_filter = filter,
+      .name_octets = static_cast<std::uint8_t>(name.size())};
+  std::copy(name.begin(), name.end(), operation.name.begin());
+  auto &command =
+      prepare(NetworkCommandKind::clear_router_dhcpv6_server_leases);
+  command.device = device;
+  command.fib = operation;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_router_dhcpv6_server_statistics(
+    DeviceHandle device, std::string_view name) noexcept {
+  if (!device || !devices_.get(device) || name.empty() || name.size() > 32U)
+    return false;
+  RouterDhcpv6ServerOperation operation{
+      .name_octets = static_cast<std::uint8_t>(name.size())};
+  std::copy(name.begin(), name.end(), operation.name.begin());
+  auto &command =
+      prepare(NetworkCommandKind::clear_router_dhcpv6_server_statistics);
+  command.device = device;
+  command.fib = operation;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_router_dhcpv4_server_statistics(
+    DeviceHandle device, std::string_view name) noexcept {
+  if (!device || !devices_.get(device) || name.empty() || name.size() > 32U)
+    return false;
+  RouterDhcpv4ServerOperation operation{
+      .name_octets = static_cast<std::uint8_t>(name.size())};
+  std::copy(name.begin(), name.end(), operation.name.begin());
+  auto &command =
+      prepare(NetworkCommandKind::clear_router_dhcpv4_server_statistics);
+  command.device = device;
+  command.fib = operation;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+bool RuntimeSupervisor::clear_router_dhcpv4_server_leases(
+    DeviceHandle device, std::string_view name,
+    const dhcpv4::LeaseClearFilter &filter) noexcept {
+  if (!device || !devices_.get(device) || name.empty() || name.size() > 32U ||
+      filter.prefix_length > 32U)
+    return false;
+  RouterDhcpv4ServerOperation operation{
+      .lease_filter = filter,
+      .name_octets = static_cast<std::uint8_t>(name.size())};
+  std::copy(name.begin(), name.end(), operation.name.begin());
+  auto &command =
+      prepare(NetworkCommandKind::clear_router_dhcpv4_server_leases);
+  command.device = device;
+  command.fib = operation;
+  const auto result = dispatch(command);
+  return result && result->success;
+}
+
+dhcpv4::ForceRenewStatus RuntimeSupervisor::send_router_dhcpv4_force_renew(
+    DeviceHandle device, std::string_view name, packet::Ipv4 address) noexcept {
+  if (!device || !devices_.get(device) || name.empty() || name.size() > 32U ||
+      address == packet::Ipv4{})
+    return dhcpv4::ForceRenewStatus::not_configured;
+  RouterDhcpv4ServerOperation operation{
+      .address = address,
+      .name_octets = static_cast<std::uint8_t>(name.size())};
+  std::copy(name.begin(), name.end(), operation.name.begin());
+  auto &command =
+      prepare(NetworkCommandKind::send_router_dhcpv4_force_renew);
+  command.device = device;
+  command.fib = operation;
+  const auto result = dispatch(command);
+  return result ? static_cast<dhcpv4::ForceRenewStatus>(result->value)
+                : dhcpv4::ForceRenewStatus::delivery_failed;
+}
+
 bool RuntimeSupervisor::program_dhcpv6_relay(
     DeviceHandle device, std::uint16_t port_ordinal,
     const dhcpv6::RelayInterfaceConfig &configuration,

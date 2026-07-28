@@ -220,6 +220,11 @@ std::optional<std::size_t> RouterHardwareInventory::ordinal(
 }
 
 RouterPortState *RouterHardwareInventory::find(std::string_view port_id) noexcept {
+  // The out-of-band management connector is catalog-owned hardware, but it is
+  // not located below an IOM or MDA and therefore has no numeric card path.
+  // Its stable ordinal sits outside the physical coordinate grid.
+  if (profile_ && profile_->management_port && port_id == "management")
+    return &ports_[device_catalog::management_port_ordinal];
   const auto parsed = parse_port_id(port_id);
   if (!parsed)
     return nullptr;
@@ -231,6 +236,8 @@ const RouterPortState *
 RouterHardwareInventory::find(std::string_view port_id) const noexcept {
   // Parsing is identical for const projections and mutable control edits. A
   // textual port never gains a second interpretation in the UI read path.
+  if (profile_ && profile_->management_port && port_id == "management")
+    return &ports_[device_catalog::management_port_ordinal];
   const auto parsed = parse_port_id(port_id);
   if (!parsed)
     return nullptr;
@@ -243,6 +250,9 @@ RouterHardwareInventory::handle(std::string_view port_id) const noexcept {
   const auto *port = find(port_id);
   if (!port || !port->present || !port->configuration_compatible)
     return std::nullopt;
+  if (port_id == "management")
+    return PortHandle{node(device_), device_catalog::management_port_ordinal,
+                      port->generation};
   const auto index = ordinal(port->card_slot, port->mda_slot, port->port_number);
   if (!index)
     return std::nullopt;
@@ -252,6 +262,8 @@ RouterHardwareInventory::handle(std::string_view port_id) const noexcept {
 
 std::optional<std::uint16_t> RouterHardwareInventory::coordinate_ordinal(
     std::string_view port_id) const noexcept {
+  if (profile_ && profile_->management_port && port_id == "management")
+    return device_catalog::management_port_ordinal;
   const auto parsed = parse_port_id(port_id);
   const auto card_limit = profile_ ? (profile_->fixed ? 1U : profile_->card_slots) : 0U;
   if (!parsed || (*parsed)[0] > card_limit ||
@@ -333,6 +345,22 @@ HardwareEditResult RouterHardwareInventory::configure_port(
     std::string_view port_id, bool admin_enabled, std::uint16_t mtu,
     std::uint32_t speed_mbps) noexcept {
   auto *port = find(port_id);
+  if (port_id == "management") {
+    if (!port)
+      return HardwareEditResult::invalid_slot;
+    // BOF limits this connector to these three Ethernet rates. Unlike an MDA
+    // port, its capabilities do not depend on provisioned card equipment.
+    const bool speed_supported =
+        speed_mbps == 10U || speed_mbps == 100U || speed_mbps == 1000U;
+    if (mtu < device_catalog::minimum_network_mtu ||
+        mtu > device_catalog::maximum_network_mtu || !speed_supported)
+      return HardwareEditResult::unsupported_type;
+    port->admin_enabled = admin_enabled;
+    port->mtu = mtu;
+    port->speed_mbps = speed_mbps;
+    port->configuration_compatible = true;
+    return HardwareEditResult::applied;
+  }
   const auto parsed = parse_port_id(port_id);
   if (!port || !parsed || !coordinate_ordinal(port_id))
     return HardwareEditResult::invalid_slot;
@@ -427,6 +455,17 @@ void RouterHardwareInventory::invalidate_mda_ports(std::uint16_t card,
 
 void RouterHardwareInventory::rebuild_ports() noexcept {
   std::array<bool, device_catalog::maximum_ports_per_router> next_presence{};
+  if (profile_ && profile_->management_port) {
+    // OOB management is integrated chassis hardware. Card removal cannot make
+    // it disappear, so its presence and hierarchy are independent of IOMs.
+    const auto index = device_catalog::management_port_ordinal;
+    next_presence[index] = true;
+    auto &management = ports_[index];
+    management.hierarchy_enabled = true;
+    management.configuration_compatible = true;
+    if (!management.speed_mbps)
+      management.speed_mbps = 100U;
+  }
   const auto card_count = profile_ ? (profile_->fixed ? 1U : profile_->card_slots) : 0U;
   for (std::uint16_t card_index = 0; card_index < card_count; ++card_index) {
     const auto &card = cards_[card_index];
@@ -552,6 +591,29 @@ bool RouterHardwareInventory::restore(const RouterHardwareCheckpoint &state) {
     std::size_t present{};
     for (std::size_t index = 0; index < state.ports.size(); ++index) {
       const auto &source = state.ports[index];
+      const bool management =
+          index == device_catalog::management_port_ordinal &&
+          profile->management_port;
+      if (management) {
+        // The OOB connector has no card, MDA or port coordinate. Validate it
+        // through the same public configuration contract used by live BOF
+        // edits, then preserve carrier and generation from the checkpoint.
+        if (!source.generation || !source.present ||
+            source.card_slot != 0U || source.mda_slot != 0U ||
+            source.port_number != 0U ||
+            source.mtu < device_catalog::minimum_network_mtu ||
+            source.mtu > device_catalog::maximum_network_mtu ||
+            replacement->configure_port(
+                "management", source.admin_enabled, source.mtu,
+                source.speed_mbps) != HardwareEditResult::applied ||
+            source.configuration_compatible !=
+                replacement->ports_[index].configuration_compatible ||
+            source.hierarchy_enabled !=
+                replacement->ports_[index].hierarchy_enabled)
+          return false;
+        ++present;
+        continue;
+      }
       const auto expected_card = static_cast<std::uint16_t>(
           index / (device_catalog::maximum_mda_slots_per_card *
                    device_catalog::maximum_ports_per_mda) +

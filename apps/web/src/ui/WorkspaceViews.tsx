@@ -7,7 +7,7 @@ import { PROFILE_CATALOG, type LabProjectV4, type LabRuntimeSnapshotV6,
 import { useEffect, useState, type ChangeEvent, type RefObject } from "react";
 import { VirtualizedList } from "./VirtualizedList";
 import type { DemoLabId, DemoLabOption } from "./demo-catalog";
-import { Monitor, Router as RouterIcon } from "lucide-react";
+import { Monitor, Router as RouterIcon, Server } from "lucide-react";
 
 export type WorkspaceView = "topology" | "demos" | "devices" | "captures" |
   "configs" | "snapshots" | "notes" | "settings";
@@ -39,17 +39,31 @@ export function DevicesWorkspace({ project, snapshot, onInspect, onConsole }: {
 }) {
   const devices = [
     ...project.routers.map((router) => ({ kind: "router" as const, router })),
+    ...project.dhcpServers.map((server) => ({
+      kind: "dhcp-server" as const, server
+    })),
     ...project.hosts.map((host) => ({ kind: "host" as const, host }))
   ];
   return <section className="workspace-page devices-page" aria-labelledby="devices-title">
     <header className="workspace-page-head"><div><span>INVENTORY</span><h1 id="devices-title">Devices</h1></div></header>
     <VirtualizedList className="device-table" items={devices} itemHeight={63}
-      itemKey={(item) => item.kind === "router" ? item.router.id : item.host.id}
+      itemKey={(item) => item.kind === "router" ? item.router.id :
+        item.kind === "dhcp-server" ? item.server.id : item.host.id}
       renderItem={(item) => {
         if (item.kind === "host") return <button onClick={() =>
           onInspect(item.host.id)}><span className="inventory-icon"><Monitor size={16} /></span>
           <strong>{item.host.name}</strong><small>{item.host.eth0.address}</small>
           <b className="good">Configured</b></button>;
+        if (item.kind === "dhcp-server") {
+          const live = snapshot?.dhcpServers.find((value) =>
+            value.id === item.server.id);
+          return <button onClick={() => onInspect(item.server.id)}>
+            <span className="inventory-icon"><Server size={16} /></span>
+            <strong>{item.server.name}</strong>
+            <small>{item.server.profileId}</small>
+            <b className={live ? "good" : "muted"}>{live
+              ? "Running" : "Unavailable"}</b></button>;
+        }
         const live = snapshot?.routers.find((value) =>
           value.id === item.router.id);
         return <button onDoubleClick={() => onConsole(item.router.id)}
@@ -93,6 +107,19 @@ export function CaptureWorkspace({ project, snapshot, selections, onSelection,
     <div className="capture-tree">
       <section><h2>Physical links</h2>{project.links.length ? project.links.map((link) => <div className="capture-group" key={link.id}><strong>{link.id}</strong><small>{link.endpoints[0].nodeId} / {link.endpoints[0].portId} to {link.endpoints[1].nodeId} / {link.endpoints[1].portId}</small><div>{point("First to second", "link-direction", link.id, "", 0)}{point("Second to first", "link-direction", link.id, "", 1)}</div></div>) : <p className="empty-copy">No physical links are configured.</p>}</section>
       <section><h2>Routers</h2>{project.routers.map((router) => { const live = snapshot?.routers.find((item) => item.id === router.id); return <div className="capture-group" key={router.id}><strong>{router.systemName}</strong><div>{point("CPM punt", "cpm-punt", router.id, "", 0)}</div>{live?.ports.map((port) => <div className="capture-port" key={port.id}><small>{port.id}</small><div>{point("Ingress", "router-ingress", router.id, port.id, 0)}{point("Egress", "router-egress", router.id, port.id, 0)}</div></div>)}</div>; })}</section>
+      <section><h2>DHCP servers</h2>{project.dhcpServers.length
+        ? project.dhcpServers.map((server) => {
+          const live = snapshot?.dhcpServers.find(
+            (item) => item.id === server.id);
+          return <div className="capture-group" key={server.id}>
+            <strong>{server.name}</strong>{live?.ports.map((port) =>
+              <div className="capture-port" key={port.id}>
+                <small>{port.id}</small><div>
+                  {point("Ingress", "router-ingress", server.id, port.id, 0)}
+                  {point("Egress", "router-egress", server.id, port.id, 0)}
+                </div></div>)}</div>;
+        }) : <p className="empty-copy">No dedicated DHCP servers are configured.</p>}
+      </section>
     </div>
   </section>;
 }

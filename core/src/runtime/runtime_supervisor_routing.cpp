@@ -18,6 +18,12 @@ bool RuntimeSupervisor::remove_interface(DeviceHandle device,
   auto &port = state.ports[*ordinal];
   if (!port.configured || !port.ipv4_configured)
     return false;
+  // Relay giaddr is the interface address being removed. Withdraw the UDP 67
+  // application first so no BOOTREPLY can be accepted between clearing the
+  // address owner and publishing the new forwarding port generation.
+  if (state.dhcpv4_relays[*ordinal] &&
+      !remove_dhcpv4_relay(device, port_id))
+    return false;
 
   // IPv4 and IPv6 are leaves on one routed interface. Removing the IPv4 leaf
   // must not tear down IPv6, DAD, ND or RA state. The physical forwarding port
@@ -460,6 +466,14 @@ void RuntimeSupervisor::refresh_router(DeviceHandle device) noexcept {
           static_cast<void>(
               submit_policy(mld::ImportPolicyProgramOperation::abort));
       }
+    }
+    if (state.dhcpv4_relays[ordinal]) {
+      // Relay application state is recreated only after the restored IPv4
+      // interface owns giaddr again. The server destinations still leave
+      // through the newly compiled FIB and ordinary ARP path.
+      static_cast<void>(
+          program_dhcpv4_relay(device, static_cast<std::uint16_t>(ordinal),
+                               *state.dhcpv4_relays[ordinal]));
     }
     if (state.dhcpv6_relays[ordinal]) {
       // A forwarding port can disappear with a card while committed service

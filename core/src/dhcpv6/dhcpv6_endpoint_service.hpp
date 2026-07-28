@@ -69,6 +69,15 @@ public:
   [[nodiscard]] std::size_t client_lease_count() const noexcept {
     return client_ ? client_->leases().size() : 0U;
   }
+  [[nodiscard]] bool client_bootstrap_complete() const noexcept {
+    if (!client_)
+      return false;
+    // Stateful BOF completes with at least one IA value. Information-request
+    // has no lease by design and is complete only after a valid Reply moved
+    // the RFC 9915 client into INFORMATION-BOUND.
+    return !client_->leases().empty() ||
+           client_->state() == dhcpv6::ClientState::information_bound;
+  }
   [[nodiscard]] std::optional<Clock::time_point> next_deadline() const noexcept {
     return client_ && !client_pending_.active ? client_->next_deadline()
                                                : std::nullopt;

@@ -18,6 +18,35 @@
 namespace router::lab {
 namespace {
 
+bool authenticate_dhcpv4_failover_output(
+    std::vector<std::uint8_t> &message,
+    std::span<const std::uint8_t> secret) noexcept {
+  if (secret.empty())
+    return true;
+  // A blocked TCP send may revisit the same application message on several
+  // service turns. An already valid digest proves that insertion and signing
+  // happened before, preventing duplicate digest options on retransmission.
+  const auto existing =
+      dhcpv4::failover::verify_hmac_md5(message, secret);
+  if (existing == dhcpv4::failover::DigestStatus::accepted)
+    return true;
+  if (existing != dhcpv4::failover::DigestStatus::missing)
+    return false;
+  const auto original_octets = message.size();
+  try {
+    // output reserves this capacity when the relationship is installed, so
+    // normal service performs no allocation here. resize only exposes the
+    // caller-owned spare bytes required by the allocation-free codec helper.
+    message.resize(dhcpv4::failover::maximum_message_octets);
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+  const auto authenticated = dhcpv4::failover::insert_hmac_md5(
+      message, original_octets, secret);
+  message.resize(authenticated ? *authenticated : original_octets);
+  return authenticated.has_value();
+}
+
 std::uint32_t to_u32(packet::Ipv4 address) noexcept {
   // Packet fields remain byte arrays in network order. The RIB uses an integer
   // only as a comparison key, so this conversion performs no host-endian load.
@@ -366,6 +395,22 @@ ipv6_reachable_seed(const ForwardPort &port,
 
 } // namespace
 
+RouterForwarder::RouterForwarder(crypto::Sha256Digest transport_secret,
+                                 Clock::time_point now) noexcept {
+  // TcpEndpoint rejects an all-zero secret. Admission supplies entropy before
+  // constructing the forwarding owner, so failure here leaves TCP absent and
+  // causes later service configuration to fail instead of substituting a
+  // predictable ISN key.
+  try {
+    tcp_ =
+        std::make_unique<transport::tcp::TcpEndpoint>(transport_secret, now);
+    if (!tcp_->valid())
+      tcp_.reset();
+  } catch (...) {
+    tcp_.reset();
+  }
+}
+
 void RouterForwarder::refresh_ipv6_reachable_time(
     std::uint16_t port_ordinal, Clock::time_point now) noexcept {
   auto &state = ipv6_reachable_times_[port_ordinal];
@@ -673,7 +718,8 @@ bool RouterForwarder::send_ospf_ipv4_unicast(
   // selected by the protocol owner, while ARP remains the sole MAC authority.
   if (auto *adjacency =
           find_adjacency(egress.ordinal, destination, now)) {
-    send_resolved(frame, egress, adjacency->mac, false, context, sink, now);
+    static_cast<void>(
+        send_resolved(frame, egress, adjacency->mac, false, context, sink, now));
     return true;
   }
 
@@ -1072,6 +1118,1849 @@ dhcpv6::RelayConfigStatus RouterForwarder::configure_dhcpv6_relay(
   return dhcpv6::RelayConfigStatus::accepted;
 }
 
+bool RouterForwarder::configure_dhcpv4_relay(
+    dhcpv4::RelayInterfaceConfiguration configuration) noexcept {
+  if (configuration.interface_id == 0U)
+    return false;
+  const auto *configured_port = port(configuration.physical_port_ordinal);
+  if (!configured_port || !configured_port->ipv4_configured ||
+      to_ipv4(configured_port->address) !=
+          configuration.relay.gateway_address)
+    return false;
+
+  // giaddr is the BOOTREPLY return-path key. Two logical interfaces with the
+  // same value make RFC 1542 delivery ambiguous even when their internal IDs
+  // differ, so the complete replacement is rejected before any socket or live
+  // generation changes.
+  for (const auto &entry : dhcpv4_relays_)
+    if (entry.configuration.interface_id != configuration.interface_id &&
+        (entry.configuration.relay.gateway_address ==
+             configuration.relay.gateway_address ||
+         entry.configuration.physical_port_ordinal ==
+             configuration.physical_port_ordinal))
+      return false;
+
+  Dhcpv4RelayInterfaceState staged{.configuration = configuration,
+                                    .agent = {}};
+  if (!staged.agent.configure(configuration.relay))
+    return false;
+  try {
+    auto replacement = dhcpv4_relays_;
+    std::vector<std::uint8_t> receive_scratch;
+    std::vector<std::uint8_t> relay_scratch;
+    std::vector<std::uint8_t> datagram_scratch;
+    const bool allocate_scratch = dhcpv4_receive_scratch_.empty();
+    if (allocate_scratch) {
+      receive_scratch.resize(packet::dhcpv4::maximum_message_octets);
+      relay_scratch.resize(packet::dhcpv4::maximum_message_octets);
+      datagram_scratch.resize(
+          packet::maximum_ethernet_ipv4_datagram_octets);
+    }
+    const auto existing =
+        std::find_if(replacement.begin(), replacement.end(),
+                     [&](const auto &entry) {
+                       return entry.configuration.interface_id ==
+                              configuration.interface_id;
+                     });
+    if (existing == replacement.end())
+      replacement.push_back(std::move(staged));
+    else
+      *existing = std::move(staged);
+
+    auto socket = dhcpv4_relay_socket_;
+    if (!socket) {
+      socket = udp_.bind({.family = transport::IpFamily::ipv4,
+                          .interface_id = 0U,
+                          .port = packet::dhcpv4::server_port,
+                          .ipv4_broadcast = true});
+      if (!socket)
+        return false;
+    }
+    dhcpv4_relays_ = std::move(replacement);
+    if (allocate_scratch) {
+      dhcpv4_receive_scratch_ = std::move(receive_scratch);
+      dhcpv4_relay_scratch_ = std::move(relay_scratch);
+      ipv4_udp_datagram_scratch_ = std::move(datagram_scratch);
+    }
+    dhcpv4_relay_socket_ = socket;
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
+bool RouterForwarder::remove_dhcpv4_relay(
+    std::uint64_t logical_interface_id) noexcept {
+  const auto existing =
+      std::find_if(dhcpv4_relays_.begin(), dhcpv4_relays_.end(),
+                   [&](const auto &entry) {
+                     return entry.configuration.interface_id ==
+                            logical_interface_id;
+                   });
+  if (existing == dhcpv4_relays_.end())
+    return false;
+  dhcpv4_relays_.erase(existing);
+  if (dhcpv4_relays_.empty() && dhcpv4_servers_.empty() &&
+      dhcpv4_relay_socket_) {
+    static_cast<void>(udp_.close(*dhcpv4_relay_socket_));
+    dhcpv4_relay_socket_.reset();
+    // Releasing cold arenas returns their memory to the shared heap when the
+    // last relay is removed. clear() alone would retain capacity and make an
+    // administratively disabled feature continue consuming its peak budget.
+    std::vector<std::uint8_t>{}.swap(dhcpv4_receive_scratch_);
+    std::vector<std::uint8_t>{}.swap(dhcpv4_relay_scratch_);
+    std::vector<std::uint8_t>{}.swap(ipv4_udp_datagram_scratch_);
+  }
+  return true;
+}
+
+bool RouterForwarder::configure_dhcpv4_server(
+    std::string name, const dhcpv4::ServerConfiguration &configuration,
+    std::span<const dhcpv4::Pool> pools,
+    std::span<const dhcpv4::Reservation> reservations,
+    std::span<const dhcpv4::ExcludedRange> exclusions) noexcept {
+  if (name.empty() || name.size() > 32U)
+    return false;
+  if (!tcp_)
+    return false;
+  Dhcpv4ServerState staged{.name = std::move(name),
+                           .configuration = configuration,
+                           .protocol = {}};
+  if (!staged.protocol.configure(configuration, pools, reservations,
+                                 exclusions))
+    return false;
+
+  // Two enabled Base servers may not claim the same allocation scope. Without
+  // this preflight, packet arrival order or vector order would choose a server
+  // and make address ownership non-deterministic.
+  for (const auto &other : dhcpv4_servers_) {
+    if (other.name == staged.name)
+      continue;
+    for (const auto &left : other.protocol.leases().pools())
+      for (const auto &right : pools)
+        if (left.enabled && right.enabled &&
+            left.scope.server_instance == right.scope.server_instance &&
+            left.scope.routing_context == right.scope.routing_context &&
+            left.scope.link_identity == right.scope.link_identity)
+          return false;
+  }
+
+  try {
+    auto replacement = dhcpv4_servers_;
+    std::vector<std::uint8_t> receive_scratch;
+    std::vector<std::uint8_t> response_scratch;
+    std::vector<std::uint8_t> datagram_scratch;
+    const bool allocate_scratch = dhcpv4_receive_scratch_.empty();
+    if (allocate_scratch) {
+      receive_scratch.resize(packet::dhcpv4::maximum_message_octets);
+      response_scratch.resize(packet::dhcpv4::maximum_message_octets);
+      datagram_scratch.resize(packet::maximum_ethernet_ipv4_datagram_octets);
+    }
+    const auto existing =
+        std::find_if(replacement.begin(), replacement.end(),
+                     [&](const auto &entry) {
+                       return entry.name == staged.name;
+                     });
+    if (existing == replacement.end())
+      replacement.push_back(std::move(staged));
+    else
+      *existing = std::move(staged);
+
+    auto socket = dhcpv4_relay_socket_;
+    bool opened_udp_socket{};
+    if (!socket) {
+      socket = udp_.bind({.family = transport::IpFamily::ipv4,
+                          .interface_id = 0U,
+                          .port = packet::dhcpv4::server_port,
+                          .ipv4_broadcast = true});
+      if (!socket)
+        return false;
+      opened_udp_socket = true;
+    }
+    auto leasequery_listener = dhcpv4_leasequery_listener_;
+    if (!leasequery_listener) {
+      leasequery_listener = tcp_->listen(
+          {.family = transport::IpFamily::ipv4,
+           .interface_id = 0U,
+           .port = packet::dhcpv4::server_port},
+          device_catalog::dhcpv4_leasequery_connections_per_server);
+      if (!leasequery_listener) {
+        // bind() mutates the transport socket table. A later TCP resource
+        // failure must roll that staged side effect back or a failed server
+        // command would leave UDP/67 occupied without any configuration owner.
+        if (opened_udp_socket)
+          static_cast<void>(udp_.close(*socket));
+        return false;
+      }
+    }
+    dhcpv4_servers_ = std::move(replacement);
+    if (allocate_scratch) {
+      dhcpv4_receive_scratch_ = std::move(receive_scratch);
+      dhcpv4_relay_scratch_ = std::move(response_scratch);
+      ipv4_udp_datagram_scratch_ = std::move(datagram_scratch);
+    }
+    dhcpv4_relay_socket_ = socket;
+    dhcpv4_leasequery_listener_ = leasequery_listener;
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
+bool RouterForwarder::remove_dhcpv4_server(
+    std::string_view name) noexcept {
+  const auto existing =
+      std::find_if(dhcpv4_servers_.begin(), dhcpv4_servers_.end(),
+                   [&](const auto &entry) { return entry.name == name; });
+  if (existing == dhcpv4_servers_.end())
+    return false;
+  dhcpv4_servers_.erase(existing);
+  // A session belongs to the named server selected at accept time. Removing
+  // that configuration closes only those connections and cannot redirect an
+  // established query to another server with a matching pool.
+  std::erase_if(dhcpv4_leasequery_sessions_, [&](const auto &session) {
+    if (session.server_name != name)
+      return false;
+    if (tcp_)
+      static_cast<void>(tcp_->close(session.socket));
+    return true;
+  });
+  if (dhcpv4_servers_.empty() && dhcpv4_leasequery_listener_) {
+    if (tcp_)
+      static_cast<void>(tcp_->close(*dhcpv4_leasequery_listener_));
+    dhcpv4_leasequery_listener_.reset();
+  }
+  if (dhcpv4_servers_.empty() && dhcpv4_relays_.empty() &&
+      dhcpv4_relay_socket_) {
+    static_cast<void>(udp_.close(*dhcpv4_relay_socket_));
+    dhcpv4_relay_socket_.reset();
+    std::vector<std::uint8_t>{}.swap(dhcpv4_receive_scratch_);
+    std::vector<std::uint8_t>{}.swap(dhcpv4_relay_scratch_);
+    std::vector<std::uint8_t>{}.swap(ipv4_udp_datagram_scratch_);
+  }
+  return true;
+}
+
+bool RouterForwarder::configure_dhcpv4_failover(
+    Dhcpv4FailoverTransportConfiguration configuration,
+    Clock::time_point now) noexcept {
+  if (!tcp_ || configuration.server_name.empty() ||
+      configuration.relationship.relationship_name.empty() ||
+      configuration.local == packet::Ipv4{} ||
+      configuration.partner == packet::Ipv4{} ||
+      configuration.local == configuration.partner ||
+      configuration.reconnect_delay <= std::chrono::seconds::zero() ||
+      configuration.shared_secret.size() >
+          device_catalog::dhcp_failover_shared_secret_bytes ||
+      dhcpv4_leasequery_server(configuration.server_name) == nullptr)
+    return false;
+
+  // A relationship name is the application identity. The wire tuple must also
+  // be unique because one accepted TCP stream cannot safely select two lease
+  // repositories. Rejecting ambiguity before opening the listener preserves
+  // the old configuration on failure.
+  for (const auto &candidate : dhcpv4_failover_sessions_)
+    if (candidate.configuration.relationship.relationship_name ==
+            configuration.relationship.relationship_name ||
+        (candidate.configuration.local == configuration.local &&
+         candidate.configuration.partner == configuration.partner))
+      return false;
+
+  auto listener = dhcpv4_failover_listener_;
+  if (!listener) {
+    listener = tcp_->listen(
+        {.family = transport::IpFamily::ipv4,
+         .interface_id = 0U,
+         .port = dhcpv4::failover::tcp_port},
+        device_catalog::dhcpv4_servers_per_router);
+    if (!listener)
+      return false;
+  }
+
+  try {
+    Dhcpv4FailoverSession staged{
+        .configuration = std::move(configuration),
+        .protocol = {},
+        .decoder = std::make_unique<dhcpv4::failover::StreamDecoder>(),
+        .socket = std::nullopt,
+        .output = {},
+        .synchronization_leases = {},
+        .output_offset = 0U,
+        .synchronization_cursor = 0U,
+        .synchronization_request_transaction_id = 0U,
+        .synchronization_binding_transaction_id = 0U,
+        .reconnect_at = now,
+        .transport_started = false};
+    const auto absolute_now = static_cast<std::uint32_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    if (!staged.protocol.configure(
+            staged.configuration.relationship,
+            staged.configuration.negotiation,
+            staged.configuration.secured_transport, absolute_now, now)) {
+      if (!dhcpv4_failover_listener_)
+        static_cast<void>(tcp_->close(*listener));
+      return false;
+    }
+    staged.output.reserve(dhcpv4::failover::maximum_message_octets);
+    dhcpv4_failover_sessions_.push_back(std::move(staged));
+    dhcpv4_failover_listener_ = listener;
+    return true;
+  } catch (const std::bad_alloc &) {
+    if (!dhcpv4_failover_listener_)
+      static_cast<void>(tcp_->close(*listener));
+    return false;
+  }
+}
+
+bool RouterForwarder::remove_dhcpv4_failover(
+    std::string_view relationship_name) noexcept {
+  const auto existing = std::find_if(
+      dhcpv4_failover_sessions_.begin(), dhcpv4_failover_sessions_.end(),
+      [&](const auto &candidate) {
+        return candidate.configuration.relationship.relationship_name ==
+               relationship_name;
+      });
+  if (existing == dhcpv4_failover_sessions_.end())
+    return false;
+  if (tcp_ && existing->socket)
+    static_cast<void>(tcp_->close(*existing->socket));
+  dhcpv4_failover_sessions_.erase(existing);
+  if (dhcpv4_failover_sessions_.empty() && dhcpv4_failover_listener_) {
+    if (tcp_)
+      static_cast<void>(tcp_->close(*dhcpv4_failover_listener_));
+    dhcpv4_failover_listener_.reset();
+  }
+  return true;
+}
+
+bool RouterForwarder::request_dhcpv4_failover_partner_down(
+    std::string_view relationship_name, std::uint32_t absolute_now,
+    Clock::time_point now) noexcept {
+  const auto relationship = std::find_if(
+      dhcpv4_failover_sessions_.begin(), dhcpv4_failover_sessions_.end(),
+      [&](const auto &candidate) {
+        return candidate.configuration.relationship.relationship_name ==
+               relationship_name;
+      });
+  return relationship != dhcpv4_failover_sessions_.end() &&
+         relationship->protocol.endpoint().request_partner_down(
+             absolute_now, now);
+}
+
+bool RouterForwarder::configure_dhcpv6_failover(
+    Dhcpv6FailoverTransportConfiguration configuration,
+    Clock::time_point now) noexcept {
+  if (!tcp_ || configuration.server_name.empty() ||
+      configuration.relationship.relationship_name.empty() ||
+      ip::is_unspecified(configuration.local) ||
+      ip::is_unspecified(configuration.partner) ||
+      configuration.local == configuration.partner ||
+      configuration.reconnect_delay <= std::chrono::seconds::zero() ||
+      std::none_of(dhcpv6_servers_.begin(), dhcpv6_servers_.end(),
+                   [&](const auto &candidate) {
+                     return candidate.name == configuration.server_name;
+                   }))
+    return false;
+  for (const auto &candidate : dhcpv6_failover_sessions_)
+    if (candidate.configuration.relationship.relationship_name ==
+            configuration.relationship.relationship_name ||
+        (candidate.configuration.local == configuration.local &&
+         candidate.configuration.partner == configuration.partner))
+      return false;
+
+  auto listener = dhcpv6_failover_listener_;
+  if (!listener) {
+    listener = tcp_->listen(
+        {.family = transport::IpFamily::ipv6,
+         .interface_id = 0U,
+         .port = dhcpv6::failover::tcp_port},
+        device_catalog::dhcpv6_servers_per_router);
+    if (!listener)
+      return false;
+  }
+
+  try {
+    Dhcpv6FailoverSession staged{
+        .configuration = std::move(configuration),
+        .protocol = {},
+        .decoder = std::make_unique<dhcpv6::failover::StreamDecoder>(),
+        .socket = std::nullopt,
+        .message = {},
+        .output = {},
+        .synchronization_leases = {},
+        .output_offset = 0U,
+        .synchronization_cursor = 0U,
+        .synchronization_request_transaction_id = 0U,
+        .synchronization_binding_transaction_id = 0U,
+        .reconnect_at = now,
+        .transport_started = false};
+    const auto absolute_now = static_cast<std::uint32_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    if (!staged.protocol.configure(staged.configuration.relationship,
+                                   staged.configuration.connect_flags,
+                                   absolute_now, now)) {
+      if (!dhcpv6_failover_listener_)
+        static_cast<void>(tcp_->close(*listener));
+      return false;
+    }
+    staged.message.reserve(dhcpv6::failover::maximum_message_octets);
+    staged.output.reserve(dhcpv6::failover::maximum_message_octets +
+                          dhcpv6::failover::frame_prefix_octets);
+    dhcpv6_failover_sessions_.push_back(std::move(staged));
+    dhcpv6_failover_listener_ = listener;
+    return true;
+  } catch (const std::bad_alloc &) {
+    if (!dhcpv6_failover_listener_)
+      static_cast<void>(tcp_->close(*listener));
+    return false;
+  }
+}
+
+bool RouterForwarder::remove_dhcpv6_failover(
+    std::string_view relationship_name) noexcept {
+  const auto existing = std::find_if(
+      dhcpv6_failover_sessions_.begin(), dhcpv6_failover_sessions_.end(),
+      [&](const auto &candidate) {
+        return candidate.configuration.relationship.relationship_name ==
+               relationship_name;
+      });
+  if (existing == dhcpv6_failover_sessions_.end())
+    return false;
+  if (tcp_ && existing->socket)
+    static_cast<void>(tcp_->close(*existing->socket));
+  dhcpv6_failover_sessions_.erase(existing);
+  if (dhcpv6_failover_sessions_.empty() && dhcpv6_failover_listener_) {
+    if (tcp_)
+      static_cast<void>(tcp_->close(*dhcpv6_failover_listener_));
+    dhcpv6_failover_listener_.reset();
+  }
+  return true;
+}
+
+bool RouterForwarder::request_dhcpv6_failover_partner_down(
+    std::string_view relationship_name, std::uint32_t absolute_now,
+    Clock::time_point now) noexcept {
+  const auto relationship = std::find_if(
+      dhcpv6_failover_sessions_.begin(), dhcpv6_failover_sessions_.end(),
+      [&](const auto &candidate) {
+        return candidate.configuration.relationship.relationship_name ==
+               relationship_name;
+      });
+  return relationship != dhcpv6_failover_sessions_.end() &&
+         relationship->protocol.endpoint().request_partner_down(
+             absolute_now, now);
+}
+
+bool RouterForwarder::clear_dhcpv4_server_statistics(
+    std::string_view name) noexcept {
+  const auto server =
+      std::find_if(dhcpv4_servers_.begin(), dhcpv4_servers_.end(),
+                   [&](const auto &entry) { return entry.name == name; });
+  if (server == dhcpv4_servers_.end())
+    return false;
+  server->protocol.clear_statistics();
+  return true;
+}
+
+RouterForwarder::Dhcpv4ServerState *
+RouterForwarder::dhcpv4_leasequery_server(std::string_view name) noexcept {
+  const auto server =
+      std::find_if(dhcpv4_servers_.begin(), dhcpv4_servers_.end(),
+                   [&](const auto &candidate) { return candidate.name == name; });
+  return server == dhcpv4_servers_.end() ? nullptr : &*server;
+}
+
+bool RouterForwarder::emit_tcp(
+    const transport::tcp::PreparedEndpointSegment &prepared,
+    transport::tcp::EndpointSocketHandle socket, void *context,
+    EgressSink sink, Clock::time_point now) noexcept {
+  if (!tcp_ || !prepared.emit ||
+      prepared.octets > tcp_segment_scratch_.size())
+    return false;
+  const auto local = tcp_->local_binding(socket);
+  const auto remote = tcp_->remote_endpoint(socket);
+  if (!local || !remote)
+    return false;
+
+  packet::Frame frame;
+  bool admitted{};
+  if (local->family == transport::IpFamily::ipv4 &&
+      local->ipv4 != packet::Ipv4{} &&
+      remote->ipv4 != packet::Ipv4{}) {
+    const auto encoded = packet::encode_ipv4_ethernet_datagram(
+        tcp_datagram_scratch_, unresolved_mac, unresolved_mac, local->ipv4,
+        remote->ipv4, packet::ipv6_next_header_tcp,
+        device_catalog::default_ip_hop_limit, dhcpv4_identification_,
+        std::span<const std::uint8_t>{tcp_segment_scratch_}.first(
+            prepared.octets),
+        true);
+    if (encoded && *encoded <= frame.bytes.size()) {
+      std::copy_n(tcp_datagram_scratch_.begin(), *encoded,
+                  frame.bytes.begin());
+      frame.length = static_cast<std::uint16_t>(*encoded);
+      admitted =
+          send(frame, to_u32(remote->ipv4), false, context, sink, now);
+      if (admitted)
+        ++dhcpv4_identification_;
+    }
+  } else if (local->family == transport::IpFamily::ipv6 &&
+             !ip::is_unspecified(local->ipv6) &&
+             !ip::is_unspecified(remote->ipv6)) {
+    const auto encoded = packet::encode_ipv6_ethernet_datagram(
+        tcp_datagram_scratch_, unresolved_mac, unresolved_mac, local->ipv6,
+        remote->ipv6, packet::ipv6_next_header_tcp,
+        device_catalog::default_ip_hop_limit,
+        std::span<const std::uint8_t>{tcp_segment_scratch_}.first(
+            prepared.octets));
+    if (encoded && *encoded <= frame.bytes.size()) {
+      std::copy_n(tcp_datagram_scratch_.begin(), *encoded,
+                  frame.bytes.begin());
+      frame.length = static_cast<std::uint16_t>(*encoded);
+      // The normal IPv6 output path owns FIB selection, scope validation, ND,
+      // PMTU and egress queues. Failover TCP therefore cannot bypass a broken
+      // route or directly invoke its partner.
+      admitted = send_ipv6(frame, remote->ipv6, false, context, sink, now);
+    }
+  }
+  if (prepared.endpoint_token) {
+    // SND.NXT and retransmission timers advance only after the encoded packet
+    // entered ARP resolution or a physical egress queue.
+    if (admitted)
+      static_cast<void>(tcp_->commit(prepared, now));
+    else
+      static_cast<void>(tcp_->discard(prepared));
+  }
+  return admitted;
+}
+
+void RouterForwarder::service_dhcpv4_leasequery(
+    void *context, EgressSink sink, Clock::time_point now) noexcept {
+  if (!tcp_ || !dhcpv4_leasequery_listener_)
+    return;
+
+  // Accept is bounded by both the TCP backlog and the generated application
+  // limit. One maintenance turn drains every completed handshake because the
+  // upper bound is ten, independent of traffic volume.
+  while (dhcpv4_leasequery_sessions_.size() <
+         device_catalog::dhcpv4_leasequery_connections_per_server) {
+    const auto accepted = tcp_->accept(*dhcpv4_leasequery_listener_);
+    if (!accepted)
+      break;
+    const auto local = tcp_->local_binding(*accepted);
+    const auto remote = tcp_->remote_endpoint(*accepted);
+    const auto server =
+        local ? std::find_if(dhcpv4_servers_.begin(), dhcpv4_servers_.end(),
+                             [&](const auto &candidate) {
+                               return candidate.configuration.server_identifier ==
+                                      local->ipv4;
+                             })
+              : dhcpv4_servers_.end();
+    // A wildcard Base listener may receive a connection addressed to another
+    // local interface. One configured server is unambiguous; several require
+    // an exact server identifier and are refused rather than chosen by order.
+    const auto selected =
+        server != dhcpv4_servers_.end()
+            ? server
+            : (dhcpv4_servers_.size() == 1U ? dhcpv4_servers_.begin()
+                                            : dhcpv4_servers_.end());
+    if (!local || !remote || selected == dhcpv4_servers_.end()) {
+      static_cast<void>(tcp_->close(*accepted));
+      continue;
+    }
+    try {
+      dhcpv4_leasequery_sessions_.push_back(
+          {.socket = *accepted,
+           .decoder =
+               std::make_unique<dhcpv4::leasequery::StreamDecoder>(),
+           .request = std::nullopt,
+           .local = local->ipv4,
+           .remote = remote->ipv4,
+           .server_name = selected->name,
+           .lease_cursor = 0U,
+           .pool_cursor = 0U,
+           .address_cursor = 0U,
+           .revision_cursor = 0U,
+           .scan_revision_target = 0U,
+           .data_deadline =
+               now + std::chrono::seconds{
+                         device_catalog::
+                             dhcpv4_bulk_leasequery_data_timeout_seconds},
+           .keepalive_deadline =
+               now + std::chrono::seconds{
+                         device_catalog::
+                             dhcpv4_active_leasequery_idle_seconds},
+           .first_reply = true,
+           .catch_up_complete = false,
+           .done = false});
+    } catch (const std::bad_alloc &) {
+      static_cast<void>(tcp_->close(*accepted));
+      break;
+    }
+  }
+
+  const auto base_time = [] {
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(
+                             std::chrono::system_clock::now()
+                                 .time_since_epoch())
+                             .count();
+    return static_cast<std::uint32_t>(
+        std::clamp<std::int64_t>(seconds, 0,
+                                 std::numeric_limits<std::uint32_t>::max()));
+  }();
+  std::array<std::uint8_t, 64U> read_buffer{};
+  constexpr std::array<std::uint8_t, 0U> no_status_text{};
+
+  for (auto &session : dhcpv4_leasequery_sessions_) {
+    auto *server = dhcpv4_leasequery_server(session.server_name);
+    if (!server || !session.decoder) {
+      session.done = true;
+      continue;
+    }
+
+    // TCP receive storage already enforces flow control. Reading a small
+    // bounded chunk prevents one peer from monopolizing a forwarding turn,
+    // while StreamDecoder preserves arbitrary segmentation across turns.
+    const auto read = tcp_->read(session.socket, read_buffer, now);
+    if (read != 0U) {
+      // Before the first complete request only the Bulk framing timeout is
+      // knowable. Once parsed, Active Leasequery uses its independently
+      // generated RFC 7724 timeout. Do not accidentally grant every Bulk peer
+      // the Active profile merely because another TCP segment arrived.
+      const auto timeout =
+          session.request &&
+                  session.request->kind ==
+                      dhcpv4::leasequery::RequestKind::active
+              ? device_catalog::
+                    dhcpv4_active_leasequery_data_timeout_seconds
+              : device_catalog::
+                    dhcpv4_bulk_leasequery_data_timeout_seconds;
+      session.data_deadline =
+          now + std::chrono::seconds{timeout};
+    }
+    std::size_t offset{};
+    while (offset < read && !session.request && !session.done) {
+      const auto decoded = session.decoder->ingest(
+          std::span<const std::uint8_t>{read_buffer}.subspan(offset,
+                                                             read - offset));
+      offset += decoded.accepted_octets;
+      if (decoded.status == dhcpv4::leasequery::StreamStatus::message_ready) {
+        const auto parsed =
+            dhcpv4::leasequery::parse_request_result(decoded.message);
+        session.decoder->consume();
+        if (parsed.status !=
+            dhcpv4::leasequery::RequestParseStatus::accepted) {
+          const auto code =
+              parsed.status ==
+                      dhcpv4::leasequery::RequestParseStatus::not_allowed
+                  ? dhcpv4::leasequery::StatusCode::not_allowed
+                  : dhcpv4::leasequery::StatusCode::malformed_query;
+          const auto message = dhcpv4::leasequery::encode_status_reply(
+              dhcpv4::leasequery::RequestKind::bulk, 0U, code, base_time,
+              no_status_text, dhcpv4_relay_scratch_);
+          if (message) {
+            const auto framed = dhcpv4::leasequery::encode_frame(
+                std::span<const std::uint8_t>{dhcpv4_relay_scratch_}.first(
+                    *message),
+                dhcpv4_receive_scratch_);
+            if (framed)
+              static_cast<void>(tcp_->write(
+                  session.socket,
+                  std::span<const std::uint8_t>{dhcpv4_receive_scratch_}.first(
+                      *framed),
+                  now));
+          }
+          session.done = true;
+          break;
+        }
+        session.request = parsed.request;
+        session.revision_cursor = server->protocol.leases().current_revision();
+        session.data_deadline =
+            now + std::chrono::seconds{
+                      parsed.request.kind ==
+                              dhcpv4::leasequery::RequestKind::active
+                          ? device_catalog::
+                                dhcpv4_active_leasequery_data_timeout_seconds
+                          : device_catalog::
+                                dhcpv4_bulk_leasequery_data_timeout_seconds};
+      } else if (decoded.status !=
+                 dhcpv4::leasequery::StreamStatus::need_more) {
+        session.done = true;
+      } else if (decoded.accepted_octets == 0U) {
+        break;
+      }
+    }
+
+    if (session.request && !session.done) {
+      auto &request = *session.request;
+      const auto leases = server->protocol.leases().leases();
+      const dhcpv4::Lease *selected{};
+      const dhcpv4::Pool *selected_pool{};
+      packet::Ipv4 selected_address{};
+
+      if (request.kind == dhcpv4::leasequery::RequestKind::bulk &&
+          request.selector ==
+              dhcpv4::leasequery::SelectorKind::all_configured) {
+        // ALL-CONFIGURED-IP-ADDRESSES describes every address controlled by
+        // the server, including addresses which have never had a binding. Pool
+        // validation prevents overlapping ranges, so this cursor emits each
+        // address exactly once and uses bounded storage independent of range
+        // size.
+        const auto pools = server->protocol.leases().pools();
+        while (session.pool_cursor < pools.size()) {
+          const auto &pool = pools[session.pool_cursor];
+          const auto first = to_u32(pool.first);
+          const auto last = to_u32(pool.last);
+          if (session.address_cursor == 0U)
+            session.address_cursor = first;
+          if (!pool.enabled || session.address_cursor < first ||
+              session.address_cursor > last) {
+            ++session.pool_cursor;
+            session.address_cursor = 0U;
+            continue;
+          }
+
+          selected_address = to_ipv4(session.address_cursor);
+          selected_pool = &pool;
+          const auto binding = std::find_if(
+              leases.begin(), leases.end(), [&](const auto &lease) {
+                return lease.scope.server_instance ==
+                           pool.scope.server_instance &&
+                       lease.scope.routing_context ==
+                           pool.scope.routing_context &&
+                       lease.scope.link_identity == pool.scope.link_identity &&
+                       lease.address == selected_address;
+              });
+          selected = binding == leases.end() ? nullptr : &*binding;
+          if (session.address_cursor == last) {
+            ++session.pool_cursor;
+            session.address_cursor = 0U;
+          } else {
+            ++session.address_cursor;
+          }
+          break;
+        }
+      } else {
+        while (session.lease_cursor < leases.size()) {
+          const auto &candidate = leases[session.lease_cursor++];
+          const bool in_revision_window =
+              !session.catch_up_complete ||
+              (candidate.revision > session.revision_cursor &&
+               candidate.revision <= session.scan_revision_target);
+          if (in_revision_window &&
+              dhcpv4::leasequery::matches(request, candidate, base_time, now)) {
+            selected = &candidate;
+            selected_pool = server->protocol.leases().pool_for(
+                candidate.scope, candidate.address);
+            selected_address = candidate.address;
+            break;
+          }
+        }
+      }
+
+      std::optional<std::size_t> message;
+      if (request.kind == dhcpv4::leasequery::RequestKind::tls) {
+        message = dhcpv4::leasequery::encode_status_reply(
+            request.kind, request.transaction_id,
+            dhcpv4::leasequery::StatusCode::tls_connection_refused, base_time,
+            no_status_text, dhcpv4_relay_scratch_);
+        session.done = true;
+      } else if (selected) {
+        message = dhcpv4::leasequery::encode_binding_reply(
+            {.lease = selected,
+             .pool = selected_pool,
+             .address = selected_address,
+             .server_identifier =
+                 server->configuration.server_identifier,
+             .transaction_id = request.transaction_id,
+             .base_time = base_time,
+             .requested_options =
+                 std::span<const std::uint8_t>{request.requested_options}.first(
+                     request.requested_option_octets),
+             .now = now,
+             .include_server_identifier = session.first_reply,
+             .active_query =
+                 request.kind == dhcpv4::leasequery::RequestKind::active},
+            dhcpv4_relay_scratch_);
+        session.first_reply = false;
+      } else if (request.kind ==
+                 dhcpv4::leasequery::RequestKind::bulk) {
+        if (selected_pool) {
+          message = dhcpv4::leasequery::encode_binding_reply(
+              {.lease = nullptr,
+               .pool = selected_pool,
+               .address = selected_address,
+               .server_identifier =
+                   server->configuration.server_identifier,
+               .transaction_id = request.transaction_id,
+               .base_time = base_time,
+               .requested_options =
+                   std::span<const std::uint8_t>{request.requested_options}
+                       .first(request.requested_option_octets),
+               .now = now,
+               .include_server_identifier = session.first_reply,
+               .active_query = false},
+              dhcpv4_relay_scratch_);
+          session.first_reply = false;
+        } else {
+          message = dhcpv4::leasequery::encode_status_reply(
+              request.kind, request.transaction_id,
+              dhcpv4::leasequery::StatusCode::success, base_time,
+              no_status_text, dhcpv4_relay_scratch_);
+          session.done = true;
+        }
+      } else if (!session.catch_up_complete) {
+        message = dhcpv4::leasequery::encode_status_reply(
+            request.kind, request.transaction_id,
+            dhcpv4::leasequery::StatusCode::catch_up_complete, base_time,
+            no_status_text, dhcpv4_relay_scratch_);
+        session.catch_up_complete = true;
+        session.lease_cursor = 0U;
+        session.scan_revision_target = session.revision_cursor;
+      } else if (session.scan_revision_target > session.revision_cursor &&
+                 session.lease_cursor >= leases.size()) {
+        session.revision_cursor = session.scan_revision_target;
+        session.lease_cursor = 0U;
+      } else if (server->protocol.leases().current_revision() >
+                     session.revision_cursor &&
+                 session.scan_revision_target == session.revision_cursor) {
+        session.scan_revision_target =
+            server->protocol.leases().current_revision();
+        session.lease_cursor = 0U;
+      } else if (now >= session.keepalive_deadline) {
+        message = dhcpv4::leasequery::encode_status_reply(
+            request.kind, request.transaction_id,
+            dhcpv4::leasequery::StatusCode::success, base_time, no_status_text,
+            dhcpv4_relay_scratch_);
+        session.keepalive_deadline =
+            now + std::chrono::seconds{
+                      device_catalog::dhcpv4_active_leasequery_idle_seconds};
+      }
+
+      if (message) {
+        const auto framed = dhcpv4::leasequery::encode_frame(
+            std::span<const std::uint8_t>{dhcpv4_relay_scratch_}.first(
+                *message),
+            dhcpv4_receive_scratch_);
+        if (!framed ||
+            tcp_->write(
+                session.socket,
+                std::span<const std::uint8_t>{dhcpv4_receive_scratch_}.first(
+                    *framed),
+                now) != *framed)
+          session.done = true;
+        else
+          session.data_deadline =
+              now + std::chrono::seconds{
+                        device_catalog::
+                            dhcpv4_active_leasequery_data_timeout_seconds};
+      }
+    }
+
+    const auto prepared =
+        tcp_->prepare_data(session.socket, tcp_segment_scratch_, true, now);
+    if (prepared.segment.emit)
+      static_cast<void>(
+          emit_tcp(prepared.segment, session.socket, context, sink, now));
+    if (now >= session.data_deadline)
+      session.done = true;
+  }
+
+  std::erase_if(dhcpv4_leasequery_sessions_, [&](auto &session) {
+    if (!session.done)
+      return false;
+    static_cast<void>(tcp_->close(session.socket));
+    return true;
+  });
+}
+
+void RouterForwarder::service_dhcp_failover(
+    void *context, EgressSink sink, Clock::time_point now) noexcept {
+  if (!tcp_)
+    return;
+
+  const auto absolute_now = static_cast<std::uint32_t>(
+      std::chrono::duration_cast<std::chrono::seconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count());
+  constexpr auto disconnected_retry_floor = std::chrono::seconds::zero();
+
+  // Passive connections are selected by the complete received tuple. A
+  // secondary relationship with a different local or partner address cannot
+  // consume the stream, even if it shares TCP/647 and a relationship name.
+  if (dhcpv4_failover_listener_) {
+    while (const auto accepted =
+               tcp_->accept(*dhcpv4_failover_listener_)) {
+      const auto local = tcp_->local_binding(*accepted);
+      const auto remote = tcp_->remote_endpoint(*accepted);
+      const auto selected =
+          local && remote
+              ? std::find_if(
+                    dhcpv4_failover_sessions_.begin(),
+                    dhcpv4_failover_sessions_.end(),
+                    [&](const auto &candidate) {
+                      return !candidate.socket &&
+                             candidate.configuration.relationship.role ==
+                                 dhcpv4::failover::Role::secondary &&
+                             candidate.configuration.local == local->ipv4 &&
+                             candidate.configuration.partner == remote->ipv4 &&
+                             remote->port != 0U;
+                    })
+              : dhcpv4_failover_sessions_.end();
+      if (selected == dhcpv4_failover_sessions_.end()) {
+        static_cast<void>(tcp_->close(*accepted));
+        continue;
+      }
+      selected->socket = *accepted;
+      *selected->decoder = {};
+      selected->output.clear();
+      selected->output_offset = 0U;
+      selected->synchronization_leases.clear();
+      selected->synchronization_cursor = 0U;
+      selected->synchronization_request_transaction_id = 0U;
+      selected->synchronization_binding_transaction_id = 0U;
+      selected->transport_started = true;
+      selected->protocol.transport_connected(absolute_now, now);
+    }
+  }
+  if (dhcpv6_failover_listener_) {
+    while (const auto accepted =
+               tcp_->accept(*dhcpv6_failover_listener_)) {
+      const auto local = tcp_->local_binding(*accepted);
+      const auto remote = tcp_->remote_endpoint(*accepted);
+      const auto selected =
+          local && remote
+              ? std::find_if(
+                    dhcpv6_failover_sessions_.begin(),
+                    dhcpv6_failover_sessions_.end(),
+                    [&](const auto &candidate) {
+                      return !candidate.socket &&
+                             candidate.configuration.relationship.role ==
+                                 dhcpv6::failover::Role::secondary &&
+                             candidate.configuration.local == local->ipv6 &&
+                             candidate.configuration.partner == remote->ipv6 &&
+                             remote->port != 0U;
+                    })
+              : dhcpv6_failover_sessions_.end();
+      if (selected == dhcpv6_failover_sessions_.end()) {
+        static_cast<void>(tcp_->close(*accepted));
+        continue;
+      }
+      selected->socket = *accepted;
+      *selected->decoder = {};
+      selected->message.clear();
+      selected->output.clear();
+      selected->output_offset = 0U;
+      selected->synchronization_leases.clear();
+      selected->synchronization_cursor = 0U;
+      selected->synchronization_request_transaction_id = 0U;
+      selected->synchronization_binding_transaction_id = 0U;
+      selected->transport_started = true;
+      selected->protocol.transport_connected(absolute_now, now);
+    }
+  }
+
+  // Primary endpoints actively open the real routed connection. The selected
+  // output interface supplies the advertised MSS, while emit_tcp performs the
+  // actual ARP or ND resolution and queue admission before the SYN is committed.
+  for (auto &session : dhcpv4_failover_sessions_) {
+    if (!session.socket &&
+        session.configuration.relationship.role ==
+            dhcpv4::failover::Role::primary &&
+        now >= session.reconnect_at) {
+      routing::Route route;
+      if (lookup_ipv4_route(to_u32(session.configuration.partner), route) &&
+          !route.local_system) {
+        const auto *egress = port(route.port_ordinal);
+        if (egress && egress->operational && egress->mtu > 40U) {
+          const auto prepared = tcp_->prepare_connect(
+              {.family = transport::IpFamily::ipv4,
+               .ipv4 = session.configuration.local,
+               .interface_id = physical_interface_id(egress->ordinal),
+               .port = 0U},
+              {.ipv4 = session.configuration.partner,
+               .port = dhcpv4::failover::tcp_port},
+              egress->mtu - 20U, tcp_segment_scratch_, {}, now);
+          if (prepared.segment.emit &&
+              emit_tcp(prepared.segment, prepared.segment.socket, context,
+                       sink, now)) {
+            session.socket = prepared.segment.socket;
+            session.transport_started = false;
+          }
+        }
+      }
+      if (!session.socket)
+        session.reconnect_at =
+            now + std::max(session.configuration.reconnect_delay,
+                           disconnected_retry_floor);
+    }
+  }
+  for (auto &session : dhcpv6_failover_sessions_) {
+    if (!session.socket &&
+        session.configuration.relationship.role ==
+            dhcpv6::failover::Role::primary &&
+        now >= session.reconnect_at) {
+      routing::Ipv6Route route;
+      bool blackhole{};
+      if (lookup_ipv6_route(session.configuration.partner, route, blackhole) &&
+          !blackhole) {
+        const auto *egress = port(route.physical_port_ordinal);
+        if (egress && egress->operational &&
+            egress->mtu > packet::ipv6_header_octets + 20U) {
+          const auto prepared = tcp_->prepare_connect(
+              {.family = transport::IpFamily::ipv6,
+               .ipv6 = session.configuration.local,
+               .interface_id = physical_interface_id(egress->ordinal),
+               .port = 0U},
+              {.ipv6 = session.configuration.partner,
+               .port = dhcpv6::failover::tcp_port},
+              egress->mtu - packet::ipv6_header_octets,
+              tcp_segment_scratch_, {}, now);
+          if (prepared.segment.emit &&
+              emit_tcp(prepared.segment, prepared.segment.socket, context,
+                       sink, now)) {
+            session.socket = prepared.segment.socket;
+            session.transport_started = false;
+          }
+        }
+      }
+      if (!session.socket)
+        session.reconnect_at =
+            now + std::max(session.configuration.reconnect_delay,
+                           disconnected_retry_floor);
+    }
+  }
+
+  std::array<std::uint8_t, 2048U> read_buffer{};
+  for (auto &session : dhcpv4_failover_sessions_) {
+    if (!session.socket)
+      continue;
+    const auto state = tcp_->state(*session.socket);
+    if (!state || *state == transport::tcp::State::closed ||
+        *state == transport::tcp::State::time_wait) {
+      session.protocol.transport_closed(absolute_now, now);
+      static_cast<void>(tcp_->close(*session.socket));
+      session.socket.reset();
+      session.transport_started = false;
+      session.reconnect_at = now + session.configuration.reconnect_delay;
+      continue;
+    }
+    if (*state != transport::tcp::State::established)
+      continue;
+    if (!session.transport_started) {
+      session.synchronization_leases.clear();
+      session.synchronization_cursor = 0U;
+      session.synchronization_request_transaction_id = 0U;
+      session.synchronization_binding_transaction_id = 0U;
+      session.transport_started = true;
+      session.protocol.transport_connected(absolute_now, now);
+    }
+    session.protocol.service(absolute_now, now);
+
+    // Do not consume another application frame while an acknowledgement or
+    // control message is still waiting for TCP send-buffer admission. TCP's
+    // receive window then provides real backpressure without an unbounded
+    // second failover queue in the protocol owner.
+    const auto received =
+        session.output.empty()
+            ? tcp_->read(*session.socket, read_buffer, now)
+            : 0U;
+    std::size_t offset{};
+    bool failed{};
+    while (offset < received && !failed) {
+      const auto decoded = session.decoder->ingest(
+          std::span<const std::uint8_t>{read_buffer}.subspan(offset));
+      offset += decoded.accepted_octets;
+      if (decoded.status == dhcpv4::failover::StreamStatus::message_ready) {
+        // Shared-secret authentication covers the exact framed bytes and is
+        // checked before decoding or mutating the lease repository. A missing,
+        // misplaced or mismatched digest closes the relationship, as accepting
+        // it would let unauthenticated binding updates cross the trust boundary.
+        const auto authenticated =
+            session.configuration.shared_secret.empty() ||
+            dhcpv4::failover::verify_hmac_md5(
+                session.decoder->mutable_message(),
+                session.configuration.shared_secret) ==
+                dhcpv4::failover::DigestStatus::accepted;
+        const auto message =
+            authenticated
+                ? dhcpv4::failover::decode(decoded.message)
+                : dhcpv4::failover::DecodeResult{
+                      .status =
+                          dhcpv4::failover::DecodeStatus::malformed_option};
+        if (message.status != dhcpv4::failover::DecodeStatus::accepted) {
+          failed = true;
+        } else {
+          const auto event =
+              session.protocol.receive(message.message, absolute_now, now);
+          if (event.kind ==
+              dhcpv4::failover::SessionEventKind::
+                  synchronization_requested) {
+            auto *server =
+                dhcpv4_leasequery_server(session.configuration.server_name);
+            if (!server ||
+                session.synchronization_request_transaction_id != 0U) {
+              failed = true;
+            } else {
+              try {
+                session.synchronization_leases =
+                    server->protocol.leases().checkpoint(now).leases;
+              } catch (...) {
+                failed = true;
+              }
+              if (!failed) {
+                session.synchronization_cursor = 0U;
+                session.synchronization_binding_transaction_id = 0U;
+                session.synchronization_request_transaction_id =
+                    event.message.transaction_id;
+              }
+            }
+          } else if (event.kind ==
+                     dhcpv4::failover::SessionEventKind::binding_ack) {
+            if (session.synchronization_binding_transaction_id == 0U ||
+                event.message.transaction_id !=
+                    session.synchronization_binding_transaction_id ||
+                session.synchronization_cursor >=
+                    session.synchronization_leases.size()) {
+              failed = true;
+            } else {
+              const auto acknowledgement =
+                  dhcpv4::failover::next_binding(event.message);
+              if (acknowledgement.status !=
+                      dhcpv4::failover::BindingParseStatus::accepted ||
+                  acknowledgement.update.reject_reason ||
+                  acknowledgement.update.address !=
+                      session
+                          .synchronization_leases
+                              [session.synchronization_cursor]
+                          .address ||
+                  dhcpv4::failover::next_binding(
+                      event.message, acknowledgement.next_offset)
+                          .status !=
+                      dhcpv4::failover::BindingParseStatus::end) {
+                failed = true;
+              } else {
+                ++session.synchronization_cursor;
+                session.synchronization_binding_transaction_id = 0U;
+              }
+            }
+          }
+          else if (event.kind ==
+                   dhcpv4::failover::SessionEventKind::binding_update) {
+            std::array<
+                dhcpv4::failover::BindingUpdateView,
+                device_catalog::dhcp_failover_updates_in_flight>
+                updates{};
+            std::size_t count{};
+            std::size_t cursor{};
+            while (count < updates.size()) {
+              const auto binding =
+                  dhcpv4::failover::next_binding(event.message, cursor);
+              if (binding.status ==
+                  dhcpv4::failover::BindingParseStatus::end)
+                break;
+              if (binding.status !=
+                  dhcpv4::failover::BindingParseStatus::accepted) {
+                failed = true;
+                break;
+              }
+              updates[count++] = binding.update;
+              cursor = binding.next_offset;
+            }
+            auto *server =
+                dhcpv4_leasequery_server(session.configuration.server_name);
+            if (!failed) {
+              const auto applied =
+                  server && count != 0U
+                      ? server->protocol.leases().apply_partner_updates(
+                            std::span<const
+                                      dhcpv4::failover::BindingUpdateView>{
+                                updates}
+                                .first(count),
+                            absolute_now, now)
+                      : dhcpv4::PartnerUpdateStatus::invalid_update;
+              if (applied != dhcpv4::PartnerUpdateStatus::applied &&
+                  applied != dhcpv4::PartnerUpdateStatus::duplicate)
+                failed = true;
+            }
+            if (!failed) {
+              session.output.resize(
+                  dhcpv4::failover::maximum_message_octets);
+              const auto ack = dhcpv4::failover::encode_binding_ack(
+                  absolute_now, event.message.transaction_id,
+                  std::span<const dhcpv4::failover::BindingUpdateView>{updates}
+                      .first(count),
+                  session.output);
+              if (!ack)
+                failed = true;
+              else {
+                session.output.resize(*ack);
+                session.output_offset = 0U;
+              }
+            }
+          }
+          else if (event.kind ==
+                       dhcpv4::failover::SessionEventKind::protocol_error ||
+                   event.kind ==
+                       dhcpv4::failover::SessionEventKind::pool_request)
+            failed = true;
+        }
+        session.decoder->consume();
+      } else if (decoded.status !=
+                 dhcpv4::failover::StreamStatus::need_more) {
+        failed = true;
+      } else if (decoded.accepted_octets == 0U) {
+        break;
+      }
+    }
+
+    if (failed) {
+      session.protocol.transport_closed(absolute_now, now);
+      static_cast<void>(tcp_->close(*session.socket));
+      session.socket.reset();
+      session.transport_started = false;
+      session.reconnect_at = now + session.configuration.reconnect_delay;
+      continue;
+    }
+    if (session.output.empty() &&
+        session.synchronization_request_transaction_id != 0U &&
+        session.synchronization_binding_transaction_id == 0U) {
+      if (session.synchronization_cursor ==
+          session.synchronization_leases.size()) {
+        if (!session.protocol.finish_synchronization(
+                session.synchronization_request_transaction_id)) {
+          session.protocol.transport_closed(absolute_now, now);
+          static_cast<void>(tcp_->close(*session.socket));
+          session.socket.reset();
+          session.transport_started = false;
+          session.reconnect_at =
+              now + session.configuration.reconnect_delay;
+          continue;
+        }
+        session.synchronization_leases.clear();
+        session.synchronization_cursor = 0U;
+        session.synchronization_request_transaction_id = 0U;
+      } else {
+        const auto &lease =
+            session.synchronization_leases[session.synchronization_cursor];
+        const auto remaining_seconds = [](std::int64_t nanoseconds) {
+          return nanoseconds <= 0
+                     ? 0U
+                     : static_cast<std::uint32_t>(
+                           std::chrono::duration_cast<std::chrono::seconds>(
+                               std::chrono::nanoseconds{nanoseconds})
+                               .count());
+        };
+        const auto xid =
+            session.protocol.endpoint().allocate_transaction_id();
+        const auto client_identifier =
+            lease.client.option_61
+                ? std::span<const std::uint8_t>{lease.client.bytes}.first(
+                      lease.client.octets)
+                : std::span<const std::uint8_t>{};
+        std::array<std::uint8_t, 17U> hardware{};
+        hardware[0U] = lease.hardware.type;
+        std::copy_n(lease.hardware.address.begin(), lease.hardware.length,
+                    hardware.begin() + 1);
+        const auto hardware_identity =
+            lease.client.option_61
+                ? std::span<const std::uint8_t>{hardware}.first(
+                      static_cast<std::size_t>(lease.hardware.length) + 1U)
+                : std::span<const std::uint8_t>{lease.client.bytes}.first(
+                      lease.client.octets);
+        session.output.resize(
+            dhcpv4::failover::maximum_message_octets);
+        const auto encoded = dhcpv4::failover::encode_binding(
+            dhcpv4::failover::MessageType::binding_update, absolute_now, xid,
+            {.address = lease.address,
+             .status = lease.failover_managed
+                           ? lease.failover_status
+                           : lease.state == dhcpv4::BindingState::active
+                                 ? dhcpv4::failover::BindingStatus::active
+                                 : lease.state ==
+                                           dhcpv4::BindingState::declined
+                                       ? dhcpv4::failover::BindingStatus::
+                                             abandoned
+                                       : dhcpv4::failover::BindingStatus::
+                                             expired,
+             .client_identifier = client_identifier,
+             .client_hardware_address = hardware_identity,
+             .lease_expiration_time =
+                 absolute_now +
+                 remaining_seconds(lease.active_remaining_nanoseconds),
+             .potential_expiration_time =
+                 absolute_now +
+                 remaining_seconds(lease.active_remaining_nanoseconds),
+             .client_last_transaction_time = absolute_now,
+             .start_time_of_state =
+                 lease.failover_state_started_absolute == 0U
+                     ? absolute_now
+                     : lease.failover_state_started_absolute,
+             .reject_reason = std::nullopt},
+            session.output);
+        if (!encoded) {
+          session.output.clear();
+          session.protocol.transport_closed(absolute_now, now);
+          static_cast<void>(tcp_->close(*session.socket));
+          session.socket.reset();
+          session.transport_started = false;
+          session.reconnect_at =
+              now + session.configuration.reconnect_delay;
+          continue;
+        }
+        session.output.resize(*encoded);
+        session.output_offset = 0U;
+        session.synchronization_binding_transaction_id = xid;
+      }
+    }
+    if (session.output.empty()) {
+      session.output.resize(dhcpv4::failover::maximum_message_octets);
+      const auto encoded =
+          session.protocol.prepare_next(session.output, absolute_now, now);
+      if (encoded)
+        session.output.resize(*encoded);
+      else
+        session.output.clear();
+      session.output_offset = 0U;
+    }
+    if (!session.output.empty()) {
+      if (!authenticate_dhcpv4_failover_output(
+              session.output, session.configuration.shared_secret)) {
+        session.protocol.transport_closed(absolute_now, now);
+        static_cast<void>(tcp_->close(*session.socket));
+        session.socket.reset();
+        session.output.clear();
+        session.output_offset = 0U;
+        session.transport_started = false;
+        session.reconnect_at = now + session.configuration.reconnect_delay;
+        continue;
+      }
+      session.output_offset += tcp_->write(
+          *session.socket,
+          std::span<const std::uint8_t>{session.output}.subspan(
+              session.output_offset),
+          now);
+      if (session.output_offset == session.output.size()) {
+        session.output.clear();
+        session.output_offset = 0U;
+      }
+    }
+    const auto prepared =
+        tcp_->prepare_data(*session.socket, tcp_segment_scratch_, true, now);
+    if (prepared.segment.emit)
+      static_cast<void>(
+          emit_tcp(prepared.segment, *session.socket, context, sink, now));
+  }
+
+  for (auto &session : dhcpv6_failover_sessions_) {
+    if (!session.socket)
+      continue;
+    const auto state = tcp_->state(*session.socket);
+    if (!state || *state == transport::tcp::State::closed ||
+        *state == transport::tcp::State::time_wait) {
+      session.protocol.transport_closed(absolute_now, now);
+      static_cast<void>(tcp_->close(*session.socket));
+      session.socket.reset();
+      session.transport_started = false;
+      session.reconnect_at = now + session.configuration.reconnect_delay;
+      continue;
+    }
+    if (*state != transport::tcp::State::established)
+      continue;
+    if (!session.transport_started) {
+      session.synchronization_leases.clear();
+      session.synchronization_cursor = 0U;
+      session.synchronization_request_transaction_id = 0U;
+      session.synchronization_binding_transaction_id = 0U;
+      session.transport_started = true;
+      session.protocol.transport_connected(absolute_now, now);
+    }
+    session.protocol.service(absolute_now, now);
+
+    // Preserve application-message ordering while a reply is waiting for TCP
+    // send-buffer admission. The peer is naturally backpressured by the TCP
+    // receive window and no unbounded failover queue is introduced here.
+    const auto received =
+        session.output.empty()
+            ? tcp_->read(*session.socket, read_buffer, now)
+            : 0U;
+    std::size_t offset{};
+    bool failed{};
+    while (offset < received && !failed) {
+      const auto decoded = session.decoder->ingest(
+          std::span<const std::uint8_t>{read_buffer}.subspan(offset));
+      offset += decoded.accepted_octets;
+      if (decoded.status == dhcpv6::failover::StreamStatus::message_ready) {
+        const auto message = dhcpv6::failover::decode(decoded.message);
+        if (message.status != dhcpv6::failover::DecodeStatus::accepted) {
+          failed = true;
+        } else {
+          const auto event =
+              session.protocol.receive(message.message, absolute_now, now);
+          if (event.kind ==
+              dhcpv6::failover::SessionEventKind::
+                  synchronization_requested) {
+            const auto server = std::find_if(
+                dhcpv6_servers_.begin(), dhcpv6_servers_.end(),
+                [&](const auto &candidate) {
+                  return candidate.name ==
+                         session.configuration.server_name;
+                });
+            if (server == dhcpv6_servers_.end() ||
+                session.synchronization_request_transaction_id != 0U) {
+              failed = true;
+            } else {
+              try {
+                session.synchronization_leases =
+                    server->protocol.leases().checkpoint(now);
+              } catch (...) {
+                failed = true;
+              }
+              if (!failed) {
+                session.synchronization_cursor = 0U;
+                session.synchronization_binding_transaction_id = 0U;
+                session.synchronization_request_transaction_id =
+                    event.message.transaction_id;
+              }
+            }
+          } else if (event.kind ==
+                     dhcpv6::failover::SessionEventKind::binding_reply) {
+            if (session.synchronization_binding_transaction_id == 0U ||
+                event.message.transaction_id !=
+                    session.synchronization_binding_transaction_id ||
+                session.synchronization_cursor >=
+                    session.synchronization_leases.size()) {
+              failed = true;
+            } else {
+              std::array<dhcpv6::failover::BindingUpdateView, 2U>
+                  acknowledgement{};
+              const auto parsed = dhcpv6::failover::parse_bindings(
+                  event.message, acknowledgement);
+              const auto &expected =
+                  session.synchronization_leases
+                      [session.synchronization_cursor];
+              if (parsed.status !=
+                      dhcpv6::failover::BindingParseStatus::accepted ||
+                  parsed.bindings != 1U ||
+                  acknowledgement[0U].value != expected.value ||
+                  acknowledgement[0U].prefix_length !=
+                      expected.prefix_length) {
+                failed = true;
+              } else {
+                ++session.synchronization_cursor;
+                session.synchronization_binding_transaction_id = 0U;
+              }
+            }
+          }
+          else if (event.kind ==
+                   dhcpv6::failover::SessionEventKind::binding_update) {
+            std::array<
+                dhcpv6::failover::BindingUpdateView,
+                device_catalog::dhcp_failover_updates_in_flight>
+                updates{};
+            const auto parsed =
+                dhcpv6::failover::parse_bindings(event.message, updates);
+            auto *server = [&]() noexcept -> dhcpv6::Server * {
+              const auto found = std::find_if(
+                  dhcpv6_servers_.begin(), dhcpv6_servers_.end(),
+                  [&](const auto &candidate) {
+                    return candidate.name ==
+                           session.configuration.server_name;
+                  });
+              return found == dhcpv6_servers_.end()
+                         ? nullptr
+                         : &found->protocol;
+            }();
+            if (parsed.status !=
+                    dhcpv6::failover::BindingParseStatus::accepted ||
+                parsed.bindings == 0U || !server) {
+              failed = true;
+            } else {
+              const auto applied = server->leases().apply_partner_updates(
+                  std::span<const dhcpv6::failover::BindingUpdateView>{updates}
+                      .first(parsed.bindings),
+                  absolute_now, now);
+              if (applied != dhcpv6::PartnerUpdateStatus::applied &&
+                  applied != dhcpv6::PartnerUpdateStatus::duplicate) {
+                failed = true;
+              } else {
+                // BNDREPLY is constructed only after the repository transaction
+                // commits. A malformed later resource therefore cannot leave
+                // an acknowledged partial lease database.
+                session.message.resize(
+                    dhcpv6::failover::maximum_message_octets);
+                const auto reply =
+                    dhcpv6::failover::encode_binding_reply(
+                        event.message.transaction_id, absolute_now,
+                        std::span<const
+                                  dhcpv6::failover::BindingUpdateView>{updates}
+                            .first(parsed.bindings),
+                        session.message);
+                if (!reply) {
+                  failed = true;
+                } else {
+                  session.output.resize(
+                      *reply + dhcpv6::failover::frame_prefix_octets);
+                  const auto framed = dhcpv6::failover::frame(
+                      std::span<const std::uint8_t>{session.message}.first(
+                          *reply),
+                      session.output);
+                  if (!framed) {
+                    failed = true;
+                  } else {
+                    session.output.resize(*framed);
+                    session.output_offset = 0U;
+                  }
+                }
+                session.message.clear();
+              }
+            }
+          }
+          else if (event.kind ==
+                       dhcpv6::failover::SessionEventKind::protocol_error ||
+                   event.kind ==
+                       dhcpv6::failover::SessionEventKind::pool_request)
+            failed = true;
+        }
+        session.decoder->consume();
+      } else if (decoded.status !=
+                 dhcpv6::failover::StreamStatus::need_more) {
+        failed = true;
+      } else if (decoded.accepted_octets == 0U) {
+        break;
+      }
+    }
+
+    if (failed) {
+      session.protocol.transport_closed(absolute_now, now);
+      static_cast<void>(tcp_->close(*session.socket));
+      session.socket.reset();
+      session.transport_started = false;
+      session.reconnect_at = now + session.configuration.reconnect_delay;
+      continue;
+    }
+    if (session.output.empty() &&
+        session.synchronization_request_transaction_id != 0U &&
+        session.synchronization_binding_transaction_id == 0U) {
+      if (session.synchronization_cursor ==
+          session.synchronization_leases.size()) {
+        if (!session.protocol.finish_synchronization(
+                session.synchronization_request_transaction_id)) {
+          session.protocol.transport_closed(absolute_now, now);
+          static_cast<void>(tcp_->close(*session.socket));
+          session.socket.reset();
+          session.transport_started = false;
+          session.reconnect_at =
+              now + session.configuration.reconnect_delay;
+          continue;
+        }
+        session.synchronization_leases.clear();
+        session.synchronization_cursor = 0U;
+        session.synchronization_request_transaction_id = 0U;
+      } else {
+        const auto &lease =
+            session.synchronization_leases[session.synchronization_cursor];
+        const auto remaining_seconds = [](std::int64_t nanoseconds) {
+          return nanoseconds <= 0
+                     ? 0U
+                     : static_cast<std::uint32_t>(
+                           std::chrono::duration_cast<std::chrono::seconds>(
+                               std::chrono::nanoseconds{nanoseconds})
+                               .count());
+        };
+        const auto xid =
+            session.protocol.endpoint().allocate_transaction_id();
+        const auto association =
+            lease.client.kind == dhcpv6::LeaseKind::prefix
+                ? dhcpv6::failover::IdentityAssociationType::
+                      delegated_prefix
+            : lease.client.kind == dhcpv6::LeaseKind::temporary
+                ? dhcpv6::failover::IdentityAssociationType::temporary
+                : dhcpv6::failover::IdentityAssociationType::
+                      non_temporary;
+        session.message.resize(
+            dhcpv6::failover::maximum_message_octets);
+        const auto encoded = dhcpv6::failover::encode_binding(
+            dhcpv6::failover::MessageType::binding_update, xid, absolute_now,
+            {.client_identifier =
+                 std::span<const std::uint8_t>{lease.client.duid}.first(
+                     lease.client.duid_octets),
+             .value = lease.value,
+             .association = association,
+             .status = lease.declined
+                           ? dhcpv6::failover::BindingStatus::abandoned
+                           : dhcpv6::failover::BindingStatus::active,
+             .iaid = lease.client.iaid,
+             .t1 = 0U,
+             .t2 = 0U,
+             .preferred_lifetime =
+                 remaining_seconds(
+                     lease.preferred_remaining_nanoseconds),
+             .valid_lifetime =
+                 remaining_seconds(lease.valid_remaining_nanoseconds),
+             .base_time = absolute_now,
+             .start_time_of_state = absolute_now,
+             .state_expiration_time =
+                 absolute_now +
+                 remaining_seconds(lease.valid_remaining_nanoseconds),
+             .client_last_transaction_time = absolute_now,
+             .partner_lifetime =
+                 remaining_seconds(lease.valid_remaining_nanoseconds),
+             .partner_raw_client_last_transaction_time = absolute_now,
+             .expiration_time =
+                 absolute_now +
+                 remaining_seconds(lease.valid_remaining_nanoseconds),
+             .prefix_length = lease.prefix_length},
+            session.message);
+        if (!encoded) {
+          session.message.clear();
+          session.protocol.transport_closed(absolute_now, now);
+          static_cast<void>(tcp_->close(*session.socket));
+          session.socket.reset();
+          session.transport_started = false;
+          session.reconnect_at =
+              now + session.configuration.reconnect_delay;
+          continue;
+        }
+        session.output.resize(
+            *encoded + dhcpv6::failover::frame_prefix_octets);
+        const auto framed = dhcpv6::failover::frame(
+            std::span<const std::uint8_t>{session.message}.first(*encoded),
+            session.output);
+        session.message.clear();
+        if (!framed) {
+          session.output.clear();
+          session.protocol.transport_closed(absolute_now, now);
+          static_cast<void>(tcp_->close(*session.socket));
+          session.socket.reset();
+          session.transport_started = false;
+          session.reconnect_at =
+              now + session.configuration.reconnect_delay;
+          continue;
+        }
+        session.output.resize(*framed);
+        session.output_offset = 0U;
+        session.synchronization_binding_transaction_id = xid;
+      }
+    }
+    if (session.output.empty()) {
+      session.message.resize(dhcpv6::failover::maximum_message_octets);
+      const auto encoded =
+          session.protocol.prepare_next(session.message, absolute_now, now);
+      if (encoded) {
+        session.output.resize(*encoded +
+                              dhcpv6::failover::frame_prefix_octets);
+        const auto framed = dhcpv6::failover::frame(
+            std::span<const std::uint8_t>{session.message}.first(*encoded),
+            session.output);
+        if (framed)
+          session.output.resize(*framed);
+        else
+          session.output.clear();
+      } else {
+        session.output.clear();
+      }
+      session.message.clear();
+      session.output_offset = 0U;
+    }
+    if (!session.output.empty()) {
+      session.output_offset += tcp_->write(
+          *session.socket,
+          std::span<const std::uint8_t>{session.output}.subspan(
+              session.output_offset),
+          now);
+      if (session.output_offset == session.output.size()) {
+        session.output.clear();
+        session.output_offset = 0U;
+      }
+    }
+    const auto prepared =
+        tcp_->prepare_data(*session.socket, tcp_segment_scratch_, true, now);
+    if (prepared.segment.emit)
+      static_cast<void>(
+          emit_tcp(prepared.segment, *session.socket, context, sink, now));
+  }
+}
+
+bool RouterForwarder::clear_dhcpv4_server_leases(
+    std::string_view name, const dhcpv4::LeaseClearFilter &filter,
+    Clock::time_point now) noexcept {
+  const auto server =
+      std::find_if(dhcpv4_servers_.begin(), dhcpv4_servers_.end(),
+                   [&](const auto &entry) { return entry.name == name; });
+  if (server == dhcpv4_servers_.end() || filter.prefix_length > 32U)
+    return false;
+  static_cast<void>(server->protocol.leases().clear(filter, now));
+  return true;
+}
+
+dhcpv4::ForceRenewStatus RouterForwarder::send_dhcpv4_force_renew(
+    std::string_view name, packet::Ipv4 address, void *context,
+    EgressSink sink, EgressAdmission admission, Clock::time_point now) noexcept {
+  const auto server =
+      std::find_if(dhcpv4_servers_.begin(), dhcpv4_servers_.end(),
+                   [&](const auto &entry) { return entry.name == name; });
+  if (server == dhcpv4_servers_.end())
+    return dhcpv4::ForceRenewStatus::not_configured;
+
+  packet::Ipv4 source = server->configuration.server_identifier;
+  dhcpv4::RelayInterfaceConfiguration egress_identity{};
+  packet::Mac destination_mac = unresolved_mac;
+  bool direct_link{};
+
+  // Direct clients must receive the packet at the Ethernet address retained
+  // from their binding. Relayed clients are reached through the normal FIB and
+  // ARP path, exactly like any other server-originated IPv4 unicast.
+  const auto *lease = server->protocol.leases().active_lease_at(address, now);
+  if (!lease)
+    return dhcpv4::ForceRenewStatus::lease_not_found;
+  if (const auto physical =
+          physical_port_from_interface_id(lease->scope.link_identity)) {
+    const auto *wire = port(*physical);
+    if (!wire || !wire->operational || !wire->ipv4_configured)
+      return dhcpv4::ForceRenewStatus::not_configured;
+    source = to_ipv4(wire->address);
+    egress_identity.interface_id = lease->scope.link_identity;
+    egress_identity.physical_port_ordinal = *physical;
+    direct_link = true;
+  }
+
+  const auto encoded =
+      server->protocol.force_renew(address, source, dhcpv4_relay_scratch_, now);
+  if (encoded.status != dhcpv4::ForceRenewStatus::encoded)
+    return encoded.status;
+  if (direct_link)
+    destination_mac = encoded.destination_mac;
+  if (!originate_dhcpv4_relay(
+          egress_identity, source, encoded.destination, destination_mac,
+          packet::dhcpv4::client_port,
+          std::span<const std::uint8_t>{dhcpv4_relay_scratch_}.first(
+          encoded.message_octets),
+          direct_link, context, sink, admission, now))
+    return dhcpv4::ForceRenewStatus::delivery_failed;
+
+  server->protocol.note_force_renew_sent();
+  return dhcpv4::ForceRenewStatus::encoded;
+}
+
+bool RouterForwarder::configure_dhcpv6_server(
+    std::string name, const dhcpv6::ServerConfiguration &configuration,
+    std::span<const dhcpv6::LeasePool> address_pools,
+    std::span<const dhcpv6::LeasePool> prefix_pools,
+    std::chrono::seconds decline_hold_time) noexcept {
+  if (name.empty() || name.size() > 32U)
+    return false;
+
+  std::unique_ptr<Dhcpv6ServerState> staged;
+  try {
+    // The RFC 9915 repository owns a dense, bounded lease arena. Staging the
+    // whole server on the forwarding pthread stack would consume hundreds of
+    // kilobytes before configuration validation starts. Cold configuration is
+    // allowed to allocate, so the candidate lives on the shared heap and is
+    // moved into the owner only after its complete policy validates.
+    staged = std::make_unique<Dhcpv6ServerState>(
+        Dhcpv6ServerState{.name = std::move(name), .protocol = {}});
+    if (!staged->protocol.configure(configuration, address_pools, prefix_pools,
+                                    decline_hold_time))
+      return false;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+
+  // Two local servers cannot own the same scoped link for the same IA kind.
+  // Rejecting the candidate makes Solicit handling independent of vector
+  // order and prevents two Advertise messages from one router configuration.
+  const auto overlaps = [](std::span<const dhcpv6::LeasePool> left,
+                           std::span<const dhcpv6::LeasePool> right) {
+    for (const auto &a : left)
+      for (const auto &b : right)
+        if ((!a.link_scoped && !b.link_scoped) ||
+            (a.link_scoped && b.link_scoped &&
+             a.link_identity == b.link_identity))
+          return true;
+    return false;
+  };
+  for (const auto &other : dhcpv6_servers_) {
+    if (other.name == staged->name)
+      continue;
+    const auto state = other.protocol.checkpoint();
+    if (overlaps(state.address_pools, address_pools) ||
+        overlaps(state.prefix_pools, prefix_pools))
+      return false;
+  }
+
+  try {
+    auto replacement = dhcpv6_servers_;
+    const auto existing =
+        std::find_if(replacement.begin(), replacement.end(),
+                     [&](const auto &entry) {
+                       return entry.name == staged->name;
+                     });
+    if (existing == replacement.end())
+      replacement.push_back(std::move(*staged));
+    else
+      *existing = std::move(*staged);
+
+    auto socket = dhcpv6_relay_socket_;
+    if (!socket) {
+      socket = udp_.bind({.family = transport::IpFamily::ipv6,
+                          .interface_id = 0U,
+                          .port = packet::dhcpv6::server_port});
+      if (!socket)
+        return false;
+    }
+    dhcpv6_servers_ = std::move(replacement);
+    dhcpv6_relay_socket_ = socket;
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
+bool RouterForwarder::remove_dhcpv6_server(std::string_view name) noexcept {
+  const auto existing =
+      std::find_if(dhcpv6_servers_.begin(), dhcpv6_servers_.end(),
+                   [&](const auto &entry) { return entry.name == name; });
+  if (existing == dhcpv6_servers_.end())
+    return false;
+  dhcpv6_servers_.erase(existing);
+  if (dhcpv6_servers_.empty() &&
+      dhcpv6_relay_.interface_count() == 0U && dhcpv6_relay_socket_) {
+    static_cast<void>(udp_.close(*dhcpv6_relay_socket_));
+    dhcpv6_relay_socket_.reset();
+  }
+  return true;
+}
+
+bool RouterForwarder::clear_dhcpv6_server_leases(
+    std::string_view name, const dhcpv6::LeaseClearFilter &filter,
+    Clock::time_point now) noexcept {
+  const auto server =
+      std::find_if(dhcpv6_servers_.begin(), dhcpv6_servers_.end(),
+                   [&](const auto &entry) { return entry.name == name; });
+  if (server == dhcpv6_servers_.end() || filter.prefix_length > 128U)
+    return false;
+  static_cast<void>(server->protocol.leases().clear(filter, now));
+  return true;
+}
+
+bool RouterForwarder::clear_dhcpv6_server_statistics(
+    std::string_view name) noexcept {
+  const auto server =
+      std::find_if(dhcpv6_servers_.begin(), dhcpv6_servers_.end(),
+                   [&](const auto &entry) { return entry.name == name; });
+  if (server == dhcpv6_servers_.end())
+    return false;
+  // The forwarding shard is the sole owner of the embedded service instance.
+  // Clearing here prevents a control-thread write racing an in-flight UDP
+  // request and gives the operational command an atomic before/after point.
+  server->protocol.clear_statistics();
+  return true;
+}
+
 bool RouterForwarder::remove_dhcpv6_relay(
     std::uint64_t logical_interface_id) noexcept {
   dhcpv6::RelayAgent replacement_relay;
@@ -1125,7 +3014,8 @@ bool RouterForwarder::remove_dhcpv6_relay(
           entry.interface_id == logical_interface_id)
         entry = {};
   }
-  if (dhcpv6_relay_.interface_count() == 0U && dhcpv6_relay_socket_) {
+  if (dhcpv6_relay_.interface_count() == 0U &&
+      dhcpv6_servers_.empty() && dhcpv6_relay_socket_) {
     static_cast<void>(udp_.close(*dhcpv6_relay_socket_));
     dhcpv6_relay_socket_.reset();
   }
@@ -1856,6 +3746,7 @@ void RouterForwarder::checkpoint(RouterForwarderCheckpoint &state,
   // Replacement semantics make reused heap storage safe: a prior, larger
   // checkpoint cannot leave trailing records that are no longer live.
   state = {};
+  state.transit_forwarding_enabled = transit_forwarding_enabled_;
   state.ports.reserve(ports_.size());
   for (const auto &port : ports_)
     if (port.configured)
@@ -1901,7 +3792,60 @@ void RouterForwarder::checkpoint(RouterForwarderCheckpoint &state,
   state.ipv6_reassembly = ipv6_reassembly_.checkpoint(now);
   state.udp = udp_.checkpoint();
   state.ike_udp = ike_udp_.checkpoint();
+  // TCP owns sequence-number entropy, socket generations, retransmission
+  // state and application receive buffers. A router checkpoint without this
+  // owner state could resurrect DHCP leasequery with a reused four-tuple or
+  // acknowledge bytes that no longer exist, so absence is treated as an
+  // invalid snapshot rather than silently constructing an empty endpoint.
+  if (tcp_)
+    state.tcp = tcp_->checkpoint(now);
+  state.dhcpv4_leasequery_listener = dhcpv4_leasequery_listener_;
+  state.dhcpv4_leasequery_sessions.reserve(
+      dhcpv4_leasequery_sessions_.size());
+  const auto remaining = [now](Clock::time_point deadline) {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               deadline > now ? deadline - now : Clock::duration::zero())
+        .count();
+  };
+  for (const auto &session : dhcpv4_leasequery_sessions_) {
+    state.dhcpv4_leasequery_sessions.push_back(
+        {.socket = session.socket,
+         .decoder = session.decoder
+                        ? session.decoder->checkpoint()
+                        : dhcpv4::leasequery::StreamDecoderCheckpoint{},
+         .request = session.request,
+         .local = session.local,
+         .remote = session.remote,
+         .server_name = session.server_name,
+         .lease_cursor = session.lease_cursor,
+         .pool_cursor = session.pool_cursor,
+         .address_cursor = session.address_cursor,
+         .revision_cursor = session.revision_cursor,
+         .scan_revision_target = session.scan_revision_target,
+         .data_remaining_nanoseconds = remaining(session.data_deadline),
+         .keepalive_remaining_nanoseconds =
+             remaining(session.keepalive_deadline),
+         .first_reply = session.first_reply,
+         .catch_up_complete = session.catch_up_complete,
+         .done = session.done});
+  }
+  state.dhcpv4_relay_interfaces.reserve(dhcpv4_relays_.size());
+  for (const auto &relay : dhcpv4_relays_)
+    state.dhcpv4_relay_interfaces.push_back(relay.configuration);
+  state.dhcpv4_servers.reserve(dhcpv4_servers_.size());
+  for (const auto &server : dhcpv4_servers_) {
+    // Management identity and protocol state have different owners. The name
+    // selects the configured server instance, while Server::checkpoint owns
+    // every binding and relative deadline committed by that instance.
+    state.dhcpv4_servers.push_back(
+        {.name = server.name, .protocol = server.protocol.checkpoint(now)});
+  }
+  state.dhcpv4_relay_socket = dhcpv4_relay_socket_;
   state.dhcpv6_relay_interfaces = dhcpv6_relay_.interfaces();
+  state.dhcpv6_servers.reserve(dhcpv6_servers_.size());
+  for (const auto &server : dhcpv6_servers_)
+    state.dhcpv6_servers.push_back(
+        {.name = server.name, .protocol = server.protocol.checkpoint(now)});
   state.dhcpv6_relay_leases = dhcpv6_relay_leases_.checkpoint(now);
   state.dhcpv6_relay_routes = dhcpv6_relay_routes_.checkpoint();
   state.dhcpv6_relay_socket = dhcpv6_relay_socket_;
@@ -2109,6 +4053,8 @@ bool RouterForwarder::validate_checkpoint(
       state.ipv6_reassembly.size() >
           device_catalog::ipv6_reassembly_entries_per_endpoint ||
       state.mld_interfaces.size() > device_catalog::maximum_ports_per_router ||
+      state.dhcpv4_relay_interfaces.size() >
+          device_catalog::maximum_ports_per_router ||
       state.dhcpv6_relay_interfaces.size() >
           device_catalog::maximum_ports_per_router ||
       state.ipv6_redirect_limiters.size() >
@@ -2129,7 +4075,7 @@ bool RouterForwarder::validate_checkpoint(
       state.interface_traffic_statistics.size() >
           device_catalog::maximum_ports_per_router ||
       state.last_drop < ForwardDrop::none ||
-      state.last_drop > ForwardDrop::blackhole ||
+      state.last_drop > ForwardDrop::transit_disabled ||
       state.mld_service_cursor > state.mld_interfaces.size())
     return false;
   service::SapForwardingTable sap_validation;
@@ -2139,8 +4085,98 @@ bool RouterForwarder::validate_checkpoint(
     return false;
   if (!transport::UdpEndpoint::validate_checkpoint(state.udp) ||
       !ikev2::UdpService::validate_checkpoint(state.ike_udp, state.udp) ||
-      state.dhcpv6_relay_interfaces.empty() != !state.dhcpv6_relay_socket)
+      (state.dhcpv4_relay_interfaces.empty() &&
+       state.dhcpv4_servers.empty()) != !state.dhcpv4_relay_socket ||
+      (state.dhcpv6_relay_interfaces.empty() &&
+       state.dhcpv6_servers.empty()) != !state.dhcpv6_relay_socket)
     return false;
+  if (state.dhcpv4_relay_socket) {
+    const auto handle = *state.dhcpv4_relay_socket;
+    if (handle.index >= state.udp.sockets.size())
+      return false;
+    const auto &socket = state.udp.sockets[handle.index];
+    if (!socket.occupied || socket.generation != handle.generation ||
+        socket.binding.family != transport::IpFamily::ipv4 ||
+        socket.binding.port != packet::dhcpv4::server_port ||
+        socket.binding.interface_id != 0U ||
+        socket.binding.ipv4 != packet::Ipv4{} ||
+        !socket.binding.ipv4_broadcast)
+      return false;
+  }
+  for (std::size_t index{}; index < state.dhcpv4_relay_interfaces.size();
+       ++index) {
+    const auto &candidate = state.dhcpv4_relay_interfaces[index];
+    dhcpv4::RelayAgent validation;
+    if (candidate.interface_id == 0U ||
+        !validation.configure(candidate.relay))
+      return false;
+    const auto configured_port =
+        std::find_if(state.ports.begin(), state.ports.end(),
+                     [&](const auto &port) {
+                       return port.ordinal ==
+                                  candidate.physical_port_ordinal &&
+                              port.ipv4_configured &&
+                              to_ipv4(port.address) ==
+                                  candidate.relay.gateway_address;
+                     });
+    if (configured_port == state.ports.end())
+      return false;
+    for (std::size_t prior{}; prior < index; ++prior)
+      if (state.dhcpv4_relay_interfaces[prior].interface_id ==
+              candidate.interface_id ||
+          state.dhcpv4_relay_interfaces[prior].relay.gateway_address ==
+              candidate.relay.gateway_address)
+        return false;
+  }
+  try {
+    // A checkpoint count is bounded by the fixed ABI envelope rather than an
+    // invented platform maximum. The configured pool and lease limits remain
+    // sourced device-profile limits inside each Server checkpoint.
+    if (state.dhcpv4_servers.size() >
+        device_catalog::wasm_initial_memory_bytes /
+            sizeof(RouterForwarderCheckpoint::Dhcpv4Server))
+      return false;
+    std::vector<dhcpv4::Server> restored;
+    restored.reserve(state.dhcpv4_servers.size());
+    for (std::size_t index{}; index < state.dhcpv4_servers.size(); ++index) {
+      const auto &candidate = state.dhcpv4_servers[index];
+      if (candidate.name.empty() || candidate.name.size() > 32U)
+        return false;
+      for (std::size_t prior{}; prior < index; ++prior)
+        if (state.dhcpv4_servers[prior].name == candidate.name)
+          return false;
+      dhcpv4::Server protocol;
+      if (!protocol.restore(candidate.protocol))
+        return false;
+      restored.push_back(std::move(protocol));
+    }
+  } catch (...) {
+    return false;
+  }
+  try {
+    std::vector<dhcpv6::Server> restored;
+    restored.reserve(state.dhcpv6_servers.size());
+    for (std::size_t index{}; index < state.dhcpv6_servers.size(); ++index) {
+      const auto &candidate = state.dhcpv6_servers[index];
+      if (candidate.name.empty() || candidate.name.size() > 32U ||
+          !dhcpv6::Server::validate_checkpoint(candidate.protocol))
+        return false;
+      for (std::size_t prior{}; prior < index; ++prior)
+        if (state.dhcpv6_servers[prior].name == candidate.name)
+          return false;
+      // A DHCPv6 Server contains the complete bounded lease arena. Validation
+      // is cold-path work, but this function also validates many unrelated
+      // fixed tables in one call frame. Heap staging prevents the DHCP arena
+      // from consuming the WebAssembly pthread stack merely to prove a
+      // checkpoint valid.
+      auto protocol = std::make_unique<dhcpv6::Server>();
+      if (!protocol->restore(candidate.protocol))
+        return false;
+      restored.push_back(std::move(*protocol));
+    }
+  } catch (...) {
+    return false;
+  }
   if (state.dhcpv6_relay_socket) {
     const auto handle = *state.dhcpv6_relay_socket;
     if (handle.index >= state.udp.sockets.size())
@@ -2679,7 +4715,18 @@ bool RouterForwarder::restore(const RouterForwarderCheckpoint &state,
     return false;
 
   transport::UdpEndpoint restored_udp;
+  std::unique_ptr<transport::tcp::TcpEndpoint> restored_tcp;
+  std::optional<transport::tcp::EndpointSocketHandle>
+      restored_dhcpv4_leasequery_listener;
+  std::vector<Dhcpv4LeasequerySession>
+      restored_dhcpv4_leasequery_sessions;
   ikev2::UdpService restored_ike_udp;
+  std::vector<Dhcpv4RelayInterfaceState> restored_dhcpv4_relays;
+  std::vector<Dhcpv4ServerState> restored_dhcpv4_servers;
+  std::vector<Dhcpv6ServerState> restored_dhcpv6_servers;
+  std::vector<std::uint8_t> restored_dhcpv4_receive_scratch;
+  std::vector<std::uint8_t> restored_dhcpv4_relay_scratch;
+  std::vector<std::uint8_t> restored_ipv4_udp_datagram_scratch;
   dhcpv6::RelayAgent restored_relay;
   dhcpv6::RelayLeaseRepository restored_relay_leases;
   dhcpv6::RelayRouteRepository restored_relay_routes;
@@ -2687,6 +4734,121 @@ bool RouterForwarder::restore(const RouterForwarderCheckpoint &state,
   std::vector<dhcpv6::RelayLeaseRecord> restored_clear_scratch;
   std::vector<Ipv6NeighborBatchEdit> restored_neighbor_edits;
   try {
+    // The ISN checkpoint contains the original per-device secret. Restoring
+    // from that identity preserves RFC 6528 sequence continuity without
+    // inventing fresh entropy or sharing a process-wide secret.
+    if (state.tcp) {
+      restored_tcp = std::make_unique<transport::tcp::TcpEndpoint>(
+          state.tcp->isn.secret, now);
+      if (!restored_tcp->valid() || !restored_tcp->restore(*state.tcp, now))
+        return false;
+      for (std::size_t index{}; index < state.tcp->sockets.size(); ++index) {
+        const auto &socket = state.tcp->sockets[index];
+        if (!socket.occupied || !socket.listener ||
+            socket.binding.family != transport::IpFamily::ipv4 ||
+            socket.binding.ipv4 != packet::Ipv4{} ||
+            socket.binding.interface_id != 0U ||
+            socket.binding.port != packet::dhcpv4::server_port)
+          continue;
+        // Only one wildcard TCP/67 listener may own the Base routing instance.
+        // A second matching listener is a corrupt checkpoint, not a reason to
+        // choose whichever happens to appear first in serialized order.
+        if (restored_dhcpv4_leasequery_listener)
+          return false;
+        restored_dhcpv4_leasequery_listener =
+            transport::tcp::EndpointSocketHandle{
+                .index = static_cast<std::uint32_t>(index),
+                .generation = socket.generation};
+      }
+      if (state.dhcpv4_leasequery_listener !=
+          restored_dhcpv4_leasequery_listener)
+        return false;
+    } else if (state.dhcpv4_leasequery_listener ||
+               !state.dhcpv4_leasequery_sessions.empty()) {
+      return false;
+    }
+    restored_dhcpv4_relays.reserve(state.dhcpv4_relay_interfaces.size());
+    for (const auto &configuration : state.dhcpv4_relay_interfaces) {
+      Dhcpv4RelayInterfaceState relay{.configuration = configuration,
+                                       .agent = {}};
+      if (!relay.agent.configure(configuration.relay))
+        return false;
+      restored_dhcpv4_relays.push_back(std::move(relay));
+    }
+    restored_dhcpv4_servers.reserve(state.dhcpv4_servers.size());
+    for (const auto &checkpoint : state.dhcpv4_servers) {
+      dhcpv4::Server protocol;
+      if (!protocol.restore(checkpoint.protocol, now))
+        return false;
+      restored_dhcpv4_servers.push_back(
+          {.name = checkpoint.name,
+           .configuration = checkpoint.protocol.configuration,
+           .protocol = std::move(protocol)});
+    }
+    if (restored_dhcpv4_servers.empty() !=
+        !restored_dhcpv4_leasequery_listener)
+      return false;
+    if (state.dhcpv4_leasequery_sessions.size() >
+        device_catalog::dhcpv4_leasequery_connections_per_server)
+      return false;
+    restored_dhcpv4_leasequery_sessions.reserve(
+        state.dhcpv4_leasequery_sessions.size());
+    for (const auto &saved : state.dhcpv4_leasequery_sessions) {
+      if (!restored_tcp || saved.server_name.empty() ||
+          saved.data_remaining_nanoseconds < 0 ||
+          saved.keepalive_remaining_nanoseconds < 0)
+        return false;
+      const auto local = restored_tcp->local_binding(saved.socket);
+      const auto remote = restored_tcp->remote_endpoint(saved.socket);
+      const auto server = std::find_if(
+          restored_dhcpv4_servers.begin(),
+          restored_dhcpv4_servers.end(), [&](const auto &candidate) {
+            return candidate.name == saved.server_name;
+          });
+      if (!local || !remote ||
+          local->family != transport::IpFamily::ipv4 ||
+          local->ipv4 != saved.local || remote->ipv4 != saved.remote ||
+          server == restored_dhcpv4_servers.end() ||
+          saved.lease_cursor > server->protocol.leases().leases().size() ||
+          saved.pool_cursor > server->protocol.leases().pools().size() ||
+          (saved.catch_up_complete &&
+           saved.revision_cursor > saved.scan_revision_target))
+        return false;
+      auto decoder =
+          std::make_unique<dhcpv4::leasequery::StreamDecoder>();
+      if (!decoder->restore(saved.decoder))
+        return false;
+      restored_dhcpv4_leasequery_sessions.push_back(
+          {.socket = saved.socket,
+           .decoder = std::move(decoder),
+           .request = saved.request,
+           .local = saved.local,
+           .remote = saved.remote,
+           .server_name = saved.server_name,
+           .lease_cursor = saved.lease_cursor,
+           .pool_cursor = saved.pool_cursor,
+           .address_cursor = saved.address_cursor,
+           .revision_cursor = saved.revision_cursor,
+           .scan_revision_target = saved.scan_revision_target,
+           .data_deadline =
+               now + std::chrono::nanoseconds{
+                         saved.data_remaining_nanoseconds},
+           .keepalive_deadline =
+               now + std::chrono::nanoseconds{
+                         saved.keepalive_remaining_nanoseconds},
+           .first_reply = saved.first_reply,
+           .catch_up_complete = saved.catch_up_complete,
+           .done = saved.done});
+    }
+    if (!restored_dhcpv4_relays.empty() ||
+        !restored_dhcpv4_servers.empty()) {
+      restored_dhcpv4_receive_scratch.resize(
+          packet::dhcpv4::maximum_message_octets);
+      restored_dhcpv4_relay_scratch.resize(
+          packet::dhcpv4::maximum_message_octets);
+      restored_ipv4_udp_datagram_scratch.resize(
+          packet::maximum_ethernet_ipv4_datagram_octets);
+    }
     if (!restored_udp.restore(state.udp) ||
         !restored_ike_udp.restore(state.ike_udp, restored_udp) ||
         !restored_relay.restore(state.dhcpv6_relay_interfaces) ||
@@ -2700,6 +4862,18 @@ bool RouterForwarder::restore(const RouterForwarderCheckpoint &state,
                               state.service_ipv6_interfaces) !=
             service::SapProgramStatus::accepted)
       return false;
+    restored_dhcpv6_servers.reserve(state.dhcpv6_servers.size());
+    for (const auto &checkpoint : state.dhcpv6_servers) {
+      // Restore preserves atomic publication by constructing every server
+      // outside the live vector. The dense lease arena belongs on the heap:
+      // placing it on this worker stack makes unrelated restore components
+      // compete with DHCP for a fixed 1 MiB execution budget.
+      auto protocol = std::make_unique<dhcpv6::Server>();
+      if (!protocol->restore(checkpoint.protocol, now))
+        return false;
+      restored_dhcpv6_servers.push_back(
+          {.name = checkpoint.name, .protocol = std::move(*protocol)});
+    }
     std::size_t lease_capacity{};
     std::size_t neighbor_capacity{};
     for (const auto &policy :
@@ -2718,6 +4892,7 @@ bool RouterForwarder::restore(const RouterForwarderCheckpoint &state,
   }
 
   ports_.fill({});
+  transit_forwarding_enabled_ = state.transit_forwarding_enabled;
   ipv6_redirect_limiters_.fill({});
   ipv4_redirect_limiters_.fill({});
   ipv6_reachable_times_.fill({});
@@ -2916,8 +5091,21 @@ bool RouterForwarder::restore(const RouterForwarderCheckpoint &state,
   ipv4_probe_interface_id_ = state.ipv4_probe_interface_id;
   ipv4_probe_port_ordinal_ = state.ipv4_probe_port_ordinal;
   udp_ = std::move(restored_udp);
+  tcp_ = std::move(restored_tcp);
+  dhcpv4_leasequery_listener_ =
+      restored_dhcpv4_leasequery_listener;
+  dhcpv4_leasequery_sessions_ =
+      std::move(restored_dhcpv4_leasequery_sessions);
   ike_udp_ = std::move(restored_ike_udp);
+  dhcpv4_relays_ = std::move(restored_dhcpv4_relays);
+  dhcpv4_servers_ = std::move(restored_dhcpv4_servers);
+  dhcpv4_receive_scratch_ = std::move(restored_dhcpv4_receive_scratch);
+  dhcpv4_relay_scratch_ = std::move(restored_dhcpv4_relay_scratch);
+  ipv4_udp_datagram_scratch_ =
+      std::move(restored_ipv4_udp_datagram_scratch);
+  dhcpv4_relay_socket_ = state.dhcpv4_relay_socket;
   dhcpv6_relay_ = std::move(restored_relay);
+  dhcpv6_servers_ = std::move(restored_dhcpv6_servers);
   dhcpv6_relay_leases_ = std::move(restored_relay_leases);
   dhcpv6_relay_routes_ = std::move(restored_relay_routes);
   dhcpv6_clear_scratch_.swap(restored_clear_scratch);
@@ -3146,7 +5334,7 @@ bool RouterForwarder::originate_echo(std::uint32_t destination,
   }
   const auto forwarded_before = forwarded_frames_;
   const auto pending_before = pending_frames();
-  send(request, destination, false, context, sink, now);
+  static_cast<void>(send(request, destination, false, context, sink, now));
   const bool accepted = forwarded_frames_ != forwarded_before ||
                         pending_frames() > pending_before;
   if (!accepted)
@@ -3826,7 +6014,7 @@ bool RouterForwarder::emit_ipv6_interface(std::uint64_t interface_id,
   return emit(port_ordinal, wire, context, sink);
 }
 
-void RouterForwarder::send_resolved(const packet::Frame &input,
+bool RouterForwarder::send_resolved(const packet::Frame &input,
                                     const ForwardPort &egress,
                                     packet::Mac destination_mac, bool transit,
                                     void *context, EgressSink sink,
@@ -3840,7 +6028,7 @@ void RouterForwarder::send_resolved(const packet::Frame &input,
     // checksum.
     if (!packet::route_ipv4_into(frame, input, egress.mac, destination_mac)) {
       drop(ForwardDrop::malformed);
-      return;
+      return false;
     }
   } else {
     packet::rewrite_ethernet(frame, egress.mac, destination_mac);
@@ -3849,15 +6037,14 @@ void RouterForwarder::send_resolved(const packet::Frame &input,
   auto ip = packet::parse_ipv4(frame);
   if (!ip) {
     drop(ForwardDrop::malformed);
-    return;
+    return false;
   }
   // SR OS Ethernet MTU includes the 14-octet untagged MAC header. Fragmentation
   // receives the actual maximum IPv4 length for this egress port.
   const auto ip_mtu =
       static_cast<std::uint16_t>(egress.mtu - packet::ethernet_header_octets);
   if (ip->total_length <= ip_mtu) {
-    static_cast<void>(emit(egress.ordinal, frame, context, sink));
-    return;
+    return emit(egress.ordinal, frame, context, sink);
   }
   if (ip->dont_fragment) {
     drop(ForwardDrop::mtu_exceeded);
@@ -3869,7 +6056,7 @@ void RouterForwarder::send_resolved(const packet::Frame &input,
         send_fragmentation_needed(input, *original_ip, ip_mtu, context, sink,
                                   now);
     }
-    return;
+    return false;
   }
   struct FragmentEgress {
     RouterForwarder *owner{};
@@ -3896,6 +6083,7 @@ void RouterForwarder::send_resolved(const packet::Frame &input,
       frame, ip_mtu, &fragment_egress, emit_fragment);
   if (!fragments && fragment_egress.admitted == 0U)
     drop(ForwardDrop::mtu_exceeded);
+  return fragments.has_value();
 }
 
 bool RouterForwarder::send_resolved_ipv6(
@@ -4036,7 +6224,7 @@ bool RouterForwarder::send_ipv6(packet::Frame frame,
   return resolution.status == Ipv6ResolutionStatus::pending;
 }
 
-void RouterForwarder::send(packet::Frame frame, std::uint32_t destination,
+bool RouterForwarder::send(packet::Frame frame, std::uint32_t destination,
                            bool transit, void *context, EgressSink sink,
                            Clock::time_point now) noexcept {
   routing::Route route;
@@ -4051,7 +6239,7 @@ void RouterForwarder::send(packet::Frame frame, std::uint32_t destination,
         send_network_unreachable(frame, *original, context, sink, now);
     }
     drop(ForwardDrop::no_route);
-    return;
+    return false;
   }
   if (route.local_system) {
     // send() is an egress routine and therefore cannot manufacture a physical
@@ -4067,20 +6255,20 @@ void RouterForwarder::send(packet::Frame frame, std::uint32_t destination,
       echo_reply_ttl_ = parsed_for_hash ? parsed_for_hash->ttl : 0U;
       echo_request_valid_ = false;
     }
-    return;
+    return true;
   }
   const auto *egress = port(route.port_ordinal);
   if (!egress || !egress->operational) {
     drop(ForwardDrop::port_down);
-    return;
+    return false;
   }
   const auto next_hop = route.next_hop ? route.next_hop : destination;
   // A connected route resolves the destination itself. A static route resolves
   // its configured protocol next-hop and never asks topology for a neighbor
   // MAC.
   if (auto *adjacency = find_adjacency(route.port_ordinal, next_hop, now)) {
-    send_resolved(frame, *egress, adjacency->mac, transit, context, sink, now);
-    return;
+    return send_resolved(frame, *egress, adjacency->mac, transit, context,
+                         sink, now);
   }
 
   bool request_in_progress{};
@@ -4097,7 +6285,7 @@ void RouterForwarder::send(packet::Frame frame, std::uint32_t destination,
   }
   if (!free) {
     drop(ForwardDrop::arp_pending_full);
-    return;
+    return false;
   }
   free->valid = true;
   free->transit = transit;
@@ -4116,8 +6304,10 @@ void RouterForwarder::send(packet::Frame frame, std::uint32_t destination,
       // queue. Keeping this frame would advertise a pending operation whose
       // first retry starts only after five seconds, so reject it atomically.
       *free = {};
+      return false;
     }
   }
+  return true;
 }
 
 void RouterForwarder::flush_pending(std::uint16_t port_ordinal,
@@ -4138,7 +6328,8 @@ void RouterForwarder::flush_pending(std::uint16_t port_ordinal,
     const auto frame = entry.frame;
     const auto transit = entry.transit;
     entry = {};
-    send_resolved(frame, *egress, mac, transit, context, sink, now);
+    static_cast<void>(
+        send_resolved(frame, *egress, mac, transit, context, sink, now));
   }
 }
 
@@ -4190,7 +6381,8 @@ void RouterForwarder::send_time_exceeded(const packet::Frame &original,
     return;
   }
   count_sent_icmpv4(egress->ordinal, *error);
-  send(*error, to_u32(ip.source), false, context, sink, now);
+  static_cast<void>(
+      send(*error, to_u32(ip.source), false, context, sink, now));
 }
 
 void RouterForwarder::send_network_unreachable(const packet::Frame &original,
@@ -4214,7 +6406,8 @@ void RouterForwarder::send_network_unreachable(const packet::Frame &original,
                                        to_ipv4(egress->address), ip.source);
   if (error) {
     count_sent_icmpv4(egress->ordinal, *error);
-    send(*error, to_u32(ip.source), false, context, sink, now);
+    static_cast<void>(
+        send(*error, to_u32(ip.source), false, context, sink, now));
   }
 }
 
@@ -4245,7 +6438,8 @@ void RouterForwarder::send_local_destination_unreachable(
           : std::optional<packet::Frame>{};
   if (error) {
     count_sent_icmpv4(egress->ordinal, *error);
-    send(*error, to_u32(ip.source), false, context, sink, now);
+    static_cast<void>(
+        send(*error, to_u32(ip.source), false, context, sink, now));
   }
 }
 
@@ -4266,7 +6460,8 @@ void RouterForwarder::send_reassembly_time_exceeded(
       ip.source);
   if (error) {
     count_sent_icmpv4(egress->ordinal, *error);
-    send(*error, to_u32(ip.source), false, context, sink, now);
+    static_cast<void>(
+        send(*error, to_u32(ip.source), false, context, sink, now));
   }
 }
 
@@ -4285,7 +6480,8 @@ void RouterForwarder::send_fragmentation_needed(
       ip.source, next_hop_mtu);
   if (error) {
     count_sent_icmpv4(egress->ordinal, *error);
-    send(*error, to_u32(ip.source), false, context, sink, now);
+    static_cast<void>(
+        send(*error, to_u32(ip.source), false, context, sink, now));
   }
 }
 
@@ -4744,13 +6940,59 @@ void RouterForwarder::service_dhcpv6_relay(std::uint16_t ingress_port,
   const bool relay_reply =
       message && message->type == static_cast<std::uint8_t>(
                                       packet::dhcpv6::MessageType::relay_reply);
-  if (received.metadata.interface_id != ingress_interface_id ||
-      (!relay_reply && [&] {
+  if (received.metadata.interface_id != ingress_interface_id) {
+    drop(ForwardDrop::malformed);
+    return;
+  }
+
+  if (message && !relay_reply && !dhcpv6_servers_.empty()) {
+    // Direct DHCPv6 clients are keyed by the stable logical ingress identity.
+    // Relay-forward messages replace this key inside Server::process with the
+    // RFC link-address and Interface-ID tuple from the outer relay envelope.
+    const auto link_identity =
+        dhcpv6_link_identity(ingress_interface_id);
+    bool responded{};
+    for (auto &server : dhcpv6_servers_) {
+      const auto processed =
+          server.protocol.process(payload, dhcpv6_relay_scratch_, now,
+                                  link_identity,
+                                  received.metadata.source_ipv6);
+      if (processed.status != dhcpv6::ServerProcessStatus::response)
+        continue;
+      const dhcpv6::RelayDecision response{
+          .status = dhcpv6::RelayDecisionStatus::forward_downstream,
+          .payload_octets = processed.message_octets,
+          .egress_interface_id = ingress_interface_id,
+          .destination = received.metadata.source_ipv6,
+          .source_port = packet::dhcpv6::server_port,
+          .destination_port = received.metadata.source_port};
+      const auto scope =
+          ip::is_link_local(received.metadata.source_ipv6)
+              ? ingress_interface_id
+              : std::uint64_t{};
+      static_cast<void>(originate_dhcpv6_relay(
+          response,
+          {.address = received.metadata.source_ipv6,
+           .scope_interface_id = scope},
+          std::span<const std::uint8_t>{dhcpv6_relay_scratch_}.first(
+              processed.message_octets),
+          context, sink, admission, now));
+      responded = true;
+    }
+    // One UDP datagram is consumed exactly once. A local server response and a
+    // relay-forward of the same client message would create two independent
+    // DHCP authorities on one link, so successful local handling terminates
+    // dispatch.
+    if (responded)
+      return;
+  }
+
+  if (!relay_reply && [&] {
         const auto *relay_interface =
             dhcpv6_relay_.interface(ingress_interface_id);
         return !relay_interface ||
                relay_interface->physical_port_ordinal != ingress_port;
-      }())) {
+      }()) {
     drop(ForwardDrop::malformed);
     return;
   }
@@ -4906,6 +7148,328 @@ void RouterForwarder::service_dhcpv6_relay(std::uint16_t ingress_port,
   // application and RFC 9915 defines malformed and hop-limit discards locally.
 }
 
+void RouterForwarder::service_dhcpv4_relay(
+    std::uint16_t ingress_port, std::uint64_t ingress_interface_id,
+    void *context, EgressSink sink, EgressAdmission admission,
+    Clock::time_point now) noexcept {
+  if (!dhcpv4_relay_socket_)
+    return;
+  const auto received =
+      udp_.receive(*dhcpv4_relay_socket_, dhcpv4_receive_scratch_);
+  if (received.status != transport::UdpReceiveStatus::delivered)
+    return;
+  const auto payload =
+      std::span<const std::uint8_t>{dhcpv4_receive_scratch_}.first(
+          received.metadata.payload_octets);
+  const auto message = packet::dhcpv4::parse(payload);
+  if (!message || received.metadata.destination_port !=
+                      packet::dhcpv4::server_port) {
+    drop(ForwardDrop::malformed);
+    return;
+  }
+
+  if (message->operation == packet::dhcpv4::Operation::boot_request) {
+    // A Base local server consumes the same UDP 67 datagram as a relay. Each
+    // server validates its own allocation scope, so only one may produce a
+    // response after the cross-instance scope preflight performed at commit.
+    for (auto &server : dhcpv4_servers_) {
+      std::array<packet::Ipv4,
+                 device_catalog::maximum_ports_per_router + 1U>
+          local_identifiers{};
+      std::size_t local_identifier_count{1U};
+      local_identifiers[0U] = server.configuration.server_identifier;
+      packet::Ipv4 response_identifier =
+          server.configuration.server_identifier;
+      for (const auto &port : ports_) {
+        if (!port.configured || port.address == 0U)
+          continue;
+        const auto address = to_ipv4(port.address);
+        const auto accepted =
+            std::span<const packet::Ipv4>{local_identifiers}.first(
+                local_identifier_count);
+        if (std::ranges::find(accepted, address) == accepted.end())
+          local_identifiers[local_identifier_count++] = address;
+        if (port.ordinal == ingress_port)
+          response_identifier = address;
+      }
+      // RFC 2131 section 4.1 requires the identifier most likely reachable
+      // from the client. Direct and relayed requests both arrived on this
+      // server-facing interface, so its configured address is preferred.
+      // The persistent fallback covers a system-address server reached via a
+      // route whose forwarding projection has no physical address.
+      const auto result = server.protocol.process(
+          payload, dhcpv4_relay_scratch_, ingress_interface_id,
+          response_identifier,
+          std::span<const packet::Ipv4>{local_identifiers}.first(
+              local_identifier_count),
+          now);
+      if (result.status != dhcpv4::ServerProcessStatus::response)
+        continue;
+      const auto response = packet::dhcpv4::parse(
+          std::span<const std::uint8_t>{dhcpv4_relay_scratch_}.first(
+              result.message_octets));
+      if (!response) {
+        drop(ForwardDrop::malformed);
+        return;
+      }
+
+      constexpr packet::Mac broadcast_mac{
+          0xffU, 0xffU, 0xffU, 0xffU, 0xffU, 0xffU};
+      packet::Ipv4 destination{};
+      packet::Mac destination_mac = unresolved_mac;
+      bool direct_link = false;
+      if (message->gateway_address != packet::Ipv4{}) {
+        // giaddr remains the relay return address even when RFC 3527 Link
+        // Selection chose a different allocation subnet.
+        destination = message->gateway_address;
+      } else if (result.limited_broadcast) {
+        destination = {255U, 255U, 255U, 255U};
+        destination_mac = broadcast_mac;
+        direct_link = true;
+      } else if (result.direct_client_l2) {
+        if (message->hardware_type != 1U ||
+            message->hardware_length != packet::Mac{}.size()) {
+          drop(ForwardDrop::malformed);
+          return;
+        }
+        destination = response->your_address;
+        std::copy_n(message->client_hardware_address.begin(),
+                    destination_mac.size(), destination_mac.begin());
+        direct_link = true;
+      } else {
+        // RENEWING uses ciaddr and ordinary routed unicast. It must not be
+        // converted into broadcast merely because yiaddr is zero in the
+        // request.
+        destination = message->client_address;
+      }
+      const dhcpv4::RelayInterfaceConfiguration egress_identity{
+          .interface_id = ingress_interface_id,
+          .physical_port_ordinal = ingress_port,
+          .relay = {}};
+      static_cast<void>(originate_dhcpv4_relay(
+          egress_identity, response_identifier,
+          destination, destination_mac,
+          message->gateway_address != packet::Ipv4{}
+              ? packet::dhcpv4::server_port
+              : packet::dhcpv4::client_port,
+          std::span<const std::uint8_t>{dhcpv4_relay_scratch_}.first(
+              result.message_octets),
+          direct_link, context, sink, admission, now));
+      return;
+    }
+
+    // A physical ingress is valid only when exactly one logical relay owns
+    // that untagged wire. Tagged IES classification will supply its logical
+    // identity directly when IPv4 service interfaces are published.
+    const auto relay =
+        std::find_if(dhcpv4_relays_.begin(), dhcpv4_relays_.end(),
+                     [&](const auto &entry) {
+                       return entry.configuration.interface_id ==
+                                  ingress_interface_id &&
+                              entry.configuration.physical_port_ordinal ==
+                                  ingress_port;
+                     });
+    if (relay == dhcpv4_relays_.end())
+      return;
+    const auto *policy = relay->agent.configuration();
+    if (!policy)
+      return;
+
+    // RFC 1542 requires the same destination set for every transaction from a
+    // client. Sending one transformed copy to every configured server avoids
+    // an unstable round-robin policy and leaves response selection to DHCP.
+    for (std::size_t index = 0; index < policy->servers.size(); ++index) {
+      const auto decision = relay->agent.forward_client(
+          payload, dhcpv4_relay_scratch_, index);
+      if (decision.status != dhcpv4::RelayStatus::forwarded)
+        continue;
+      routing::Route route;
+      if (!lookup_ipv4_route(to_u32(decision.destination), route) ||
+          route.local_system)
+        continue;
+      const auto *egress = port(route.port_ordinal);
+      if (!egress || !egress->operational || !egress->ipv4_configured)
+        continue;
+      // `auto` follows the routed egress source selection. The modeled
+      // `gi-address` choice deliberately keeps the client-link address as the
+      // source even when the server is reached through another interface.
+      const auto source =
+          policy->source_address == dhcpv4::RelaySourceAddress::gi_address
+              ? policy->gateway_address
+              : to_ipv4(egress->address);
+      static_cast<void>(originate_dhcpv4_relay(
+          relay->configuration, source, decision.destination, unresolved_mac,
+          packet::dhcpv4::server_port,
+          std::span<const std::uint8_t>{dhcpv4_relay_scratch_}.first(
+              decision.message_octets),
+          false, context, sink, admission, now));
+    }
+    return;
+  }
+
+  // BOOTREPLY selects its client-facing link solely through giaddr. Looking
+  // at the server-facing ingress or topology would be a cross-interface
+  // shortcut and would fail when the reply follows an asymmetric route.
+  const auto relay =
+      std::find_if(dhcpv4_relays_.begin(), dhcpv4_relays_.end(),
+                   [&](const auto &entry) {
+                     return entry.configuration.relay.gateway_address ==
+                            message->gateway_address;
+                   });
+  if (relay == dhcpv4_relays_.end())
+    return;
+  const auto decision =
+      relay->agent.forward_server(payload, dhcpv4_relay_scratch_);
+  if (decision.status != dhcpv4::RelayStatus::forwarded)
+    return;
+  constexpr packet::Mac broadcast_mac{0xffU, 0xffU, 0xffU,
+                                      0xffU, 0xffU, 0xffU};
+  const auto destination =
+      decision.client_broadcast
+          ? packet::Ipv4{255U, 255U, 255U, 255U}
+          : decision.destination;
+  const auto destination_mac =
+      decision.client_broadcast ? broadcast_mac : decision.client_mac;
+  static_cast<void>(originate_dhcpv4_relay(
+      relay->configuration, relay->configuration.relay.gateway_address,
+      destination, destination_mac, packet::dhcpv4::client_port,
+      std::span<const std::uint8_t>{dhcpv4_relay_scratch_}.first(
+          decision.message_octets),
+      true, context, sink, admission, now));
+}
+
+bool RouterForwarder::originate_dhcpv4_relay(
+    const dhcpv4::RelayInterfaceConfiguration &relay, packet::Ipv4 source,
+    packet::Ipv4 destination, packet::Mac destination_mac,
+    std::uint16_t destination_port, std::span<const std::uint8_t> payload,
+    bool direct_link, void *context, EgressSink sink,
+    EgressAdmission admission, Clock::time_point now) noexcept {
+  if (!dhcpv4_relay_socket_ || !sink || source == packet::Ipv4{} ||
+      destination == packet::Ipv4{} || destination_port == 0U) {
+    drop(ForwardDrop::malformed);
+    return false;
+  }
+
+  std::uint16_t egress_ordinal = relay.physical_port_ordinal;
+  std::uint64_t egress_interface_id = relay.interface_id;
+  if (!direct_link) {
+    routing::Route route;
+    if (!lookup_ipv4_route(to_u32(destination), route) || route.local_system) {
+      drop(ForwardDrop::no_route);
+      return false;
+    }
+    egress_ordinal = route.port_ordinal;
+    egress_interface_id = physical_interface_id(route.port_ordinal);
+  }
+  const auto *egress = port(egress_ordinal);
+  if (!egress || !egress->operational || !egress->ipv4_configured) {
+    drop(ForwardDrop::port_down);
+    return false;
+  }
+
+  auto udp_storage =
+      std::span<std::uint8_t>{ipv4_udp_datagram_scratch_}.subspan(
+          packet::ethernet_header_octets +
+          packet::ipv4_minimum_header_octets);
+  const auto encoded_udp = udp_.encode_ipv4(
+      *dhcpv4_relay_socket_, source, destination, egress_interface_id,
+      destination_port, payload, udp_storage);
+  if (encoded_udp.status != transport::UdpSendStatus::encoded) {
+    drop(ForwardDrop::malformed);
+    return false;
+  }
+  const auto datagram = packet::encode_ipv4_ethernet_datagram(
+      ipv4_udp_datagram_scratch_, egress->mac, destination_mac, source,
+      destination, 17U, device_catalog::default_ip_hop_limit,
+      dhcpv4_identification_++,
+      udp_storage.first(encoded_udp.datagram_octets), false);
+  if (!datagram) {
+    drop(ForwardDrop::malformed);
+    return false;
+  }
+
+  const auto ip_mtu =
+      static_cast<std::uint16_t>(egress->mtu - packet::ethernet_header_octets);
+  const auto ip_octets = *datagram - packet::ethernet_header_octets;
+  if (ip_octets <= ip_mtu) {
+    // RFC 791 fragmentation applies only when the complete IP datagram exceeds
+    // the outgoing IP MTU. ipv4_fragment_count deliberately rejects an atomic
+    // datagram, so the ordinary one-frame path must be admitted and emitted
+    // before entering the fragmentation-only helper.
+    if (admission && !admission(context, egress_ordinal, 1U)) {
+      drop(ForwardDrop::egress_queue_full);
+      return false;
+    }
+    packet::Frame frame;
+    std::copy_n(ipv4_udp_datagram_scratch_.begin(), *datagram,
+                frame.bytes.begin());
+    frame.length = static_cast<std::uint16_t>(*datagram);
+    if (direct_link) {
+      if (!sink(context, egress_ordinal, frame)) {
+        drop(ForwardDrop::egress_queue_full);
+        return false;
+      }
+    } else {
+      // Routed relay traffic still enters the ordinary FIB and adjacency path.
+      // A pending ARP generation owns the encoded frame after send() returns.
+      static_cast<void>(
+          send(frame, to_u32(destination), false, context, sink, now));
+    }
+    return true;
+  }
+  const auto fragments = packet::ipv4_fragment_count(
+      std::span<const std::uint8_t>{ipv4_udp_datagram_scratch_}.first(
+          *datagram),
+      ip_mtu);
+  if (!fragments ||
+      (admission && !admission(context, egress_ordinal, *fragments))) {
+    drop(ForwardDrop::egress_queue_full);
+    return false;
+  }
+
+  struct FragmentContext {
+    RouterForwarder *owner{};
+    void *egress_context{};
+    EgressSink sink{};
+    std::uint16_t port{};
+    std::uint32_t destination{};
+    bool direct{};
+    bool accepted{true};
+    Clock::time_point now{};
+  } fragment_context{.owner = this,
+                     .egress_context = context,
+                     .sink = sink,
+                     .port = egress_ordinal,
+                     .destination = to_u32(destination),
+                     .direct = direct_link,
+                     .now = now};
+  const auto fragment_sink = [](void *opaque,
+                                const packet::Frame &fragment) noexcept {
+    auto &state = *static_cast<FragmentContext *>(opaque);
+    if (state.direct) {
+      if (!state.sink(state.egress_context, state.port, fragment))
+        state.accepted = false;
+    } else {
+      // Each source fragment performs the same FIB and ARP lookup as any
+      // locally originated IPv4 packet. No fragment is delivered directly to
+      // another device or bypasses the pending-adjacency owner.
+      static_cast<void>(state.owner->send(
+          fragment, state.destination, false, state.egress_context, state.sink,
+          state.now));
+    }
+    return state.accepted;
+  };
+  const auto emitted = packet::fragment_ipv4_datagram(
+      std::span<const std::uint8_t>{ipv4_udp_datagram_scratch_}.first(
+          *datagram),
+      ip_mtu, &fragment_context, fragment_sink);
+  if (!emitted || !fragment_context.accepted) {
+    drop(ForwardDrop::egress_queue_full);
+    return false;
+  }
+  return true;
+}
+
 bool RouterForwarder::originate_dhcpv6_relay(
     const dhcpv6::RelayDecision &decision,
     const dhcpv6::RelayDestination &destination,
@@ -4925,13 +7489,23 @@ bool RouterForwarder::originate_dhcpv6_relay(
   if (destination.scope_interface_id != 0U) {
     const auto *scoped =
         dhcpv6_relay_.interface(destination.scope_interface_id);
-    if (!scoped) {
+    if (scoped) {
+      egress_ordinal = scoped->physical_port_ordinal;
+      egress_interface_id = scoped->interface_id;
+      next_hop = destination.address;
+    } else if (const auto physical =
+                   physical_port_from_interface_id(
+                       destination.scope_interface_id)) {
+      // A Base server can reply directly on a native or service interface
+      // without requiring a relay policy on that link. The interface identity
+      // still resolves through the forwarding owner's published projection.
+      egress_ordinal = *physical;
+      egress_interface_id = destination.scope_interface_id;
+      next_hop = destination.address;
+    } else {
       drop(ForwardDrop::no_route);
       return false;
     }
-    egress_ordinal = scoped->physical_port_ordinal;
-    egress_interface_id = scoped->interface_id;
-    next_hop = destination.address;
   } else {
     routing::Ipv6Route route;
     bool blackhole{};
@@ -5965,8 +8539,11 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
           const auto quoted = packet::parse_ipv6_quote(icmp->data);
           routing::Ipv6Route route;
           bool blackhole{};
-          if (quoted && quoted->upper_layer_protocol ==
-                            packet::ipv6_next_header_udp &&
+          if (quoted &&
+              (quoted->upper_layer_protocol ==
+                   packet::ipv6_next_header_udp ||
+               quoted->upper_layer_protocol ==
+                   packet::ipv6_next_header_tcp) &&
               lookup_ipv6_route(quoted->destination, route, blackhole) &&
               !blackhole) {
             const auto offset =
@@ -5974,10 +8551,24 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
             const auto local_port = read_network_u16(icmp->data, offset);
             const auto remote_port =
                 read_network_u16(icmp->data, offset + 2U);
-            const bool accepted = udp_.report_ipv6_error(
-                quoted->source, quoted->destination, route.interface_id,
-                local_port, remote_port, kind, icmp->type, icmp->code,
-                icmp->parameter);
+            bool accepted{};
+            if (quoted->upper_layer_protocol ==
+                packet::ipv6_next_header_udp) {
+              accepted = udp_.report_ipv6_error(
+                  quoted->source, quoted->destination, route.interface_id,
+                  local_port, remote_port, kind, icmp->type, icmp->code,
+                  icmp->parameter);
+            } else if (tcp_ && icmp->data.size() >= offset + 8U) {
+              const auto sequence =
+                  static_cast<std::uint32_t>(icmp->data[offset + 4U]) << 24U |
+                  static_cast<std::uint32_t>(icmp->data[offset + 5U]) << 16U |
+                  static_cast<std::uint32_t>(icmp->data[offset + 6U]) << 8U |
+                  icmp->data[offset + 7U];
+              accepted = tcp_->report_ipv6_error(
+                  quoted->source, quoted->destination, route.interface_id,
+                  local_port, remote_port, sequence, kind, icmp->type,
+                  icmp->code, icmp->parameter);
+            }
             if (accepted &&
                 kind == transport::Ipv6NetworkErrorKind::packet_too_big) {
               const auto egress = ipv6_interface(
@@ -5991,6 +8582,34 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
             }
           }
         }
+      } else if (local_ipv6->upper_layer_protocol ==
+                     packet::ipv6_next_header_tcp &&
+                 tcp_) {
+        const auto packet_end =
+            static_cast<std::size_t>(packet::ethernet_header_octets) +
+            packet::ipv6_header_octets + local_ipv6->payload_length;
+        const auto upper_offset =
+            static_cast<std::size_t>(local_ipv6->upper_layer_offset);
+        if (upper_offset > packet_end ||
+            ingress->mtu <= packet::ipv6_header_octets) {
+          drop(ForwardDrop::malformed);
+          return;
+        }
+        const auto prepared = tcp_->ingest_ipv6(
+            local_packet.subspan(upper_offset, packet_end - upper_offset),
+            local_ipv6->source, local_ipv6->destination,
+            ingress_ipv6_interface_id,
+            static_cast<std::uint32_t>(ingress->mtu) -
+                packet::ipv6_header_octets,
+            tcp_segment_scratch_, now);
+        if (prepared.segment.emit)
+          static_cast<void>(emit_tcp(prepared.segment,
+                                     prepared.segment.socket, context, sink,
+                                     now));
+        // TCP/647 failover is another stream application on this endpoint.
+        // Servicing it after transport ingress lets an accepted handshake or
+        // newly readable frame progress without waiting for unrelated traffic.
+        service_dhcp_failover(context, sink, now);
       } else if (local_ipv6->upper_layer_protocol ==
                  packet::ipv6_next_header_udp) {
         const auto packet_end =
@@ -6074,6 +8693,13 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
       return;
     }
 
+    // A multihomed endpoint can own local addresses, DHCP sockets and a
+    // shared route table without acting as an IP router. Local delivery above
+    // remains intact; only packets destined for another node stop here.
+    if (!transit_forwarding_enabled_) {
+      drop(ForwardDrop::transit_disabled);
+      return;
+    }
     if (ipv6->hop_limit <= 1U) {
       send_ipv6_time_exceeded(frame, *ipv6, context, sink, now);
       return;
@@ -6215,7 +8841,8 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
               reply_egress && reply_egress->operational)
             count_sent_icmpv4(reply_egress->ordinal, *reply);
         }
-        send(*reply, to_u32(ip->source), false, context, sink, now);
+        static_cast<void>(
+            send(*reply, to_u32(ip->source), false, context, sink, now));
       }
     } else if (icmp && icmp->type == 0U && icmp->code == 0U &&
                !ingress_broadcast) {
@@ -6247,6 +8874,37 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
       // Receipt alone is not success. The PMTU owner changes only when the
       // quoted bytes and current route both match the retained local probe.
       static_cast<void>(accept_ipv4_fragmentation_needed(*icmp, now));
+    } else if (ip->protocol == packet::ipv6_next_header_tcp && tcp_ &&
+               !ingress_broadcast) {
+      const auto upper_offset = packet::ethernet_header_octets +
+                                static_cast<std::size_t>(ip->header_length);
+      const auto packet_end = packet::ethernet_header_octets +
+                              static_cast<std::size_t>(ip->total_length);
+      if (upper_offset > packet_end ||
+          ingress->mtu <= static_cast<std::uint32_t>(20U)) {
+        drop(ForwardDrop::malformed);
+        return;
+      }
+
+      // The transport endpoint owns sequence validation, reassembly, flow
+      // control and retransmission state. The router IP owner supplies only
+      // the received tuple and the locally advertised MSS derived from the
+      // actual ingress MTU. Any ACK or reset then re-enters ordinary FIB and
+      // ARP resolution through emit_tcp.
+      const auto prepared = tcp_->ingest_ipv4(
+          local_packet.subspan(upper_offset, packet_end - upper_offset),
+          ip->source, ip->destination, physical_interface_id(ingress->ordinal),
+          static_cast<std::uint32_t>(ingress->mtu) - 20U,
+          tcp_segment_scratch_, now);
+      if (prepared.segment.emit)
+        static_cast<void>(emit_tcp(
+            prepared.segment, prepared.segment.socket, context, sink, now));
+
+      // A passive open becomes visible to accept only after the final ACK has
+      // passed through the TCP state machine. Servicing here makes application
+      // progress independent of an unrelated maintenance wakeup.
+      service_dhcpv4_leasequery(context, sink, now);
+      service_dhcp_failover(context, sink, now);
     } else if (ip->protocol == 17U) {
       const auto upper_offset = packet::ethernet_header_octets +
                                 static_cast<std::size_t>(ip->header_length);
@@ -6263,7 +8921,14 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
       const auto status = udp_.ingest_ipv4(
           local_packet.subspan(upper_offset, packet_end - upper_offset),
           ip->source, ip->destination, interface_id);
-      if (status == transport::UdpIngressStatus::no_socket)
+      if (status == transport::UdpIngressStatus::delivered) {
+        // The relay socket owns only UDP 67. Calling the service after generic
+        // demultiplexing preserves ordinary socket semantics and allows
+        // 0.0.0.0 limited-broadcast client traffic without a special direct
+        // call from the Ethernet parser into the DHCP protocol object.
+        service_dhcpv4_relay(ingress_port, interface_id, context, sink,
+                             nullptr, now);
+      } else if (status == transport::UdpIngressStatus::no_socket)
         send_local_destination_unreachable(local_packet, *ip, 3U, context, sink,
                                            now);
       else if (status == transport::UdpIngressStatus::queue_full)
@@ -6281,6 +8946,10 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
     return;
   }
 
+  if (!transit_forwarding_enabled_) {
+    drop(ForwardDrop::transit_disabled);
+    return;
+  }
   if (ip->ttl <= 1U) {
     // TTL is evaluated before route_ipv4 can decrement it. The original header
     // is available for the required ICMP quotation.
@@ -6291,7 +8960,7 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
   if (lookup_ipv4_route(destination, redirect_route))
     maybe_send_ipv4_redirect(*ingress, *ethernet, *ip, redirect_route, frame,
                              context, sink, now);
-  send(frame, destination, true, context, sink, now);
+  static_cast<void>(send(frame, destination, true, context, sink, now));
 }
 
 void RouterForwarder::expire(Clock::time_point now) noexcept {
@@ -6372,6 +9041,24 @@ void RouterForwarder::service_ipv4_maintenance(void *context, EgressSink sink,
         egress->mac, to_ipv4(egress->address), to_ipv4(leader.next_hop));
     static_cast<void>(emit(egress->ordinal, request, context, sink));
   }
+
+  // TCP retransmission and close deadlines are owned by each connection. One
+  // due connection is serviced per maintenance turn, matching the endpoint
+  // work budget and preventing a large socket table from starving port RX.
+  if (tcp_) {
+    const auto socket = tcp_->earliest_deadline_socket();
+    const auto deadline = socket ? tcp_->next_deadline(*socket) : std::nullopt;
+    if (socket && deadline && *deadline <= now) {
+      const auto prepared =
+          tcp_->prepare_deadline(*socket, tcp_segment_scratch_, now);
+      if (prepared.segment.emit)
+        static_cast<void>(
+            emit_tcp(prepared.segment, *socket, context, sink, now));
+    }
+  }
+
+  service_dhcpv4_leasequery(context, sink, now);
+  service_dhcp_failover(context, sink, now);
 }
 
 std::optional<RouterForwarder::Clock::time_point>
@@ -6385,6 +9072,28 @@ RouterForwarder::next_ipv4_deadline() const noexcept {
     if (entry.valid && !entry.ipv6 &&
         (!next || entry.arp_retry_deadline < *next))
       next = entry.arp_retry_deadline;
+  if (tcp_) {
+    if (const auto socket = tcp_->earliest_deadline_socket()) {
+      const auto deadline = tcp_->next_deadline(*socket);
+      if (deadline && (!next || *deadline < *next))
+        next = *deadline;
+    }
+  }
+  for (const auto &session : dhcpv4_leasequery_sessions_) {
+    if (!next || session.data_deadline < *next)
+      next = session.data_deadline;
+    if (session.request &&
+        session.request->kind ==
+            dhcpv4::leasequery::RequestKind::active &&
+        (!next || session.keepalive_deadline < *next))
+      next = session.keepalive_deadline;
+  }
+  for (const auto &session : dhcpv4_failover_sessions_)
+    if (!session.socket && (!next || session.reconnect_at < *next))
+      next = session.reconnect_at;
+  for (const auto &session : dhcpv6_failover_sessions_)
+    if (!session.socket && (!next || session.reconnect_at < *next))
+      next = session.reconnect_at;
   return next;
 }
 

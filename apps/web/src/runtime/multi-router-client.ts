@@ -7,6 +7,8 @@ import {
   parseLabRuntimeSnapshotV6,
   type LabProjectV4,
   type LabRuntimeSnapshotV6,
+  type HostDhcpv4ServerIntent,
+  type HostDhcpv6ServerIntent,
   type RouterInterfaceIntent,
   type RouterPortIntent
 } from "@router-simulator/contracts";
@@ -63,6 +65,227 @@ function runtimeStableIidSecret(value: string | null): string {
   // it, so a null project value is represented by zero bytes without creating
   // a secret or publishing sensitive material in the runtime snapshot.
   return value ?? "0".repeat(64);
+}
+
+function dhcpv4Payload(
+  intent: LabProjectV4["hosts"][number]["eth0"]["dhcpv4"]
+): string {
+  const values: string[] = [intent.client ? "1" : "0"];
+  if (intent.client) {
+    const client = intent.client;
+    values.push(client.clientIdentifierHex, client.transactionSecretHex,
+      String(client.maximumMessageSize), boolean(client.broadcast),
+      String(client.parameterRequestList.length),
+      ...client.parameterRequestList.map(String));
+  }
+  values.push(intent.server ? "1" : "0");
+  if (intent.server) {
+    const server = intent.server;
+    values.push(server.serverIdentifier, String(server.serverInstance),
+      String(server.routingContext), String(server.offerHoldSeconds),
+      String(server.declineHoldSeconds), boolean(server.authoritative),
+      String(server.domainNameServers.length), ...server.domainNameServers,
+      String(server.pools.length));
+    for (const pool of server.pools)
+      values.push(String(pool.id), String(pool.serverInstance),
+        String(pool.routingContext), pool.linkIdentity, pool.first, pool.last,
+        pool.subnetMask, pool.router, String(pool.leaseSeconds),
+        String(pool.renewalSeconds), String(pool.rebindingSeconds),
+        boolean(pool.enabled));
+    values.push(String(server.reservations.length));
+    for (const reservation of server.reservations)
+      values.push(String(reservation.serverInstance),
+        String(reservation.routingContext), reservation.linkIdentity,
+        boolean(reservation.option61), reservation.clientKeyHex,
+        reservation.address);
+    values.push(String(server.exclusions.length));
+    for (const excluded of server.exclusions)
+      values.push(String(excluded.serverInstance),
+        String(excluded.routingContext), excluded.linkIdentity,
+        excluded.first, excluded.last);
+  }
+  return protocolMessage(values[0], values.slice(1));
+}
+
+function dhcpv6Payload(
+  intent: LabProjectV4["hosts"][number]["eth0"]["ipv6"]["dhcpv6"]
+): string {
+  const values: string[] = [intent.client ? "1" : "0"];
+  if (intent.client) {
+    const client = intent.client;
+    values.push(client.duidHex, client.transactionSecretHex,
+      boolean(client.rapidCommit), boolean(client.informationOnly),
+      String(client.identityAssociations.length));
+    for (const association of client.identityAssociations)
+      values.push(String(association.iaid), association.kind);
+    values.push(String(client.requestedOptions.length));
+    for (const option of client.requestedOptions) values.push(String(option));
+  }
+  values.push(intent.server ? "1" : "0");
+  if (intent.server) {
+    const server = intent.server;
+    values.push(server.duidHex, String(server.preference),
+      boolean(server.rapidCommit), boolean(server.leaseQuery),
+      String(server.informationRefreshTimeSeconds),
+      server.solicitMaximumRetransmissionSeconds?.toString() ?? "",
+      server.informationMaximumRetransmissionSeconds?.toString() ?? "",
+      String(server.declineHoldTimeSeconds), String(server.addressPoolIndex),
+      String(server.prefixPoolIndex), String(server.dnsRecursiveServers.length),
+      ...server.dnsRecursiveServers, String(server.addressPools.length));
+    for (const pool of server.addressPools)
+      values.push(pool.prefix, pool.allocationSecretHex,
+        String(pool.preferredLifetimeSeconds), String(pool.validLifetimeSeconds),
+        String(pool.t1Seconds), String(pool.t2Seconds));
+    values.push(String(server.prefixPools.length));
+    for (const pool of server.prefixPools)
+      values.push(pool.prefix, pool.allocationSecretHex,
+        String(pool.preferredLifetimeSeconds), String(pool.validLifetimeSeconds),
+        String(pool.t1Seconds), String(pool.t2Seconds),
+        String(pool.delegatedLength));
+  }
+  return protocolMessage(values[0], values.slice(1));
+}
+
+function routerConfigurationPayload(router:
+  LabProjectV4["routers"][number] | LabProjectV4["dhcpServers"][number]) {
+  const deviceName = router.kind === "router" ? router.systemName : router.name;
+  const values: string[] = [deviceName,
+    String(router.running.maximumEcmpPaths),
+    String(router.running.ports.length)];
+  for (const port of router.running.ports) {
+    values.push(port.id, boolean(port.admin === "up"), String(port.mtu),
+      String(port.speedMbps), port.description);
+  }
+  values.push(String(router.running.interfaces.length));
+  for (const item of router.running.interfaces) {
+    values.push(item.name, item.portId, item.address,
+      item.arpTimeoutSeconds?.toString() ?? "",
+      item.arpRetryTimerDeciseconds?.toString() ?? "",
+      String(item.ipv6Addresses.length));
+    for (const address of item.ipv6Addresses)
+      values.push(address.address,
+        boolean(address.duplicateAddressDetection),
+        boolean(address.eui64),
+        address.eui64SourceMac ?? "",
+        String(address.primaryPreference), address.tag?.toString() ?? "");
+    values.push(boolean(item.admin === "up"));
+  }
+  values.push(String(router.running.staticRoutes.length));
+  for (const route of router.running.staticRoutes)
+    values.push(route.prefix, route.nextHop, boolean(route.indirect));
+  values.push(String(router.running.ipv6StaticRoutes.length));
+  for (const route of router.running.ipv6StaticRoutes)
+    values.push(route.prefix, route.nextHop, route.outgoingPortId,
+      boolean(route.indirect));
+  values.push(String(router.running.policyOptions.prefixLists.length));
+  for (const list of router.running.policyOptions.prefixLists)
+    values.push(list.name, String(list.prefixes.length), ...list.prefixes);
+  values.push(String(router.running.policyOptions.statements.length));
+  for (const statement of router.running.policyOptions.statements) {
+    values.push(statement.name, statement.defaultAction ?? "",
+      String(statement.entries.length));
+    for (const entry of statement.entries)
+      values.push(String(entry.number), entry.groupPrefixList,
+        entry.sourceAddress ?? "", entry.sourcePrefixList,
+        boolean(entry.protocolMld), entry.routePrefixList,
+        entry.routeSource ?? "", entry.protocolInstance?.toString() ?? "",
+        entry.routeTag?.toString() ?? "", entry.action ?? "",
+        entry.setMetric?.toString() ?? "", entry.setMetricType ?? "",
+        entry.setRouteTag?.toString() ?? "");
+  }
+  values.push(String(router.running.ospf.instances.length));
+  for (const instance of router.running.ospf.instances) {
+    values.push(String(instance.instanceId), instance.addressFamily,
+      instance.routerId ?? "", instance.exportPolicy,
+      instance.asbrTracePathDomainId?.toString() ?? "",
+      String(instance.referenceBandwidthKbps),
+      String(instance.routerPreference), String(instance.externalPreference),
+      String(instance.spfTimersMilliseconds.initial),
+      String(instance.spfTimersMilliseconds.second),
+      String(instance.spfTimersMilliseconds.maximum),
+      String(instance.lsaTimersMilliseconds.initial),
+      String(instance.lsaTimersMilliseconds.second),
+      String(instance.lsaTimersMilliseconds.maximum),
+      boolean(instance.asbr), boolean(instance.gracefulRestartHelper),
+      boolean(instance.loopfreeAlternates), boolean(instance.overload),
+      boolean(instance.admin === "up"), String(instance.areas.length));
+    for (const area of instance.areas) {
+      values.push(area.areaId, area.type, String(area.defaultMetric),
+        boolean(area.summaries), boolean(area.nssaTranslateAlways),
+        String(area.ranges.length));
+      for (const range of area.ranges)
+        values.push(range.prefix, range.advertisedMetric?.toString() ?? "",
+          boolean(range.advertise));
+      values.push(String(area.interfaces.length));
+      for (const attached of area.interfaces) {
+        values.push(attached.interfaceName, String(attached.cost),
+          String(attached.helloIntervalSeconds),
+          String(attached.deadIntervalSeconds),
+          String(attached.retransmitIntervalSeconds),
+          String(attached.transmitDelaySeconds), String(attached.priority),
+          attached.networkType, attached.authentication, attached.keychain,
+          attached.ipsecSaInbound, attached.ipsecSaOutbound,
+          boolean(attached.passive),
+          boolean(attached.mtuMismatchIgnore),
+          boolean(attached.admin === "up"),
+          String(attached.nbmaNeighbors.length));
+        for (const neighbor of attached.nbmaNeighbors)
+          values.push(neighbor.address, String(neighbor.priority),
+            String(neighbor.pollIntervalSeconds));
+      }
+      values.push(String(area.virtualLinks.length));
+      for (const virtualLink of area.virtualLinks)
+        values.push(virtualLink.transitAreaId, virtualLink.remoteRouterId,
+          String(virtualLink.helloIntervalSeconds),
+          String(virtualLink.deadIntervalSeconds),
+          String(virtualLink.retransmitIntervalSeconds),
+          String(virtualLink.transmitDelaySeconds),
+          virtualLink.authentication, virtualLink.keychain,
+          virtualLink.ipsecSaInbound, virtualLink.ipsecSaOutbound,
+          boolean(virtualLink.admin === "up"));
+    }
+  }
+  return protocolMessage(values[0], values.slice(1));
+}
+
+function dnsPayload(
+  intent: LabProjectV4["hosts"][number]["eth0"]["dns"]
+): string {
+  const values: string[] = [intent.resolver ? "1" : "0"];
+  if (intent.resolver) {
+    const resolver = intent.resolver;
+    values.push(resolver.identifierSecretHex,
+      String(resolver.maximumNsec3Iterations), boolean(resolver.serveClients),
+      String(resolver.rootHints.length));
+    for (const root of resolver.rootHints) {
+      values.push(root.serverName, String(root.addresses.length));
+      for (const address of root.addresses)
+        values.push(address.family, address.address);
+    }
+    values.push(String(resolver.trustAnchors.length));
+    for (const anchor of resolver.trustAnchors)
+      values.push(anchor.owner, String(anchor.ttl), anchor.rdataHex);
+  }
+  values.push(intent.authoritative ? "1" : "0");
+  if (intent.authoritative) {
+    const authoritative = intent.authoritative;
+    values.push(boolean(Boolean(authoritative.signing)),
+      String(authoritative.zones.length));
+    for (const zone of authoritative.zones)
+      values.push(zone.origin, zone.masterFile);
+    if (authoritative.signing) {
+      const signing = authoritative.signing;
+      values.push(String(signing.dnskeyTtl), String(signing.denialTtl),
+        signing.denialMode, String(signing.validitySeconds),
+        String(signing.refreshSeconds), String(signing.resignSeconds),
+        String(signing.inceptionOffsetSeconds), String(signing.keys.length));
+      for (const key of signing.keys)
+        values.push(key.role, String(key.algorithm), String(key.rsaBits),
+          String(key.publishAt), String(key.readyAt), String(key.activateAt),
+          String(key.retireAt), String(key.deadAt), String(key.removeAt));
+    }
+  }
+  return protocolMessage(values[0], values.slice(1));
 }
 
 function expectSuccess(value: string): string {
@@ -275,109 +498,61 @@ export class MultiRouterRuntimeClient {
       [routerId, systemName]);
   }
 
-  replaceRouterConfiguration(router: LabProjectV4["routers"][number]) {
+  createDhcpServer(id: string, profileId: string, name: string) {
+    return this.mutation(LAB_RUNTIME_PROTOCOL.dhcp_server_create,
+      [id, profileId, name]);
+  }
+
+  deleteDhcpServer(id: string) {
+    return this.mutation(LAB_RUNTIME_PROTOCOL.dhcp_server_delete, [id]);
+  }
+
+  replaceRouterConfiguration(router:
+    LabProjectV4["routers"][number] | LabProjectV4["dhcpServers"][number]) {
     // The nested payload is one outer protocol field. Its own netstrings make
     // every description and interface name unambiguous while C++ stages the
     // complete value before changing hardware, RIB or FIB owners.
-    const values: string[] = [router.systemName,
-      String(router.running.maximumEcmpPaths),
-      String(router.running.ports.length)];
-    for (const port of router.running.ports) {
-      values.push(port.id, boolean(port.admin === "up"), String(port.mtu),
-        String(port.speedMbps), port.description);
-    }
-    values.push(String(router.running.interfaces.length));
-    for (const item of router.running.interfaces) {
-      values.push(item.name, item.portId, item.address,
-        item.arpTimeoutSeconds?.toString() ?? "",
-        item.arpRetryTimerDeciseconds?.toString() ?? "",
-        String(item.ipv6Addresses.length));
-      for (const address of item.ipv6Addresses)
-        values.push(address.address,
-          boolean(address.duplicateAddressDetection),
-          boolean(address.eui64),
-          address.eui64SourceMac ?? "",
-          String(address.primaryPreference), address.tag?.toString() ?? "");
-      values.push(boolean(item.admin === "up"));
-    }
-    values.push(String(router.running.staticRoutes.length));
-    for (const route of router.running.staticRoutes)
-      values.push(route.prefix, route.nextHop, boolean(route.indirect));
-    values.push(String(router.running.ipv6StaticRoutes.length));
-    for (const route of router.running.ipv6StaticRoutes)
-      values.push(route.prefix, route.nextHop, route.outgoingPortId,
-        boolean(route.indirect));
-    values.push(String(router.running.policyOptions.prefixLists.length));
-    for (const list of router.running.policyOptions.prefixLists) {
-      values.push(list.name, String(list.prefixes.length), ...list.prefixes);
-    }
-    values.push(String(router.running.policyOptions.statements.length));
-    for (const statement of router.running.policyOptions.statements) {
-      values.push(statement.name, statement.defaultAction ?? "",
-        String(statement.entries.length));
-      for (const entry of statement.entries)
-        values.push(String(entry.number), entry.groupPrefixList,
-          entry.sourceAddress ?? "", entry.sourcePrefixList,
-          boolean(entry.protocolMld), entry.routePrefixList,
-          entry.routeSource ?? "", entry.protocolInstance?.toString() ?? "",
-          entry.routeTag?.toString() ?? "", entry.action ?? "",
-          entry.setMetric?.toString() ?? "", entry.setMetricType ?? "",
-          entry.setRouteTag?.toString() ?? "");
-    }
-    values.push(String(router.running.ospf.instances.length));
-    for (const instance of router.running.ospf.instances) {
-      values.push(String(instance.instanceId), instance.addressFamily,
-        instance.routerId ?? "", instance.exportPolicy,
-        instance.asbrTracePathDomainId?.toString() ?? "",
-        String(instance.referenceBandwidthKbps),
-        String(instance.routerPreference), String(instance.externalPreference),
-        String(instance.spfTimersMilliseconds.initial),
-        String(instance.spfTimersMilliseconds.second),
-        String(instance.spfTimersMilliseconds.maximum),
-        String(instance.lsaTimersMilliseconds.initial),
-        String(instance.lsaTimersMilliseconds.second),
-        String(instance.lsaTimersMilliseconds.maximum),
-        boolean(instance.asbr), boolean(instance.gracefulRestartHelper),
-        boolean(instance.loopfreeAlternates), boolean(instance.overload),
-        boolean(instance.admin === "up"), String(instance.areas.length));
-      for (const area of instance.areas) {
-        values.push(area.areaId, area.type, String(area.defaultMetric),
-          boolean(area.summaries), boolean(area.nssaTranslateAlways),
-          String(area.ranges.length));
-        for (const range of area.ranges)
-          values.push(range.prefix, range.advertisedMetric?.toString() ?? "",
-            boolean(range.advertise));
-        values.push(String(area.interfaces.length));
-        for (const attached of area.interfaces) {
-          values.push(attached.interfaceName, String(attached.cost),
-            String(attached.helloIntervalSeconds),
-            String(attached.deadIntervalSeconds),
-            String(attached.retransmitIntervalSeconds),
-            String(attached.transmitDelaySeconds), String(attached.priority),
-            attached.networkType, attached.authentication, attached.keychain,
-            attached.ipsecSaInbound, attached.ipsecSaOutbound,
-            boolean(attached.passive),
-            boolean(attached.mtuMismatchIgnore),
-            boolean(attached.admin === "up"),
-            String(attached.nbmaNeighbors.length));
-          for (const neighbor of attached.nbmaNeighbors)
-            values.push(neighbor.address, String(neighbor.priority),
-              String(neighbor.pollIntervalSeconds));
-        }
-        values.push(String(area.virtualLinks.length));
-        for (const virtualLink of area.virtualLinks)
-          values.push(virtualLink.transitAreaId, virtualLink.remoteRouterId,
-            String(virtualLink.helloIntervalSeconds),
-            String(virtualLink.deadIntervalSeconds),
-            String(virtualLink.retransmitIntervalSeconds),
-            String(virtualLink.transmitDelaySeconds),
-            virtualLink.authentication, virtualLink.keychain,
-            virtualLink.ipsecSaInbound, virtualLink.ipsecSaOutbound,
-            boolean(virtualLink.admin === "up"));
-      }
-    }
-    return this.mutation(LAB_RUNTIME_PROTOCOL.router_configuration_replace,
-      [router.id, protocolMessage(values[0], values.slice(1))]);
+    const operation = router.kind === "router"
+      ? LAB_RUNTIME_PROTOCOL.router_configuration_replace
+      : LAB_RUNTIME_PROTOCOL.dhcp_server_configuration_replace;
+    return this.mutation(operation,
+      [router.id, routerConfigurationPayload(router)]);
+  }
+
+  replaceDhcpServer(previous: LabProjectV4["dhcpServers"][number],
+    next: LabProjectV4["dhcpServers"][number]) {
+    // Previous names let the C++ owner remove applications that disappeared
+    // from the draft. New payloads carry complete desired state. The operation
+    // checkpoints forwarding, control and device intent before touching any
+    // one of them, which gives Apply all-or-nothing semantics.
+    const fields = [next.id, routerConfigurationPayload(next),
+      String(previous.dhcpv4Servers.length),
+      ...previous.dhcpv4Servers.map((server) => server.name),
+      String(next.dhcpv4Servers.length)];
+    for (const server of next.dhcpv4Servers)
+      fields.push(server.name,
+        dhcpv4Payload({ client: null, server: server.configuration }));
+    fields.push(String(previous.dhcpv6Servers.length),
+      ...previous.dhcpv6Servers.map((server) => server.name),
+      String(next.dhcpv6Servers.length));
+    for (const server of next.dhcpv6Servers)
+      fields.push(server.name,
+        dhcpv6Payload({ client: null, server: server.configuration }));
+    return this.mutation(LAB_RUNTIME_PROTOCOL.dhcp_server_replace, fields);
+  }
+
+  replaceDhcpServerV4(nodeId: string, name: string,
+    configuration: HostDhcpv4ServerIntent) {
+    return this.mutation(LAB_RUNTIME_PROTOCOL.dhcp_server_dhcpv4_replace,
+      [nodeId, name,
+        dhcpv4Payload({ client: null, server: configuration })]);
+  }
+
+  replaceDhcpServerV6(nodeId: string, name: string,
+    configuration: HostDhcpv6ServerIntent) {
+    return this.mutation(LAB_RUNTIME_PROTOCOL.dhcp_server_dhcpv6_replace,
+      [nodeId, name,
+        dhcpv6Payload({ client: null, server: configuration })]);
   }
 
   createHost(id: string, name: string) {
@@ -502,45 +677,19 @@ export class MultiRouterRuntimeClient {
         transportSecretHex]);
   }
 
+  replaceHostDhcpv4(hostId: string,
+    intent: LabProjectV4["hosts"][number]["eth0"]["dhcpv4"]) {
+    return this.mutation(LAB_RUNTIME_PROTOCOL.host_dhcpv4_replace,
+      [hostId, dhcpv4Payload(intent)]);
+  }
+
   replaceHostDhcpv6(hostId: string,
     intent: LabProjectV4["hosts"][number]["eth0"]["ipv6"]["dhcpv6"]) {
     // The nested record is parsed completely by the C++ control owner before
     // either socket is replaced. Every list count precedes its exact entries,
     // allowing arbitrary legal pool and ORO values without JSON in the core.
-    const values: string[] = [intent.client ? "1" : "0"];
-    if (intent.client) {
-      const client = intent.client;
-      values.push(client.duidHex, client.transactionSecretHex,
-        boolean(client.rapidCommit), boolean(client.informationOnly),
-        String(client.identityAssociations.length));
-      for (const association of client.identityAssociations)
-        values.push(String(association.iaid), association.kind);
-      values.push(String(client.requestedOptions.length));
-      for (const option of client.requestedOptions) values.push(String(option));
-    }
-    values.push(intent.server ? "1" : "0");
-    if (intent.server) {
-      const server = intent.server;
-      values.push(server.duidHex, String(server.preference),
-        boolean(server.rapidCommit), String(server.informationRefreshTimeSeconds),
-        server.solicitMaximumRetransmissionSeconds?.toString() ?? "",
-        server.informationMaximumRetransmissionSeconds?.toString() ?? "",
-        String(server.declineHoldTimeSeconds), String(server.addressPoolIndex),
-        String(server.prefixPoolIndex), String(server.dnsRecursiveServers.length),
-        ...server.dnsRecursiveServers, String(server.addressPools.length));
-      for (const pool of server.addressPools)
-        values.push(pool.prefix, pool.allocationSecretHex,
-          String(pool.preferredLifetimeSeconds), String(pool.validLifetimeSeconds),
-          String(pool.t1Seconds), String(pool.t2Seconds));
-      values.push(String(server.prefixPools.length));
-      for (const pool of server.prefixPools)
-        values.push(pool.prefix, pool.allocationSecretHex,
-          String(pool.preferredLifetimeSeconds), String(pool.validLifetimeSeconds),
-          String(pool.t1Seconds), String(pool.t2Seconds),
-          String(pool.delegatedLength));
-    }
     return this.mutation(LAB_RUNTIME_PROTOCOL.host_dhcpv6_replace,
-      [hostId, protocolMessage(values[0], values.slice(1))]);
+      [hostId, dhcpv6Payload(intent)]);
   }
 
   replaceHostDns(hostId: string,
@@ -548,42 +697,8 @@ export class MultiRouterRuntimeClient {
     // DNS configuration is one nested netstring transaction. Master-file text
     // can contain arbitrary whitespace and punctuation without becoming a
     // command delimiter, while each count is verified again by the C++ owner.
-    const values: string[] = [intent.resolver ? "1" : "0"];
-    if (intent.resolver) {
-      const resolver = intent.resolver;
-      values.push(resolver.identifierSecretHex,
-        String(resolver.maximumNsec3Iterations), boolean(resolver.serveClients),
-        String(resolver.rootHints.length));
-      for (const root of resolver.rootHints) {
-        values.push(root.serverName, String(root.addresses.length));
-        for (const address of root.addresses)
-          values.push(address.family, address.address);
-      }
-      values.push(String(resolver.trustAnchors.length));
-      for (const anchor of resolver.trustAnchors)
-        values.push(anchor.owner, String(anchor.ttl), anchor.rdataHex);
-    }
-    values.push(intent.authoritative ? "1" : "0");
-    if (intent.authoritative) {
-      const authoritative = intent.authoritative;
-      values.push(boolean(Boolean(authoritative.signing)),
-        String(authoritative.zones.length));
-      for (const zone of authoritative.zones)
-        values.push(zone.origin, zone.masterFile);
-      if (authoritative.signing) {
-        const signing = authoritative.signing;
-        values.push(String(signing.dnskeyTtl), String(signing.denialTtl),
-          signing.denialMode, String(signing.validitySeconds),
-          String(signing.refreshSeconds), String(signing.resignSeconds),
-          String(signing.inceptionOffsetSeconds), String(signing.keys.length));
-        for (const key of signing.keys)
-          values.push(key.role, String(key.algorithm), String(key.rsaBits),
-            String(key.publishAt), String(key.readyAt), String(key.activateAt),
-            String(key.retireAt), String(key.deadAt), String(key.removeAt));
-      }
-    }
     return this.mutation(LAB_RUNTIME_PROTOCOL.host_dns_replace,
-      [hostId, protocolMessage(values[0], values.slice(1))]);
+      [hostId, dnsPayload(intent)]);
   }
 
   createConfiguredHost(id: string, name: string, mac: string, address: string,
@@ -621,6 +736,20 @@ export class MultiRouterRuntimeClient {
         boolean(ipv6Autoconfiguration), interfaceIdentifierMode,
         runtimeStableIidSecret(stableIidSecret), networkId,
         transportSecretHex]);
+  }
+
+  replaceHostIpv4(host: LabProjectV4["hosts"][number]) {
+    // IPv4 identity and its DHCP owner are one control-plane transaction.
+    // Enabling DHCPv4 must not first publish 0.0.0.0/0 and then fail before
+    // the client socket exists. Independent IPv6 and DNS owners are untouched.
+    return this.mutation(LAB_RUNTIME_PROTOCOL.host_ipv4_replace,
+      [host.id, host.name, host.eth0.mac, host.eth0.address,
+        host.eth0.gateway, String(host.eth0.mtu), host.eth0.ipv6.interfaceId,
+        boolean(host.eth0.ipv6.autoconfiguration),
+        host.eth0.ipv6.interfaceIdentifierMode,
+        runtimeStableIidSecret(host.eth0.ipv6.stableIidSecret),
+        host.eth0.ipv6.networkId, host.eth0.transportSecretHex,
+        dhcpv4Payload(host.eth0.dhcpv4)]);
   }
 
   createSession(sessionId: string, routerId: string,
@@ -795,7 +924,8 @@ export class MultiRouterRuntimeClient {
     // This method is used on a fresh replacement Worker. A failed replay never
     // mutates the currently visible runtime owned by the caller's old client.
     let snapshot = await this.snapshot();
-    if (snapshot.routers.length || snapshot.hosts.length ||
+    if (snapshot.routers.length || snapshot.dhcpServers.length ||
+        snapshot.hosts.length ||
         snapshot.switches.length || snapshot.links.length) {
       throw new Error("Project replay requires an empty runtime");
     }
@@ -830,6 +960,22 @@ export class MultiRouterRuntimeClient {
       snapshot = await replay(`router ${router.id} configuration`, () =>
         this.replaceRouterConfiguration(router));
     }
+    for (const server of project.dhcpServers) {
+      snapshot = await replay(`DHCP server ${server.id} creation`, () =>
+        this.createDhcpServer(server.id, server.profileId, server.name));
+      snapshot = await replay(`DHCP server ${server.id} network configuration`,
+        () => this.replaceRouterConfiguration(server));
+      for (const instance of server.dhcpv4Servers)
+        snapshot = await replay(
+          `DHCP server ${server.id} IPv4 instance ${instance.name}`,
+          () => this.replaceDhcpServerV4(
+            server.id, instance.name, instance.configuration));
+      for (const instance of server.dhcpv6Servers)
+        snapshot = await replay(
+          `DHCP server ${server.id} IPv6 instance ${instance.name}`,
+          () => this.replaceDhcpServerV6(
+            server.id, instance.name, instance.configuration));
+    }
     for (const host of project.hosts) {
       snapshot = await replay(`host ${host.id} creation`, () =>
         this.createConfiguredHost(host.id, host.name,
@@ -838,11 +984,10 @@ export class MultiRouterRuntimeClient {
           host.eth0.ipv6.interfaceIdentifierMode,
           host.eth0.ipv6.stableIidSecret, host.eth0.ipv6.networkId,
           host.eth0.transportSecretHex));
-      if (host.eth0.ipv6.dhcpv6.client || host.eth0.ipv6.dhcpv6.server)
-        snapshot = await this.replaceHostDhcpv6(
-          host.id, host.eth0.ipv6.dhcpv6);
-      if (host.eth0.dns.resolver || host.eth0.dns.authoritative)
-        snapshot = await this.replaceHostDns(host.id, host.eth0.dns);
+      snapshot = await this.replaceHostDhcpv4(host.id, host.eth0.dhcpv4);
+      snapshot = await this.replaceHostDhcpv6(
+        host.id, host.eth0.ipv6.dhcpv6);
+      snapshot = await this.replaceHostDns(host.id, host.eth0.dns);
     }
     for (const ethernetSwitch of project.switches) {
       snapshot = await replay(`switch ${ethernetSwitch.id} creation`, () =>

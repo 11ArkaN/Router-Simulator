@@ -122,16 +122,45 @@ private:
   // Variable service policy is assembled only on the network owner. Each
   // control message contains one value item, so shared SPSC slots remain
   // trivially copyable and never carry vector pointers across pthreads.
+  std::array<std::optional<HostDhcpv4ClientProgram>,
+             device_catalog::maximum_hosts>
+      dhcpv4_client_staging_{};
+  std::array<std::optional<RouterBofDhcpv4ClientProgram>,
+             device_catalog::maximum_routers>
+      bof_dhcpv4_client_staging_{};
+  std::array<std::optional<HostDhcpv4ServerProgram>,
+             device_catalog::maximum_hosts>
+      dhcpv4_server_staging_{};
+  std::array<std::array<std::uint32_t, 4U>, device_catalog::maximum_hosts>
+      dhcpv4_server_expected_{};
+  std::array<std::optional<RouterDhcpv4ServerProgram>,
+             device_catalog::maximum_routers>
+      router_dhcpv4_server_staging_{};
+  std::array<std::array<std::uint32_t, 4U>,
+             device_catalog::maximum_routers>
+      router_dhcpv4_server_expected_{};
   std::array<std::optional<HostDhcpv6ClientProgram>,
              device_catalog::maximum_hosts>
       dhcpv6_client_staging_{};
   std::array<std::array<std::uint32_t, 2U>, device_catalog::maximum_hosts>
       dhcpv6_client_expected_{};
+  std::array<std::optional<RouterBofDhcpv6ClientProgram>,
+             device_catalog::maximum_routers>
+      bof_dhcpv6_client_staging_{};
+  std::array<std::array<std::uint32_t, 2U>,
+             device_catalog::maximum_routers>
+      bof_dhcpv6_client_expected_{};
   std::array<std::optional<HostDhcpv6ServerProgram>,
              device_catalog::maximum_hosts>
       dhcpv6_server_staging_{};
   std::array<std::array<std::uint32_t, 3U>, device_catalog::maximum_hosts>
       dhcpv6_server_expected_{};
+  std::array<std::optional<RouterDhcpv6ServerProgram>,
+             device_catalog::maximum_routers>
+      router_dhcpv6_server_staging_{};
+  std::array<std::array<std::uint32_t, 3U>,
+             device_catalog::maximum_routers>
+      router_dhcpv6_server_expected_{};
   struct DnsResolverStaging {
     // One network owner assembles variable resolver policy before asking the
     // forwarding owner to perform its own value-only transaction. current_*

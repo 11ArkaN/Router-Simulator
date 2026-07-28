@@ -13,10 +13,46 @@
 
 namespace router::lab {
 
-// Version 25 adds unresolved static-route intent and ECMP policy to the sole
-// network RIB owner. An older worker would bypass OSPF next-hop resolution, so
-// version mismatch must reject the command rather than install a partial RIB.
-inline constexpr std::uint32_t network_plane_message_version = 31;
+// Version 37 adds the complete DHCPv4 client status to synchronous query
+// results. An older worker would interpret the shorter result envelope with
+// the wrong offsets, so the ABI handshake must reject a mixed build.
+inline constexpr std::uint32_t network_plane_message_version = 37;
+
+struct NetworkDhcpv4ClientBegin {
+  // RFC 2131 caps each ordinary option payload at 255 octets. Carrying the two
+  // configured option bodies inline keeps this shared-memory message
+  // pointer-free and avoids a second chunk protocol for bounded values.
+  packet::Mac hardware_address{};
+  std::array<std::uint8_t, 255U> client_identifier{};
+  std::array<std::uint8_t, 255U> parameter_request_list{};
+  std::array<std::uint8_t, 254U> user_class{};
+  crypto::Sha256Digest transaction_secret{};
+  std::uint16_t client_identifier_octets{};
+  std::uint16_t parameter_request_list_octets{};
+  std::uint16_t user_class_octets{};
+  std::uint16_t maximum_message_size{};
+  // BOF timeout is an overall bootstrap attempt deadline, not an RFC 2131
+  // retransmission parameter. The forwarding owner stops an unbound client
+  // when it expires while preserving a successfully acquired lease.
+  std::uint32_t bootstrap_timeout_seconds{};
+  bool broadcast{};
+};
+
+struct NetworkDhcpv4ServerBegin {
+  std::array<char, 32U> name{};
+  packet::Ipv4 server_identifier{};
+  std::uint64_t offer_hold_seconds{};
+  std::uint64_t decline_hold_seconds{};
+  std::uint32_t server_instance{};
+  std::uint32_t routing_context{};
+  std::uint32_t expected_dns_servers{};
+  std::uint32_t expected_pools{};
+  std::uint32_t expected_reservations{};
+  std::uint32_t expected_exclusions{};
+  std::uint8_t name_octets{};
+  bool authoritative{};
+  bool force_renews{};
+};
 
 struct NetworkOspfGenerationBegin {
   // These are exact item counts for one configuration transaction. They are
@@ -42,9 +78,15 @@ struct NetworkSigningVaultInitialize {
 struct NetworkDhcpv6ClientBegin {
   std::array<std::uint8_t, packet::dhcpv6::maximum_duid_octets> duid{};
   crypto::Sha256Digest transaction_secret{};
+  // A BOF platform user-class is bounded by the same 255-octet control
+  // envelope as other bootstrap identities. The DHCPv6 packet encoder adds
+  // the RFC 9915 two-octet class length inside Option 15.
+  std::array<std::uint8_t, 255U> user_class{};
   std::uint32_t expected_associations{};
   std::uint32_t expected_options{};
   std::uint16_t duid_octets{};
+  std::uint16_t user_class_octets{};
+  std::uint32_t bootstrap_timeout_seconds{};
   bool rapid_commit{};
   bool information_only{};
 };
@@ -56,6 +98,7 @@ struct NetworkDhcpv6ClientAssociation {
 
 struct NetworkDhcpv6ServerBegin {
   std::array<std::uint8_t, packet::dhcpv6::maximum_duid_octets> duid{};
+  std::array<char, 32U> name{};
   std::uint64_t decline_hold_seconds{};
   std::uint32_t expected_dns_servers{};
   std::uint32_t expected_address_pools{};
@@ -64,10 +107,14 @@ struct NetworkDhcpv6ServerBegin {
   std::uint32_t solicit_maximum_retransmission_seconds{};
   std::uint32_t information_maximum_retransmission_seconds{};
   std::uint16_t duid_octets{};
+  std::uint8_t name_octets{};
   std::uint8_t preference{};
   std::uint8_t address_pool_index{};
   std::uint8_t prefix_pool_index{};
   bool rapid_commit{};
+  // The forwarding owner enforces RFC 5007 admission. Carrying the switch in
+  // this immutable envelope prevents it from consulting UI-owned project data.
+  bool lease_query{};
   bool has_solicit_maximum_retransmission{};
   bool has_information_maximum_retransmission{};
 };
@@ -131,6 +178,17 @@ enum class NetworkCommandKind : std::uint8_t {
   initialize_signing_vault,
   add_router,
   remove_router,
+  configure_router_bof_management,
+  begin_router_bof_dhcpv4_client,
+  commit_router_bof_dhcpv4_client,
+  abort_router_bof_dhcpv4_client,
+  remove_router_bof_dhcpv4_client,
+  begin_router_bof_dhcpv6_client,
+  add_router_bof_dhcpv6_client_ia,
+  add_router_bof_dhcpv6_client_option,
+  commit_router_bof_dhcpv6_client,
+  abort_router_bof_dhcpv6_client,
+  remove_router_bof_dhcpv6_client,
   add_host,
   remove_host,
   add_switch,
@@ -171,6 +229,19 @@ enum class NetworkCommandKind : std::uint8_t {
   remove_router_advertisement,
   configure_mld_interface,
   remove_mld_interface,
+  configure_dhcpv4_relay,
+  remove_dhcpv4_relay,
+  begin_router_dhcpv4_server,
+  add_router_dhcpv4_server_dns,
+  add_router_dhcpv4_server_pool,
+  add_router_dhcpv4_server_reservation,
+  add_router_dhcpv4_server_exclusion,
+  commit_router_dhcpv4_server,
+  abort_router_dhcpv4_server,
+  remove_router_dhcpv4_server,
+  clear_router_dhcpv4_server_statistics,
+  clear_router_dhcpv4_server_leases,
+  send_router_dhcpv4_force_renew,
   begin_dhcpv6_relay,
   add_dhcpv6_relay_interface_id,
   add_dhcpv6_relay_server,
@@ -178,6 +249,15 @@ enum class NetworkCommandKind : std::uint8_t {
   abort_dhcpv6_relay,
   remove_dhcpv6_relay,
   clear_dhcpv6_relay_leases,
+  begin_router_dhcpv6_server,
+  add_router_dhcpv6_server_dns,
+  add_router_dhcpv6_server_address_pool,
+  add_router_dhcpv6_server_prefix_pool,
+  commit_router_dhcpv6_server,
+  abort_router_dhcpv6_server,
+  remove_router_dhcpv6_server,
+  clear_router_dhcpv6_server_leases,
+  clear_router_dhcpv6_server_statistics,
   clear_mld_database,
   clear_mld_database_all,
   clear_mld_version,
@@ -195,6 +275,19 @@ enum class NetworkCommandKind : std::uint8_t {
   clear_router_advertisement_statistics_all,
   clear_router_advertisement_interface_statistics,
   configure_host,
+  begin_host_dhcpv4_client,
+  commit_host_dhcpv4_client,
+  abort_host_dhcpv4_client,
+  remove_host_dhcpv4_client,
+  begin_host_dhcpv4_server,
+  add_host_dhcpv4_server_dns,
+  add_host_dhcpv4_server_pool,
+  add_host_dhcpv4_server_reservation,
+  add_host_dhcpv4_server_exclusion,
+  commit_host_dhcpv4_server,
+  abort_host_dhcpv4_server,
+  remove_host_dhcpv4_server,
+  host_dhcpv4_client_status,
   begin_host_dhcpv6_client,
   add_host_dhcpv6_client_ia,
   add_host_dhcpv6_client_option,
@@ -261,6 +354,15 @@ struct NetworkCommand {
   std::uint64_t logical_interface_id{};
   NetworkCommandKind kind{};
   DeviceHandle device{};
+  // Router-local TCP uses a per-admission CSPRNG key for RFC 6528-style ISN
+  // derivation. This fixed value crosses the control-to-network SPSC command
+  // once and is retained only by the transport endpoint checkpoint.
+  crypto::Sha256Digest router_transport_secret{};
+  // Dedicated network services reuse the complete multiport packet engine but
+  // are hosts, not routers. The admission command publishes this immutable
+  // forwarding policy with the new instance so no packet can traverse a
+  // server during a later configuration window.
+  bool transit_forwarding_enabled{true};
   HostHandle host{};
   SwitchHandle ethernet_switch{};
   std::uint16_t switch_profile_index{};
@@ -276,11 +378,16 @@ struct NetworkCommand {
       Ipv6AddressGenerationBegin,
       RouterIpv6Address, StaticIpv6NeighborProgram, StaticIpv4NeighborProgram,
       RouterAdvertisementProgram, MldInterfaceProgram, SapGenerationBegin,
-      service::SapAttachment, service::ServiceIpv6Interface, Dhcpv6RelayBegin,
+      service::SapAttachment, service::ServiceIpv6Interface, Dhcpv4RelayBegin,
+      Dhcpv6RelayBegin,
       Dhcpv6RelayInterfaceIdChunk, dhcpv6::RelayDestination,
-      Dhcpv6RelayLeaseClearProgram, NetworkDhcpv6ClientBegin,
+      Dhcpv6RelayLeaseClearProgram, NetworkDhcpv4ClientBegin,
+      NetworkDhcpv4ServerBegin, packet::Ipv4, dhcpv4::Pool,
+      dhcpv4::Reservation, dhcpv4::ExcludedRange,
+      RouterDhcpv4ServerOperation, NetworkDhcpv6ClientBegin,
       NetworkDhcpv6ClientAssociation, NetworkDhcpv6ServerBegin,
-      dhcpv6::LeasePool, NetworkDnsResolverBegin, NetworkDnsRootHintBegin,
+      dhcpv6::LeasePool, RouterDhcpv6ServerOperation,
+      NetworkDnsResolverBegin, NetworkDnsRootHintBegin,
       dns::ServerAddress, NetworkDnsTrustAnchorBegin,
       NetworkDnsAuthoritativeBegin, NetworkDnsZoneBegin,
       NetworkDnsSigningKeyDefinition, NetworkDnsRecordBegin,
@@ -336,6 +443,10 @@ struct NetworkResult {
   // describe command validity. This avoids overloading false as both an absent
   // reply and a stale handle error.
   std::uint64_t value{};
+  // A DHCP client status is an immutable snapshot from one forwarding owner.
+  // It is pointer-free, bounded and meaningful only for the matching query
+  // kind when success is true.
+  dhcpv4::ClientStatus dhcpv4_client{};
   // Rich OSPF rows are still fixed, pointer-free values. A dedicated field
   // avoids encoding protocol state into unrelated scalar counters and keeps
   // the synchronous control result self-describing through `kind`.

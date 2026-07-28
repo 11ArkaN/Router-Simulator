@@ -27,17 +27,18 @@ void router_hardware_inventory_tests() {
   require(sr1 && sr7 && sr12, "generated chassis profiles are missing");
 
   RouterHardwareInventory fixed{{0, 1}, *sr1};
-  // SR-1 default integrated MDAs expose 6 plus 12 Ethernet ports. Users cannot
-  // remove the fixed card through modular inventory operations.
-  require(fixed.present_ports() == 18 && fixed.handle("1/1/1") &&
-              fixed.handle("1/2/12"),
+  // SR-1 exposes 6 plus 12 data ports and its independent OOB management
+  // connector. Users cannot remove either integrated hardware class through a
+  // modular card operation.
+  require(fixed.present_ports() == 19 && fixed.handle("1/1/1") &&
+              fixed.handle("1/2/12") && fixed.handle("management"),
           "fixed SR-1 inventory did not derive catalog ports");
   require(fixed.set_card(1, {}, {}) == HardwareEditResult::fixed_hardware,
           "fixed SR-1 accepted card removal");
 
   RouterHardwareInventory modular{{1, 1}, *sr7};
-  require(modular.present_ports() == 0,
-          "modular SR-7 created ports without hardware");
+  require(modular.present_ports() == 1 && modular.handle("management"),
+          "modular SR-7 did not isolate its integrated management port");
 
   RouterHardwareInventory retained{{3, 1}, *sr7};
   require(retained.configure_port("1/1/1", true, 1600, 100'000) ==
@@ -61,11 +62,11 @@ void router_hardware_inventory_tests() {
           "SR-7 rejected compatible card inventory");
   require(modular.set_mda(1, 1, "me10-10gb-sfp+", "me1-100gb-cfp2") ==
               HardwareEditResult::applied &&
-              modular.present_ports() == 0,
+              modular.present_ports() == 1,
           "MDA mismatch exposed operational ports");
   require(modular.set_mda(1, 1, "me10-10gb-sfp+", "me10-10gb-sfp+") ==
               HardwareEditResult::applied &&
-              modular.present_ports() == 10,
+              modular.present_ports() == 11,
           "matching MDA did not expose its ten ports");
   {
     // Runtime messages are temporary strings. Destroy both of them before a
@@ -80,7 +81,7 @@ void router_hardware_inventory_tests() {
     equipped.assign(256, 'y');
   }
   require(modular.set_card_admin(1, false) == HardwareEditResult::applied &&
-              modular.present_ports() == 10 && modular.find("1/1/10") &&
+              modular.present_ports() == 11 && modular.find("1/1/10") &&
               modular.configure_port("1/1/10", true, 9212, 10'000) ==
                   HardwareEditResult::applied,
           "inventory retained caller-owned MDA text after command return");
@@ -165,7 +166,7 @@ void router_hardware_inventory_tests() {
                     catalog_entry.set_mda(1, 1, mda.type, mda.type) ==
                         HardwareEditResult::applied &&
                     catalog_entry.present_ports() ==
-                        (mda.ethernet ? mda.port_count : 0U),
+                        (mda.ethernet ? mda.port_count + 1U : 1U),
                 "compatible generated hardware entry was not instantiable");
       }
 

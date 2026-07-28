@@ -65,6 +65,20 @@ export interface RuntimeHostV6 {
   gateway: string;
   mtu: number;
   interfaceId: string;
+  dhcpv4: {
+    configured: boolean;
+    state: "stopped" | "init" | "selecting" | "requesting" | "checking" |
+      "declining" | "bound" | "renewing" | "rebinding" | "init-reboot" |
+      "rebooting" | "releasing" | "informing" | "failed";
+    leasePresent: boolean;
+    address: string;
+    subnetMask: string;
+    router: string;
+    serverIdentifier: string;
+    renewRemainingMs: number;
+    rebindRemainingMs: number;
+    validRemainingMs: number;
+  };
   ipv6Autoconfiguration: boolean;
   ipv6InterfaceIdentifierMode: "modified-eui64" | "stable-opaque";
 }
@@ -117,6 +131,10 @@ export interface LabRuntimeSnapshotV6 {
   protocolVersion: typeof LAB_RUNTIME_PROTOCOL.version;
   status: "ready";
   routers: RuntimeRouterV6[];
+  // Dedicated servers use the same multiport projection fields. Their
+  // generated profile role, not a browser-provided discriminator, separates
+  // them from SR OS routers at this trust boundary.
+  dhcpServers: RuntimeRouterV6[];
   hosts: RuntimeHostV6[];
   switches: RuntimeSwitchV6[];
   links: RuntimeLinkV6[];
@@ -129,7 +147,10 @@ export interface LabRuntimeSnapshotV6 {
 }
 
 const identifier = /^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$/i;
-const portId = /^\d{1,2}\/\d{1,2}\/\d{1,3}$/;
+// The integrated BOF connector has a catalog identity rather than fabricated
+// card coordinates. Snapshot validation accepts that one explicit name while
+// project validation still checks whether the selected chassis owns it.
+const portId = /^(?:\d{1,2}\/\d{1,2}\/\d{1,3}|management)$/;
 const prefix = /^(?:\d{1,3}\.){3}\d{1,3}\/([0-9]|[12]\d|3[0-2])$/;
 const ipv4 = /^(?:\d{1,3}\.){3}\d{1,3}$/;
 const uint64 = /^(?:0|[1-9]\d{0,19})$/;
@@ -151,7 +172,10 @@ function validHandle(value: unknown): value is RuntimeHandleV6 {
 
 export function parseLabRuntimeSnapshotV6(input: unknown): LabRuntimeSnapshotV6 {
   assert(input && typeof input === "object", "Runtime snapshot must be an object");
-  const value = input as Partial<LabRuntimeSnapshotV6>;
+  // The native ABI stores both roles in its bounded network-device array.
+  // Parsing normalizes that compact representation into separate product
+  // collections without weakening validation of either role.
+  const value = input as Partial<Omit<LabRuntimeSnapshotV6, "dhcpServers">>;
   assert(value.abiVersion === LAB_RUNTIME_PROTOCOL.snapshotAbi &&
     value.protocolVersion === LAB_RUNTIME_PROTOCOL.version && value.status === "ready",
     "Runtime snapshot ABI is incompatible");
@@ -173,7 +197,8 @@ export function parseLabRuntimeSnapshotV6(input: unknown): LabRuntimeSnapshotV6 
   const handles = new Set<string>();
   for (const router of value.routers) {
     const profile = PROFILE_CATALOG.profiles.find((item) => item.id === router?.profileId);
-    assert(router && identifier.test(router.id) && !nodes.has(router.id) && profile &&
+    assert(router && identifier.test(router.id) && !nodes.has(router.id) &&
+      profile &&
       router.chassis === profile.chassis && typeof router.systemName === "string" &&
       Number.isSafeInteger(router.maximumEcmpPaths) &&
       router.maximumEcmpPaths >= 1 &&
@@ -262,7 +287,14 @@ export function parseLabRuntimeSnapshotV6(input: unknown): LabRuntimeSnapshotV6 
         (item.outgoingPortId === "" || portId.test(item.outgoingPortId))),
     "Runtime routing projection is invalid");
   }
+  const runtimeRouters = value.routers.filter((device) =>
+    PROFILE_CATALOG.profiles.find((profile) => profile.id === device.profileId)
+      ?.role === "router");
+  const runtimeDhcpServers = value.routers.filter((device) =>
+    PROFILE_CATALOG.profiles.find((profile) => profile.id === device.profileId)
+      ?.role === "dhcp-server");
   for (const host of value.hosts) {
+    const dhcpState = host?.dhcpv4?.state;
     assert(host && identifier.test(host.id) && !nodes.has(host.id) &&
       typeof host.name === "string" && validHandle(host.handle) &&
       /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/i.test(host.mac) &&
@@ -272,6 +304,25 @@ export function parseLabRuntimeSnapshotV6(input: unknown): LabRuntimeSnapshotV6 
       host.mtu <= PROFILE_CATALOG.ethernet.maximum_network_mtu &&
       uint64.test(host.interfaceId) &&
       BigInt(host.interfaceId) <= maximumUint64 &&
+      host.dhcpv4 && typeof host.dhcpv4.configured === "boolean" &&
+      ["stopped", "init", "selecting", "requesting", "checking",
+       "declining", "bound", "renewing", "rebinding", "init-reboot",
+       "rebooting", "releasing", "informing", "failed"].includes(
+        dhcpState ?? "") &&
+      typeof host.dhcpv4.leasePresent === "boolean" &&
+      (!host.dhcpv4.address || ipv4.test(host.dhcpv4.address)) &&
+      (!host.dhcpv4.subnetMask || ipv4.test(host.dhcpv4.subnetMask)) &&
+      (!host.dhcpv4.router || ipv4.test(host.dhcpv4.router)) &&
+      (!host.dhcpv4.serverIdentifier ||
+       ipv4.test(host.dhcpv4.serverIdentifier)) &&
+      finiteCounter(host.dhcpv4.renewRemainingMs) &&
+      finiteCounter(host.dhcpv4.rebindRemainingMs) &&
+      finiteCounter(host.dhcpv4.validRemainingMs) &&
+      (host.dhcpv4.leasePresent
+        ? Boolean(host.dhcpv4.address && host.dhcpv4.subnetMask &&
+            host.dhcpv4.serverIdentifier)
+        : !host.dhcpv4.address && !host.dhcpv4.subnetMask &&
+          !host.dhcpv4.router && !host.dhcpv4.serverIdentifier) &&
       typeof host.ipv6Autoconfiguration === "boolean" &&
       (host.ipv6InterfaceIdentifierMode === "modified-eui64" ||
        host.ipv6InterfaceIdentifierMode === "stable-opaque") &&
@@ -323,7 +374,7 @@ export function parseLabRuntimeSnapshotV6(input: unknown): LabRuntimeSnapshotV6 
   const counts = new Map<string, number>();
   for (const session of value.sessions) {
     assert(session && identifier.test(session.id) && !sessionIds.has(session.id) &&
-      value.routers.some((router) => router.id === session.routerId) &&
+      runtimeRouters.some((router) => router.id === session.routerId) &&
       Number.isInteger(session.mode) && session.mode >= 0 && session.mode <= 4 &&
       (session.engine === "md" || session.engine === "classic"),
     "Runtime terminal session projection is invalid");
@@ -351,5 +402,10 @@ export function parseLabRuntimeSnapshotV6(input: unknown): LabRuntimeSnapshotV6 
     "Runtime capture point projection is invalid");
     captureIds.add(point.id);
   }
-  return structuredClone(value as LabRuntimeSnapshotV6);
+  const clone = structuredClone(value);
+  return {
+    ...clone,
+    routers: runtimeRouters.map((router) => structuredClone(router)),
+    dhcpServers: runtimeDhcpServers.map((server) => structuredClone(server))
+  } as LabRuntimeSnapshotV6;
 }

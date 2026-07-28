@@ -38,17 +38,21 @@ struct EthernetSwitchProfile {
 // One release owns this entire generated catalog. Runtime capability output
 // consumes this value instead of repeating the release pin in hand-written C++.
 inline constexpr std::string_view release{"26.7.R1"};
-inline constexpr std::uint64_t catalog_hash = 0xcb781470f7aa6127ULL;
-inline constexpr std::uint64_t checkpoint_schema_hash = 0x7fccb54e0ce85c26ULL;
-inline constexpr std::uint64_t runtime_protocol_hash = 0x93fe9fe7c895d610ULL;
-inline constexpr std::uint64_t build_hash = 0xd752418b11155075ULL;
+inline constexpr std::uint64_t catalog_hash = 0xbeffdbc0ca23127fULL;
+inline constexpr std::uint64_t checkpoint_schema_hash = 0x5ca8da0d50e71435ULL;
+inline constexpr std::uint64_t runtime_protocol_hash = 0x513c19fec444dbd2ULL;
+inline constexpr std::uint64_t build_hash = 0x4d0354803b7cb5a0ULL;
 
 inline constexpr std::size_t maximum_routers = 16;
+inline constexpr std::size_t maximum_sr_routers = 16;
+inline constexpr std::size_t maximum_dhcp_servers = 4;
 inline constexpr std::size_t maximum_hosts = 16;
 inline constexpr std::size_t maximum_switches = 16;
 inline constexpr std::size_t maximum_links = 64;
 inline constexpr std::size_t maximum_sessions_per_router = 4;
-inline constexpr std::size_t maximum_ports_per_router = 800;
+inline constexpr std::size_t maximum_ports_per_router = 801;
+inline constexpr std::uint16_t management_port_ordinal =
+    800;
 inline constexpr std::size_t maximum_card_slots = 10;
 inline constexpr std::size_t maximum_mda_slots_per_card = 2;
 inline constexpr std::size_t maximum_ports_per_mda = 40;
@@ -143,7 +147,25 @@ inline constexpr std::uint32_t dns_resolver_attempts_per_server = 2;
 inline constexpr std::uint32_t dns_resolver_max_minimise_count = 10;
 inline constexpr std::uint32_t dns_resolver_minimise_one_label_count = 4;
 inline constexpr std::uint32_t dns_resolver_max_alias_hops = 16;
+inline constexpr std::size_t dhcpv4_pools_per_server = 16;
+inline constexpr std::size_t dhcpv4_servers_per_router = 16;
+inline constexpr std::size_t dhcpv4_leases_per_server = 2048;
+inline constexpr std::size_t dhcpv4_leasequery_connections_per_server = 10;
+inline constexpr std::uint32_t dhcpv4_bulk_leasequery_data_timeout_seconds = 300;
+inline constexpr std::uint32_t dhcpv4_active_leasequery_idle_seconds = 60;
+inline constexpr std::uint32_t dhcpv4_active_leasequery_data_timeout_seconds = 120;
+inline constexpr std::size_t dhcpv4_pending_offers_per_server = 512;
+inline constexpr std::size_t dhcpv4_declined_addresses_per_server = 512;
+inline constexpr std::size_t dhcpv4_relay_servers_per_interface = 8;
+inline constexpr std::size_t dhcpv4_option_occurrences_per_message = 512;
+inline constexpr std::size_t dhcpv4_normalized_option_octets = 65507;
+inline constexpr std::size_t dhcp_failover_relationships_per_server = 16;
+inline constexpr std::size_t dhcp_failover_updates_in_flight = 256;
+inline constexpr std::size_t dhcp_failover_options_per_message = 512;
+inline constexpr std::size_t dhcp_failover_connections_per_server = 16;
+inline constexpr std::size_t dhcp_failover_shared_secret_bytes = 1024;
 inline constexpr std::size_t dhcpv6_address_pools_per_server = 8;
+inline constexpr std::size_t dhcpv6_servers_per_router = 16;
 inline constexpr std::size_t dhcpv6_prefix_pools_per_server = 8;
 inline constexpr std::size_t dhcpv6_leases_per_server = 1024;
 inline constexpr std::size_t dhcpv6_relay_servers_per_interface = 8;
@@ -161,6 +183,7 @@ inline constexpr std::size_t ipv6_slaac_addresses_per_host_interface = 16;
 inline constexpr std::size_t ipv6_rdnss_entries_per_host_interface = 8;
 inline constexpr std::size_t ipv6_stable_iid_network_id_octets = 64;
 inline constexpr std::size_t host_ipv6_work_budget_actions = 8;
+inline constexpr std::size_t host_application_work_budget_datagrams = 8;
 inline constexpr std::size_t mld_groups_per_interface = 64;
 inline constexpr std::size_t mld_sources_per_group = 64;
 inline constexpr std::size_t mld_records_per_report = 64;
@@ -188,7 +211,7 @@ inline constexpr std::uint8_t ospf_v3_ipv4_instance_first = 64;
 inline constexpr std::uint8_t ospf_v3_ipv4_instance_last = 95;
 inline constexpr std::size_t candidate_keys_per_router = 16384;
 inline constexpr std::size_t candidate_keys_per_session = 128;
-inline constexpr std::size_t maximum_active_capture_points = 25744;
+inline constexpr std::size_t maximum_active_capture_points = 25776;
 inline constexpr std::size_t capture_point_name_bytes = 512;
 inline constexpr std::uint16_t default_network_mtu = 9212;
 inline constexpr std::uint16_t minimum_network_mtu = 512;
@@ -246,6 +269,26 @@ inline constexpr std::array<TlsAlgorithmName, 15> tls13_signatures{{
 }};
 inline constexpr std::chrono::seconds dynamic_arp_timeout{
     14400};
+inline constexpr std::size_t dhcpv4_server_name_bytes =
+    32;
+inline constexpr std::size_t dhcpv4_description_bytes =
+    80;
+inline constexpr std::uint32_t dhcpv4_lease_time_minimum_seconds =
+    10U;
+inline constexpr std::uint32_t dhcpv4_lease_time_maximum_seconds =
+    315446399U;
+inline constexpr std::uint32_t dhcpv4_minimum_lease_time_seconds =
+    600U;
+inline constexpr std::uint32_t dhcpv4_maximum_lease_time_seconds =
+    864000U;
+inline constexpr std::uint32_t dhcpv4_offer_time_minimum_seconds =
+    10U;
+inline constexpr std::uint32_t dhcpv4_offer_time_maximum_seconds =
+    600U;
+inline constexpr std::uint32_t dhcpv4_offer_time_seconds =
+    60U;
+inline constexpr std::uint32_t dhcpv4_maximum_declined_default =
+    64U;
 inline constexpr std::chrono::seconds ospf_hello_interval{
     10};
 inline constexpr std::chrono::seconds ospf_dead_interval{
@@ -534,11 +577,22 @@ struct CardProfile {
   std::uint16_t mda_count{};
 };
 
+// The role is immutable profile identity. Keeping it in the generated catalog
+// lets runtime, persistence and UI enforce the same capacity and behavior
+// without comparing product IDs or maintaining parallel hardcoded lists.
+enum class DeviceRole : std::uint8_t {
+  router,
+  dhcp_server,
+};
+
 struct DeviceProfile {
   std::string_view id;
   std::string_view chassis;
   std::string_view release;
+  DeviceRole role{DeviceRole::router};
   bool fixed{};
+  bool management_port{};
+  bool bof_autoconfigure{};
   std::uint8_t card_slots{};
   std::uint16_t first_card{};
   std::uint16_t card_count{};
@@ -549,7 +603,8 @@ struct DeviceProfile {
   std::uint16_t maximum_ports{};
 };
 
-inline constexpr std::array<MdaProfile, 27> mdas{{
+inline constexpr std::array<MdaProfile, 28> mdas{{
+    {"server-8x10g", true, 8, 1, {{{8, {{10000U, 100000U}}}, {0, {{0U, 0U}}}}}},
     {"isa2-aa", false, 0, 0, {{{0, {{0U, 0U}}}, {0, {{0U, 0U}}}}}},
     {"isa2-bb", false, 0, 0, {{{0, {{0U, 0U}}}, {0, {{0U, 0U}}}}}},
     {"isa2-tunnel", false, 0, 0, {{{0, {{0U, 0U}}}, {0, {{0U, 0U}}}}}},
@@ -579,11 +634,11 @@ inline constexpr std::array<MdaProfile, 27> mdas{{
     {"m5e16-100g-sfp112", true, 16, 1, {{{16, {{100000U, 0U}}}, {0, {{0U, 0U}}}}}}
 }};
 
-inline constexpr std::array<std::uint16_t, 95> card_mdas{{
-    16U, 17U, 18U, 19U, 20U, 21U, 22U, 23U, 24U, 25U, 26U, 0U, 1U, 2U, 3U, 4U, 7U, 0U, 1U, 2U, 8U, 9U, 10U, 11U, 12U, 13U, 14U, 15U, 0U, 1U, 2U, 8U, 9U, 10U, 11U, 12U, 13U, 14U, 15U, 8U, 9U, 10U, 11U, 12U, 13U, 14U, 15U, 17U, 18U, 20U, 21U, 22U, 0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 0U, 1U, 2U, 8U, 9U, 10U, 11U, 12U, 13U, 14U, 15U, 0U, 1U, 2U, 8U, 9U, 10U, 11U, 12U, 13U, 14U, 15U, 8U, 9U, 10U, 11U, 12U, 13U, 14U, 15U, 17U, 18U, 20U, 21U, 22U
+inline constexpr std::array<std::uint16_t, 96> card_mdas{{
+    17U, 18U, 19U, 20U, 21U, 22U, 23U, 24U, 25U, 26U, 27U, 1U, 2U, 3U, 4U, 5U, 8U, 1U, 2U, 3U, 9U, 10U, 11U, 12U, 13U, 14U, 15U, 16U, 1U, 2U, 3U, 9U, 10U, 11U, 12U, 13U, 14U, 15U, 16U, 9U, 10U, 11U, 12U, 13U, 14U, 15U, 16U, 18U, 19U, 21U, 22U, 23U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U, 1U, 2U, 3U, 9U, 10U, 11U, 12U, 13U, 14U, 15U, 16U, 1U, 2U, 3U, 9U, 10U, 11U, 12U, 13U, 14U, 15U, 16U, 9U, 10U, 11U, 12U, 13U, 14U, 15U, 16U, 18U, 19U, 21U, 22U, 23U, 0U
 }};
 
-inline constexpr std::array<CardProfile, 13> cards{{
+inline constexpr std::array<CardProfile, 14> cards{{
     {"7750-sr-1", "cpm-1", true, 2, 0, 11},
     {"7750-sr-7", "imm-2pac-fp3", false, 2, 11, 5},
     {"7750-sr-7", "imm48-1gb-sfp-c", false, 1, 16, 1},
@@ -596,13 +651,15 @@ inline constexpr std::array<CardProfile, 13> cards{{
     {"7750-sr-12", "iom4-e", false, 2, 60, 11},
     {"7750-sr-12", "iom4-e-b", false, 2, 71, 11},
     {"7750-sr-12", "iom4-e-hs", false, 2, 82, 8},
-    {"7750-sr-12", "iom5-e", false, 2, 90, 5}
+    {"7750-sr-12", "iom5-e", false, 2, 90, 5},
+    {"generic-dhcp-server-8", "server-nic-8", true, 1, 95, 1}
 }};
 
-inline constexpr std::array<DeviceProfile, 3> profiles{{
-    {"7750-sr-1", "7750 SR-1", "26.7.R1", true, 0, 0, 1, "A", "cpm-1", "cpm-1", {"me6-100gb-qsfp28", "me12-100gb-qsfp28"}, 36},
-    {"7750-sr-7", "7750 SR-7", "26.7.R1", false, 5, 1, 6, "A", "cpm5", "iom5-e", {"me6-100gb-qsfp28", ""}, 400},
-    {"7750-sr-12", "7750 SR-12", "26.7.R1", false, 10, 7, 6, "A", "cpm5", "iom5-e", {"me6-100gb-qsfp28", ""}, 800}
+inline constexpr std::array<DeviceProfile, 4> profiles{{
+    {"7750-sr-1", "7750 SR-1", "26.7.R1", DeviceRole::router, true, true, true, 0, 0, 1, "A", "cpm-1", "cpm-1", {"me6-100gb-qsfp28", "me12-100gb-qsfp28"}, 37},
+    {"7750-sr-7", "7750 SR-7", "26.7.R1", DeviceRole::router, false, true, true, 5, 1, 6, "A", "cpm5", "iom5-e", {"me6-100gb-qsfp28", ""}, 401},
+    {"7750-sr-12", "7750 SR-12", "26.7.R1", DeviceRole::router, false, true, false, 10, 7, 6, "A", "cpm5", "iom5-e", {"me6-100gb-qsfp28", ""}, 801},
+    {"generic-dhcp-server-8", "Dedicated DHCP Server", "26.7.R1", DeviceRole::dhcp_server, true, false, false, 0, 13, 1, "system", "server-control", "server-nic-8", {"server-8x10g", ""}, 8}
 }};
 
 [[nodiscard]] constexpr const DeviceProfile *find_profile(std::string_view id) noexcept {

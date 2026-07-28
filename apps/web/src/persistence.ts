@@ -7,6 +7,7 @@ import {
   createEmptyProjectV4,
   parseLabProjectV4,
   parseTerminalPresentationV2,
+  type DhcpServerProjectV5,
   type HostProjectV4,
   type LabProjectV4,
   type LinkProjectV4,
@@ -17,9 +18,10 @@ import {
 } from "@router-simulator/contracts";
 
 const DATABASE_NAME = "router-simulator-v5";
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const HEADS = "project-heads";
 const ROUTERS = "project-routers";
+const DHCP_SERVERS = "project-dhcp-servers";
 const HOSTS = "project-hosts";
 const SWITCHES = "project-switches";
 const LINKS = "project-links";
@@ -39,6 +41,7 @@ interface ProjectHead {
   layout: LabProjectV4["layout"];
   updatedAt: string;
   routers: string[];
+  dhcpServers: string[];
   hosts: string[];
   switches: string[];
   links: string[];
@@ -60,13 +63,15 @@ export interface PersistedPresentation {
 
 export interface ProjectRevisionSummary {
   routersWritten: number;
+  dhcpServersWritten: number;
   hostsWritten: number;
   linksWritten: number;
   switchesWritten: number;
 }
 
 type ProjectObject =
-  RouterProjectV4 | HostProjectV4 | SwitchProjectV5 | LinkProjectV4;
+  RouterProjectV4 | DhcpServerProjectV5 | HostProjectV4 |
+  SwitchProjectV5 | LinkProjectV4;
 
 const ENCRYPTED_FORMAT = "router-simulator-encrypted-manifest";
 const ENCRYPTED_VERSION = 1;
@@ -114,7 +119,8 @@ function database(): Promise<IDBDatabase> {
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
     request.onupgradeneeded = () => {
       for (const store of
-        [HEADS, ROUTERS, HOSTS, SWITCHES, LINKS, PRESENTATION, ACTIVE]) {
+        [HEADS, ROUTERS, DHCP_SERVERS, HOSTS, SWITCHES, LINKS, PRESENTATION,
+          ACTIVE]) {
         if (!request.result.objectStoreNames.contains(store)) {
           request.result.createObjectStore(store);
         }
@@ -171,6 +177,7 @@ function head(project: LabProjectV4): ProjectHead {
     layout: project.layout,
     updatedAt: project.updatedAt,
     routers: project.routers.map((item) => item.id),
+    dhcpServers: project.dhcpServers.map((item) => item.id),
     hosts: project.hosts.map((item) => item.id),
     switches: project.switches.map((item) => item.id),
     links: project.links.map((item) => item.id)
@@ -199,17 +206,21 @@ async function saveNow(input: LabProjectV4): Promise<ProjectRevisionSummary> {
   const db = await database();
   const previousHead = await requestValue(db.transaction(HEADS).objectStore(HEADS)
     .get(project.projectId)) as ProjectHead | undefined;
-  const [routerRecords, hostRecords, switchRecords, linkRecords] =
+  const [routerRecords, dhcpServerRecords, hostRecords, switchRecords,
+    linkRecords] =
     await Promise.all([
     currentRecords(db, ROUTERS, project.projectId, project.routers),
+    currentRecords(db, DHCP_SERVERS, project.projectId, project.dhcpServers),
     currentRecords(db, HOSTS, project.projectId, project.hosts),
     currentRecords(db, SWITCHES, project.projectId, project.switches),
     currentRecords(db, LINKS, project.projectId, project.links)
   ]);
   const transaction = db.transaction(
-    [HEADS, ROUTERS, HOSTS, SWITCHES, LINKS, ACTIVE], "readwrite");
+    [HEADS, ROUTERS, DHCP_SERVERS, HOSTS, SWITCHES, LINKS, ACTIVE],
+    "readwrite");
   const summary: ProjectRevisionSummary = {
     routersWritten: 0,
+    dhcpServersWritten: 0,
     hostsWritten: 0,
     switchesWritten: 0,
     linksWritten: 0
@@ -229,6 +240,8 @@ async function saveNow(input: LabProjectV4): Promise<ProjectRevisionSummary> {
     }
   };
   write(ROUTERS, project.routers, routerRecords, "routersWritten");
+  write(DHCP_SERVERS, project.dhcpServers, dhcpServerRecords,
+    "dhcpServersWritten");
   write(HOSTS, project.hosts, hostRecords, "hostsWritten");
   write(SWITCHES, project.switches, switchRecords, "switchesWritten");
   write(LINKS, project.links, linkRecords, "linksWritten");
@@ -242,6 +255,8 @@ async function saveNow(input: LabProjectV4): Promise<ProjectRevisionSummary> {
     }
   };
   removeMissing(ROUTERS, previousHead?.routers, project.routers.map((item) => item.id));
+  removeMissing(DHCP_SERVERS, previousHead?.dhcpServers,
+    project.dhcpServers.map((item) => item.id));
   removeMissing(HOSTS, previousHead?.hosts, project.hosts.map((item) => item.id));
   removeMissing(SWITCHES, previousHead?.switches,
     project.switches.map((item) => item.id));
@@ -277,8 +292,9 @@ export async function loadLabProjectV4(projectId: string): Promise<LabProjectV4 
     }
     return records.map((record) => record!.value);
   };
-  const [routers, hosts, switches, links] = await Promise.all([
+  const [routers, dhcpServers, hosts, switches, links] = await Promise.all([
     read<RouterProjectV4>(ROUTERS, projectHead.routers),
+    read<DhcpServerProjectV5>(DHCP_SERVERS, projectHead.dhcpServers ?? []),
     read<HostProjectV4>(HOSTS, projectHead.hosts),
     read<SwitchProjectV5>(SWITCHES, projectHead.switches),
     read<LinkProjectV4>(LINKS, projectHead.links)
@@ -296,6 +312,7 @@ export async function loadLabProjectV4(projectId: string): Promise<LabProjectV4 
     layout: projectHead.layout,
     updatedAt: projectHead.updatedAt,
     routers,
+    dhcpServers,
     hosts,
     switches,
     links

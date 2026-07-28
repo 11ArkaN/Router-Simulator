@@ -8,6 +8,7 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <utility>
 
 namespace router::dhcpv6 {
@@ -22,15 +23,21 @@ enum class StatusCode : std::uint16_t {
   no_addresses_available = 2U,
   no_binding = 3U,
   not_on_link = 4U,
-  no_prefixes_available = 6U
+  no_prefixes_available = 6U,
+  unknown_query_type = 7U,
+  malformed_query = 8U,
+  not_configured = 9U,
+  not_allowed = 10U
 };
 
 struct RequestOptions {
   std::span<const std::uint8_t> client_identifier{};
   std::span<const std::uint8_t> server_identifier{};
   std::span<const std::uint8_t> option_request{};
+  std::span<const std::uint8_t> leasequery_query{};
   bool rapid_commit{};
   bool has_identity_association{};
+  bool leasequery_query_present{};
   bool valid{true};
 };
 
@@ -81,6 +88,15 @@ RequestOptions scan_options(std::span<const std::uint8_t> bytes) noexcept {
       if (result.rapid_commit || !option->data.empty())
         result.valid = false;
       result.rapid_commit = true;
+    } else if (option->code == code(OptionCode::leasequery_query)) {
+      // RFC 5007 requires exactly one query option. Empty is not used as the
+      // duplicate sentinel because a zero-length occurrence is itself a
+      // malformed query that still has to be distinguished from absence.
+      if (result.leasequery_query_present)
+        result.valid = false;
+      else
+        result.leasequery_query = option->data;
+      result.leasequery_query_present = true;
     } else if (option->code == code(OptionCode::ia_na) ||
                option->code == code(OptionCode::ia_pd)) {
       result.has_identity_association = true;
@@ -134,8 +150,10 @@ bool append_u32_option(packet::dhcpv6::Writer &writer,
 }
 
 ClientIdentity identity(std::span<const std::uint8_t> duid,
+                        const crypto::Sha256Digest &link_identity,
                         std::uint32_t iaid, LeaseKind kind) noexcept {
-  ClientIdentity result{.duid_octets = static_cast<std::uint16_t>(duid.size()),
+  ClientIdentity result{.link_identity = link_identity,
+                        .duid_octets = static_cast<std::uint16_t>(duid.size()),
                         .iaid = iaid,
                         .kind = kind};
   std::copy(duid.begin(), duid.end(), result.duid.begin());
@@ -204,11 +222,99 @@ bool append_ia(packet::dhcpv6::Writer &writer, OptionCode ia_code,
                            *encoded_association));
 }
 
+// Return the client-facing message nested under any legal Relay-forward or
+// Relay-reply chain. The server uses this only after the ordinary bounded
+// parser has accepted each layer, so statistics never introduce a second,
+// looser wire decoder.
+std::optional<std::uint8_t>
+innermost_message_type(std::span<const std::uint8_t> bytes) noexcept {
+  for (std::uint8_t depth{}; depth <= packet::dhcpv6::hop_count_limit;
+       ++depth) {
+    const auto message = packet::dhcpv6::parse(bytes);
+    if (!message)
+      return std::nullopt;
+    if (!message->relay)
+      return message->type;
+
+    std::span<const std::uint8_t> inner;
+    bool found{};
+    packet::dhcpv6::OptionCursor cursor{message->options};
+    while (const auto option = cursor.next()) {
+      if (option->code != code(OptionCode::relay_message))
+        continue;
+      if (found)
+        return std::nullopt;
+      inner = option->data;
+      found = true;
+    }
+    if (!cursor.valid() || !found)
+      return std::nullopt;
+    bytes = inner;
+  }
+  return std::nullopt;
+}
+
+void note_received(ServerStatistics &statistics,
+                   std::uint8_t message_type) noexcept {
+  switch (static_cast<MessageType>(message_type)) {
+  case MessageType::solicit:
+    ++statistics.rx_solicit;
+    break;
+  case MessageType::request:
+    ++statistics.rx_request;
+    break;
+  case MessageType::confirm:
+    ++statistics.rx_confirm;
+    break;
+  case MessageType::renew:
+    ++statistics.rx_renew;
+    break;
+  case MessageType::rebind:
+    ++statistics.rx_rebind;
+    break;
+  case MessageType::release:
+    ++statistics.rx_release;
+    break;
+  case MessageType::decline:
+    ++statistics.rx_decline;
+    break;
+  case MessageType::information_request:
+    ++statistics.rx_information_request;
+    break;
+  case MessageType::leasequery:
+    ++statistics.rx_leasequery;
+    break;
+  default:
+    break;
+  }
+}
+
+void note_transmitted(ServerStatistics &statistics,
+                      std::uint8_t message_type) noexcept {
+  switch (static_cast<MessageType>(message_type)) {
+  case MessageType::advertise:
+    ++statistics.tx_advertise;
+    break;
+  case MessageType::reply:
+    ++statistics.tx_reply;
+    break;
+  case MessageType::reconfigure:
+    ++statistics.tx_reconfigure;
+    break;
+  case MessageType::leasequery_reply:
+    ++statistics.tx_leasequery_reply;
+    break;
+  default:
+    break;
+  }
+}
+
 } // namespace
 
 Server::Server()
     : relay_scratch_a_(packet::dhcpv6::maximum_message_octets),
-      relay_scratch_b_(packet::dhcpv6::maximum_message_octets) {}
+      relay_scratch_b_(packet::dhcpv6::maximum_message_octets),
+      leasequery_scratch_(packet::dhcpv6::maximum_message_octets) {}
 
 bool Server::configure(const ServerConfiguration &configuration,
                        std::span<const LeasePool> address_pools,
@@ -251,6 +357,28 @@ bool Server::configure(const ServerConfiguration &configuration,
       !std::all_of(prefix_pools.begin(), prefix_pools.end(), consistent))
     return false;
 
+  const auto unambiguous_links = [](std::span<const LeasePool> pools) {
+    for (std::size_t left = 0; left < pools.size(); ++left) {
+      if (!pools[left].link_scoped)
+        continue;
+      const bool nonzero = std::any_of(
+          pools[left].link_identity.begin(), pools[left].link_identity.end(),
+          [](std::uint8_t value) { return value != 0U; });
+      if (!nonzero)
+        return false;
+      for (std::size_t right = left + 1U; right < pools.size(); ++right)
+        if (pools[right].link_scoped &&
+            pools[left].link_identity == pools[right].link_identity)
+          return false;
+    }
+    return true;
+  };
+  // One address pool and one prefix pool may serve the same link, but two
+  // pools of the same IA kind would make request handling order-dependent.
+  if (!unambiguous_links(address_pools) ||
+      !unambiguous_links(prefix_pools))
+    return false;
+
   ServerConfiguration staged_configuration;
   std::vector<LeasePool> staged_address_pools;
   std::vector<LeasePool> staged_prefix_pools;
@@ -264,14 +392,23 @@ bool Server::configure(const ServerConfiguration &configuration,
   } catch (...) {
     return false;
   }
-  LeaseRepository staged;
-  if (!staged.configure(address_pools, prefix_pools, decline_hold_time))
+  // LeaseRepository owns the complete generated lease arena. Staging it on a
+  // WebAssembly pthread stack would make configuration depth determine
+  // whether an otherwise valid server overflows the stack. Heap staging keeps
+  // the replacement atomic and converts allocation failure into `false`.
+  auto staged = std::unique_ptr<LeaseRepository>{};
+  try {
+    staged = std::make_unique<LeaseRepository>();
+  } catch (...) {
+    return false;
+  }
+  if (!staged->configure(address_pools, prefix_pools, decline_hold_time))
     return false;
   configuration_ = std::move(staged_configuration);
   address_pools_ = std::move(staged_address_pools);
   prefix_pools_ = std::move(staged_prefix_pools);
   decline_hold_time_ = decline_hold_time;
-  leases_ = std::move(staged);
+  leases_ = std::move(*staged);
   configured_ = true;
   return true;
 }
@@ -281,6 +418,8 @@ ServerCheckpoint Server::checkpoint(Clock::time_point now) const {
           .address_pools = address_pools_,
           .prefix_pools = prefix_pools_,
           .leases = leases_.checkpoint(now),
+          .failover_bindings = leases_.failover_checkpoint(),
+          .statistics = statistics_,
           .decline_hold_seconds = decline_hold_time_.count(),
           .configured = configured_};
 }
@@ -293,7 +432,9 @@ bool Server::validate_checkpoint(const ServerCheckpoint &state) noexcept {
     return staged.configure(
                state.configuration, state.address_pools, state.prefix_pools,
                std::chrono::seconds{state.decline_hold_seconds}) &&
-           staged.leases_.validate_checkpoint(state.leases);
+           staged.leases_.validate_checkpoint(state.leases) &&
+           staged.leases_.validate_failover_checkpoint(
+               state.failover_bindings);
   } catch (...) {
     return false;
   }
@@ -307,8 +448,11 @@ bool Server::restore(const ServerCheckpoint &state, Clock::time_point now) noexc
     if (!staged.configure(
             state.configuration, state.address_pools, state.prefix_pools,
             std::chrono::seconds{state.decline_hold_seconds}) ||
-        !staged.leases_.restore(state.leases, now))
+        !staged.leases_.restore(state.leases, now) ||
+        !staged.leases_.restore_failover_checkpoint(
+            state.failover_bindings))
       return false;
+    staged.statistics_ = state.statistics;
     *this = std::move(staged);
     return true;
   } catch (...) {
@@ -318,13 +462,71 @@ bool Server::restore(const ServerCheckpoint &state, Clock::time_point now) noexc
 
 ServerProcessResult Server::process(std::span<const std::uint8_t> input,
                                     std::span<std::uint8_t> output,
-                                    Clock::time_point now) noexcept {
-  return process_impl(input, output, now, 0U);
+                                    Clock::time_point now,
+                                    const crypto::Sha256Digest
+                                        &direct_link_identity,
+                                    packet::Ipv6 direct_client_address) noexcept {
+  // Statistics are updated only at the public service boundary. Recursive
+  // relay processing therefore cannot double-count the same nested message.
+  const auto outer = packet::dhcpv6::parse(input);
+  const auto inner_type = innermost_message_type(input);
+  if (!outer || !inner_type) {
+    ++statistics_.dropped_bad_packet;
+    return process_impl(input, output, now, 0U, direct_link_identity,
+                        direct_client_address);
+  }
+  if (outer->type == type(MessageType::relay_forward))
+    ++statistics_.rx_relay_forward;
+  note_received(statistics_, *inner_type);
+
+  const auto result = process_impl(input, output, now, 0U,
+                                   direct_link_identity,
+                                   direct_client_address);
+  if (result.status == ServerProcessStatus::malformed ||
+      result.status == ServerProcessStatus::unsupported_relay)
+    ++statistics_.dropped_bad_packet;
+  else if (result.status == ServerProcessStatus::output_too_small)
+    ++statistics_.dropped_resource_exhausted;
+
+  if (result.status != ServerProcessStatus::response)
+    return result;
+  const auto response_bytes = output.first(result.message_octets);
+  const auto response_outer = packet::dhcpv6::parse(response_bytes);
+  const auto response_inner = innermost_message_type(response_bytes);
+  if (response_outer &&
+      response_outer->type == type(MessageType::relay_reply))
+    ++statistics_.tx_relay_reply;
+  if (response_inner)
+    note_transmitted(statistics_, *response_inner);
+  return result;
+}
+
+std::optional<std::size_t>
+Server::pool_for(LeaseKind kind,
+                 const crypto::Sha256Digest &link_identity) const noexcept {
+  const auto &pools =
+      kind == LeaseKind::prefix ? prefix_pools_ : address_pools_;
+  const auto configured_index =
+      kind == LeaseKind::prefix ? configuration_.prefix_pool_index
+                                : configuration_.address_pool_index;
+
+  // An explicitly scoped pool always wins. At most one matching scope is
+  // admitted by configure(), so selection cannot depend on YAML or vector
+  // order when a Base server owns several client-facing links.
+  for (std::size_t index = 0; index < pools.size(); ++index)
+    if (pools[index].link_scoped &&
+        pools[index].link_identity == link_identity)
+      return index;
+  if (configured_index < pools.size() && !pools[configured_index].link_scoped)
+    return configured_index;
+  return std::nullopt;
 }
 
 ServerProcessResult Server::process_impl(
     std::span<const std::uint8_t> input, std::span<std::uint8_t> output,
-    Clock::time_point now, std::uint8_t relay_depth) noexcept {
+    Clock::time_point now, std::uint8_t relay_depth,
+    const crypto::Sha256Digest &link_identity,
+    packet::Ipv6 client_address) noexcept {
   if (!configured_)
     return {.status = ServerProcessStatus::not_configured};
   // A larger caller buffer must not let DHCP bypass the ordinary IPv6 UDP
@@ -340,9 +542,21 @@ ServerProcessResult Server::process_impl(
         relay_depth >= packet::dhcpv6::hop_count_limit)
       return {.status = ServerProcessStatus::unsupported_relay};
     std::span<const std::uint8_t> inner;
+    // The relay link-address and complete Interface-ID bytes identify the
+    // allocation link. Hashing their length-delimited wire values prevents
+    // ambiguous concatenation while keeping the lease key fixed-size.
+    crypto::Sha256 relay_link_hash;
+    relay_link_hash.update(request->link_address);
     bool have_inner{};
     packet::dhcpv6::OptionCursor relay_options{request->options};
     while (const auto option = relay_options.next()) {
+      if (option->code == code(OptionCode::interface_id)) {
+        const std::array<std::uint8_t, 2U> length{
+            static_cast<std::uint8_t>(option->data.size() >> 8U),
+            static_cast<std::uint8_t>(option->data.size())};
+        relay_link_hash.update(length);
+        relay_link_hash.update(option->data);
+      }
       if (option->code != code(OptionCode::relay_message))
         continue;
       if (have_inner)
@@ -352,9 +566,11 @@ ServerProcessResult Server::process_impl(
     }
     if (!relay_options.valid() || !have_inner)
       return {.status = ServerProcessStatus::malformed};
-    const auto inner_result = process_impl(
-        inner, relay_scratch_a_, now,
-        static_cast<std::uint8_t>(relay_depth + 1U));
+    const auto relay_link_identity = relay_link_hash.finish();
+    const auto inner_result =
+        process_impl(inner, relay_scratch_a_, now,
+                     static_cast<std::uint8_t>(relay_depth + 1U),
+                     relay_link_identity, request->peer_address);
     if (inner_result.status != ServerProcessStatus::response)
       return inner_result;
     const auto wrapped = encapsulate_relay_reply(
@@ -378,6 +594,153 @@ ServerProcessResult Server::process_impl(
     return {.status = ServerProcessStatus::malformed};
 
   const auto message_type = request->type;
+  if (message_type == type(MessageType::leasequery)) {
+    // RFC 5007 validates the outer requestor identity before interpreting the
+    // nested query. Nokia's documented server surface enables only lookup by
+    // DUID, but unsupported query types still receive a standards-compliant
+    // reply rather than being mistaken for malformed ordinary DHCPv6.
+    if (options.client_identifier.empty() ||
+        !options.leasequery_query_present ||
+        (!options.server_identifier.empty() &&
+         !same_identifier(options.server_identifier, configuration_)))
+      return {.status = ServerProcessStatus::discarded};
+
+    auto writer = packet::dhcpv6::begin_client_server(
+        output, type(MessageType::leasequery_reply),
+        request->transaction_id);
+    if (!writer)
+      return {.status = ServerProcessStatus::output_too_small};
+    const auto server_duid =
+        std::span<const std::uint8_t>{configuration_.duid}.first(
+            configuration_.duid_octets);
+    if (!writer->append(code(OptionCode::server_identifier), server_duid) ||
+        !writer->append(code(OptionCode::client_identifier),
+                        options.client_identifier))
+      return {.status = ServerProcessStatus::output_too_small};
+
+    if (!configuration_.lease_query) {
+      // SR OS rejects a syntactically valid query when the administrator has
+      // not enabled lease-query. Count that policy decision separately from
+      // malformed packets and leave the binding repository untouched.
+      ++statistics_.dropped_not_allowed;
+      if (!append_status(*writer, StatusCode::not_allowed))
+        return {.status = ServerProcessStatus::output_too_small};
+      return {.status = ServerProcessStatus::response,
+              .message_octets = writer->size()};
+    }
+
+    const auto query = options.leasequery_query;
+    if (query.empty() || query[0] != 2U) {
+      // QUERY_BY_ADDRESS is deliberately not accepted because SR OS 26.7
+      // documents Client ID as the only supported identification method.
+      if (!append_status(*writer, query.size() < 17U
+                                      ? StatusCode::malformed_query
+                                      : StatusCode::unknown_query_type))
+        return {.status = ServerProcessStatus::output_too_small};
+      return {.status = ServerProcessStatus::response,
+              .message_octets = writer->size()};
+    }
+    if (query.size() < 17U) {
+      if (!append_status(*writer, StatusCode::malformed_query))
+        return {.status = ServerProcessStatus::output_too_small};
+      return {.status = ServerProcessStatus::response,
+              .message_octets = writer->size()};
+    }
+
+    std::span<const std::uint8_t> target_duid;
+    bool target_seen{};
+    bool nested_valid{true};
+    packet::dhcpv6::OptionCursor query_options{query.subspan(17U)};
+    while (const auto option = query_options.next()) {
+      if (option->code != code(OptionCode::client_identifier))
+        continue;
+      if (target_seen || !packet::dhcpv6::valid_duid(option->data))
+        nested_valid = false;
+      else
+        target_duid = option->data;
+      target_seen = true;
+    }
+    nested_valid = nested_valid && query_options.valid() && target_seen;
+    if (!nested_valid) {
+      if (!append_status(*writer, StatusCode::malformed_query))
+        return {.status = ServerProcessStatus::output_too_small};
+      return {.status = ServerProcessStatus::response,
+              .message_octets = writer->size()};
+    }
+
+    // Nokia returns all active bindings for the DUID and does not implement
+    // RFC 5007 Client Link or Relay Data. The raw link-address is therefore
+    // intentionally not used as a filter. Each resource remains a distinct
+    // wire option inside one CLIENT_DATA option.
+    const auto state = leases_.checkpoint(now);
+    std::size_t client_data_size{};
+    if (!append_nested_option(leasequery_scratch_, client_data_size,
+                              OptionCode::client_identifier, target_duid))
+      return {.status = ServerProcessStatus::output_too_small};
+    bool found{};
+    std::uint32_t last_transaction_seconds =
+        std::numeric_limits<std::uint32_t>::max();
+    const auto lifetime_seconds = [](std::int64_t nanoseconds) {
+      if (nanoseconds <= 0)
+        return std::uint32_t{};
+      const auto seconds = nanoseconds / 1'000'000'000LL;
+      return seconds > std::numeric_limits<std::uint32_t>::max()
+                 ? std::numeric_limits<std::uint32_t>::max()
+                 : static_cast<std::uint32_t>(seconds);
+    };
+    for (const auto &lease : state) {
+      const auto lease_duid =
+          std::span<const std::uint8_t>{lease.client.duid}.first(
+              lease.client.duid_octets);
+      if (lease.declined || lease_duid.size() != target_duid.size() ||
+          !std::equal(lease_duid.begin(), lease_duid.end(),
+                      target_duid.begin()))
+        continue;
+      found = true;
+      std::array<std::uint8_t, 32U> resource{};
+      std::optional<std::size_t> encoded;
+      auto resource_code = OptionCode::ia_address;
+      if (lease.client.kind == LeaseKind::prefix) {
+        resource_code = OptionCode::ia_prefix;
+        encoded = packet::dhcpv6::encode_ia_prefix(
+            resource, lease.value, lease.prefix_length,
+            lifetime_seconds(lease.preferred_remaining_nanoseconds),
+            lifetime_seconds(lease.valid_remaining_nanoseconds));
+      } else {
+        encoded = packet::dhcpv6::encode_ia_address(
+            resource, lease.value,
+            lifetime_seconds(lease.preferred_remaining_nanoseconds),
+            lifetime_seconds(lease.valid_remaining_nanoseconds));
+      }
+      if (!encoded ||
+          !append_nested_option(
+              leasequery_scratch_, client_data_size, resource_code,
+              std::span<const std::uint8_t>{resource}.first(*encoded)))
+        return {.status = ServerProcessStatus::output_too_small};
+      last_transaction_seconds =
+          std::min(last_transaction_seconds,
+                   lifetime_seconds(
+                       lease.last_client_transaction_ago_nanoseconds));
+    }
+    if (found) {
+      if (!append_nested_option(
+              leasequery_scratch_, client_data_size,
+              OptionCode::client_last_transaction_time,
+              std::array<std::uint8_t, 4U>{
+                  static_cast<std::uint8_t>(last_transaction_seconds >> 24U),
+                  static_cast<std::uint8_t>(last_transaction_seconds >> 16U),
+                  static_cast<std::uint8_t>(last_transaction_seconds >> 8U),
+                  static_cast<std::uint8_t>(last_transaction_seconds)}) ||
+          !writer->append(
+              code(OptionCode::client_data),
+              std::span<const std::uint8_t>{leasequery_scratch_}.first(
+                  client_data_size)))
+        return {.status = ServerProcessStatus::output_too_small};
+    }
+    return {.status = ServerProcessStatus::response,
+            .message_octets = writer->size()};
+  }
+
   const bool solicit = message_type == type(MessageType::solicit);
   const bool request_message = message_type == type(MessageType::request);
   const bool confirm = message_type == type(MessageType::confirm);
@@ -388,8 +751,10 @@ ServerProcessResult Server::process_impl(
   const bool information =
       message_type == type(MessageType::information_request);
   if (!(solicit || request_message || confirm || renew || rebind || release ||
-        decline || information))
+        decline || information)) {
+    ++statistics_.dropped_not_allowed;
     return {.status = ServerProcessStatus::discarded};
+  }
 
   const bool client_required = !information;
   const bool server_required = request_message || renew || release || decline;
@@ -449,9 +814,9 @@ ServerProcessResult Server::process_impl(
     const auto iaid = association->iaid;
     const auto kind =
         pd ? LeaseKind::prefix : LeaseKind::non_temporary;
-    const auto client = identity(options.client_identifier, iaid, kind);
-    const auto pool_index = pd ? configuration_.prefix_pool_index
-                               : configuration_.address_pool_index;
+    const auto client =
+        identity(options.client_identifier, link_identity, iaid, kind);
+    const auto pool_index = pool_for(kind, link_identity);
     if (confirm) {
       if (pd)
         return {.status = ServerProcessStatus::discarded};
@@ -464,20 +829,31 @@ ServerProcessResult Server::process_impl(
           return {.status = ServerProcessStatus::malformed};
         confirm_saw_address = true;
         confirm_on_link = confirm_on_link &&
-                          leases_.appropriate_address(address->address);
+                          leases_.appropriate_address(address->address,
+                                                      link_identity);
       }
       if (!confirm_options.valid())
         return {.status = ServerProcessStatus::malformed};
       continue;
     }
     LeaseResult lease;
+    bool committed{};
     if (solicit && !rapid)
-      lease = leases_.preview(client, pool_index, now);
-    else if (request_message || rapid)
-      lease = leases_.assign(client, pool_index, now);
-    else if (renew || rebind)
+      lease = pool_index ? leases_.preview(client, *pool_index, now)
+                         : LeaseResult{.status =
+                                           pd ? LeaseStatus::no_prefixes_available
+                                              : LeaseStatus::no_addresses_available};
+    else if (request_message || rapid) {
+      lease = pool_index ? leases_.assign(client, *pool_index, now)
+                         : LeaseResult{.status =
+                                           pd ? LeaseStatus::no_prefixes_available
+                                              : LeaseStatus::no_addresses_available};
+      committed = lease.status == LeaseStatus::assigned ||
+                  lease.status == LeaseStatus::renewed;
+    } else if (renew || rebind) {
       lease = leases_.renew(client, now);
-    else if (release || decline) {
+      committed = lease.status == LeaseStatus::renewed;
+    } else if (release || decline) {
       const auto status = release ? leases_.release(client)
                                   : leases_.decline(client, now);
       if (status == LeaseStatus::released || status == LeaseStatus::declined) {
@@ -486,6 +862,13 @@ ServerProcessResult Server::process_impl(
       lease.status = LeaseStatus::no_binding;
     } else
       return {.status = ServerProcessStatus::discarded};
+    // The server learns the endpoint from the received IPv6 packet or from
+    // the enclosing Relay-forward peer-address. Recording it only after a
+    // successful binding mutation prevents an Advertise preview from
+    // manufacturing persistent operational state.
+    if (committed && !ip::is_unspecified(client_address) &&
+        !leases_.note_client_address(client, client_address))
+      return {.status = ServerProcessStatus::malformed};
     const auto ia_code = pd ? OptionCode::ia_pd : OptionCode::ia_na;
     if (!append_ia(*writer, ia_code, iaid, lease))
       return {.status = ServerProcessStatus::output_too_small};

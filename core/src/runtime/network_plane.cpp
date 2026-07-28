@@ -3,6 +3,7 @@
 
 #include "router/network_plane.hpp"
 
+#include "dhcpv4/dhcpv4_endpoint_service.hpp"
 #include "dhcpv6/dhcpv6_endpoint_service.hpp"
 #include "dns/dns_endpoint_service.hpp"
 #include "forwarding/network_endpoint.hpp"
@@ -27,6 +28,26 @@
 namespace router::lab {
 
 namespace {
+
+template <typename Clock>
+[[nodiscard]] std::int64_t
+relative_runtime_deadline(typename Clock::time_point deadline,
+                          typename Clock::time_point now) noexcept {
+  if (deadline == Clock::time_point::max())
+    return -1;
+  return std::max<std::int64_t>(
+      0, std::chrono::duration_cast<std::chrono::nanoseconds>(deadline - now)
+             .count());
+}
+
+template <typename Clock>
+[[nodiscard]] typename Clock::time_point
+restore_runtime_deadline(std::int64_t remaining,
+                         typename Clock::time_point now) noexcept {
+  return remaining < 0
+             ? Clock::time_point::max()
+             : now + std::chrono::nanoseconds{remaining};
+}
 
 [[nodiscard]] bool empty_unconfigured_host_checkpoint(
     const NetworkCheckpointState &state) noexcept {
@@ -93,6 +114,17 @@ namespace {
 enum class ForwardCommandKind : std::uint8_t {
   add_router,
   remove_router,
+  configure_router_bof_management,
+  begin_router_bof_dhcpv4_client,
+  commit_router_bof_dhcpv4_client,
+  abort_router_bof_dhcpv4_client,
+  remove_router_bof_dhcpv4_client,
+  begin_router_bof_dhcpv6_client,
+  add_router_bof_dhcpv6_client_ia,
+  add_router_bof_dhcpv6_client_option,
+  commit_router_bof_dhcpv6_client,
+  abort_router_bof_dhcpv6_client,
+  remove_router_bof_dhcpv6_client,
   add_host,
   remove_host,
   configure_port,
@@ -119,6 +151,19 @@ enum class ForwardCommandKind : std::uint8_t {
   remove_router_advertisement,
   configure_mld_interface,
   remove_mld_interface,
+  configure_dhcpv4_relay,
+  remove_dhcpv4_relay,
+  begin_router_dhcpv4_server,
+  add_router_dhcpv4_server_dns,
+  add_router_dhcpv4_server_pool,
+  add_router_dhcpv4_server_reservation,
+  add_router_dhcpv4_server_exclusion,
+  commit_router_dhcpv4_server,
+  abort_router_dhcpv4_server,
+  remove_router_dhcpv4_server,
+  clear_router_dhcpv4_server_statistics,
+  clear_router_dhcpv4_server_leases,
+  send_router_dhcpv4_force_renew,
   begin_dhcpv6_relay,
   add_dhcpv6_relay_interface_id,
   add_dhcpv6_relay_server,
@@ -126,6 +171,15 @@ enum class ForwardCommandKind : std::uint8_t {
   abort_dhcpv6_relay,
   remove_dhcpv6_relay,
   clear_dhcpv6_relay_leases,
+  begin_router_dhcpv6_server,
+  add_router_dhcpv6_server_dns,
+  add_router_dhcpv6_server_address_pool,
+  add_router_dhcpv6_server_prefix_pool,
+  commit_router_dhcpv6_server,
+  abort_router_dhcpv6_server,
+  remove_router_dhcpv6_server,
+  clear_router_dhcpv6_server_leases,
+  clear_router_dhcpv6_server_statistics,
   clear_mld_database,
   clear_mld_database_all,
   clear_mld_version,
@@ -143,6 +197,19 @@ enum class ForwardCommandKind : std::uint8_t {
   clear_router_advertisement_statistics_all,
   clear_router_advertisement_interface_statistics,
   configure_host,
+  begin_host_dhcpv4_client,
+  commit_host_dhcpv4_client,
+  abort_host_dhcpv4_client,
+  remove_host_dhcpv4_client,
+  begin_host_dhcpv4_server,
+  add_host_dhcpv4_server_dns,
+  add_host_dhcpv4_server_pool,
+  add_host_dhcpv4_server_reservation,
+  add_host_dhcpv4_server_exclusion,
+  commit_host_dhcpv4_server,
+  abort_host_dhcpv4_server,
+  remove_host_dhcpv4_server,
+  host_dhcpv4_client_status,
   begin_host_dhcpv6_client,
   add_host_dhcpv6_client_ia,
   add_host_dhcpv6_client_option,
@@ -183,6 +250,8 @@ enum class ForwardCommandKind : std::uint8_t {
   release_host_dns_query,
   set_host_link,
   host_link_status,
+  set_router_bof_link,
+  router_bof_link_status,
   router_ping,
   router_ipv6_ping,
   host_ping,
@@ -196,11 +265,44 @@ enum class ForwardCommandKind : std::uint8_t {
 struct Dhcpv6ClientBegin {
   std::array<std::uint8_t, packet::dhcpv6::maximum_duid_octets> duid{};
   crypto::Sha256Digest transaction_secret{};
+  std::array<std::uint8_t, 255U> user_class{};
   std::uint32_t expected_associations{};
   std::uint32_t expected_options{};
   std::uint16_t duid_octets{};
+  std::uint16_t user_class_octets{};
+  std::uint32_t bootstrap_timeout_seconds{};
   bool rapid_commit{};
   bool information_only{};
+};
+
+struct Dhcpv4ClientBegin {
+  packet::Mac hardware_address{};
+  std::array<std::uint8_t, 255U> client_identifier{};
+  std::array<std::uint8_t, 255U> parameter_request_list{};
+  std::array<std::uint8_t, 254U> user_class{};
+  crypto::Sha256Digest transaction_secret{};
+  std::uint16_t client_identifier_octets{};
+  std::uint16_t parameter_request_list_octets{};
+  std::uint16_t user_class_octets{};
+  std::uint16_t maximum_message_size{};
+  std::uint32_t bootstrap_timeout_seconds{};
+  bool broadcast{};
+};
+
+struct Dhcpv4ServerBegin {
+  std::array<char, 32U> name{};
+  packet::Ipv4 server_identifier{};
+  std::uint64_t offer_hold_seconds{};
+  std::uint64_t decline_hold_seconds{};
+  std::uint32_t server_instance{};
+  std::uint32_t routing_context{};
+  std::uint32_t expected_dns_servers{};
+  std::uint32_t expected_pools{};
+  std::uint32_t expected_reservations{};
+  std::uint32_t expected_exclusions{};
+  std::uint8_t name_octets{};
+  bool authoritative{};
+  bool force_renews{};
 };
 
 struct Dhcpv6ClientAssociation {
@@ -214,6 +316,7 @@ struct Dhcpv6ClientOption {
 
 struct Dhcpv6ServerBegin {
   std::array<std::uint8_t, packet::dhcpv6::maximum_duid_octets> duid{};
+  std::array<char, 32U> name{};
   std::uint64_t decline_hold_seconds{};
   std::uint32_t expected_dns_servers{};
   std::uint32_t expected_address_pools{};
@@ -222,10 +325,14 @@ struct Dhcpv6ServerBegin {
   std::uint32_t solicit_maximum_retransmission_seconds{};
   std::uint32_t information_maximum_retransmission_seconds{};
   std::uint16_t duid_octets{};
+  std::uint8_t name_octets{};
   std::uint8_t preference{};
   std::uint8_t address_pool_index{};
   std::uint8_t prefix_pool_index{};
   bool rapid_commit{};
+  // This value crosses the second SPSC boundary and becomes owned by the
+  // server instance when the staged program commits atomically.
+  bool lease_query{};
   bool has_solicit_maximum_retransmission{};
   bool has_information_maximum_retransmission{};
 };
@@ -298,10 +405,15 @@ using ForwardProgram = std::variant<
     routing::FibProgram, routing::Ipv6FibProgram, Ipv6AddressGenerationBegin,
     RouterIpv6Address, StaticIpv6NeighborProgram, StaticIpv4NeighborProgram,
     RouterAdvertisementProgram, MldInterfaceProgram, SapGenerationBegin,
-    service::SapAttachment, service::ServiceIpv6Interface, Dhcpv6RelayBegin,
+    service::SapAttachment, service::ServiceIpv6Interface, Dhcpv4RelayBegin,
+    Dhcpv6RelayBegin,
     Dhcpv6RelayInterfaceIdChunk, dhcpv6::RelayDestination,
-    Dhcpv6RelayLeaseClearProgram, Dhcpv6ClientBegin, Dhcpv6ClientAssociation,
+    Dhcpv6RelayLeaseClearProgram, Dhcpv4ClientBegin, Dhcpv4ServerBegin,
+    packet::Ipv4, dhcpv4::Pool, dhcpv4::Reservation,
+    dhcpv4::ExcludedRange, RouterDhcpv4ServerOperation, Dhcpv6ClientBegin,
+    Dhcpv6ClientAssociation,
     Dhcpv6ClientOption, Dhcpv6ServerBegin, packet::Ipv6, dhcpv6::LeasePool,
+    RouterDhcpv6ServerOperation,
     DnsResolverBegin, DnsRootHintBegin, dns::ServerAddress, DnsTrustAnchorBegin,
     DnsAuthoritativeBegin, DnsZoneBegin, DnsSignedZoneBegin,
     DnsSigningKeyDefinition, DnsRecordBegin, DnsRdataChunk,
@@ -314,6 +426,8 @@ struct ForwardCommand {
   std::uint64_t logical_interface_id{};
   ForwardCommandKind kind{};
   DeviceHandle device{};
+  crypto::Sha256Digest router_transport_secret{};
+  bool transit_forwarding_enabled{true};
   HostHandle host{};
   ForwardPort port{};
   // One programming command carries one FIB or one RA projection. Keeping
@@ -358,6 +472,7 @@ struct ForwardResult {
   std::uint64_t id{};
   bool success{};
   std::uint64_t value{};
+  dhcpv4::ClientStatus dhcpv4_client{};
 };
 
 struct ForwardIngress {
@@ -527,18 +642,28 @@ private:
         ingress_handler_(owner_, index_, ingress);
 
       if (!pending_command) {
-        ForwardCommand command;
-        if (commands_.try_pop(command))
-          pending_command = command;
+        // ForwardCommand contains the largest generated FIB alternative.
+        // Constructing a ring destination and then copying it into the pending
+        // optional used two additional command-sized Wasm stack frames. Pop
+        // directly into the persistent pending slot so the bounded command
+        // remains value-owned without multiplying its cold-path stack cost.
+        pending_command.emplace();
+        if (!commands_.try_pop(*pending_command))
+          pending_command.reset();
       }
       if (pending_command &&
           (pending_command->kind != ForwardCommandKind::pause ||
            ingress_.empty())) {
-        const auto command = *pending_command;
+        // Keep the payload in the optional until its handler returns. Copying
+        // it to a block local previously overlapped the handler's own staging
+        // frame and could exhaust the fixed pthread stack during a large
+        // transactional commit.
+        const auto command_kind = pending_command->kind;
+        const auto command_id = pending_command->id;
+        auto result = command_kind == ForwardCommandKind::pause
+                          ? ForwardResult{command_id, true, 0}
+                          : command_handler_(owner_, index_, *pending_command);
         pending_command.reset();
-        auto result = command.kind == ForwardCommandKind::pause
-                          ? ForwardResult{command.id, true, 0}
-                          : command_handler_(owner_, index_, command);
         while (!results_.try_push(result) &&
                !stop_requested_.load(std::memory_order_acquire)) {
           std::unique_lock lock(wait_mutex_);
@@ -547,11 +672,11 @@ private:
                    !results_.full();
           });
         }
-        if (command.kind == ForwardCommandKind::shutdown) {
+        if (command_kind == ForwardCommandKind::shutdown) {
           stop_requested_.store(true, std::memory_order_release);
           break;
         }
-        if (command.kind == ForwardCommandKind::pause) {
+        if (command_kind == ForwardCommandKind::pause) {
           resume_requested_.store(false, std::memory_order_release);
           std::unique_lock lock(wait_mutex_);
           wait_condition_.wait(lock, [&] {
@@ -612,6 +737,32 @@ struct NetworkPlane::Impl {
   struct RouterSlot {
     std::uint16_t generation{};
     std::unique_ptr<RouterForwarder> forwarder;
+    // The management endpoint is a separate protocol host attached to the
+    // chassis OOB port. It never enters RouterForwarder's Base FIB and cannot
+    // forward transit packets between management and data-plane interfaces.
+    // EndpointStack carries bounded reassembly, neighbor and transport arenas.
+    // Allocate it only for a platform whose BOF is configured so the fixed
+    // 16-router registry does not reserve unused OOB packet state.
+    std::unique_ptr<network_detail::EndpointStack> management_stack;
+    bool management_configured{};
+    bool management_link_signal{};
+    struct BofDhcpv4ClientStaging {
+      dhcpv4::ClientConfiguration configuration;
+      std::chrono::seconds bootstrap_timeout{};
+      bool active{};
+    } bof_dhcpv4_client_staging;
+    std::unique_ptr<network_detail::Dhcpv4EndpointService> bof_dhcpv4;
+    Clock::time_point bof_dhcpv4_timeout{Clock::time_point::max()};
+    struct BofDhcpv6ClientStaging {
+      dhcpv6::ClientConfiguration configuration;
+      std::uint32_t expected_associations{};
+      std::uint32_t expected_options{};
+      std::chrono::seconds bootstrap_timeout{};
+      bool information_only{};
+      bool active{};
+    } bof_dhcpv6_client_staging;
+    std::unique_ptr<network_detail::Dhcpv6EndpointService> bof_dhcpv6;
+    Clock::time_point bof_dhcpv6_timeout{Clock::time_point::max()};
     struct RelayStaging {
       // This object has exactly one writer: the RouterSlot's forwarding
       // shard. expected_* values make Begin the only allocation admission
@@ -639,6 +790,35 @@ struct NetworkPlane::Impl {
       std::uint32_t expected_addresses{};
       bool active{};
     } ipv6_address_staging;
+    struct Dhcpv4ServerStaging {
+      // Begin reserves all variable policy on this one forwarding owner. Add
+      // messages cannot exceed declared counts and Commit is the sole point
+      // at which RouterForwarder may replace a live named instance.
+      std::string name;
+      dhcpv4::ServerConfiguration configuration;
+      std::vector<dhcpv4::Pool> pools;
+      std::vector<dhcpv4::Reservation> reservations;
+      std::vector<dhcpv4::ExcludedRange> exclusions;
+      std::uint32_t expected_dns_servers{};
+      std::uint32_t expected_pools{};
+      std::uint32_t expected_reservations{};
+      std::uint32_t expected_exclusions{};
+      bool active{};
+    } dhcpv4_server_staging;
+    struct Dhcpv6ServerStaging {
+      // Two fixed-message transactions assemble one replacement on the
+      // network owner and then on the forwarding owner. No vector pointer or
+      // CLI-owned string crosses either SPSC boundary.
+      std::string name;
+      dhcpv6::ServerConfiguration configuration;
+      std::vector<dhcpv6::LeasePool> address_pools;
+      std::vector<dhcpv6::LeasePool> prefix_pools;
+      std::chrono::seconds decline_hold_time{};
+      std::uint32_t expected_dns_servers{};
+      std::uint32_t expected_address_pools{};
+      std::uint32_t expected_prefix_pools{};
+      bool active{};
+    } dhcpv6_server_staging;
   };
 
   struct HostSlot {
@@ -649,6 +829,25 @@ struct NetworkPlane::Impl {
     bool link_signal{};
     bool ping_pending{};
     bool ping_reply{};
+    struct Dhcpv4ClientStaging {
+      dhcpv4::ClientConfiguration configuration;
+      bool active{};
+    } dhcpv4_client_staging;
+    struct Dhcpv4ServerStaging {
+      dhcpv4::ServerConfiguration configuration;
+      std::vector<dhcpv4::Pool> pools;
+      std::vector<dhcpv4::Reservation> reservations;
+      std::vector<dhcpv4::ExcludedRange> exclusions;
+      std::uint32_t expected_dns_servers{};
+      std::uint32_t expected_pools{};
+      std::uint32_t expected_reservations{};
+      std::uint32_t expected_exclusions{};
+      bool active{};
+    } dhcpv4_server_staging;
+    // One application owner holds both roles because UDP 67 and UDP 68 share
+    // endpoint transport state and dynamic address ownership. The roles may
+    // coexist, but neither can mutate the other's repository.
+    std::unique_ptr<network_detail::Dhcpv4EndpointService> dhcpv4;
     struct ClientStaging {
       dhcpv6::ClientConfiguration configuration;
       std::uint32_t expected_associations{};
@@ -1219,6 +1418,27 @@ struct NetworkPlane::Impl {
                                             frames);
   }
 
+  static bool management_fragment_egress(
+      void *context, const packet::Frame &frame) noexcept {
+    // BOF DHCP shares EndpointStack with ordinary hosts but is physically
+    // attached to the catalog management ordinal, never host ordinal zero.
+    return egress(context, device_catalog::management_port_ordinal, frame);
+  }
+
+  static bool management_fragment_admission(void *context,
+                                            std::size_t frames) noexcept {
+    auto &value = *static_cast<EgressContext *>(context);
+    if (!frames)
+      return false;
+    if (value.owner->parallel())
+      return value.shard && value.shard->can_emit(frames);
+    const auto *binding = value.owner->binding(
+        value.source, device_catalog::management_port_ordinal);
+    return binding && binding->port.node == value.source && binding->link &&
+           value.owner->fabric->can_enqueue(binding->link, binding->endpoint,
+                                            frames);
+  }
+
   static bool router_fragment_admission(void *context, std::uint16_t ordinal,
                                         std::size_t frames) noexcept {
     auto &value = *static_cast<EgressContext *>(context);
@@ -1267,6 +1487,21 @@ struct NetworkPlane::Impl {
     if (delivery.destination.node.kind == NodeKind::router) {
       const DeviceHandle handle{delivery.destination.node.index,
                                 delivery.destination.node.generation};
+      if (delivery.destination.ordinal ==
+              device_catalog::management_port_ordinal &&
+          handle.index < owner.routers.size()) {
+        auto &slot = owner.routers[handle.index];
+        if (!owner.router(handle) || !slot.management_configured)
+          return;
+        const auto result =
+            slot.management_stack->receive(delivery.frame, 0U, false,
+                                          owner.now);
+        for (std::size_t index = 0; index < result.count; ++index)
+          static_cast<void>(owner.send(
+              node(handle), device_catalog::management_port_ordinal,
+              result.frames[index]));
+        return;
+      }
       auto *forwarder = owner.router(handle);
       if (!forwarder)
         return;
@@ -1373,7 +1608,13 @@ ForwardResult NetworkPlane::Impl::apply_forward_command(
     if (slot.forwarder)
       break;
     try {
-      slot.forwarder = std::make_unique<RouterForwarder>();
+      slot.forwarder = std::make_unique<RouterForwarder>(
+          command.router_transport_secret);
+      // Apply the role policy before the generation becomes visible. A server
+      // therefore never has a transient interval in which it routes foreign
+      // packets between two otherwise valid local interfaces.
+      slot.forwarder->set_transit_forwarding(
+          command.transit_forwarding_enabled);
       slot.generation = command.device.generation;
       result.success = true;
     } catch (const std::bad_alloc &) {
@@ -1387,6 +1628,228 @@ ForwardResult NetworkPlane::Impl::apply_forward_command(
     result.success = true;
     break;
   }
+  case ForwardCommandKind::configure_router_bof_management:
+    if (command.device.index < owner.routers.size()) {
+      auto &slot = owner.routers[command.device.index];
+      if (!owner.router(command.device) ||
+          command.host_program.prefix_length > 32U ||
+          command.host_program.mtu <
+              device_catalog::minimum_host_ipv4_mtu ||
+          command.host_program.mtu > device_catalog::maximum_network_mtu)
+        break;
+      std::unique_ptr<network_detail::EndpointStack> replacement;
+      try {
+        replacement = std::make_unique<network_detail::EndpointStack>();
+      } catch (const std::bad_alloc &) {
+        break;
+      }
+      const bool configured = replacement->configure(
+          {.endpoint_mac = command.host_program.mac,
+           .endpoint_address = command.host_program.address,
+           .endpoint_prefix_length = command.host_program.prefix_length,
+           .endpoint_gateway = command.host_program.gateway,
+           .endpoint_mtu = command.host_program.mtu,
+           .endpoint_interface_id = command.host_program.interface_id,
+           .endpoint_ipv6_autoconfiguration =
+               command.host_program.ipv6_autoconfiguration,
+           .endpoint_ipv6_identifier = command.host_program.ipv6_identifier,
+           .endpoint_transport_secret =
+               command.host_program.transport_secret});
+      if (!configured)
+        break;
+      replacement->set_link_state(slot.management_link_signal);
+      slot.management_stack = std::move(replacement);
+      slot.management_configured = true;
+      result.success = true;
+    }
+    break;
+  case ForwardCommandKind::begin_router_bof_dhcpv4_client:
+    if (command.device.index < owner.routers.size()) {
+      auto &slot = owner.routers[command.device.index];
+      const auto *begin = std::get_if<Dhcpv4ClientBegin>(&command.fib);
+      if (!owner.router(command.device) || !slot.management_configured ||
+          !begin ||
+          begin->client_identifier_octets > begin->client_identifier.size() ||
+          begin->parameter_request_list_octets >
+              begin->parameter_request_list.size() ||
+          begin->user_class_octets > begin->user_class.size() ||
+          begin->bootstrap_timeout_seconds == 0U)
+        break;
+      try {
+        RouterSlot::BofDhcpv4ClientStaging staged;
+        staged.configuration.hardware_address = begin->hardware_address;
+        staged.configuration.client_identifier.assign(
+            begin->client_identifier.begin(),
+            begin->client_identifier.begin() +
+                begin->client_identifier_octets);
+        staged.configuration.parameter_request_list.assign(
+            begin->parameter_request_list.begin(),
+            begin->parameter_request_list.begin() +
+                begin->parameter_request_list_octets);
+        staged.configuration.user_class.assign(
+            begin->user_class.begin(),
+            begin->user_class.begin() + begin->user_class_octets);
+        staged.configuration.transaction_secret = begin->transaction_secret;
+        staged.configuration.maximum_message_size =
+            begin->maximum_message_size;
+        staged.configuration.broadcast = begin->broadcast;
+        staged.bootstrap_timeout =
+            std::chrono::seconds{begin->bootstrap_timeout_seconds};
+        staged.active = true;
+        slot.bof_dhcpv4_client_staging = std::move(staged);
+        result.success = true;
+      } catch (...) {
+      }
+    }
+    break;
+  case ForwardCommandKind::commit_router_bof_dhcpv4_client:
+    if (command.device.index < owner.routers.size()) {
+      auto &slot = owner.routers[command.device.index];
+      auto &staged = slot.bof_dhcpv4_client_staging;
+      if (!owner.router(command.device) || !staged.active)
+        break;
+      try {
+        if (!slot.bof_dhcpv4)
+          slot.bof_dhcpv4 =
+              std::make_unique<network_detail::Dhcpv4EndpointService>();
+        const auto now = Clock::now();
+        result.success = slot.bof_dhcpv4->configure_client(
+            staged.configuration, *slot.management_stack, now);
+        if (result.success)
+          slot.bof_dhcpv4_timeout = now + staged.bootstrap_timeout;
+      } catch (...) {
+      }
+      staged = {};
+    }
+    break;
+  case ForwardCommandKind::abort_router_bof_dhcpv4_client:
+    if (command.device.index < owner.routers.size() &&
+        owner.router(command.device)) {
+      owner.routers[command.device.index].bof_dhcpv4_client_staging = {};
+      result.success = true;
+    }
+    break;
+  case ForwardCommandKind::remove_router_bof_dhcpv4_client:
+    if (command.device.index < owner.routers.size() &&
+        owner.router(command.device)) {
+      auto &slot = owner.routers[command.device.index];
+      if (slot.bof_dhcpv4)
+        slot.bof_dhcpv4->remove_client(*slot.management_stack);
+      slot.bof_dhcpv4_timeout = Clock::time_point::max();
+      slot.bof_dhcpv4_client_staging = {};
+      result.success = true;
+    }
+    break;
+  case ForwardCommandKind::begin_router_bof_dhcpv6_client:
+    if (command.device.index < owner.routers.size()) {
+      auto &slot = owner.routers[command.device.index];
+      const auto *begin = std::get_if<Dhcpv6ClientBegin>(&command.fib);
+      if (!owner.router(command.device) || !slot.management_configured ||
+          !begin || begin->user_class_octets > begin->user_class.size() ||
+          begin->bootstrap_timeout_seconds == 0U)
+        break;
+      try {
+        RouterSlot::BofDhcpv6ClientStaging staged;
+        staged.configuration.duid = begin->duid;
+        staged.configuration.duid_octets = begin->duid_octets;
+        staged.configuration.transaction_secret = begin->transaction_secret;
+        staged.configuration.user_class.assign(
+            begin->user_class.begin(),
+            begin->user_class.begin() + begin->user_class_octets);
+        staged.configuration.rapid_commit = begin->rapid_commit;
+        staged.configuration.identity_associations.reserve(
+            begin->expected_associations);
+        staged.configuration.requested_options.reserve(
+            begin->expected_options);
+        staged.expected_associations = begin->expected_associations;
+        staged.expected_options = begin->expected_options;
+        staged.bootstrap_timeout =
+            std::chrono::seconds{begin->bootstrap_timeout_seconds};
+        staged.information_only = begin->information_only;
+        staged.active = true;
+        slot.bof_dhcpv6_client_staging = std::move(staged);
+        result.success = true;
+      } catch (...) {
+      }
+    }
+    break;
+  case ForwardCommandKind::add_router_bof_dhcpv6_client_ia:
+    if (command.device.index < owner.routers.size()) {
+      auto &staged =
+          owner.routers[command.device.index].bof_dhcpv6_client_staging;
+      const auto *association =
+          std::get_if<Dhcpv6ClientAssociation>(&command.fib);
+      if (owner.router(command.device) && staged.active && association &&
+          staged.configuration.identity_associations.size() <
+              staged.expected_associations) {
+        try {
+          staged.configuration.identity_associations.push_back(
+              {.iaid = association->iaid, .kind = association->kind});
+          result.success = true;
+        } catch (...) {
+        }
+      }
+    }
+    break;
+  case ForwardCommandKind::add_router_bof_dhcpv6_client_option:
+    if (command.device.index < owner.routers.size()) {
+      auto &staged =
+          owner.routers[command.device.index].bof_dhcpv6_client_staging;
+      const auto *option = std::get_if<Dhcpv6ClientOption>(&command.fib);
+      if (owner.router(command.device) && staged.active && option &&
+          staged.configuration.requested_options.size() <
+              staged.expected_options) {
+        try {
+          staged.configuration.requested_options.push_back(option->code);
+          result.success = true;
+        } catch (...) {
+        }
+      }
+    }
+    break;
+  case ForwardCommandKind::commit_router_bof_dhcpv6_client:
+    if (command.device.index < owner.routers.size()) {
+      auto &slot = owner.routers[command.device.index];
+      auto &staged = slot.bof_dhcpv6_client_staging;
+      if (!owner.router(command.device) || !staged.active ||
+          staged.configuration.identity_associations.size() !=
+              staged.expected_associations ||
+          staged.configuration.requested_options.size() !=
+              staged.expected_options)
+        break;
+      try {
+        if (!slot.bof_dhcpv6)
+          slot.bof_dhcpv6 =
+              std::make_unique<network_detail::Dhcpv6EndpointService>();
+        const auto now = Clock::now();
+        result.success = slot.bof_dhcpv6->configure_client(
+            staged.configuration, staged.information_only,
+            *slot.management_stack, now);
+        if (result.success)
+          slot.bof_dhcpv6_timeout = now + staged.bootstrap_timeout;
+      } catch (...) {
+      }
+      staged = {};
+    }
+    break;
+  case ForwardCommandKind::abort_router_bof_dhcpv6_client:
+    if (command.device.index < owner.routers.size() &&
+        owner.router(command.device)) {
+      owner.routers[command.device.index].bof_dhcpv6_client_staging = {};
+      result.success = true;
+    }
+    break;
+  case ForwardCommandKind::remove_router_bof_dhcpv6_client:
+    if (command.device.index < owner.routers.size() &&
+        owner.router(command.device)) {
+      auto &slot = owner.routers[command.device.index];
+      if (slot.bof_dhcpv6)
+        slot.bof_dhcpv6->remove_client(*slot.management_stack);
+      slot.bof_dhcpv6_timeout = Clock::time_point::max();
+      slot.bof_dhcpv6_client_staging = {};
+      result.success = true;
+    }
+    break;
   case ForwardCommandKind::add_host:
     if (command.host.index < owner.hosts.size() &&
         !owner.hosts[command.host.index].generation) {
@@ -1623,6 +2086,241 @@ ForwardResult NetworkPlane::Impl::apply_forward_command(
     if (auto *forwarder = owner.router(command.device))
       result.success = forwarder->remove_mld_interface(command.port.ordinal);
     break;
+  case ForwardCommandKind::configure_dhcpv4_relay:
+    if (auto *forwarder = owner.router(command.device))
+      if (const auto *begin = std::get_if<Dhcpv4RelayBegin>(&command.fib);
+          begin && begin->circuit_id_octets <= begin->circuit_id.size() &&
+          begin->remote_id_octets <= begin->remote_id.size() &&
+          begin->server_count <= begin->servers.size()) {
+        try {
+          dhcpv4::RelayInterfaceConfiguration configuration{
+              .interface_id = begin->interface_id,
+              .physical_port_ordinal = begin->physical_port_ordinal,
+              .relay = {}};
+          configuration.relay.admin_enabled = true;
+          configuration.relay.gateway_address = begin->gateway_address;
+          configuration.relay.gateway_address_configured = true;
+          configuration.relay.existing_information =
+              begin->existing_information;
+          configuration.relay.source_address = begin->source_address;
+          configuration.relay.maximum_hops = begin->maximum_hops;
+          configuration.relay.trusted_ingress = begin->trusted_ingress;
+          configuration.relay.relay_plain_bootp = begin->relay_plain_bootp;
+          configuration.relay.release_include_gateway_address =
+              begin->release_include_gateway_address;
+          configuration.relay.circuit_id.assign(
+              begin->circuit_id.begin(),
+              begin->circuit_id.begin() + begin->circuit_id_octets);
+          configuration.relay.remote_id.assign(
+              begin->remote_id.begin(),
+              begin->remote_id.begin() + begin->remote_id_octets);
+          configuration.relay.servers.reserve(begin->server_count);
+          for (std::size_t index{}; index < begin->server_count; ++index)
+            configuration.relay.servers.push_back(
+                {.address = begin->servers[index]});
+          result.success =
+              forwarder->configure_dhcpv4_relay(std::move(configuration));
+        } catch (const std::bad_alloc &) {
+          result.success = false;
+        }
+      }
+    break;
+  case ForwardCommandKind::remove_dhcpv4_relay:
+    if (auto *forwarder = owner.router(command.device))
+      result.success =
+          forwarder->remove_dhcpv4_relay(command.logical_interface_id);
+    break;
+  case ForwardCommandKind::begin_router_dhcpv4_server:
+    if (owner.router(command.device))
+      if (const auto *begin = std::get_if<Dhcpv4ServerBegin>(&command.fib);
+          begin && begin->name_octets > 0U &&
+          begin->name_octets <= begin->name.size() &&
+          begin->expected_dns_servers <=
+              packet::dhcpv4::maximum_ipv4_addresses_per_option &&
+          begin->expected_pools <=
+              device_catalog::dhcpv4_pools_per_server &&
+          begin->expected_reservations <=
+              device_catalog::dhcpv4_leases_per_server &&
+          begin->expected_exclusions <=
+              device_catalog::dhcpv4_leases_per_server) {
+        try {
+          RouterSlot::Dhcpv4ServerStaging staged;
+          staged.name.assign(begin->name.data(), begin->name_octets);
+          staged.configuration.server_identifier = begin->server_identifier;
+          staged.configuration.offer_hold =
+              std::chrono::seconds{begin->offer_hold_seconds};
+          staged.configuration.decline_hold =
+              std::chrono::seconds{begin->decline_hold_seconds};
+          staged.configuration.server_instance = begin->server_instance;
+          staged.configuration.routing_context = begin->routing_context;
+          staged.configuration.authoritative = begin->authoritative;
+          staged.configuration.force_renews = begin->force_renews;
+          staged.configuration.domain_name_servers.reserve(
+              begin->expected_dns_servers);
+          staged.pools.reserve(begin->expected_pools);
+          staged.reservations.reserve(begin->expected_reservations);
+          staged.exclusions.reserve(begin->expected_exclusions);
+          staged.expected_dns_servers = begin->expected_dns_servers;
+          staged.expected_pools = begin->expected_pools;
+          staged.expected_reservations = begin->expected_reservations;
+          staged.expected_exclusions = begin->expected_exclusions;
+          staged.active = true;
+          owner.routers[command.device.index].dhcpv4_server_staging =
+              std::move(staged);
+          result.success = true;
+        } catch (const std::bad_alloc &) {
+        }
+      }
+    break;
+  case ForwardCommandKind::add_router_dhcpv4_server_dns:
+    if (owner.router(command.device)) {
+      auto &staged =
+          owner.routers[command.device.index].dhcpv4_server_staging;
+      if (const auto *address = std::get_if<packet::Ipv4>(&command.fib);
+          staged.active && address &&
+          staged.configuration.domain_name_servers.size() <
+              staged.expected_dns_servers) {
+        try {
+          staged.configuration.domain_name_servers.push_back(*address);
+          result.success = true;
+        } catch (const std::bad_alloc &) {
+        }
+      }
+    }
+    break;
+  case ForwardCommandKind::add_router_dhcpv4_server_pool:
+    if (owner.router(command.device)) {
+      auto &staged =
+          owner.routers[command.device.index].dhcpv4_server_staging;
+      if (const auto *pool = std::get_if<dhcpv4::Pool>(&command.fib);
+          staged.active && pool &&
+          staged.pools.size() < staged.expected_pools) {
+        try {
+          staged.pools.push_back(*pool);
+          result.success = true;
+        } catch (const std::bad_alloc &) {
+        }
+      }
+    }
+    break;
+  case ForwardCommandKind::add_router_dhcpv4_server_reservation:
+    if (owner.router(command.device)) {
+      auto &staged =
+          owner.routers[command.device.index].dhcpv4_server_staging;
+      if (const auto *reservation =
+              std::get_if<dhcpv4::Reservation>(&command.fib);
+          staged.active && reservation &&
+          staged.reservations.size() < staged.expected_reservations) {
+        try {
+          staged.reservations.push_back(*reservation);
+          result.success = true;
+        } catch (const std::bad_alloc &) {
+        }
+      }
+    }
+    break;
+  case ForwardCommandKind::add_router_dhcpv4_server_exclusion:
+    if (owner.router(command.device)) {
+      auto &staged =
+          owner.routers[command.device.index].dhcpv4_server_staging;
+      if (const auto *excluded =
+              std::get_if<dhcpv4::ExcludedRange>(&command.fib);
+          staged.active && excluded &&
+          staged.exclusions.size() < staged.expected_exclusions) {
+        try {
+          staged.exclusions.push_back(*excluded);
+          result.success = true;
+        } catch (const std::bad_alloc &) {
+        }
+      }
+    }
+    break;
+  case ForwardCommandKind::commit_router_dhcpv4_server:
+    if (auto *forwarder = owner.router(command.device)) {
+      auto &staged =
+          owner.routers[command.device.index].dhcpv4_server_staging;
+      if (staged.active &&
+          staged.configuration.domain_name_servers.size() ==
+              staged.expected_dns_servers &&
+          staged.pools.size() == staged.expected_pools &&
+          staged.reservations.size() == staged.expected_reservations &&
+          staged.exclusions.size() == staged.expected_exclusions)
+        result.success = forwarder->configure_dhcpv4_server(
+            std::move(staged.name), staged.configuration, staged.pools,
+            staged.reservations, staged.exclusions);
+      staged = {};
+    }
+    break;
+  case ForwardCommandKind::abort_router_dhcpv4_server:
+    if (owner.router(command.device)) {
+      owner.routers[command.device.index].dhcpv4_server_staging = {};
+      result.success = true;
+    }
+    break;
+  case ForwardCommandKind::remove_router_dhcpv4_server:
+    if (auto *forwarder = owner.router(command.device))
+      if (const auto *begin = std::get_if<Dhcpv4ServerBegin>(&command.fib);
+          begin && begin->name_octets > 0U &&
+          begin->name_octets <= begin->name.size())
+        result.success = forwarder->remove_dhcpv4_server(
+            std::string_view{begin->name.data(), begin->name_octets});
+    break;
+  case ForwardCommandKind::clear_router_dhcpv4_server_statistics:
+    if (auto *forwarder = owner.router(command.device))
+      if (const auto *operation =
+              std::get_if<RouterDhcpv4ServerOperation>(&command.fib);
+          operation && operation->name_octets > 0U &&
+          operation->name_octets <= operation->name.size())
+        result.success = forwarder->clear_dhcpv4_server_statistics(
+            std::string_view{operation->name.data(), operation->name_octets});
+    break;
+  case ForwardCommandKind::clear_router_dhcpv4_server_leases:
+    if (auto *forwarder = owner.router(command.device))
+      if (const auto *operation =
+              std::get_if<RouterDhcpv4ServerOperation>(&command.fib);
+          operation && operation->name_octets > 0U &&
+          operation->name_octets <= operation->name.size())
+        result.success = forwarder->clear_dhcpv4_server_leases(
+            std::string_view{operation->name.data(), operation->name_octets},
+            operation->lease_filter, Clock::now());
+    break;
+  case ForwardCommandKind::send_router_dhcpv4_force_renew:
+    if (auto *forwarder = owner.router(command.device))
+      if (const auto *operation =
+              std::get_if<RouterDhcpv4ServerOperation>(&command.fib);
+          operation && operation->name_octets > 0U &&
+          operation->name_octets <= operation->name.size()) {
+        auto *worker = owner.parallel()
+                           ? owner.forwarding_shards[shard_index].get()
+                           : nullptr;
+        EgressContext egress_context{&owner, node(command.device), worker};
+        const auto status = forwarder->send_dhcpv4_force_renew(
+            std::string_view{operation->name.data(), operation->name_octets},
+            operation->address, &egress_context, egress,
+            router_fragment_admission, Clock::now());
+        result.value = static_cast<std::uint64_t>(status);
+        result.success = status == dhcpv4::ForceRenewStatus::encoded;
+      }
+    break;
+  case ForwardCommandKind::clear_router_dhcpv6_server_leases:
+    if (auto *forwarder = owner.router(command.device))
+      if (const auto *operation =
+              std::get_if<RouterDhcpv6ServerOperation>(&command.fib);
+          operation && operation->name_octets > 0U &&
+          operation->name_octets <= operation->name.size())
+        result.success = forwarder->clear_dhcpv6_server_leases(
+            std::string_view{operation->name.data(), operation->name_octets},
+            operation->lease_filter, Clock::now());
+    break;
+  case ForwardCommandKind::clear_router_dhcpv6_server_statistics:
+    if (auto *forwarder = owner.router(command.device))
+      if (const auto *operation =
+              std::get_if<RouterDhcpv6ServerOperation>(&command.fib);
+          operation && operation->name_octets > 0U &&
+          operation->name_octets <= operation->name.size())
+        result.success = forwarder->clear_dhcpv6_server_statistics(
+            std::string_view{operation->name.data(), operation->name_octets});
+    break;
   case ForwardCommandKind::begin_dhcpv6_relay:
     if (auto *forwarder = owner.router(command.device); forwarder)
       if (const auto *begin = std::get_if<Dhcpv6RelayBegin>(&command.fib)) {
@@ -1750,6 +2448,119 @@ ForwardResult NetworkPlane::Impl::apply_forward_command(
             router_fragment_admission, Clock::now());
       }
     break;
+  case ForwardCommandKind::begin_router_dhcpv6_server:
+    if (owner.router(command.device))
+      if (const auto *begin = std::get_if<Dhcpv6ServerBegin>(&command.fib);
+          begin && begin->name_octets > 0U &&
+          begin->name_octets <= begin->name.size()) {
+        try {
+          RouterSlot::Dhcpv6ServerStaging staged;
+          staged.name.assign(begin->name.data(), begin->name_octets);
+          staged.configuration.duid = begin->duid;
+          staged.configuration.duid_octets = begin->duid_octets;
+          staged.configuration.preference = begin->preference;
+          staged.configuration.address_pool_index = begin->address_pool_index;
+          staged.configuration.prefix_pool_index = begin->prefix_pool_index;
+          staged.configuration.information_refresh_time_seconds =
+              begin->information_refresh_time_seconds;
+          staged.configuration.rapid_commit = begin->rapid_commit;
+          staged.configuration.lease_query = begin->lease_query;
+          if (begin->has_solicit_maximum_retransmission)
+            staged.configuration.solicit_maximum_retransmission_seconds =
+                begin->solicit_maximum_retransmission_seconds;
+          if (begin->has_information_maximum_retransmission)
+            staged.configuration.information_maximum_retransmission_seconds =
+                begin->information_maximum_retransmission_seconds;
+          staged.configuration.dns_recursive_servers.reserve(
+              begin->expected_dns_servers);
+          staged.address_pools.reserve(begin->expected_address_pools);
+          staged.prefix_pools.reserve(begin->expected_prefix_pools);
+          staged.decline_hold_time =
+              std::chrono::seconds{begin->decline_hold_seconds};
+          staged.expected_dns_servers = begin->expected_dns_servers;
+          staged.expected_address_pools = begin->expected_address_pools;
+          staged.expected_prefix_pools = begin->expected_prefix_pools;
+          staged.active = true;
+          owner.routers[command.device.index].dhcpv6_server_staging =
+              std::move(staged);
+          result.success = true;
+        } catch (const std::bad_alloc &) {
+        }
+      }
+    break;
+  case ForwardCommandKind::add_router_dhcpv6_server_dns:
+    if (owner.router(command.device)) {
+      auto &staged =
+          owner.routers[command.device.index].dhcpv6_server_staging;
+      if (const auto *address =
+              std::get_if<packet::Ipv6>(&command.fib);
+          staged.active && address &&
+          staged.configuration.dns_recursive_servers.size() <
+              staged.expected_dns_servers) {
+        try {
+          staged.configuration.dns_recursive_servers.push_back(*address);
+          result.success = true;
+        } catch (const std::bad_alloc &) {
+        }
+      }
+    }
+    break;
+  case ForwardCommandKind::add_router_dhcpv6_server_address_pool:
+  case ForwardCommandKind::add_router_dhcpv6_server_prefix_pool:
+    if (owner.router(command.device)) {
+      auto &staged =
+          owner.routers[command.device.index].dhcpv6_server_staging;
+      if (const auto *pool = std::get_if<dhcpv6::LeasePool>(&command.fib);
+          staged.active && pool) {
+        auto &target =
+            command.kind ==
+                    ForwardCommandKind::add_router_dhcpv6_server_address_pool
+                ? staged.address_pools
+                : staged.prefix_pools;
+        const auto expected =
+            command.kind ==
+                    ForwardCommandKind::add_router_dhcpv6_server_address_pool
+                ? staged.expected_address_pools
+                : staged.expected_prefix_pools;
+        if (target.size() < expected)
+          try {
+            target.push_back(*pool);
+            result.success = true;
+          } catch (const std::bad_alloc &) {
+          }
+      }
+    }
+    break;
+  case ForwardCommandKind::commit_router_dhcpv6_server:
+    if (auto *forwarder = owner.router(command.device)) {
+      auto &staged =
+          owner.routers[command.device.index].dhcpv6_server_staging;
+      if (staged.active &&
+          staged.configuration.dns_recursive_servers.size() ==
+              staged.expected_dns_servers &&
+          staged.address_pools.size() == staged.expected_address_pools &&
+          staged.prefix_pools.size() == staged.expected_prefix_pools)
+        result.success = forwarder->configure_dhcpv6_server(
+            std::move(staged.name), staged.configuration,
+            staged.address_pools, staged.prefix_pools,
+            staged.decline_hold_time);
+      staged = {};
+    }
+    break;
+  case ForwardCommandKind::abort_router_dhcpv6_server:
+    if (owner.router(command.device)) {
+      owner.routers[command.device.index].dhcpv6_server_staging = {};
+      result.success = true;
+    }
+    break;
+  case ForwardCommandKind::remove_router_dhcpv6_server:
+    if (auto *forwarder = owner.router(command.device))
+      if (const auto *begin = std::get_if<Dhcpv6ServerBegin>(&command.fib);
+          begin && begin->name_octets > 0U &&
+          begin->name_octets <= begin->name.size())
+        result.success = forwarder->remove_dhcpv6_server(
+            std::string_view{begin->name.data(), begin->name_octets});
+    break;
   case ForwardCommandKind::clear_mld_database:
     if (auto *forwarder = owner.router(command.device))
       result.success = forwarder->clear_mld_database(
@@ -1869,15 +2680,228 @@ ForwardResult NetworkPlane::Impl::apply_forward_command(
       result.success = true;
     }
     break;
+  case ForwardCommandKind::begin_host_dhcpv4_client:
+    if (auto *endpoint = owner.host(command.host);
+        endpoint && endpoint->configured)
+      if (const auto *begin = std::get_if<Dhcpv4ClientBegin>(&command.fib);
+          begin &&
+          begin->client_identifier_octets <= begin->client_identifier.size() &&
+          begin->parameter_request_list_octets <=
+              begin->parameter_request_list.size() &&
+          begin->user_class_octets <= begin->user_class.size()) {
+        try {
+          HostSlot::Dhcpv4ClientStaging staged;
+          staged.configuration.hardware_address = begin->hardware_address;
+          staged.configuration.client_identifier.assign(
+              begin->client_identifier.begin(),
+              begin->client_identifier.begin() +
+                  begin->client_identifier_octets);
+          staged.configuration.parameter_request_list.assign(
+              begin->parameter_request_list.begin(),
+              begin->parameter_request_list.begin() +
+                  begin->parameter_request_list_octets);
+          staged.configuration.user_class.assign(
+              begin->user_class.begin(),
+              begin->user_class.begin() + begin->user_class_octets);
+          staged.configuration.transaction_secret =
+              begin->transaction_secret;
+          staged.configuration.maximum_message_size =
+              begin->maximum_message_size;
+          staged.configuration.broadcast = begin->broadcast;
+          staged.active = true;
+          endpoint->dhcpv4_client_staging = std::move(staged);
+          result.success = true;
+        } catch (...) {
+        }
+      }
+    break;
+  case ForwardCommandKind::commit_host_dhcpv4_client:
+    if (auto *endpoint = owner.host(command.host); endpoint) {
+      auto &staged = endpoint->dhcpv4_client_staging;
+      if (!staged.active)
+        break;
+      try {
+        if (!endpoint->dhcpv4)
+          endpoint->dhcpv4 =
+              std::make_unique<network_detail::Dhcpv4EndpointService>();
+        result.success = endpoint->dhcpv4->configure_client(
+            staged.configuration, endpoint->stack, Clock::now());
+      } catch (...) {
+      }
+      staged = {};
+    }
+    break;
+  case ForwardCommandKind::abort_host_dhcpv4_client:
+    if (auto *endpoint = owner.host(command.host); endpoint) {
+      endpoint->dhcpv4_client_staging = {};
+      result.success = true;
+    }
+    break;
+  case ForwardCommandKind::remove_host_dhcpv4_client:
+    if (auto *endpoint = owner.host(command.host); endpoint) {
+      if (endpoint->dhcpv4)
+        endpoint->dhcpv4->remove_client(endpoint->stack);
+      endpoint->dhcpv4_client_staging = {};
+      result.success = true;
+    }
+    break;
+  case ForwardCommandKind::begin_host_dhcpv4_server:
+    if (auto *endpoint = owner.host(command.host);
+        endpoint && endpoint->configured)
+      if (const auto *begin = std::get_if<Dhcpv4ServerBegin>(&command.fib);
+          begin &&
+          begin->expected_dns_servers <=
+              packet::dhcpv4::maximum_ipv4_addresses_per_option &&
+          begin->expected_pools <=
+              device_catalog::dhcpv4_pools_per_server &&
+          begin->expected_reservations <=
+              device_catalog::dhcpv4_leases_per_server) {
+        try {
+          HostSlot::Dhcpv4ServerStaging staged;
+          staged.configuration.server_instance = begin->server_instance;
+          staged.configuration.routing_context = begin->routing_context;
+          staged.configuration.server_identifier =
+              begin->server_identifier;
+          staged.configuration.offer_hold =
+              std::chrono::seconds{begin->offer_hold_seconds};
+          staged.configuration.decline_hold =
+              std::chrono::seconds{begin->decline_hold_seconds};
+          staged.configuration.authoritative = begin->authoritative;
+          staged.configuration.force_renews = begin->force_renews;
+          staged.configuration.domain_name_servers.reserve(
+              begin->expected_dns_servers);
+          staged.pools.reserve(begin->expected_pools);
+          staged.reservations.reserve(begin->expected_reservations);
+          staged.exclusions.reserve(begin->expected_exclusions);
+          staged.expected_dns_servers = begin->expected_dns_servers;
+          staged.expected_pools = begin->expected_pools;
+          staged.expected_reservations = begin->expected_reservations;
+          staged.expected_exclusions = begin->expected_exclusions;
+          staged.active = true;
+          endpoint->dhcpv4_server_staging = std::move(staged);
+          result.success = true;
+        } catch (...) {
+        }
+      }
+    break;
+  case ForwardCommandKind::add_host_dhcpv4_server_dns:
+    if (auto *endpoint = owner.host(command.host); endpoint) {
+      auto &staged = endpoint->dhcpv4_server_staging;
+      if (const auto *address = std::get_if<packet::Ipv4>(&command.fib);
+          staged.active && address &&
+          staged.configuration.domain_name_servers.size() <
+              staged.expected_dns_servers) {
+        try {
+          staged.configuration.domain_name_servers.push_back(*address);
+          result.success = true;
+        } catch (...) {
+        }
+      }
+    }
+    break;
+  case ForwardCommandKind::add_host_dhcpv4_server_pool:
+    if (auto *endpoint = owner.host(command.host); endpoint) {
+      auto &staged = endpoint->dhcpv4_server_staging;
+      if (const auto *pool = std::get_if<dhcpv4::Pool>(&command.fib);
+          staged.active && pool &&
+          staged.pools.size() < staged.expected_pools) {
+        try {
+          staged.pools.push_back(*pool);
+          result.success = true;
+        } catch (...) {
+        }
+      }
+    }
+    break;
+  case ForwardCommandKind::add_host_dhcpv4_server_reservation:
+    if (auto *endpoint = owner.host(command.host); endpoint) {
+      auto &staged = endpoint->dhcpv4_server_staging;
+      if (const auto *reservation =
+              std::get_if<dhcpv4::Reservation>(&command.fib);
+          staged.active && reservation &&
+          staged.reservations.size() < staged.expected_reservations) {
+        try {
+          staged.reservations.push_back(*reservation);
+          result.success = true;
+        } catch (...) {
+        }
+      }
+    }
+    break;
+  case ForwardCommandKind::add_host_dhcpv4_server_exclusion:
+    if (auto *endpoint = owner.host(command.host); endpoint) {
+      auto &staged = endpoint->dhcpv4_server_staging;
+      if (const auto *excluded =
+              std::get_if<dhcpv4::ExcludedRange>(&command.fib);
+          staged.active && excluded &&
+          staged.exclusions.size() < staged.expected_exclusions) {
+        try {
+          staged.exclusions.push_back(*excluded);
+          result.success = true;
+        } catch (...) {
+        }
+      }
+    }
+    break;
+  case ForwardCommandKind::commit_host_dhcpv4_server:
+    if (auto *endpoint = owner.host(command.host); endpoint) {
+      auto &staged = endpoint->dhcpv4_server_staging;
+      if (!staged.active ||
+          staged.configuration.domain_name_servers.size() !=
+              staged.expected_dns_servers ||
+          staged.pools.size() != staged.expected_pools ||
+          staged.reservations.size() != staged.expected_reservations ||
+          staged.exclusions.size() != staged.expected_exclusions)
+        break;
+      try {
+        if (!endpoint->dhcpv4)
+          endpoint->dhcpv4 =
+              std::make_unique<network_detail::Dhcpv4EndpointService>();
+        result.success = endpoint->dhcpv4->configure_server(
+            staged.configuration, staged.pools, staged.reservations,
+            staged.exclusions, endpoint->stack);
+      } catch (...) {
+      }
+      staged = {};
+    }
+    break;
+  case ForwardCommandKind::abort_host_dhcpv4_server:
+    if (auto *endpoint = owner.host(command.host); endpoint) {
+      endpoint->dhcpv4_server_staging = {};
+      result.success = true;
+    }
+    break;
+  case ForwardCommandKind::remove_host_dhcpv4_server:
+    if (auto *endpoint = owner.host(command.host); endpoint) {
+      if (endpoint->dhcpv4)
+        endpoint->dhcpv4->remove_server(endpoint->stack);
+      endpoint->dhcpv4_server_staging = {};
+      result.success = true;
+    }
+    break;
+  case ForwardCommandKind::host_dhcpv4_client_status:
+    if (const auto *endpoint = owner.host(command.host);
+        endpoint && endpoint->dhcpv4 &&
+        endpoint->dhcpv4->client_configured()) {
+      result.success = true;
+      result.dhcpv4_client = *endpoint->dhcpv4->client_status();
+      result.value = result.dhcpv4_client.lease_present ? 1U : 0U;
+    }
+    break;
   case ForwardCommandKind::begin_host_dhcpv6_client:
     if (auto *endpoint = owner.host(command.host);
         endpoint && endpoint->configured)
       if (const auto *begin = std::get_if<Dhcpv6ClientBegin>(&command.fib)) {
+        if (begin->user_class_octets > begin->user_class.size())
+          break;
         try {
           HostSlot::ClientStaging staged;
           staged.configuration.duid = begin->duid;
           staged.configuration.duid_octets = begin->duid_octets;
           staged.configuration.transaction_secret = begin->transaction_secret;
+          staged.configuration.user_class.assign(
+              begin->user_class.begin(),
+              begin->user_class.begin() + begin->user_class_octets);
           staged.configuration.rapid_commit = begin->rapid_commit;
           staged.configuration.identity_associations.reserve(
               begin->expected_associations);
@@ -1974,6 +2998,7 @@ ForwardResult NetworkPlane::Impl::apply_forward_command(
           staged.configuration.information_refresh_time_seconds =
               begin->information_refresh_time_seconds;
           staged.configuration.rapid_commit = begin->rapid_commit;
+          staged.configuration.lease_query = begin->lease_query;
           if (begin->has_solicit_maximum_retransmission)
             staged.configuration.solicit_maximum_retransmission_seconds =
                 begin->solicit_maximum_retransmission_seconds;
@@ -2531,6 +3556,26 @@ ForwardResult NetworkPlane::Impl::apply_forward_command(
       result.value = endpoint->link_signal;
     }
     break;
+  case ForwardCommandKind::set_router_bof_link:
+    if (command.port.ordinal == device_catalog::management_port_ordinal &&
+        command.device.index < owner.routers.size() &&
+        owner.router(command.device)) {
+      auto &slot = owner.routers[command.device.index];
+      slot.management_link_signal = command.flag;
+      if (slot.management_stack)
+        slot.management_stack->set_link_state(command.flag);
+      result.success = true;
+    }
+    break;
+  case ForwardCommandKind::router_bof_link_status:
+    if (command.port.ordinal == device_catalog::management_port_ordinal &&
+        command.device.index < owner.routers.size() &&
+        owner.router(command.device)) {
+      result.success = true;
+      result.value =
+          owner.routers[command.device.index].management_link_signal;
+    }
+    break;
   case ForwardCommandKind::router_ping:
     if (auto *forwarder = owner.router(command.device)) {
       auto &worker = *owner.forwarding_shards[shard_index];
@@ -2608,6 +3653,24 @@ void NetworkPlane::Impl::apply_forward_ingress(
   if (ingress.destination.node.kind == NodeKind::router) {
     const DeviceHandle handle{ingress.destination.node.index,
                               ingress.destination.node.generation};
+    if (ingress.destination.ordinal ==
+            device_catalog::management_port_ordinal &&
+        handle.index < owner.routers.size()) {
+      auto &slot = owner.routers[handle.index];
+      if (!owner.router(handle) || !slot.management_configured)
+        return;
+      // The OOB endpoint consumes Ethernet locally. It is never passed to the
+      // Base forwarding engine, which enforces ip-forwarding=false between
+      // management and routed interfaces.
+      const auto frames =
+          slot.management_stack->receive(ingress.frame, 0U, false,
+                                        Clock::now());
+      for (std::size_t index = 0; index < frames.count; ++index)
+        static_cast<void>(owner.queue_egress(
+            &worker, node(handle), device_catalog::management_port_ordinal,
+            frames.frames[index]));
+      return;
+    }
     auto *forwarder = owner.router(handle);
     if (!forwarder)
       return;
@@ -2656,6 +3719,49 @@ NetworkPlane::Impl::service_forwarding(void *context, std::size_t shard_index,
     // inter-shard and physical-link queues as its initiating request.
     slot.forwarder->service_ipv4_maintenance(&egress_context, egress, now);
     slot.forwarder->service_ipv6_maintenance(&egress_context, egress, now);
+    if (slot.management_configured) {
+      const auto frames = slot.management_stack->service_maintenance(now);
+      for (std::size_t frame = 0; frame < frames.count; ++frame)
+        static_cast<void>(owner.queue_egress(
+            &worker, node(handle), device_catalog::management_port_ordinal,
+            frames.frames[frame]));
+      if (slot.bof_dhcpv4) {
+        const auto deadline = slot.bof_dhcpv4->service(
+            *slot.management_stack, &egress_context,
+            management_fragment_egress, management_fragment_admission, now);
+        if (deadline && (!next || *deadline < *next))
+          next = deadline;
+        if (slot.bof_dhcpv4->client_bootstrap_complete()) {
+          slot.bof_dhcpv4_timeout = Clock::time_point::max();
+        } else if (now >= slot.bof_dhcpv4_timeout) {
+          slot.bof_dhcpv4->remove_client(*slot.management_stack);
+          slot.bof_dhcpv4_timeout = Clock::time_point::max();
+        } else if (slot.bof_dhcpv4_timeout != Clock::time_point::max() &&
+                   (!next || slot.bof_dhcpv4_timeout < *next)) {
+          next = slot.bof_dhcpv4_timeout;
+        }
+      }
+      if (slot.bof_dhcpv6) {
+        const auto deadline = slot.bof_dhcpv6->service(
+            *slot.management_stack, &egress_context,
+            management_fragment_egress, management_fragment_admission, now);
+        if (deadline && (!next || *deadline < *next))
+          next = deadline;
+        if (slot.bof_dhcpv6->client_bootstrap_complete()) {
+          slot.bof_dhcpv6_timeout = Clock::time_point::max();
+        } else if (now >= slot.bof_dhcpv6_timeout) {
+          slot.bof_dhcpv6->remove_client(*slot.management_stack);
+          slot.bof_dhcpv6_timeout = Clock::time_point::max();
+        } else if (slot.bof_dhcpv6_timeout != Clock::time_point::max() &&
+                   (!next || slot.bof_dhcpv6_timeout < *next)) {
+          next = slot.bof_dhcpv6_timeout;
+        }
+      }
+      const auto deadline =
+          slot.management_stack->next_maintenance_deadline();
+      if (deadline && (!next || *deadline < *next))
+        next = deadline;
+    }
     for (const auto deadline : {slot.forwarder->next_ipv4_deadline(),
                                 slot.forwarder->next_ipv6_deadline()})
       if (deadline && (!next || *deadline < *next))
@@ -2672,6 +3778,13 @@ NetworkPlane::Impl::service_forwarding(void *context, std::size_t shard_index,
       static_cast<void>(
           owner.queue_egress(&worker, node(handle), 0U, frames.frames[frame]));
     EgressContext egress_context{&owner, node(handle), &worker};
+    if (slot.dhcpv4) {
+      const auto service_deadline = slot.dhcpv4->service(
+          slot.stack, &egress_context, host_fragment_egress,
+          host_fragment_admission, now);
+      if (service_deadline && (!next || *service_deadline < *next))
+        next = service_deadline;
+    }
     if (slot.dhcpv6) {
       const auto service_deadline = slot.dhcpv6->service(
           slot.stack, &egress_context, host_fragment_egress,
@@ -3099,8 +4212,14 @@ NetworkPlane::NetworkPlane(std::size_t logical_cpus)
 }
 NetworkPlane::~NetworkPlane() = default;
 
-bool NetworkPlane::add_router(DeviceHandle device) noexcept {
+bool NetworkPlane::add_router(
+    DeviceHandle device,
+    const crypto::Sha256Digest &transport_secret,
+    bool transit_forwarding_enabled) noexcept {
   if (!device || device.index >= impl_->routers.size())
+    return false;
+  if (std::ranges::all_of(transport_secret,
+                          [](std::uint8_t octet) { return octet == 0U; }))
     return false;
   std::unique_ptr<Impl::RouteManagerState> route_manager;
   try {
@@ -3117,8 +4236,11 @@ bool NetworkPlane::add_router(DeviceHandle device) noexcept {
       return false;
     const bool added =
         impl_
-            ->execute_forward(
-                {.kind = ForwardCommandKind::add_router, .device = device})
+            ->execute_forward({.kind = ForwardCommandKind::add_router,
+                               .device = device,
+                               .router_transport_secret = transport_secret,
+                               .transit_forwarding_enabled =
+                                   transit_forwarding_enabled})
             .success;
     if (added) {
       impl_->router_generations[device.index] = device.generation;
@@ -3132,7 +4254,9 @@ bool NetworkPlane::add_router(DeviceHandle device) noexcept {
   // Allocate the device arena once on lifecycle admission, never on packet
   // receipt. Generation is published only after allocation succeeded.
   try {
-    slot.forwarder = std::make_unique<RouterForwarder>();
+    slot.forwarder =
+        std::make_unique<RouterForwarder>(transport_secret);
+    slot.forwarder->set_transit_forwarding(transit_forwarding_enabled);
   } catch (const std::bad_alloc &) {
     return false;
   }
@@ -4154,6 +5278,206 @@ bool NetworkPlane::remove_mld_interface(DeviceHandle device,
   return forwarder && forwarder->remove_mld_interface(port_ordinal);
 }
 
+bool NetworkPlane::configure_dhcpv4_relay(
+    DeviceHandle device,
+    const dhcpv4::RelayInterfaceConfiguration &configuration) noexcept {
+  if (!device || configuration.interface_id == 0U ||
+      configuration.relay.circuit_id.size() > 255U ||
+      configuration.relay.remote_id.size() > 255U ||
+      configuration.relay.servers.size() >
+          device_catalog::dhcpv4_relay_servers_per_interface)
+    return false;
+  Dhcpv4RelayBegin begin{
+      .interface_id = configuration.interface_id,
+      .physical_port_ordinal = configuration.physical_port_ordinal,
+      .gateway_address = configuration.relay.gateway_address,
+      .circuit_id_octets = static_cast<std::uint16_t>(
+          configuration.relay.circuit_id.size()),
+      .remote_id_octets = static_cast<std::uint16_t>(
+          configuration.relay.remote_id.size()),
+      .server_count =
+          static_cast<std::uint16_t>(configuration.relay.servers.size()),
+      .existing_information = configuration.relay.existing_information,
+      .source_address = configuration.relay.source_address,
+      .maximum_hops = configuration.relay.maximum_hops,
+      .trusted_ingress = configuration.relay.trusted_ingress,
+      .relay_plain_bootp = configuration.relay.relay_plain_bootp,
+      .release_include_gateway_address =
+          configuration.relay.release_include_gateway_address};
+  std::copy(configuration.relay.circuit_id.begin(),
+            configuration.relay.circuit_id.end(), begin.circuit_id.begin());
+  std::copy(configuration.relay.remote_id.begin(),
+            configuration.relay.remote_id.end(), begin.remote_id.begin());
+  for (std::size_t index{}; index < configuration.relay.servers.size();
+       ++index)
+    begin.servers[index] = configuration.relay.servers[index].address;
+  const ForwardCommand command{.kind =
+                                   ForwardCommandKind::configure_dhcpv4_relay,
+                               .device = device,
+                               .fib = begin};
+  return (impl_->parallel()
+              ? impl_->execute_forward(command)
+              : Impl::apply_forward_command(impl_.get(), 0U, command))
+      .success;
+}
+
+bool NetworkPlane::remove_dhcpv4_relay(
+    DeviceHandle device, std::uint64_t logical_interface_id) noexcept {
+  if (!device || logical_interface_id == 0U)
+    return false;
+  const ForwardCommand command{
+      .logical_interface_id = logical_interface_id,
+      .kind = ForwardCommandKind::remove_dhcpv4_relay,
+      .device = device};
+  return (impl_->parallel()
+              ? impl_->execute_forward(command)
+              : Impl::apply_forward_command(impl_.get(), 0U, command))
+      .success;
+}
+
+bool NetworkPlane::configure_router_dhcpv4_server(
+    const RouterDhcpv4ServerProgram &program) noexcept {
+  if (!program.device || program.name.empty() || program.name.size() > 32U ||
+      program.configuration.offer_hold <= std::chrono::seconds::zero() ||
+      program.configuration.decline_hold < std::chrono::seconds::zero() ||
+      program.configuration.domain_name_servers.size() >
+          packet::dhcpv4::maximum_ipv4_addresses_per_option ||
+      program.pools.size() > device_catalog::dhcpv4_pools_per_server ||
+      program.reservations.size() >
+          device_catalog::dhcpv4_leases_per_server ||
+      program.exclusions.size() >
+          device_catalog::dhcpv4_leases_per_server)
+    return false;
+  const auto execute = [&](ForwardCommand command) noexcept {
+    command.device = program.device;
+    return impl_->parallel()
+               ? impl_->execute_forward(command).success
+               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  };
+  const auto &configuration = program.configuration;
+  Dhcpv4ServerBegin begin{
+      .server_identifier = configuration.server_identifier,
+      .offer_hold_seconds =
+          static_cast<std::uint64_t>(configuration.offer_hold.count()),
+      .decline_hold_seconds =
+          static_cast<std::uint64_t>(configuration.decline_hold.count()),
+      .server_instance = configuration.server_instance,
+      .routing_context = configuration.routing_context,
+      .expected_dns_servers = static_cast<std::uint32_t>(
+          configuration.domain_name_servers.size()),
+      .expected_pools = static_cast<std::uint32_t>(program.pools.size()),
+      .expected_reservations =
+          static_cast<std::uint32_t>(program.reservations.size()),
+      .expected_exclusions =
+          static_cast<std::uint32_t>(program.exclusions.size()),
+      .name_octets = static_cast<std::uint8_t>(program.name.size()),
+      .authoritative = configuration.authoritative,
+      .force_renews = configuration.force_renews};
+  std::copy(program.name.begin(), program.name.end(), begin.name.begin());
+  if (!execute({.kind = ForwardCommandKind::begin_router_dhcpv4_server,
+                .fib = begin}))
+    return false;
+  for (const auto &dns : configuration.domain_name_servers)
+    if (!execute({.kind = ForwardCommandKind::add_router_dhcpv4_server_dns,
+                  .fib = dns}))
+      goto abort_router_dhcpv4_server;
+  for (const auto &pool : program.pools)
+    if (!execute({.kind = ForwardCommandKind::add_router_dhcpv4_server_pool,
+                  .fib = pool}))
+      goto abort_router_dhcpv4_server;
+  for (const auto &reservation : program.reservations)
+    if (!execute(
+            {.kind =
+                 ForwardCommandKind::add_router_dhcpv4_server_reservation,
+             .fib = reservation}))
+      goto abort_router_dhcpv4_server;
+  for (const auto &excluded : program.exclusions)
+    if (!execute(
+            {.kind = ForwardCommandKind::add_router_dhcpv4_server_exclusion,
+             .fib = excluded}))
+      goto abort_router_dhcpv4_server;
+  if (execute({.kind = ForwardCommandKind::commit_router_dhcpv4_server}))
+    return true;
+abort_router_dhcpv4_server:
+  static_cast<void>(
+      execute({.kind = ForwardCommandKind::abort_router_dhcpv4_server}));
+  return false;
+}
+
+bool NetworkPlane::remove_router_dhcpv4_server(
+    DeviceHandle device, std::string_view name) noexcept {
+  if (!device || name.empty() || name.size() > 32U)
+    return false;
+  Dhcpv4ServerBegin begin{
+      .name_octets = static_cast<std::uint8_t>(name.size())};
+  std::copy(name.begin(), name.end(), begin.name.begin());
+  const ForwardCommand command{
+      .kind = ForwardCommandKind::remove_router_dhcpv4_server,
+      .device = device,
+      .fib = begin};
+  return (impl_->parallel()
+              ? impl_->execute_forward(command)
+              : Impl::apply_forward_command(impl_.get(), 0U, command))
+      .success;
+}
+
+bool NetworkPlane::clear_router_dhcpv4_server_statistics(
+    DeviceHandle device, std::string_view name) noexcept {
+  if (!device || name.empty() || name.size() > 32U)
+    return false;
+  RouterDhcpv4ServerOperation operation{
+      .name_octets = static_cast<std::uint8_t>(name.size())};
+  std::copy(name.begin(), name.end(), operation.name.begin());
+  const ForwardCommand command{
+      .kind = ForwardCommandKind::clear_router_dhcpv4_server_statistics,
+      .device = device,
+      .fib = operation};
+  return (impl_->parallel()
+              ? impl_->execute_forward(command)
+              : Impl::apply_forward_command(impl_.get(), 0U, command))
+      .success;
+}
+
+bool NetworkPlane::clear_router_dhcpv4_server_leases(
+    DeviceHandle device, std::string_view name,
+    const dhcpv4::LeaseClearFilter &filter) noexcept {
+  if (!device || name.empty() || name.size() > 32U ||
+      filter.prefix_length > 32U)
+    return false;
+  RouterDhcpv4ServerOperation operation{
+      .lease_filter = filter,
+      .name_octets = static_cast<std::uint8_t>(name.size())};
+  std::copy(name.begin(), name.end(), operation.name.begin());
+  const ForwardCommand command{
+      .kind = ForwardCommandKind::clear_router_dhcpv4_server_leases,
+      .device = device,
+      .fib = operation};
+  return (impl_->parallel()
+              ? impl_->execute_forward(command)
+              : Impl::apply_forward_command(impl_.get(), 0U, command))
+      .success;
+}
+
+dhcpv4::ForceRenewStatus NetworkPlane::send_router_dhcpv4_force_renew(
+    DeviceHandle device, std::string_view name, packet::Ipv4 address) noexcept {
+  if (!device || name.empty() || name.size() > 32U ||
+      address == packet::Ipv4{})
+    return dhcpv4::ForceRenewStatus::not_configured;
+  RouterDhcpv4ServerOperation operation{
+      .address = address,
+      .name_octets = static_cast<std::uint8_t>(name.size())};
+  std::copy(name.begin(), name.end(), operation.name.begin());
+  const ForwardCommand command{
+      .kind = ForwardCommandKind::send_router_dhcpv4_force_renew,
+      .device = device,
+      .fib = operation};
+  const auto result =
+      impl_->parallel()
+          ? impl_->execute_forward(command)
+          : Impl::apply_forward_command(impl_.get(), 0U, command);
+  return static_cast<dhcpv4::ForceRenewStatus>(result.value);
+}
+
 bool NetworkPlane::configure_dhcpv6_relay(
     DeviceHandle device,
     const dhcpv6::RelayInterfaceConfig &configuration) noexcept {
@@ -4516,6 +5840,144 @@ bool NetworkPlane::initialize_signing_vault(
   return true;
 }
 
+bool NetworkPlane::configure_router_bof_management(
+    const RouterBofManagementProgram &program) noexcept {
+  if (!program.device || program.endpoint.host)
+    return false;
+  auto endpoint = program.endpoint;
+  const ForwardCommand command{
+      .kind = ForwardCommandKind::configure_router_bof_management,
+      .device = program.device,
+      .host_program = endpoint};
+  return impl_->parallel()
+             ? impl_->execute_forward(command).success
+             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+}
+
+bool NetworkPlane::configure_router_bof_dhcpv4_client(
+    const RouterBofDhcpv4ClientProgram &program) noexcept {
+  if (!program.device ||
+      program.bootstrap_timeout <= std::chrono::seconds::zero() ||
+      program.configuration.client_identifier.size() > 255U ||
+      program.configuration.parameter_request_list.size() > 255U)
+    return false;
+  if (program.configuration.user_class.size() > 254U)
+    return false;
+  const auto execute = [&](ForwardCommand command) noexcept {
+    command.device = program.device;
+    return impl_->parallel()
+               ? impl_->execute_forward(command).success
+               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  };
+  Dhcpv4ClientBegin begin{
+      .hardware_address = program.configuration.hardware_address,
+      .transaction_secret = program.configuration.transaction_secret,
+      .client_identifier_octets = static_cast<std::uint16_t>(
+          program.configuration.client_identifier.size()),
+      .parameter_request_list_octets = static_cast<std::uint16_t>(
+          program.configuration.parameter_request_list.size()),
+      .user_class_octets = static_cast<std::uint16_t>(
+          program.configuration.user_class.size()),
+      .maximum_message_size = program.configuration.maximum_message_size,
+      .bootstrap_timeout_seconds = static_cast<std::uint32_t>(
+          program.bootstrap_timeout.count()),
+      .broadcast = program.configuration.broadcast};
+  std::ranges::copy(program.configuration.client_identifier,
+                    begin.client_identifier.begin());
+  std::ranges::copy(program.configuration.parameter_request_list,
+                    begin.parameter_request_list.begin());
+  std::ranges::copy(program.configuration.user_class,
+                    begin.user_class.begin());
+  if (!execute({.kind =
+                    ForwardCommandKind::begin_router_bof_dhcpv4_client,
+                .fib = begin}))
+    return false;
+  if (execute(
+          {.kind = ForwardCommandKind::commit_router_bof_dhcpv4_client}))
+    return true;
+  static_cast<void>(execute(
+      {.kind = ForwardCommandKind::abort_router_bof_dhcpv4_client}));
+  return false;
+}
+
+bool NetworkPlane::remove_router_bof_dhcpv4_client(
+    DeviceHandle device) noexcept {
+  const ForwardCommand command{
+      .kind = ForwardCommandKind::remove_router_bof_dhcpv4_client,
+      .device = device};
+  return impl_->parallel()
+             ? impl_->execute_forward(command).success
+             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+}
+
+bool NetworkPlane::configure_router_bof_dhcpv6_client(
+    const RouterBofDhcpv6ClientProgram &program) noexcept {
+  if (!program.device ||
+      program.bootstrap_timeout <= std::chrono::seconds::zero() ||
+      program.configuration.identity_associations.size() >
+          std::numeric_limits<std::uint32_t>::max() ||
+      program.configuration.requested_options.size() >
+          std::numeric_limits<std::uint32_t>::max() ||
+      program.configuration.user_class.size() > 255U)
+    return false;
+  const auto execute = [&](ForwardCommand command) noexcept {
+    command.device = program.device;
+    return impl_->parallel()
+               ? impl_->execute_forward(command).success
+               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  };
+  Dhcpv6ClientBegin begin{
+      .duid = program.configuration.duid,
+      .transaction_secret = program.configuration.transaction_secret,
+      .expected_associations = static_cast<std::uint32_t>(
+          program.configuration.identity_associations.size()),
+      .expected_options = static_cast<std::uint32_t>(
+          program.configuration.requested_options.size()),
+      .duid_octets = program.configuration.duid_octets,
+      .user_class_octets = static_cast<std::uint16_t>(
+          program.configuration.user_class.size()),
+      .bootstrap_timeout_seconds = static_cast<std::uint32_t>(
+          program.bootstrap_timeout.count()),
+      .rapid_commit = program.configuration.rapid_commit,
+      .information_only = program.information_only};
+  std::ranges::copy(program.configuration.user_class,
+                    begin.user_class.begin());
+  if (!execute({.kind =
+                    ForwardCommandKind::begin_router_bof_dhcpv6_client,
+                .fib = begin}))
+    return false;
+  for (const auto &association : program.configuration.identity_associations)
+    if (!execute(
+            {.kind =
+                 ForwardCommandKind::add_router_bof_dhcpv6_client_ia,
+             .fib = Dhcpv6ClientAssociation{association.iaid,
+                                            association.kind}}))
+      goto abort_bof_dhcpv6;
+  for (const auto option : program.configuration.requested_options)
+    if (!execute(
+            {.kind =
+                 ForwardCommandKind::add_router_bof_dhcpv6_client_option,
+             .fib = Dhcpv6ClientOption{option}}))
+      goto abort_bof_dhcpv6;
+  if (execute(
+          {.kind = ForwardCommandKind::commit_router_bof_dhcpv6_client}))
+    return true;
+abort_bof_dhcpv6:
+  static_cast<void>(execute(
+      {.kind = ForwardCommandKind::abort_router_bof_dhcpv6_client}));
+  return false;
+}
+
+bool NetworkPlane::remove_router_bof_dhcpv6_client(
+    DeviceHandle device) noexcept {
+  const ForwardCommand command{
+      .kind = ForwardCommandKind::remove_router_bof_dhcpv6_client,
+      .device = device};
+  return impl_->parallel()
+             ? impl_->execute_forward(command).success
+             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+}
+
 bool NetworkPlane::configure_host(const HostNetworkProgram &program) noexcept {
   if (impl_->parallel())
     return impl_
@@ -4548,13 +6010,157 @@ bool NetworkPlane::configure_host(const HostNetworkProgram &program) noexcept {
   return true;
 }
 
+bool NetworkPlane::configure_host_dhcpv4_client(
+    const HostDhcpv4ClientProgram &program) noexcept {
+  if (!program.host ||
+      program.configuration.client_identifier.size() > 255U ||
+      program.configuration.parameter_request_list.size() > 255U)
+    return false;
+  if (program.configuration.user_class.size() > 254U)
+    return false;
+  const auto execute = [&](ForwardCommand command) noexcept {
+    command.host = program.host;
+    return impl_->parallel()
+               ? impl_->execute_forward(command).success
+               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  };
+
+  Dhcpv4ClientBegin begin{
+      .hardware_address = program.configuration.hardware_address,
+      .transaction_secret = program.configuration.transaction_secret,
+      .client_identifier_octets = static_cast<std::uint16_t>(
+          program.configuration.client_identifier.size()),
+      .parameter_request_list_octets = static_cast<std::uint16_t>(
+          program.configuration.parameter_request_list.size()),
+      .user_class_octets = static_cast<std::uint16_t>(
+          program.configuration.user_class.size()),
+      .maximum_message_size = program.configuration.maximum_message_size,
+      .broadcast = program.configuration.broadcast};
+  std::ranges::copy(program.configuration.client_identifier,
+                    begin.client_identifier.begin());
+  std::ranges::copy(program.configuration.parameter_request_list,
+                    begin.parameter_request_list.begin());
+  std::ranges::copy(program.configuration.user_class,
+                    begin.user_class.begin());
+  if (!execute(
+          {.kind = ForwardCommandKind::begin_host_dhcpv4_client, .fib = begin}))
+    return false;
+  if (execute({.kind = ForwardCommandKind::commit_host_dhcpv4_client}))
+    return true;
+  static_cast<void>(
+      execute({.kind = ForwardCommandKind::abort_host_dhcpv4_client}));
+  return false;
+}
+
+bool NetworkPlane::remove_host_dhcpv4_client(HostHandle host) noexcept {
+  const ForwardCommand command{
+      .kind = ForwardCommandKind::remove_host_dhcpv4_client, .host = host};
+  return impl_->parallel()
+             ? impl_->execute_forward(command).success
+             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+}
+
+bool NetworkPlane::configure_host_dhcpv4_server(
+    const HostDhcpv4ServerProgram &program) noexcept {
+  if (!program.host ||
+      program.configuration.offer_hold <= std::chrono::seconds::zero() ||
+      program.configuration.decline_hold <= std::chrono::seconds::zero() ||
+      program.configuration.domain_name_servers.size() >
+          packet::dhcpv4::maximum_ipv4_addresses_per_option ||
+      program.pools.size() > device_catalog::dhcpv4_pools_per_server ||
+      program.reservations.size() >
+          device_catalog::dhcpv4_leases_per_server ||
+      program.exclusions.size() >
+          device_catalog::dhcpv4_leases_per_server)
+    return false;
+  const auto execute = [&](ForwardCommand command) noexcept {
+    command.host = program.host;
+    return impl_->parallel()
+               ? impl_->execute_forward(command).success
+               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  };
+  const auto &configuration = program.configuration;
+  const Dhcpv4ServerBegin begin{
+      .server_identifier = configuration.server_identifier,
+      .offer_hold_seconds =
+          static_cast<std::uint64_t>(configuration.offer_hold.count()),
+      .decline_hold_seconds =
+          static_cast<std::uint64_t>(configuration.decline_hold.count()),
+      .server_instance = configuration.server_instance,
+      .routing_context = configuration.routing_context,
+      .expected_dns_servers = static_cast<std::uint32_t>(
+          configuration.domain_name_servers.size()),
+      .expected_pools = static_cast<std::uint32_t>(program.pools.size()),
+      .expected_reservations =
+          static_cast<std::uint32_t>(program.reservations.size()),
+      .expected_exclusions =
+          static_cast<std::uint32_t>(program.exclusions.size()),
+      .authoritative = configuration.authoritative,
+      .force_renews = configuration.force_renews};
+  if (!execute(
+          {.kind = ForwardCommandKind::begin_host_dhcpv4_server, .fib = begin}))
+    return false;
+  for (const auto &dns : configuration.domain_name_servers)
+    if (!execute({.kind = ForwardCommandKind::add_host_dhcpv4_server_dns,
+                  .fib = dns}))
+      goto abort_dhcpv4_server;
+  for (const auto &pool : program.pools)
+    if (!execute({.kind = ForwardCommandKind::add_host_dhcpv4_server_pool,
+                  .fib = pool}))
+      goto abort_dhcpv4_server;
+  for (const auto &reservation : program.reservations)
+    if (!execute(
+            {.kind =
+                 ForwardCommandKind::add_host_dhcpv4_server_reservation,
+             .fib = reservation}))
+      goto abort_dhcpv4_server;
+  for (const auto &excluded : program.exclusions)
+    if (!execute(
+            {.kind = ForwardCommandKind::add_host_dhcpv4_server_exclusion,
+             .fib = excluded}))
+      goto abort_dhcpv4_server;
+  if (execute({.kind = ForwardCommandKind::commit_host_dhcpv4_server}))
+    return true;
+abort_dhcpv4_server:
+  static_cast<void>(
+      execute({.kind = ForwardCommandKind::abort_host_dhcpv4_server}));
+  return false;
+}
+
+bool NetworkPlane::remove_host_dhcpv4_server(HostHandle host) noexcept {
+  const ForwardCommand command{
+      .kind = ForwardCommandKind::remove_host_dhcpv4_server, .host = host};
+  return impl_->parallel()
+             ? impl_->execute_forward(command).success
+             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+}
+
+std::optional<std::size_t>
+NetworkPlane::host_dhcpv4_client_lease_count(HostHandle host) noexcept {
+  const auto status = host_dhcpv4_client_status(host);
+  return status ? std::optional<std::size_t>{
+                      status->lease_present ? 1U : 0U}
+                : std::nullopt;
+}
+
+std::optional<dhcpv4::ClientStatus>
+NetworkPlane::host_dhcpv4_client_status(HostHandle host) noexcept {
+  const ForwardCommand command{
+      .kind = ForwardCommandKind::host_dhcpv4_client_status, .host = host};
+  const auto result =
+      impl_->parallel() ? impl_->execute_forward(command)
+                        : Impl::apply_forward_command(impl_.get(), 0U, command);
+  return result.success ? std::optional{result.dhcpv4_client} : std::nullopt;
+}
+
 bool NetworkPlane::configure_host_dhcpv6_client(
     const HostDhcpv6ClientProgram &program) noexcept {
   if (!program.host ||
       program.configuration.identity_associations.size() >
           std::numeric_limits<std::uint32_t>::max() ||
       program.configuration.requested_options.size() >
-          std::numeric_limits<std::uint32_t>::max())
+          std::numeric_limits<std::uint32_t>::max() ||
+      program.configuration.user_class.size() > 255U)
     return false;
   const auto execute = [&](ForwardCommand command) noexcept {
     command.host = program.host;
@@ -4570,8 +6176,12 @@ bool NetworkPlane::configure_host_dhcpv6_client(
       .expected_options = static_cast<std::uint32_t>(
           program.configuration.requested_options.size()),
       .duid_octets = program.configuration.duid_octets,
+      .user_class_octets = static_cast<std::uint16_t>(
+          program.configuration.user_class.size()),
       .rapid_commit = program.configuration.rapid_commit,
       .information_only = program.information_only};
+  std::ranges::copy(program.configuration.user_class,
+                    begin.user_class.begin());
   if (!execute(
           {.kind = ForwardCommandKind::begin_host_dhcpv6_client, .fib = begin}))
     return false;
@@ -4643,6 +6253,7 @@ bool NetworkPlane::configure_host_dhcpv6_server(
       .address_pool_index = configuration.address_pool_index,
       .prefix_pool_index = configuration.prefix_pool_index,
       .rapid_commit = configuration.rapid_commit,
+      .lease_query = configuration.lease_query,
       .has_solicit_maximum_retransmission =
           configuration.solicit_maximum_retransmission_seconds.has_value(),
       .has_information_maximum_retransmission =
@@ -4675,6 +6286,134 @@ abort_server:
 bool NetworkPlane::remove_host_dhcpv6_server(HostHandle host) noexcept {
   const ForwardCommand command{
       .kind = ForwardCommandKind::remove_host_dhcpv6_server, .host = host};
+  return impl_->parallel()
+             ? impl_->execute_forward(command).success
+             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+}
+
+bool NetworkPlane::configure_router_dhcpv6_server(
+    const RouterDhcpv6ServerProgram &program) noexcept {
+  // RFC 9915 defines Decline but not a mandatory quarantine duration. The
+  // protocol repository therefore uses zero as the documented indefinite
+  // retention sentinel. Reject negative durations while preserving that
+  // sentinel across this intermediate owner boundary.
+  if (!program.device || program.name.empty() || program.name.size() > 32U ||
+      program.decline_hold_time < std::chrono::seconds::zero() ||
+      program.configuration.dns_recursive_servers.size() >
+          std::numeric_limits<std::uint32_t>::max() ||
+      program.address_pools.size() >
+          std::numeric_limits<std::uint32_t>::max() ||
+      program.prefix_pools.size() >
+          std::numeric_limits<std::uint32_t>::max())
+    return false;
+  const auto execute = [&](ForwardCommand command) noexcept {
+    command.device = program.device;
+    return impl_->parallel()
+               ? impl_->execute_forward(command).success
+               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  };
+  const auto &configuration = program.configuration;
+  Dhcpv6ServerBegin begin{
+      .duid = configuration.duid,
+      .decline_hold_seconds =
+          static_cast<std::uint64_t>(program.decline_hold_time.count()),
+      .expected_dns_servers = static_cast<std::uint32_t>(
+          configuration.dns_recursive_servers.size()),
+      .expected_address_pools =
+          static_cast<std::uint32_t>(program.address_pools.size()),
+      .expected_prefix_pools =
+          static_cast<std::uint32_t>(program.prefix_pools.size()),
+      .information_refresh_time_seconds =
+          configuration.information_refresh_time_seconds,
+      .solicit_maximum_retransmission_seconds =
+          configuration.solicit_maximum_retransmission_seconds.value_or(0U),
+      .information_maximum_retransmission_seconds =
+          configuration.information_maximum_retransmission_seconds.value_or(0U),
+      .duid_octets = configuration.duid_octets,
+      .name_octets = static_cast<std::uint8_t>(program.name.size()),
+      .preference = configuration.preference,
+      .address_pool_index = configuration.address_pool_index,
+      .prefix_pool_index = configuration.prefix_pool_index,
+      .rapid_commit = configuration.rapid_commit,
+      .lease_query = configuration.lease_query,
+      .has_solicit_maximum_retransmission =
+          configuration.solicit_maximum_retransmission_seconds.has_value(),
+      .has_information_maximum_retransmission =
+          configuration.information_maximum_retransmission_seconds.has_value()};
+  std::copy(program.name.begin(), program.name.end(), begin.name.begin());
+  if (!execute({.kind = ForwardCommandKind::begin_router_dhcpv6_server,
+                .fib = begin}))
+    return false;
+  for (const auto &dns : configuration.dns_recursive_servers)
+    if (!execute({.kind = ForwardCommandKind::add_router_dhcpv6_server_dns,
+                  .fib = dns}))
+      goto abort_router_server;
+  for (const auto &pool : program.address_pools)
+    if (!execute(
+            {.kind =
+                 ForwardCommandKind::add_router_dhcpv6_server_address_pool,
+             .fib = pool}))
+      goto abort_router_server;
+  for (const auto &pool : program.prefix_pools)
+    if (!execute(
+            {.kind =
+                 ForwardCommandKind::add_router_dhcpv6_server_prefix_pool,
+             .fib = pool}))
+      goto abort_router_server;
+  if (execute({.kind = ForwardCommandKind::commit_router_dhcpv6_server}))
+    return true;
+abort_router_server:
+  static_cast<void>(
+      execute({.kind = ForwardCommandKind::abort_router_dhcpv6_server}));
+  return false;
+}
+
+bool NetworkPlane::remove_router_dhcpv6_server(
+    DeviceHandle device, std::string_view name) noexcept {
+  if (!device || name.empty() || name.size() > 32U)
+    return false;
+  Dhcpv6ServerBegin begin{
+      .name_octets = static_cast<std::uint8_t>(name.size())};
+  std::copy(name.begin(), name.end(), begin.name.begin());
+  const ForwardCommand command{
+      .kind = ForwardCommandKind::remove_router_dhcpv6_server,
+      .device = device,
+      .fib = begin};
+  return impl_->parallel()
+             ? impl_->execute_forward(command).success
+             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+}
+
+bool NetworkPlane::clear_router_dhcpv6_server_leases(
+    DeviceHandle device, std::string_view name,
+    const dhcpv6::LeaseClearFilter &filter) noexcept {
+  if (!device || name.empty() || name.size() > 32U ||
+      filter.prefix_length > 128U)
+    return false;
+  RouterDhcpv6ServerOperation operation{
+      .lease_filter = filter,
+      .name_octets = static_cast<std::uint8_t>(name.size())};
+  std::copy(name.begin(), name.end(), operation.name.begin());
+  const ForwardCommand command{
+      .kind = ForwardCommandKind::clear_router_dhcpv6_server_leases,
+      .device = device,
+      .fib = operation};
+  return impl_->parallel()
+             ? impl_->execute_forward(command).success
+             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+}
+
+bool NetworkPlane::clear_router_dhcpv6_server_statistics(
+    DeviceHandle device, std::string_view name) noexcept {
+  if (!device || name.empty() || name.size() > 32U)
+    return false;
+  RouterDhcpv6ServerOperation operation{
+      .name_octets = static_cast<std::uint8_t>(name.size())};
+  std::copy(name.begin(), name.end(), operation.name.begin());
+  const ForwardCommand command{
+      .kind = ForwardCommandKind::clear_router_dhcpv6_server_statistics,
+      .device = device,
+      .fib = operation};
   return impl_->parallel()
              ? impl_->execute_forward(command).success
              : Impl::apply_forward_command(impl_.get(), 0U, command).success;
@@ -5032,6 +6771,13 @@ bool NetworkPlane::configure_link(const NetworkLinkProgram &program) noexcept {
   };
   std::array<HostSignalChange, 2> host_changes{};
   std::size_t host_change_count{};
+  struct ManagementSignalChange {
+    DeviceHandle device{};
+    bool previous{};
+    bool applied{};
+  };
+  std::array<ManagementSignalChange, 2> management_changes{};
+  std::size_t management_change_count{};
   const auto set_local_host_signal = [&](HostHandle handle, bool value) {
     auto *host = impl_->host(handle);
     if (!host)
@@ -5058,6 +6804,28 @@ bool NetworkPlane::configure_link(const NetworkLinkProgram &program) noexcept {
       change.previous = host->link_signal;
     }
   }
+  for (const auto endpoint : {program.first, program.second}) {
+    if (endpoint.node.kind != NodeKind::router ||
+        endpoint.ordinal != device_catalog::management_port_ordinal)
+      continue;
+    auto &change = management_changes[management_change_count++];
+    change.device = {endpoint.node.index, endpoint.node.generation};
+    if (impl_->parallel()) {
+      const auto status = impl_->execute_forward(
+          {.kind = ForwardCommandKind::router_bof_link_status,
+           .device = change.device,
+           .port = {.ordinal = device_catalog::management_port_ordinal}});
+      if (!status.success)
+        return false;
+      change.previous = status.value != 0U;
+    } else {
+      const auto *router = impl_->router(change.device);
+      if (!router)
+        return false;
+      change.previous =
+          impl_->routers[change.device.index].management_link_signal;
+    }
+  }
   const auto rollback_host_signals = [&] {
     // Reverse order mirrors a small transaction log. Each target was validated
     // before the first mutation, so rollback cannot address a stale handle.
@@ -5072,6 +6840,25 @@ bool NetworkPlane::configure_link(const NetworkLinkProgram &program) noexcept {
                                     .flag = change.previous}));
       else
         static_cast<void>(set_local_host_signal(change.host, change.previous));
+    }
+  };
+  const auto rollback_management_signals = [&] {
+    for (std::size_t index = management_change_count; index > 0U; --index) {
+      const auto &change = management_changes[index - 1U];
+      if (!change.applied)
+        continue;
+      if (impl_->parallel())
+        static_cast<void>(impl_->execute_forward(
+            {.kind = ForwardCommandKind::set_router_bof_link,
+             .device = change.device,
+             .port = {.ordinal = device_catalog::management_port_ordinal},
+             .flag = change.previous}));
+      else {
+        auto &slot = impl_->routers[change.device.index];
+        slot.management_link_signal = change.previous;
+        if (slot.management_stack)
+          slot.management_stack->set_link_state(change.previous);
+      }
     }
   };
   const auto rollback_switch_signals = [&] {
@@ -5100,6 +6887,33 @@ bool NetworkPlane::configure_link(const NetworkLinkProgram &program) noexcept {
     }
     change.applied = true;
   }
+  for (std::size_t index = 0; index < management_change_count; ++index) {
+    auto &change = management_changes[index];
+    bool changed{};
+    if (impl_->parallel())
+      changed =
+          impl_
+              ->execute_forward(
+                  {.kind = ForwardCommandKind::set_router_bof_link,
+                   .device = change.device,
+                   .port = {
+                       .ordinal = device_catalog::management_port_ordinal},
+                   .flag = program.carrier})
+              .success;
+    else {
+      auto &slot = impl_->routers[change.device.index];
+      slot.management_link_signal = program.carrier;
+      if (slot.management_stack)
+        slot.management_stack->set_link_state(program.carrier);
+      changed = true;
+    }
+    if (!changed) {
+      rollback_management_signals();
+      rollback_host_signals();
+      return false;
+    }
+    change.applied = true;
+  }
   for (std::size_t index{}; index < switch_change_count; ++index) {
     auto &change = switch_changes[index];
     auto *slot = impl_->ethernet_switch(change.handle);
@@ -5108,6 +6922,7 @@ bool NetworkPlane::configure_link(const NetworkLinkProgram &program) noexcept {
     if (!slot ||
         !slot->forwarding->configure_port(change.port, configured)) {
       rollback_switch_signals();
+      rollback_management_signals();
       rollback_host_signals();
       return false;
     }
@@ -5120,6 +6935,7 @@ bool NetworkPlane::configure_link(const NetworkLinkProgram &program) noexcept {
                                 program.bits_per_second, program.propagation,
                                 program.carrier)) {
     rollback_switch_signals();
+    rollback_management_signals();
     rollback_host_signals();
     return false;
   }
@@ -5144,6 +6960,13 @@ bool NetworkPlane::remove_link(LinkHandle link) noexcept {
   };
   std::array<HostSignalChange, 2> changes{};
   std::size_t change_count{};
+  struct ManagementSignalChange {
+    DeviceHandle device{};
+    bool previous{};
+    bool applied{};
+  };
+  std::array<ManagementSignalChange, 2> management_changes{};
+  std::size_t management_change_count{};
   struct SwitchSignalChange {
     SwitchHandle handle{};
     std::uint16_t port{};
@@ -5176,6 +6999,27 @@ bool NetworkPlane::remove_link(LinkHandle link) noexcept {
       if (!host)
         return false;
       change.previous = host->link_signal;
+    }
+  }
+  for (const auto endpoint : impl_->endpoints[link.index]) {
+    if (endpoint.node.kind != NodeKind::router ||
+        endpoint.ordinal != device_catalog::management_port_ordinal)
+      continue;
+    auto &change = management_changes[management_change_count++];
+    change.device = {endpoint.node.index, endpoint.node.generation};
+    if (impl_->parallel()) {
+      const auto status = impl_->execute_forward(
+          {.kind = ForwardCommandKind::router_bof_link_status,
+           .device = change.device,
+           .port = {.ordinal = device_catalog::management_port_ordinal}});
+      if (!status.success)
+        return false;
+      change.previous = status.value != 0U;
+    } else {
+      if (!impl_->router(change.device))
+        return false;
+      change.previous =
+          impl_->routers[change.device.index].management_link_signal;
     }
   }
   for (const auto endpoint : impl_->endpoints[link.index]) {
@@ -5212,6 +7056,23 @@ bool NetworkPlane::remove_link(LinkHandle link) noexcept {
       else
         static_cast<void>(set_local_host_signal(change.host, change.previous));
     }
+    for (std::size_t index = management_change_count; index > 0U; --index) {
+      const auto &change = management_changes[index - 1U];
+      if (!change.applied)
+        continue;
+      if (impl_->parallel())
+        static_cast<void>(impl_->execute_forward(
+            {.kind = ForwardCommandKind::set_router_bof_link,
+             .device = change.device,
+             .port = {.ordinal = device_catalog::management_port_ordinal},
+             .flag = change.previous}));
+      else {
+        auto &slot = impl_->routers[change.device.index];
+        slot.management_link_signal = change.previous;
+        if (slot.management_stack)
+          slot.management_stack->set_link_state(change.previous);
+      }
+    }
   };
   for (std::size_t index = 0; index < change_count; ++index) {
     auto &change = changes[index];
@@ -5223,6 +7084,32 @@ bool NetworkPlane::remove_link(LinkHandle link) noexcept {
                                      .flag = false})
                   .success
             : set_local_host_signal(change.host, false);
+    if (!cleared) {
+      rollback();
+      return false;
+    }
+    change.applied = true;
+  }
+  for (std::size_t index = 0; index < management_change_count; ++index) {
+    auto &change = management_changes[index];
+    bool cleared{};
+    if (impl_->parallel())
+      cleared =
+          impl_
+              ->execute_forward(
+                  {.kind = ForwardCommandKind::set_router_bof_link,
+                   .device = change.device,
+                   .port = {
+                       .ordinal = device_catalog::management_port_ordinal},
+                   .flag = false})
+              .success;
+    else {
+      auto &slot = impl_->routers[change.device.index];
+      slot.management_link_signal = false;
+      if (slot.management_stack)
+        slot.management_stack->set_link_state(false);
+      cleared = true;
+    }
     if (!cleared) {
       rollback();
       return false;
@@ -5351,15 +7238,41 @@ NetworkPlane::checkpoint(Clock::time_point now) {
            std::chrono::duration_cast<std::chrono::nanoseconds>(
                now.time_since_epoch())
                .count(),
-       .kind = ospf::ControlCommandKind::checkpoint});
+               .kind = ospf::ControlCommandKind::checkpoint});
   if (!ospf_result.success)
     return std::nullopt;
   for (std::size_t index = 0; index < impl_->routers.size(); ++index) {
     const auto &slot = impl_->routers[index];
-    if (slot.forwarder)
-      state.routers.push_back(
-          {{static_cast<std::uint16_t>(index), slot.generation},
-           slot.forwarder->checkpoint(now)});
+    if (!slot.forwarder)
+      continue;
+    NetworkRouterCheckpoint router;
+    router.device = {static_cast<std::uint16_t>(index), slot.generation};
+    router.forwarding = slot.forwarder->checkpoint(now);
+    router.management_configured = slot.management_configured;
+    router.management_link_signal = slot.management_link_signal;
+    if (slot.management_stack) {
+      router.management_endpoint.emplace();
+      slot.management_stack->checkpoint(*router.management_endpoint, now);
+      router.management_mac = slot.management_stack->mac();
+      router.management_address = slot.management_stack->address();
+      router.management_gateway = slot.management_stack->gateway();
+      router.management_prefix_length =
+          slot.management_stack->prefix_length();
+      router.management_mtu = slot.management_stack->mtu();
+      router.management_interface_id =
+          slot.management_stack->interface_id();
+      router.management_ipv6_autoconfiguration =
+          slot.management_stack->ipv6_enabled();
+    }
+    if (slot.bof_dhcpv4)
+      router.bof_dhcpv4 = slot.bof_dhcpv4->checkpoint(now);
+    if (slot.bof_dhcpv6)
+      router.bof_dhcpv6 = slot.bof_dhcpv6->checkpoint(now);
+    router.bof_dhcpv4_timeout_remaining_nanoseconds =
+        relative_runtime_deadline<Clock>(slot.bof_dhcpv4_timeout, now);
+    router.bof_dhcpv6_timeout_remaining_nanoseconds =
+        relative_runtime_deadline<Clock>(slot.bof_dhcpv6_timeout, now);
+    state.routers.push_back(std::move(router));
   }
   for (std::size_t index = 0; index < impl_->hosts.size(); ++index) {
     const auto &slot = impl_->hosts[index];
@@ -5385,6 +7298,8 @@ NetworkPlane::checkpoint(Clock::time_point now) {
     host.ping_pending = slot.ping_pending;
     host.ping_reply = slot.ping_reply;
     host.ipv6_autoconfiguration = slot.stack.ipv6_enabled();
+    if (slot.dhcpv4)
+      host.dhcpv4 = slot.dhcpv4->checkpoint(now);
     if (slot.dhcpv6)
       host.dhcpv6 = slot.dhcpv6->checkpoint(now);
     if (slot.dns) {
@@ -5508,7 +7423,13 @@ bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
           !RouterForwarder::validate_checkpoint(router.forwarding))
         return false;
       router_seen[router.device.index] = true;
-      auto forwarder = std::make_unique<RouterForwarder>();
+      // RouterForwarder restore must begin with the exact persisted TCP ISN
+      // identity. A default or shared secret would make sequence numbers
+      // repeat across routers after restoring the same lab.
+      if (!router.forwarding.tcp)
+        return false;
+      auto forwarder = std::make_unique<RouterForwarder>(
+          router.forwarding.tcp->isn.secret, now);
       if (!forwarder->restore(router.forwarding, now))
         return false;
       // The RIB owner is reconstructed empty and receives canonical connected,
@@ -5528,15 +7449,85 @@ bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
           router.forwarding.ipv6_fib.generation;
       (*staged_route_managers)[router.device.index] =
           std::move(route_manager);
-      (*staged_routers)[router.device.index] = {
-          .generation = router.device.generation,
-          .forwarder = std::move(forwarder),
-          // Staging is an in-flight control transaction, not committed router
-          // state. Restore starts with neither a half-programmed relay nor a
-          // partially received SAP generation.
-          .dhcpv6_relay_staging = {},
-          .sap_staging = {},
-          .ipv6_address_staging = {}};
+      auto &target = (*staged_routers)[router.device.index];
+      target.generation = router.device.generation;
+      target.forwarder = std::move(forwarder);
+      if (router.management_configured !=
+              router.management_endpoint.has_value() ||
+          (!router.management_configured &&
+           (router.bof_dhcpv4 || router.bof_dhcpv6 ||
+            router.management_link_signal)))
+        return false;
+      if (router.management_configured) {
+        if (router.management_prefix_length > 32U ||
+            router.management_mtu < device_catalog::minimum_host_ipv4_mtu ||
+            router.management_mtu > device_catalog::maximum_network_mtu ||
+            !router.management_interface_id ||
+            (router.management_ipv6_autoconfiguration &&
+             router.management_mtu < packet::ipv6_minimum_link_mtu))
+          return false;
+        const auto &endpoint = *router.management_endpoint;
+        const auto &saved_identifier = endpoint.ipv6.autoconfiguration;
+        if (saved_identifier.network_id.size() >
+            device_catalog::ipv6_stable_iid_network_id_octets)
+          return false;
+        host::Ipv6InterfaceIdentifierConfiguration identifier{
+            .modified_eui64 = saved_identifier.interface_identifier,
+            .stable_secret = saved_identifier.stable_secret,
+            .network_id_octets =
+                static_cast<std::uint8_t>(saved_identifier.network_id.size()),
+            .mode = saved_identifier.interface_identifier_mode};
+        std::copy(saved_identifier.network_id.begin(),
+                  saved_identifier.network_id.end(),
+                  identifier.network_id.begin());
+        target.management_stack =
+            std::make_unique<network_detail::EndpointStack>();
+        if (!target.management_stack->configure(
+                {.endpoint_mac = router.management_mac,
+                 .endpoint_address = router.management_address,
+                 .endpoint_prefix_length = router.management_prefix_length,
+                 .endpoint_gateway = router.management_gateway,
+                 .endpoint_mtu = router.management_mtu,
+                 .endpoint_interface_id = router.management_interface_id,
+                 .endpoint_ipv6_autoconfiguration =
+                     router.management_ipv6_autoconfiguration,
+                 .endpoint_ipv6_identifier = identifier,
+                 .endpoint_transport_secret =
+                     endpoint.tcp ? endpoint.tcp->isn.secret
+                                  : crypto::Sha256Digest{}}))
+          return false;
+        target.management_stack->set_link_state(
+            router.management_link_signal, now);
+        if (!target.management_stack->restore(endpoint, now))
+          return false;
+        if (router.bof_dhcpv4) {
+          target.bof_dhcpv4 =
+              std::make_unique<network_detail::Dhcpv4EndpointService>();
+          if (!target.bof_dhcpv4->restore(
+                  *router.bof_dhcpv4, *target.management_stack, now))
+            return false;
+          if (router.bof_dhcpv4_timeout_remaining_nanoseconds < -1)
+            return false;
+          target.bof_dhcpv4_timeout = restore_runtime_deadline<Clock>(
+              router.bof_dhcpv4_timeout_remaining_nanoseconds, now);
+        }
+        if (router.bof_dhcpv6) {
+          target.bof_dhcpv6 =
+              std::make_unique<network_detail::Dhcpv6EndpointService>();
+          if (!target.bof_dhcpv6->restore(
+                  *router.bof_dhcpv6, *target.management_stack, now))
+            return false;
+          if (router.bof_dhcpv6_timeout_remaining_nanoseconds < -1)
+            return false;
+          target.bof_dhcpv6_timeout = restore_runtime_deadline<Clock>(
+              router.bof_dhcpv6_timeout_remaining_nanoseconds, now);
+        }
+        target.management_configured = true;
+        target.management_link_signal = router.management_link_signal;
+      }
+      // Staging values represent incomplete external transactions and are
+      // intentionally discarded. Only committed endpoint and DHCP owners are
+      // restored, so a checkpoint can never replay half of a configuration.
     }
     for (const auto &host : state.hosts) {
       if (!host.host || host.host.index >= host_seen.size() ||
@@ -5596,7 +7587,16 @@ bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
             host.prefix_length != 0U ||
             host.mtu != device_catalog::default_host_ipv4_mtu ||
             host.interface_id != 0U || host.ipv6_autoconfiguration ||
-            host.dhcpv6 || host.dns || host.ping_pending || host.ping_reply)
+            host.dhcpv4 || host.dhcpv6 || host.dns || host.ping_pending ||
+            host.ping_reply)
+          return false;
+      }
+      if (host.dhcpv4) {
+        if (!host.configured)
+          return false;
+        target.dhcpv4 =
+            std::make_unique<network_detail::Dhcpv4EndpointService>();
+        if (!target.dhcpv4->restore(*host.dhcpv4, target.stack, now))
           return false;
       }
       if (host.dhcpv6) {
@@ -5911,7 +7911,7 @@ bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
              std::chrono::duration_cast<std::chrono::nanoseconds>(
                  now.time_since_epoch())
                  .count(),
-         .kind = ospf::ControlCommandKind::restore_checkpoint});
+                 .kind = ospf::ControlCommandKind::restore_checkpoint});
     if (!ospf_restore.success)
       std::terminate();
     return true;
@@ -6061,6 +8061,37 @@ void NetworkPlane::pump(Clock::time_point now) noexcept {
       Impl::EgressContext context{impl_.get(), node(handle), nullptr};
       slot.forwarder->service_ipv4_maintenance(&context, Impl::egress, now);
       slot.forwarder->service_ipv6_maintenance(&context, Impl::egress, now);
+      if (slot.management_configured) {
+        const auto frames = slot.management_stack->service_maintenance(now);
+        for (std::size_t frame = 0; frame < frames.count; ++frame)
+          static_cast<void>(impl_->send(
+              node(handle), device_catalog::management_port_ordinal,
+              frames.frames[frame]));
+        if (slot.bof_dhcpv4) {
+          static_cast<void>(slot.bof_dhcpv4->service(
+              *slot.management_stack, &context,
+              Impl::management_fragment_egress,
+              Impl::management_fragment_admission, now));
+          if (slot.bof_dhcpv4->client_bootstrap_complete()) {
+            slot.bof_dhcpv4_timeout = Clock::time_point::max();
+          } else if (now >= slot.bof_dhcpv4_timeout) {
+            slot.bof_dhcpv4->remove_client(*slot.management_stack);
+            slot.bof_dhcpv4_timeout = Clock::time_point::max();
+          }
+        }
+        if (slot.bof_dhcpv6) {
+          static_cast<void>(slot.bof_dhcpv6->service(
+              *slot.management_stack, &context,
+              Impl::management_fragment_egress,
+              Impl::management_fragment_admission, now));
+          if (slot.bof_dhcpv6->client_bootstrap_complete()) {
+            slot.bof_dhcpv6_timeout = Clock::time_point::max();
+          } else if (now >= slot.bof_dhcpv6_timeout) {
+            slot.bof_dhcpv6->remove_client(*slot.management_stack);
+            slot.bof_dhcpv6_timeout = Clock::time_point::max();
+          }
+        }
+      }
     }
     for (std::size_t index = 0; index < impl_->hosts.size(); ++index) {
       auto &slot = impl_->hosts[index];
@@ -6071,6 +8102,12 @@ void NetworkPlane::pump(Clock::time_point now) noexcept {
       const auto frames = slot.stack.service_maintenance(now);
       for (std::size_t frame = 0; frame < frames.count; ++frame)
         static_cast<void>(impl_->send(node(handle), 0U, frames.frames[frame]));
+      if (slot.dhcpv4) {
+        Impl::EgressContext context{impl_.get(), node(handle), nullptr};
+        static_cast<void>(slot.dhcpv4->service(
+            slot.stack, &context, Impl::host_fragment_egress,
+            Impl::host_fragment_admission, now));
+      }
       if (slot.dhcpv6) {
         Impl::EgressContext context{impl_.get(), node(handle), nullptr};
         static_cast<void>(slot.dhcpv6->service(
@@ -6140,6 +8177,11 @@ NetworkPlane::next_deadline() const noexcept {
       const auto candidate = slot.stack.next_maintenance_deadline();
       if (candidate && (!next || *candidate < *next))
         next = candidate;
+      if (slot.dhcpv4) {
+        const auto service = slot.dhcpv4->next_deadline();
+        if (service && (!next || *service < *next))
+          next = service;
+      }
       if (slot.dhcpv6) {
         const auto service = slot.dhcpv6->next_deadline();
         if (service && (!next || *service < *next))

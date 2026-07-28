@@ -12,7 +12,7 @@ function snapshotWithPort(port: {
   oper: boolean;
 }) {
   return {
-    abiVersion: 8,
+    abiVersion: 9,
     protocolVersion: 4,
     status: "ready",
     routers: [{

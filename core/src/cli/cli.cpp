@@ -6,6 +6,7 @@
 #include "router/cli.hpp"
 
 #include "cli_internal.hpp"
+#include "bof_cli_configuration.hpp"
 #include "router/routing.hpp"
 
 #include <algorithm>
@@ -963,13 +964,17 @@ std::string effective_input(const CliSession &session, std::string_view input) {
   if (path.empty())
     return std::string{input};
   if (session.engine == CliEngine::md && input.starts_with("delete ") &&
-      (path == "configure" || path.starts_with("configure "))) {
+      (path == "configure" || path.starts_with("configure ") ||
+       path == "bof" || path.starts_with("bof "))) {
     // MD delete is an operator applied to a path. From /configure card 1,
     // "delete mda 1" denotes the same modeled node as the root form
     // "delete card 1 mda 1". The generated command row remains canonical.
+    const bool bof = path == "bof" || path.starts_with("bof ");
     const auto relative_path =
-        path == "configure" ? std::string_view{} : path.substr(10);
-    return std::string{"delete "} +
+        path == "configure" || path == "bof"
+            ? std::string_view{}
+            : path.substr(bof ? 4U : 10U);
+    return std::string{"delete "} + (bof ? "bof " : "") +
            (relative_path.empty() ? std::string{}
                                   : std::string{relative_path} + ' ') +
            std::string{input.substr(7)};
@@ -979,6 +984,8 @@ std::string effective_input(const CliSession &session, std::string_view input) {
 
 bool md_configuration_command(cli_schema::CommandId id) noexcept {
   using enum cli_schema::CommandId;
+  if (router::lab::bof_cli::is_md_command(id))
+    return true;
   switch (id) {
   case configure_card_type:
   case configure_mda_type:
@@ -1286,6 +1293,17 @@ bool enter_classic_context(CliSession &session,
   return true;
 }
 
+bool enter_md_context(CliSession &session, std::string_view path) noexcept {
+  // Keep this mutation next to the private path primitives so every caller
+  // preserves exit's reversible-origin invariant. Reimplementing it in the
+  // runtime facade would update only md_path and make `exit` jump to stale
+  // storage after entering a presence container such as BOF DHCP.
+  if (session.engine != CliEngine::md || path.size() >= session.md_path.size())
+    return false;
+  move_session_path(session, path);
+  return true;
+}
+
 void synchronize_candidate(ConfigurationState &configuration,
                            CliSession &session, bool running_changed) noexcept {
   // A classic write rebases a clean MD candidate but marks a dirty candidate
@@ -1440,6 +1458,17 @@ std::string execute_cli(DeviceState &state, CliSession &session,
     const auto canonical =
         cli_detail::canonical_command_prefix(session, effective);
     if (!canonical.empty()) {
+      if (session.engine == CliEngine::md && canonical == "edit-config") {
+        // `edit-config` is a global workflow command whose required child
+        // selects the candidate mode. It is not a configuration region.
+        // Descendant command rows make it a grammar prefix, but treating every
+        // grammar prefix as a navigable model node fabricated the impossible
+        // prompt `[/edit-config]`. Keep the PWC unchanged and expose the
+        // documented mode choices as the normal incomplete-command response.
+        output = cli_detail::incomplete_command_help(state, session, effective);
+        return output +
+               cli_detail::prompt(state.configuration.running, session);
+      }
       if (session.engine == CliEngine::md &&
           session.md_workflow == MdCliWorkflow::operational &&
           (canonical == "configure" ||

@@ -5,7 +5,8 @@
 // @vitest-environment jsdom
 
 import { createFourRouterReferenceLabV4, createOspfTriangleDemoLabV5,
-  createStaticIpv4DemoLabV5 } from "@router-simulator/contracts";
+  createStaticIpv4DemoLabV5, createDhcpServerProjectV5,
+  createEmptyProjectV4 } from "@router-simulator/contracts";
 import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,7 +18,8 @@ describe("host IPv6 inspector", () => {
   const renderInspector = (project = createFourRouterReferenceLabV4(),
     ping = vi.fn().mockResolvedValue("")) => render(<Inspector selected="h1"
       tab="chassis" onTabChange={vi.fn()} project={project}
-      updateHost={vi.fn()} updateRouter={vi.fn()} setCard={vi.fn()}
+      updateHost={vi.fn()} updateDhcpServer={vi.fn()}
+      updateRouter={vi.fn()} setCard={vi.fn()}
       setMda={vi.fn()} setCardAdmin={vi.fn()} setMdaAdmin={vi.fn()}
       setSwitchName={vi.fn()} setSwitchPort={vi.fn()} setLink={vi.fn()}
       updateLink={vi.fn()} deleteLink={vi.fn()} deleteNode={vi.fn()}
@@ -30,7 +32,8 @@ describe("host IPv6 inspector", () => {
     const updateHost = vi.fn();
     const user = userEvent.setup();
     render(<Inspector selected="h1" tab="chassis" onTabChange={vi.fn()}
-      project={project} updateHost={updateHost} updateRouter={vi.fn()}
+      project={project} updateHost={updateHost} updateDhcpServer={vi.fn()}
+      updateRouter={vi.fn()}
       setCard={vi.fn()} setMda={vi.fn()} setCardAdmin={vi.fn()}
       setMdaAdmin={vi.fn()} setSwitchName={vi.fn()}
       setSwitchPort={vi.fn()} setLink={vi.fn()} updateLink={vi.fn()}
@@ -66,7 +69,8 @@ describe("host IPv6 inspector", () => {
 
     rendered.rerender(<Inspector selected="h1" tab="chassis"
       onTabChange={vi.fn()} project={createOspfTriangleDemoLabV5()}
-      updateHost={vi.fn()} updateRouter={vi.fn()} setCard={vi.fn()}
+      updateHost={vi.fn()} updateDhcpServer={vi.fn()}
+      updateRouter={vi.fn()} setCard={vi.fn()}
       setMda={vi.fn()} setCardAdmin={vi.fn()} setMdaAdmin={vi.fn()}
       setSwitchName={vi.fn()} setSwitchPort={vi.fn()} setLink={vi.fn()}
       updateLink={vi.fn()} deleteLink={vi.fn()} deleteNode={vi.fn()}
@@ -77,5 +81,50 @@ describe("host IPv6 inspector", () => {
     expect(screen.queryByText("Reply received from 192.0.2.6.")).toBeNull();
     expect(screen.getByRole("button", { name: "Ping Data center host" }))
       .toBeTruthy();
+  });
+});
+
+describe("dedicated DHCP server inspector", () => {
+  it("submits a physical-interface-scoped IPv4 address range", async () => {
+    const project = createEmptyProjectV4();
+    const server = createDhcpServerProjectV5("dhcp1");
+    const port = server.running.ports.find((item) => item.id !== "management")!;
+    port.admin = "up";
+    server.running.interfaces.push({
+      name: "clients", admin: "up", portId: port.id,
+      address: "192.0.2.1/24", arpTimeoutSeconds: null,
+      arpRetryTimerDeciseconds: null, ipv6Addresses: []
+    });
+    project.dhcpServers.push(server);
+    project.layout.nodes.dhcp1 = { x: 200, y: 160 };
+    const updateDhcpServer = vi.fn();
+    const user = userEvent.setup();
+
+    render(<Inspector selected="dhcp1" tab="chassis"
+      onTabChange={vi.fn()} project={project} updateHost={vi.fn()}
+      updateDhcpServer={updateDhcpServer} updateRouter={vi.fn()}
+      setCard={vi.fn()} setMda={vi.fn()} setCardAdmin={vi.fn()}
+      setMdaAdmin={vi.fn()} setSwitchName={vi.fn()}
+      setSwitchPort={vi.fn()} setLink={vi.fn()} updateLink={vi.fn()}
+      deleteLink={vi.fn()} deleteNode={vi.fn()} updateAnnotation={vi.fn()}
+      deleteAnnotation={vi.fn()} ping={vi.fn()} width={324}
+      onWidthChange={vi.fn()} openConsole={vi.fn()} close={vi.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: "Add IPv4 server" }));
+    await user.type(screen.getByLabelText("Decline hold, seconds"), "900");
+    await user.click(screen.getByRole("button", { name: "Add range" }));
+    await user.type(screen.getByPlaceholderText("192.0.2.10"), "192.0.2.20");
+    await user.type(screen.getByPlaceholderText("192.0.2.200"), "192.0.2.90");
+    await user.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(updateDhcpServer).toHaveBeenCalledOnce();
+    const submitted = updateDhcpServer.mock.calls[0][0];
+    expect(submitted.dhcpv4Servers[0].configuration.pools[0]).toMatchObject({
+      first: "192.0.2.20", last: "192.0.2.90",
+      subnetMask: "255.255.255.0", router: "192.0.2.1",
+      enabled: true
+    });
+    expect(BigInt(submitted.dhcpv4Servers[0].configuration.pools[0]
+      .linkIdentity) >> 63n).toBe(1n);
   });
 });

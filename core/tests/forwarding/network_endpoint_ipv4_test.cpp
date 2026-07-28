@@ -224,6 +224,59 @@ void network_endpoint_ipv4_tests() {
   if (!broadcast_source_socket || !broadcast_destination_socket)
     throw std::runtime_error("IPv4 UDP broadcast socket bind failed");
 
+  // A DHCP client can receive DHCPOFFER as Ethernet unicast to its hardware
+  // address while its IPv4 address is still 0.0.0.0. Build the complete wire
+  // datagram here so this verifies IP admission and UDP demultiplexing, not a
+  // direct call into the DHCP state machine.
+  auto bootstrap_configuration = destination_configuration;
+  bootstrap_configuration.endpoint_address = {};
+  bootstrap_configuration.endpoint_prefix_length = 0U;
+  bootstrap_configuration.endpoint_interface_id = 103U;
+  bootstrap_configuration.endpoint_transport_secret = transport_secret(3U);
+  auto bootstrap = std::make_unique<EndpointStack>();
+  if (!bootstrap->configure(bootstrap_configuration))
+    throw std::runtime_error("IPv4 bootstrap endpoint configuration failed");
+  bootstrap->set_link_state(true, now);
+  const auto bootstrap_socket = bootstrap->bind_udp(
+      {.family = transport::IpFamily::ipv4,
+       .interface_id = bootstrap_configuration.endpoint_interface_id,
+       .port = 68U,
+       .ipv4_broadcast = true,
+       .ipv4_unconfigured_unicast = true});
+  std::array<std::uint8_t, 64U> bootstrap_udp{};
+  const std::array<std::uint8_t, 3U> bootstrap_payload{0x44U, 0x48U, 0x43U};
+  const packet::Ipv4 offered_address{192U, 0U, 2U, 44U};
+  const auto bootstrap_udp_octets = packet::udp::encode_ipv4(
+      bootstrap_udp, source_configuration.endpoint_address, offered_address,
+      67U, 68U, bootstrap_payload);
+  packet::Frame bootstrap_frame;
+  const auto bootstrap_frame_octets =
+      bootstrap_udp_octets
+          ? packet::encode_ipv4_ethernet_datagram(
+                bootstrap_frame.bytes, source_configuration.endpoint_mac,
+                bootstrap_configuration.endpoint_mac,
+                source_configuration.endpoint_address, offered_address, 17U,
+                64U, 1U,
+                std::span<const std::uint8_t>{bootstrap_udp}.first(
+                    *bootstrap_udp_octets),
+                false)
+          : std::optional<std::size_t>{};
+  if (!bootstrap_socket || !bootstrap_frame_octets)
+    throw std::runtime_error("IPv4 bootstrap unicast fixture encode failed");
+  bootstrap_frame.length =
+      static_cast<std::uint16_t>(*bootstrap_frame_octets);
+  const auto bootstrap_result =
+      bootstrap->receive(bootstrap_frame, 0U, false, now);
+  std::array<std::uint8_t, 3U> received_bootstrap{};
+  const auto bootstrap_received =
+      bootstrap->receive_udp(*bootstrap_socket, received_bootstrap);
+  if (bootstrap_result.count != 0U ||
+      bootstrap_received.status != transport::UdpReceiveStatus::delivered ||
+      bootstrap_received.metadata.destination_ipv4 != offered_address ||
+      received_bootstrap != bootstrap_payload)
+    throw std::runtime_error(
+        "IPv4 pre-address unicast did not reach its authorized UDP socket");
+
   // The first application send emits only an encoded ARP request. Delivering
   // the request and reply through receive() is the sole way the source learns
   // the destination MAC before its retry.

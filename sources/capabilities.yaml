@@ -103,6 +103,36 @@ features:
   ipv6.dhcpv6_packet_codec:
     status: implemented
     source_ids: [ietf.dhcpv6.rfc9915, ietf.dhcpv6.dns_options.rfc3646, ietf.udp.rfc768]
+  ipv4.dhcpv4_packet_codec:
+    status: implemented
+    source_ids: [ietf.dhcpv4.rfc2131, ietf.dhcpv4.options.rfc2132, ietf.dhcpv4.concatenation.rfc3396, ietf.udp.rfc768]
+  ipv4.dhcpv4_lease_repository:
+    status: implemented
+    source_ids: [ietf.dhcpv4.rfc2131]
+  ipv4.dhcpv4_client_state_machine:
+    status: implemented
+    source_ids: [ietf.dhcpv4.rfc2131, ietf.dhcpv4.options.rfc2132, ietf.dhcpv4.concatenation.rfc3396, ietf.dhcpv4.address_conflict.rfc5227]
+  ipv4.dhcpv4_server_state_machine:
+    status: implemented
+    source_ids: [ietf.dhcpv4.rfc2131, ietf.dhcpv4.options.rfc2132, ietf.dhcpv4.concatenation.rfc3396, ietf.dhcpv4.leasequery.rfc4388]
+  ipv4.dhcpv4_basic_leasequery:
+    status: implemented
+    source_ids: [ietf.dhcpv4.leasequery.rfc4388]
+  ipv4.dhcpv4_relay_primitive:
+    status: implemented
+    source_ids: [ietf.dhcpv4.rfc2131, ietf.dhcpv4.options.rfc2132, ietf.dhcpv4.concatenation.rfc3396, ietf.dhcpv4.relay.rfc1542_rfc3046]
+  ipv4.dhcpv4_failover_state:
+    status: implemented
+    source_ids: [ietf.dhcpv4.failover.draft12_codec, ietf.dhcpv4.failover.draft12_state]
+  ipv4.dhcpv4_base_interface_relay:
+    status: implemented
+    source_ids: [ietf.dhcpv4.rfc2131, ietf.dhcpv4.relay.rfc1542_rfc3046, nokia.sros.26_7.dhcpv4.relay]
+  ipv4.dhcpv4_base_local_server:
+    status: partially-implemented
+    source_ids: [ietf.dhcpv4.rfc2131, ietf.dhcpv4.options.rfc2132, ietf.dhcpv4.force_renew.rfc3203, nokia.sros.26_7.dhcpv4.local_server, nokia.sros.26_7.dhcpv4.operational]
+  management.bof_dhcp_autoconfigure:
+    status: partially-implemented
+    source_ids: [ietf.dhcpv4.rfc2131, ietf.dhcpv6.rfc9915, nokia.sros.26_7.bof.autoconfigure]
   ipv6.dhcpv6_server_lease_repository:
     status: implemented
     source_ids: [ietf.dhcpv6.rfc9915]
@@ -129,7 +159,13 @@ features:
     source_ids: [nokia.sros.26_7.ies.dhcpv6_lease_operational, nokia.sros.26_7.ies.dhcpv6_lease_population]
   ipv6.dhcpv6_server:
     status: implemented
-    source_ids: [ietf.dhcpv6.rfc9915, ietf.dhcpv6.dns_options.rfc3646]
+    source_ids: [ietf.dhcpv6.rfc9915, ietf.dhcpv6.dns_options.rfc3646, ietf.dhcpv6.leasequery.rfc5007]
+  ipv6.dhcpv6_base_local_server:
+    status: partially-implemented
+    source_ids: [ietf.dhcpv6.rfc9915, nokia.sros.26_7.dhcpv6.local_server, nokia.sros.26_7.dhcpv6.operational]
+  ipv6.dhcpv6_leasequery:
+    status: implemented
+    source_ids: [ietf.dhcpv6.leasequery.rfc5007, nokia.sros.26_7.dhcpv6.leasequery]
   ipv6.dhcpv6_client:
     status: implemented
     source_ids: [ietf.dhcpv6.rfc9915, ietf.dhcpv6.dns_options.rfc3646]

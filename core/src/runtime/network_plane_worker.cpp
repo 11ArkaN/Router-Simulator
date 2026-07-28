@@ -142,7 +142,9 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
     break;
   }
   case NetworkCommandKind::add_router:
-    result.success = plane_.add_router(command.device);
+    result.success = plane_.add_router(command.device,
+                                       command.router_transport_secret,
+                                       command.transit_forwarding_enabled);
     if (result.success &&
         command.device.index < sap_generation_staging_.size()) {
       sap_generation_staging_[command.device.index].reset();
@@ -565,6 +567,228 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
     result.success =
         plane_.remove_mld_interface(command.device, command.port.ordinal);
     break;
+  case NetworkCommandKind::configure_dhcpv4_relay:
+    if (const auto *begin = std::get_if<Dhcpv4RelayBegin>(&command.fib);
+        begin && begin->circuit_id_octets <= begin->circuit_id.size() &&
+        begin->remote_id_octets <= begin->remote_id.size() &&
+        begin->server_count <= begin->servers.size()) {
+      try {
+        dhcpv4::RelayInterfaceConfiguration configuration{
+            .interface_id = begin->interface_id,
+            .physical_port_ordinal = begin->physical_port_ordinal,
+            .relay = {}};
+        configuration.relay.admin_enabled = true;
+        configuration.relay.gateway_address = begin->gateway_address;
+        configuration.relay.gateway_address_configured = true;
+        configuration.relay.existing_information =
+            begin->existing_information;
+        configuration.relay.source_address = begin->source_address;
+        configuration.relay.maximum_hops = begin->maximum_hops;
+        configuration.relay.trusted_ingress = begin->trusted_ingress;
+        configuration.relay.relay_plain_bootp = begin->relay_plain_bootp;
+        configuration.relay.release_include_gateway_address =
+            begin->release_include_gateway_address;
+        configuration.relay.circuit_id.assign(
+            begin->circuit_id.begin(),
+            begin->circuit_id.begin() + begin->circuit_id_octets);
+        configuration.relay.remote_id.assign(
+            begin->remote_id.begin(),
+            begin->remote_id.begin() + begin->remote_id_octets);
+        configuration.relay.servers.reserve(begin->server_count);
+        for (std::size_t index{}; index < begin->server_count; ++index)
+          configuration.relay.servers.push_back(
+              {.address = begin->servers[index]});
+        result.success =
+            plane_.configure_dhcpv4_relay(command.device, configuration);
+      } catch (const std::bad_alloc &) {
+        result.success = false;
+      }
+    }
+    break;
+  case NetworkCommandKind::remove_dhcpv4_relay:
+    result.success = plane_.remove_dhcpv4_relay(
+        command.device, command.logical_interface_id);
+    break;
+  case NetworkCommandKind::begin_router_dhcpv4_server:
+    if (command.device.index < router_dhcpv4_server_staging_.size())
+      if (const auto *begin =
+              std::get_if<NetworkDhcpv4ServerBegin>(&command.fib);
+          begin && begin->name_octets > 0U &&
+          begin->name_octets <= begin->name.size() &&
+          begin->expected_dns_servers <=
+              packet::dhcpv4::maximum_ipv4_addresses_per_option &&
+          begin->expected_pools <=
+              device_catalog::dhcpv4_pools_per_server &&
+          begin->expected_reservations <=
+              device_catalog::dhcpv4_leases_per_server &&
+          begin->expected_exclusions <=
+              device_catalog::dhcpv4_leases_per_server) {
+        try {
+          RouterDhcpv4ServerProgram staged{
+              .device = command.device,
+              .name = std::string{begin->name.data(), begin->name_octets},
+              .configuration = {},
+              .pools = {},
+              .reservations = {},
+              .exclusions = {}};
+          staged.configuration.server_identifier = begin->server_identifier;
+          staged.configuration.offer_hold =
+              std::chrono::seconds{begin->offer_hold_seconds};
+          staged.configuration.decline_hold =
+              std::chrono::seconds{begin->decline_hold_seconds};
+          staged.configuration.server_instance = begin->server_instance;
+          staged.configuration.routing_context = begin->routing_context;
+          staged.configuration.authoritative = begin->authoritative;
+          staged.configuration.force_renews = begin->force_renews;
+          staged.configuration.domain_name_servers.reserve(
+              begin->expected_dns_servers);
+          staged.pools.reserve(begin->expected_pools);
+          staged.reservations.reserve(begin->expected_reservations);
+          staged.exclusions.reserve(begin->expected_exclusions);
+          router_dhcpv4_server_staging_[command.device.index] =
+              std::move(staged);
+          router_dhcpv4_server_expected_[command.device.index] = {
+              begin->expected_dns_servers, begin->expected_pools,
+              begin->expected_reservations, begin->expected_exclusions};
+          result.success = true;
+        } catch (const std::bad_alloc &) {
+        }
+      }
+    break;
+  case NetworkCommandKind::add_router_dhcpv4_server_dns:
+    if (command.device.index < router_dhcpv4_server_staging_.size())
+      if (auto &staged =
+              router_dhcpv4_server_staging_[command.device.index];
+          staged) {
+        const auto expected =
+            router_dhcpv4_server_expected_[command.device.index];
+        if (const auto *address = std::get_if<packet::Ipv4>(&command.fib);
+            address &&
+            staged->configuration.domain_name_servers.size() < expected[0U]) {
+          try {
+            staged->configuration.domain_name_servers.push_back(*address);
+            result.success = true;
+          } catch (const std::bad_alloc &) {
+          }
+        }
+      }
+    break;
+  case NetworkCommandKind::add_router_dhcpv4_server_pool:
+    if (command.device.index < router_dhcpv4_server_staging_.size())
+      if (auto &staged =
+              router_dhcpv4_server_staging_[command.device.index];
+          staged) {
+        const auto expected =
+            router_dhcpv4_server_expected_[command.device.index];
+        if (const auto *pool = std::get_if<dhcpv4::Pool>(&command.fib);
+            pool && staged->pools.size() < expected[1U]) {
+          try {
+            staged->pools.push_back(*pool);
+            result.success = true;
+          } catch (const std::bad_alloc &) {
+          }
+        }
+      }
+    break;
+  case NetworkCommandKind::add_router_dhcpv4_server_reservation:
+    if (command.device.index < router_dhcpv4_server_staging_.size())
+      if (auto &staged =
+              router_dhcpv4_server_staging_[command.device.index];
+          staged) {
+        const auto expected =
+            router_dhcpv4_server_expected_[command.device.index];
+        if (const auto *reservation =
+                std::get_if<dhcpv4::Reservation>(&command.fib);
+            reservation && staged->reservations.size() < expected[2U]) {
+          try {
+            staged->reservations.push_back(*reservation);
+            result.success = true;
+          } catch (const std::bad_alloc &) {
+          }
+        }
+      }
+    break;
+  case NetworkCommandKind::commit_router_dhcpv4_server:
+    if (command.device.index < router_dhcpv4_server_staging_.size()) {
+      auto &staged = router_dhcpv4_server_staging_[command.device.index];
+      const auto expected =
+          router_dhcpv4_server_expected_[command.device.index];
+      if (staged &&
+          staged->configuration.domain_name_servers.size() == expected[0U] &&
+          staged->pools.size() == expected[1U] &&
+          staged->reservations.size() == expected[2U] &&
+          staged->exclusions.size() == expected[3U])
+        result.success = plane_.configure_router_dhcpv4_server(*staged);
+      staged.reset();
+      router_dhcpv4_server_expected_[command.device.index] = {};
+    }
+    break;
+  case NetworkCommandKind::add_router_dhcpv4_server_exclusion:
+    if (command.device.index < router_dhcpv4_server_staging_.size())
+      if (auto &staged =
+              router_dhcpv4_server_staging_[command.device.index];
+          staged) {
+        const auto expected =
+            router_dhcpv4_server_expected_[command.device.index];
+        if (const auto *excluded =
+                std::get_if<dhcpv4::ExcludedRange>(&command.fib);
+            excluded && staged->exclusions.size() < expected[3U]) {
+          try {
+            staged->exclusions.push_back(*excluded);
+            result.success = true;
+          } catch (const std::bad_alloc &) {
+          }
+        }
+      }
+    break;
+  case NetworkCommandKind::abort_router_dhcpv4_server:
+    if (command.device.index < router_dhcpv4_server_staging_.size()) {
+      router_dhcpv4_server_staging_[command.device.index].reset();
+      router_dhcpv4_server_expected_[command.device.index] = {};
+      result.success = true;
+    }
+    break;
+  case NetworkCommandKind::remove_router_dhcpv4_server:
+    if (const auto *begin =
+            std::get_if<NetworkDhcpv4ServerBegin>(&command.fib);
+        begin && begin->name_octets > 0U &&
+        begin->name_octets <= begin->name.size())
+      result.success = plane_.remove_router_dhcpv4_server(
+          command.device,
+          std::string_view{begin->name.data(), begin->name_octets});
+    break;
+  case NetworkCommandKind::clear_router_dhcpv4_server_statistics:
+    if (const auto *operation =
+            std::get_if<RouterDhcpv4ServerOperation>(&command.fib);
+        operation && operation->name_octets > 0U &&
+        operation->name_octets <= operation->name.size())
+      result.success = plane_.clear_router_dhcpv4_server_statistics(
+          command.device,
+          std::string_view{operation->name.data(), operation->name_octets});
+    break;
+  case NetworkCommandKind::clear_router_dhcpv4_server_leases:
+    if (const auto *operation =
+            std::get_if<RouterDhcpv4ServerOperation>(&command.fib);
+        operation && operation->name_octets > 0U &&
+        operation->name_octets <= operation->name.size())
+      result.success = plane_.clear_router_dhcpv4_server_leases(
+          command.device,
+          std::string_view{operation->name.data(), operation->name_octets},
+          operation->lease_filter);
+    break;
+  case NetworkCommandKind::send_router_dhcpv4_force_renew:
+    if (const auto *operation =
+            std::get_if<RouterDhcpv4ServerOperation>(&command.fib);
+        operation && operation->name_octets > 0U &&
+        operation->name_octets <= operation->name.size()) {
+      const auto status = plane_.send_router_dhcpv4_force_renew(
+          command.device,
+          std::string_view{operation->name.data(), operation->name_octets},
+          operation->address);
+      result.value = static_cast<std::uint64_t>(status);
+      result.success = status == dhcpv4::ForceRenewStatus::encoded;
+    }
+    break;
   case NetworkCommandKind::begin_dhcpv6_relay:
     if (command.device && command.device.index < dhcpv6_relay_staging_.size())
       if (const auto *begin = std::get_if<Dhcpv6RelayBegin>(&command.fib)) {
@@ -669,6 +893,147 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
       result.success =
           plane_.clear_dhcpv6_relay_leases(command.device, *program);
     break;
+  case NetworkCommandKind::begin_router_dhcpv6_server:
+    if (command.device.index < router_dhcpv6_server_staging_.size())
+      if (const auto *begin =
+              std::get_if<NetworkDhcpv6ServerBegin>(&command.fib);
+          begin && begin->name_octets > 0U &&
+          begin->name_octets <= begin->name.size()) {
+        try {
+          RouterDhcpv6ServerProgram staged{
+              .device = command.device,
+              .name = std::string{begin->name.data(), begin->name_octets},
+              .configuration = {},
+              .address_pools = {},
+              .prefix_pools = {},
+              .decline_hold_time =
+                  std::chrono::seconds{begin->decline_hold_seconds}};
+          auto &configuration = staged.configuration;
+          configuration.duid = begin->duid;
+          configuration.duid_octets = begin->duid_octets;
+          configuration.preference = begin->preference;
+          configuration.address_pool_index = begin->address_pool_index;
+          configuration.prefix_pool_index = begin->prefix_pool_index;
+          configuration.information_refresh_time_seconds =
+              begin->information_refresh_time_seconds;
+          configuration.rapid_commit = begin->rapid_commit;
+          configuration.lease_query = begin->lease_query;
+          if (begin->has_solicit_maximum_retransmission)
+            configuration.solicit_maximum_retransmission_seconds =
+                begin->solicit_maximum_retransmission_seconds;
+          if (begin->has_information_maximum_retransmission)
+            configuration.information_maximum_retransmission_seconds =
+                begin->information_maximum_retransmission_seconds;
+          configuration.dns_recursive_servers.reserve(
+              begin->expected_dns_servers);
+          staged.address_pools.reserve(begin->expected_address_pools);
+          staged.prefix_pools.reserve(begin->expected_prefix_pools);
+          router_dhcpv6_server_staging_[command.device.index] =
+              std::move(staged);
+          router_dhcpv6_server_expected_[command.device.index] = {
+              begin->expected_dns_servers, begin->expected_address_pools,
+              begin->expected_prefix_pools};
+          result.success = true;
+        } catch (const std::bad_alloc &) {
+        }
+      }
+    break;
+  case NetworkCommandKind::add_router_dhcpv6_server_dns:
+    if (command.device.index < router_dhcpv6_server_staging_.size())
+      if (auto &staged =
+              router_dhcpv6_server_staging_[command.device.index];
+          staged) {
+        const auto expected =
+            router_dhcpv6_server_expected_[command.device.index];
+        if (staged->configuration.dns_recursive_servers.size() < expected[0U])
+          try {
+            staged->configuration.dns_recursive_servers.push_back(
+                command.ipv6_destination);
+            result.success = true;
+          } catch (const std::bad_alloc &) {
+          }
+      }
+    break;
+  case NetworkCommandKind::add_router_dhcpv6_server_address_pool:
+  case NetworkCommandKind::add_router_dhcpv6_server_prefix_pool:
+    if (command.device.index < router_dhcpv6_server_staging_.size())
+      if (auto &staged =
+              router_dhcpv6_server_staging_[command.device.index];
+          staged)
+        if (const auto *pool = std::get_if<dhcpv6::LeasePool>(&command.fib)) {
+          auto &target =
+              command.kind ==
+                      NetworkCommandKind::
+                          add_router_dhcpv6_server_address_pool
+                  ? staged->address_pools
+                  : staged->prefix_pools;
+          const auto expected =
+              router_dhcpv6_server_expected_[command.device.index];
+          const auto admitted =
+              command.kind ==
+                      NetworkCommandKind::
+                          add_router_dhcpv6_server_address_pool
+                  ? expected[1U]
+                  : expected[2U];
+          if (target.size() < admitted)
+            try {
+              target.push_back(*pool);
+              result.success = true;
+            } catch (const std::bad_alloc &) {
+            }
+        }
+    break;
+  case NetworkCommandKind::commit_router_dhcpv6_server:
+    if (command.device.index < router_dhcpv6_server_staging_.size()) {
+      auto &staged =
+          router_dhcpv6_server_staging_[command.device.index];
+      const auto expected =
+          router_dhcpv6_server_expected_[command.device.index];
+      if (staged &&
+          staged->configuration.dns_recursive_servers.size() == expected[0U] &&
+          staged->address_pools.size() == expected[1U] &&
+          staged->prefix_pools.size() == expected[2U])
+        result.success = plane_.configure_router_dhcpv6_server(*staged);
+      staged.reset();
+      router_dhcpv6_server_expected_[command.device.index] = {};
+    }
+    break;
+  case NetworkCommandKind::abort_router_dhcpv6_server:
+    if (command.device.index < router_dhcpv6_server_staging_.size()) {
+      router_dhcpv6_server_staging_[command.device.index].reset();
+      router_dhcpv6_server_expected_[command.device.index] = {};
+      result.success = true;
+    }
+    break;
+  case NetworkCommandKind::remove_router_dhcpv6_server:
+    if (command.device.index < router_dhcpv6_server_staging_.size())
+      if (const auto *begin =
+              std::get_if<NetworkDhcpv6ServerBegin>(&command.fib);
+          begin && begin->name_octets > 0U &&
+          begin->name_octets <= begin->name.size())
+        result.success = plane_.remove_router_dhcpv6_server(
+            command.device,
+            std::string_view{begin->name.data(), begin->name_octets});
+    break;
+  case NetworkCommandKind::clear_router_dhcpv6_server_leases:
+    if (const auto *operation =
+            std::get_if<RouterDhcpv6ServerOperation>(&command.fib);
+        operation && operation->name_octets > 0U &&
+        operation->name_octets <= operation->name.size())
+      result.success = plane_.clear_router_dhcpv6_server_leases(
+          command.device,
+          std::string_view{operation->name.data(), operation->name_octets},
+          operation->lease_filter);
+    break;
+  case NetworkCommandKind::clear_router_dhcpv6_server_statistics:
+    if (const auto *operation =
+            std::get_if<RouterDhcpv6ServerOperation>(&command.fib);
+        operation && operation->name_octets > 0U &&
+        operation->name_octets <= operation->name.size())
+      result.success = plane_.clear_router_dhcpv6_server_statistics(
+          command.device,
+          std::string_view{operation->name.data(), operation->name_octets});
+    break;
   case NetworkCommandKind::clear_mld_database:
     result.success = plane_.clear_mld_database(
         command.device, command.port.ordinal,
@@ -735,13 +1100,357 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
     result.success = plane_.clear_router_advertisement_interface_statistics(
         command.device, command.port.ordinal);
     break;
+  case NetworkCommandKind::configure_router_bof_management:
+    result.success = plane_.configure_router_bof_management(
+        {.device = command.device, .endpoint = command.host_program});
+    break;
+  case NetworkCommandKind::begin_router_bof_dhcpv4_client:
+    if (command.device.index < bof_dhcpv4_client_staging_.size())
+      if (const auto *begin =
+              std::get_if<NetworkDhcpv4ClientBegin>(&command.fib);
+          begin &&
+          begin->client_identifier_octets <=
+              begin->client_identifier.size() &&
+          begin->parameter_request_list_octets <=
+              begin->parameter_request_list.size() &&
+          begin->user_class_octets <= begin->user_class.size() &&
+          begin->bootstrap_timeout_seconds != 0U) {
+        try {
+          RouterBofDhcpv4ClientProgram staged{.device = command.device};
+          auto &configuration = staged.configuration;
+          configuration.hardware_address = begin->hardware_address;
+          configuration.client_identifier.assign(
+              begin->client_identifier.begin(),
+              begin->client_identifier.begin() +
+                  begin->client_identifier_octets);
+          configuration.parameter_request_list.assign(
+              begin->parameter_request_list.begin(),
+              begin->parameter_request_list.begin() +
+                  begin->parameter_request_list_octets);
+          configuration.user_class.assign(
+              begin->user_class.begin(),
+              begin->user_class.begin() + begin->user_class_octets);
+          configuration.transaction_secret = begin->transaction_secret;
+          configuration.maximum_message_size = begin->maximum_message_size;
+          configuration.broadcast = begin->broadcast;
+          staged.bootstrap_timeout =
+              std::chrono::seconds{begin->bootstrap_timeout_seconds};
+          bof_dhcpv4_client_staging_[command.device.index] =
+              std::move(staged);
+          result.success = true;
+        } catch (...) {
+        }
+      }
+    break;
+  case NetworkCommandKind::commit_router_bof_dhcpv4_client:
+    if (command.device.index < bof_dhcpv4_client_staging_.size()) {
+      auto &staged = bof_dhcpv4_client_staging_[command.device.index];
+      if (staged)
+        result.success =
+            plane_.configure_router_bof_dhcpv4_client(*staged);
+      staged.reset();
+    }
+    break;
+  case NetworkCommandKind::abort_router_bof_dhcpv4_client:
+    if (command.device.index < bof_dhcpv4_client_staging_.size()) {
+      bof_dhcpv4_client_staging_[command.device.index].reset();
+      result.success = true;
+    }
+    break;
+  case NetworkCommandKind::remove_router_bof_dhcpv4_client:
+    result.success =
+        plane_.remove_router_bof_dhcpv4_client(command.device);
+    break;
+  case NetworkCommandKind::begin_router_bof_dhcpv6_client:
+    if (command.device.index < bof_dhcpv6_client_staging_.size())
+      if (const auto *begin =
+              std::get_if<NetworkDhcpv6ClientBegin>(&command.fib);
+          begin && begin->user_class_octets <= begin->user_class.size() &&
+          begin->bootstrap_timeout_seconds != 0U) {
+        try {
+          RouterBofDhcpv6ClientProgram staged{
+              .device = command.device,
+              .configuration = {},
+              .bootstrap_timeout =
+                  std::chrono::seconds{begin->bootstrap_timeout_seconds},
+              .information_only = begin->information_only};
+          staged.configuration.duid = begin->duid;
+          staged.configuration.duid_octets = begin->duid_octets;
+          staged.configuration.transaction_secret =
+              begin->transaction_secret;
+          staged.configuration.user_class.assign(
+              begin->user_class.begin(),
+              begin->user_class.begin() + begin->user_class_octets);
+          staged.configuration.rapid_commit = begin->rapid_commit;
+          staged.configuration.identity_associations.reserve(
+              begin->expected_associations);
+          staged.configuration.requested_options.reserve(
+              begin->expected_options);
+          bof_dhcpv6_client_staging_[command.device.index] =
+              std::move(staged);
+          bof_dhcpv6_client_expected_[command.device.index] = {
+              begin->expected_associations, begin->expected_options};
+          result.success = true;
+        } catch (...) {
+        }
+      }
+    break;
+  case NetworkCommandKind::add_router_bof_dhcpv6_client_ia:
+    if (command.device.index < bof_dhcpv6_client_staging_.size())
+      if (auto &staged =
+              bof_dhcpv6_client_staging_[command.device.index];
+          staged &&
+          staged->configuration.identity_associations.size() <
+              bof_dhcpv6_client_expected_[command.device.index][0U])
+        if (const auto *association =
+                std::get_if<NetworkDhcpv6ClientAssociation>(&command.fib)) {
+          try {
+            staged->configuration.identity_associations.push_back(
+                {.iaid = association->iaid, .kind = association->kind});
+            result.success = true;
+          } catch (...) {
+          }
+        }
+    break;
+  case NetworkCommandKind::add_router_bof_dhcpv6_client_option:
+    if (command.device.index < bof_dhcpv6_client_staging_.size())
+      if (auto &staged =
+              bof_dhcpv6_client_staging_[command.device.index];
+          staged &&
+          staged->configuration.requested_options.size() <
+              bof_dhcpv6_client_expected_[command.device.index][1U]) {
+        try {
+          staged->configuration.requested_options.push_back(
+              command.dhcpv6_option_code);
+          result.success = true;
+        } catch (...) {
+        }
+      }
+    break;
+  case NetworkCommandKind::commit_router_bof_dhcpv6_client:
+    if (command.device.index < bof_dhcpv6_client_staging_.size()) {
+      auto &staged = bof_dhcpv6_client_staging_[command.device.index];
+      const auto expected =
+          bof_dhcpv6_client_expected_[command.device.index];
+      if (staged &&
+          staged->configuration.identity_associations.size() ==
+              expected[0U] &&
+          staged->configuration.requested_options.size() == expected[1U])
+        result.success =
+            plane_.configure_router_bof_dhcpv6_client(*staged);
+      staged.reset();
+      bof_dhcpv6_client_expected_[command.device.index] = {};
+    }
+    break;
+  case NetworkCommandKind::abort_router_bof_dhcpv6_client:
+    if (command.device.index < bof_dhcpv6_client_staging_.size()) {
+      bof_dhcpv6_client_staging_[command.device.index].reset();
+      bof_dhcpv6_client_expected_[command.device.index] = {};
+      result.success = true;
+    }
+    break;
+  case NetworkCommandKind::remove_router_bof_dhcpv6_client:
+    result.success =
+        plane_.remove_router_bof_dhcpv6_client(command.device);
+    break;
   case NetworkCommandKind::configure_host:
     result.success = plane_.configure_host(command.host_program);
+    break;
+  case NetworkCommandKind::begin_host_dhcpv4_client:
+    if (command.host.index < dhcpv4_client_staging_.size())
+      if (const auto *begin =
+              std::get_if<NetworkDhcpv4ClientBegin>(&command.fib);
+          begin &&
+          begin->client_identifier_octets <=
+              begin->client_identifier.size() &&
+          begin->parameter_request_list_octets <=
+              begin->parameter_request_list.size() &&
+          begin->user_class_octets <= begin->user_class.size()) {
+        try {
+          HostDhcpv4ClientProgram staged{.host = command.host};
+          auto &configuration = staged.configuration;
+          configuration.hardware_address = begin->hardware_address;
+          configuration.client_identifier.assign(
+              begin->client_identifier.begin(),
+              begin->client_identifier.begin() +
+                  begin->client_identifier_octets);
+          configuration.parameter_request_list.assign(
+              begin->parameter_request_list.begin(),
+              begin->parameter_request_list.begin() +
+                  begin->parameter_request_list_octets);
+          configuration.user_class.assign(
+              begin->user_class.begin(),
+              begin->user_class.begin() + begin->user_class_octets);
+          configuration.transaction_secret = begin->transaction_secret;
+          configuration.maximum_message_size = begin->maximum_message_size;
+          configuration.broadcast = begin->broadcast;
+          dhcpv4_client_staging_[command.host.index] = std::move(staged);
+          result.success = true;
+        } catch (...) {
+        }
+      }
+    break;
+  case NetworkCommandKind::commit_host_dhcpv4_client:
+    if (command.host.index < dhcpv4_client_staging_.size()) {
+      auto &staged = dhcpv4_client_staging_[command.host.index];
+      if (staged)
+        result.success = plane_.configure_host_dhcpv4_client(*staged);
+      staged.reset();
+    }
+    break;
+  case NetworkCommandKind::abort_host_dhcpv4_client:
+    if (command.host.index < dhcpv4_client_staging_.size()) {
+      dhcpv4_client_staging_[command.host.index].reset();
+      result.success = true;
+    }
+    break;
+  case NetworkCommandKind::remove_host_dhcpv4_client:
+    result.success = plane_.remove_host_dhcpv4_client(command.host);
+    break;
+  case NetworkCommandKind::begin_host_dhcpv4_server:
+    if (command.host.index < dhcpv4_server_staging_.size())
+      if (const auto *begin =
+              std::get_if<NetworkDhcpv4ServerBegin>(&command.fib);
+          begin &&
+          begin->expected_dns_servers <=
+              packet::dhcpv4::maximum_ipv4_addresses_per_option &&
+          begin->expected_pools <=
+              device_catalog::dhcpv4_pools_per_server &&
+          begin->expected_reservations <=
+              device_catalog::dhcpv4_leases_per_server &&
+          begin->expected_exclusions <=
+              device_catalog::dhcpv4_leases_per_server) {
+        try {
+          HostDhcpv4ServerProgram staged{
+              .host = command.host,
+              .configuration = {},
+              .pools = {},
+              .reservations = {},
+              .exclusions = {}};
+          auto &configuration = staged.configuration;
+          configuration.server_identifier = begin->server_identifier;
+          configuration.offer_hold =
+              std::chrono::seconds{begin->offer_hold_seconds};
+          configuration.decline_hold =
+              std::chrono::seconds{begin->decline_hold_seconds};
+          configuration.server_instance = begin->server_instance;
+          configuration.routing_context = begin->routing_context;
+          configuration.authoritative = begin->authoritative;
+          configuration.force_renews = begin->force_renews;
+          configuration.domain_name_servers.reserve(
+              begin->expected_dns_servers);
+          staged.pools.reserve(begin->expected_pools);
+          staged.reservations.reserve(begin->expected_reservations);
+          staged.exclusions.reserve(begin->expected_exclusions);
+          dhcpv4_server_staging_[command.host.index] = std::move(staged);
+          dhcpv4_server_expected_[command.host.index] = {
+              begin->expected_dns_servers, begin->expected_pools,
+              begin->expected_reservations, begin->expected_exclusions};
+          result.success = true;
+        } catch (...) {
+        }
+      }
+    break;
+  case NetworkCommandKind::add_host_dhcpv4_server_dns:
+    if (command.host.index < dhcpv4_server_staging_.size())
+      if (auto &staged = dhcpv4_server_staging_[command.host.index]; staged) {
+        const auto expected = dhcpv4_server_expected_[command.host.index];
+        if (staged->configuration.domain_name_servers.size() >= expected[0U])
+          break;
+        try {
+          if (const auto *address =
+                  std::get_if<packet::Ipv4>(&command.fib)) {
+            staged->configuration.domain_name_servers.push_back(*address);
+            result.success = true;
+          }
+        } catch (...) {
+        }
+      }
+    break;
+  case NetworkCommandKind::add_host_dhcpv4_server_pool:
+    if (command.host.index < dhcpv4_server_staging_.size())
+      if (auto &staged = dhcpv4_server_staging_[command.host.index]; staged) {
+        const auto expected = dhcpv4_server_expected_[command.host.index];
+        if (staged->pools.size() >= expected[1U])
+          break;
+        try {
+          if (const auto *pool = std::get_if<dhcpv4::Pool>(&command.fib)) {
+            staged->pools.push_back(*pool);
+            result.success = true;
+          }
+        } catch (...) {
+        }
+      }
+    break;
+  case NetworkCommandKind::add_host_dhcpv4_server_reservation:
+    if (command.host.index < dhcpv4_server_staging_.size())
+      if (auto &staged = dhcpv4_server_staging_[command.host.index]; staged) {
+        const auto expected = dhcpv4_server_expected_[command.host.index];
+        if (staged->reservations.size() >= expected[2U])
+          break;
+        try {
+          if (const auto *reservation =
+                  std::get_if<dhcpv4::Reservation>(&command.fib)) {
+            staged->reservations.push_back(*reservation);
+            result.success = true;
+          }
+        } catch (...) {
+        }
+      }
+    break;
+  case NetworkCommandKind::commit_host_dhcpv4_server:
+    if (command.host.index < dhcpv4_server_staging_.size()) {
+      auto &staged = dhcpv4_server_staging_[command.host.index];
+      const auto expected = dhcpv4_server_expected_[command.host.index];
+      if (staged &&
+          staged->configuration.domain_name_servers.size() == expected[0U] &&
+          staged->pools.size() == expected[1U] &&
+          staged->reservations.size() == expected[2U] &&
+          staged->exclusions.size() == expected[3U])
+        result.success = plane_.configure_host_dhcpv4_server(*staged);
+      staged.reset();
+      dhcpv4_server_expected_[command.host.index] = {};
+    }
+    break;
+  case NetworkCommandKind::add_host_dhcpv4_server_exclusion:
+    if (command.host.index < dhcpv4_server_staging_.size())
+      if (auto &staged = dhcpv4_server_staging_[command.host.index]; staged) {
+        const auto expected = dhcpv4_server_expected_[command.host.index];
+        if (staged->exclusions.size() >= expected[3U])
+          break;
+        try {
+          if (const auto *excluded =
+                  std::get_if<dhcpv4::ExcludedRange>(&command.fib)) {
+            staged->exclusions.push_back(*excluded);
+            result.success = true;
+          }
+        } catch (...) {
+        }
+      }
+    break;
+  case NetworkCommandKind::abort_host_dhcpv4_server:
+    if (command.host.index < dhcpv4_server_staging_.size()) {
+      dhcpv4_server_staging_[command.host.index].reset();
+      dhcpv4_server_expected_[command.host.index] = {};
+      result.success = true;
+    }
+    break;
+  case NetworkCommandKind::remove_host_dhcpv4_server:
+    result.success = plane_.remove_host_dhcpv4_server(command.host);
+    break;
+  case NetworkCommandKind::host_dhcpv4_client_status:
+    if (const auto status =
+            plane_.host_dhcpv4_client_status(command.host)) {
+      result.success = true;
+      result.dhcpv4_client = *status;
+      result.value = status->lease_present ? 1U : 0U;
+    }
     break;
   case NetworkCommandKind::begin_host_dhcpv6_client:
     if (command.host.index < dhcpv6_client_staging_.size())
       if (const auto *begin =
-              std::get_if<NetworkDhcpv6ClientBegin>(&command.fib)) {
+              std::get_if<NetworkDhcpv6ClientBegin>(&command.fib);
+          begin && begin->user_class_octets <= begin->user_class.size()) {
         try {
           HostDhcpv6ClientProgram staged{.host = command.host,
                                          .configuration = {},
@@ -750,6 +1459,9 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
           staged.configuration.duid = begin->duid;
           staged.configuration.duid_octets = begin->duid_octets;
           staged.configuration.transaction_secret = begin->transaction_secret;
+          staged.configuration.user_class.assign(
+              begin->user_class.begin(),
+              begin->user_class.begin() + begin->user_class_octets);
           staged.configuration.rapid_commit = begin->rapid_commit;
           staged.configuration.identity_associations.reserve(
               begin->expected_associations);
@@ -842,6 +1554,7 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
           configuration.information_refresh_time_seconds =
               begin->information_refresh_time_seconds;
           configuration.rapid_commit = begin->rapid_commit;
+          configuration.lease_query = begin->lease_query;
           if (begin->has_solicit_maximum_retransmission)
             configuration.solicit_maximum_retransmission_seconds =
                 begin->solicit_maximum_retransmission_seconds;

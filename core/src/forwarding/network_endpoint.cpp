@@ -306,6 +306,9 @@ bool EndpointStack::configure(
   address_ = configuration.endpoint_address;
   prefix_length_ = configuration.endpoint_prefix_length;
   gateway_ = configuration.endpoint_gateway;
+  dhcpv4_address_owned_ = false;
+  dhcpv4_probe_candidate_ = {};
+  dhcpv4_probe_conflict_ = false;
   mtu_ = configuration.endpoint_mtu;
   interface_id_ = configuration.endpoint_interface_id;
   ipv6_enabled_ = configuration.endpoint_ipv6_autoconfiguration;
@@ -555,12 +558,20 @@ EndpointUdpSendResult EndpointStack::send_udp_ipv4(
   const auto binding = udp_.local_binding(handle);
   if (!binding || binding->family != transport::IpFamily::ipv4)
     return {.status = EndpointUdpSendStatus::invalid_socket};
-  if (address_ == packet::Ipv4{} ||
-      (binding->ipv4 != packet::Ipv4{} && binding->ipv4 != address_))
-    return {.status = EndpointUdpSendStatus::no_source_address};
-
   const bool broadcast =
       ipv4_broadcast_for_interface(destination, address_, prefix_length_);
+  // RFC 2131 address acquisition is the one ordinary UDP use of source
+  // 0.0.0.0. A wildcard-bound, broadcast-enabled socket may use it only for
+  // the limited broadcast destination. Directed broadcast and unicast still
+  // require a configured interface source and therefore cannot bypass host
+  // routing or ARP through this exception.
+  const bool acquiring_address =
+      address_ == packet::Ipv4{} &&
+      destination == packet::Ipv4{255U, 255U, 255U, 255U} &&
+      binding->ipv4 == packet::Ipv4{} && binding->ipv4_broadcast;
+  if ((!acquiring_address && address_ == packet::Ipv4{}) ||
+      (binding->ipv4 != packet::Ipv4{} && binding->ipv4 != address_))
+    return {.status = EndpointUdpSendStatus::no_source_address};
   if (broadcast && !binding->ipv4_broadcast)
     return {.status = EndpointUdpSendStatus::invalid_destination};
   constexpr packet::Mac ethernet_broadcast{0xffU, 0xffU, 0xffU,
@@ -600,19 +611,118 @@ EndpointUdpSendResult EndpointStack::send_udp_ipv4(
   if (!broadcast)
     destination_mac = *neighbor_mac_;
 
+  return encode_udp_ipv4_to_mac(
+      handle, address_, destination, destination_mac, destination_port,
+      payload, sink_context, sink, admission, checksum_enabled);
+}
+
+bool EndpointStack::install_dhcpv4_lease(
+    packet::Ipv4 address, std::uint8_t prefix_length,
+    packet::Ipv4 gateway) noexcept {
+  if (address == packet::Ipv4{} || prefix_length == 0U ||
+      prefix_length > 32U || (!dhcpv4_address_owned_ &&
+                              address_ != packet::Ipv4{}))
+    return false;
+  address_ = address;
+  prefix_length_ = prefix_length;
+  gateway_ = gateway;
+  dhcpv4_address_owned_ = true;
+  clear_neighbor();
+  return true;
+}
+
+bool EndpointStack::restore_dhcpv4_lease_ownership(
+    packet::Ipv4 address, std::uint8_t prefix_length,
+    packet::Ipv4 gateway) noexcept {
+  if (address == packet::Ipv4{} || prefix_length == 0U ||
+      prefix_length > 32U || address_ != address ||
+      prefix_length_ != prefix_length || gateway_ != gateway)
+    return false;
+  dhcpv4_address_owned_ = true;
+  return true;
+}
+
+void EndpointStack::remove_dhcpv4_lease() noexcept {
+  if (!dhcpv4_address_owned_)
+    return;
+  address_ = {};
+  prefix_length_ = 0U;
+  gateway_ = {};
+  dhcpv4_address_owned_ = false;
+  clear_neighbor();
+}
+
+bool EndpointStack::arm_dhcpv4_address_probe(
+    packet::Ipv4 candidate) noexcept {
+  if (candidate == packet::Ipv4{} || dhcpv4_address_owned_ ||
+      address_ != packet::Ipv4{})
+    return false;
+  dhcpv4_probe_candidate_ = candidate;
+  dhcpv4_probe_conflict_ = false;
+  return true;
+}
+
+void EndpointStack::disarm_dhcpv4_address_probe() noexcept {
+  dhcpv4_probe_candidate_ = {};
+  dhcpv4_probe_conflict_ = false;
+}
+
+bool EndpointStack::send_dhcpv4_address_probe(
+    void *sink_context, packet::Ipv4FragmentSink sink,
+    packet::Ipv4FragmentAdmission admission) noexcept {
+  if (!link_operational_ || !sink ||
+      dhcpv4_probe_candidate_ == packet::Ipv4{})
+    return false;
+  if (admission && !admission(sink_context, 1U))
+    return false;
+  // packet::arp_request accepts an explicit sender protocol address. Zero is
+  // intentional here and prevents other nodes from learning the candidate
+  // before conflict detection has completed.
+  return sink(sink_context,
+              packet::arp_request(mac_, {}, dhcpv4_probe_candidate_));
+}
+
+EndpointUdpSendResult EndpointStack::send_udp_ipv4_direct_l2(
+    transport::UdpSocketHandle handle, packet::Ipv4 destination,
+    packet::Mac destination_mac, std::uint16_t destination_port,
+    std::span<const std::uint8_t> payload, void *sink_context,
+    packet::Ipv4FragmentSink sink,
+    packet::Ipv4FragmentAdmission admission, bool checksum_enabled) noexcept {
+  if (!link_operational_ || !sink)
+    return {.status = EndpointUdpSendStatus::link_down};
+  const auto binding = udp_.local_binding(handle);
+  if (!binding || binding->family != transport::IpFamily::ipv4)
+    return {.status = EndpointUdpSendStatus::invalid_socket};
+  if (address_ == packet::Ipv4{} ||
+      destination == packet::Ipv4{} || destination_port == 0U ||
+      is_zero(destination_mac) ||
+      (destination_mac[0U] & 1U) != 0U ||
+      (binding->ipv4 != packet::Ipv4{} && binding->ipv4 != address_))
+    return {.status = EndpointUdpSendStatus::invalid_destination};
+  return encode_udp_ipv4_to_mac(
+      handle, address_, destination, destination_mac, destination_port,
+      payload, sink_context, sink, admission, checksum_enabled);
+}
+
+EndpointUdpSendResult EndpointStack::encode_udp_ipv4_to_mac(
+    transport::UdpSocketHandle handle, packet::Ipv4 source,
+    packet::Ipv4 destination, packet::Mac destination_mac,
+    std::uint16_t destination_port, std::span<const std::uint8_t> payload,
+    void *sink_context, packet::Ipv4FragmentSink sink,
+    packet::Ipv4FragmentAdmission admission, bool checksum_enabled) noexcept {
   // UDP occupies bytes immediately following the fixed source IPv4 header.
   // The one owner-local arena then becomes a complete datagram image that can
   // be copied once or streamed as fragments without a 9 KiB Frame ceiling.
   auto udp_storage = std::span<std::uint8_t>{ip_datagram_scratch_}.subspan(
       packet::ethernet_header_octets + 20U);
   const auto encoded_udp = udp_.encode_ipv4(
-      handle, address_, destination, interface_id_, destination_port, payload,
+      handle, source, destination, interface_id_, destination_port, payload,
       udp_storage, checksum_enabled);
   if (encoded_udp.status != transport::UdpSendStatus::encoded)
     return {.status = endpoint_udp_error(encoded_udp.status)};
   const auto identification = next_ipv4_identification_;
   const auto datagram = packet::encode_ipv4_ethernet_datagram(
-      ip_datagram_scratch_, mac_, destination_mac, address_, destination, 17U,
+      ip_datagram_scratch_, mac_, destination_mac, source, destination, 17U,
       device_catalog::default_ip_hop_limit, identification,
       udp_storage.first(encoded_udp.datagram_octets), false);
   if (!datagram)
@@ -1587,7 +1697,15 @@ EndpointFrames EndpointStack::receive(const packet::Frame &frame,
 
   if (ethernet->ether_type == packet::ethernet_type_arp) {
     const auto arp = packet::parse_arp(frame);
-    if (!arp || arp->target_ip != address_)
+    if (!arp)
+      return result;
+    if (dhcpv4_probe_candidate_ != packet::Ipv4{} &&
+        arp->sender_mac != mac_ &&
+        (arp->sender_ip == dhcpv4_probe_candidate_ ||
+         (arp->sender_ip == packet::Ipv4{} &&
+          arp->target_ip == dhcpv4_probe_candidate_)))
+      dhcpv4_probe_conflict_ = true;
+    if (arp->target_ip != address_)
       return result;
     // RFC 826 merges sender mapping before examining the operation. Releasing a
     // pending frame still requires the exact protocol address requested.
@@ -1618,7 +1736,34 @@ EndpointFrames EndpointStack::receive(const packet::Frame &frame,
   auto ip = packet::parse_ipv4(frame);
   const bool broadcast = ip && ipv4_broadcast_for_interface(
                                    ip->destination, address_, prefix_length_);
-  if (!ip || (ip->destination != address_ && !broadcast))
+  const auto pre_address_unicast =
+      [&](std::span<const std::uint8_t> packet_bytes,
+          const packet::Ipv4View &candidate) {
+        // RFC 2131 permits direct L2 delivery to yiaddr before the interface
+        // installs that address. Ethernet filtering above has already proved
+        // the frame belongs to this NIC. UDP socket authority then narrows the
+        // exception to the configured acquisition client and exact port.
+        if (address_ != packet::Ipv4{} || candidate.protocol != 17U ||
+            candidate.fragment_offset || candidate.more_fragments)
+          return false;
+        const auto upper_offset =
+            packet::ethernet_header_octets +
+            static_cast<std::size_t>(candidate.header_length);
+        const auto packet_end =
+            packet::ethernet_header_octets +
+            static_cast<std::size_t>(candidate.total_length);
+        if (upper_offset > packet_end || packet_end > packet_bytes.size())
+          return false;
+        const auto datagram = packet::udp::parse_ipv4(
+            packet_bytes.subspan(upper_offset, packet_end - upper_offset),
+            candidate.source, candidate.destination);
+        return datagram &&
+               udp_.accepts_ipv4_unconfigured_unicast(
+                   interface_id_, datagram->destination_port);
+      };
+  if (!ip ||
+      (ip->destination != address_ && !broadcast &&
+       !pre_address_unicast(frame.view(), *ip)))
     return result;
   std::span<const std::uint8_t> local_packet = frame.view();
   std::optional<packet::Frame> small_reassembled;
@@ -1641,7 +1786,12 @@ EndpointFrames EndpointStack::receive(const packet::Frame &frame,
           static_cast<std::uint16_t>(local_packet.size());
     }
   }
-  if (!ip || (ip->destination != address_ && !broadcast))
+  const bool reassembled_broadcast =
+      ip && ipv4_broadcast_for_interface(ip->destination, address_,
+                                         prefix_length_);
+  if (!ip ||
+      (ip->destination != address_ && !reassembled_broadcast &&
+       !pre_address_unicast(local_packet, *ip)))
     return result;
   if (ip->protocol == 17U) {
     const auto upper_offset = packet::ethernet_header_octets +
@@ -1652,7 +1802,7 @@ EndpointFrames EndpointStack::receive(const packet::Frame &frame,
       return result;
     const auto delivered = udp_.ingest_ipv4(
         local_packet.subspan(upper_offset, packet_end - upper_offset),
-        ip->source, ip->destination, interface_id_);
+        ip->source, ip->destination, interface_id_, ethernet->source);
     if (delivered == transport::UdpIngressStatus::no_socket && !broadcast &&
         valid_icmpv4_error_destination(ip->source)) {
       const auto invoking_ethernet = packet::parse_ethernet(local_packet);

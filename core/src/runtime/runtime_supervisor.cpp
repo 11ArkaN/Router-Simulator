@@ -3,7 +3,55 @@
 
 #include "runtime_supervisor_internal.hpp"
 
+#include <openssl/crypto.h>
+#include <openssl/rand.h>
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 namespace router::lab {
+namespace {
+
+#ifdef __EMSCRIPTEN__
+EM_JS(int, browser_secure_random, (std::uint8_t *output, std::size_t size), {
+  // Web Crypto is the host CSPRNG in browsers and supported Node.js runners.
+  // Predictable TCP sequence numbers are never substituted when it is absent.
+  const provider = globalThis.crypto;
+  if (!provider || typeof provider.getRandomValues !== 'function' ||
+      size > 65536)
+    return 0;
+  try {
+    // Do not pass a SharedArrayBuffer-backed heap view to Web Crypto. Browser
+    // implementations may reject shared storage even though Node.js accepts
+    // the same call, which would make router admission host-dependent. Entropy
+    // is generated into private host memory and copied once into the Wasm heap
+    // before this synchronous import returns, so no other pthread can observe
+    // a partially generated secret.
+    const random = new Uint8Array(size);
+    provider.getRandomValues(random);
+    HEAPU8.set(random, output);
+    random.fill(0);
+    return 1;
+  } catch (_) {
+    return 0;
+  }
+});
+#endif
+
+[[nodiscard]] bool
+fill_transport_secret(crypto::Sha256Digest &secret) noexcept {
+  // Emscripten's OpenSSL build is not automatically seeded in every standalone
+  // Node.js fixture. WebAssembly therefore asks the host CSPRNG directly,
+  // while native builds retain the operating-system-backed OpenSSL provider.
+#ifdef __EMSCRIPTEN__
+  return browser_secure_random(secret.data(), secret.size()) == 1;
+#else
+  return RAND_bytes(secret.data(), static_cast<int>(secret.size())) == 1;
+#endif
+}
+
+} // namespace
 
 RuntimeSupervisor::RuntimeSupervisor()
     : session_workflows_(sessions_),
@@ -113,7 +161,8 @@ RuntimeSupervisor::dispatch(NetworkCommand &command) noexcept {
   const auto id = command.id;
   const auto kind = command.kind;
   const bool sensitive =
-      kind == NetworkCommandKind::add_ospf_authentication;
+      kind == NetworkCommandKind::add_ospf_authentication ||
+      kind == NetworkCommandKind::add_router;
   if (!network_worker_->submit(command)) {
     if (sensitive)
       spsc_secure_clear(command);
@@ -184,10 +233,42 @@ std::optional<DeviceHandle>
 RuntimeSupervisor::create_router(std::string_view node_id,
                                  std::string_view profile_id,
                                  std::string_view system_name) {
+  return create_network_device(node_id, profile_id, system_name,
+                               device_catalog::DeviceRole::router);
+}
+
+std::optional<DeviceHandle>
+RuntimeSupervisor::create_dhcp_server(std::string_view node_id,
+                                      std::string_view profile_id,
+                                      std::string_view name) {
+  return create_network_device(node_id, profile_id, name,
+                               device_catalog::DeviceRole::dhcp_server);
+}
+
+std::optional<DeviceHandle> RuntimeSupervisor::create_network_device(
+    std::string_view node_id, std::string_view profile_id,
+    std::string_view name, device_catalog::DeviceRole expected_role) {
   // Cross-kind identity is checked before DeviceRegistry reserves a slot.
   if (hosts_.find(node_id) || switches_.find(node_id))
     return std::nullopt;
-  const auto handle = devices_.create(node_id, profile_id, system_name);
+  const auto *requested_profile = device_catalog::find_profile(profile_id);
+  if (!requested_profile || requested_profile->role != expected_role)
+    return std::nullopt;
+  std::size_t role_count{};
+  for (const auto &entry : devices_.checkpoint().entries) {
+    const auto *profile = device_catalog::find_profile(entry.profile_id);
+    if (profile && profile->role == expected_role)
+      ++role_count;
+  }
+  const auto role_limit =
+      expected_role == device_catalog::DeviceRole::router
+          ? device_catalog::maximum_sr_routers
+          : device_catalog::maximum_dhcp_servers;
+  // Each product role owns its public capacity even though both use the same
+  // bounded physical registry underneath.
+  if (role_count >= role_limit)
+    return std::nullopt;
+  const auto handle = devices_.create(node_id, profile_id, name);
   if (!handle)
     return std::nullopt;
   const auto *record = devices_.get(*handle);
@@ -195,9 +276,23 @@ RuntimeSupervisor::create_router(std::string_view node_id,
   // handle back to the command caller.
   hardware_[handle->index].emplace(*handle, *record->profile);
   router_network_[handle->index] = std::make_unique<RouterNetworkState>();
+  crypto::Sha256Digest transport_secret{};
+  if (!fill_transport_secret(transport_secret)) {
+    router_network_[handle->index].reset();
+    hardware_[handle->index].reset();
+    static_cast<void>(devices_.erase(*handle));
+    return std::nullopt;
+  }
   auto &add = prepare(NetworkCommandKind::add_router);
   add.device = *handle;
+  add.router_transport_secret = transport_secret;
+  // Role comes from the immutable generated profile, never from a UI flag.
+  // Router profiles forward transit traffic; a dedicated DHCP appliance only
+  // originates and terminates packets on its own addresses.
+  add.transit_forwarding_enabled =
+      expected_role == device_catalog::DeviceRole::router;
   const auto admitted = dispatch(add);
+  OPENSSL_cleanse(transport_secret.data(), transport_secret.size());
   if (!admitted || !admitted->success) {
     // Cross-owner admission is transactional. A failed network allocation is
     // rolled back before the caller can observe a half-created router.

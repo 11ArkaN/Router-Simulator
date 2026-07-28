@@ -1,5 +1,5 @@
 version: 4
-snapshot_abi: 8
+snapshot_abi: 9
 # Telemetry is a separate shared-memory structure. Its revision changes only
 # when offsets, widths or publication semantics change, not whenever the
 # structural runtime snapshot gains another configuration domain.
@@ -17,6 +17,15 @@ operations:
   snapshot: snapshot
   router_create: router-create
   router_delete: router-delete
+  dhcp_server_create: dhcp-server-create
+  dhcp_server_delete: dhcp-server-delete
+  dhcp_server_configuration_replace: dhcp-server-configuration-replace
+  # One management transaction replaces the network attachment and every
+  # dedicated DHCP application. The runtime checkpoints all owners before
+  # applying it, so a rejected pool cannot leave only the interface changed.
+  dhcp_server_replace: dhcp-server-replace
+  dhcp_server_dhcpv4_replace: dhcp-server-dhcpv4-replace
+  dhcp_server_dhcpv6_replace: dhcp-server-dhcpv6-replace
   system_name_set: system-name-set
   router_configuration_replace: router-configuration-replace
   host_create: host-create
@@ -24,6 +33,7 @@ operations:
   host_delete: host-delete
   host_name_set: host-name-set
   host_update: host-update
+  host_ipv4_replace: host-ipv4-replace
   switch_create: switch-create
   switch_delete: switch-delete
   switch_name_set: switch-name-set
@@ -42,6 +52,7 @@ operations:
   link_admin_set: link-admin-set
   link_properties_set: link-properties-set
   host_configure: host-configure
+  host_dhcpv4_replace: host-dhcpv4-replace
   host_dhcpv6_replace: host-dhcpv6-replace
   host_dns_replace: host-dns-replace
   router_ping_start: router-ping-start

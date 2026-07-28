@@ -93,6 +93,42 @@ std::vector<std::uint8_t> confirm_message(
   return bytes;
 }
 
+std::vector<std::uint8_t> leasequery_message(
+    std::span<const std::uint8_t> requestor_duid,
+    std::span<const std::uint8_t> target_duid,
+    std::uint8_t query_type = 2U) {
+  using namespace router::packet::dhcpv6;
+  // RFC 5007 places the target Client ID inside OPTION_LQ_QUERY. The outer
+  // Client ID identifies the requestor and must be echoed independently.
+  std::array<std::uint8_t, 17U + 4U +
+                               maximum_duid_octets> query{};
+  query[0] = query_type;
+  const auto nested_offset = 17U;
+  query[nested_offset] = 0U;
+  query[nested_offset + 1U] =
+      static_cast<std::uint8_t>(OptionCode::client_identifier);
+  query[nested_offset + 2U] =
+      static_cast<std::uint8_t>(target_duid.size() >> 8U);
+  query[nested_offset + 3U] =
+      static_cast<std::uint8_t>(target_duid.size());
+  std::copy(target_duid.begin(), target_duid.end(),
+            query.begin() + nested_offset + 4U);
+
+  std::vector<std::uint8_t> bytes(512U);
+  auto writer =
+      begin_client_server(bytes, type(MessageType::leasequery), 0xabcdefU);
+  if (!writer ||
+      !writer->append(code(OptionCode::client_identifier),
+                      requestor_duid) ||
+      !writer->append(
+          code(OptionCode::leasequery_query),
+          std::span<const std::uint8_t>{query}.first(
+              nested_offset + 4U + target_duid.size())))
+    throw std::runtime_error("DHCPv6 Leasequery fixture failed");
+  bytes.resize(writer->size());
+  return bytes;
+}
+
 std::optional<router::packet::dhcpv6::OptionView>
 find_option(std::span<const std::uint8_t> bytes,
             router::packet::dhcpv6::OptionCode wanted) {
@@ -137,6 +173,7 @@ void dhcpv6_server_tests() {
       .duid_octets = static_cast<std::uint16_t>(server_duid.size()),
       .preference = 91U,
       .rapid_commit = true,
+      .lease_query = true,
       .dns_recursive_servers = {*ip::parse_ipv6("2001:db8:53::53")},
       .solicit_maximum_retransmission_seconds = std::nullopt,
       .information_maximum_retransmission_seconds = std::nullopt};
@@ -184,6 +221,53 @@ void dhcpv6_server_tests() {
               first_checkpoint.front().value ==
                   retransmit_checkpoint.front().value,
           "DHCPv6 Request retransmit changed or duplicated its binding");
+
+  constexpr std::array<std::uint8_t, 6U> requestor_duid{
+      0U, 3U, 0U, 1U, 0xccU, 3U};
+  const auto leasequery =
+      leasequery_message(requestor_duid, client_duid);
+  result = server.process(leasequery, response, now + 3s);
+  const auto leasequery_wire =
+      std::span<const std::uint8_t>{response}.first(result.message_octets);
+  const auto client_data =
+      find_option(leasequery_wire, OptionCode::client_data);
+  require(result.status == ServerProcessStatus::response &&
+              packet::dhcpv6::parse(leasequery_wire)->type ==
+                  type(MessageType::leasequery_reply) &&
+              client_data,
+          "DHCPv6 Leasequery by DUID did not return Client Data");
+  OptionCursor client_data_options{client_data->data};
+  bool saw_target{};
+  bool saw_address{};
+  bool saw_transaction_time{};
+  while (const auto option = client_data_options.next()) {
+    saw_target = saw_target ||
+                 (option->code == code(OptionCode::client_identifier) &&
+                  std::equal(option->data.begin(), option->data.end(),
+                             client_duid.begin()));
+    saw_address =
+        saw_address || option->code == code(OptionCode::ia_address);
+    saw_transaction_time =
+        saw_transaction_time ||
+        (option->code ==
+             code(OptionCode::client_last_transaction_time) &&
+         option->data.size() == 4U);
+  }
+  require(client_data_options.valid() && saw_target && saw_address &&
+              saw_transaction_time,
+          "DHCPv6 Leasequery Client Data omitted required RFC 5007 options");
+
+  const auto unsupported_query =
+      leasequery_message(requestor_duid, client_duid, 1U);
+  result = server.process(unsupported_query, response, now + 3s);
+  const auto unsupported_status =
+      find_option(std::span<const std::uint8_t>{response}.first(
+                      result.message_octets),
+                  OptionCode::status_code);
+  require(result.status == ServerProcessStatus::response &&
+              unsupported_status &&
+              parse_status_code(unsupported_status->data)->code == 7U,
+          "DHCPv6 unsupported Leasequery type omitted UnknownQueryType");
 
   const auto confirm = confirm_message(client_duid,
                                        first_checkpoint.front().value);
@@ -286,4 +370,33 @@ void dhcpv6_server_tests() {
               packet::dhcpv6::parse(relay_reply->message)->type ==
                   type(MessageType::advertise),
           "DHCPv6 server did not reconstruct the relayed return path");
+
+  // Counters must describe successful wire processing, including the outer
+  // relay envelope and the nested client message. They are checkpointed
+  // operational state, not values reconstructed from lease count.
+  const auto &statistics = server.statistics();
+  require(statistics.rx_solicit == 3U &&
+              statistics.rx_relay_forward == 1U &&
+              statistics.rx_request == 3U &&
+              statistics.rx_confirm == 2U &&
+              statistics.rx_release == 1U &&
+              statistics.rx_information_request == 1U &&
+              statistics.rx_leasequery == 2U &&
+              statistics.tx_advertise == 2U &&
+              statistics.tx_relay_reply == 1U &&
+              statistics.tx_leasequery_reply == 2U,
+          "DHCPv6 server message statistics do not reflect wire exchanges");
+  const auto saved = server.checkpoint(now + 8s);
+  Server restored;
+  require(restored.restore(saved, now + 9s) &&
+              restored.statistics().rx_solicit ==
+                  statistics.rx_solicit &&
+              restored.statistics().tx_reply == statistics.tx_reply,
+          "DHCPv6 server checkpoint lost message statistics");
+  restored.clear_statistics();
+  require(restored.statistics().rx_solicit == 0U &&
+              restored.statistics().tx_reply == 0U &&
+              restored.leases().active_leases() ==
+                  server.leases().active_leases(),
+          "Clearing DHCPv6 statistics changed lease ownership");
 }

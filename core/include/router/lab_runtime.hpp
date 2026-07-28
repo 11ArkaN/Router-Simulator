@@ -5,7 +5,10 @@
 
 #pragma once
 
+#include "router/bof_autoconfigure.hpp"
 #include "router/control_projection_worker.hpp"
+#include "router/dhcpv4_configuration.hpp"
+#include "router/dhcpv6_configuration.hpp"
 #include "router/device.hpp"
 #include "router/generated_profile.hpp"
 #include "router/lab_checkpoint.hpp"
@@ -196,6 +199,10 @@ private:
     bool ipv6_neighbor_limit_log_only_configured{};
     bool ipv6_neighbor_limit_threshold_configured{};
     std::vector<StaticIpv6NeighborIntent> static_ipv6_neighbors;
+    // Empty means no local DHCPv6 server attachment. The configured list name
+    // is resolved to a running Base server during the same atomic publish as
+    // the interface and pool generation.
+    std::string dhcpv6_local_server;
     bool router_advertisement_configured{};
     bool router_advertisement_enabled{};
     // MD-CLI distinguishes an absent defaulted leaf from a leaf explicitly
@@ -255,6 +262,10 @@ private:
     // inheritance and is distinct from a fabricated empty override context.
     std::vector<MldSsmTranslation> mld_ssm_translations;
     std::vector<MldStaticGroupIntent> mld_static_groups;
+    // Relay policy is a child of the Base IPv4 interface. The portable intent
+    // stores only operator-visible protocol leaves. Stable logical and
+    // physical identities are resolved from port_id during publication.
+    std::optional<dhcpv4::RelayConfiguration> dhcpv4_relay;
     bool operator==(const InterfaceIntent &) const = default;
   };
 
@@ -332,6 +343,9 @@ private:
     tls_profile::Configuration tls;
     ipsec::configuration::Configuration ipsec;
     service::Configuration ies;
+    bof::AutoconfigureIntent bof_autoconfigure;
+    dhcpv4::configuration::RouterConfiguration dhcpv4_servers;
+    dhcpv6::configuration::RouterConfiguration dhcpv6_servers;
     ospf::RouterConfiguration ospf;
     std::array<CardConfigurationIntent, device_catalog::maximum_card_slots>
         cards;
@@ -365,6 +379,9 @@ private:
     tls_profile::Configuration tls;
     ipsec::configuration::Configuration ipsec;
     service::Configuration ies;
+    bof::AutoconfigureIntent bof_autoconfigure;
+    dhcpv4::configuration::RouterConfiguration dhcpv4_servers;
+    dhcpv6::configuration::RouterConfiguration dhcpv6_servers;
     ospf::RouterConfiguration ospf;
     ConfigurationIntent global_candidate;
     bool global_candidate_initialized{};
@@ -468,6 +485,8 @@ private:
 
   [[nodiscard]] bool create_router(std::span<const std::string_view> fields);
   [[nodiscard]] bool
+  create_dhcp_server(std::span<const std::string_view> fields);
+  [[nodiscard]] bool
   replace_router_configuration(std::span<const std::string_view> fields);
   [[nodiscard]] bool create_host(std::span<const std::string_view> fields);
   [[nodiscard]] bool create_switch(std::span<const std::string_view> fields);
@@ -485,8 +504,20 @@ private:
   [[nodiscard]] bool create_link(std::span<const std::string_view> fields);
   [[nodiscard]] bool configure_host(std::span<const std::string_view> fields);
   [[nodiscard]] bool
-  replace_host_dhcpv6(std::span<const std::string_view> fields);
-  [[nodiscard]] bool replace_host_dns(std::span<const std::string_view> fields);
+  replace_host_ipv4(std::span<const std::string_view> fields);
+  [[nodiscard]] bool
+  replace_host_dhcpv4(std::span<const std::string_view> fields,
+                       bool transaction_has_checkpoint = false,
+                       RouterIntent *dedicated_device = nullptr,
+                       std::string_view server_name = {});
+  [[nodiscard]] bool
+  replace_host_dhcpv6(std::span<const std::string_view> fields,
+                       bool transaction_has_checkpoint = false,
+                       RouterIntent *dedicated_device = nullptr,
+                       std::string_view server_name = {});
+  [[nodiscard]] bool
+  replace_host_dns(std::span<const std::string_view> fields,
+                   bool transaction_has_checkpoint = false);
   [[nodiscard]] bool
   replace_capture_selection(std::span<const std::string_view> fields);
   [[nodiscard]] bool create_session(std::span<const std::string_view> fields);
@@ -502,7 +533,8 @@ private:
   [[nodiscard]] PortableConfigurationCheckpoint
   portable_configuration(const ConfigurationIntent &value) const;
   [[nodiscard]] bool apply_configuration(RouterIntent &router,
-                                         const ConfigurationIntent &value);
+                                         const ConfigurationIntent &value,
+                                         bool boot_effective = false);
   [[nodiscard]] static packet::nd::RouterAdvertisementConfig
   effective_router_advertisement(const RouterAdvertisementDnsIntent &router_dns,
                                  const InterfaceIntent &interface) noexcept;

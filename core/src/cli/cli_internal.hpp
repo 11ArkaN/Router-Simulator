@@ -63,6 +63,15 @@ parse_interface_address(std::string_view address,
 // together, or neither changes when the bounded session storage is exceeded.
 [[nodiscard]] bool enter_classic_context(CliSession &session,
                                          std::string_view path) noexcept;
+// Stores a validated MD-CLI present-working-context after the runtime facade
+// has successfully applied a command that is both a presence-container edit
+// and the parent of additional leaves. The generated grammar decides whether
+// a command has that dual role; this helper only owns the session transition.
+// Preconditions: control-shard affinity, MD-CLI engine, canonical command path.
+// Postcondition: current and reversible previous paths change atomically, or
+// neither changes when the bounded session path cannot contain the new value.
+[[nodiscard]] bool enter_md_context(CliSession &session,
+                                    std::string_view path) noexcept;
 
 template <std::size_t N>
 bool copy_config_text(std::array<char, N> &destination,

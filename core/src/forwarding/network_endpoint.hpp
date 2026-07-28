@@ -166,6 +166,33 @@ public:
     return prefix_length_;
   }
   [[nodiscard]] packet::Ipv4 gateway() const noexcept { return gateway_; }
+  // The DHCPv4 client owner installs and removes only its acquired address.
+  // Project static configuration uses configure and cannot be overwritten by
+  // this API unless the endpoint was explicitly created for dynamic IPv4.
+  [[nodiscard]] bool install_dhcpv4_lease(packet::Ipv4 address,
+                                          std::uint8_t prefix_length,
+                                          packet::Ipv4 gateway) noexcept;
+  // Restore may reclaim an already restored address only when every identity
+  // field matches the validated client lease. Live acquisition continues to
+  // use install_dhcpv4_lease and cannot take over a static address.
+  [[nodiscard]] bool restore_dhcpv4_lease_ownership(
+      packet::Ipv4 address, std::uint8_t prefix_length,
+      packet::Ipv4 gateway) noexcept;
+  void remove_dhcpv4_lease() noexcept;
+  // RFC 5227 probing is armed by the DHCP owner before it emits any ARP
+  // Probe. The endpoint observes every ARP frame on the local link because
+  // only this forwarding owner can compare encoded traffic with its own MAC.
+  [[nodiscard]] bool
+  arm_dhcpv4_address_probe(packet::Ipv4 candidate) noexcept;
+  void disarm_dhcpv4_address_probe() noexcept;
+  [[nodiscard]] bool dhcpv4_address_conflict() const noexcept {
+    return dhcpv4_probe_conflict_;
+  }
+  // One call emits exactly one RFC 5227 ARP Probe with sender IP 0.0.0.0.
+  // Timing and retry count remain owned by Dhcpv4EndpointService.
+  [[nodiscard]] bool send_dhcpv4_address_probe(
+      void *sink_context, packet::Ipv4FragmentSink sink,
+      packet::Ipv4FragmentAdmission admission = nullptr) noexcept;
   [[nodiscard]] std::uint16_t mtu() const noexcept { return mtu_; }
   [[nodiscard]] bool ipv6_enabled() const noexcept { return ipv6_enabled_; }
   [[nodiscard]] std::uint64_t interface_id() const noexcept {
@@ -238,6 +265,17 @@ public:
       transport::UdpSocketHandle handle, packet::Ipv4 destination,
       std::uint16_t destination_port, std::span<const std::uint8_t> payload,
       void *sink_context, packet::Ipv4FragmentSink sink,
+      packet::Ipv4FragmentAdmission admission = nullptr,
+      bool checksum_enabled = true) noexcept;
+  // DHCPv4 servers may deliver OFFER and ACK directly to chaddr before the
+  // client can answer ARP. The caller must supply the received client MAC and
+  // this method still emits a normal encoded IPv4 and UDP frame through the
+  // same admission and fragment path.
+  [[nodiscard]] EndpointUdpSendResult send_udp_ipv4_direct_l2(
+      transport::UdpSocketHandle handle, packet::Ipv4 destination,
+      packet::Mac destination_mac, std::uint16_t destination_port,
+      std::span<const std::uint8_t> payload, void *sink_context,
+      packet::Ipv4FragmentSink sink,
       packet::Ipv4FragmentAdmission admission = nullptr,
       bool checksum_enabled = true) noexcept;
   [[nodiscard]] std::optional<transport::tcp::EndpointSocketHandle>
@@ -314,6 +352,13 @@ private:
   };
 
   [[nodiscard]] EndpointFrames make_frame_result() noexcept;
+  [[nodiscard]] EndpointUdpSendResult encode_udp_ipv4_to_mac(
+      transport::UdpSocketHandle handle, packet::Ipv4 source,
+      packet::Ipv4 destination, packet::Mac destination_mac,
+      std::uint16_t destination_port, std::span<const std::uint8_t> payload,
+      void *sink_context, packet::Ipv4FragmentSink sink,
+      packet::Ipv4FragmentAdmission admission,
+      bool checksum_enabled) noexcept;
   // A host node currently owns one Ethernet attachment. Naming its local DAD
   // coordinate avoids scattering a numeric sentinel and makes a future
   // multi-interface host change local to this owner contract.
@@ -376,6 +421,9 @@ private:
   bool ipv6_enabled_{};
   bool link_operational_{};
   bool router_solicitation_active_{};
+  bool dhcpv4_address_owned_{};
+  packet::Ipv4 dhcpv4_probe_candidate_{};
+  bool dhcpv4_probe_conflict_{};
   std::optional<packet::Ipv4> neighbor_address_;
   std::optional<packet::Mac> neighbor_mac_;
   // Allocated once with the endpoint, never on a packet turn. The unique owner

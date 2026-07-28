@@ -60,7 +60,12 @@ enum class MessageType : std::uint8_t {
   reconfigure = 10,
   information_request = 11,
   relay_forward = 12,
-  relay_reply = 13
+  relay_reply = 13,
+  // RFC 5007 adds the on-demand Leasequery exchange. Bulk Leasequery uses
+  // later message codes and a TCP transport, so it must not be conflated with
+  // these two UDP messages.
+  leasequery = 14,
+  leasequery_reply = 15
 };
 
 enum class OptionCode : std::uint16_t {
@@ -88,6 +93,18 @@ enum class OptionCode : std::uint16_t {
   ia_pd = 25,
   ia_prefix = 26,
   information_refresh_time = 32,
+  // RFC 5007 options are kept in the common wire codec even though the
+  // release profile accepts only QUERY_BY_CLIENTID. Unsupported query types
+  // still need to be decoded in order to return the mandated status code.
+  leasequery_query = 44,
+  client_data = 45,
+  client_last_transaction_time = 46,
+  leasequery_relay_data = 47,
+  leasequery_client_link = 48,
+  // RFC 7653 moved the common Active/Bulk Leasequery base timestamp into the
+  // IANA DHCPv6 option registry at code 100. RFC 8156 reuses that exact option
+  // inside failover CLIENT_DATA and unassociated IAPREFIX bindings.
+  leasequery_base_time = 100,
   // RFC 6603 assigns option 67 to the excluded child prefix carried inside
   // an IA Prefix option. It remains a nested wire option and is never inferred
   // from the delegated aggregate by local policy.

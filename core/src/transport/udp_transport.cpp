@@ -113,8 +113,11 @@ UdpEndpoint::ephemeral_port(IpFamily family, std::uint64_t interface_id,
 std::optional<UdpSocketHandle>
 UdpEndpoint::bind(const UdpBinding &input) noexcept {
   if (input.family == IpFamily::ipv6 &&
-      (input.ipv4_broadcast ||
+      (input.ipv4_broadcast || input.ipv4_unconfigured_unicast ||
        (ip::is_link_local(input.ipv6) && input.interface_id == 0U)))
+    return std::nullopt;
+  if (input.ipv4_unconfigured_unicast &&
+      input.ipv4 != packet::Ipv4{})
     return std::nullopt;
   auto binding = input;
   if (binding.port == 0U) {
@@ -298,7 +301,8 @@ UdpIngressStatus UdpEndpoint::enqueue(
 
 UdpIngressStatus UdpEndpoint::ingest_ipv4(
     std::span<const std::uint8_t> datagram, packet::Ipv4 source,
-    packet::Ipv4 destination, std::uint64_t interface_id) noexcept {
+    packet::Ipv4 destination, std::uint64_t interface_id,
+    packet::Mac source_mac) noexcept {
   const auto parsed = packet::udp::parse_ipv4(datagram, source, destination);
   if (!parsed)
     return UdpIngressStatus::malformed;
@@ -310,12 +314,29 @@ UdpIngressStatus UdpEndpoint::ingest_ipv4(
                  {.family = IpFamily::ipv4,
                   .source_ipv4 = source,
                   .destination_ipv4 = destination,
+                  .source_mac = source_mac,
                   .interface_id = interface_id,
                   .payload_octets =
                       static_cast<std::uint32_t>(parsed->payload.size()),
                   .source_port = parsed->source_port,
                   .destination_port = parsed->destination_port},
                  parsed->payload);
+}
+
+bool UdpEndpoint::accepts_ipv4_unconfigured_unicast(
+    std::uint64_t interface_id,
+    std::uint16_t destination_port) const noexcept {
+  if (!interface_id || !destination_port)
+    return false;
+  return std::ranges::any_of(sockets_, [&](const Socket &socket) {
+    if (!socket.occupied ||
+        socket.binding.family != IpFamily::ipv4 ||
+        !socket.binding.ipv4_unconfigured_unicast ||
+        socket.binding.port != destination_port)
+      return false;
+    return socket.binding.interface_id == 0U ||
+           socket.binding.interface_id == interface_id;
+  });
 }
 
 UdpIngressStatus UdpEndpoint::ingest_ipv6(
@@ -556,7 +577,10 @@ bool UdpEndpoint::validate_checkpoint(
         (!socket.occupied && !socket.datagrams.empty()) ||
         (socket.occupied && socket.binding.port == 0U) ||
         (socket.occupied && socket.binding.family == IpFamily::ipv6 &&
-         socket.binding.ipv4_broadcast) ||
+         (socket.binding.ipv4_broadcast ||
+          socket.binding.ipv4_unconfigured_unicast)) ||
+        (socket.occupied && socket.binding.ipv4_unconfigured_unicast &&
+         socket.binding.ipv4 != packet::Ipv4{}) ||
         (!socket.occupied &&
          (socket.last_ipv6_transmission || socket.network_error)) ||
         (socket.last_ipv6_transmission &&

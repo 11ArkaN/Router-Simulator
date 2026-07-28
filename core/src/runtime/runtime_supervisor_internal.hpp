@@ -48,6 +48,11 @@ struct RuntimeSupervisor::RouterNetworkState {
       router_advertisements{};
   std::array<MldInterfaceIntent, device_catalog::maximum_ports_per_router>
       mld_interfaces{};
+  // Native Base relay intent remains control-owned while an absent card may
+  // temporarily remove its forwarding object and UDP socket.
+  std::array<std::optional<dhcpv4::RelayInterfaceConfiguration>,
+             device_catalog::maximum_ports_per_router>
+      dhcpv4_relays{};
   // Control retains committed relay intent independently of the forwarding
   // socket. Card removal may destroy the latter while the former must be
   // available for exact reprovisioning when hardware returns.

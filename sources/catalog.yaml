@@ -672,6 +672,244 @@ records:
     tests: [core/tests/dhcpv6/dhcpv6_packet_test.cpp, core/tests/dns/dns_packet_test.cpp]
     status: implemented
     notes: Option codes 23 and 24 are preserved. Ordered DNS recursive server address lists and uncompressed Domain Search List names are validated without an implementation-defined count ceiling. The shared DNS boundary rejects compression pointers, reserved label forms, oversized names and truncated labels without publishing partial state.
+  - id: ietf.dhcpv4.rfc2131
+    kind: protocol
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-draft-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc2131
+    section: 2 Protocol Summary, 3 Protocols, 4 Protocol Details
+    rfc_refs: [RFC2131, RFC2132, RFC6842]
+    yang_path: null
+    last_verified_at: 2026-07-27
+    implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, core/include/router/dhcpv4_packet.hpp, core/include/router/dhcpv4_lease.hpp, core/include/router/dhcpv4_client.hpp, core/include/router/dhcpv4_server.hpp, core/src/dhcpv4/dhcpv4_packet.cpp, core/src/dhcpv4/dhcpv4_lease.cpp, core/src/dhcpv4/dhcpv4_client.cpp, core/src/dhcpv4/dhcpv4_server.cpp]
+    tests: [core/tests/dhcpv4/dhcpv4_packet_test.cpp, core/tests/dhcpv4/dhcpv4_lease_test.cpp, core/tests/dhcpv4/dhcpv4_client_test.cpp, core/tests/dhcpv4/dhcpv4_server_test.cpp]
+    status: implemented
+    notes: The allocation-bounded BOOTP and DHCPv4 codec validates the fixed header, magic cookie, overload fields and complete option stream before exposing semantic state. The client implements INIT, SELECTING, REQUESTING, BOUND, RENEWING, REBINDING, INIT-REBOOT and REBOOTING with transaction-stable identifiers and RFC retransmission backoff. The single-owner server repository preserves pending offers, active and sticky bindings, reservations, requested addresses, decline quarantine and release state. Client Identifier is stable and is echoed and validated according to RFC 6842. These capabilities describe protocol primitives; end-to-end product exposure is tracked separately and is not implied by this record.
+  - id: ietf.dhcpv4.options.rfc2132
+    kind: protocol-option
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc2132
+    section: 2 BOOTP Extension/DHCP Option Field Format, 3 RFC 1497 Vendor Extensions, 9 DHCP Extensions
+    rfc_refs: [RFC2132, RFC2131, RFC6842]
+    yang_path: null
+    last_verified_at: 2026-07-27
+    implementation: [core/include/router/dhcpv4_packet.hpp, core/src/dhcpv4/dhcpv4_packet.cpp, core/include/router/dhcpv4_client.hpp, core/src/dhcpv4/dhcpv4_client.cpp, core/include/router/dhcpv4_server.hpp, core/src/dhcpv4/dhcpv4_server.cpp]
+    tests: [core/tests/dhcpv4/dhcpv4_packet_test.cpp, core/tests/dhcpv4/dhcpv4_client_test.cpp, core/tests/dhcpv4/dhcpv4_server_test.cpp]
+    status: implemented
+    notes: Pad and End are handled as single-octet values, typed fixed-width options reject malformed lengths, unknown well-formed options remain available to relay and inspection code, and the server emits subnet mask, router, DNS, lease, renewal, rebinding and server identifier values from explicit configuration rather than hidden defaults.
+  - id: ietf.dhcpv4.address_conflict.rfc5227
+    kind: address-conflict-detection
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-proposed-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc5227
+    section: 2.1 Probing the Address, 2.2 Claiming the Address, 2.4 Address Conflict Detection
+    rfc_refs: [RFC5227, RFC2131]
+    yang_path: null
+    last_verified_at: 2026-07-27
+    implementation: [core/include/router/dhcpv4_client.hpp, core/src/dhcpv4/dhcpv4_client.cpp, core/src/dhcpv4/dhcpv4_endpoint_service.hpp, core/src/dhcpv4/dhcpv4_endpoint_service.cpp, core/src/forwarding/network_endpoint.hpp, core/src/forwarding/network_endpoint.cpp]
+    tests: [core/tests/dhcpv4/dhcpv4_client_test.cpp, core/tests/runtime/network_plane_test.cpp]
+    status: implemented
+    notes: A newly acknowledged address remains unusable while the endpoint emits three real ARP probes with randomized RFC timing and observes conflicting ARP frames from the link. Conflict emits DHCPDECLINE and delays a new transaction for ten seconds. Renewing an unchanged address does not repeat probing.
+  - id: ietf.dhcpv4.force_renew.rfc3203
+    kind: protocol-extension
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-proposed-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc3203
+    section: 3 Protocol
+    rfc_refs: [RFC3203, RFC2131]
+    yang_path: null
+    last_verified_at: 2026-07-27
+    implementation: [core/include/router/dhcpv4_server.hpp, core/src/dhcpv4/dhcpv4_server.cpp, core/src/forwarding/router_forwarder.cpp, core/src/runtime/network_plane.cpp, core/src/runtime/network_plane_worker.cpp, core/src/runtime/runtime_supervisor_services.cpp]
+    tests: [core/tests/dhcpv4/dhcpv4_server_test.cpp, core/tests/runtime/network_plane_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
+    status: implemented
+    notes: An operator request encodes DHCPFORCERENEW for an existing active lease and emits it as real unicast. Direct clients use retained BOOTP Ethernet identity. Relayed clients use the ordinary FIB and ARP path. The transmit counter advances only after egress admission succeeds.
+  - id: ietf.dhcpv4.concatenation.rfc3396
+    kind: protocol-option
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-proposed-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc3396
+    section: 2 Concatenation of Option Data, 3 Concatenation of Multiple Instances of the Same Option
+    rfc_refs: [RFC3396, RFC2131, RFC2132]
+    yang_path: null
+    last_verified_at: 2026-07-27
+    implementation: [core/include/router/dhcpv4_packet.hpp, core/src/dhcpv4/dhcpv4_packet.cpp]
+    tests: [core/tests/dhcpv4/dhcpv4_packet_test.cpp]
+    status: implemented
+    notes: Raw option occurrences retain order and source field across the ordinary options area and overloaded file and sname fields. Semantic concatenation uses caller-provided bounded storage, so preserving the received packet and producing a normalized value are separate operations.
+  - id: ietf.dhcpv4.relay.rfc1542_rfc3046
+    kind: relay-protocol
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc3046
+    section: 2.1 Agent Operation, 2.1.1 Reforwarded DHCP requests, 2.1.2 BOOTREPLY Messages
+    rfc_refs: [RFC1542, RFC2131, RFC3046]
+    yang_path: null
+    last_verified_at: 2026-07-27
+    implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, core/include/router/dhcpv4_relay.hpp, core/src/dhcpv4/dhcpv4_relay.cpp]
+    tests: [core/tests/dhcpv4/dhcpv4_relay_test.cpp]
+    status: implemented
+    notes: The relay primitive advances hops, assigns giaddr, preserves or replaces Relay Agent Information according to explicit trust policy, generates Circuit-ID and Remote-ID suboptions, forwards to configured server addresses and removes relay information before client delivery. Packets are re-encoded canonically only when the relay changes them. Runtime packet-path exposure is tracked separately.
+  - id: ietf.dhcpv4.leasequery.rfc4388
+    kind: protocol
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-proposed-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc4388
+    section: 6 Protocol Details
+    rfc_refs: [RFC2131, RFC2132, RFC3046, RFC4388]
+    yang_path: null
+    last_verified_at: 2026-07-27
+    implementation: [core/include/router/dhcpv4_packet.hpp, core/include/router/dhcpv4_lease.hpp, core/include/router/dhcpv4_server.hpp, core/src/dhcpv4/dhcpv4_lease.cpp, core/src/dhcpv4/dhcpv4_server.cpp, core/src/runtime/lab_checkpoint.cpp]
+    tests: [core/tests/dhcpv4/dhcpv4_server_test.cpp]
+    status: implemented
+    notes: The UDP protocol supports query by managed IP address, BOOTP hardware identity and Option 61 Client Identifier. It retains the most recent relay information and client transaction time, returns ACTIVE, UNASSIGNED or UNKNOWN with the mandated option restrictions, and routes replies to the non-zero giaddr through the ordinary IPv4 path.
+  - id: ietf.dhcpv4.bulk_leasequery.rfc6926
+    kind: protocol
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-proposed-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc6926.html
+    section: 6.1 Message Framing for TCP and 8 Server Behavior
+    rfc_refs: [RFC6926]
+    yang_path: null
+    last_verified_at: 2026-07-27
+    implementation: [core/include/router/dhcpv4_leasequery.hpp, core/src/dhcpv4/dhcpv4_leasequery.cpp, core/include/router/dhcpv4_packet.hpp]
+    tests: [core/tests/dhcpv4/dhcpv4_leasequery_test.cpp]
+    status: partially-implemented
+    notes: The bounded TCP frame codec and common request validator are implemented. Server streaming and socket integration remain required before the capability is exposed.
+  - id: ietf.dhcpv4.active_leasequery.rfc7724
+    kind: protocol
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-proposed-standard
+    source_url: https://www.rfc-editor.org/rfc/rfc7724.html
+    section: 5 Message and Option Definitions and 8 Server Behavior
+    rfc_refs: [RFC7724, RFC6926]
+    yang_path: null
+    last_verified_at: 2026-07-27
+    implementation: [core/include/router/dhcpv4_leasequery.hpp, core/src/dhcpv4/dhcpv4_leasequery.cpp, core/include/router/dhcpv4_packet.hpp]
+    tests: [core/tests/dhcpv4/dhcpv4_leasequery_test.cpp]
+    status: partially-implemented
+    notes: Shared TCP framing and Active request constraints are implemented. Long-lived update delivery remains required before exposure.
+  - id: ietf.dhcpv4.failover.draft12_codec
+    kind: protocol-codec
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-expired-draft
+    source_url: https://datatracker.ietf.org/doc/html/draft-ietf-dhc-failover-12
+    section: 5 Message Formats, 6 Message and Option Encoding, 11.1 Message Digest Option
+    rfc_refs: [RFC3074]
+    yang_path: null
+    last_verified_at: 2026-07-27
+    implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, core/include/router/dhcpv4_failover.hpp, core/src/dhcpv4/dhcpv4_failover.cpp]
+    tests: [core/tests/dhcpv4/dhcpv4_failover_test.cpp]
+    status: implemented
+    notes: The bounded TCP message codec implements the draft-12 fixed header, required and optional message classification, ordered TLV validation, binding option repetition rules and the first-option HMAC-MD5 authentication format. This record covers wire admission and authentication only, not a complete failover relationship.
+  - id: ietf.dhcpv4.failover.draft12_state
+    kind: protocol-state-machine
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-expired-draft
+    source_url: https://datatracker.ietf.org/doc/html/draft-ietf-dhc-failover-12
+    section: 8 Connection Management, 9 Failover Endpoint States, 10 Safe Period
+    rfc_refs: [RFC3074]
+    yang_path: null
+    last_verified_at: 2026-07-28
+    implementation: [profiles/catalog/26.7.R1.yaml, core/include/router/dhcpv4_failover.hpp, core/src/dhcpv4/dhcpv4_failover.cpp]
+    tests: [core/tests/dhcpv4/dhcpv4_failover_test.cpp]
+    status: implemented
+    notes: The relationship owner implements STARTUP, recovery and MCLT interlock, communications interruption, safe-period and manual partner-down transitions, conflict resolution, client responsiveness and stable timer checkpointing. TCP, lease binding replication and security negotiation remain outside this record.
+  - id: nokia.sros.26_7.dhcpv4.relay
+    kind: cli-and-platform-behavior
+    release: 26.7.R1
+    platforms: [7750-sr]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html
+    section: configure router interface ipv4 dhcp
+    rfc_refs: [RFC1542, RFC2131, RFC3046]
+    yang_path: /configure/router/interface/ipv4/dhcp
+    last_verified_at: 2026-07-27
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/dhcpv4_relay.hpp, core/src/dhcpv4/dhcpv4_relay.cpp, core/src/runtime/lab_runtime.cpp, core/src/forwarding/router_forwarder.cpp, core/src/runtime/network_plane.cpp, core/src/runtime/network_plane_worker.cpp, core/src/runtime/runtime_supervisor_services.cpp, core/src/runtime/lab_checkpoint.cpp]
+    tests: [core/tests/dhcpv4/dhcpv4_relay_test.cpp, core/tests/runtime/network_plane_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
+    status: implemented
+    notes: Base-interface relay intent preserves the SR OS administrative default, server ordering, source address selection, BOOTP and RELEASE behavior, trust policy, and Option 82 choices. Circuit ID bytes are derived from committed router and interface identity, while Remote ID mac is derived from each validated client packet.
+  - id: nokia.sros.26_7.dhcpv4.option82
+    kind: cli-and-wire-behavior
+    release: 26.7.R1
+    platforms: [7750-sr]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html
+    section: configure router interface ipv4 dhcp option-82
+    rfc_refs: [RFC3046, RFC3527]
+    yang_path: /configure/router/interface/ipv4/dhcp/option-82
+    last_verified_at: 2026-07-27
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/dhcpv4_relay.hpp, core/src/dhcpv4/dhcpv4_relay.cpp, core/src/dhcpv4/dhcpv4_server.cpp, core/src/runtime/lab_runtime.cpp]
+    tests: [core/tests/dhcpv4/dhcpv4_relay_test.cpp, core/tests/dhcpv4/dhcpv4_server_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
+    status: implemented
+    notes: The option policy supports keep, replace and drop, the documented Circuit ID and Remote ID choices, trust validation and RFC 3527 Link Selection for allocation-scope selection.
+  - id: nokia.sros.26_7.dhcpv4.local_server
+    kind: cli-and-platform-behavior
+    release: 26.7.R1
+    platforms: [7750-sr]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html
+    section: configure router dhcp-server dhcpv4
+    rfc_refs: [RFC2131, RFC2132]
+    yang_path: /configure/router/dhcp-server/dhcpv4
+    last_verified_at: 2026-07-27
+    implementation: [profiles/catalog/26.7.R1.yaml, schemas/cli/26.7.R1.yaml, core/include/router/dhcpv4_configuration.hpp, core/src/dhcpv4/dhcpv4_configuration.cpp, core/src/cli/dhcpv4_cli_configuration.hpp, core/src/cli/dhcpv4_cli_configuration.cpp, core/src/runtime/lab_runtime.cpp, core/src/runtime/lab_checkpoint.cpp]
+    tests: [core/tests/dhcpv4/dhcpv4_configuration_test.cpp, core/tests/cli/dhcpv4_cli_configuration_test.cpp, core/tests/dhcpv4/dhcpv4_server_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
+    status: partially-implemented
+    notes: The canonical Base router model covers named DHCPv4 servers, pools, subnets, address ranges, exclusions, lease and offer timers, declined-address limits, administrative state and documented pool behavior. Runtime compilation and the complete MD-CLI and classic CLI command families are tracked by this record until browser validation is complete.
+  - id: nokia.sros.26_7.bof.autoconfigure
+    kind: cli-and-platform-behavior
+    release: 26.7.R1
+    platforms: [7750-sr]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/bof-conf_0.html
+    section: bof auto-configure ipv4 dhcp and bof auto-configure ipv6 dhcp
+    rfc_refs: [RFC2131, RFC9915, RFC4861]
+    yang_path: /bof/auto-configure
+    last_verified_at: 2026-07-28
+    implementation: [profiles/catalog/26.7.R1.yaml, schemas/cli/26.7.R1.yaml, core/include/router/bof_autoconfigure.hpp, core/src/cli/bof_cli_configuration.hpp, core/src/cli/bof_cli_configuration.cpp, core/src/runtime/network_plane.cpp, core/src/runtime/lab_checkpoint.cpp]
+    tests: [core/tests/cli/bof_cli_configuration_test.cpp, core/tests/runtime/network_plane_test.cpp, core/tests/runtime/runtime_supervisor_test.cpp]
+    status: partially-implemented
+    notes: BOF autoconfiguration is confined to the out-of-band management interface. The saved intent distinguishes DHCPv4 and DHCPv6, stable client identity, documented client type, user-class request and timeout. The live management endpoint uses DHCPv4, DHCPv6 and ND or RA rather than exposing a general DHCP client on Base service interfaces.
+  - id: nokia.sros.26_7.dhcpv4.operational
+    kind: cli-operational-behavior
+    release: 26.7.R1
+    platforms: [7750-sr]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-l-commands.html
+    section: show and clear router dhcp local-dhcp-server leases
+    rfc_refs: [RFC2131, RFC3203]
+    yang_path: /state/router/dhcp-server/dhcpv4
+    last_verified_at: 2026-07-27
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/dhcpv4_lease.hpp, core/src/dhcpv4/dhcpv4_lease.cpp, core/include/router/dhcpv4_server.hpp, core/src/dhcpv4/dhcpv4_server.cpp, core/src/runtime/lab_runtime.cpp, core/src/forwarding/router_forwarder.cpp, core/src/runtime/network_plane.cpp, core/src/runtime/network_plane_worker.cpp, core/src/runtime/runtime_supervisor_services.cpp]
+    tests: [core/tests/dhcpv4/dhcpv4_lease_test.cpp, core/tests/dhcpv4/dhcpv4_server_test.cpp, core/tests/runtime/network_plane_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
+    status: implemented
+    notes: Lease, declined-address, sticky-lease and server statistics reports read one forwarding-owner checkpoint. Classic clear and MD reset mutate the same owner. The documented tools perform command emits an actual DHCPFORCERENEW packet and reports dependency failures explicitly.
+  - id: runtime.dhcpv4.endpoint_packet_path
+    kind: runtime-integration
+    release: 26.7.R1
+    platforms: [browser, native]
+    source_type: implementation-contract
+    source_url: https://www.rfc-editor.org/rfc/rfc2131
+    section: 4 Protocol Details
+    rfc_refs: [RFC768, RFC791, RFC894, RFC2131]
+    yang_path: null
+    last_verified_at: 2026-07-27
+    implementation: [core/src/dhcpv4/dhcpv4_endpoint_service.hpp, core/src/dhcpv4/dhcpv4_endpoint_service.cpp, core/src/forwarding/network_endpoint.cpp, core/src/runtime/network_plane.cpp, core/src/runtime/network_plane_worker.cpp, core/src/runtime/runtime_supervisor_hosts.cpp, core/src/runtime/lab_checkpoint.cpp, core/src/runtime/lab_runtime.cpp]
+    tests: [core/tests/runtime/network_plane_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
+    status: implemented
+    notes: Host client and server services bind real UDP 68 and 67 sockets and emit encoded IPv4 traffic through the endpoint, forwarding queues and physical links. Limited broadcast, direct client L2 delivery, routed relay responses, pending datagrams and dynamic address ownership survive checkpoint restore.
   - id: ietf.dhcpv6.rfc9915
     kind: protocol
     release: 26.7.R1
@@ -686,6 +924,76 @@ records:
     tests: [core/tests/dhcpv6/dhcpv6_packet_test.cpp, core/tests/dhcpv6/dhcpv6_retransmission_test.cpp, core/tests/dhcpv6/dhcpv6_lease_test.cpp, core/tests/dhcpv6/dhcpv6_relay_test.cpp, core/tests/dhcpv6/dhcpv6_client_test.cpp, core/tests/dhcpv6/dhcpv6_server_test.cpp, core/tests/forwarding/network_endpoint_ipv6_test.cpp, core/tests/runtime/network_plane_test.cpp, core/tests/runtime/runtime_supervisor_test.cpp, core/tests/runtime/lab_runtime_test.cpp, packages/contracts/tests/project-v4.test.ts, apps/web/src/persistence-v4.test.ts]
     status: implemented
     notes: Client-server and nested relay headers, lossless option iteration, typed IA_NA, IA_PD, IAADDR, IAPREFIX and Status Code encoding and validation are implemented. IA_TA, Server Unicast and UseMulticast are recognized as obsolete wire values but are never generated or used for allocation. The owner-affine reliability primitive implements every Table 1 timeout, randomized initial delays and backoff, Elapsed Time saturation, MRC or MRD termination, mutable SOL_MAX_RT and INF_MAX_RT and exact checkpoint continuation. Advertise control-option overrides remain effective only while every advertising server that supplied the option agrees, and that consensus survives checkpoint restore. Transaction IDs are derived with HMAC-SHA-256 from a persisted per-interface secret and monotonic checkpointed counter. The client owner implements preference collection, preference 255, distinct Request transactions, Rapid Commit validation, multiple requested IA types, multiple resources per received IA, earliest T1/T2 Renew and Rebind transitions, Confirm, Release, Decline, DNS server receipt, Information-request refresh, infinity, active checkpoint continuation and a generated per-interface token bucket that persists across exchange restarts. The server lease repository provides non-committing offers, secret-derived non-predictable allocation, independent IA namespaces, Renew, Rebind, Release, Decline quarantine, Confirm, infinity, checkpoint restore and finite pool exhaustion. The server processes direct and relayed Solicit, Advertise, Request, Reply, Rapid Commit, Release, Decline, Confirm and Information-request exchanges with ORO, DNS server delivery, Information Refresh Time, SOL_MAX_RT and INF_MAX_RT. Host client and server services and router relay services bind real UDP 546 or 547 sockets, retain pending datagrams across Neighbor Discovery or backpressure, traverse IPv6 FIB, source selection, packet queues and the encoded fabric, and survive complete checkpoint restore. Project intent carries DUIDs, secrets, IA requests, ORO, DNS, lease pools and IES relay configuration through rollback-safe replacement transactions. Generated MD and classic service-interface commands configure the same relay owner, while operational show and clear commands project and mutate its real lease state.
+  - id: ietf.dhcpv6.leasequery.rfc5007
+    kind: protocol
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc5007
+    section: 4.1 Message and Option Definitions, 4.2 Message Validation, 4.4 Server Behavior
+    rfc_refs: [RFC5007, RFC9915]
+    yang_path: null
+    last_verified_at: 2026-07-27
+    implementation: [core/include/router/dhcpv6_packet.hpp, core/include/router/dhcpv6_lease.hpp, core/include/router/dhcpv6_server.hpp, core/src/dhcpv6/dhcpv6_lease.cpp, core/src/dhcpv6/dhcpv6_server.cpp, core/src/runtime/lab_checkpoint.cpp]
+    tests: [core/tests/dhcpv6/dhcpv6_server_test.cpp]
+    status: implemented
+    notes: The UDP Leasequery and Leasequery-reply messages, Query, Client Data and Client Last Transaction Time options are encoded as wire data. Query by Client ID returns every live address and delegated prefix for the DUID. Unsupported query types and malformed queries return their assigned RFC status codes, and administrative disable returns NotAllowed without changing lease state.
+  - id: ietf.dhcpv6.failover.rfc8156_core
+    kind: protocol-state-machine
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc8156.html
+    section: 5 Message Format, 7 Protocol State Machine, 9 State Transitions
+    rfc_refs: [RFC8156, RFC9915]
+    yang_path: null
+    last_verified_at: 2026-07-27
+    implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, core/include/router/dhcpv6_failover.hpp, core/src/dhcpv6/dhcpv6_failover.cpp]
+    tests: [core/tests/dhcpv6/dhcpv6_failover_test.cpp]
+    status: implemented
+    notes: The bounded message codec and relationship-owned state machine implement RFC 8156 framing, option admission, partner-state transitions, liveness deadlines, manual and timed partner-down entry, conflict resolution and bounded unacknowledged update tracking. TCP and TLS connection integration remain outside this record.
+  - id: nokia.sros.26_7.dhcpv6.leasequery
+    kind: platform-behavior
+    release: 26.7.R1
+    platforms: [7750-sr, 7450-ess, 7750-sr-a, 7750-sr-e, 7750-sr-s, vsr]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-a-commands-addr-2.html
+    section: configure router dhcp6 local-dhcp-server allow-lease-query
+    rfc_refs: [RFC5007]
+    yang_path: /nokia-conf:configure/router/dhcp-server/dhcpv6/lease-query
+    last_verified_at: 2026-07-27
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/dhcpv6_configuration.hpp, core/include/router/dhcpv6_server.hpp, core/src/cli/dhcpv6_cli_configuration.cpp, core/src/dhcpv6/dhcpv6_configuration.cpp, core/src/dhcpv6/dhcpv6_server.cpp, core/src/forwarding/router_forwarder.cpp, core/src/runtime/lab_runtime.cpp, core/src/runtime/network_plane.cpp, core/src/runtime/lab_checkpoint.cpp]
+    tests: [core/tests/cli/dhcpv6_cli_configuration_test.cpp, core/tests/dhcpv6/dhcpv6_server_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
+    status: implemented
+    notes: The documented default-disabled policy is represented in the canonical Base server configuration and can be changed through generated MD-CLI and classic CLI commands. The forwarding owner receives Leasequery on its real UDP 547 socket, passes the encoded datagram to the configured Base server and emits the Leasequery-reply through the normal IPv6 output path. Only Client ID queries are accepted, matching the documented platform restriction. Unsupported query types, malformed queries and administratively disabled service return their assigned protocol status without changing lease state. Configuration, lease data and policy survive checkpoint restore.
+  - id: nokia.sros.26_7.dhcpv6.local_server
+    kind: platform-behavior
+    release: 26.7.R1
+    platforms: [7750-sr, 7450-ess, 7750-sr-a, 7750-sr-e, 7750-sr-s, vsr]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html
+    section: configure router dhcp-server dhcpv6 and configure router interface ipv6 local-dhcp-server
+    rfc_refs: [RFC9915, RFC6355]
+    yang_path: /nokia-conf:configure/router/dhcp-server/dhcpv6
+    last_verified_at: 2026-07-27
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/dhcpv6_configuration.hpp, core/src/dhcpv6/dhcpv6_configuration.cpp, core/src/cli/dhcpv6_cli_configuration.hpp, core/src/cli/dhcpv6_cli_configuration.cpp, core/src/runtime/lab_runtime.cpp, core/src/runtime/lab_checkpoint.cpp]
+    tests: [core/tests/cli/dhcpv6_cli_configuration_test.cpp, core/tests/dhcpv6/dhcpv6_server_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
+    status: partially-implemented
+    notes: The canonical Base server model, persistent DUID-UUID and allocation identities, inherited lease defaults, prefix applications, pool delegation policy, interface leafref, MD-CLI and classic CLI edits, and contextual info are implemented. Remaining command families and failover dependencies retain this record as partially implemented until the complete plan is closed.
+  - id: nokia.sros.26_7.dhcpv6.operational
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [7750-sr, 7450-ess, 7750-sr-a, 7750-sr-e, 7750-sr-s, vsr]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-l-commands.html
+    section: show and clear router dhcp6 local-dhcp-server leases
+    rfc_refs: [RFC9915]
+    yang_path: /nokia-state:state/router/dhcp-server/dhcpv6
+    last_verified_at: 2026-07-27
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/dhcpv6_lease.hpp, core/src/dhcpv6/dhcpv6_lease.cpp, core/src/runtime/lab_runtime.cpp, core/src/runtime/runtime_supervisor_services.cpp, core/src/runtime/network_plane.cpp, core/src/forwarding/router_forwarder.cpp]
+    tests: [core/tests/dhcpv6/dhcpv6_lease_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
+    status: partially-implemented
+    notes: Classic and MD lease display and deletion are connected to the live Base server repository. The report preserves the observed direct or relayed client endpoint and supports real prefix, type and state filtering. Statistics and failover-specific operational families remain part of the open DHCP plan.
   - id: ietf.dhcpv6.prefix_exclude.rfc6603
     kind: protocol-option
     release: 26.7.R1

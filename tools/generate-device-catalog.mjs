@@ -59,13 +59,16 @@ const cppBoolean = (value) => value ? "true" : "false";
 // make hardware validation appear authoritative while accepting combinations
 // that never existed in one SR OS image.
 if (catalog.release !== "26.7.R1") fail("release must match the pinned baseline");
-if (protocol.version !== 4 || protocol.snapshot_abi !== 8 ||
+if (protocol.version !== 4 || protocol.snapshot_abi !== 9 ||
     protocol.telemetry_abi !== 6 ||
     protocol.checkpoint_abi !== 7 ||
     !protocol.operations || checkpoint.version !== 7)
   fail("runtime protocol 4, snapshot ABI 8, telemetry ABI 6 and checkpoint schema 7 are required");
 for (const [name, value] of Object.entries(catalog.limits ?? {})) exactInteger(value, `limits.${name}`, 1);
-if (catalog.limits.routers !== 16 || catalog.limits.hosts !== 16 ||
+if (catalog.limits.routers !== 16 ||
+    catalog.limits.sr_routers !== 16 ||
+    catalog.limits.dhcp_servers < 1 ||
+    catalog.limits.hosts !== 16 ||
     catalog.limits.switches !== 16 ||
     catalog.limits.links !== 64 || catalog.limits.sessions_per_router !== 4) {
   fail("laboratory limits do not match project format 5");
@@ -138,7 +141,24 @@ for (const name of ["wasm_initial_memory_bytes", "wasm_maximum_memory_bytes",
   "dns_resolver_max_minimise_count",
   "dns_resolver_minimise_one_label_count",
   "dns_resolver_max_alias_hops",
-  "dhcpv6_address_pools_per_server", "dhcpv6_prefix_pools_per_server",
+  "dhcpv4_pools_per_server", "dhcpv4_servers_per_router",
+  "dhcpv4_leases_per_server",
+  "dhcpv4_leasequery_connections_per_server",
+  "dhcpv4_bulk_leasequery_data_timeout_seconds",
+  "dhcpv4_active_leasequery_idle_seconds",
+  "dhcpv4_active_leasequery_data_timeout_seconds",
+  "dhcpv4_pending_offers_per_server",
+  "dhcpv4_declined_addresses_per_server",
+  "dhcpv4_relay_servers_per_interface",
+  "dhcpv4_option_occurrences_per_message",
+  "dhcpv4_normalized_option_octets",
+  "dhcp_failover_relationships_per_server",
+  "dhcp_failover_updates_in_flight",
+  "dhcp_failover_options_per_message",
+  "dhcp_failover_connections_per_server",
+  "dhcp_failover_shared_secret_bytes",
+  "dhcpv6_address_pools_per_server", "dhcpv6_servers_per_router",
+  "dhcpv6_prefix_pools_per_server",
   "dhcpv6_leases_per_server", "dhcpv6_relay_servers_per_interface",
   "dhcpv6_zero_t1_percent_of_preferred",
   "dhcpv6_zero_t2_percent_of_preferred", "dhcpv6_client_rate_limit_packets",
@@ -148,6 +168,7 @@ for (const name of ["wasm_initial_memory_bytes", "wasm_maximum_memory_bytes",
   "ipv6_slaac_addresses_per_host_interface", "ipv6_rdnss_entries_per_host_interface",
   "ipv6_stable_iid_network_id_octets",
   "host_ipv6_work_budget_actions",
+  "host_application_work_budget_datagrams",
   "mld_groups_per_interface", "mld_sources_per_group",
   "mld_records_per_report", "mld_work_budget_actions",
   "mld_router_groups_per_interface", "mld_router_sources_per_group",
@@ -279,6 +300,13 @@ if (catalog.runtime.tcp_send_buffer_default_bytes < 1 ||
       catalog.runtime.tcp_ephemeral_port_last ||
     catalog.runtime.tcp_ephemeral_port_last > 65535) {
   fail("TCP socket resource defaults and ephemeral ports are inconsistent");
+}
+if (catalog.runtime.dhcpv4_leasequery_connections_per_server < 1 ||
+    catalog.runtime.dhcpv4_bulk_leasequery_data_timeout_seconds < 1 ||
+    catalog.runtime.dhcpv4_active_leasequery_idle_seconds < 1 ||
+    catalog.runtime.dhcpv4_active_leasequery_data_timeout_seconds <
+      catalog.runtime.dhcpv4_active_leasequery_idle_seconds) {
+  fail("DHCPv4 Leasequery connection and timeout resources are inconsistent");
 }
 for (const [name, value] of Object.entries(catalog.ethernet ?? {}))
   exactInteger(value, `ethernet.${name}`, 1);
@@ -485,6 +513,12 @@ for (const profile of catalog.profiles ?? []) {
   // generation operation all-or-nothing from the caller's perspective.
   if (!profile.id || profileIds.has(profile.id)) fail(`duplicate or empty profile ID ${profile.id}`);
   profileIds.add(profile.id);
+  if (profile.role !== "router" && profile.role !== "dhcp-server")
+    fail(`${profile.id} has an unsupported device role`);
+  if (typeof profile.management_port !== "boolean" ||
+      typeof profile.bof_autoconfigure !== "boolean" ||
+      (profile.bof_autoconfigure && !profile.management_port))
+    fail(`${profile.id} has inconsistent management-port capabilities`);
   exactInteger(profile.card_slots, `${profile.id}.card_slots`);
   if (profile.fixed !== (profile.card_slots === 0)) fail(`${profile.id} fixed flag conflicts with card slots`);
   if (!Array.isArray(profile.control?.types) || !profile.control.types.length)
@@ -526,7 +560,11 @@ for (const profile of catalog.profiles ?? []) {
 if (!catalog.profiles.some((profile) => profile.fixed) ||
     !catalog.profiles.some((profile) => !profile.fixed))
   fail("the catalog requires fixed and modular hardware profiles");
-const maximumPortsPerRouter = Math.max(...profileMaximumPorts.values());
+const maximumHardwarePortsPerRouter = Math.max(...profileMaximumPorts.values());
+// The OOB management Ethernet port is a chassis resource outside card/MDA
+// coordinates. A dedicated final ordinal preserves every existing physical
+// ordinal while admitting the independently cabled management interface.
+const maximumPortsPerRouter = maximumHardwarePortsPerRouter + 1;
 const maximumCardSlots = Math.max(...catalog.profiles.map((profile) =>
   profile.fixed ? 1 : profile.card_slots));
 const maximumActiveCapturePoints = catalog.limits.links * 2 +
@@ -574,7 +612,9 @@ const profileRows = catalog.profiles.map((profile) => {
   const firstCard = cardCursor;
   cardCursor += profile.cards.length;
   const defaults = [...profile.default_hardware.mdas, "", ""].slice(0, 2);
-  return `    {${cppString(profile.id)}, ${cppString(profile.chassis)}, ${cppString(catalog.release)}, ${profile.fixed}, ${profile.card_slots}, ${firstCard}, ${profile.cards.length}, ${cppString(profile.control.slot)}, ${cppString(profile.control.types[0])}, ${cppString(profile.default_hardware.card)}, {${cppString(defaults[0])}, ${cppString(defaults[1])}}, ${profileMaximumPorts.get(profile.id)}}`;
+  const role = profile.role === "router" ? "DeviceRole::router" :
+    "DeviceRole::dhcp_server";
+  return `    {${cppString(profile.id)}, ${cppString(profile.chassis)}, ${cppString(catalog.release)}, ${role}, ${profile.fixed}, ${profile.management_port}, ${profile.bof_autoconfigure}, ${profile.card_slots}, ${firstCard}, ${profile.cards.length}, ${cppString(profile.control.slot)}, ${cppString(profile.control.types[0])}, ${cppString(profile.default_hardware.card)}, {${cppString(defaults[0])}, ${cppString(defaults[1])}}, ${profileMaximumPorts.get(profile.id) + (profile.management_port ? 1 : 0)}}`;
 }).join(",\n");
 const switchRows = catalog.switch_profiles.map((profile) => {
   // Four profile speeds cover the current catalog without making every switch
@@ -629,11 +669,15 @@ inline constexpr std::uint64_t runtime_protocol_hash = 0x${protocolHash}ULL;
 inline constexpr std::uint64_t build_hash = 0x${buildHash}ULL;
 
 inline constexpr std::size_t maximum_routers = ${catalog.limits.routers};
+inline constexpr std::size_t maximum_sr_routers = ${catalog.limits.sr_routers};
+inline constexpr std::size_t maximum_dhcp_servers = ${catalog.limits.dhcp_servers};
 inline constexpr std::size_t maximum_hosts = ${catalog.limits.hosts};
 inline constexpr std::size_t maximum_switches = ${catalog.limits.switches};
 inline constexpr std::size_t maximum_links = ${catalog.limits.links};
 inline constexpr std::size_t maximum_sessions_per_router = ${catalog.limits.sessions_per_router};
 inline constexpr std::size_t maximum_ports_per_router = ${maximumPortsPerRouter};
+inline constexpr std::uint16_t management_port_ordinal =
+    ${maximumHardwarePortsPerRouter};
 inline constexpr std::size_t maximum_card_slots = ${maximumCardSlots};
 inline constexpr std::size_t maximum_mda_slots_per_card = ${maximumMdaSlotsPerCard};
 inline constexpr std::size_t maximum_ports_per_mda = ${maximumPortsPerMda};
@@ -728,7 +772,25 @@ inline constexpr std::uint32_t dns_resolver_attempts_per_server = ${catalog.runt
 inline constexpr std::uint32_t dns_resolver_max_minimise_count = ${catalog.runtime.dns_resolver_max_minimise_count};
 inline constexpr std::uint32_t dns_resolver_minimise_one_label_count = ${catalog.runtime.dns_resolver_minimise_one_label_count};
 inline constexpr std::uint32_t dns_resolver_max_alias_hops = ${catalog.runtime.dns_resolver_max_alias_hops};
+inline constexpr std::size_t dhcpv4_pools_per_server = ${catalog.runtime.dhcpv4_pools_per_server};
+inline constexpr std::size_t dhcpv4_servers_per_router = ${catalog.runtime.dhcpv4_servers_per_router};
+inline constexpr std::size_t dhcpv4_leases_per_server = ${catalog.runtime.dhcpv4_leases_per_server};
+inline constexpr std::size_t dhcpv4_leasequery_connections_per_server = ${catalog.runtime.dhcpv4_leasequery_connections_per_server};
+inline constexpr std::uint32_t dhcpv4_bulk_leasequery_data_timeout_seconds = ${catalog.runtime.dhcpv4_bulk_leasequery_data_timeout_seconds};
+inline constexpr std::uint32_t dhcpv4_active_leasequery_idle_seconds = ${catalog.runtime.dhcpv4_active_leasequery_idle_seconds};
+inline constexpr std::uint32_t dhcpv4_active_leasequery_data_timeout_seconds = ${catalog.runtime.dhcpv4_active_leasequery_data_timeout_seconds};
+inline constexpr std::size_t dhcpv4_pending_offers_per_server = ${catalog.runtime.dhcpv4_pending_offers_per_server};
+inline constexpr std::size_t dhcpv4_declined_addresses_per_server = ${catalog.runtime.dhcpv4_declined_addresses_per_server};
+inline constexpr std::size_t dhcpv4_relay_servers_per_interface = ${catalog.runtime.dhcpv4_relay_servers_per_interface};
+inline constexpr std::size_t dhcpv4_option_occurrences_per_message = ${catalog.runtime.dhcpv4_option_occurrences_per_message};
+inline constexpr std::size_t dhcpv4_normalized_option_octets = ${catalog.runtime.dhcpv4_normalized_option_octets};
+inline constexpr std::size_t dhcp_failover_relationships_per_server = ${catalog.runtime.dhcp_failover_relationships_per_server};
+inline constexpr std::size_t dhcp_failover_updates_in_flight = ${catalog.runtime.dhcp_failover_updates_in_flight};
+inline constexpr std::size_t dhcp_failover_options_per_message = ${catalog.runtime.dhcp_failover_options_per_message};
+inline constexpr std::size_t dhcp_failover_connections_per_server = ${catalog.runtime.dhcp_failover_connections_per_server};
+inline constexpr std::size_t dhcp_failover_shared_secret_bytes = ${catalog.runtime.dhcp_failover_shared_secret_bytes};
 inline constexpr std::size_t dhcpv6_address_pools_per_server = ${catalog.runtime.dhcpv6_address_pools_per_server};
+inline constexpr std::size_t dhcpv6_servers_per_router = ${catalog.runtime.dhcpv6_servers_per_router};
 inline constexpr std::size_t dhcpv6_prefix_pools_per_server = ${catalog.runtime.dhcpv6_prefix_pools_per_server};
 inline constexpr std::size_t dhcpv6_leases_per_server = ${catalog.runtime.dhcpv6_leases_per_server};
 inline constexpr std::size_t dhcpv6_relay_servers_per_interface = ${catalog.runtime.dhcpv6_relay_servers_per_interface};
@@ -746,6 +808,7 @@ inline constexpr std::size_t ipv6_slaac_addresses_per_host_interface = ${catalog
 inline constexpr std::size_t ipv6_rdnss_entries_per_host_interface = ${catalog.runtime.ipv6_rdnss_entries_per_host_interface};
 inline constexpr std::size_t ipv6_stable_iid_network_id_octets = ${catalog.runtime.ipv6_stable_iid_network_id_octets};
 inline constexpr std::size_t host_ipv6_work_budget_actions = ${catalog.runtime.host_ipv6_work_budget_actions};
+inline constexpr std::size_t host_application_work_budget_datagrams = ${catalog.runtime.host_application_work_budget_datagrams};
 inline constexpr std::size_t mld_groups_per_interface = ${catalog.runtime.mld_groups_per_interface};
 inline constexpr std::size_t mld_sources_per_group = ${catalog.runtime.mld_sources_per_group};
 inline constexpr std::size_t mld_records_per_report = ${catalog.runtime.mld_records_per_report};
@@ -808,6 +871,26 @@ ${catalog.tls.tls13_signatures.map((item) => `    {${cppString(item.sros)}, ${cp
 }};
 inline constexpr std::chrono::seconds dynamic_arp_timeout{
     ${catalog.protocol_defaults.dynamic_arp_timeout_seconds}};
+inline constexpr std::size_t dhcpv4_server_name_bytes =
+    ${catalog.protocol_defaults.dhcpv4_server_name_bytes};
+inline constexpr std::size_t dhcpv4_description_bytes =
+    ${catalog.protocol_defaults.dhcpv4_description_bytes};
+inline constexpr std::uint32_t dhcpv4_lease_time_minimum_seconds =
+    ${catalog.protocol_defaults.dhcpv4_lease_time_minimum_seconds}U;
+inline constexpr std::uint32_t dhcpv4_lease_time_maximum_seconds =
+    ${catalog.protocol_defaults.dhcpv4_lease_time_maximum_seconds}U;
+inline constexpr std::uint32_t dhcpv4_minimum_lease_time_seconds =
+    ${catalog.protocol_defaults.dhcpv4_minimum_lease_time_seconds}U;
+inline constexpr std::uint32_t dhcpv4_maximum_lease_time_seconds =
+    ${catalog.protocol_defaults.dhcpv4_maximum_lease_time_seconds}U;
+inline constexpr std::uint32_t dhcpv4_offer_time_minimum_seconds =
+    ${catalog.protocol_defaults.dhcpv4_offer_time_minimum_seconds}U;
+inline constexpr std::uint32_t dhcpv4_offer_time_maximum_seconds =
+    ${catalog.protocol_defaults.dhcpv4_offer_time_maximum_seconds}U;
+inline constexpr std::uint32_t dhcpv4_offer_time_seconds =
+    ${catalog.protocol_defaults.dhcpv4_offer_time_seconds}U;
+inline constexpr std::uint32_t dhcpv4_maximum_declined_default =
+    ${catalog.protocol_defaults.dhcpv4_maximum_declined_default}U;
 inline constexpr std::chrono::seconds ospf_hello_interval{
     ${catalog.protocol_defaults.ospf_hello_interval_seconds}};
 inline constexpr std::chrono::seconds ospf_dead_interval{
@@ -1096,11 +1179,22 @@ struct CardProfile {
   std::uint16_t mda_count{};
 };
 
+// The role is immutable profile identity. Keeping it in the generated catalog
+// lets runtime, persistence and UI enforce the same capacity and behavior
+// without comparing product IDs or maintaining parallel hardcoded lists.
+enum class DeviceRole : std::uint8_t {
+  router,
+  dhcp_server,
+};
+
 struct DeviceProfile {
   std::string_view id;
   std::string_view chassis;
   std::string_view release;
+  DeviceRole role{DeviceRole::router};
   bool fixed{};
+  bool management_port{};
+  bool bof_autoconfigure{};
   std::uint8_t card_slots{};
   std::uint16_t first_card{};
   std::uint16_t card_count{};

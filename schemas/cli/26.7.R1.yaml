@@ -45,6 +45,20 @@ parameters:
   prefix_length: { display: "<prefix-length>", description: "IPv4 prefix length" }
   arp_timeout_seconds: { display: "<seconds>", description: "Dynamic ARP entry lifetime in seconds" }
   arp_retry_deciseconds: { display: "<deciseconds>", description: "ARP retry interval in 100 ms units" }
+  dhcp_remote_id_ascii: { display: "<ascii-string>", description: "DHCP relay Remote ID string from 1 through 32 characters" }
+  dhcp_server_name: { display: "<server-name>", description: "Local DHCP server name from 1 through 32 characters" }
+  dhcp_pool_name: { display: "<pool-name>", description: "Local DHCP address pool name from 1 through 32 characters" }
+  dhcp_lease_seconds: { display: "<seconds>", description: "DHCP lease time from 10 through 315446399 seconds" }
+  dhcp_offer_seconds: { display: "<seconds>", description: "DHCP offer retention time from 10 through 600 seconds" }
+  dhcp_maximum_declined: { display: "<maximum-declined>", description: "Maximum number of declined addresses" }
+  dhcp_lease_state: { display: "<lease-state>", description: "DHCPv4 lease state" }
+  dhcpv6_lease_state: { display: "<lease-state>", description: "DHCPv6 lease state" }
+  dhcpv6_lease_type: { display: "<lease-type>", description: "DHCPv6 lease type" }
+  dhcpv6_lifetime_seconds: { display: "<seconds>", description: "DHCPv6 lifetime in seconds" }
+  dhcpv6_timer_seconds: { display: "<seconds>", description: "DHCPv6 T1 or T2 timer in seconds" }
+  dhcpv6_delegated_length: { display: "<prefix-length>", description: "Delegated prefix length from 48 through 127" }
+  bof_client_id: { display: "<client-id>", description: "Opaque BOF DHCP client identifier" }
+  bof_timeout_seconds: { display: "<seconds>", description: "BOF DHCP timeout from 1 through 65535 seconds" }
   count: { display: "<number>", description: "Number of echo requests" }
   alarm_count: { display: "<count>", description: "Maximum number of facility alarm rows" }
   alarm_newer_than_days: { display: "<days>", description: "Facility alarms newer than this number of days" }
@@ -216,6 +230,14 @@ literals:
   address: "Configure an IP address"
   alarms: "Display facility alarms"
   all: "Navigate to the operational root"
+  leases: "Display or clear DHCP server leases"
+  server-stats: "Display or clear local DHCP server statistics"
+  declined-addresses: "Display declined DHCP addresses"
+  sticky-leases: "Display sticky DHCP leases"
+  state: "Select a DHCP lease state"
+  tools: "Enter operational tools"
+  perform: "Perform an operational action"
+  send-force-renew: "Send DHCPFORCERENEW to an active client"
   arp: "Display the ARP table"
   arp-timeout: "Configure the dynamic ARP entry lifetime"
   arp-retry-timer: "Configure the ARP request retry interval"
@@ -424,6 +446,59 @@ literals:
   dot1q: "Use IEEE 802.1Q service encapsulation"
   qinq: "Use stacked IEEE 802.1Q service encapsulation"
   dhcp6: "Configure or display DHCPv6"
+  dhcp: "Configure DHCPv4 relay parameters"
+  dhcp-server: "Configure local DHCP server instances"
+  dhcpv4: "Configure a DHCPv4 server instance"
+  dhcpv6: "Configure a DHCPv6 server instance"
+  local-dhcp-server: "Configure or display a local DHCP server"
+  pool: "Configure a local DHCP address pool"
+  subnet: "Configure a DHCP allocation subnet"
+  address-range: "Configure an inclusive allocation address range"
+  exclude-addresses: "Exclude an address interval from allocation"
+  max-lease-time: "Configure the maximum lease time"
+  min-lease-time: "Configure the minimum lease time"
+  offer-time: "Configure the offer retention time"
+  maximum-declined: "Configure the maximum number of declined addresses"
+  drain: "Prevent new allocations from a subnet"
+  nak-non-matching-subnet: "Send DHCPNAK for requests outside configured subnets"
+  force-renews: "Enable DHCPFORCERENEW transmission"
+  defaults: "Configure inherited DHCPv6 lease defaults"
+  ignore-rapid-commit: "Ignore the DHCPv6 Rapid Commit option"
+  lease-query: "Enable DHCPv6 Leasequery processing"
+  renew-time: "Configure the DHCPv6 T1 renew timer"
+  rebind-time: "Configure the DHCPv6 T2 rebind timer"
+  delegated-prefix: "Configure delegated prefix length policy"
+  delegated-prefix-length: "Configure delegated prefix length policy"
+  length: "Configure the preferred delegated prefix length"
+  minimum: "Configure the minimum delegated prefix length"
+  maximum: "Configure the maximum delegated prefix length"
+  prefix-type: "Configure address assignment applications"
+  wan-host: "Allocate IA_NA or SLAAC addresses from this prefix"
+  failover: "Configure DHCP failover behavior"
+  failover-control-type: "Select address-range failover ownership"
+  bof: "Configure the boot option file"
+  auto-configure: "Configure management-interface address autoconfiguration"
+  client-id: "Configure the DHCP client identifier"
+  client-type: "Configure the DHCPv6 DUID type"
+  include-user-class: "Include DHCP user class information"
+  duid-enterprise: "Use an enterprise-number DUID"
+  duid-link-local: "Use a link-layer-address DUID"
+  gi-address: "Configure the DHCP relay gateway address"
+  option-82: "Configure DHCP Relay Agent Information Option processing"
+  circuit-id: "Configure the DHCP relay Circuit ID sub-option"
+  remote-id: "Configure the DHCP relay Remote ID sub-option"
+  ascii-string: "Use an explicit printable ASCII string"
+  if-name: "Use the router interface name"
+  ifindex: "Use the router interface index"
+  port-id: "Use the physical port identifier"
+  vlan-ascii-tuple: "Use the VLAN-aware ASCII tuple"
+  relay-plain-bootp: "Relay plain BOOTP messages"
+  release-include-gi-address: "Include giaddr in relayed DHCP Release messages"
+  src-ip-addr: "Select the IPv4 source used for relayed requests"
+  gi-address-source: "Use the relay gateway as the IPv4 source"
+  trusted: "Trust pre-existing relay information on this interface"
+  keep: "Keep existing Relay Agent Information"
+  replace: "Replace existing Relay Agent Information"
   dhcp6-relay: "Configure DHCPv6 relay parameters"
   relay: "Configure DHCPv6 relay parameters"
   link-address: "Configure the DHCPv6 Relay-Forward link address"
@@ -521,9 +596,9 @@ literals:
   force-keep-alive: "Force NAT keepalive transmission"
   keep-alive-interval: "Configure the NAT keepalive interval"
   ts-list: "Configure an IKEv2 traffic selector list"
-  local: "Configure local traffic selectors"
+  local: "Select the local side"
   local-entry: "Display one or all local traffic selector entries"
-  remote: "Configure remote traffic selectors"
+  remote: "Select the remote side"
   remote-entry: "Display one or all remote traffic selector entries"
   range: "Configure an inclusive range"
   begin: "Configure the lower range bound"
@@ -1152,6 +1227,59 @@ commands:
   - { id: show_system_alarms_cleared_count, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, cleared, count, { parameter: alarm_count }] }
   - { id: show_system_alarms_cleared_newer_than, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, cleared, newer-than, { parameter: alarm_newer_than_days }] }
   - { id: show_system_alarms_cleared_severity, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, cleared, severity, { parameter: alarm_severity }] }
+  # Local server operational commands share one runtime owner but retain both
+  # documented operational trees. Each complete row is generated so question
+  # mark help and completion cannot advertise an action without a dispatcher.
+  - { id: show_dhcpv4_server_leases, engines: [md, classic], source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [show, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, leases] }
+  - { id: show_dhcpv4_server_leases_detail, engines: [md, classic], modifier: detail, source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [show, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, leases, detail] }
+  - { id: show_dhcpv4_server_leases_prefix, engines: [md, classic], source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [show, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, leases, { parameter: ipv4_prefix }] }
+  - { id: show_dhcpv4_server_leases_prefix_detail, engines: [md, classic], modifier: detail, source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [show, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, leases, { parameter: ipv4_prefix }, detail] }
+  - { id: show_dhcpv4_server_statistics, engines: [md, classic], source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [show, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, server-stats] }
+  - { id: show_dhcpv4_server_declined, engines: [md, classic], source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [show, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, declined-addresses] }
+  - { id: show_dhcpv4_server_declined_detail, engines: [md, classic], modifier: detail, source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [show, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, declined-addresses, detail] }
+  - { id: show_dhcpv4_server_sticky, engines: [md, classic], source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [show, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, sticky-leases] }
+  - { id: show_dhcpv4_server_sticky_detail, engines: [md, classic], modifier: detail, source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [show, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, sticky-leases, detail] }
+  - { id: clear_dhcpv4_server_leases_all, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [clear, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, leases, all] }
+  - { id: clear_dhcpv4_server_leases_all_state, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [clear, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, leases, all, state, { parameter: dhcp_lease_state }] }
+  - { id: clear_dhcpv4_server_leases_prefix, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [clear, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, leases, { parameter: ipv4_prefix }] }
+  - { id: clear_dhcpv4_server_leases_prefix_state, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [clear, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, leases, { parameter: ipv4_prefix }, state, { parameter: dhcp_lease_state }] }
+  - { id: clear_dhcpv4_server_statistics, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [clear, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, server-stats] }
+  - { id: reset_dhcpv4_server_leases_all, engines: [md], source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [reset, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, leases, all] }
+  - { id: reset_dhcpv4_server_leases_all_state, engines: [md], source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [reset, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, leases, all, state, { parameter: dhcp_lease_state }] }
+  - { id: reset_dhcpv4_server_lease_address, engines: [md], source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [reset, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, leases, address, { parameter: ipv4 }] }
+  - { id: reset_dhcpv4_server_lease_address_state, engines: [md], source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [reset, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, leases, address, { parameter: ipv4 }, state, { parameter: dhcp_lease_state }] }
+  - { id: reset_dhcpv4_server_statistics, engines: [md], source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [reset, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, server-stats] }
+  - { id: tools_dhcpv4_send_force_renew, engines: [md, classic], source_id: nokia.sros.26_7.dhcpv4.operational, tokens: [tools, perform, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, send-force-renew, { parameter: ipv4 }] }
+  # Classic exposes the local DHCPv6 server beneath dhcp6. MD operational
+  # actions use the dhcp-server/dhcpv6 state tree. Rows remain explicit because
+  # optional type and state operands may appear together and must participate
+  # in contextual help exactly where the release command reference places them.
+  - { id: show_dhcpv6_server_leases, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [show, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, leases] }
+  - { id: show_dhcpv6_server_leases_detail, engines: [classic], modifier: detail, source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [show, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, leases, detail] }
+  - { id: show_dhcpv6_server_leases_prefix, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [show, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, leases, { parameter: ipv6_prefix }] }
+  - { id: show_dhcpv6_server_leases_prefix_detail, engines: [classic], modifier: detail, source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [show, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, leases, { parameter: ipv6_prefix }, detail] }
+  - { id: show_dhcpv6_server_leases_type, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [show, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, leases, type, { parameter: dhcpv6_lease_type }] }
+  - { id: show_dhcpv6_server_leases_state, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [show, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, leases, state, { parameter: dhcpv6_lease_state }] }
+  - { id: show_dhcpv6_server_leases_type_state, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [show, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, leases, type, { parameter: dhcpv6_lease_type }, state, { parameter: dhcpv6_lease_state }] }
+  - { id: show_dhcpv6_server_leases_md, engines: [md], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [show, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, leases] }
+  - { id: show_dhcpv6_server_leases_md_detail, engines: [md], modifier: detail, source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [show, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, leases, detail] }
+  - { id: show_dhcpv6_server_leases_md_prefix, engines: [md], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [show, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, leases, prefix, { parameter: ipv6_prefix }] }
+  - { id: show_dhcpv6_server_leases_md_type, engines: [md], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [show, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, leases, type, { parameter: dhcpv6_lease_type }] }
+  - { id: show_dhcpv6_server_leases_md_state, engines: [md], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [show, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, leases, state, { parameter: dhcpv6_lease_state }] }
+  - { id: show_dhcpv6_server_statistics, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [show, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, server-stats] }
+  - { id: show_dhcpv6_server_statistics_md, engines: [md], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [show, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, server-stats] }
+  - { id: clear_dhcpv6_server_leases_all, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [clear, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, leases, all] }
+  - { id: clear_dhcpv6_server_leases_all_type, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [clear, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, leases, all, type, { parameter: dhcpv6_lease_type }] }
+  - { id: clear_dhcpv6_server_leases_all_state, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [clear, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, leases, all, state, { parameter: dhcpv6_lease_state }] }
+  - { id: clear_dhcpv6_server_leases_all_type_state, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [clear, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, leases, all, type, { parameter: dhcpv6_lease_type }, state, { parameter: dhcpv6_lease_state }] }
+  - { id: clear_dhcpv6_server_leases_prefix, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [clear, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, leases, { parameter: ipv6_prefix }] }
+  - { id: reset_dhcpv6_server_leases_all, engines: [md], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [reset, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, leases, all] }
+  - { id: reset_dhcpv6_server_leases_all_type, engines: [md], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [reset, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, leases, all, type, { parameter: dhcpv6_lease_type }] }
+  - { id: reset_dhcpv6_server_leases_all_state, engines: [md], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [reset, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, leases, all, state, { parameter: dhcpv6_lease_state }] }
+  - { id: reset_dhcpv6_server_leases_prefix, engines: [md], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [reset, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, leases, prefix, { parameter: ipv6_prefix }] }
+  - { id: reset_dhcpv6_server_lease_address, engines: [md], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [reset, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, leases, address, { parameter: ipv6 }] }
+  - { id: clear_dhcpv6_server_statistics, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [clear, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, server-stats] }
+  - { id: reset_dhcpv6_server_statistics, engines: [md], source_id: nokia.sros.26_7.dhcpv6.operational, tokens: [reset, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, server-stats] }
   - id: show_card
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.card
@@ -1911,6 +2039,98 @@ commands:
     engines: [md]
     source_id: nokia.sros.26_7.arp.aging
     tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, neighbor-discovery, retry-timer, { parameter: arp_retry_deciseconds }]
+  - { id: md_dhcpv4_relay_enable, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, admin-state, enable] }
+  - { id: md_dhcpv4_relay_disable, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, admin-state, disable] }
+  - { id: md_dhcpv4_relay_description, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, description, { parameter: description }] }
+  - { id: md_dhcpv4_relay_gi_address, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, gi-address, { parameter: ipv4 }] }
+  - { id: md_dhcpv4_relay_server, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, server, { parameter: ipv4 }] }
+  - { id: md_dhcpv4_relay_source_auto, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, src-ip-addr, auto] }
+  - { id: md_dhcpv4_relay_source_gi, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, src-ip-addr, gi-address] }
+  - { id: md_dhcpv4_relay_trusted, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, trusted, { parameter: boolean }] }
+  - { id: md_dhcpv4_relay_plain_bootp, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, relay-plain-bootp, { parameter: boolean }] }
+  - { id: md_dhcpv4_relay_release_gi, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, release-include-gi-address, { parameter: boolean }] }
+  - { id: md_dhcpv4_option82_keep, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, action, keep] }
+  - { id: md_dhcpv4_option82_replace, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, action, replace] }
+  - { id: md_dhcpv4_option82_drop, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, action, drop] }
+  - { id: md_dhcpv4_circuit_none, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, circuit-id, none] }
+  - { id: md_dhcpv4_circuit_ascii_tuple, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, circuit-id, ascii-tuple] }
+  - { id: md_dhcpv4_circuit_if_name, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, circuit-id, if-name] }
+  - { id: md_dhcpv4_circuit_ifindex, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, circuit-id, ifindex] }
+  - { id: md_dhcpv4_circuit_port_id, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, circuit-id, port-id] }
+  - { id: md_dhcpv4_remote_none, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, remote-id, none] }
+  - { id: md_dhcpv4_remote_mac, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, remote-id, mac] }
+  - { id: md_dhcpv4_remote_ascii, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, remote-id, ascii-string, { parameter: dhcp_remote_id_ascii }] }
+  - { id: md_dhcpv4_server_enable, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, admin-state, enable] }
+  - { id: md_dhcpv4_server_disable, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, admin-state, disable] }
+  - { id: md_dhcpv4_server_description, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, description, { parameter: description }] }
+  - { id: md_dhcpv4_server_force_renews, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, force-renews, { parameter: boolean }] }
+  - { id: md_dhcpv4_pool_description, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, description, { parameter: description }] }
+  - { id: md_dhcpv4_pool_min_lease, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, min-lease-time, { parameter: dhcp_lease_seconds }] }
+  - { id: md_dhcpv4_pool_max_lease, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, max-lease-time, { parameter: dhcp_lease_seconds }] }
+  - { id: md_dhcpv4_pool_offer_time, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, offer-time, { parameter: dhcp_offer_seconds }] }
+  - { id: md_dhcpv4_pool_nak, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, nak-non-matching-subnet, { parameter: boolean }] }
+  - { id: md_dhcpv4_subnet_drain, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, drain, { parameter: boolean }] }
+  - { id: md_dhcpv4_subnet_maximum_declined, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, maximum-declined, { parameter: dhcp_maximum_declined }] }
+  - { id: md_dhcpv4_range_local, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, address-range, { parameter: ipv4 }, end, { parameter: ipv4 }, failover-control-type, local] }
+  - { id: md_dhcpv4_range_remote, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, address-range, { parameter: ipv4 }, end, { parameter: ipv4 }, failover-control-type, remote] }
+  - { id: md_dhcpv4_exclude_range, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, exclude-addresses, { parameter: ipv4 }, end, { parameter: ipv4 }] }
+  - { id: md_delete_dhcpv4_server, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }] }
+  - { id: md_delete_dhcpv4_server_description, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, description] }
+  - { id: md_delete_dhcpv4_server_force_renews, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, force-renews] }
+  - { id: md_delete_dhcpv4_pool, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }] }
+  - { id: md_delete_dhcpv4_pool_description, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, description] }
+  - { id: md_delete_dhcpv4_pool_min_lease, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, min-lease-time] }
+  - { id: md_delete_dhcpv4_pool_max_lease, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, max-lease-time] }
+  - { id: md_delete_dhcpv4_pool_offer_time, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, offer-time] }
+  - { id: md_delete_dhcpv4_pool_nak, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, nak-non-matching-subnet] }
+  - { id: md_delete_dhcpv4_subnet, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }] }
+  - { id: md_delete_dhcpv4_subnet_drain, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, drain] }
+  - { id: md_delete_dhcpv4_subnet_maximum_declined, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, maximum-declined] }
+  - { id: md_delete_dhcpv4_range, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, address-range, { parameter: ipv4 }, end, { parameter: ipv4 }] }
+  - { id: md_delete_dhcpv4_exclude_range, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, exclude-addresses, { parameter: ipv4 }, end, { parameter: ipv4 }] }
+  - { id: md_dhcpv6_server_enable, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, admin-state, enable] }
+  - { id: md_dhcpv6_server_disable, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, admin-state, disable] }
+  - { id: md_dhcpv6_server_description, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, description, { parameter: description }] }
+  - { id: md_dhcpv6_server_ignore_rapid_commit, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, ignore-rapid-commit, { parameter: boolean }] }
+  - { id: md_dhcpv6_server_lease_query, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, lease-query, { parameter: boolean }] }
+  - { id: md_dhcpv6_default_preferred_lifetime, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, defaults, preferred-lifetime, { parameter: dhcpv6_lifetime_seconds }] }
+  - { id: md_dhcpv6_default_valid_lifetime, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, defaults, valid-lifetime, { parameter: dhcpv6_lifetime_seconds }] }
+  - { id: md_dhcpv6_default_renew_time, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, defaults, renew-time, { parameter: dhcpv6_timer_seconds }] }
+  - { id: md_dhcpv6_default_rebind_time, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, defaults, rebind-time, { parameter: dhcpv6_timer_seconds }] }
+  - { id: md_dhcpv6_pool_description, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, description, { parameter: description }] }
+  - { id: md_dhcpv6_pool_delegated_length, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, delegated-prefix, length, { parameter: dhcpv6_delegated_length }] }
+  - { id: md_dhcpv6_pool_delegated_minimum, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, delegated-prefix, minimum, { parameter: dhcpv6_delegated_length }] }
+  - { id: md_dhcpv6_pool_delegated_maximum, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, delegated-prefix, maximum, { parameter: dhcpv6_delegated_length }] }
+  - { id: md_dhcpv6_prefix_drain, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, drain, { parameter: boolean }] }
+  - { id: md_dhcpv6_prefix_pd, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, prefix-type, pd, { parameter: boolean }] }
+  - { id: md_dhcpv6_prefix_wan_host, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, prefix-type, wan-host, { parameter: boolean }] }
+  - { id: md_dhcpv6_prefix_preferred_lifetime, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, preferred-lifetime, { parameter: dhcpv6_lifetime_seconds }] }
+  - { id: md_dhcpv6_prefix_valid_lifetime, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, valid-lifetime, { parameter: dhcpv6_lifetime_seconds }] }
+  - { id: md_dhcpv6_prefix_renew_time, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, renew-time, { parameter: dhcpv6_timer_seconds }] }
+  - { id: md_dhcpv6_prefix_rebind_time, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, rebind-time, { parameter: dhcpv6_timer_seconds }] }
+  - { id: md_delete_dhcpv6_server, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }] }
+  - { id: md_delete_dhcpv6_server_description, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, description] }
+  - { id: md_delete_dhcpv6_server_ignore_rapid_commit, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, ignore-rapid-commit] }
+  - { id: md_delete_dhcpv6_server_lease_query, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, lease-query] }
+  - { id: md_delete_dhcpv6_default_preferred_lifetime, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, defaults, preferred-lifetime] }
+  - { id: md_delete_dhcpv6_default_valid_lifetime, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, defaults, valid-lifetime] }
+  - { id: md_delete_dhcpv6_default_renew_time, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, defaults, renew-time] }
+  - { id: md_delete_dhcpv6_default_rebind_time, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, defaults, rebind-time] }
+  - { id: md_delete_dhcpv6_pool, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }] }
+  - { id: md_delete_dhcpv6_pool_description, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, description] }
+  - { id: md_delete_dhcpv6_pool_delegated_length, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, delegated-prefix, length] }
+  - { id: md_delete_dhcpv6_pool_delegated_minimum, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, delegated-prefix, minimum] }
+  - { id: md_delete_dhcpv6_pool_delegated_maximum, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, delegated-prefix, maximum] }
+  - { id: md_delete_dhcpv6_prefix, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }] }
+  - { id: md_delete_dhcpv6_prefix_drain, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, drain] }
+  - { id: md_delete_dhcpv6_prefix_pd, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, prefix-type, pd] }
+  - { id: md_delete_dhcpv6_prefix_wan_host, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, prefix-type, wan-host] }
+  - { id: md_delete_dhcpv6_prefix_preferred_lifetime, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, preferred-lifetime] }
+  - { id: md_delete_dhcpv6_prefix_valid_lifetime, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, valid-lifetime] }
+  - { id: md_delete_dhcpv6_prefix_renew_time, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, renew-time] }
+  - { id: md_delete_dhcpv6_prefix_rebind_time, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', dhcp-server, dhcpv6, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, rebind-time] }
+  - { id: md_interface_dhcpv6_local_server, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv6, local-dhcp-server, { parameter: dhcp_server_name }] }
+  - { id: md_delete_interface_dhcpv6_local_server, engines: [md], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv6, local-dhcp-server] }
   - id: md_delete_interface
     engines: [md]
     source_id: nokia.sros.26_7.router_interface.configuration
@@ -1927,6 +2147,17 @@ commands:
     engines: [md]
     source_id: nokia.sros.26_7.arp.aging
     tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, neighbor-discovery, retry-timer]
+  - { id: md_delete_dhcpv4_relay, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp] }
+  - { id: md_delete_dhcpv4_relay_description, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, description] }
+  - { id: md_delete_dhcpv4_relay_gi_address, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, gi-address] }
+  - { id: md_delete_dhcpv4_relay_server, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, server, { parameter: ipv4 }] }
+  - { id: md_delete_dhcpv4_relay_source, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, src-ip-addr] }
+  - { id: md_delete_dhcpv4_relay_trusted, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, trusted] }
+  - { id: md_delete_dhcpv4_relay_plain_bootp, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, relay-plain-bootp] }
+  - { id: md_delete_dhcpv4_relay_release_gi, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, release-include-gi-address] }
+  - { id: md_delete_dhcpv4_option82_action, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, action] }
+  - { id: md_delete_dhcpv4_circuit, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, circuit-id] }
+  - { id: md_delete_dhcpv4_remote, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, remote-id] }
   - id: md_delete_interface_port
     engines: [md]
     source_id: nokia.sros.26_7.router_interface.configuration
@@ -2423,6 +2654,105 @@ commands:
     engines: [classic]
     source_id: nokia.sros.26_7.router_interface.configuration
     tokens: [configure, router, interface, { parameter: interface_name }, address, { parameter: ipv4_prefix }]
+  - { id: classic_dhcpv4_relay_shutdown, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, shutdown] }
+  - { id: classic_dhcpv4_relay_no_shutdown, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, no, shutdown] }
+  - { id: classic_dhcpv4_relay_description, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, description, { parameter: description }] }
+  - { id: classic_dhcpv4_relay_no_description, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, no, description] }
+  - { id: classic_dhcpv4_relay_gi_address, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, gi-address, { parameter: ipv4 }] }
+  - { id: classic_dhcpv4_relay_no_gi_address, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, no, gi-address] }
+  - { id: classic_dhcpv4_relay_server, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, server, { parameter: ipv4 }] }
+  - { id: classic_dhcpv4_relay_no_server, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, no, server, { parameter: ipv4 }] }
+  - { id: classic_dhcpv4_relay_source_auto, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, src-ip-addr, auto] }
+  - { id: classic_dhcpv4_relay_source_gi, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, src-ip-addr, gi-address] }
+  - { id: classic_dhcpv4_relay_no_source, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, no, src-ip-addr] }
+  - { id: classic_dhcpv4_relay_trusted, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, trusted] }
+  - { id: classic_dhcpv4_relay_no_trusted, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, no, trusted] }
+  - { id: classic_dhcpv4_relay_plain_bootp, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, relay-plain-bootp] }
+  - { id: classic_dhcpv4_relay_no_plain_bootp, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, no, relay-plain-bootp] }
+  - { id: classic_dhcpv4_relay_release_gi, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, release-include-gi-address] }
+  - { id: classic_dhcpv4_relay_no_release_gi, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, no, release-include-gi-address] }
+  - { id: classic_dhcpv4_option82_keep, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, action, keep] }
+  - { id: classic_dhcpv4_option82_replace, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, action, replace] }
+  - { id: classic_dhcpv4_option82_drop, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, action, drop] }
+  - { id: classic_dhcpv4_option82_no_action, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, no, action] }
+  - { id: classic_dhcpv4_circuit_none, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, circuit-id, none] }
+  - { id: classic_dhcpv4_circuit_ascii_tuple, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, circuit-id, ascii-tuple] }
+  - { id: classic_dhcpv4_circuit_if_name, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, circuit-id, if-name] }
+  - { id: classic_dhcpv4_circuit_ifindex, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, circuit-id, ifindex] }
+  - { id: classic_dhcpv4_circuit_port_id, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, circuit-id, port-id] }
+  - { id: classic_dhcpv4_circuit_no, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, no, circuit-id] }
+  - { id: classic_dhcpv4_remote_none, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, remote-id, none] }
+  - { id: classic_dhcpv4_remote_mac, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, remote-id, mac] }
+  - { id: classic_dhcpv4_remote_ascii, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, remote-id, ascii-string, { parameter: dhcp_remote_id_ascii }] }
+  - { id: classic_dhcpv4_remote_no, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, no, remote-id] }
+  - { id: classic_dhcpv4_server_shutdown, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, shutdown] }
+  - { id: classic_dhcpv4_server_no_shutdown, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, no, shutdown] }
+  - { id: classic_dhcpv4_server_remove, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, no, local-dhcp-server, { parameter: dhcp_server_name }] }
+  - { id: classic_dhcpv4_server_description, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, description, { parameter: description }] }
+  - { id: classic_dhcpv4_server_no_description, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, no, description] }
+  - { id: classic_dhcpv4_server_force_renews, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, force-renews] }
+  - { id: classic_dhcpv4_server_no_force_renews, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, no, force-renews] }
+  - { id: classic_dhcpv4_pool_description, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, description, { parameter: description }] }
+  - { id: classic_dhcpv4_pool_remove, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, no, pool, { parameter: dhcp_pool_name }] }
+  - { id: classic_dhcpv4_pool_no_description, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, no, description] }
+  - { id: classic_dhcpv4_pool_min_lease, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, min-lease-time, { parameter: dhcp_lease_seconds }] }
+  - { id: classic_dhcpv4_pool_no_min_lease, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, no, min-lease-time] }
+  - { id: classic_dhcpv4_pool_max_lease, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, max-lease-time, { parameter: dhcp_lease_seconds }] }
+  - { id: classic_dhcpv4_pool_no_max_lease, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, no, max-lease-time] }
+  - { id: classic_dhcpv4_pool_offer_time, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, offer-time, { parameter: dhcp_offer_seconds }] }
+  - { id: classic_dhcpv4_pool_no_offer_time, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, no, offer-time] }
+  - { id: classic_dhcpv4_pool_nak, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, nak-non-matching-subnet] }
+  - { id: classic_dhcpv4_pool_no_nak, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, no, nak-non-matching-subnet] }
+  - { id: classic_dhcpv4_subnet_drain, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, drain] }
+  - { id: classic_dhcpv4_subnet_remove, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, no, subnet, { parameter: ipv4_prefix }] }
+  - { id: classic_dhcpv4_subnet_no_drain, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, no, drain] }
+  - { id: classic_dhcpv4_subnet_maximum_declined, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, maximum-declined, { parameter: dhcp_maximum_declined }] }
+  - { id: classic_dhcpv4_subnet_no_maximum_declined, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, no, maximum-declined] }
+  - { id: classic_dhcpv4_range_local, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, address-range, { parameter: ipv4 }, { parameter: ipv4 }, failover, local] }
+  - { id: classic_dhcpv4_range_remote, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, address-range, { parameter: ipv4 }, { parameter: ipv4 }, failover, remote] }
+  - { id: classic_dhcpv4_range_no, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, no, address-range, { parameter: ipv4 }, { parameter: ipv4 }] }
+  - { id: classic_dhcpv4_exclude_range, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, exclude-addresses, { parameter: ipv4 }, { parameter: ipv4 }] }
+  - { id: classic_dhcpv4_exclude_range_no, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, subnet, { parameter: ipv4_prefix }, no, exclude-addresses, { parameter: ipv4 }, { parameter: ipv4 }] }
+  - { id: classic_interface_dhcpv6_local_server, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, interface, { parameter: interface_name }, ipv6, local-dhcp-server, { parameter: dhcp_server_name }] }
+  - { id: classic_interface_no_dhcpv6_local_server, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, interface, { parameter: interface_name }, ipv6, no, local-dhcp-server] }
+  - { id: classic_dhcpv6_server_shutdown, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, shutdown] }
+  - { id: classic_dhcpv6_server_no_shutdown, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, no, shutdown] }
+  - { id: classic_dhcpv6_server_remove, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, no, local-dhcp-server, { parameter: dhcp_server_name }] }
+  - { id: classic_dhcpv6_server_description, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, description, { parameter: description }] }
+  - { id: classic_dhcpv6_server_no_description, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, no, description] }
+  - { id: classic_dhcpv6_server_ignore_rapid_commit, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, ignore-rapid-commit] }
+  - { id: classic_dhcpv6_server_no_ignore_rapid_commit, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, no, ignore-rapid-commit] }
+  - { id: classic_dhcpv6_server_lease_query, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, lease-query] }
+  - { id: classic_dhcpv6_server_no_lease_query, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, no, lease-query] }
+  - { id: classic_dhcpv6_default_preferred_lifetime, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, defaults, preferred-lifetime, { parameter: dhcpv6_lifetime_seconds }] }
+  - { id: classic_dhcpv6_default_valid_lifetime, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, defaults, valid-lifetime, { parameter: dhcpv6_lifetime_seconds }] }
+  - { id: classic_dhcpv6_default_renew_time, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, defaults, renew-time, { parameter: dhcpv6_timer_seconds }] }
+  - { id: classic_dhcpv6_default_rebind_time, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, defaults, rebind-time, { parameter: dhcpv6_timer_seconds }] }
+  - { id: classic_dhcpv6_default_no_preferred_lifetime, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, defaults, no, preferred-lifetime] }
+  - { id: classic_dhcpv6_default_no_valid_lifetime, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, defaults, no, valid-lifetime] }
+  - { id: classic_dhcpv6_default_no_renew_time, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, defaults, no, renew-time] }
+  - { id: classic_dhcpv6_default_no_rebind_time, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, defaults, no, rebind-time] }
+  - { id: classic_dhcpv6_pool_description, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, description, { parameter: description }] }
+  - { id: classic_dhcpv6_pool_no_description, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, no, description] }
+  - { id: classic_dhcpv6_pool_remove, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, no, pool, { parameter: dhcp_pool_name }] }
+  - { id: classic_dhcpv6_pool_delegated_length, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, delegated-prefix-length, { parameter: dhcpv6_delegated_length }] }
+  - { id: classic_dhcpv6_pool_delegated_range, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, delegated-prefix-length, { parameter: dhcpv6_delegated_length }, minimum, { parameter: dhcpv6_delegated_length }, maximum, { parameter: dhcpv6_delegated_length }] }
+  - { id: classic_dhcpv6_pool_no_delegated_length, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, no, delegated-prefix-length] }
+  - { id: classic_dhcpv6_prefix_both, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, pd, wan-host] }
+  - { id: classic_dhcpv6_prefix_default, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }] }
+  - { id: classic_dhcpv6_prefix_pd, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, pd] }
+  - { id: classic_dhcpv6_prefix_wan_host, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, wan-host] }
+  - { id: classic_dhcpv6_prefix_remove, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, no, prefix, { parameter: ipv6_prefix }] }
+  - { id: classic_dhcpv6_prefix_drain, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, drain] }
+  - { id: classic_dhcpv6_prefix_no_drain, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, no, drain] }
+  - { id: classic_dhcpv6_prefix_preferred_lifetime, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, preferred-lifetime, { parameter: dhcpv6_lifetime_seconds }] }
+  - { id: classic_dhcpv6_prefix_valid_lifetime, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, valid-lifetime, { parameter: dhcpv6_lifetime_seconds }] }
+  - { id: classic_dhcpv6_prefix_renew_time, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, renew-time, { parameter: dhcpv6_timer_seconds }] }
+  - { id: classic_dhcpv6_prefix_rebind_time, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, rebind-time, { parameter: dhcpv6_timer_seconds }] }
+  - { id: classic_dhcpv6_prefix_no_preferred_lifetime, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, no, preferred-lifetime] }
+  - { id: classic_dhcpv6_prefix_no_valid_lifetime, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, no, valid-lifetime] }
+  - { id: classic_dhcpv6_prefix_no_renew_time, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, no, renew-time] }
+  - { id: classic_dhcpv6_prefix_no_rebind_time, engines: [classic], source_id: nokia.sros.26_7.dhcpv6.local_server, tokens: [configure, router, dhcp6, local-dhcp-server, { parameter: dhcp_server_name }, pool, { parameter: dhcp_pool_name }, prefix, { parameter: ipv6_prefix }, no, rebind-time] }
   - id: classic_interface_arp_timeout
     engines: [classic]
     source_id: nokia.sros.26_7.arp.aging
@@ -3941,3 +4271,26 @@ commands:
   - { id: classic_tls_server_secondary_crl, engines: [classic], source_id: nokia.sros.26_7.tls_profiles, tokens: [configure, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }, status-verify, ee-revocation, secondary, crl] }
   - { id: classic_tls_server_secondary_ocsp, engines: [classic], source_id: nokia.sros.26_7.tls_profiles, tokens: [configure, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }, status-verify, ee-revocation, secondary, ocsp] }
   - { id: classic_tls_server_no_secondary, engines: [classic], source_id: nokia.sros.26_7.tls_profiles, tokens: [configure, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }, status-verify, ee-revocation, no, secondary] }
+
+  # BOF is a separate model-driven configuration region. These rows mirror
+  # the 26.7.R1 BOF tree and therefore do not add a fictitious configure prefix
+  # or expose the MD tree as classic CLI syntax.
+  - { id: md_bof_ipv4_dhcp, engines: [md], enters_context: true, source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [bof, auto-configure, ipv4, dhcp] }
+  - { id: md_bof_ipv4_client_id, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [bof, auto-configure, ipv4, dhcp, client-id, { parameter: bof_client_id }] }
+  - { id: md_bof_ipv4_include_user_class, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [bof, auto-configure, ipv4, dhcp, include-user-class, { parameter: boolean }] }
+  - { id: md_bof_ipv4_timeout, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [bof, auto-configure, ipv4, dhcp, timeout, { parameter: bof_timeout_seconds }] }
+  - { id: md_delete_bof_ipv4_dhcp, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [delete, bof, auto-configure, ipv4, dhcp] }
+  - { id: md_delete_bof_ipv4_client_id, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [delete, bof, auto-configure, ipv4, dhcp, client-id] }
+  - { id: md_delete_bof_ipv4_include_user_class, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [delete, bof, auto-configure, ipv4, dhcp, include-user-class] }
+  - { id: md_delete_bof_ipv4_timeout, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [delete, bof, auto-configure, ipv4, dhcp, timeout] }
+  - { id: md_bof_ipv6_dhcp, engines: [md], enters_context: true, source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [bof, auto-configure, ipv6, dhcp] }
+  - { id: md_bof_ipv6_client_id, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [bof, auto-configure, ipv6, dhcp, client-id, { parameter: bof_client_id }] }
+  - { id: md_bof_ipv6_client_type_enterprise, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [bof, auto-configure, ipv6, dhcp, client-type, duid-enterprise] }
+  - { id: md_bof_ipv6_client_type_link_local, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [bof, auto-configure, ipv6, dhcp, client-type, duid-link-local] }
+  - { id: md_bof_ipv6_include_user_class, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [bof, auto-configure, ipv6, dhcp, include-user-class, { parameter: boolean }] }
+  - { id: md_bof_ipv6_timeout, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [bof, auto-configure, ipv6, dhcp, timeout, { parameter: bof_timeout_seconds }] }
+  - { id: md_delete_bof_ipv6_dhcp, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [delete, bof, auto-configure, ipv6, dhcp] }
+  - { id: md_delete_bof_ipv6_client_id, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [delete, bof, auto-configure, ipv6, dhcp, client-id] }
+  - { id: md_delete_bof_ipv6_client_type, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [delete, bof, auto-configure, ipv6, dhcp, client-type] }
+  - { id: md_delete_bof_ipv6_include_user_class, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [delete, bof, auto-configure, ipv6, dhcp, include-user-class] }
+  - { id: md_delete_bof_ipv6_timeout, engines: [md], source_id: nokia.sros.26_7.bof.autoconfigure, tokens: [delete, bof, auto-configure, ipv6, dhcp, timeout] }

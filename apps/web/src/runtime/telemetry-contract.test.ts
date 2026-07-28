@@ -12,7 +12,7 @@ const layout: TelemetryLayout = {
   // ABI. This fixture models the current shared page, so its descriptor must
   // advance together with the C++ layout instead of accidentally exercising
   // the rejection path in every positive projection assertion.
-  abi: 8, size: 512, sequence: 0, abiVersion: 4,
+  abi: 6, size: 512, sequence: 0, abiVersion: 4,
   workerCount: 0, workerDirectory: 0, workerBlockSize: 0, workerRole: 0,
   workerRunning: 0, workerThreadId: 0, workerTurns: 0,
   capturedFrames: 8, captureDropped: 16, droppedPackets: 24,
@@ -25,7 +25,8 @@ const layout: TelemetryLayout = {
 };
 
 function snapshot(): LabRuntimeSnapshotV6 {
-  return { abiVersion: 8, protocolVersion: 4, status: "ready",
+  return { abiVersion: 9, protocolVersion: 4, status: "ready",
+    dhcpServers: [],
     routers: [{ id: "r1", profileId: "7750-sr-1", chassis: "7750 SR-1",
       systemName: "R1", maximumEcmpPaths: 1,
       handle: { index: 0, generation: 1 }, cards: [],

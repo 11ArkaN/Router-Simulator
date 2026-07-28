@@ -1,7 +1,12 @@
 # Source: nokia.sros.26_7.srsim.supported_hardware
 release: 26.7.R1
 limits:
+  # Routing nodes share one bounded forwarding-plane registry. The separate
+  # role limits preserve the product promise of sixteen SR OS routers. Both
+  # roles consume the same bounded packet-engine registry.
   routers: 16
+  sr_routers: 16
+  dhcp_servers: 4
   hosts: 16
   # Switches are runtime topology owners, not emulated SR OS systems. The
   # project-format 5 resource contract admits one independent broadcast-domain
@@ -177,9 +182,42 @@ runtime:
   dns_resolver_max_minimise_count: 10
   dns_resolver_minimise_one_label_count: 4
   dns_resolver_max_alias_hops: 16
+  # DHCPv4 owner capacities are emulator resource contracts. SR OS does not
+  # publish one common scale for every supported chassis, card and service
+  # combination, so these values bound memory without claiming hardware scale.
+  dhcpv4_pools_per_server: 16
+  # Browser resource ceiling for independently named Base server instances.
+  # This is not presented as an SR OS platform maximum.
+  dhcpv4_servers_per_router: 16
+  dhcpv4_leases_per_server: 2048
+  # RFC 6926 section 6.3 recommends ten simultaneous Bulk Leasequery
+  # connections and a 300 second application data timeout. RFC 7724 uses a
+  # 60 second Active keepalive and 120 second receive/send timeouts.
+  dhcpv4_leasequery_connections_per_server: 10
+  dhcpv4_bulk_leasequery_data_timeout_seconds: 300
+  dhcpv4_active_leasequery_idle_seconds: 60
+  dhcpv4_active_leasequery_data_timeout_seconds: 120
+  # Failover endpoints are optional cold-path control-plane owners. These
+  # bounds protect the browser runtime and do not claim an SR OS platform
+  # scale. One relationship can retain only a bounded unacknowledged update
+  # window as required by the negotiated failover option.
+  dhcp_failover_relationships_per_server: 16
+  dhcp_failover_updates_in_flight: 256
+  dhcp_failover_options_per_message: 512
+  dhcp_failover_connections_per_server: 16
+  # Emulator credential storage bound. The historical draft does not assign a
+  # maximum shared-secret length, so this is not presented as a protocol or
+  # platform limit.
+  dhcp_failover_shared_secret_bytes: 1024
+  dhcpv4_pending_offers_per_server: 512
+  dhcpv4_declined_addresses_per_server: 512
+  dhcpv4_relay_servers_per_interface: 8
+  dhcpv4_option_occurrences_per_message: 512
+  dhcpv4_normalized_option_octets: 65507
   # DHCPv6 server state is allocated only for an enabled logical service.
   # These are emulator owner capacities, not Nokia platform scale claims.
   dhcpv6_address_pools_per_server: 8
+  dhcpv6_servers_per_router: 16
   dhcpv6_prefix_pools_per_server: 8
   dhcpv6_leases_per_server: 1024
   # SR OS service-interface DHCPv6 relay accepts at most eight server
@@ -209,6 +247,9 @@ runtime:
   # the complete identity without heap allocation in forwarding commands.
   ipv6_stable_iid_network_id_octets: 64
   host_ipv6_work_budget_actions: 8
+  # A host application drains a bounded UDP batch before returning to packet
+  # and timer work. This is an emulator fairness contract, not a DHCP limit.
+  host_application_work_budget_datagrams: 8
   # MLD repositories are bounded independently from unicast addresses. Source
   # filters can grow without multiplying every host or router port structure.
   mld_groups_per_interface: 64
@@ -263,7 +304,7 @@ runtime:
   # Every physical link direction, every router port ingress and egress, and
   # every CPM can be selected together in the maximum generated topology.
   # The generator rejects this value if hardware or topology bounds change.
-  maximum_active_capture_points: 25744
+  maximum_active_capture_points: 25776
   capture_point_name_bytes: 512
 ethernet:
   # SR OS network Ethernet ports in this modeled set use the documented
@@ -391,6 +432,19 @@ tls:
     - { sros: tls-ed448, openssl: ed448, pqc: false }
     - { sros: tls-ml-dsa87, openssl: mldsa87, pqc: true }
 protocol_defaults:
+  # SR OS 26.7 Base local DHCPv4 server and pool command references. These
+  # limits are management semantics, not RFC wire constants. Generated values
+  # keep candidate validation, completion and the runtime compiler aligned.
+  dhcpv4_server_name_bytes: 32
+  dhcpv4_description_bytes: 80
+  dhcpv4_lease_time_minimum_seconds: 10
+  dhcpv4_lease_time_maximum_seconds: 315446399
+  dhcpv4_minimum_lease_time_seconds: 600
+  dhcpv4_maximum_lease_time_seconds: 864000
+  dhcpv4_offer_time_minimum_seconds: 10
+  dhcpv4_offer_time_maximum_seconds: 600
+  dhcpv4_offer_time_seconds: 60
+  dhcpv4_maximum_declined_default: 64
   # RFC 2328 section 9 and the SR OS 26.7 interface command defaults. A
   # configured metric of zero means no explicit metric. The operational cost
   # is then calculated from reference bandwidth and actual interface speed.
@@ -580,7 +634,10 @@ protocol_defaults:
   checkpoint_max_relative_deadline_seconds: 86400
 profiles:
   - id: 7750-sr-1
+    role: router
     chassis: 7750 SR-1
+    management_port: true
+    bof_autoconfigure: true
     fixed: true
     card_slots: 0
     control:
@@ -607,7 +664,10 @@ profiles:
       mdas: [me6-100gb-qsfp28, me12-100gb-qsfp28]
 
   - id: 7750-sr-7
+    role: router
     chassis: 7750 SR-7
+    management_port: true
+    bof_autoconfigure: true
     fixed: false
     card_slots: 5
     control:
@@ -667,7 +727,10 @@ profiles:
       mdas: [me6-100gb-qsfp28]
 
   - id: 7750-sr-12
+    role: router
     chassis: 7750 SR-12
+    management_port: true
+    bof_autoconfigure: false
     fixed: false
     card_slots: 10
     control:
@@ -728,7 +791,34 @@ profiles:
       card: iom5-e
       mdas: [me6-100gb-qsfp28]
 
+  # This vendor-neutral appliance profile is an emulator resource contract,
+  # not a claim about Nokia hardware. It deliberately uses the same physical
+  # inventory machinery as routers so every interface owns a real port, queue
+  # and link while the runtime disables transit forwarding for this role.
+  - id: generic-dhcp-server-8
+    role: dhcp-server
+    chassis: Dedicated DHCP Server
+    management_port: false
+    bof_autoconfigure: false
+    fixed: true
+    card_slots: 0
+    control:
+      slot: system
+      types: [server-control]
+    cards:
+      - type: server-nic-8
+        fixed: true
+        mda_slots: 1
+        mdas: [server-8x10g]
+    default_hardware:
+      card: server-nic-8
+      mdas: [server-8x10g]
+
 mdas:
+  # The generic server NIC is intentionally profile data. Runtime and UI code
+  # derive the available ports from this record instead of assuming two or any
+  # other fixed number of server interfaces.
+  server-8x10g: { ethernet: true, ports: [{ count: 8, speeds_mbps: [10000, 100000] }] }
   isa2-aa: { ethernet: false, ports: [] }
   isa2-bb: { ethernet: false, ports: [] }
   isa2-tunnel: { ethernet: false, ports: [] }

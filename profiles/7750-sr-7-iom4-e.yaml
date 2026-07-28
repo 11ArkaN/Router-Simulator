@@ -163,7 +163,7 @@ cli_defaults:
 abi:
   # Snapshot ABI 8 adds canonical OSPF configuration intent after ABI 7 added
   # profile-bound Ethernet switch forwarding state.
-  runtime_snapshot: 8
+  runtime_snapshot: 9
   # Telemetry ABI 6 adds IPv6 host operational state to the shared directory.
   telemetry: 6
   # Protocol 4 adds dual-stack host identity and rejects older field graphs.

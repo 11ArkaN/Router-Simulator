@@ -5,6 +5,9 @@
 #include "router/lab_runtime.hpp"
 
 #include "cli/cli_internal.hpp"
+#include "cli/bof_cli_configuration.hpp"
+#include "cli/dhcpv4_cli_configuration.hpp"
+#include "cli/dhcpv6_cli_configuration.hpp"
 #include "cli/ies_cli_configuration.hpp"
 #include "cli/ipsec_cli_configuration.hpp"
 #include "cli/ospf_cli_configuration.hpp"
@@ -130,6 +133,22 @@ private:
   // The adapter borrows the Worker-owned vault only for one serialized CLI
   // edit. It is never retained by a candidate or sent to another shard.
   vault::SecretVault *owner_{};
+};
+
+class Dhcpv6EntropySource final : public dhcpv6_cli::EntropySource,
+                                  public bof_cli::EntropySource {
+public:
+  [[nodiscard]] bool
+  fill(std::span<std::uint8_t> output) noexcept override {
+    // OpenSSL is backed by the browser or native operating-system CSPRNG.
+    // Refusing an oversized request avoids narrowing size_t into RAND_bytes'
+    // signed length and makes entropy failure an atomic CLI error.
+    if (output.size() >
+        static_cast<std::size_t>(std::numeric_limits<int>::max()))
+      return false;
+    return output.empty() ||
+           RAND_bytes(output.data(), static_cast<int>(output.size())) == 1;
+  }
 };
 
 class OspfVaultSink final : public ospf_cli::SecretSink {
@@ -312,6 +331,25 @@ bool hexadecimal_octets(std::string_view text,
     if (!high || !low)
       return false;
     output[index] = static_cast<std::uint8_t>((*high << 4U) | *low);
+  }
+  return true;
+}
+
+bool hexadecimal_octets_vector(std::string_view text,
+                               std::vector<std::uint8_t> &output,
+                               std::size_t maximum_octets,
+                               std::size_t minimum_octets = 0U) {
+  if ((text.size() & 1U) != 0U ||
+      text.size() / 2U < minimum_octets ||
+      text.size() / 2U > maximum_octets)
+    return false;
+  try {
+    std::vector<std::uint8_t> decoded(text.size() / 2U);
+    if (!hexadecimal_octets(text, decoded))
+      return false;
+    output = std::move(decoded);
+  } catch (...) {
+    return false;
   }
   return true;
 }
@@ -1352,11 +1390,49 @@ packet::Ipv4 ipv4_bytes(std::uint32_t value) noexcept {
           static_cast<std::uint8_t>(value)};
 }
 
+std::uint32_t ipv4_value(const packet::Ipv4 &value) noexcept {
+  return static_cast<std::uint32_t>(value[0]) << 24U |
+         static_cast<std::uint32_t>(value[1]) << 16U |
+         static_cast<std::uint32_t>(value[2]) << 8U |
+         static_cast<std::uint32_t>(value[3]);
+}
+
 std::string ipv4_text(std::uint32_t value) {
   return std::to_string(value >> 24U) + '.' +
          std::to_string(value >> 16U & 255U) + '.' +
          std::to_string(value >> 8U & 255U) + '.' +
          std::to_string(value & 255U);
+}
+
+std::string_view
+dhcpv4_client_state_text(dhcpv4::ClientState state) noexcept {
+  using enum dhcpv4::ClientState;
+  switch (state) {
+  case stopped: return "stopped";
+  case init: return "init";
+  case selecting: return "selecting";
+  case requesting: return "requesting";
+  case checking: return "checking";
+  case declining: return "declining";
+  case bound: return "bound";
+  case renewing: return "renewing";
+  case rebinding: return "rebinding";
+  case init_reboot: return "init-reboot";
+  case rebooting: return "rebooting";
+  case releasing: return "releasing";
+  case informing: return "informing";
+  case failed: return "failed";
+  }
+  return "failed";
+}
+
+std::uint64_t remaining_milliseconds(std::int64_t nanoseconds) noexcept {
+  // Expired deadlines display as zero. Only the client owner advances the
+  // state machine; presentation cannot extend a lease through an unsigned
+  // conversion of a negative duration.
+  return nanoseconds > 0
+             ? static_cast<std::uint64_t>(nanoseconds / 1'000'000)
+             : 0U;
 }
 
 std::string port_id(std::uint16_t ordinal) {
@@ -1660,6 +1736,166 @@ bool dhcpv6_lease_show_command(cli_schema::CommandId id) noexcept {
   default:
     return false;
   }
+}
+
+bool dhcpv4_server_show_command(cli_schema::CommandId id) noexcept {
+  using enum cli_schema::CommandId;
+  switch (id) {
+  case show_dhcpv4_server_leases:
+  case show_dhcpv4_server_leases_detail:
+  case show_dhcpv4_server_leases_prefix:
+  case show_dhcpv4_server_leases_prefix_detail:
+  case show_dhcpv4_server_statistics:
+  case show_dhcpv4_server_declined:
+  case show_dhcpv4_server_declined_detail:
+  case show_dhcpv4_server_sticky:
+  case show_dhcpv4_server_sticky_detail:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool dhcpv4_server_clear_command(cli_schema::CommandId id) noexcept {
+  using enum cli_schema::CommandId;
+  switch (id) {
+  case clear_dhcpv4_server_leases_all:
+  case clear_dhcpv4_server_leases_all_state:
+  case clear_dhcpv4_server_leases_prefix:
+  case clear_dhcpv4_server_leases_prefix_state:
+  case clear_dhcpv4_server_statistics:
+  case reset_dhcpv4_server_leases_all:
+  case reset_dhcpv4_server_leases_all_state:
+  case reset_dhcpv4_server_lease_address:
+  case reset_dhcpv4_server_lease_address_state:
+  case reset_dhcpv4_server_statistics:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool dhcpv6_server_show_command(cli_schema::CommandId id) noexcept {
+  using enum cli_schema::CommandId;
+  switch (id) {
+  case show_dhcpv6_server_leases:
+  case show_dhcpv6_server_leases_detail:
+  case show_dhcpv6_server_leases_prefix:
+  case show_dhcpv6_server_leases_prefix_detail:
+  case show_dhcpv6_server_leases_type:
+  case show_dhcpv6_server_leases_state:
+  case show_dhcpv6_server_leases_type_state:
+  case show_dhcpv6_server_leases_md:
+  case show_dhcpv6_server_leases_md_detail:
+  case show_dhcpv6_server_leases_md_prefix:
+  case show_dhcpv6_server_leases_md_type:
+  case show_dhcpv6_server_leases_md_state:
+  case show_dhcpv6_server_statistics:
+  case show_dhcpv6_server_statistics_md:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool dhcpv6_server_clear_command(cli_schema::CommandId id) noexcept {
+  using enum cli_schema::CommandId;
+  switch (id) {
+  case clear_dhcpv6_server_leases_all:
+  case clear_dhcpv6_server_leases_all_type:
+  case clear_dhcpv6_server_leases_all_state:
+  case clear_dhcpv6_server_leases_all_type_state:
+  case clear_dhcpv6_server_leases_prefix:
+  case reset_dhcpv6_server_leases_all:
+  case reset_dhcpv6_server_leases_all_type:
+  case reset_dhcpv6_server_leases_all_state:
+  case reset_dhcpv6_server_leases_prefix:
+  case reset_dhcpv6_server_lease_address:
+  case clear_dhcpv6_server_statistics:
+  case reset_dhcpv6_server_statistics:
+    return true;
+  default:
+    return false;
+  }
+}
+
+std::optional<dhcpv6::OperationalLeaseState>
+dhcpv6_operational_lease_state(std::string_view value) noexcept {
+  using enum dhcpv6::OperationalLeaseState;
+  if (value == "advertised")
+    return advertised;
+  if (value == "stable")
+    return stable;
+  if (value == "remove-pending")
+    return remove_pending;
+  if (value == "held")
+    return held;
+  if (value == "internal")
+    return internal;
+  if (value == "internal-orphan")
+    return internal_orphan;
+  if (value == "internal-offered")
+    return internal_offered;
+  if (value == "internal-held")
+    return internal_held;
+  return std::nullopt;
+}
+
+std::optional<dhcpv6::LeaseClearFilter::Type>
+dhcpv6_operational_lease_type(std::string_view value) noexcept {
+  using Type = dhcpv6::LeaseClearFilter::Type;
+  if (value == "pd")
+    return Type::pd;
+  if (value == "slaac")
+    return Type::slaac;
+  if (value == "wan" || value == "wan-host")
+    return Type::wan;
+  return std::nullopt;
+}
+
+std::optional<dhcpv4::OperationalLeaseState>
+dhcpv4_operational_lease_state(std::string_view text) noexcept {
+  using enum dhcpv4::OperationalLeaseState;
+  if (text == "offered")
+    return offered;
+  if (text == "stable")
+    return stable;
+  if (text == "force-renew-pending")
+    return force_renew_pending;
+  if (text == "remove-pending")
+    return remove_pending;
+  if (text == "held")
+    return held;
+  if (text == "internal")
+    return internal;
+  if (text == "internal-orphan")
+    return internal_orphan;
+  if (text == "internal-offered")
+    return internal_offered;
+  if (text == "internal-held")
+    return internal_held;
+  if (text == "sticky")
+    return sticky;
+  return std::nullopt;
+}
+
+std::string_view
+dhcpv4_operational_state(dhcpv4::BindingState state) noexcept {
+  using enum dhcpv4::BindingState;
+  switch (state) {
+  case pending_offer:
+    return "offered";
+  case active:
+    return "stable";
+  case expired:
+  case released:
+  case declined:
+  case conflict:
+    return "held";
+  case reserved:
+    return "internal";
+  }
+  return "internal";
 }
 
 bool dhcpv6_lease_clear_command(cli_schema::CommandId id) noexcept {
@@ -2066,8 +2302,16 @@ bool md_mld_configuration_command(cli_schema::CommandId id) noexcept {
   }
 }
 
+bool dhcpv6_interface_server_command(cli_schema::CommandId id) noexcept;
+
 bool classic_configuration_command(cli_schema::CommandId id) noexcept {
   using enum cli_schema::CommandId;
+  if (dhcpv4_cli::is_classic_command(id))
+    return true;
+  if (dhcpv6_interface_server_command(id))
+    return true;
+  if (dhcpv6_cli::is_classic_command(id))
+    return true;
   if (ospf_cli::is_classic_command(id))
     return true;
   if (ipsec_cli::is_classic_command(id))
@@ -2102,6 +2346,37 @@ bool classic_configuration_command(cli_schema::CommandId id) noexcept {
   case classic_interface_no_arp_retry_timer:
   case classic_interface_no_port:
   case classic_interface_no_address:
+  case classic_dhcpv4_relay_shutdown:
+  case classic_dhcpv4_relay_no_shutdown:
+  case classic_dhcpv4_relay_description:
+  case classic_dhcpv4_relay_no_description:
+  case classic_dhcpv4_relay_gi_address:
+  case classic_dhcpv4_relay_no_gi_address:
+  case classic_dhcpv4_relay_server:
+  case classic_dhcpv4_relay_no_server:
+  case classic_dhcpv4_relay_source_auto:
+  case classic_dhcpv4_relay_source_gi:
+  case classic_dhcpv4_relay_no_source:
+  case classic_dhcpv4_relay_trusted:
+  case classic_dhcpv4_relay_no_trusted:
+  case classic_dhcpv4_relay_plain_bootp:
+  case classic_dhcpv4_relay_no_plain_bootp:
+  case classic_dhcpv4_relay_release_gi:
+  case classic_dhcpv4_relay_no_release_gi:
+  case classic_dhcpv4_option82_keep:
+  case classic_dhcpv4_option82_replace:
+  case classic_dhcpv4_option82_drop:
+  case classic_dhcpv4_option82_no_action:
+  case classic_dhcpv4_circuit_none:
+  case classic_dhcpv4_circuit_ascii_tuple:
+  case classic_dhcpv4_circuit_if_name:
+  case classic_dhcpv4_circuit_ifindex:
+  case classic_dhcpv4_circuit_port_id:
+  case classic_dhcpv4_circuit_no:
+  case classic_dhcpv4_remote_none:
+  case classic_dhcpv4_remote_mac:
+  case classic_dhcpv4_remote_ascii:
+  case classic_dhcpv4_remote_no:
   case classic_interface_ipv6_address:
   case classic_interface_ipv6_address_dad_disable:
   case classic_interface_ipv6_address_primary_preference:
@@ -2224,8 +2499,95 @@ bool classic_configuration_command(cli_schema::CommandId id) noexcept {
   }
 }
 
+bool dhcpv4_relay_configuration_command(
+    cli_schema::CommandId id) noexcept {
+  using enum cli_schema::CommandId;
+  switch (id) {
+  case md_dhcpv4_relay_enable:
+  case md_dhcpv4_relay_disable:
+  case md_dhcpv4_relay_description:
+  case md_dhcpv4_relay_gi_address:
+  case md_dhcpv4_relay_server:
+  case md_dhcpv4_relay_source_auto:
+  case md_dhcpv4_relay_source_gi:
+  case md_dhcpv4_relay_trusted:
+  case md_dhcpv4_relay_plain_bootp:
+  case md_dhcpv4_relay_release_gi:
+  case md_dhcpv4_option82_keep:
+  case md_dhcpv4_option82_replace:
+  case md_dhcpv4_option82_drop:
+  case md_dhcpv4_circuit_none:
+  case md_dhcpv4_circuit_ascii_tuple:
+  case md_dhcpv4_circuit_if_name:
+  case md_dhcpv4_circuit_ifindex:
+  case md_dhcpv4_circuit_port_id:
+  case md_dhcpv4_remote_none:
+  case md_dhcpv4_remote_mac:
+  case md_dhcpv4_remote_ascii:
+  case md_delete_dhcpv4_relay:
+  case md_delete_dhcpv4_relay_description:
+  case md_delete_dhcpv4_relay_gi_address:
+  case md_delete_dhcpv4_relay_server:
+  case md_delete_dhcpv4_relay_source:
+  case md_delete_dhcpv4_relay_trusted:
+  case md_delete_dhcpv4_relay_plain_bootp:
+  case md_delete_dhcpv4_relay_release_gi:
+  case md_delete_dhcpv4_option82_action:
+  case md_delete_dhcpv4_circuit:
+  case md_delete_dhcpv4_remote:
+  case classic_dhcpv4_relay_shutdown:
+  case classic_dhcpv4_relay_no_shutdown:
+  case classic_dhcpv4_relay_description:
+  case classic_dhcpv4_relay_no_description:
+  case classic_dhcpv4_relay_gi_address:
+  case classic_dhcpv4_relay_no_gi_address:
+  case classic_dhcpv4_relay_server:
+  case classic_dhcpv4_relay_no_server:
+  case classic_dhcpv4_relay_source_auto:
+  case classic_dhcpv4_relay_source_gi:
+  case classic_dhcpv4_relay_no_source:
+  case classic_dhcpv4_relay_trusted:
+  case classic_dhcpv4_relay_no_trusted:
+  case classic_dhcpv4_relay_plain_bootp:
+  case classic_dhcpv4_relay_no_plain_bootp:
+  case classic_dhcpv4_relay_release_gi:
+  case classic_dhcpv4_relay_no_release_gi:
+  case classic_dhcpv4_option82_keep:
+  case classic_dhcpv4_option82_replace:
+  case classic_dhcpv4_option82_drop:
+  case classic_dhcpv4_option82_no_action:
+  case classic_dhcpv4_circuit_none:
+  case classic_dhcpv4_circuit_ascii_tuple:
+  case classic_dhcpv4_circuit_if_name:
+  case classic_dhcpv4_circuit_ifindex:
+  case classic_dhcpv4_circuit_port_id:
+  case classic_dhcpv4_circuit_no:
+  case classic_dhcpv4_remote_none:
+  case classic_dhcpv4_remote_mac:
+  case classic_dhcpv4_remote_ascii:
+  case classic_dhcpv4_remote_no:
+    return true;
+  default:
+    return false;
+  }
+}
+
+bool dhcpv6_interface_server_command(cli_schema::CommandId id) noexcept {
+  using enum cli_schema::CommandId;
+  return id == md_interface_dhcpv6_local_server ||
+         id == md_delete_interface_dhcpv6_local_server ||
+         id == classic_interface_dhcpv6_local_server ||
+         id == classic_interface_no_dhcpv6_local_server;
+}
+
 bool md_configuration_command(cli_schema::CommandId id) noexcept {
   using enum cli_schema::CommandId;
+  if (bof_cli::is_md_command(id))
+    return true;
+  if (dhcpv4_cli::is_md_command(id))
+    return true;
+  if (dhcpv6_cli::is_md_command(id))
+    return true;
   if (ospf_cli::is_md_command(id))
     return true;
   if (ipsec_cli::is_md_command(id))
@@ -2253,6 +2615,40 @@ bool md_configuration_command(cli_schema::CommandId id) noexcept {
   case md_interface_ipv4_primary:
   case md_interface_ipv4_arp_timeout:
   case md_interface_ipv4_arp_retry_timer:
+  case md_interface_dhcpv6_local_server:
+  case md_delete_interface_dhcpv6_local_server:
+  case md_dhcpv4_relay_enable:
+  case md_dhcpv4_relay_disable:
+  case md_dhcpv4_relay_description:
+  case md_dhcpv4_relay_gi_address:
+  case md_dhcpv4_relay_server:
+  case md_dhcpv4_relay_source_auto:
+  case md_dhcpv4_relay_source_gi:
+  case md_dhcpv4_relay_trusted:
+  case md_dhcpv4_relay_plain_bootp:
+  case md_dhcpv4_relay_release_gi:
+  case md_dhcpv4_option82_keep:
+  case md_dhcpv4_option82_replace:
+  case md_dhcpv4_option82_drop:
+  case md_dhcpv4_circuit_none:
+  case md_dhcpv4_circuit_ascii_tuple:
+  case md_dhcpv4_circuit_if_name:
+  case md_dhcpv4_circuit_ifindex:
+  case md_dhcpv4_circuit_port_id:
+  case md_dhcpv4_remote_none:
+  case md_dhcpv4_remote_mac:
+  case md_dhcpv4_remote_ascii:
+  case md_delete_dhcpv4_relay:
+  case md_delete_dhcpv4_relay_description:
+  case md_delete_dhcpv4_relay_gi_address:
+  case md_delete_dhcpv4_relay_server:
+  case md_delete_dhcpv4_relay_source:
+  case md_delete_dhcpv4_relay_trusted:
+  case md_delete_dhcpv4_relay_plain_bootp:
+  case md_delete_dhcpv4_relay_release_gi:
+  case md_delete_dhcpv4_option82_action:
+  case md_delete_dhcpv4_circuit:
+  case md_delete_dhcpv4_remote:
   case md_delete_interface_port:
   case md_delete_interface_ipv4_primary:
   case md_delete_interface_ipv4_arp_timeout:
@@ -2674,6 +3070,281 @@ ospf_area_identifier(std::string_view text) noexcept {
 void md_indent(std::ostringstream &out, std::size_t depth) {
   for (std::size_t index{}; index < depth; ++index)
     out << "    ";
+}
+
+void md_dhcpv6_prefix_info(
+    std::ostringstream &out,
+    const dhcpv6::configuration::Prefix &prefix,
+    const dhcpv6::configuration::Server &server, std::size_t depth,
+    bool detail) {
+  // Presence bits distinguish inherited values from explicit overrides.
+  // `info detail` resolves inheritance at the server renderer before calling
+  // this function, while ordinary `info` prints only configured leaves.
+  if (prefix.drain_configured || detail) {
+    md_indent(out, depth);
+    out << "drain " << (prefix.drain ? "true" : "false") << '\n';
+  }
+  if (prefix.delegated_prefix_configured || detail) {
+    md_indent(out, depth);
+    out << "prefix-type pd "
+        << (prefix.delegated_prefix ? "true" : "false") << '\n';
+  }
+  if (prefix.wan_host_configured || detail) {
+    md_indent(out, depth);
+    out << "prefix-type wan-host "
+        << (prefix.wan_host ? "true" : "false") << '\n';
+  }
+  const auto scalar = [&](std::string_view name, std::uint32_t value,
+                          bool configured) {
+    if (!configured && !detail)
+      return;
+    md_indent(out, depth);
+    out << name << ' ' << value << '\n';
+  };
+  scalar("preferred-lifetime",
+         prefix.preferred_lifetime_configured
+             ? prefix.preferred_lifetime_seconds
+             : server.default_preferred_lifetime_seconds,
+         prefix.preferred_lifetime_configured);
+  scalar("valid-lifetime",
+         prefix.valid_lifetime_configured
+             ? prefix.valid_lifetime_seconds
+             : server.default_valid_lifetime_seconds,
+         prefix.valid_lifetime_configured);
+  scalar("renew-time",
+         prefix.renewal_time_configured
+             ? prefix.renewal_time_seconds
+             : server.default_renewal_time_seconds,
+         prefix.renewal_time_configured);
+  scalar("rebind-time",
+         prefix.rebinding_time_configured
+             ? prefix.rebinding_time_seconds
+             : server.default_rebinding_time_seconds,
+         prefix.rebinding_time_configured);
+}
+
+void md_dhcpv6_pool_info(
+    std::ostringstream &out, const dhcpv6::configuration::Pool &pool,
+    const dhcpv6::configuration::Server &server, std::size_t depth,
+    bool detail) {
+  if (!pool.description.empty()) {
+    md_indent(out, depth);
+    out << "description \"" << pool.description << "\"\n";
+  }
+  if (pool.delegated_length_configured ||
+      pool.minimum_delegated_length_configured ||
+      pool.maximum_delegated_length_configured || detail) {
+    md_indent(out, depth);
+    out << "delegated-prefix {\n";
+    if (pool.delegated_length_configured || detail) {
+      md_indent(out, depth + 1U);
+      out << "length " << static_cast<unsigned>(pool.delegated_length)
+          << '\n';
+    }
+    if (pool.minimum_delegated_length_configured || detail) {
+      md_indent(out, depth + 1U);
+      out << "minimum "
+          << static_cast<unsigned>(pool.minimum_delegated_length) << '\n';
+    }
+    if (pool.maximum_delegated_length_configured || detail) {
+      md_indent(out, depth + 1U);
+      out << "maximum "
+          << static_cast<unsigned>(pool.maximum_delegated_length) << '\n';
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  for (const auto &prefix : pool.prefixes) {
+    md_indent(out, depth);
+    out << "prefix " << ip::format_ipv6(prefix.aggregate.network) << '/'
+        << static_cast<unsigned>(prefix.aggregate.length) << " {\n";
+    md_dhcpv6_prefix_info(out, prefix, server, depth + 1U, detail);
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+void md_dhcpv6_server_info(
+    std::ostringstream &out, const dhcpv6::configuration::Server &server,
+    std::size_t depth, bool detail) {
+  if (server.admin_state_configured || detail) {
+    md_indent(out, depth);
+    out << "admin-state "
+        << (server.admin_enabled ? "enable" : "disable") << '\n';
+  }
+  if (!server.description.empty()) {
+    md_indent(out, depth);
+    out << "description \"" << server.description << "\"\n";
+  }
+  if (server.default_preferred_lifetime_configured ||
+      server.default_valid_lifetime_configured ||
+      server.default_renewal_time_configured ||
+      server.default_rebinding_time_configured || detail) {
+    md_indent(out, depth);
+    out << "defaults {\n";
+    const auto scalar = [&](std::string_view name, std::uint32_t value,
+                            bool configured) {
+      if (!configured && !detail)
+        return;
+      md_indent(out, depth + 1U);
+      out << name << ' ' << value << '\n';
+    };
+    scalar("preferred-lifetime",
+           server.default_preferred_lifetime_seconds,
+           server.default_preferred_lifetime_configured);
+    scalar("valid-lifetime", server.default_valid_lifetime_seconds,
+           server.default_valid_lifetime_configured);
+    scalar("renew-time", server.default_renewal_time_seconds,
+           server.default_renewal_time_configured);
+    scalar("rebind-time", server.default_rebinding_time_seconds,
+           server.default_rebinding_time_configured);
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  if (server.rapid_commit_configured || detail) {
+    md_indent(out, depth);
+    out << "ignore-rapid-commit "
+        << (server.rapid_commit ? "false" : "true") << '\n';
+  }
+  if (server.lease_query_configured || detail) {
+    md_indent(out, depth);
+    out << "lease-query " << (server.lease_query ? "true" : "false")
+        << '\n';
+  }
+  for (const auto &pool : server.pools) {
+    md_indent(out, depth);
+    out << "pool \"" << pool.name << "\" {\n";
+    md_dhcpv6_pool_info(out, pool, server, depth + 1U, detail);
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+void md_dhcpv6_servers_info(
+    std::ostringstream &out,
+    const dhcpv6::configuration::RouterConfiguration &configuration,
+    std::size_t depth, bool detail) {
+  if (configuration.servers.empty() && !detail)
+    return;
+  md_indent(out, depth);
+  out << "dhcp-server {\n";
+  for (const auto &server : configuration.servers) {
+    md_indent(out, depth + 1U);
+    out << "dhcpv6 \"" << server.name << "\" {\n";
+    md_dhcpv6_server_info(out, server, depth + 2U, detail);
+    md_indent(out, depth + 1U);
+    out << "}\n";
+  }
+  md_indent(out, depth);
+  out << "}\n";
+}
+
+std::optional<std::string> md_dhcpv6_configuration_info(
+    const dhcpv6::configuration::RouterConfiguration &configuration,
+    std::string_view path, bool detail) {
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->size() < 4U ||
+      (*tokens)[0] != "configure" || (*tokens)[1] != "router" ||
+      (*tokens)[2] != "Base" || (*tokens)[3] != "dhcp-server")
+    return std::nullopt;
+
+  std::ostringstream out;
+  if (tokens->size() == 4U) {
+    for (const auto &server : configuration.servers) {
+      out << "dhcpv6 \"" << server.name << "\" {\n";
+      md_dhcpv6_server_info(out, server, 1U, detail);
+      out << "}\n";
+    }
+    return out.str();
+  }
+  if ((*tokens)[4] != "dhcpv6")
+    return std::nullopt;
+  if (tokens->size() == 5U) {
+    for (const auto &server : configuration.servers) {
+      out << '"' << server.name << "\" {\n";
+      md_dhcpv6_server_info(out, server, 1U, detail);
+      out << "}\n";
+    }
+    return out.str();
+  }
+
+  const auto server = std::ranges::find(configuration.servers, (*tokens)[5],
+                                        &dhcpv6::configuration::Server::name);
+  if (server == configuration.servers.end())
+    return std::string{};
+  if (tokens->size() == 6U) {
+    md_dhcpv6_server_info(out, *server, 0U, detail);
+    return out.str();
+  }
+  if ((*tokens)[6] == "defaults") {
+    if (tokens->size() != 7U)
+      return std::nullopt;
+    const auto scalar = [&](std::string_view name, std::uint32_t value,
+                            bool configured) {
+      if (configured || detail)
+        out << name << ' ' << value << '\n';
+    };
+    scalar("preferred-lifetime",
+           server->default_preferred_lifetime_seconds,
+           server->default_preferred_lifetime_configured);
+    scalar("valid-lifetime", server->default_valid_lifetime_seconds,
+           server->default_valid_lifetime_configured);
+    scalar("renew-time", server->default_renewal_time_seconds,
+           server->default_renewal_time_configured);
+    scalar("rebind-time", server->default_rebinding_time_seconds,
+           server->default_rebinding_time_configured);
+    return out.str();
+  }
+  if ((*tokens)[6] != "pool" || tokens->size() < 8U)
+    return std::nullopt;
+  const auto pool = std::ranges::find(server->pools, (*tokens)[7],
+                                      &dhcpv6::configuration::Pool::name);
+  if (pool == server->pools.end())
+    return std::string{};
+  if (tokens->size() == 8U) {
+    md_dhcpv6_pool_info(out, *pool, *server, 0U, detail);
+    return out.str();
+  }
+  if ((*tokens)[8] == "delegated-prefix" && tokens->size() == 9U) {
+    if (pool->delegated_length_configured || detail)
+      out << "length " << static_cast<unsigned>(pool->delegated_length)
+          << '\n';
+    if (pool->minimum_delegated_length_configured || detail)
+      out << "minimum "
+          << static_cast<unsigned>(pool->minimum_delegated_length) << '\n';
+    if (pool->maximum_delegated_length_configured || detail)
+      out << "maximum "
+          << static_cast<unsigned>(pool->maximum_delegated_length) << '\n';
+    return out.str();
+  }
+  if ((*tokens)[8] != "prefix" || tokens->size() < 10U)
+    return std::nullopt;
+  const auto key = ip::parse_ip_prefix((*tokens)[9]);
+  if (!key || key->network.family != ip::AddressFamily::ipv6)
+    return std::string{};
+  packet::Ipv6 network{};
+  std::ranges::copy(key->network.bytes, network.begin());
+  const ip::Ipv6Prefix canonical{.network = ip::mask(network, key->length),
+                                 .length = key->length};
+  const auto prefix = std::ranges::find(pool->prefixes, canonical,
+                                        &dhcpv6::configuration::Prefix::
+                                            aggregate);
+  if (prefix == pool->prefixes.end())
+    return std::string{};
+  if (tokens->size() == 10U) {
+    md_dhcpv6_prefix_info(out, *prefix, *server, 0U, detail);
+    return out.str();
+  }
+  if ((*tokens)[10] == "prefix-type" && tokens->size() == 11U) {
+    if (prefix->delegated_prefix_configured || detail)
+      out << "pd " << (prefix->delegated_prefix ? "true" : "false")
+          << '\n';
+    if (prefix->wan_host_configured || detail)
+      out << "wan-host " << (prefix->wan_host ? "true" : "false")
+          << '\n';
+    return out.str();
+  }
+  return std::nullopt;
 }
 
 void md_ospf_interface_info(
@@ -3108,6 +3779,134 @@ unsolicited_learning_text(Ipv6UnsolicitedLearning value) noexcept {
   return {};
 }
 
+std::string_view
+dhcpv4_relay_action_text(
+    dhcpv4::ExistingRelayInformationAction action) noexcept {
+  switch (action) {
+  case dhcpv4::ExistingRelayInformationAction::keep:
+    return "keep";
+  case dhcpv4::ExistingRelayInformationAction::replace:
+    return "replace";
+  case dhcpv4::ExistingRelayInformationAction::drop:
+    return "drop";
+  }
+  return {};
+}
+
+std::string_view
+dhcpv4_circuit_id_text(dhcpv4::CircuitIdSource source) noexcept {
+  switch (source) {
+  case dhcpv4::CircuitIdSource::none:
+    return "none";
+  case dhcpv4::CircuitIdSource::ascii_tuple:
+    return "ascii-tuple";
+  case dhcpv4::CircuitIdSource::interface_name:
+    return "if-name";
+  case dhcpv4::CircuitIdSource::interface_index:
+    return "ifindex";
+  case dhcpv4::CircuitIdSource::port_id:
+    return "port-id";
+  case dhcpv4::CircuitIdSource::vlan_ascii_tuple:
+    return "vlan-ascii-tuple";
+  }
+  return {};
+}
+
+template <typename Relay>
+void md_dhcpv4_relay_info(std::ostringstream &out, const Relay &relay,
+                          std::size_t depth, bool detail) {
+  // This renderer consumes the canonical configuration rather than CLI
+  // tokens. MD-CLI and classic CLI therefore expose the same effective
+  // policy while retaining their respective syntax and delimiters.
+  md_indent(out, depth);
+  out << "admin-state " << (relay.admin_enabled ? "enable" : "disable")
+      << '\n';
+  if (!relay.description.empty()) {
+    md_indent(out, depth);
+    out << "description \"" << relay.description << "\"\n";
+  }
+  if (relay.gateway_address_configured) {
+    md_indent(out, depth);
+    out << "gi-address " << ipv4_text(ipv4_value(relay.gateway_address))
+        << '\n';
+  }
+  for (const auto &server : relay.servers) {
+    md_indent(out, depth);
+    out << "server " << ipv4_text(ipv4_value(server.address)) << '\n';
+  }
+  if (detail ||
+      relay.source_address != dhcpv4::RelaySourceAddress::automatic) {
+    md_indent(out, depth);
+    out << "src-ip-addr "
+        << (relay.source_address == dhcpv4::RelaySourceAddress::automatic
+                ? "auto"
+                : "gi-address")
+        << '\n';
+  }
+  if (detail || relay.trusted_ingress) {
+    md_indent(out, depth);
+    out << "trusted " << (relay.trusted_ingress ? "true" : "false") << '\n';
+  }
+  if (detail || relay.relay_plain_bootp) {
+    md_indent(out, depth);
+    out << "relay-plain-bootp "
+        << (relay.relay_plain_bootp ? "true" : "false") << '\n';
+  }
+  if (detail || relay.release_include_gateway_address) {
+    md_indent(out, depth);
+    out << "release-include-gi-address "
+        << (relay.release_include_gateway_address ? "true" : "false")
+        << '\n';
+  }
+
+  const bool option_82 =
+      detail ||
+      relay.existing_information !=
+          dhcpv4::ExistingRelayInformationAction::keep ||
+      relay.circuit_id_source != dhcpv4::CircuitIdSource::ascii_tuple ||
+      relay.remote_id_source != dhcpv4::RemoteIdSource::none;
+  if (!option_82)
+    return;
+  md_indent(out, depth);
+  out << "option-82 {\n";
+  if (detail ||
+      relay.existing_information !=
+          dhcpv4::ExistingRelayInformationAction::keep) {
+    md_indent(out, depth + 1U);
+    out << "action "
+        << dhcpv4_relay_action_text(relay.existing_information) << '\n';
+  }
+  if (detail ||
+      relay.circuit_id_source != dhcpv4::CircuitIdSource::ascii_tuple) {
+    md_indent(out, depth + 1U);
+    out << "circuit-id {\n";
+    md_indent(out, depth + 2U);
+    out << dhcpv4_circuit_id_text(relay.circuit_id_source) << '\n';
+    md_indent(out, depth + 1U);
+    out << "}\n";
+  }
+  if (detail || relay.remote_id_source != dhcpv4::RemoteIdSource::none) {
+    md_indent(out, depth + 1U);
+    out << "remote-id {\n";
+    md_indent(out, depth + 2U);
+    switch (relay.remote_id_source) {
+    case dhcpv4::RemoteIdSource::none:
+      out << "none\n";
+      break;
+    case dhcpv4::RemoteIdSource::ascii_string:
+      out << "ascii-string \"" << relay.remote_id_ascii << "\"\n";
+      break;
+    case dhcpv4::RemoteIdSource::client_mac:
+      out << "mac\n";
+      break;
+    }
+    md_indent(out, depth + 1U);
+    out << "}\n";
+  }
+  md_indent(out, depth);
+  out << "}\n";
+}
+
 template <typename Interface>
 void md_base_interface_info(std::ostringstream &out,
                             const Interface &interface, std::size_t depth,
@@ -3125,7 +3924,7 @@ void md_base_interface_info(std::ostringstream &out,
   if (interface.port_configured)
     leaf("port", interface.port_id);
 
-  if (interface.address_configured || detail) {
+  if (interface.address_configured || interface.dhcpv4_relay || detail) {
     md_indent(out, depth);
     out << "ipv4 {\n";
     if (interface.address_configured) {
@@ -3181,6 +3980,13 @@ void md_base_interface_info(std::ostringstream &out,
       md_indent(out, depth + 1U);
       out << "}\n";
     }
+    if (interface.dhcpv4_relay) {
+      md_indent(out, depth + 1U);
+      out << "dhcp {\n";
+      md_dhcpv4_relay_info(out, *interface.dhcpv4_relay, depth + 2U, detail);
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
     md_indent(out, depth);
     out << "}\n";
   }
@@ -3193,6 +3999,7 @@ void md_base_interface_info(std::ostringstream &out,
       interface.ipv6_proactive_refresh_configured ||
       interface.ipv6_neighbor_limit_configured ||
       !interface.static_ipv6_neighbors.empty() ||
+      !interface.dhcpv6_local_server.empty() ||
       interface.icmp6_redirect_admin_configured ||
       interface.icmp6_redirect_maximum_configured ||
       interface.icmp6_redirect_interval_configured;
@@ -3220,6 +4027,11 @@ void md_base_interface_info(std::ostringstream &out,
       }
       md_indent(out, depth + 1U);
       out << "}\n";
+    }
+    if (!interface.dhcpv6_local_server.empty()) {
+      md_indent(out, depth + 1U);
+      out << "local-dhcp-server \"" << interface.dhcpv6_local_server
+          << "\"\n";
     }
     if (detail || interface.ipv6_unsolicited_learning_configured ||
         interface.ipv6_nd_reachable_time_configured ||
@@ -3308,6 +4120,81 @@ void md_base_interface_info(std::ostringstream &out,
 
 template <typename Configuration>
 std::optional<std::string>
+md_bof_configuration_info(const Configuration &configuration,
+                          std::string_view path, bool detail) {
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->empty() || (*tokens)[0] != "bof")
+    return std::nullopt;
+
+  const auto emit_client = [&](std::ostringstream &out,
+                               const bof::DhcpClientIntent &client,
+                               bool ipv6) {
+    if (!client.client_id.empty())
+      out << "client-id "
+          << (client.client_id_hex ? client.client_id
+                                   : "\"" + client.client_id + "\"")
+          << "\n";
+    if (ipv6 && (detail || static_cast<const bof::Dhcpv6ClientIntent &>(client)
+                                   .client_type !=
+                               bof::Dhcpv6ClientType::duid_enterprise))
+      out << "client-type "
+          << (static_cast<const bof::Dhcpv6ClientIntent &>(client)
+                          .client_type ==
+                      bof::Dhcpv6ClientType::duid_link_local
+                  ? "duid-link-local"
+                  : "duid-enterprise")
+          << '\n';
+    if (detail || client.include_user_class)
+      out << "include-user-class "
+          << (client.include_user_class ? "true" : "false") << '\n';
+    if (detail || client.timeout_seconds != 30U)
+      out << "timeout " << client.timeout_seconds << '\n';
+  };
+
+  const auto &intent = configuration.bof_autoconfigure;
+  std::ostringstream out;
+  if (tokens->size() == 1U) {
+    out << "auto-configure {\n";
+    if (intent.ipv4.enabled) {
+      out << "    ipv4 {\n        dhcp {\n";
+      std::ostringstream body;
+      emit_client(body, intent.ipv4, false);
+      std::istringstream lines(body.str());
+      std::string line;
+      while (std::getline(lines, line))
+        out << "            " << line << '\n';
+      out << "        }\n    }\n";
+    }
+    if (intent.ipv6.enabled) {
+      out << "    ipv6 {\n        dhcp {\n";
+      std::ostringstream body;
+      emit_client(body, intent.ipv6, true);
+      std::istringstream lines(body.str());
+      std::string line;
+      while (std::getline(lines, line))
+        out << "            " << line << '\n';
+      out << "        }\n    }\n";
+    }
+    out << "}\n";
+    return out.str();
+  }
+  if (tokens->size() < 4U || (*tokens)[1] != "auto-configure" ||
+      ((*tokens)[2] != "ipv4" && (*tokens)[2] != "ipv6") ||
+      (*tokens)[3] != "dhcp")
+    return std::nullopt;
+  const bool ipv6 = (*tokens)[2] == "ipv6";
+  const auto &client = ipv6
+                           ? static_cast<const bof::DhcpClientIntent &>(
+                                 intent.ipv6)
+                           : intent.ipv4;
+  if ((ipv6 ? intent.ipv6.enabled : intent.ipv4.enabled) ||
+      tokens->size() == 4U)
+    emit_client(out, client, ipv6);
+  return out.str();
+}
+
+template <typename Configuration>
+std::optional<std::string>
 md_base_configuration_info(const Configuration &configuration,
                            std::string_view path, bool detail) {
   const auto tokens = md_context_tokens(path);
@@ -3315,6 +4202,7 @@ md_base_configuration_info(const Configuration &configuration,
     return std::nullopt;
 
   const auto emit_router = [&](std::ostringstream &out, std::size_t depth) {
+    md_dhcpv6_servers_info(out, configuration.dhcpv6_servers, depth, detail);
     for (const auto &interface : configuration.interfaces) {
       md_indent(out, depth);
       out << "interface \"" << interface.name << "\" {\n";
@@ -3379,6 +4267,50 @@ md_base_configuration_info(const Configuration &configuration,
       out << "primary {\n    address " << ipv4_text(interface->address)
           << " prefix-length "
           << static_cast<unsigned>(interface->prefix_length) << "\n}\n";
+    if (interface->dhcpv4_relay) {
+      out << "dhcp {\n";
+      md_dhcpv4_relay_info(out, *interface->dhcpv4_relay, 1U, detail);
+      out << "}\n";
+    }
+    return out.str();
+  }
+  if (tokens->size() == 7U && (*tokens)[5] == "ipv4" &&
+      (*tokens)[6] == "dhcp") {
+    if (interface->dhcpv4_relay) {
+      md_dhcpv4_relay_info(out, *interface->dhcpv4_relay, 0U, detail);
+    } else if (detail) {
+      // The operator can navigate into a schema container before creating its
+      // presence in the candidate. `info detail` still reports effective
+      // defaults for that present working context, while plain `info` remains
+      // empty because no value was explicitly configured.
+      const dhcpv4::RelayConfiguration defaults{};
+      md_dhcpv4_relay_info(out, defaults, 0U, true);
+    }
+    return out.str();
+  }
+  if (tokens->size() == 8U && (*tokens)[5] == "ipv4" &&
+      (*tokens)[6] == "dhcp" && (*tokens)[7] == "option-82") {
+    if (!interface->dhcpv4_relay && !detail)
+      return out.str();
+    // Reuse the canonical renderer and return its option subtree rather than
+    // maintaining a second set of defaults. The generic context resolver
+    // already presents full-path commands at this depth.
+    const dhcpv4::RelayConfiguration defaults{};
+    const auto &relay =
+        interface->dhcpv4_relay ? *interface->dhcpv4_relay : defaults;
+    out << "action " << dhcpv4_relay_action_text(relay.existing_information)
+        << "\ncircuit-id {\n    "
+        << dhcpv4_circuit_id_text(relay.circuit_id_source) << "\n}\n";
+    if (relay.remote_id_source != dhcpv4::RemoteIdSource::none || detail) {
+      out << "remote-id {\n    ";
+      if (relay.remote_id_source == dhcpv4::RemoteIdSource::ascii_string)
+        out << "ascii-string \"" << relay.remote_id_ascii << "\"\n";
+      else
+        out << (relay.remote_id_source == dhcpv4::RemoteIdSource::client_mac
+                    ? "mac\n"
+                    : "none\n");
+      out << "}\n";
+    }
     return out.str();
   }
   if (tokens->size() == 6U && (*tokens)[5] == "ipv6") {
@@ -3386,6 +4318,9 @@ md_base_configuration_info(const Configuration &configuration,
       out << "address " << ip::format_ipv6(address.address)
           << " prefix-length " << static_cast<unsigned>(address.prefix_length)
           << "\n";
+    if (!interface->dhcpv6_local_server.empty())
+      out << "local-dhcp-server \"" << interface->dhcpv6_local_server
+          << "\"\n";
     return out.str();
   }
   return std::nullopt;
@@ -3404,6 +4339,44 @@ md_path_from_classic(std::string_view classic_path) {
     return std::nullopt;
 
   std::ostringstream out;
+  if (tokens->size() >= 3U && (*tokens)[0] == "configure" &&
+      (*tokens)[1] == "router" && (*tokens)[2] == "dhcp6") {
+    // Classic collapses the MD router list key and renames the server
+    // containers. Converting the saved context before rendering keeps one
+    // datastore traversal while preserving the syntax of both engines.
+    out << "configure router \"Base\" dhcp-server";
+    if (tokens->size() == 3U)
+      return out.str();
+    if ((*tokens)[3] != "local-dhcp-server")
+      return std::nullopt;
+    out << " dhcpv6";
+    for (std::size_t index = 4U; index < tokens->size(); ++index) {
+      out << ' ';
+      const auto &token = (*tokens)[index];
+      const bool quote = token.find(' ') != std::string::npos;
+      out << (quote ? "\"" : "") << token << (quote ? "\"" : "");
+      if (index == 5U && token == "delegated-prefix-length")
+        return std::nullopt;
+    }
+    return out.str();
+  }
+  if (tokens->size() >= 5U && (*tokens)[0] == "configure" &&
+      (*tokens)[1] == "router" && (*tokens)[2] == "interface" &&
+      (*tokens)[4] == "dhcp") {
+    // Classic places the IPv4 relay container directly below the interface;
+    // the MD model places the same datastore below `ipv4 dhcp`. Insert that
+    // model-only node before invoking the shared renderer. This mapping
+    // applies to the container and every deeper Option 82 context so classic
+    // info cannot silently render an empty, non-existent MD path.
+    out << "configure router \"Base\" interface \"" << (*tokens)[3]
+        << "\" ipv4 dhcp";
+    for (std::size_t index = 5U; index < tokens->size(); ++index) {
+      const auto &token = (*tokens)[index];
+      const bool quote = token.find(' ') != std::string::npos;
+      out << ' ' << (quote ? "\"" : "") << token << (quote ? "\"" : "");
+    }
+    return out.str();
+  }
   for (std::size_t index{}; index < tokens->size(); ++index) {
     if (index)
       out << ' ';
@@ -3481,7 +4454,12 @@ classic_configuration_info(const Configuration &configuration,
   auto rendered =
       md_router_advertisement_info(configuration, *md_path, detail);
   if (!rendered)
+    rendered = md_bof_configuration_info(configuration, *md_path, detail);
+  if (!rendered)
     rendered = md_ospf_info(configuration.ospf, *md_path, detail);
+  if (!rendered)
+    rendered = md_dhcpv6_configuration_info(configuration.dhcpv6_servers,
+                                            *md_path, detail);
   if (!rendered)
     rendered = md_base_configuration_info(configuration, *md_path, detail);
   if (!rendered) {
@@ -3896,6 +4874,9 @@ LabRuntime::running_configuration(const RouterIntent &router_intent) const {
   value.tls = router_intent.tls;
   value.ipsec = router_intent.ipsec;
   value.ies = router_intent.ies;
+  value.bof_autoconfigure = router_intent.bof_autoconfigure;
+  value.dhcpv4_servers = router_intent.dhcpv4_servers;
+  value.dhcpv6_servers = router_intent.dhcpv6_servers;
   value.ospf = router_intent.ospf;
   value.ports = router_intent.ports;
   value.interfaces = router_intent.interfaces;
@@ -3904,16 +4885,20 @@ LabRuntime::running_configuration(const RouterIntent &router_intent) const {
   const auto *inventory = supervisor_.hardware(router_intent.handle);
   if (!inventory)
     return value;
-  RouterHardwareCheckpoint hardware;
-  inventory->checkpoint(hardware);
-  for (std::size_t card = 0; card < hardware.cards.size(); ++card) {
-    value.cards[card].provisioned = hardware.cards[card].provisioned;
-    value.cards[card].admin_enabled = hardware.cards[card].admin_enabled;
-    for (std::size_t mda = 0; mda < hardware.cards[card].mdas.size(); ++mda) {
+  // The hardware image contains the complete generated chassis capacity.
+  // This projection is requested from inside the already substantial CLI
+  // transaction frame, so bounded heap ownership avoids multiplying fixed
+  // Wasm pthread stack use.
+  auto hardware = std::make_unique<RouterHardwareCheckpoint>();
+  inventory->checkpoint(*hardware);
+  for (std::size_t card = 0; card < hardware->cards.size(); ++card) {
+    value.cards[card].provisioned = hardware->cards[card].provisioned;
+    value.cards[card].admin_enabled = hardware->cards[card].admin_enabled;
+    for (std::size_t mda = 0; mda < hardware->cards[card].mdas.size(); ++mda) {
       value.cards[card].mdas[mda].provisioned =
-          hardware.cards[card].mdas[mda].provisioned;
+          hardware->cards[card].mdas[mda].provisioned;
       value.cards[card].mdas[mda].admin_enabled =
-          hardware.cards[card].mdas[mda].admin_enabled;
+          hardware->cards[card].mdas[mda].admin_enabled;
     }
   }
   return value;
@@ -3966,6 +4951,9 @@ LabRuntime::portable_configuration(const ConfigurationIntent &source) const {
   target.tls = source.tls;
   target.ipsec = source.ipsec;
   target.ies = source.ies;
+  target.bof_autoconfigure = source.bof_autoconfigure;
+  target.dhcpv4_servers = source.dhcpv4_servers;
+  target.dhcpv6_servers = source.dhcpv6_servers;
   target.ospf = source.ospf;
   for (std::size_t card = 0; card < source.cards.size(); ++card) {
     target.cards[card].provisioned = source.cards[card].provisioned;
@@ -4090,7 +5078,9 @@ LabRuntime::portable_configuration(const ConfigurationIntent &source) const {
              interface.mld_router_alert_check_configured,
          .mld_import_policy = interface.mld_import_policy,
          .mld_ssm_translations = interface.mld_ssm_translations,
-         .mld_static_groups = {}});
+         .mld_static_groups = {},
+         .dhcpv4_relay = interface.dhcpv4_relay,
+         .dhcpv6_local_server = interface.dhcpv6_local_server});
     auto &saved_addresses = target.interfaces.back().ipv6_addresses;
     saved_addresses.reserve(interface.ipv6_addresses.size());
     for (const auto &address : interface.ipv6_addresses)
@@ -4134,7 +5124,8 @@ LabRuntime::portable_configuration(const ConfigurationIntent &source) const {
 }
 
 bool LabRuntime::apply_configuration(RouterIntent &router_intent,
-                                     const ConfigurationIntent &value) {
+                                     const ConfigurationIntent &value,
+                                     bool boot_effective) {
   // The supervisor checkpoint is the transaction boundary across registry,
   // hardware, forwarding and workflow owners. Configuration intent is copied
   // only after every owner accepts the staged candidate.
@@ -4175,6 +5166,11 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
       tls_profile::validate(value.tls) ||
       !ipsec::configuration::validate(value.ipsec) ||
       service::validate(value.ies) != service::ValidationError::none ||
+      !bof::valid(value.bof_autoconfigure) ||
+      dhcpv4::configuration::validate(value.dhcpv4_servers, false) !=
+          dhcpv4::configuration::Status::valid ||
+      dhcpv6::configuration::validate(value.dhcpv6_servers, false) !=
+          dhcpv6::configuration::Status::valid ||
       !valid_router_advertisement_dns(
           value.router_advertisement_dns.rdnss,
           value.router_advertisement_dns.rdnss_lifetime_seconds) ||
@@ -4248,6 +5244,15 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
                                                interface.mld_import_policy) ||
                    (!interface.mld_configured &&
                     !interface.mld_import_policy.empty()) ||
+                   (!interface.dhcpv6_local_server.empty() &&
+                    (!interface.port_configured ||
+                     !interface.ipv6_address_configured ||
+                     std::ranges::none_of(
+                         value.dhcpv6_servers.servers,
+                         [&](const dhcpv6::configuration::Server &server) {
+                           return server.name ==
+                                  interface.dhcpv6_local_server;
+                         }))) ||
                    (!interface.mld_router_alert_check_configured &&
                     !interface.mld_router_alert_check) ||
                    (interface.mld_configured &&
@@ -4489,19 +5494,194 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
   auto backup = supervisor_.checkpoint();
   if (!backup)
     return false;
-  RouterHardwareCheckpoint hardware;
-  inventory->checkpoint(hardware);
+  // The complete generated chassis image is cold-path rollback evidence.
+  // Heap ownership prevents it from overlapping the already substantial CLI
+  // and transaction frames on the fixed Wasm pthread stack.
+  auto hardware = std::make_unique<RouterHardwareCheckpoint>();
+  inventory->checkpoint(*hardware);
   bool applied =
       supervisor_.set_system_name(router_intent.handle, value.system_name);
+  if (applied && boot_effective &&
+      (value.bof_autoconfigure.ipv4.enabled ||
+       value.bof_autoconfigure.ipv6.enabled)) {
+    const auto *management = inventory->find("management");
+    const auto management_mac = inventory->physical_mac("management");
+    std::uint64_t management_interface_id{};
+    if (!management || !management_mac) {
+      applied = false;
+    } else {
+      // The endpoint transport secret is domain-separated from the DHCP
+      // transaction secrets. It is deterministic across checkpoint restore
+      // but never derived from a public identifier or a fixed constant.
+      crypto::Sha256 transport;
+      transport.update(value.bof_autoconfigure.ipv4_transaction_secret);
+      transport.update(value.bof_autoconfigure.ipv6_transaction_secret);
+      const auto transport_secret = transport.finish();
+      const auto link_local = ip::link_local_from_mac(*management_mac);
+      host::Ipv6InterfaceIdentifierConfiguration identifier{};
+      std::ranges::copy(link_local.begin() + 8U, link_local.end(),
+                        identifier.modified_eui64.begin());
+      identifier.mode = host::InterfaceIdentifierMode::modified_eui64;
+      for (auto byte : identifier.modified_eui64)
+        management_interface_id = (management_interface_id << 8U) | byte;
+      applied = supervisor_.configure_router_bof_management(
+          {.device = router_intent.handle,
+           .endpoint = {.host = {},
+                        .mac = *management_mac,
+                        .address = {},
+                        .gateway = {},
+                        .prefix_length = {},
+                        .mtu = management->mtu,
+                        .interface_id = management_interface_id,
+                        .ipv6_autoconfiguration = true,
+                        .ipv6_identifier = identifier,
+                        .transport_secret = transport_secret}});
+    }
+
+    const auto opaque_identifier =
+        [&](const bof::DhcpClientIntent &intent) {
+          std::vector<std::uint8_t> bytes;
+          if (intent.client_id.empty()) {
+            // The simulator has no vendor serial EEPROM. Its stable chassis
+            // identity is the catalog-assigned base MAC rendered as twelve
+            // uppercase hexadecimal characters, which remains hardware-owned
+            // and portable rather than depending on a user-visible node name.
+            constexpr char digits[] = "0123456789ABCDEF";
+            bytes.reserve(management_mac->size() * 2U);
+            for (const auto byte : *management_mac) {
+              bytes.push_back(
+                  static_cast<std::uint8_t>(digits[byte >> 4U]));
+              bytes.push_back(
+                  static_cast<std::uint8_t>(digits[byte & 0x0fU]));
+            }
+            return bytes;
+          }
+          if (!intent.client_id_hex) {
+            bytes.assign(intent.client_id.begin(), intent.client_id.end());
+            return bytes;
+          }
+          const auto text = std::string_view{intent.client_id}.substr(2U);
+          bytes.reserve((text.size() + 1U) / 2U);
+          const auto nibble = [](char byte) -> std::uint8_t {
+            if (byte >= '0' && byte <= '9')
+              return static_cast<std::uint8_t>(byte - '0');
+            if (byte >= 'a' && byte <= 'f')
+              return static_cast<std::uint8_t>(byte - 'a' + 10);
+            return static_cast<std::uint8_t>(byte - 'A' + 10);
+          };
+          std::size_t index{};
+          if (text.size() % 2U)
+            bytes.push_back(nibble(text[index++]));
+          while (index < text.size()) {
+            bytes.push_back(static_cast<std::uint8_t>(
+                (nibble(text[index]) << 4U) | nibble(text[index + 1U])));
+            index += 2U;
+          }
+          return bytes;
+        };
+    const auto user_class = [&] {
+      // Nokia's ZTP documentation defines Option 77 as
+      // "platform;timos-release;ztp". Both DHCP families carry the same
+      // class value, while their packet encoders apply their RFC-specific
+      // length fields.
+      const auto text = std::string{inventory->profile()->chassis} +
+                        ";timos-" + std::string{profile::release} + ";ztp";
+      return std::vector<std::uint8_t>{text.begin(), text.end()};
+    };
+    if (applied && value.bof_autoconfigure.ipv4.enabled) {
+      dhcpv4::ClientConfiguration configuration{
+          .hardware_address = *management_mac,
+          .client_identifier =
+              opaque_identifier(value.bof_autoconfigure.ipv4),
+          .parameter_request_list =
+              {static_cast<std::uint8_t>(
+                   packet::dhcpv4::OptionCode::subnet_mask),
+               static_cast<std::uint8_t>(
+                   packet::dhcpv4::OptionCode::router),
+               static_cast<std::uint8_t>(
+                   packet::dhcpv4::OptionCode::domain_name_server),
+               static_cast<std::uint8_t>(
+                   packet::dhcpv4::OptionCode::lease_time),
+               static_cast<std::uint8_t>(
+                   packet::dhcpv4::OptionCode::server_identifier),
+               static_cast<std::uint8_t>(
+                   packet::dhcpv4::OptionCode::renewal_time),
+               static_cast<std::uint8_t>(
+                   packet::dhcpv4::OptionCode::rebinding_time)},
+          .user_class = value.bof_autoconfigure.ipv4.include_user_class
+                            ? user_class()
+                            : std::vector<std::uint8_t>{},
+          .transaction_secret =
+              value.bof_autoconfigure.ipv4_transaction_secret,
+          .maximum_message_size = 576U,
+          .broadcast = true};
+      applied = supervisor_.configure_router_bof_dhcpv4_client(
+          {.device = router_intent.handle,
+           .configuration = std::move(configuration),
+           .bootstrap_timeout = std::chrono::seconds{
+               value.bof_autoconfigure.ipv4.timeout_seconds}});
+    }
+    if (applied && value.bof_autoconfigure.ipv6.enabled) {
+      dhcpv6::ClientConfiguration configuration{};
+      const auto identifier =
+          opaque_identifier(value.bof_autoconfigure.ipv6);
+      if (value.bof_autoconfigure.ipv6.client_type ==
+          bof::Dhcpv6ClientType::duid_enterprise) {
+        // RFC 8415 DUID-EN: type 2, Nokia's IANA enterprise number 6527,
+        // followed by the configured opaque identifier.
+        const std::array<std::uint8_t, 6U> prefix{0U, 2U, 0U, 0U, 0x19U,
+                                                 0x7fU};
+        configuration.duid_octets = static_cast<std::uint16_t>(
+            prefix.size() + identifier.size());
+        if (configuration.duid_octets > configuration.duid.size()) {
+          applied = false;
+        } else {
+          std::ranges::copy(prefix, configuration.duid.begin());
+          std::ranges::copy(identifier,
+                            configuration.duid.begin() + prefix.size());
+        }
+      } else {
+        // RFC 8415 DUID-LL for Ethernet is type 3, hardware type 1 and the
+        // integrated management MAC. The configured opaque client ID does not
+        // replace a type-1 link-layer address.
+        const std::array<std::uint8_t, 4U> prefix{0U, 3U, 0U, 1U};
+        configuration.duid_octets =
+            static_cast<std::uint16_t>(prefix.size() +
+                                       management_mac->size());
+        std::ranges::copy(prefix, configuration.duid.begin());
+        std::ranges::copy(*management_mac,
+                          configuration.duid.begin() + prefix.size());
+      }
+      if (applied) {
+        configuration.identity_associations.push_back(
+            {.iaid = static_cast<std::uint32_t>(management_interface_id),
+             .kind = dhcpv6::LeaseKind::non_temporary});
+        configuration.requested_options.push_back(static_cast<std::uint16_t>(
+            packet::dhcpv6::OptionCode::dns_recursive_name_server));
+        configuration.user_class =
+            value.bof_autoconfigure.ipv6.include_user_class
+                ? user_class()
+                : std::vector<std::uint8_t>{};
+        configuration.transaction_secret =
+            value.bof_autoconfigure.ipv6_transaction_secret;
+        applied = supervisor_.configure_router_bof_dhcpv6_client(
+            {.device = router_intent.handle,
+             .configuration = std::move(configuration),
+             .bootstrap_timeout = std::chrono::seconds{
+                 value.bof_autoconfigure.ipv6.timeout_seconds},
+             .information_only = false});
+      }
+    }
+  }
   for (std::size_t card = 0; applied && card < value.cards.size(); ++card) {
     const auto slot = static_cast<std::uint16_t>(card + 1U);
-    if (value.cards[card].provisioned != hardware.cards[card].provisioned)
+    if (value.cards[card].provisioned != hardware->cards[card].provisioned)
       applied = supervisor_.set_card(router_intent.handle, slot,
                                      value.cards[card].provisioned,
-                                     hardware.cards[card].equipped) ==
+                                     hardware->cards[card].equipped) ==
                 HardwareEditResult::applied;
     if (applied &&
-        value.cards[card].admin_enabled != hardware.cards[card].admin_enabled)
+        value.cards[card].admin_enabled != hardware->cards[card].admin_enabled)
       applied = supervisor_.set_card_admin(router_intent.handle, slot,
                                            value.cards[card].admin_enabled) ==
                 HardwareEditResult::applied;
@@ -4509,14 +5689,14 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
          ++mda) {
       const auto mda_slot = static_cast<std::uint16_t>(mda + 1U);
       if (value.cards[card].mdas[mda].provisioned !=
-          hardware.cards[card].mdas[mda].provisioned)
+          hardware->cards[card].mdas[mda].provisioned)
         applied =
             supervisor_.set_mda(router_intent.handle, slot, mda_slot,
                                 value.cards[card].mdas[mda].provisioned,
-                                hardware.cards[card].mdas[mda].equipped) ==
+                                hardware->cards[card].mdas[mda].equipped) ==
             HardwareEditResult::applied;
       if (applied && value.cards[card].mdas[mda].admin_enabled !=
-                         hardware.cards[card].mdas[mda].admin_enabled)
+                         hardware->cards[card].mdas[mda].admin_enabled)
         applied = supervisor_.set_mda_admin(
                       router_intent.handle, slot, mda_slot,
                       value.cards[card].mdas[mda].admin_enabled) ==
@@ -4784,8 +5964,19 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
         live_ra(*ordinal))
       applied = supervisor_.remove_router_advertisement(router_intent.handle,
                                                         old.port_id);
+    // The relay owns a UDP listener and per-interface transaction state under
+    // its IPv4 parent. Remove that child before replacing or deleting the
+    // address so no datagram can be accepted against a stale giaddr while the
+    // candidate transaction is being published.
+    const bool ipv4_replaced = !next || !same_ipv4(old, *next);
+    if (applied && old.dhcpv4_relay &&
+        old.dhcpv4_relay->admin_enabled &&
+        (ipv4_replaced || !next->dhcpv4_relay ||
+         !next->dhcpv4_relay->admin_enabled))
+      applied =
+          supervisor_.remove_dhcpv4_relay(router_intent.handle, old.port_id);
     if (applied && old.address_configured &&
-        (!next || !same_ipv4(old, *next)) && live && live->ipv4_configured)
+        ipv4_replaced && live && live->ipv4_configured)
       applied = supervisor_.remove_interface(router_intent.handle, old.port_id);
     if (applied && old.ipv6_address_configured && ipv6_replaced && live &&
         live->ipv6_configured)
@@ -4861,6 +6052,80 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
           router_intent.handle, interface.port_id,
           interface.icmp_redirects_enabled, interface.icmp_redirect_maximum,
           interface.icmp_redirect_interval_seconds);
+    if (applied && interface.dhcpv4_relay &&
+        interface.dhcpv4_relay->admin_enabled &&
+        (program_ipv4 || !old ||
+         !old->dhcpv4_relay || !old->dhcpv4_relay->admin_enabled ||
+         old->dhcpv4_relay != interface.dhcpv4_relay)) {
+      // giaddr is not an independent user leaf on a routed interface. It is
+      // derived from the committed interface address at the ownership
+      // boundary, preventing configuration text from making the relay claim a
+      // different link. RuntimeSupervisor resolves the physical ordinal too,
+      // so neither topology identity nor forwarding identity is duplicated in
+      // portable project state.
+      auto relay = *interface.dhcpv4_relay;
+      if (!relay.gateway_address_configured)
+        relay.gateway_address = ipv4_bytes(interface.address);
+      const auto ordinal = inventory->coordinate_ordinal(interface.port_id);
+      if (!ordinal) {
+        applied = false;
+        continue;
+      }
+
+      // Option 82 values depend on committed router and interface identity.
+      // They are materialized here, immediately before publication to the
+      // forwarding owner, so candidate configuration remains portable across
+      // equipment changes. RFC 3046 treats both sub-options as opaque bytes;
+      // Nokia defines the exact source selected by each 26.7.R1 leaf.
+      const auto bytes_of = [](std::string_view value) {
+        return std::vector<std::uint8_t>{value.begin(), value.end()};
+      };
+      switch (relay.circuit_id_source) {
+      case dhcpv4::CircuitIdSource::none:
+        relay.circuit_id.clear();
+        break;
+      case dhcpv4::CircuitIdSource::ascii_tuple:
+        // The Base routing instance has service ID zero. The documented
+        // network-interface tuple is system-name|service-id|interface-name.
+        relay.circuit_id =
+            bytes_of(router_intent.system_name + "|0|" + interface.name);
+        break;
+      case dhcpv4::CircuitIdSource::interface_name:
+        relay.circuit_id = bytes_of(interface.name);
+        break;
+      case dhcpv4::CircuitIdSource::interface_index: {
+        // IfIndex is a protocol number, not its decimal presentation. Encode
+        // the stable 32-bit interface identity in network byte order.
+        const auto id = ospf_physical_interface_id(*ordinal);
+        relay.circuit_id = {
+            static_cast<std::uint8_t>((id >> 24U) & 0xffU),
+            static_cast<std::uint8_t>((id >> 16U) & 0xffU),
+            static_cast<std::uint8_t>((id >> 8U) & 0xffU),
+            static_cast<std::uint8_t>(id & 0xffU)};
+        break;
+      }
+      case dhcpv4::CircuitIdSource::port_id:
+        relay.circuit_id = bytes_of(interface.port_id);
+        break;
+      case dhcpv4::CircuitIdSource::vlan_ascii_tuple:
+        // A VLAN tuple includes ingress dot1p and dot1q information and can be
+        // generated only by a tagged SAP. Base physical interfaces in this
+        // profile have no SAP or tag stack, so accepting this candidate would
+        // fabricate wire data.
+        applied = false;
+        continue;
+      }
+      relay.remote_id.clear();
+      if (relay.remote_id_source == dhcpv4::RemoteIdSource::ascii_string)
+        relay.remote_id = bytes_of(relay.remote_id_ascii);
+      applied = supervisor_.configure_dhcpv4_relay(
+          router_intent.handle, interface.port_id,
+          dhcpv4::RelayInterfaceConfiguration{
+              .interface_id = ospf_physical_interface_id(*ordinal),
+              .physical_port_ordinal = *ordinal,
+              .relay = std::move(relay),
+          });
+    }
     if (applied && interface.address_configured) {
       // Reprogramming the IPv4 parent clears every adjacency on its ordinal.
       // Otherwise update only configured rows so learned ARP lifetimes survive
@@ -6101,6 +7366,354 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
     applied =
         supervisor_.configure_ies_services(router_intent.handle, value.ies);
   }
+  if (applied && router_intent.dhcpv4_servers != value.dhcpv4_servers) {
+    // Remove only servers that were live. An administratively disabled list
+    // node owns configuration but no UDP socket or protocol state, so trying
+    // to remove it from forwarding would turn a valid edit into a false
+    // "not found" failure.
+    for (const auto &previous : router_intent.dhcpv4_servers.servers) {
+      const auto replacement = std::ranges::find(
+          value.dhcpv4_servers.servers, previous.name,
+          &dhcpv4::configuration::Server::name);
+      if (previous.admin_enabled &&
+          (replacement == value.dhcpv4_servers.servers.end() ||
+           !replacement->admin_enabled) &&
+          !supervisor_.remove_router_dhcpv4_server(router_intent.handle,
+                                                    previous.name)) {
+        applied = false;
+        break;
+      }
+    }
+
+    for (const auto &server : value.dhcpv4_servers.servers) {
+      if (!applied || !server.admin_enabled)
+        continue;
+
+      RouterDhcpv4ServerProgram program{
+          .device = router_intent.handle,
+          .name = server.name,
+          .configuration =
+              {.server_instance = server.instance_id,
+               .routing_context = 0U,
+               .server_identifier = {},
+               .domain_name_servers = {},
+               .offer_hold = std::chrono::seconds{
+                   device_catalog::dhcpv4_offer_time_seconds},
+               // SR OS retains declined bindings until the per-subnet
+               // maximum is exceeded. The time value is therefore unused for
+               // declined leases and remains zero rather than inventing a
+               // vendor timeout.
+               .decline_hold = std::chrono::seconds::zero(),
+               .authoritative = true,
+               .force_renews = server.force_renews},
+          .pools = {},
+          .reservations = {},
+          .exclusions = {}};
+
+      // The stored fallback is the system address when present, otherwise the
+      // numerically lowest configured Base address. RouterForwarder replaces
+      // it with the request ingress address whenever RFC 2131 gives better
+      // reachability information.
+      for (const auto &interface : value.interfaces) {
+        if (!interface.address_configured || interface.address == 0U)
+          continue;
+        if (interface.name == system_interface_name) {
+          program.configuration.server_identifier =
+              ipv4_bytes(interface.address);
+          break;
+        }
+        if (program.configuration.server_identifier == packet::Ipv4{} ||
+            interface.address <
+                ipv4_value(program.configuration.server_identifier))
+          program.configuration.server_identifier =
+              ipv4_bytes(interface.address);
+      }
+      if (program.configuration.server_identifier == packet::Ipv4{}) {
+        applied = false;
+        break;
+      }
+
+      std::uint32_t next_pool_id{1U};
+      for (const auto &named_pool : server.pools) {
+        for (const auto &subnet : named_pool.subnets) {
+          const auto mask_value =
+              routing::prefix_mask(subnet.prefix_length);
+          const InterfaceIntent *direct{};
+          std::optional<std::uint16_t> direct_ordinal;
+          for (const auto &interface : value.interfaces) {
+            if (!interface.port_configured ||
+                !interface.address_configured ||
+                interface.prefix_length != subnet.prefix_length ||
+                (interface.address & mask_value) !=
+                    ipv4_value(subnet.network))
+              continue;
+            const auto ordinal =
+                inventory->coordinate_ordinal(interface.port_id);
+            if (!ordinal || direct) {
+              // Two Base interfaces claiming the same DHCP link would make
+              // direct broadcast ownership ambiguous. Do not use vector order
+              // to choose which wire receives the offer.
+              applied = false;
+              break;
+            }
+            direct = &interface;
+            direct_ordinal = *ordinal;
+          }
+          if (!applied)
+            break;
+          const auto scope =
+              direct_ordinal
+                  ? physical_interface_id(*direct_ordinal)
+                  : dhcpv4_allocation_scope_id(
+                        server.instance_id, subnet.allocation_scope_id);
+          for (const auto &range : subnet.address_ranges) {
+            if (next_pool_id >
+                std::numeric_limits<std::uint16_t>::max()) {
+              applied = false;
+              break;
+            }
+            program.pools.push_back(
+                {.id = static_cast<std::uint16_t>(next_pool_id++),
+                 .scope =
+                     {.server_instance = server.instance_id,
+                      .routing_context = 0U,
+                      .link_identity = scope},
+                 .first = range.first,
+                 .last = range.last,
+                 .subnet_mask = ipv4_bytes(mask_value),
+                 .router = direct ? ipv4_bytes(direct->address)
+                                  : packet::Ipv4{},
+                 .lease_seconds = named_pool.maximum_lease_seconds,
+                 .minimum_lease_seconds =
+                     named_pool.minimum_lease_seconds,
+                 .maximum_lease_seconds =
+                     named_pool.maximum_lease_seconds,
+                 .offer_seconds = named_pool.offer_seconds,
+                 .maximum_declined = subnet.maximum_declined,
+                 .renewal_seconds = 0U,
+                 .rebinding_seconds = 0U,
+                 .enabled =
+                     !subnet.drain &&
+                     range.failover_control ==
+                         dhcpv4::configuration::FailoverControlType::local});
+          }
+          for (const auto &excluded : subnet.excluded_ranges) {
+            const bool locally_owned = std::ranges::any_of(
+                subnet.address_ranges,
+                [&](const dhcpv4::configuration::AddressRange &range) {
+                  return range.failover_control ==
+                             dhcpv4::configuration::FailoverControlType::
+                                 local &&
+                         ipv4_value(range.first) <=
+                             ipv4_value(excluded.first) &&
+                         ipv4_value(range.last) >=
+                             ipv4_value(excluded.last);
+                });
+            if (locally_owned)
+              program.exclusions.push_back(
+                  {.scope =
+                       {.server_instance = server.instance_id,
+                        .routing_context = 0U,
+                        .link_identity = scope},
+                   .first = excluded.first,
+                   .last = excluded.last});
+          }
+        }
+        if (!applied)
+          break;
+      }
+      if (!applied || program.pools.empty() ||
+          !supervisor_.configure_router_dhcpv4_server(program)) {
+        applied = false;
+        break;
+      }
+    }
+  }
+  if (applied && router_intent.dhcpv6_servers != value.dhcpv6_servers) {
+    // A configured list entry and a live UDP service have different
+    // lifetimes. Disabled entries remain management-owned intent and do not
+    // own a socket, so only entries which were previously enabled are removed
+    // from forwarding.
+    for (const auto &previous : router_intent.dhcpv6_servers.servers) {
+      const auto replacement = std::ranges::find(
+          value.dhcpv6_servers.servers, previous.name,
+          &dhcpv6::configuration::Server::name);
+      if (previous.admin_enabled &&
+          (replacement == value.dhcpv6_servers.servers.end() ||
+           !replacement->admin_enabled) &&
+          !supervisor_.remove_router_dhcpv6_server(router_intent.handle,
+                                                    previous.name)) {
+        applied = false;
+        break;
+      }
+    }
+
+    for (const auto &server : value.dhcpv6_servers.servers) {
+      if (!applied || !server.admin_enabled)
+        continue;
+
+      RouterDhcpv6ServerProgram program{
+          .device = router_intent.handle,
+          .name = server.name,
+          .configuration =
+              {.duid = server.duid,
+               .duid_octets = server.duid_octets,
+               .preference = server.preference,
+               .address_pool_index = 0U,
+               .prefix_pool_index = 0U,
+               .information_refresh_time_seconds =
+                   server.information_refresh_time_seconds,
+               .rapid_commit = server.rapid_commit,
+               .lease_query = server.lease_query,
+               .dns_recursive_servers = server.dns_recursive_servers,
+               .solicit_maximum_retransmission_seconds = std::nullopt,
+               .information_maximum_retransmission_seconds = std::nullopt},
+          .address_pools = {},
+          .prefix_pools = {},
+          // RFC 9915 does not define a decline quarantine duration and SR OS
+          // exposes held leases plus explicit reset. Zero is the protocol
+          // repository's documented sentinel for indefinite retention.
+          .decline_hold_time = std::chrono::seconds::zero()};
+
+      struct AttachedLink {
+        crypto::Sha256Digest identity{};
+        std::vector<ip::Ipv6Prefix> connected_prefixes;
+      };
+      std::vector<AttachedLink> attached_links;
+      for (const auto &interface : value.interfaces) {
+        if (interface.dhcpv6_local_server != server.name)
+          continue;
+        const auto ordinal = inventory->coordinate_ordinal(interface.port_id);
+        if (!ordinal) {
+          applied = false;
+          break;
+        }
+        AttachedLink link{
+            .identity =
+                dhcpv6_link_identity(physical_interface_id(*ordinal)),
+            .connected_prefixes = {}};
+        if (interface.ipv6_addresses.empty()) {
+          link.connected_prefixes.push_back(
+              {.network =
+                   ip::mask(interface.ipv6_address,
+                            interface.ipv6_prefix_length),
+               .length = interface.ipv6_prefix_length});
+        } else {
+          for (const auto &address : interface.ipv6_addresses) {
+            const auto concrete = effective_ipv6_address(interface, address);
+            if (!concrete) {
+              applied = false;
+              break;
+            }
+            link.connected_prefixes.push_back(
+                {.network = ip::mask(*concrete, address.prefix_length),
+                 .length = address.prefix_length});
+          }
+        }
+        if (!applied)
+          break;
+        attached_links.push_back(std::move(link));
+      }
+      if (!applied)
+        break;
+
+      const auto compile_prefix =
+          [&](const dhcpv6::configuration::Pool &pool,
+              const dhcpv6::configuration::Prefix &prefix,
+              bool delegated,
+              std::vector<dhcpv6::LeasePool> &destination) {
+            std::optional<std::size_t> matching_link;
+            for (std::size_t link_index{}; link_index < attached_links.size();
+                 ++link_index) {
+              const bool matches = std::ranges::any_of(
+                  attached_links[link_index].connected_prefixes,
+                  [&](const ip::Ipv6Prefix &connected) {
+                    // A WAN address pool normally covers the connected
+                    // subnet. A delegated aggregate is commonly disjoint, so
+                    // a single attached link can still own it unambiguously.
+                    return ip::contains(connected, prefix.aggregate.network) ||
+                           ip::contains(prefix.aggregate, connected.network);
+                  });
+              if (!matches)
+                continue;
+              if (matching_link)
+                return false;
+              matching_link = link_index;
+            }
+            if (!matching_link && attached_links.size() == 1U)
+              matching_link = 0U;
+
+            dhcpv6::LeasePool compiled{
+                .prefix = prefix.aggregate,
+                .allocation_secret = prefix.allocation_secret,
+                .link_identity =
+                    matching_link
+                        ? attached_links[*matching_link].identity
+                        : crypto::Sha256Digest{},
+                .preferred_lifetime_seconds =
+                    prefix.preferred_lifetime_configured
+                        ? prefix.preferred_lifetime_seconds
+                        : server.default_preferred_lifetime_seconds,
+                .valid_lifetime_seconds =
+                    prefix.valid_lifetime_configured
+                        ? prefix.valid_lifetime_seconds
+                        : server.default_valid_lifetime_seconds,
+                .t1_seconds = prefix.renewal_time_configured
+                                  ? prefix.renewal_time_seconds
+                                  : server.default_renewal_time_seconds,
+                .t2_seconds = prefix.rebinding_time_configured
+                                  ? prefix.rebinding_time_seconds
+                                  : server.default_rebinding_time_seconds,
+                .delegated_length =
+                    delegated ? pool.delegated_length : std::uint8_t{},
+                .link_scoped = matching_link.has_value()};
+
+            // With no direct interface, one unscoped aggregate of each IA
+            // kind is valid for relay traffic. Multiple unscoped aggregates
+            // need an explicit relay-link selection rule and are rejected
+            // rather than being selected by vector order.
+            if (!compiled.link_scoped &&
+                std::ranges::any_of(destination, [](const auto &pool) {
+                  return !pool.link_scoped;
+                }))
+              return false;
+            // The current protocol repository admits one aggregate per
+            // link and IA kind. Reject overlap here so configure() cannot
+            // silently choose the first matching vector element.
+            if (compiled.link_scoped &&
+                std::ranges::any_of(destination, [&](const auto &pool) {
+                  return pool.link_scoped &&
+                         pool.link_identity == compiled.link_identity;
+                }))
+              return false;
+            if (!prefix.drain)
+              destination.push_back(std::move(compiled));
+            return true;
+          };
+
+      for (const auto &pool : server.pools) {
+        for (const auto &prefix : pool.prefixes) {
+          // One configured aggregate may feed both IA_NA and IA_PD. Compile
+          // each enabled application into its protocol-owned repository while
+          // retaining the same source identity and allocation secret.
+          if ((prefix.wan_host &&
+               !compile_prefix(pool, prefix, false, program.address_pools)) ||
+              (prefix.delegated_prefix &&
+               !compile_prefix(pool, prefix, true, program.prefix_pools))) {
+            applied = false;
+            break;
+          }
+        }
+        if (!applied)
+          break;
+      }
+      if (!applied ||
+          !supervisor_.configure_router_dhcpv6_server(program)) {
+        applied = false;
+        break;
+      }
+    }
+  }
   if (!applied) {
     static_cast<void>(supervisor_.restore(std::move(*backup)));
     return false;
@@ -6136,6 +7749,9 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
   router_intent.tls = value.tls;
   router_intent.ipsec = value.ipsec;
   router_intent.ies = value.ies;
+  router_intent.bof_autoconfigure = value.bof_autoconfigure;
+  router_intent.dhcpv4_servers = value.dhcpv4_servers;
+  router_intent.dhcpv6_servers = value.dhcpv6_servers;
   router_intent.ospf = value.ospf;
   return true;
 }
@@ -6197,6 +7813,9 @@ bool LabRuntime::create_router(std::span<const std::string_view> fields) {
                         .tls = {},
                         .ipsec = {},
                         .ies = {},
+                        .bof_autoconfigure = {},
+                        .dhcpv4_servers = {},
+                        .dhcpv6_servers = {},
                         .ospf = {},
                         .global_candidate = {},
                         .global_candidate_initialized = false,
@@ -6212,6 +7831,63 @@ bool LabRuntime::create_router(std::span<const std::string_view> fields) {
     static_cast<void>(supervisor_.delete_router(*handle));
     return false;
   }
+}
+
+bool LabRuntime::create_dhcp_server(
+    std::span<const std::string_view> fields) {
+  if (fields.size() != 3U || router(fields[0]) || host(fields[0]) ||
+      ethernet_switch(fields[0]))
+    return false;
+  const auto handle =
+      supervisor_.create_dhcp_server(fields[0], fields[1], fields[2]);
+  if (!handle)
+    return false;
+  try {
+    // Dedicated servers intentionally reuse RouterIntent as the portable
+    // multi-interface configuration value. Their generated profile role
+    // determines product behavior and prevents CLI or OSPF exposure.
+    routers_.push_back({.handle = *handle,
+                        .node_id = std::string{fields[0]},
+                        .system_name = std::string{fields[2]},
+                        .profile_id = std::string{fields[1]},
+                        .maximum_ecmp_paths = 1U,
+                        .ports = {},
+                        .interfaces = {},
+                        .routes = {},
+                        .ipv6_routes = {},
+                        // The generic server shares only the routed endpoint
+                        // data shape. Router-only configuration domains remain
+                        // empty and cannot be populated through its protocol
+                        // operations or an SR OS terminal session.
+                        .mld = {},
+                        .mld_prefix_lists = {},
+                        .mld_import_policies = {},
+                        .router_advertisement_dns = {},
+                        .ipv6_nd_reachable_time_seconds =
+                            device_catalog::nd_default_reachable_time_seconds,
+                        .ipv6_nd_stale_time_seconds =
+                            device_catalog::nd_default_stale_time_seconds,
+                        .ipv6_nd_reachable_time_configured = false,
+                        .ipv6_nd_stale_time_configured = false,
+                        .tls = {},
+                        .ipsec = {},
+                        .ies = {},
+                        .bof_autoconfigure = {},
+                        .dhcpv4_servers = {},
+                        .dhcpv6_servers = {},
+                        .ospf = {},
+                        .global_candidate = {},
+                        .global_candidate_initialized = false,
+                        .port_seen_operational = {},
+                        .active_facility_alarms = {},
+                        .cleared_facility_alarms = {},
+                        .next_facility_alarm_index = 1U,
+                        .cleared_facility_alarms_wrapped = false});
+  } catch (const std::bad_alloc &) {
+    static_cast<void>(supervisor_.delete_router(*handle));
+    return false;
+  }
+  return true;
 }
 
 bool LabRuntime::replace_router_configuration(
@@ -6408,9 +8084,11 @@ bool LabRuntime::replace_router_configuration(
          .ipv6_address_configured = !ipv6_addresses.empty(),
          .ipv6_addresses = std::move(ipv6_addresses),
          .static_ipv6_neighbors = {},
+         .dhcpv6_local_server = {},
          .mld_import_policy = {},
          .mld_ssm_translations = {},
-         .mld_static_groups = {}});
+         .mld_static_groups = {},
+         .dhcpv4_relay = std::nullopt});
   }
 
   if (!next_netstring(payload, value) || !decimal(value, count) ||
@@ -7000,7 +8678,7 @@ bool LabRuntime::replace_router_configuration(
   // payload instead of silently applying only the prefix understood here.
   if (!payload.empty())
     return false;
-  return apply_configuration(*device, next);
+  return apply_configuration(*device, next, true);
 }
 
 bool LabRuntime::create_host(std::span<const std::string_view> fields) {
@@ -7491,7 +9169,11 @@ bool LabRuntime::configure_host(std::span<const std::string_view> fields) {
                     [](std::uint8_t value) { return value == 0U; }))
       return false;
   }
-  if (!endpoint || !mac || !address || !gateway || !*gateway ||
+  const bool dynamic_ipv4 =
+      address && gateway && address->address == 0U &&
+      address->length == 0U && *gateway == 0U;
+  if (!endpoint || !mac || !address || !gateway ||
+      (!dynamic_ipv4 && (address->address == 0U || *gateway == 0U)) ||
       !decimal(fields[4], mtu) || !decimal(fields[5], interface_id) ||
       !boolean(fields[6], ipv6_autoconfiguration) ||
       mtu < device_catalog::minimum_host_ipv4_mtu ||
@@ -7514,9 +9196,313 @@ bool LabRuntime::configure_host(std::span<const std::string_view> fields) {
   return true;
 }
 
-bool LabRuntime::replace_host_dhcpv6(std::span<const std::string_view> fields) {
-  auto *endpoint = fields.size() == 2U ? host(fields[0]) : nullptr;
-  if (!endpoint || !endpoint->configured)
+bool LabRuntime::replace_host_ipv4(
+    std::span<const std::string_view> fields) {
+  auto *endpoint = fields.size() == 13U ? host(fields[0]) : nullptr;
+  auto backup = endpoint ? supervisor_.checkpoint() : nullptr;
+  if (!endpoint || !backup)
+    return false;
+  const auto before = *endpoint;
+  const std::array<std::string_view, 11> configuration{
+      fields[0], fields[2], fields[3], fields[4],  fields[5], fields[6],
+      fields[7], fields[8], fields[9], fields[10], fields[11]};
+  const std::array<std::string_view, 2> dhcpv4{fields[0], fields[12]};
+  // This cold management transaction intentionally checkpoints the whole
+  // runtime graph. Host IPv4 identity and DHCP sockets span different
+  // single-owner modules, so a local partial rollback would leave an
+  // accepted address without the application that owns it.
+  if (supervisor_.set_host_name(endpoint->handle, fields[1]) &&
+      configure_host(configuration) &&
+      replace_host_dhcpv4(dhcpv4, true)) {
+    endpoint->name.assign(fields[1]);
+    return true;
+  }
+  *endpoint = before;
+  static_cast<void>(supervisor_.restore(std::move(*backup)));
+  return false;
+}
+
+bool LabRuntime::replace_host_dhcpv4(
+    std::span<const std::string_view> fields,
+    bool transaction_has_checkpoint, RouterIntent *dedicated_device,
+    std::string_view server_name) {
+  auto *endpoint =
+      !dedicated_device && fields.size() == 2U ? host(fields[0]) : nullptr;
+  if (fields.size() != 2U ||
+      (!dedicated_device && (!endpoint || !endpoint->configured)) ||
+      (dedicated_device && server_name.empty()))
+    return false;
+  std::string_view payload = fields[1];
+  std::string_view value;
+  bool client_present{};
+  bool server_present{};
+  // Dedicated router-side services do not own a HostHandle. Do not evaluate a
+  // null endpoint merely to initialize fields that only the host branch uses.
+  // The previous unconditional dereference made dedicated server replacement
+  // undefined behavior before its payload was even parsed.
+  const auto endpoint_handle = endpoint ? endpoint->handle : HostHandle{};
+  HostDhcpv4ClientProgram client{.host = endpoint_handle,
+                                 .configuration = {}};
+  HostDhcpv4ServerProgram server{.host = endpoint_handle,
+                                 .configuration = {},
+                                 .pools = {},
+                                 .reservations = {},
+                                 .exclusions = {}};
+
+  if (!next_netstring(payload, value) || !boolean(value, client_present))
+    return false;
+  if (client_present) {
+    auto &configuration = client.configuration;
+    std::string_view identifier;
+    std::string_view secret;
+    std::string_view maximum_size;
+    std::string_view broadcast;
+    std::string_view option_count_text;
+    unsigned option_count{};
+    if (!next_netstring(payload, identifier) ||
+        !next_netstring(payload, secret) ||
+        !next_netstring(payload, maximum_size) ||
+        !next_netstring(payload, broadcast) ||
+        !next_netstring(payload, option_count_text) ||
+        !hexadecimal_octets_vector(
+            identifier, configuration.client_identifier, 255U) ||
+        !hexadecimal_octets(secret, configuration.transaction_secret) ||
+        !decimal(maximum_size, configuration.maximum_message_size) ||
+        !boolean(broadcast, configuration.broadcast) ||
+        !decimal(option_count_text, option_count) || option_count > 255U)
+      return false;
+    if (dedicated_device)
+      return false;
+    configuration.hardware_address = endpoint->mac;
+    configuration.parameter_request_list.reserve(option_count);
+    for (unsigned index{}; index < option_count; ++index) {
+      std::uint8_t option{};
+      if (!next_netstring(payload, value) || !decimal(value, option) ||
+          option == 0U || option == 255U)
+        return false;
+      configuration.parameter_request_list.push_back(option);
+    }
+  }
+
+  if (!next_netstring(payload, value) || !boolean(value, server_present))
+    return false;
+  if (server_present) {
+    auto &configuration = server.configuration;
+    std::string_view server_identifier;
+    std::string_view server_instance;
+    std::string_view routing_context;
+    std::string_view offer_hold;
+    std::string_view decline_hold;
+    std::string_view authoritative;
+    std::string_view count_text;
+    std::uint64_t offer_seconds{};
+    std::uint64_t decline_seconds{};
+    unsigned dns_count{};
+    if (!next_netstring(payload, server_identifier) ||
+        !next_netstring(payload, server_instance) ||
+        !next_netstring(payload, routing_context) ||
+        !next_netstring(payload, offer_hold) ||
+        !next_netstring(payload, decline_hold) ||
+        !next_netstring(payload, authoritative) ||
+        !next_netstring(payload, count_text))
+      return false;
+    const auto server_address = ipv4(server_identifier);
+    if (!server_address ||
+        !decimal(server_instance, configuration.server_instance) ||
+        !decimal(routing_context, configuration.routing_context) ||
+        !decimal(offer_hold, offer_seconds) ||
+        !decimal(decline_hold, decline_seconds) ||
+        offer_seconds == 0U || decline_seconds == 0U ||
+        offer_seconds >
+            static_cast<std::uint64_t>(std::chrono::seconds::max().count()) ||
+        decline_seconds >
+            static_cast<std::uint64_t>(std::chrono::seconds::max().count()) ||
+        !boolean(authoritative, configuration.authoritative) ||
+        !decimal(count_text, dns_count) ||
+        dns_count > packet::dhcpv4::maximum_ipv4_addresses_per_option)
+      return false;
+    configuration.server_identifier = ipv4_bytes(*server_address);
+    configuration.offer_hold =
+        std::chrono::seconds{static_cast<std::int64_t>(offer_seconds)};
+    configuration.decline_hold =
+        std::chrono::seconds{static_cast<std::int64_t>(decline_seconds)};
+    configuration.domain_name_servers.reserve(dns_count);
+    for (unsigned index{}; index < dns_count; ++index) {
+      if (!next_netstring(payload, value))
+        return false;
+      const auto address = ipv4(value);
+      if (!address)
+        return false;
+      configuration.domain_name_servers.push_back(ipv4_bytes(*address));
+    }
+
+    unsigned pool_count{};
+    if (!next_netstring(payload, count_text) ||
+        !decimal(count_text, pool_count) ||
+        pool_count > device_catalog::dhcpv4_pools_per_server)
+      return false;
+    server.pools.reserve(pool_count);
+    for (unsigned index{}; index < pool_count; ++index) {
+      dhcpv4::Pool pool;
+      std::string_view id;
+      std::string_view scope_instance;
+      std::string_view scope_context;
+      std::string_view scope_link;
+      std::string_view first;
+      std::string_view last;
+      std::string_view mask;
+      std::string_view router;
+      std::string_view lease;
+      std::string_view renewal;
+      std::string_view rebinding;
+      std::string_view enabled;
+      if (!next_netstring(payload, id) ||
+          !next_netstring(payload, scope_instance) ||
+          !next_netstring(payload, scope_context) ||
+          !next_netstring(payload, scope_link) ||
+          !next_netstring(payload, first) ||
+          !next_netstring(payload, last) ||
+          !next_netstring(payload, mask) ||
+          !next_netstring(payload, router) ||
+          !next_netstring(payload, lease) ||
+          !next_netstring(payload, renewal) ||
+          !next_netstring(payload, rebinding) ||
+          !next_netstring(payload, enabled))
+        return false;
+      const auto first_address = ipv4(first);
+      const auto last_address = ipv4(last);
+      const auto mask_address = ipv4(mask);
+      const auto router_address = ipv4(router);
+      if (!first_address || !last_address || !mask_address ||
+          !router_address || !decimal(id, pool.id) ||
+          !decimal(scope_instance, pool.scope.server_instance) ||
+          !decimal(scope_context, pool.scope.routing_context) ||
+          !decimal(scope_link, pool.scope.link_identity) ||
+          !decimal(lease, pool.lease_seconds) ||
+          !decimal(renewal, pool.renewal_seconds) ||
+          !decimal(rebinding, pool.rebinding_seconds) ||
+          !boolean(enabled, pool.enabled))
+        return false;
+      pool.first = ipv4_bytes(*first_address);
+      pool.last = ipv4_bytes(*last_address);
+      pool.subnet_mask = ipv4_bytes(*mask_address);
+      pool.router = ipv4_bytes(*router_address);
+      server.pools.push_back(pool);
+    }
+
+    unsigned reservation_count{};
+    if (!next_netstring(payload, count_text) ||
+        !decimal(count_text, reservation_count) ||
+        reservation_count > device_catalog::dhcpv4_leases_per_server)
+      return false;
+    server.reservations.reserve(reservation_count);
+    for (unsigned index{}; index < reservation_count; ++index) {
+      dhcpv4::Reservation reservation;
+      std::string_view scope_instance;
+      std::string_view scope_context;
+      std::string_view scope_link;
+      std::string_view option_61;
+      std::string_view key;
+      std::string_view address_text;
+      if (!next_netstring(payload, scope_instance) ||
+          !next_netstring(payload, scope_context) ||
+          !next_netstring(payload, scope_link) ||
+          !next_netstring(payload, option_61) ||
+          !next_netstring(payload, key) ||
+          !next_netstring(payload, address_text) ||
+          !decimal(scope_instance, reservation.scope.server_instance) ||
+          !decimal(scope_context, reservation.scope.routing_context) ||
+          !decimal(scope_link, reservation.scope.link_identity) ||
+          !boolean(option_61, reservation.client.option_61))
+        return false;
+      std::vector<std::uint8_t> decoded_key;
+      const auto address = ipv4(address_text);
+      if (!address ||
+          !hexadecimal_octets_vector(
+              key, decoded_key, reservation.client.bytes.size(), 1U))
+        return false;
+      reservation.client.octets =
+          static_cast<std::uint16_t>(decoded_key.size());
+      std::ranges::copy(decoded_key, reservation.client.bytes.begin());
+      reservation.address = ipv4_bytes(*address);
+      server.reservations.push_back(reservation);
+    }
+
+    unsigned exclusion_count{};
+    if (!next_netstring(payload, count_text) ||
+        !decimal(count_text, exclusion_count) ||
+        exclusion_count > device_catalog::dhcpv4_leases_per_server)
+      return false;
+    server.exclusions.reserve(exclusion_count);
+    for (unsigned index{}; index < exclusion_count; ++index) {
+      dhcpv4::ExcludedRange excluded;
+      std::string_view scope_instance;
+      std::string_view scope_context;
+      std::string_view scope_link;
+      std::string_view first_text;
+      std::string_view last_text;
+      if (!next_netstring(payload, scope_instance) ||
+          !next_netstring(payload, scope_context) ||
+          !next_netstring(payload, scope_link) ||
+          !next_netstring(payload, first_text) ||
+          !next_netstring(payload, last_text) ||
+          !decimal(scope_instance, excluded.scope.server_instance) ||
+          !decimal(scope_context, excluded.scope.routing_context) ||
+          !decimal(scope_link, excluded.scope.link_identity))
+        return false;
+      const auto first = ipv4(first_text);
+      const auto last = ipv4(last_text);
+      if (!first || !last)
+        return false;
+      excluded.first = ipv4_bytes(*first);
+      excluded.last = ipv4_bytes(*last);
+      server.exclusions.push_back(excluded);
+    }
+  }
+  if (!payload.empty())
+    return false;
+
+  if (dedicated_device) {
+    if (client_present || !server_present)
+      return false;
+    RouterDhcpv4ServerProgram program{
+        .device = dedicated_device->handle,
+        .name = std::string{server_name},
+        .configuration = std::move(server.configuration),
+        .pools = std::move(server.pools),
+        .reservations = std::move(server.reservations),
+        .exclusions = std::move(server.exclusions),
+    };
+    return supervisor_.configure_router_dhcpv4_server(program);
+  }
+  auto backup = transaction_has_checkpoint ? nullptr
+                                           : supervisor_.checkpoint();
+  if (!transaction_has_checkpoint && !backup)
+    return false;
+  const bool client_applied =
+      client_present ? supervisor_.configure_host_dhcpv4_client(client)
+                     : supervisor_.remove_host_dhcpv4_client(endpoint->handle);
+  const bool server_applied =
+      client_applied &&
+      (server_present
+           ? supervisor_.configure_host_dhcpv4_server(server)
+           : supervisor_.remove_host_dhcpv4_server(endpoint->handle));
+  if (server_applied)
+    return true;
+  if (backup)
+    static_cast<void>(supervisor_.restore(std::move(*backup)));
+  return false;
+}
+
+bool LabRuntime::replace_host_dhcpv6(
+    std::span<const std::string_view> fields,
+    bool transaction_has_checkpoint, RouterIntent *dedicated_device,
+    std::string_view server_name) {
+  auto *endpoint =
+      !dedicated_device && fields.size() == 2U ? host(fields[0]) : nullptr;
+  if (fields.size() != 2U ||
+      (!dedicated_device && (!endpoint || !endpoint->configured)) ||
+      (dedicated_device && server_name.empty()))
     return false;
   std::string_view payload = fields[1];
   std::string_view value;
@@ -7526,13 +9512,16 @@ bool LabRuntime::replace_host_dhcpv6(std::span<const std::string_view> fields) {
   HostDhcpv6ServerProgram server;
   // Assigning the identity after value initialization keeps every optional
   // field in its protocol-defined empty state without partial aggregate init.
-  client.host = endpoint->handle;
-  server.host = endpoint->handle;
+  const auto endpoint_handle = endpoint ? endpoint->handle : HostHandle{};
+  client.host = endpoint_handle;
+  server.host = endpoint_handle;
 
   // The entire nested record is converted to detached values before any
   // forwarding command is sent. A malformed suffix therefore cannot replace
   // a valid client while leaving the old server behind.
   if (!next_netstring(payload, value) || !boolean(value, client_present))
+    return false;
+  if (dedicated_device && client_present)
     return false;
   if (client_present) {
     auto &configuration = client.configuration;
@@ -7604,6 +9593,7 @@ bool LabRuntime::replace_host_dhcpv6(std::span<const std::string_view> fields) {
     std::string_view duid;
     std::string_view preference;
     std::string_view rapid;
+    std::string_view lease_query;
     std::string_view refresh;
     std::string_view solicit_maximum;
     std::string_view information_maximum;
@@ -7615,7 +9605,9 @@ bool LabRuntime::replace_host_dhcpv6(std::span<const std::string_view> fields) {
     unsigned dns_count{};
     if (!next_netstring(payload, duid) ||
         !next_netstring(payload, preference) ||
-        !next_netstring(payload, rapid) || !next_netstring(payload, refresh) ||
+        !next_netstring(payload, rapid) ||
+        !next_netstring(payload, lease_query) ||
+        !next_netstring(payload, refresh) ||
         !next_netstring(payload, solicit_maximum) ||
         !next_netstring(payload, information_maximum) ||
         !next_netstring(payload, decline_hold) ||
@@ -7626,6 +9618,7 @@ bool LabRuntime::replace_host_dhcpv6(std::span<const std::string_view> fields) {
                                      configuration.duid_octets, 3U) ||
         !decimal(preference, configuration.preference) ||
         !boolean(rapid, configuration.rapid_commit) ||
+        !boolean(lease_query, configuration.lease_query) ||
         !decimal(refresh, configuration.information_refresh_time_seconds) ||
         !decimal(decline_hold, decline_hold_seconds) ||
         decline_hold_seconds >
@@ -7710,8 +9703,22 @@ bool LabRuntime::replace_host_dhcpv6(std::span<const std::string_view> fields) {
   if (!payload.empty())
     return false;
 
-  auto backup = supervisor_.checkpoint();
-  if (!backup)
+  if (dedicated_device) {
+    if (!server_present)
+      return false;
+    RouterDhcpv6ServerProgram program{
+        .device = dedicated_device->handle,
+        .name = std::string{server_name},
+        .configuration = std::move(server.configuration),
+        .address_pools = std::move(server.address_pools),
+        .prefix_pools = std::move(server.prefix_pools),
+        .decline_hold_time = server.decline_hold_time,
+    };
+    return supervisor_.configure_router_dhcpv6_server(program);
+  }
+  auto backup = transaction_has_checkpoint ? nullptr
+                                           : supervisor_.checkpoint();
+  if (!transaction_has_checkpoint && !backup)
     return false;
   const bool client_applied =
       client_present ? supervisor_.configure_host_dhcpv6_client(client)
@@ -7726,11 +9733,14 @@ bool LabRuntime::replace_host_dhcpv6(std::span<const std::string_view> fields) {
   // Restore is the same detached full-runtime transaction used by other
   // browser mutations. It restores sockets, leases and active retransmission
   // deadlines, not merely the portable configuration fields parsed above.
-  static_cast<void>(supervisor_.restore(std::move(*backup)));
+  if (backup)
+    static_cast<void>(supervisor_.restore(std::move(*backup)));
   return false;
 }
 
-bool LabRuntime::replace_host_dns(std::span<const std::string_view> fields) {
+bool LabRuntime::replace_host_dns(
+    std::span<const std::string_view> fields,
+    bool transaction_has_checkpoint) {
   auto *endpoint = fields.size() == 2U ? host(fields[0]) : nullptr;
   if (!endpoint || !endpoint->configured)
     return false;
@@ -7974,8 +9984,9 @@ bool LabRuntime::replace_host_dns(std::span<const std::string_view> fields) {
   if (!payload.empty())
     return false;
 
-  auto backup = supervisor_.checkpoint();
-  if (!backup)
+  auto backup = transaction_has_checkpoint ? nullptr
+                                           : supervisor_.checkpoint();
+  if (!transaction_has_checkpoint && !backup)
     return false;
   const bool resolver_applied =
       resolver_present ? supervisor_.configure_host_dns_resolver(resolver)
@@ -7990,13 +10001,21 @@ bool LabRuntime::replace_host_dns(std::span<const std::string_view> fields) {
            : supervisor_.remove_host_dns_authoritative(endpoint->handle));
   if (authoritative_applied)
     return true;
-  static_cast<void>(supervisor_.restore(std::move(*backup)));
+  if (backup)
+    static_cast<void>(supervisor_.restore(std::move(*backup)));
   return false;
 }
 
 bool LabRuntime::create_session(std::span<const std::string_view> fields) {
   auto *device = fields.size() == 3U ? router(fields[1]) : nullptr;
-  if (!device || session(fields[0]))
+  const auto *profile =
+      device ? device_catalog::find_profile(device->profile_id) : nullptr;
+  // A dedicated server exposes its own configuration inspector and packet
+  // services. It must never receive an SR OS terminal merely because its
+  // packet engine shares the internal DeviceHandle representation.
+  if (!device || !profile ||
+      profile->role != device_catalog::DeviceRole::router ||
+      session(fields[0]))
     return false;
   const auto handle = supervisor_.create_session(device->handle, fields[0]);
   if (!handle)
@@ -8234,6 +10253,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         intent->tls = state.tls;
         intent->ipsec = state.ipsec;
         intent->ies = state.ies;
+        intent->bof_autoconfigure = state.bof_autoconfigure;
         intent->ospf = state.ospf;
         intent->ports = state.ports;
         intent->interfaces = state.interfaces;
@@ -9448,6 +11468,246 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     return valid_mld_candidate(configuration);
   };
 
+  const auto edit_dhcpv4_relay =
+      [&](ConfigurationIntent &configuration,
+          cli_schema::CommandId id) -> bool {
+    using enum cli_schema::CommandId;
+    const auto raw_name =
+        cli_detail::argument(*parsed, cli_schema::TokenKind::interface_name);
+    const auto name =
+        raw_name ? cli_detail::unquote(*raw_name) : std::string_view{};
+    if (name.empty() || name.size() > 64U || name == system_interface_name)
+      return false;
+
+    auto interface =
+        std::find_if(configuration.interfaces.begin(),
+                     configuration.interfaces.end(),
+                     [&](const auto &entry) { return entry.name == name; });
+    if (id == md_delete_dhcpv4_relay) {
+      if (interface == configuration.interfaces.end() ||
+          !interface->dhcpv4_relay)
+        return false;
+      interface->dhcpv4_relay.reset();
+      return true;
+    }
+    if (interface == configuration.interfaces.end()) {
+      // A full MD list path creates missing presence containers. Classic
+      // context traversal reaches the same canonical configuration object.
+      // Enabling an incomplete relay is still rejected by the transaction
+      // validator, so this never creates operational packet behavior early.
+      InterfaceIntent created{};
+      created.name.assign(name);
+      configuration.interfaces.push_back(std::move(created));
+      interface = std::prev(configuration.interfaces.end());
+    }
+    if (!interface->dhcpv4_relay)
+      interface->dhcpv4_relay.emplace();
+    auto &relay = *interface->dhcpv4_relay;
+
+    if (id == md_dhcpv4_relay_enable ||
+        id == classic_dhcpv4_relay_no_shutdown) {
+      relay.admin_enabled = true;
+    } else if (id == md_dhcpv4_relay_disable ||
+               id == classic_dhcpv4_relay_shutdown) {
+      relay.admin_enabled = false;
+    } else if (id == md_dhcpv4_relay_description ||
+               id == classic_dhcpv4_relay_description) {
+      const auto raw =
+          cli_detail::argument(*parsed, cli_schema::TokenKind::description);
+      const auto unquoted =
+          raw ? cli_detail::unquote(*raw) : std::string_view{};
+      const auto value = raw && unquoted.empty() ? *raw : unquoted;
+      if (!raw || value.empty() || value.size() > 80U ||
+          !cli_detail::valid_cli_string(*raw))
+        return false;
+      relay.description.assign(value);
+    } else if (id == md_delete_dhcpv4_relay_description ||
+               id == classic_dhcpv4_relay_no_description) {
+      if (relay.description.empty())
+        return false;
+      relay.description.clear();
+    } else if (id == md_dhcpv4_relay_gi_address ||
+               id == classic_dhcpv4_relay_gi_address) {
+      const auto text =
+          cli_detail::argument(*parsed, cli_schema::TokenKind::ipv4);
+      const auto address = text ? ipv4(*text) : std::optional<std::uint32_t>{};
+      if (!address || *address == 0U)
+        return false;
+      relay.gateway_address = ipv4_bytes(*address);
+      relay.gateway_address_configured = true;
+    } else if (id == md_delete_dhcpv4_relay_gi_address ||
+               id == classic_dhcpv4_relay_no_gi_address) {
+      if (!relay.gateway_address_configured)
+        return false;
+      relay.gateway_address = {};
+      relay.gateway_address_configured = false;
+    } else if (id == md_dhcpv4_relay_server ||
+               id == classic_dhcpv4_relay_server ||
+               id == md_delete_dhcpv4_relay_server ||
+               id == classic_dhcpv4_relay_no_server) {
+      const auto text =
+          cli_detail::argument(*parsed, cli_schema::TokenKind::ipv4);
+      const auto parsed_address =
+          text ? ipv4(*text) : std::optional<std::uint32_t>{};
+      if (!parsed_address || *parsed_address == 0U)
+        return false;
+      const auto address = ipv4_bytes(*parsed_address);
+      const auto existing =
+          std::find_if(relay.servers.begin(), relay.servers.end(),
+                       [&](const auto &entry) {
+                         return entry.address == address;
+                       });
+      const bool remove = id == md_delete_dhcpv4_relay_server ||
+                          id == classic_dhcpv4_relay_no_server;
+      if (remove) {
+        if (existing == relay.servers.end())
+          return false;
+        relay.servers.erase(existing);
+      } else if (existing == relay.servers.end()) {
+        if (relay.servers.size() ==
+            device_catalog::dhcpv4_relay_servers_per_interface)
+          return false;
+        relay.servers.push_back({.address = address});
+      }
+    } else if (id == md_dhcpv4_relay_source_gi ||
+               id == classic_dhcpv4_relay_source_gi) {
+      relay.source_address = dhcpv4::RelaySourceAddress::gi_address;
+    } else if (id == md_dhcpv4_relay_source_auto ||
+               id == md_delete_dhcpv4_relay_source ||
+               id == classic_dhcpv4_relay_source_auto ||
+               id == classic_dhcpv4_relay_no_source) {
+      relay.source_address = dhcpv4::RelaySourceAddress::automatic;
+    } else if (id == md_dhcpv4_relay_trusted) {
+      const auto text =
+          cli_detail::argument(*parsed, cli_schema::TokenKind::boolean);
+      if (!text || !cli_boolean(*text, relay.trusted_ingress))
+        return false;
+    } else if (id == md_delete_dhcpv4_relay_trusted ||
+               id == classic_dhcpv4_relay_no_trusted) {
+      relay.trusted_ingress = false;
+    } else if (id == classic_dhcpv4_relay_trusted) {
+      relay.trusted_ingress = true;
+    } else if (id == md_dhcpv4_relay_plain_bootp) {
+      const auto text =
+          cli_detail::argument(*parsed, cli_schema::TokenKind::boolean);
+      if (!text || !cli_boolean(*text, relay.relay_plain_bootp))
+        return false;
+    } else if (id == md_delete_dhcpv4_relay_plain_bootp ||
+               id == classic_dhcpv4_relay_no_plain_bootp) {
+      relay.relay_plain_bootp = false;
+    } else if (id == classic_dhcpv4_relay_plain_bootp) {
+      relay.relay_plain_bootp = true;
+    } else if (id == md_dhcpv4_relay_release_gi) {
+      const auto text =
+          cli_detail::argument(*parsed, cli_schema::TokenKind::boolean);
+      if (!text ||
+          !cli_boolean(*text, relay.release_include_gateway_address))
+        return false;
+    } else if (id == md_delete_dhcpv4_relay_release_gi ||
+               id == classic_dhcpv4_relay_no_release_gi) {
+      relay.release_include_gateway_address = false;
+    } else if (id == classic_dhcpv4_relay_release_gi) {
+      relay.release_include_gateway_address = true;
+    } else if (id == md_dhcpv4_option82_keep ||
+               id == classic_dhcpv4_option82_keep ||
+               id == md_delete_dhcpv4_option82_action ||
+               id == classic_dhcpv4_option82_no_action) {
+      relay.existing_information =
+          dhcpv4::ExistingRelayInformationAction::keep;
+    } else if (id == md_dhcpv4_option82_replace ||
+               id == classic_dhcpv4_option82_replace) {
+      relay.existing_information =
+          dhcpv4::ExistingRelayInformationAction::replace;
+    } else if (id == md_dhcpv4_option82_drop ||
+               id == classic_dhcpv4_option82_drop) {
+      relay.existing_information =
+          dhcpv4::ExistingRelayInformationAction::drop;
+    } else if (id == md_dhcpv4_circuit_none ||
+               id == md_delete_dhcpv4_circuit ||
+               id == classic_dhcpv4_circuit_none ||
+               id == classic_dhcpv4_circuit_no) {
+      relay.circuit_id_source = dhcpv4::CircuitIdSource::none;
+    } else if (id == md_dhcpv4_circuit_ascii_tuple ||
+               id == classic_dhcpv4_circuit_ascii_tuple) {
+      relay.circuit_id_source = dhcpv4::CircuitIdSource::ascii_tuple;
+    } else if (id == md_dhcpv4_circuit_if_name ||
+               id == classic_dhcpv4_circuit_if_name) {
+      relay.circuit_id_source = dhcpv4::CircuitIdSource::interface_name;
+    } else if (id == md_dhcpv4_circuit_ifindex ||
+               id == classic_dhcpv4_circuit_ifindex) {
+      relay.circuit_id_source = dhcpv4::CircuitIdSource::interface_index;
+    } else if (id == md_dhcpv4_circuit_port_id ||
+               id == classic_dhcpv4_circuit_port_id) {
+      relay.circuit_id_source = dhcpv4::CircuitIdSource::port_id;
+    } else if (id == md_dhcpv4_remote_none ||
+               id == md_delete_dhcpv4_remote ||
+               id == classic_dhcpv4_remote_none ||
+               id == classic_dhcpv4_remote_no) {
+      relay.remote_id_source = dhcpv4::RemoteIdSource::none;
+      relay.remote_id_ascii.clear();
+    } else if (id == md_dhcpv4_remote_mac ||
+               id == classic_dhcpv4_remote_mac) {
+      relay.remote_id_source = dhcpv4::RemoteIdSource::client_mac;
+      relay.remote_id_ascii.clear();
+    } else if (id == md_dhcpv4_remote_ascii ||
+               id == classic_dhcpv4_remote_ascii) {
+      const auto raw = cli_detail::argument(
+          *parsed, cli_schema::TokenKind::dhcp_remote_id_ascii);
+      const auto unquoted =
+          raw ? cli_detail::unquote(*raw) : std::string_view{};
+      const auto value = raw && unquoted.empty() ? *raw : unquoted;
+      if (!raw || value.empty() || value.size() > 32U ||
+          !cli_detail::valid_cli_string(*raw))
+        return false;
+      relay.remote_id_source = dhcpv4::RemoteIdSource::ascii_string;
+      relay.remote_id_ascii.assign(value);
+    } else {
+      return false;
+    }
+    return true;
+  };
+
+  const auto edit_dhcpv6_interface_server =
+      [&](ConfigurationIntent &configuration,
+          cli_schema::CommandId id) -> bool {
+    using enum cli_schema::CommandId;
+    const auto raw_name =
+        cli_detail::argument(*parsed, cli_schema::TokenKind::interface_name);
+    const auto name =
+        raw_name ? cli_detail::unquote(*raw_name) : std::string_view{};
+    if (name.empty() || name == system_interface_name)
+      return false;
+    const auto interface = std::ranges::find(
+        configuration.interfaces, name, &InterfaceIntent::name);
+    if (interface == configuration.interfaces.end())
+      return false;
+
+    const bool remove =
+        id == md_delete_interface_dhcpv6_local_server ||
+        id == classic_interface_no_dhcpv6_local_server;
+    if (remove) {
+      if (interface->dhcpv6_local_server.empty())
+        return false;
+      interface->dhcpv6_local_server.clear();
+      return true;
+    }
+
+    const auto raw_server =
+        cli_detail::argument(*parsed, cli_schema::TokenKind::dhcp_server_name);
+    const auto server =
+        raw_server ? cli_detail::unquote(*raw_server) : std::string_view{};
+    if (server.empty() ||
+        std::ranges::find(configuration.dhcpv6_servers.servers, server,
+                          &dhcpv6::configuration::Server::name) ==
+            configuration.dhcpv6_servers.servers.end())
+      return false;
+    // The running transaction validates that the interface has a physical
+    // port and IPv6 address. Keeping the leafref check here gives MD candidate
+    // edits the same immediate referential-integrity behavior as SR OS.
+    interface->dhcpv6_local_server.assign(server);
+    return true;
+  };
+
   const auto session_only = [](cli_schema::CommandId id) {
     using enum cli_schema::CommandId;
     switch (id) {
@@ -9524,7 +11784,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     auto rendered =
         md_router_advertisement_info(selected, path, detail);
     if (!rendered)
+      rendered = md_bof_configuration_info(selected, path, detail);
+    if (!rendered)
       rendered = md_ospf_info(selected.ospf, path, detail);
+    if (!rendered)
+      rendered = md_dhcpv6_configuration_info(selected.dhcpv6_servers, path,
+                                              detail);
     if (!rendered)
       rendered = md_base_configuration_info(selected, path, detail);
     if (!rendered) {
@@ -9534,7 +11799,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       // for modeled subtrees; this fallback covers empty presence containers
       // and keeps command availability independent of the current depth.
       const auto tokens = md_context_tokens(path);
-      output = tokens && !tokens->empty() && (*tokens)[0] == "configure"
+      output = tokens && !tokens->empty() &&
+                       ((*tokens)[0] == "configure" || (*tokens)[0] == "bof")
                    ? std::string{}
                    : "MINOR: CLI #2001: Command is not supported in this context";
     } else {
@@ -9811,9 +12077,30 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               ? ies_cli::EditResult{}
               : ies_cli::edit(candidate->ies, *parsed, CliEngine::md,
                               *ies_inventory, candidate->system_name);
-      const auto ospf_edit =
+      const auto dhcpv4_edit =
           ipsec_edit.recognized || tls_edit.recognized ||
                   ies_edit.recognized
+              ? dhcpv4_cli::EditResult{}
+              : dhcpv4_cli::edit(candidate->dhcpv4_servers, *parsed,
+                                 CliEngine::md);
+      Dhcpv6EntropySource dhcpv6_entropy;
+      const auto dhcpv6_edit =
+          ipsec_edit.recognized || tls_edit.recognized ||
+                  ies_edit.recognized || dhcpv4_edit.recognized
+              ? dhcpv6_cli::EditResult{}
+              : dhcpv6_cli::edit(candidate->dhcpv6_servers, *parsed,
+                                 CliEngine::md, &dhcpv6_entropy);
+      const auto bof_edit =
+          ipsec_edit.recognized || tls_edit.recognized ||
+                  ies_edit.recognized || dhcpv4_edit.recognized ||
+                  dhcpv6_edit.recognized
+              ? bof_cli::EditResult{}
+              : bof_cli::edit(candidate->bof_autoconfigure, *parsed,
+                              &dhcpv6_entropy);
+      const auto ospf_edit =
+          ipsec_edit.recognized || tls_edit.recognized ||
+                  ies_edit.recognized || dhcpv4_edit.recognized ||
+                  dhcpv6_edit.recognized || bof_edit.recognized
               ? ospf_cli::EditResult{}
               : [&] {
                   OspfVaultSink secrets{
@@ -9830,9 +12117,22 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       } else if (ies_edit.recognized) {
         valid = ies_edit.changed;
         instance = ies_edit.instance;
+      } else if (dhcpv4_edit.recognized) {
+        valid = dhcpv4_edit.valid;
+        instance = dhcpv4_edit.instance;
+      } else if (dhcpv6_edit.recognized) {
+        valid = dhcpv6_edit.valid;
+        instance = dhcpv6_edit.instance;
+      } else if (bof_edit.recognized) {
+        valid = bof_edit.valid;
+        instance = bof_edit.instance;
+      } else if (dhcpv6_interface_server_command(id)) {
+        valid = edit_dhcpv6_interface_server(*candidate, id);
       } else if (ospf_edit.recognized) {
         valid = ospf_edit.valid;
         instance = ospf_edit.instance;
+      } else if (dhcpv4_relay_configuration_command(id)) {
+        valid = edit_dhcpv4_relay(*candidate, id);
       } else if (id == configure_system_name) {
         const auto raw = argument(cli_schema::TokenKind::system_name);
         const auto name = raw ? cli_detail::unquote(*raw) : std::string_view{};
@@ -10027,9 +12327,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                                            .address_configured = false,
                                            .ipv6_addresses = {},
                                            .static_ipv6_neighbors = {},
+                                           .dhcpv6_local_server = {},
                                            .mld_import_policy = {},
                                            .mld_ssm_translations = {},
-                                           .mld_static_groups = {}});
+                                           .mld_static_groups = {},
+                                           .dhcpv4_relay = std::nullopt});
           current = std::prev(candidate->interfaces.end());
         }
         if (valid && (id == md_interface_enable || id == md_interface_disable))
@@ -11329,6 +13631,25 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       if (!valid) {
         *candidate = before;
         output = "MINOR: MGMT_CORE #2301: Invalid element value";
+      } else if (parsed->spec->enters_context &&
+                 cli_detail::navigable_command_prefix(terminal->cli,
+                                                      effective)) {
+        // A presence container can be both a complete edit and the parent of
+        // further leaves. BOF DHCP is one documented example: entering
+        // `dhcp` creates the container and moves the PWC into it. Resolving
+        // complete commands before container prefixes is necessary for the
+        // edit, but without this postcondition the same successful command
+        // stayed at the parent and every following relative leaf targeted the
+        // wrong context. Use the generated grammar to make this behavior
+        // generic instead of hardcoding command identifiers. The release
+        // schema marks only documented commands with this dual behavior;
+        // inferring it from descendants alone would incorrectly enter scalar
+        // leaves that happen to be prefixes of a more specific command.
+        const auto context =
+            cli_detail::canonical_command_prefix(terminal->cli, effective);
+        if (!context.empty())
+          static_cast<void>(
+              cli_detail::enter_md_context(terminal->cli, context));
       }
       const auto status = supervisor_.session_status(terminal->handle);
       terminal->cli.candidate_dirty =
@@ -11493,6 +13814,26 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         applied = ies_edit.recognized && ies_edit.changed &&
                   apply_configuration(*intent, next);
         instance = ies_edit.instance;
+      } else if (applied && dhcpv4_cli::is_classic_command(id)) {
+        auto next = before_running;
+        const auto dhcpv4_edit = dhcpv4_cli::edit(
+            next.dhcpv4_servers, *parsed, CliEngine::classic);
+        applied = dhcpv4_edit.recognized && dhcpv4_edit.valid &&
+                  (!dhcpv4_edit.changed || apply_configuration(*intent, next));
+        instance = dhcpv4_edit.instance;
+      } else if (applied && dhcpv6_cli::is_classic_command(id)) {
+        auto next = before_running;
+        Dhcpv6EntropySource entropy;
+        const auto dhcpv6_edit = dhcpv6_cli::edit(
+            next.dhcpv6_servers, *parsed, CliEngine::classic, &entropy);
+        applied = dhcpv6_edit.recognized && dhcpv6_edit.valid &&
+                  (!dhcpv6_edit.changed ||
+                   apply_configuration(*intent, next));
+        instance = dhcpv6_edit.instance;
+      } else if (applied && dhcpv6_interface_server_command(id)) {
+        auto next = before_running;
+        applied = edit_dhcpv6_interface_server(next, id) &&
+                  apply_configuration(*intent, next);
       } else if (applied && ospf_cli::is_classic_command(id)) {
         auto next = before_running;
         OspfVaultSink ospf_secrets{
@@ -11502,6 +13843,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         applied = ospf_edit.recognized && ospf_edit.valid &&
                   (!ospf_edit.changed || apply_configuration(*intent, next));
         instance = ospf_edit.instance;
+      } else if (applied && dhcpv4_relay_configuration_command(id)) {
+        // Classic CLI applies the same canonical relay model immediately.
+        // apply_configuration keeps the forwarding owner unchanged if any
+        // dependency or packet-owner validation fails.
+        auto next = before_running;
+        applied = edit_dhcpv4_relay(next, id) &&
+                  apply_configuration(*intent, next);
       } else if (applied && id == configure_system_name) {
         const auto raw = argument(cli_schema::TokenKind::system_name);
         const auto name = raw ? cli_detail::unquote(*raw) : std::string_view{};
@@ -12945,6 +15293,503 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           static_cast<void>(
               supervisor_.set_cli_session(terminal->handle, terminal->cli));
         }
+      }
+    }
+    output += cli_prompt(view, terminal->cli);
+  } else if (dhcpv6_server_show_command(parsed->spec->id)) {
+    using enum cli_schema::CommandId;
+    const auto id = parsed->spec->id;
+    const auto server_text =
+        cli_detail::argument(*parsed, cli_schema::TokenKind::dhcp_server_name);
+    const auto operational =
+        supervisor_.router_operational_state(intent->handle);
+    const auto server =
+        operational && server_text
+            ? std::find_if(
+                  operational->dhcpv6_servers.begin(),
+                  operational->dhcpv6_servers.end(), [&](const auto &entry) {
+                    return entry.name == cli_detail::unquote(*server_text);
+                  })
+            : operational ? operational->dhcpv6_servers.end()
+                          : decltype(operational->dhcpv6_servers.end()){};
+    if (!operational || !server_text ||
+        server == operational->dhcpv6_servers.end()) {
+      output = "MINOR: MGMT_CORE #2201: Unknown element - '" +
+               std::string{server_text
+                               ? cli_detail::unquote(*server_text)
+                               : std::string_view{}} +
+               "'";
+    } else if (id == show_dhcpv6_server_statistics ||
+               id == show_dhcpv6_server_statistics_md) {
+      const auto &stats = server->protocol.statistics;
+      // Field names and ordering follow the SR OS 26.7 server-stats example.
+      // Unsupported subscriber-management failure classes are not invented;
+      // the Base server counters below are all driven by its packet owner.
+      std::ostringstream out;
+      out << table_rule << "\nStatistics for DHCPv6 Server "
+          << server->name << " router Base\n" << table_rule
+          << "\nRx Solicit Packets            : " << stats.rx_solicit
+          << "\nRx Request Packets            : " << stats.rx_request
+          << "\nRx Confirm Packets            : " << stats.rx_confirm
+          << "\nRx Renew Packets              : " << stats.rx_renew
+          << "\nRx Rebind Packets             : " << stats.rx_rebind
+          << "\nRx Decline Packets            : " << stats.rx_decline
+          << "\nRx Release Packets            : " << stats.rx_release
+          << "\nRx Information Request Packets: "
+          << stats.rx_information_request
+          << "\nRx Leasequery Packets         : " << stats.rx_leasequery
+          << "\nTx Advertise Packets          : " << stats.tx_advertise
+          << "\nTx Reply Packets              : " << stats.tx_reply
+          << "\nTx Reconfigure Packets        : " << stats.tx_reconfigure
+          << "\nTx Leasequery Reply Packets   : "
+          << stats.tx_leasequery_reply
+          << "\nDropped Bad Packet            : " << stats.dropped_bad_packet
+          << "\nDropped Invalid Type          : "
+          << stats.dropped_not_allowed
+          << "\nDropped Resource Exhausted    : "
+          << stats.dropped_resource_exhausted << '\n' << table_rule;
+      output = out.str();
+    } else {
+      const auto prefix_text =
+          cli_detail::argument(*parsed, cli_schema::TokenKind::ipv6_prefix);
+      const auto selected_prefix =
+          prefix_text ? ip::parse_ipv6_prefix(*prefix_text)
+                      : std::optional<ip::Ipv6Prefix>{};
+      const auto state_text = cli_detail::argument(
+          *parsed, cli_schema::TokenKind::dhcpv6_lease_state);
+      const auto selected_state =
+          state_text ? dhcpv6_operational_lease_state(*state_text)
+                     : std::optional<dhcpv6::OperationalLeaseState>{};
+      const auto type_text = cli_detail::argument(
+          *parsed, cli_schema::TokenKind::dhcpv6_lease_type);
+      const auto selected_type =
+          type_text ? dhcpv6_operational_lease_type(*type_text)
+                    : std::optional<dhcpv6::LeaseClearFilter::Type>{};
+      if ((prefix_text && !selected_prefix) ||
+          (state_text && !selected_state) || (type_text && !selected_type)) {
+        output =
+            "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+      } else {
+        const auto state_of = [](const auto &lease) {
+          return lease.declined ? dhcpv6::OperationalLeaseState::held
+                                : dhcpv6::OperationalLeaseState::stable;
+        };
+        const auto type_of = [](const auto &lease) {
+          return lease.client.kind == dhcpv6::LeaseKind::prefix
+                     ? dhcpv6::LeaseClearFilter::Type::pd
+                     : dhcpv6::LeaseClearFilter::Type::wan;
+        };
+        const auto state_name = [](const auto &lease) -> std::string_view {
+          return lease.declined ? "held" : "stable";
+        };
+        const auto type_name = [](const auto &lease) -> std::string_view {
+          return lease.client.kind == dhcpv6::LeaseKind::prefix ? "pd"
+                                                                : "wan-host";
+        };
+        std::vector<const dhcpv6::LeaseCheckpoint *> leases;
+        for (const auto &lease : server->protocol.leases) {
+          if (selected_prefix &&
+              !ip::contains(*selected_prefix, lease.value))
+            continue;
+          if (selected_state && *selected_state != state_of(lease))
+            continue;
+          if (selected_type && *selected_type != type_of(lease))
+            continue;
+          leases.push_back(&lease);
+        }
+        std::sort(leases.begin(), leases.end(), [](const auto *left,
+                                                   const auto *right) {
+          if (left->value != right->value)
+            return left->value < right->value;
+          return left->prefix_length < right->prefix_length;
+        });
+
+        const bool detail =
+            parsed->has_modifier(cli_schema::OutputModifier::detail);
+        std::ostringstream out;
+        out << table_rule << "\nLeases for DHCPv6 server " << server->name
+            << '\n' << table_rule;
+        if (detail) {
+          for (const auto *lease : leases) {
+            const auto lifetime =
+                lease->declined ? lease->declined_remaining_nanoseconds
+                                : lease->valid_remaining_nanoseconds;
+            out << "\nIP Address/Prefix    : "
+                << ip::format_ipv6(lease->value) << '/'
+                << static_cast<unsigned>(lease->prefix_length)
+                << "\nLink-local Address  : "
+                << (ip::is_unspecified(lease->last_client_address)
+                        ? std::string{"N/A"}
+                        : ip::format_ipv6(lease->last_client_address))
+                << "\nLease State         : " << state_name(*lease)
+                << "\nRemaining Lifetime  : "
+                << dhcpv6_lease_lifetime(lifetime, true)
+                << "\nClient DUID         : "
+                << dhcpv6_duid_text(lease->client)
+                << "\nIAID                : " << lease->client.iaid
+                << "\nType                : " << type_name(*lease)
+                << "\nFailover Control    : local\n" << row_rule;
+          }
+        } else {
+          out << "\nIP Address/Prefix                          Lease State"
+                 "       Remaining   Fail"
+              << "\n  Link-local Address"
+                 "                                         LifeTime    Ctrl"
+              << '\n' << row_rule;
+          for (const auto *lease : leases) {
+            const auto lifetime =
+                lease->declined ? lease->declined_remaining_nanoseconds
+                                : lease->valid_remaining_nanoseconds;
+            out << '\n' << ip::format_ipv6(lease->value) << '/'
+                << static_cast<unsigned>(lease->prefix_length)
+                << "\n  "
+                << std::left << std::setw(42)
+                << (ip::is_unspecified(lease->last_client_address)
+                        ? std::string{"N/A"}
+                        : ip::format_ipv6(lease->last_client_address))
+                << std::setw(19) << state_name(*lease) << std::setw(12)
+                << dhcpv6_lease_lifetime(lifetime, false) << "local";
+          }
+        }
+        if (leases.empty())
+          out << "\nNo leases found";
+        else
+          out << '\n' << row_rule << '\n' << leases.size()
+              << " leases found";
+        out << '\n' << table_rule;
+        output = out.str();
+      }
+    }
+    output += cli_prompt(view, terminal->cli);
+  } else if (dhcpv6_server_clear_command(parsed->spec->id)) {
+    using enum cli_schema::CommandId;
+    const auto id = parsed->spec->id;
+    const auto server_text =
+        cli_detail::argument(*parsed, cli_schema::TokenKind::dhcp_server_name);
+    const auto name =
+        server_text ? cli_detail::unquote(*server_text) : std::string_view{};
+    const bool exists = std::ranges::any_of(
+        intent->dhcpv6_servers.servers,
+        [&](const auto &entry) { return entry.name == name; });
+    if (!exists) {
+      output = "MINOR: MGMT_CORE #2201: Unknown element - '" +
+               std::string{name} + "'";
+    } else if (id == clear_dhcpv6_server_statistics ||
+               id == reset_dhcpv6_server_statistics) {
+      if (!supervisor_.clear_router_dhcpv6_server_statistics(intent->handle,
+                                                              name))
+        output =
+            "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+    } else {
+      dhcpv6::LeaseClearFilter filter;
+      const auto prefix_text =
+          cli_detail::argument(*parsed, cli_schema::TokenKind::ipv6_prefix);
+      const auto address_text =
+          cli_detail::argument(*parsed, cli_schema::TokenKind::ipv6);
+      if (prefix_text) {
+        const auto selected = ip::parse_ipv6_prefix(*prefix_text);
+        if (!selected) {
+          output =
+              "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+        } else {
+          filter.value = selected->network;
+          filter.prefix_length = selected->length;
+          filter.value_specific = true;
+        }
+      } else if (address_text) {
+        const auto selected = ip::parse_ipv6(*address_text);
+        if (!selected) {
+          output =
+              "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+        } else {
+          filter.value = *selected;
+          filter.prefix_length = 128U;
+          filter.value_specific = true;
+        }
+      }
+      const auto state_text = cli_detail::argument(
+          *parsed, cli_schema::TokenKind::dhcpv6_lease_state);
+      if (state_text && output.empty()) {
+        filter.state = dhcpv6_operational_lease_state(*state_text);
+        if (!filter.state)
+          output =
+              "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+      }
+      const auto type_text = cli_detail::argument(
+          *parsed, cli_schema::TokenKind::dhcpv6_lease_type);
+      if (type_text && output.empty()) {
+        filter.type = dhcpv6_operational_lease_type(*type_text);
+        if (!filter.type)
+          output =
+              "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+      }
+      if (output.empty() &&
+          !supervisor_.clear_router_dhcpv6_server_leases(intent->handle, name,
+                                                         filter))
+        output =
+            "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+    }
+    output += cli_prompt(view, terminal->cli);
+  } else if (dhcpv4_server_show_command(parsed->spec->id)) {
+    using enum cli_schema::CommandId;
+    const auto id = parsed->spec->id;
+    const auto server_text =
+        cli_detail::argument(*parsed, cli_schema::TokenKind::dhcp_server_name);
+    const auto operational =
+        supervisor_.router_operational_state(intent->handle);
+    const auto server =
+        operational && server_text
+            ? std::find_if(
+                  operational->dhcpv4_servers.begin(),
+                  operational->dhcpv4_servers.end(), [&](const auto &entry) {
+                    return entry.name == cli_detail::unquote(*server_text);
+                  })
+            : operational ? operational->dhcpv4_servers.end()
+                          : decltype(operational->dhcpv4_servers.end()){};
+    if (!operational || !server_text ||
+        server == operational->dhcpv4_servers.end()) {
+      output = "MINOR: MGMT_CORE #2201: Unknown element - '" +
+               std::string{server_text
+                               ? cli_detail::unquote(*server_text)
+                               : std::string_view{}} +
+               "'";
+    } else if (id == show_dhcpv4_server_statistics) {
+      const auto &stats = server->protocol.statistics;
+      std::ostringstream out;
+      out << table_rule << "\nLocal DHCP Server Statistics\n" << table_rule
+          << "\nServer Name                         : " << server->name
+          << "\nDiscover Packets Received           : " << stats.rx_discover
+          << "\nRequest Packets Received            : " << stats.rx_request
+          << "\nRelease Packets Received            : " << stats.rx_release
+          << "\nDecline Packets Received            : " << stats.rx_decline
+          << "\nInform Packets Received             : " << stats.rx_inform
+          << "\nLease Query Packets Received        : " << stats.rx_lease_query
+          << "\nOffer Packets Sent                  : " << stats.tx_offer
+          << "\nAcknowledgement Packets Sent        : "
+          << stats.tx_acknowledgement
+          << "\nNegative Acknowledgement Packets Sent: "
+          << stats.tx_negative_acknowledgement
+          << "\nForce Renew Packets Sent            : " << stats.tx_force_renew
+          << "\nLease Active Packets Sent           : " << stats.tx_lease_active
+          << "\nLease Unassigned Packets Sent       : "
+          << stats.tx_lease_unassigned
+          << "\nLease Unknown Packets Sent          : "
+          << stats.tx_lease_unknown
+          << "\nDropped Bad Packets                 : "
+          << stats.dropped_bad_packet
+          << "\nDropped Unknown Scope               : "
+          << stats.dropped_unknown_scope
+          << "\nDropped Address Unavailable         : "
+          << stats.dropped_address_unavailable
+          << "\nDropped Resource Exhausted          : "
+          << stats.dropped_resource_exhausted << '\n'
+          << table_rule;
+      output = out.str();
+    } else {
+      const auto prefix_text =
+          cli_detail::argument(*parsed, cli_schema::TokenKind::ipv4_prefix);
+      const auto selected_prefix =
+          prefix_text ? prefix(*prefix_text) : std::optional<Prefix>{};
+      if (prefix_text && !selected_prefix) {
+        output =
+            "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+      } else {
+        const bool declined =
+            id == show_dhcpv4_server_declined ||
+            id == show_dhcpv4_server_declined_detail;
+        const bool sticky = id == show_dhcpv4_server_sticky ||
+                            id == show_dhcpv4_server_sticky_detail;
+        const bool detail =
+            parsed->has_modifier(cli_schema::OutputModifier::detail);
+        std::vector<const dhcpv4::LeaseCheckpoint *> leases;
+        for (const auto &lease : server->protocol.leases.leases) {
+          if (declined && lease.state != dhcpv4::BindingState::declined &&
+              lease.state != dhcpv4::BindingState::conflict)
+            continue;
+          if (sticky && !lease.sticky)
+            continue;
+          if (!declined && !sticky &&
+              lease.state == dhcpv4::BindingState::reserved)
+            continue;
+          if (selected_prefix) {
+            const auto mask = routing::prefix_mask(selected_prefix->length);
+            if ((ipv4_value(lease.address) & mask) !=
+                (selected_prefix->address & mask))
+              continue;
+          }
+          leases.push_back(&lease);
+        }
+        std::sort(leases.begin(), leases.end(), [](const auto *left,
+                                                   const auto *right) {
+          return left->address < right->address;
+        });
+
+        const auto remaining = [&](const auto &lease) {
+          const auto nanoseconds =
+              std::max<std::int64_t>(0, lease.active_remaining_nanoseconds);
+          const auto seconds =
+              std::chrono::duration_cast<std::chrono::seconds>(
+                  std::chrono::nanoseconds{nanoseconds})
+                  .count();
+          const auto days = seconds / 86400;
+          const auto hours = seconds % 86400 / 3600;
+          const auto minutes = seconds % 3600 / 60;
+          const auto remainder = seconds % 60;
+          std::ostringstream text;
+          if (days)
+            text << days << 'd';
+          text << hours << 'h' << minutes << 'm' << remainder << 's';
+          return text.str();
+        };
+        const auto hardware = [](const auto &lease) {
+          if (lease.hardware.type != 1U ||
+              lease.hardware.length != packet::Mac{}.size())
+            return std::string{"N/A"};
+          packet::Mac mac{};
+          std::copy_n(lease.hardware.address.begin(), mac.size(), mac.begin());
+          return mac_text(mac);
+        };
+
+        std::ostringstream out;
+        out << table_rule << '\n';
+        if (declined)
+          out << "Declined addresses for DHCP server " << server->name;
+        else if (sticky)
+          out << "Sticky leases for DHCP server " << server->name;
+        else
+          out << "Leases for DHCP server " << server->name << " router Base";
+        out << '\n' << table_rule;
+        if (detail) {
+          for (const auto *lease : leases)
+            out << "\nIP Address           : "
+                << ipv4_text(ipv4_value(lease->address))
+                << "\nLease State          : "
+                << dhcpv4_operational_state(lease->state)
+                << "\nMac Address          : " << hardware(*lease)
+                << "\nRemaining Lifetime   : " << remaining(*lease)
+                << "\nTransaction ID       : " << lease->transaction_id
+                << "\nSticky               : "
+                << (lease->sticky ? "yes" : "no") << '\n'
+                << row_rule;
+        } else {
+          out << "\nIP Address      Lease State       Mac Address"
+                 "       Remaining LifeTime"
+              << '\n'
+              << row_rule;
+          for (const auto *lease : leases)
+            out << '\n'
+                << std::left << std::setw(16)
+                << ipv4_text(ipv4_value(lease->address)) << std::setw(18)
+                << dhcpv4_operational_state(lease->state) << std::setw(18)
+                << hardware(*lease) << remaining(*lease);
+        }
+        if (leases.empty())
+          out << "\nNo leases found";
+        else
+          out << '\n' << row_rule << '\n' << leases.size() << " leases found";
+        out << '\n' << table_rule;
+        output = out.str();
+      }
+    }
+    output += cli_prompt(view, terminal->cli);
+  } else if (dhcpv4_server_clear_command(parsed->spec->id)) {
+    using enum cli_schema::CommandId;
+    const auto id = parsed->spec->id;
+    const auto server_text =
+        cli_detail::argument(*parsed, cli_schema::TokenKind::dhcp_server_name);
+    const auto name =
+        server_text ? cli_detail::unquote(*server_text) : std::string_view{};
+    const bool exists = std::ranges::any_of(
+        intent->dhcpv4_servers.servers,
+        [&](const auto &entry) { return entry.name == name; });
+    if (!exists) {
+      output = "MINOR: MGMT_CORE #2201: Unknown element - '" +
+               std::string{name} + "'";
+    } else if (id == clear_dhcpv4_server_statistics ||
+               id == reset_dhcpv4_server_statistics) {
+      if (!supervisor_.clear_router_dhcpv4_server_statistics(intent->handle,
+                                                              name))
+        output =
+            "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+    } else {
+      dhcpv4::LeaseClearFilter filter;
+      const auto prefix_text =
+          cli_detail::argument(*parsed, cli_schema::TokenKind::ipv4_prefix);
+      const auto address_text =
+          cli_detail::argument(*parsed, cli_schema::TokenKind::ipv4);
+      if (prefix_text) {
+        const auto selected = prefix(*prefix_text);
+        if (!selected) {
+          output =
+              "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+        } else {
+          filter.address = ipv4_bytes(selected->address);
+          filter.prefix_length = selected->length;
+          filter.address_specific = true;
+        }
+      } else if (address_text) {
+        const auto selected = ipv4(*address_text);
+        if (!selected) {
+          output =
+              "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+        } else {
+          filter.address = ipv4_bytes(*selected);
+          filter.prefix_length = 32U;
+          filter.address_specific = true;
+        }
+      }
+      const auto state_text = cli_detail::argument(
+          *parsed, cli_schema::TokenKind::dhcp_lease_state);
+      if (state_text && output.empty()) {
+        const auto selected = dhcpv4_operational_lease_state(*state_text);
+        if (!selected)
+          output =
+              "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+        else
+          filter.state = *selected;
+      }
+      if (output.empty() &&
+          !supervisor_.clear_router_dhcpv4_server_leases(intent->handle, name,
+                                                         filter))
+        output =
+            "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+    }
+    output += cli_prompt(view, terminal->cli);
+  } else if (parsed->spec->id ==
+             cli_schema::CommandId::tools_dhcpv4_send_force_renew) {
+    const auto server_text =
+        cli_detail::argument(*parsed, cli_schema::TokenKind::dhcp_server_name);
+    const auto address_text =
+        cli_detail::argument(*parsed, cli_schema::TokenKind::ipv4);
+    const auto address = address_text ? ipv4(*address_text) : std::nullopt;
+    const auto name =
+        server_text ? cli_detail::unquote(*server_text) : std::string_view{};
+    if (!address || name.empty()) {
+      output =
+          "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+    } else {
+      const auto status = supervisor_.send_router_dhcpv4_force_renew(
+          intent->handle, name, ipv4_bytes(*address));
+      switch (status) {
+      case dhcpv4::ForceRenewStatus::encoded:
+        break;
+      case dhcpv4::ForceRenewStatus::disabled:
+        output = "MINOR: DHCP #2010: Force renews is not enabled";
+        break;
+      case dhcpv4::ForceRenewStatus::lease_not_found:
+        output = "MINOR: DHCP #2011: DHCP lease not found";
+        break;
+      case dhcpv4::ForceRenewStatus::unsupported_hardware:
+        output = "MINOR: DHCP #2012: Client has no usable Ethernet address";
+        break;
+      case dhcpv4::ForceRenewStatus::delivery_failed:
+        output = "MINOR: DHCP #2013: Force renew could not be transmitted";
+        break;
+      case dhcpv4::ForceRenewStatus::output_too_small:
+      case dhcpv4::ForceRenewStatus::not_configured:
+        output = "MINOR: MGMT_CORE #2201: Unknown element - '" +
+                 std::string{name} + "'";
+        break;
       }
     }
     output += cli_prompt(view, terminal->cli);
@@ -18282,9 +21127,16 @@ std::string LabRuntime::snapshot() {
       if (port_comma)
         out << ',';
       port_comma = true;
-      const auto id = std::to_string(port->card_slot) + '/' +
-                      std::to_string(port->mda_slot) + '/' +
-                      std::to_string(port->port_number);
+      // The integrated OOB connector has no card, MDA or faceplate number.
+      // Serializing its zero-valued internal coordinates as 0/0/0 invents a
+      // data-plane port that neither the project schema nor configuration API
+      // accepts. Preserve the catalog-owned identity used by BOF and topology.
+      const auto id =
+          ordinal == device_catalog::management_port_ordinal
+              ? std::string{"management"}
+              : std::to_string(port->card_slot) + '/' +
+                    std::to_string(port->mda_slot) + '/' +
+                    std::to_string(port->port_number);
       const auto configured =
           intent ? std::find_if(intent->ports.begin(), intent->ports.end(),
                                 [&](const auto &item) { return item.id == id; })
@@ -18450,6 +21302,48 @@ std::string LabRuntime::snapshot() {
                        (static_cast<std::uint32_t>(intent->gateway[2]) << 8U) |
                        intent->gateway[3])
                  : std::string{});
+    const auto dhcpv4_status =
+        supervisor_.host_dhcpv4_client_status(entry.handle);
+    out << ",\"dhcpv4\":{\"configured\":"
+        << (dhcpv4_status ? "true" : "false") << ",\"state\":";
+    json_string(out, dhcpv4_status
+                         ? dhcpv4_client_state_text(dhcpv4_status->state)
+                         : std::string_view{"stopped"});
+    out << ",\"leasePresent\":"
+        << (dhcpv4_status && dhcpv4_status->lease_present ? "true" : "false")
+        << ",\"address\":";
+    json_string(out, dhcpv4_status && dhcpv4_status->lease_present
+                         ? ipv4_text(ipv4_value(dhcpv4_status->address))
+                         : std::string{});
+    out << ",\"subnetMask\":";
+    json_string(out, dhcpv4_status && dhcpv4_status->lease_present
+                         ? ipv4_text(ipv4_value(dhcpv4_status->subnet_mask))
+                         : std::string{});
+    out << ",\"router\":";
+    json_string(out, dhcpv4_status && dhcpv4_status->lease_present
+                         ? ipv4_text(ipv4_value(dhcpv4_status->router))
+                         : std::string{});
+    out << ",\"serverIdentifier\":";
+    json_string(out, dhcpv4_status && dhcpv4_status->lease_present
+                         ? ipv4_text(
+                               ipv4_value(dhcpv4_status->server_identifier))
+                         : std::string{});
+    out << ",\"renewRemainingMs\":"
+        << (dhcpv4_status
+                ? remaining_milliseconds(
+                      dhcpv4_status->renew_remaining_nanoseconds)
+                : 0U)
+        << ",\"rebindRemainingMs\":"
+        << (dhcpv4_status
+                ? remaining_milliseconds(
+                      dhcpv4_status->rebind_remaining_nanoseconds)
+                : 0U)
+        << ",\"validRemainingMs\":"
+        << (dhcpv4_status
+                ? remaining_milliseconds(
+                      dhcpv4_status->valid_remaining_nanoseconds)
+                : 0U)
+        << '}';
     out << ",\"mtu\":"
         << (intent ? intent->mtu : device_catalog::default_host_ipv4_mtu)
         << ",\"interfaceId\":";
@@ -18780,8 +21674,141 @@ std::string_view LabRuntime::command(std::string_view message) {
   }
   if (operation == lab_runtime_protocol::router_create)
     changed = create_router(fields);
-  else if (operation == lab_runtime_protocol::router_configuration_replace)
-    changed = replace_router_configuration(fields);
+  else if (operation == lab_runtime_protocol::dhcp_server_create)
+    changed = create_dhcp_server(fields);
+  else if (operation == lab_runtime_protocol::router_configuration_replace) {
+    auto *device = !fields.empty() ? router(fields[0]) : nullptr;
+    const auto *profile =
+        device ? device_catalog::find_profile(device->profile_id) : nullptr;
+    changed = profile &&
+              profile->role == device_catalog::DeviceRole::router &&
+              replace_router_configuration(fields);
+  }
+  else if (operation ==
+           lab_runtime_protocol::dhcp_server_configuration_replace) {
+    auto *device = !fields.empty() ? router(fields[0]) : nullptr;
+    const auto *profile =
+        device ? device_catalog::find_profile(device->profile_id) : nullptr;
+    changed = profile &&
+              profile->role == device_catalog::DeviceRole::dhcp_server &&
+              replace_router_configuration(fields);
+  } else if (operation == lab_runtime_protocol::dhcp_server_replace &&
+             fields.size() >= 6U) {
+    auto *device = router(fields[0]);
+    const auto *profile =
+        device ? device_catalog::find_profile(device->profile_id) : nullptr;
+    if (profile && profile->role == device_catalog::DeviceRole::dhcp_server) {
+      // A dedicated server edit crosses three owners: router attachment,
+      // DHCPv4 applications and DHCPv6 applications. Checkpointing before the
+      // first command is the cold-path transaction barrier. A malformed pool
+      // or rejected socket binding therefore restores every owner, including
+      // the device intent used by subsequent project snapshots.
+      auto backup = supervisor_.checkpoint();
+      const auto before = *device;
+      std::size_t cursor{2U};
+      bool applied = backup != nullptr;
+
+      const auto read_count =
+          [&](std::size_t maximum, unsigned &count) {
+            if (cursor >= fields.size() || !decimal(fields[cursor++], count) ||
+                count > maximum)
+              return false;
+            return true;
+          };
+      const auto remove_v4 = [&](unsigned count) {
+        for (unsigned index{}; index < count; ++index) {
+          if (cursor >= fields.size() ||
+              !supervisor_.remove_router_dhcpv4_server(
+                  device->handle, fields[cursor++]))
+            return false;
+        }
+        return true;
+      };
+      const auto configure_v4 = [&](unsigned count) {
+        for (unsigned index{}; index < count; ++index) {
+          if (cursor + 1U >= fields.size())
+            return false;
+          const auto name = fields[cursor++];
+          const std::array<std::string_view, 2> payload{
+              fields[0], fields[cursor++]};
+          if (!replace_host_dhcpv4(payload, true, device, name))
+            return false;
+        }
+        return true;
+      };
+      const auto remove_v6 = [&](unsigned count) {
+        for (unsigned index{}; index < count; ++index) {
+          if (cursor >= fields.size() ||
+              !supervisor_.remove_router_dhcpv6_server(
+                  device->handle, fields[cursor++]))
+            return false;
+        }
+        return true;
+      };
+      const auto configure_v6 = [&](unsigned count) {
+        for (unsigned index{}; index < count; ++index) {
+          if (cursor + 1U >= fields.size())
+            return false;
+          const auto name = fields[cursor++];
+          const std::array<std::string_view, 2> payload{
+              fields[0], fields[cursor++]};
+          if (!replace_host_dhcpv6(payload, true, device, name))
+            return false;
+        }
+        return true;
+      };
+
+      // Network attachment is applied first because pool link identities and
+      // server identifiers are valid only against the resulting interface
+      // graph. The outer checkpoint makes this ordering atomic rather than
+      // exposing a temporarily half-edited dedicated server.
+      const std::array<std::string_view, 2> network{fields[0], fields[1]};
+      if (applied)
+        applied = replace_router_configuration(network);
+
+      unsigned count{};
+      if (applied)
+        applied = read_count(device_catalog::dhcpv4_servers_per_router, count) &&
+                  remove_v4(count);
+      if (applied)
+        applied = read_count(device_catalog::dhcpv4_servers_per_router, count) &&
+                  configure_v4(count);
+      if (applied)
+        applied = read_count(device_catalog::dhcpv6_servers_per_router, count) &&
+                  remove_v6(count);
+      if (applied)
+        applied = read_count(device_catalog::dhcpv6_servers_per_router, count) &&
+                  configure_v6(count) && cursor == fields.size();
+
+      if (applied) {
+        changed = true;
+      } else if (backup) {
+        // restore() returns all protocol repositories and queue owners to the
+        // barrier. The separately held portable intent must follow it because
+        // it is owned by LabRuntime rather than RuntimeSupervisor.
+        *device = before;
+        static_cast<void>(supervisor_.restore(std::move(*backup)));
+      }
+    }
+  } else if (operation == lab_runtime_protocol::dhcp_server_dhcpv4_replace &&
+             fields.size() == 3U) {
+    auto *device = router(fields[0]);
+    const auto *profile =
+        device ? device_catalog::find_profile(device->profile_id) : nullptr;
+    const std::array<std::string_view, 2> payload{fields[0], fields[2]};
+    changed = profile &&
+              profile->role == device_catalog::DeviceRole::dhcp_server &&
+              replace_host_dhcpv4(payload, false, device, fields[1]);
+  } else if (operation == lab_runtime_protocol::dhcp_server_dhcpv6_replace &&
+             fields.size() == 3U) {
+    auto *device = router(fields[0]);
+    const auto *profile =
+        device ? device_catalog::find_profile(device->profile_id) : nullptr;
+    const std::array<std::string_view, 2> payload{fields[0], fields[2]};
+    changed = profile &&
+              profile->role == device_catalog::DeviceRole::dhcp_server &&
+              replace_host_dhcpv6(payload, false, device, fields[1]);
+  }
   else if (operation == lab_runtime_protocol::system_name_set &&
            fields.size() == 2U) {
     auto *device = router(fields[0]);
@@ -18835,6 +21862,8 @@ std::string_view LabRuntime::command(std::string_view message) {
         static_cast<void>(supervisor_.restore(std::move(*backup)));
       }
     }
+  } else if (operation == lab_runtime_protocol::host_ipv4_replace) {
+    changed = replace_host_ipv4(fields);
   } else if (operation == lab_runtime_protocol::host_name_set &&
              fields.size() == 2U) {
     auto *endpoint = host(fields[0]);
@@ -18894,6 +21923,8 @@ std::string_view LabRuntime::command(std::string_view message) {
     changed = create_link(fields);
   else if (operation == lab_runtime_protocol::host_configure)
     changed = configure_host(fields);
+  else if (operation == lab_runtime_protocol::host_dhcpv4_replace)
+    changed = replace_host_dhcpv4(fields);
   else if (operation == lab_runtime_protocol::host_dhcpv6_replace)
     changed = replace_host_dhcpv6(fields);
   else if (operation == lab_runtime_protocol::host_dns_replace)
@@ -18904,10 +21935,18 @@ std::string_view LabRuntime::command(std::string_view message) {
     changed = configure_capture(fields);
   else if (operation == lab_runtime_protocol::capture_selection_replace)
     changed = replace_capture_selection(fields);
-  else if (operation == lab_runtime_protocol::router_delete &&
+  else if ((operation == lab_runtime_protocol::router_delete ||
+            operation == lab_runtime_protocol::dhcp_server_delete) &&
            fields.size() == 1U) {
     auto *device = router(fields[0]);
-    if (device && supervisor_.delete_router(device->handle)) {
+    const auto *profile =
+        device ? device_catalog::find_profile(device->profile_id) : nullptr;
+    const auto expected_role =
+        operation == lab_runtime_protocol::router_delete
+            ? device_catalog::DeviceRole::router
+            : device_catalog::DeviceRole::dhcp_server;
+    if (device && profile && profile->role == expected_role &&
+        supervisor_.delete_router(device->handle)) {
       const auto handle = device->handle;
       sessions_.erase(
           std::remove_if(sessions_.begin(), sessions_.end(),
@@ -19153,6 +22192,9 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
       value.tls = router.tls;
       value.ipsec = router.ipsec;
       value.ies = router.ies;
+      value.bof_autoconfigure = router.bof_autoconfigure;
+      value.dhcpv4_servers = router.dhcpv4_servers;
+      value.dhcpv6_servers = router.dhcpv6_servers;
       value.ospf = router.ospf;
       value.ports.reserve(router.ports.size());
       for (const auto &port : router.ports)
@@ -19272,7 +22314,9 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
                  interface.mld_router_alert_check_configured,
              .mld_import_policy = interface.mld_import_policy,
              .mld_ssm_translations = interface.mld_ssm_translations,
-             .mld_static_groups = {}});
+             .mld_static_groups = {},
+             .dhcpv4_relay = interface.dhcpv4_relay,
+             .dhcpv6_local_server = interface.dhcpv6_local_server});
         auto &saved_addresses = value.interfaces.back().ipv6_addresses;
         saved_addresses.reserve(interface.ipv6_addresses.size());
         for (const auto &address : interface.ipv6_addresses)
@@ -19490,6 +22534,9 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
       target.tls = source.tls;
       target.ipsec = source.ipsec;
       target.ies = source.ies;
+      target.bof_autoconfigure = source.bof_autoconfigure;
+      target.dhcpv4_servers = source.dhcpv4_servers;
+      target.dhcpv6_servers = source.dhcpv6_servers;
       target.ospf = source.ospf;
       for (std::size_t card = 0; card < source.cards.size(); ++card) {
         target.cards[card].provisioned = source.cards[card].provisioned;
@@ -19560,6 +22607,7 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
              .ipv6_neighbor_limit_threshold_configured =
                  interface.ipv6_neighbor_limit_threshold_configured,
              .static_ipv6_neighbors = {},
+             .dhcpv6_local_server = interface.dhcpv6_local_server,
              .router_advertisement_configured =
                  interface.router_advertisement_configured,
              .router_advertisement_enabled =
@@ -19617,7 +22665,8 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
                  interface.mld_router_alert_check_configured,
              .mld_import_policy = interface.mld_import_policy,
              .mld_ssm_translations = interface.mld_ssm_translations,
-             .mld_static_groups = {}});
+             .mld_static_groups = {},
+             .dhcpv4_relay = interface.dhcpv4_relay});
         auto &saved_addresses = target.interfaces.back().ipv6_addresses;
         saved_addresses.reserve(interface.ipv6_addresses.size());
         for (const auto &address : interface.ipv6_addresses)
@@ -19717,6 +22766,9 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
           .tls = portable->tls,
           .ipsec = portable->ipsec,
           .ies = portable->ies,
+          .bof_autoconfigure = portable->bof_autoconfigure,
+          .dhcpv4_servers = portable->dhcpv4_servers,
+          .dhcpv6_servers = portable->dhcpv6_servers,
           .ospf = portable->ospf,
           .global_candidate = {},
           .global_candidate_initialized = false,
@@ -19786,6 +22838,7 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
              .ipv6_neighbor_limit_threshold_configured =
                  interface.ipv6_neighbor_limit_threshold_configured,
              .static_ipv6_neighbors = {},
+             .dhcpv6_local_server = interface.dhcpv6_local_server,
              .router_advertisement_configured =
                  interface.router_advertisement_configured,
              .router_advertisement_enabled =
@@ -19843,7 +22896,8 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
                  interface.mld_router_alert_check_configured,
              .mld_import_policy = interface.mld_import_policy,
              .mld_ssm_translations = interface.mld_ssm_translations,
-             .mld_static_groups = {}});
+             .mld_static_groups = {},
+             .dhcpv4_relay = interface.dhcpv4_relay});
         auto &saved_addresses = value.interfaces.back().ipv6_addresses;
         saved_addresses.reserve(interface.ipv6_addresses.size());
         for (const auto &address : interface.ipv6_addresses)

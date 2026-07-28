@@ -426,6 +426,20 @@ void ipv4_reassembly_entries(
     Writer &out, const std::vector<packet::Ipv4ReassemblyCheckpoint> &value);
 bool ipv4_reassembly_entries(
     Reader &in, std::vector<packet::Ipv4ReassemblyCheckpoint> &value);
+// Router and host DHCPv4 services share one wire representation. Declaring
+// these helpers before the router codec prevents a second, subtly divergent
+// encoding for the same RFC 2131 state machine.
+void dhcpv4_server_checkpoint(Writer &out,
+                              const dhcpv4::ServerCheckpoint &value);
+bool dhcpv4_server_checkpoint(Reader &in,
+                              dhcpv4::ServerCheckpoint &value);
+// The router and dedicated endpoint also share one DHCPv6 checkpoint codec.
+// Its definition follows the client codec, but the router forwarding payload
+// is serialized earlier in this translation unit.
+void dhcpv6_server_checkpoint(Writer &out,
+                              const dhcpv6::ServerCheckpoint &value);
+bool dhcpv6_server_checkpoint(Reader &in,
+                              dhcpv6::ServerCheckpoint &value);
 
 template <std::size_t Size>
 void generations(Writer &out, const std::array<std::uint16_t, Size> &values) {
@@ -1155,6 +1169,10 @@ bool named_mld_import_policies(
 // this translation unit. Forward declarations keep one canonical relay wire
 // representation for both owners instead of duplicating a subtly different
 // variable-length codec.
+void dhcpv4_relay_configuration(
+    Writer &out, const dhcpv4::RelayInterfaceConfiguration &value);
+bool dhcpv4_relay_configuration(
+    Reader &in, dhcpv4::RelayInterfaceConfiguration &value);
 void dhcpv6_relay_configuration(Writer &out,
                                 const dhcpv6::RelayInterfaceConfig &value);
 bool dhcpv6_relay_configuration(Reader &in,
@@ -1392,11 +1410,12 @@ void control_state(Writer &out, const RouterControlCheckpoint &state) {
     mld_import_policy(out, mld.import_policy);
     out.boolean(mld.configured);
   }
-  for (const auto &relay : state.dhcpv6_relays) {
-    out.boolean(relay.has_value());
-    if (relay)
-      dhcpv6_relay_configuration(out, *relay);
-  }
+  count(out, state.dhcpv4_relays);
+  for (const auto &relay : state.dhcpv4_relays)
+    dhcpv4_relay_configuration(out, relay);
+  count(out, state.dhcpv6_relays);
+  for (const auto &relay : state.dhcpv6_relays)
+    dhcpv6_relay_configuration(out, relay);
   ies_configuration(out, state.ies_configuration);
   count(out, state.ies_sap_attachments);
   for (const auto &attachment : state.ies_sap_attachments)
@@ -1473,18 +1492,19 @@ bool control_state(Reader &in, RouterControlCheckpoint &state) noexcept {
         !mld_import_policy(in, mld.import_policy) ||
         !in.boolean(mld.configured))
       return false;
-  for (auto &relay : state.dhcpv6_relays) {
-    bool present{};
-    if (!in.boolean(present))
+  std::uint32_t relay_count{};
+  if (!count(in, relay_count, device_catalog::maximum_ports_per_router))
+    return false;
+  state.dhcpv4_relays.resize(relay_count);
+  for (auto &relay : state.dhcpv4_relays)
+    if (!dhcpv4_relay_configuration(in, relay))
       return false;
-    if (!present) {
-      relay.reset();
-      continue;
-    }
-    relay.emplace();
-    if (!dhcpv6_relay_configuration(in, *relay))
+  if (!count(in, relay_count, device_catalog::maximum_ports_per_router))
+    return false;
+  state.dhcpv6_relays.resize(relay_count);
+  for (auto &relay : state.dhcpv6_relays)
+    if (!dhcpv6_relay_configuration(in, relay))
       return false;
-  }
   std::uint32_t size{};
   if (!ies_configuration(in, state.ies_configuration) ||
       !count(in, size, maximum_checkpoint_bytes / 23U))
@@ -1912,6 +1932,82 @@ bool udp_endpoint(Reader &in, transport::UdpEndpointCheckpoint &value);
 void ike_udp_service(Writer &out, const ikev2::UdpServiceCheckpoint &value);
 bool ike_udp_service(Reader &in, ikev2::UdpServiceCheckpoint &value) noexcept;
 
+void dhcpv4_relay_policy(Writer &out,
+                         const dhcpv4::RelayConfiguration &value) {
+  out.boolean(value.admin_enabled);
+  out.string(value.description);
+  ipv4(out, value.gateway_address);
+  out.boolean(value.gateway_address_configured);
+  out.integer(value.existing_information);
+  out.integer(value.source_address);
+  out.integer(value.maximum_hops);
+  out.boolean(value.trusted_ingress);
+  out.boolean(value.relay_plain_bootp);
+  out.boolean(value.release_include_gateway_address);
+  out.integer(value.circuit_id_source);
+  out.integer(value.remote_id_source);
+  out.string(value.remote_id_ascii);
+  count(out, value.servers);
+  for (const auto &server : value.servers)
+    ipv4(out, server.address);
+  count(out, value.circuit_id);
+  out.octets(value.circuit_id);
+  count(out, value.remote_id);
+  out.octets(value.remote_id);
+}
+
+bool dhcpv4_relay_policy(Reader &in, dhcpv4::RelayConfiguration &value) {
+  std::uint32_t size{};
+  if (!in.boolean(value.admin_enabled) ||
+      !in.string(value.description, 80U) ||
+      !ipv4(in, value.gateway_address) ||
+      !in.boolean(value.gateway_address_configured) ||
+      !in.integer(value.existing_information) ||
+      value.existing_information >
+          dhcpv4::ExistingRelayInformationAction::drop ||
+      !in.integer(value.source_address) ||
+      value.source_address > dhcpv4::RelaySourceAddress::gi_address ||
+      !in.integer(value.maximum_hops) ||
+      !in.boolean(value.trusted_ingress) ||
+      !in.boolean(value.relay_plain_bootp) ||
+      !in.boolean(value.release_include_gateway_address) ||
+      !in.integer(value.circuit_id_source) ||
+      value.circuit_id_source > dhcpv4::CircuitIdSource::vlan_ascii_tuple ||
+      !in.integer(value.remote_id_source) ||
+      value.remote_id_source > dhcpv4::RemoteIdSource::client_mac ||
+      !in.string(value.remote_id_ascii, 32U) ||
+      !count(in, size,
+             device_catalog::dhcpv4_relay_servers_per_interface))
+    return false;
+  value.servers.resize(size);
+  for (auto &server : value.servers)
+    if (!ipv4(in, server.address))
+      return false;
+  if (!count(in, size, 255U))
+    return false;
+  value.circuit_id.resize(size);
+  if (!in.octets(value.circuit_id) || !count(in, size, 255U))
+    return false;
+  value.remote_id.resize(size);
+  return in.octets(value.remote_id);
+}
+
+void dhcpv4_relay_configuration(
+    Writer &out, const dhcpv4::RelayInterfaceConfiguration &value) {
+  out.integer(value.interface_id);
+  out.integer(value.physical_port_ordinal);
+  dhcpv4_relay_policy(out, value.relay);
+}
+
+bool dhcpv4_relay_configuration(
+    Reader &in, dhcpv4::RelayInterfaceConfiguration &value) {
+  return in.integer(value.interface_id) &&
+         in.integer(value.physical_port_ordinal) &&
+         value.physical_port_ordinal <
+             device_catalog::maximum_ports_per_router &&
+         dhcpv4_relay_policy(in, value.relay);
+}
+
 void dhcpv6_relay_configuration(Writer &out,
                                 const dhcpv6::RelayInterfaceConfig &value) {
   out.integer(value.interface_id);
@@ -1977,6 +2073,7 @@ void dhcpv6_relay_lease(Writer &out,
   out.integer(value.client.duid_octets);
   out.octets(std::span<const std::uint8_t>{value.client.duid}.first(
       value.client.duid_octets));
+  out.octets(value.client.link_identity);
   out.integer(value.client.iaid);
   out.integer(value.client.kind);
   // Server Identifier is the opaque RFC 9915 DUID selected by the server.
@@ -2008,6 +2105,7 @@ bool dhcpv6_relay_lease(Reader &in,
          value.client.duid_octets <= value.client.duid.size() &&
          in.octets(std::span<std::uint8_t>{value.client.duid}.first(
              value.client.duid_octets)) &&
+         in.octets(value.client.link_identity) &&
          in.integer(value.client.iaid) && in.integer(value.client.kind) &&
          value.client.kind <= dhcpv6::LeaseKind::prefix &&
          in.integer(value.server.duid_octets) &&
@@ -2149,7 +2247,145 @@ bool service_ipv6_interface(Reader &in,
          in.boolean(interface.configured) && in.boolean(interface.operational);
 }
 
+void dhcpv4_leasequery_request(
+    Writer &out, const dhcpv4::leasequery::RequestView &request) {
+  out.integer(request.kind);
+  out.integer(request.selector);
+  out.integer(request.transaction_id);
+  out.boolean(request.query_start_time.has_value());
+  if (request.query_start_time)
+    out.integer(*request.query_start_time);
+  out.boolean(request.query_end_time.has_value());
+  if (request.query_end_time)
+    out.integer(*request.query_end_time);
+  out.integer(request.selector_octets);
+  out.octets(std::span<const std::uint8_t>{request.selector_value}.first(
+      request.selector_octets));
+  out.integer(request.requested_option_octets);
+  out.octets(std::span<const std::uint8_t>{request.requested_options}.first(
+      request.requested_option_octets));
+  out.integer(request.hardware_type);
+}
+
+bool dhcpv4_leasequery_request(
+    Reader &in, dhcpv4::leasequery::RequestView &request) noexcept {
+  bool start_present{};
+  bool end_present{};
+  if (!in.integer(request.kind) ||
+      request.kind > dhcpv4::leasequery::RequestKind::tls ||
+      !in.integer(request.selector) ||
+      request.selector >
+          dhcpv4::leasequery::SelectorKind::relay_identifier ||
+      !in.integer(request.transaction_id) ||
+      !in.boolean(start_present))
+    return false;
+  if (start_present) {
+    std::uint32_t value{};
+    if (!in.integer(value))
+      return false;
+    request.query_start_time = value;
+  } else {
+    request.query_start_time.reset();
+  }
+  if (!in.boolean(end_present))
+    return false;
+  if (end_present) {
+    std::uint32_t value{};
+    if (!in.integer(value))
+      return false;
+    request.query_end_time = value;
+  } else {
+    request.query_end_time.reset();
+  }
+  if (!in.integer(request.selector_octets) ||
+      request.selector_octets > request.selector_value.size())
+    return false;
+  const auto selector = in.view(request.selector_octets);
+  if (!selector)
+    return false;
+  std::copy(selector->begin(), selector->end(),
+            request.selector_value.begin());
+  if (!in.integer(request.requested_option_octets) ||
+      request.requested_option_octets > request.requested_options.size())
+    return false;
+  const auto requested = in.view(request.requested_option_octets);
+  if (!requested || !in.integer(request.hardware_type))
+    return false;
+  std::copy(requested->begin(), requested->end(),
+            request.requested_options.begin());
+  return true;
+}
+
+void dhcpv4_leasequery_session(
+    Writer &out,
+    const RouterForwarderCheckpoint::Dhcpv4LeasequerySession &session) {
+  out.integer(session.socket.index);
+  out.integer(session.socket.generation);
+  out.integer(session.decoder.occupied);
+  out.octets(std::span<const std::uint8_t>{session.decoder.storage}.first(
+      session.decoder.occupied));
+  out.integer(session.decoder.complete_octets);
+  out.boolean(session.decoder.malformed);
+  out.boolean(session.request.has_value());
+  if (session.request)
+    dhcpv4_leasequery_request(out, *session.request);
+  ipv4(out, session.local);
+  ipv4(out, session.remote);
+  out.string(session.server_name);
+  out.integer(session.lease_cursor);
+  out.integer(session.pool_cursor);
+  out.integer(session.address_cursor);
+  out.integer(session.revision_cursor);
+  out.integer(session.scan_revision_target);
+  out.integer(session.data_remaining_nanoseconds);
+  out.integer(session.keepalive_remaining_nanoseconds);
+  out.boolean(session.first_reply);
+  out.boolean(session.catch_up_complete);
+  out.boolean(session.done);
+}
+
+bool dhcpv4_leasequery_session(
+    Reader &in,
+    RouterForwarderCheckpoint::Dhcpv4LeasequerySession &session) {
+  bool request_present{};
+  if (!in.integer(session.socket.index) ||
+      !in.integer(session.socket.generation) ||
+      !in.integer(session.decoder.occupied) ||
+      session.decoder.occupied >
+          packet::dhcpv4::maximum_message_octets +
+              dhcpv4::leasequery::frame_prefix_octets)
+    return false;
+  const auto decoder = in.view(session.decoder.occupied);
+  if (!decoder)
+    return false;
+  session.decoder.storage.assign(decoder->begin(), decoder->end());
+  if (!in.integer(session.decoder.complete_octets) ||
+      !in.boolean(session.decoder.malformed) ||
+      !in.boolean(request_present))
+    return false;
+  if (request_present) {
+    session.request.emplace();
+    if (!dhcpv4_leasequery_request(in, *session.request))
+      return false;
+  } else {
+    session.request.reset();
+  }
+  return ipv4(in, session.local) && ipv4(in, session.remote) &&
+         in.string(session.server_name,
+                   device_catalog::dhcpv4_server_name_bytes) &&
+         in.integer(session.lease_cursor) &&
+         in.integer(session.pool_cursor) &&
+         in.integer(session.address_cursor) &&
+         in.integer(session.revision_cursor) &&
+         in.integer(session.scan_revision_target) &&
+         in.integer(session.data_remaining_nanoseconds) &&
+         in.integer(session.keepalive_remaining_nanoseconds) &&
+         in.boolean(session.first_reply) &&
+         in.boolean(session.catch_up_complete) && in.boolean(session.done);
+}
+
 void forwarder_state(Writer &out, const RouterForwarderCheckpoint &state) {
+  out.boolean(state.transit_forwarding_enabled);
   count(out, state.ports);
   for (const auto &value : state.ports)
     forward_port(out, value);
@@ -2252,9 +2488,45 @@ void forwarder_state(Writer &out, const RouterForwarderCheckpoint &state) {
   ipv6_reassembly_entries(out, state.ipv6_reassembly);
   udp_endpoint(out, state.udp);
   ike_udp_service(out, state.ike_udp);
+  out.boolean(state.tcp.has_value());
+  if (state.tcp) {
+    // Reuse the transport-owned codec so the runtime checkpoint does not
+    // duplicate TCP invariants or silently omit future socket fields.
+    const auto encoded = transport::tcp::checkpoint::encode(*state.tcp);
+    if (!encoded || encoded->size() > std::numeric_limits<std::uint32_t>::max())
+      throw std::length_error("router TCP endpoint checkpoint cannot be encoded");
+    out.integer<std::uint32_t>(static_cast<std::uint32_t>(encoded->size()));
+    out.octets(*encoded);
+  }
+  out.boolean(state.dhcpv4_leasequery_listener.has_value());
+  if (state.dhcpv4_leasequery_listener) {
+    out.integer(state.dhcpv4_leasequery_listener->index);
+    out.integer(state.dhcpv4_leasequery_listener->generation);
+  }
+  count(out, state.dhcpv4_leasequery_sessions);
+  for (const auto &session : state.dhcpv4_leasequery_sessions)
+    dhcpv4_leasequery_session(out, session);
+  count(out, state.dhcpv4_relay_interfaces);
+  for (const auto &configuration : state.dhcpv4_relay_interfaces)
+    dhcpv4_relay_configuration(out, configuration);
+  count(out, state.dhcpv4_servers);
+  for (const auto &server : state.dhcpv4_servers) {
+    out.string(server.name);
+    dhcpv4_server_checkpoint(out, server.protocol);
+  }
+  out.boolean(state.dhcpv4_relay_socket.has_value());
+  if (state.dhcpv4_relay_socket) {
+    out.integer(state.dhcpv4_relay_socket->index);
+    out.integer(state.dhcpv4_relay_socket->generation);
+  }
   count(out, state.dhcpv6_relay_interfaces);
   for (const auto &configuration : state.dhcpv6_relay_interfaces)
     dhcpv6_relay_configuration(out, configuration);
+  count(out, state.dhcpv6_servers);
+  for (const auto &server : state.dhcpv6_servers) {
+    out.string(server.name);
+    dhcpv6_server_checkpoint(out, server.protocol);
+  }
   count(out, state.dhcpv6_relay_leases);
   for (const auto &lease : state.dhcpv6_relay_leases)
     dhcpv6_relay_lease(out, lease);
@@ -2375,7 +2647,8 @@ void forwarder_state(Writer &out, const RouterForwarderCheckpoint &state) {
 
 bool forwarder_state(Reader &in, RouterForwarderCheckpoint &state) {
   std::uint32_t size{};
-  if (!count(in, size, device_catalog::maximum_ports_per_router))
+  if (!in.boolean(state.transit_forwarding_enabled) ||
+      !count(in, size, device_catalog::maximum_ports_per_router))
     return false;
   state.ports.resize(size);
   for (auto &value : state.ports)
@@ -2489,12 +2762,82 @@ bool forwarder_state(Reader &in, RouterForwarderCheckpoint &state) {
   if (!ipv4_reassembly_entries(in, state.ipv4_reassembly) ||
       !ipv6_reassembly_entries(in, state.ipv6_reassembly))
     return false;
-  if (!udp_endpoint(in, state.udp) || !ike_udp_service(in, state.ike_udp) ||
-      !count(in, size, device_catalog::maximum_ports_per_router))
+  if (!udp_endpoint(in, state.udp) || !ike_udp_service(in, state.ike_udp))
+    return false;
+  bool tcp_present{};
+  if (!in.boolean(tcp_present))
+    return false;
+  if (tcp_present) {
+    std::uint32_t tcp_octets{};
+    if (!in.integer(tcp_octets))
+      return false;
+    const auto encoded = in.view(tcp_octets);
+    if (!encoded)
+      return false;
+    state.tcp = transport::tcp::checkpoint::decode(*encoded);
+    if (!state.tcp)
+      return false;
+  } else {
+    state.tcp.reset();
+  }
+  bool leasequery_listener_present{};
+  if (!in.boolean(leasequery_listener_present))
+    return false;
+  if (leasequery_listener_present) {
+    transport::tcp::EndpointSocketHandle listener;
+    if (!in.integer(listener.index) ||
+        !in.integer(listener.generation))
+      return false;
+    state.dhcpv4_leasequery_listener = listener;
+  } else {
+    state.dhcpv4_leasequery_listener.reset();
+  }
+  if (!count(
+          in, size,
+          device_catalog::dhcpv4_leasequery_connections_per_server))
+    return false;
+  state.dhcpv4_leasequery_sessions.resize(size);
+  for (auto &session : state.dhcpv4_leasequery_sessions)
+    if (!dhcpv4_leasequery_session(in, session))
+      return false;
+  if (!count(in, size, device_catalog::maximum_ports_per_router))
+    return false;
+  state.dhcpv4_relay_interfaces.resize(size);
+  for (auto &configuration : state.dhcpv4_relay_interfaces)
+    if (!dhcpv4_relay_configuration(in, configuration))
+      return false;
+  // The checkpoint envelope is the resource bound for server instances. Pool
+  // and lease counts are validated separately by the protocol decoder.
+  if (!count(in, size, maximum_checkpoint_bytes / 64U))
+    return false;
+  state.dhcpv4_servers.resize(size);
+  for (auto &server : state.dhcpv4_servers)
+    if (!in.string(server.name, 32U) ||
+        !dhcpv4_server_checkpoint(in, server.protocol))
+      return false;
+  bool dhcpv4_relay_socket_present{};
+  if (!in.boolean(dhcpv4_relay_socket_present))
+    return false;
+  if (dhcpv4_relay_socket_present) {
+    transport::UdpSocketHandle socket;
+    if (!in.integer(socket.index) || !in.integer(socket.generation))
+      return false;
+    state.dhcpv4_relay_socket = socket;
+  } else {
+    state.dhcpv4_relay_socket.reset();
+  }
+  if (!count(in, size, device_catalog::maximum_ports_per_router))
     return false;
   state.dhcpv6_relay_interfaces.resize(size);
   for (auto &configuration : state.dhcpv6_relay_interfaces)
     if (!dhcpv6_relay_configuration(in, configuration))
+      return false;
+  if (!count(in, size, maximum_checkpoint_bytes / 64U))
+    return false;
+  state.dhcpv6_servers.resize(size);
+  for (auto &server : state.dhcpv6_servers)
+    if (!in.string(server.name, 32U) ||
+        !dhcpv6_server_checkpoint(in, server.protocol))
       return false;
   // The byte-envelope bound is deliberately independent from one current
   // Nokia platform limit. The repository validator later applies each
@@ -2687,13 +3030,15 @@ void udp_binding(Writer &out, const transport::UdpBinding &value) {
   out.integer(value.interface_id);
   out.integer(value.port);
   out.boolean(value.ipv4_broadcast);
+  out.boolean(value.ipv4_unconfigured_unicast);
 }
 
 bool udp_binding(Reader &in, transport::UdpBinding &value) noexcept {
   return in.integer(value.family) &&
          value.family <= transport::IpFamily::ipv6 && ipv4(in, value.ipv4) &&
          ipv6(in, value.ipv6) && in.integer(value.interface_id) &&
-         in.integer(value.port) && in.boolean(value.ipv4_broadcast);
+         in.integer(value.port) && in.boolean(value.ipv4_broadcast) &&
+         in.boolean(value.ipv4_unconfigured_unicast);
 }
 
 void udp_metadata(Writer &out, const transport::UdpDatagramMetadata &value) {
@@ -3308,20 +3653,23 @@ void dhcpv6_pool(Writer &out, const dhcpv6::LeasePool &value) {
   ipv6(out, value.prefix.network);
   out.integer(value.prefix.length);
   out.octets(value.allocation_secret);
+  out.octets(value.link_identity);
   out.integer(value.preferred_lifetime_seconds);
   out.integer(value.valid_lifetime_seconds);
   out.integer(value.t1_seconds);
   out.integer(value.t2_seconds);
   out.integer(value.delegated_length);
+  out.boolean(value.link_scoped);
 }
 
 bool dhcpv6_pool(Reader &in, dhcpv6::LeasePool &value) noexcept {
   return ipv6(in, value.prefix.network) && in.integer(value.prefix.length) &&
          in.octets(value.allocation_secret) &&
+         in.octets(value.link_identity) &&
          in.integer(value.preferred_lifetime_seconds) &&
          in.integer(value.valid_lifetime_seconds) &&
          in.integer(value.t1_seconds) && in.integer(value.t2_seconds) &&
-         in.integer(value.delegated_length);
+         in.integer(value.delegated_length) && in.boolean(value.link_scoped);
 }
 
 void dhcpv6_client_configuration(Writer &out,
@@ -3338,6 +3686,8 @@ void dhcpv6_client_configuration(Writer &out,
   count(out, value.requested_options);
   for (const auto option : value.requested_options)
     out.integer(option);
+  count(out, value.user_class);
+  out.octets(value.user_class);
   out.boolean(value.rapid_commit);
 }
 
@@ -3361,6 +3711,11 @@ bool dhcpv6_client_configuration(Reader &in,
   for (auto &option : value.requested_options)
     if (!in.integer(option))
       return false;
+  if (!count(in, size, packet::dhcpv6::maximum_message_octets - 2U))
+    return false;
+  value.user_class.resize(size);
+  if (!in.octets(value.user_class))
+    return false;
   return in.boolean(value.rapid_commit);
 }
 
@@ -3518,6 +3873,7 @@ void dhcpv6_server_configuration(Writer &out,
   out.integer(value.prefix_pool_index);
   out.integer(value.information_refresh_time_seconds);
   out.boolean(value.rapid_commit);
+  out.boolean(value.lease_query);
   count(out, value.dns_recursive_servers);
   for (const auto &address : value.dns_recursive_servers)
     ipv6(out, address);
@@ -3540,6 +3896,7 @@ bool dhcpv6_server_configuration(Reader &in,
       !in.integer(value.prefix_pool_index) ||
       !in.integer(value.information_refresh_time_seconds) ||
       !in.boolean(value.rapid_commit) ||
+      !in.boolean(value.lease_query) ||
       !count(in, size, packet::dhcpv6::maximum_message_octets / 16U))
     return false;
   value.dns_recursive_servers.resize(size);
@@ -3578,16 +3935,49 @@ void dhcpv6_server_checkpoint(Writer &out,
     out.integer(lease.client.duid_octets);
     out.octets(std::span<const std::uint8_t>{lease.client.duid}.first(
         lease.client.duid_octets));
+    out.octets(lease.client.link_identity);
     out.integer(lease.client.iaid);
     out.integer(lease.client.kind);
     ipv6(out, lease.value);
+    ipv6(out, lease.last_client_address);
     out.integer(lease.preferred_remaining_nanoseconds);
     out.integer(lease.valid_remaining_nanoseconds);
     out.integer(lease.declined_remaining_nanoseconds);
+    out.integer(lease.last_client_transaction_ago_nanoseconds);
     out.integer(lease.pool_index);
     out.integer(lease.prefix_length);
     out.boolean(lease.declined);
   }
+  count(out, value.failover_bindings);
+  for (const auto &binding : value.failover_bindings) {
+    ipv6(out, binding.value);
+    out.integer(binding.association);
+    out.integer(binding.status);
+    out.integer(binding.state_started_absolute);
+    out.integer(binding.prefix_length);
+    out.boolean(binding.occupied);
+  }
+  // Message counters are part of operational continuity. Restoring a
+  // checkpoint must not make the server appear freshly started while its
+  // leases and transaction history remain live.
+  out.integer(value.statistics.rx_solicit);
+  out.integer(value.statistics.rx_request);
+  out.integer(value.statistics.rx_confirm);
+  out.integer(value.statistics.rx_renew);
+  out.integer(value.statistics.rx_rebind);
+  out.integer(value.statistics.rx_release);
+  out.integer(value.statistics.rx_decline);
+  out.integer(value.statistics.rx_information_request);
+  out.integer(value.statistics.rx_relay_forward);
+  out.integer(value.statistics.rx_leasequery);
+  out.integer(value.statistics.tx_advertise);
+  out.integer(value.statistics.tx_reply);
+  out.integer(value.statistics.tx_reconfigure);
+  out.integer(value.statistics.tx_relay_reply);
+  out.integer(value.statistics.tx_leasequery_reply);
+  out.integer(value.statistics.dropped_bad_packet);
+  out.integer(value.statistics.dropped_not_allowed);
+  out.integer(value.statistics.dropped_resource_exhausted);
   out.integer(value.decline_hold_seconds);
   out.boolean(value.configured);
 }
@@ -3620,16 +4010,513 @@ bool dhcpv6_server_checkpoint(Reader &in, dhcpv6::ServerCheckpoint &value) {
         lease.client.duid_octets > lease.client.duid.size() ||
         !in.octets(std::span<std::uint8_t>{lease.client.duid}.first(
             lease.client.duid_octets)) ||
+        !in.octets(lease.client.link_identity) ||
         !in.integer(lease.client.iaid) || !in.integer(lease.client.kind) ||
         lease.client.kind > dhcpv6::LeaseKind::prefix ||
-        !ipv6(in, lease.value) ||
+        !ipv6(in, lease.value) || !ipv6(in, lease.last_client_address) ||
         !in.integer(lease.preferred_remaining_nanoseconds) ||
         !in.integer(lease.valid_remaining_nanoseconds) ||
         !in.integer(lease.declined_remaining_nanoseconds) ||
+        !in.integer(lease.last_client_transaction_ago_nanoseconds) ||
         !in.integer(lease.pool_index) || !in.integer(lease.prefix_length) ||
         !in.boolean(lease.declined))
       return false;
-  return in.integer(value.decline_hold_seconds) && in.boolean(value.configured);
+  if (!count(in, size, device_catalog::dhcpv6_leases_per_server))
+    return false;
+  value.failover_bindings.resize(size);
+  for (auto &binding : value.failover_bindings)
+    if (!ipv6(in, binding.value) ||
+        !in.integer(binding.association) ||
+        binding.association >
+            dhcpv6::failover::IdentityAssociationType::unassociated_prefix ||
+        !in.integer(binding.status) ||
+        binding.status > dhcpv6::failover::BindingStatus::reset ||
+        !in.integer(binding.state_started_absolute) ||
+        !in.integer(binding.prefix_length) ||
+        !in.boolean(binding.occupied))
+      return false;
+  return in.integer(value.statistics.rx_solicit) &&
+         in.integer(value.statistics.rx_request) &&
+         in.integer(value.statistics.rx_confirm) &&
+         in.integer(value.statistics.rx_renew) &&
+         in.integer(value.statistics.rx_rebind) &&
+         in.integer(value.statistics.rx_release) &&
+         in.integer(value.statistics.rx_decline) &&
+         in.integer(value.statistics.rx_information_request) &&
+         in.integer(value.statistics.rx_relay_forward) &&
+         in.integer(value.statistics.rx_leasequery) &&
+         in.integer(value.statistics.tx_advertise) &&
+         in.integer(value.statistics.tx_reply) &&
+         in.integer(value.statistics.tx_reconfigure) &&
+         in.integer(value.statistics.tx_relay_reply) &&
+         in.integer(value.statistics.tx_leasequery_reply) &&
+         in.integer(value.statistics.dropped_bad_packet) &&
+         in.integer(value.statistics.dropped_not_allowed) &&
+         in.integer(value.statistics.dropped_resource_exhausted) &&
+         in.integer(value.decline_hold_seconds) &&
+         in.boolean(value.configured);
+}
+
+void dhcpv4_scope(Writer &out, const dhcpv4::AllocationScope &value) {
+  out.integer(value.server_instance);
+  out.integer(value.routing_context);
+  out.integer(value.link_identity);
+}
+
+bool dhcpv4_scope(Reader &in, dhcpv4::AllocationScope &value) {
+  return in.integer(value.server_instance) &&
+         in.integer(value.routing_context) &&
+         in.integer(value.link_identity);
+}
+
+void dhcpv4_client_key(Writer &out, const dhcpv4::ClientKey &value) {
+  out.integer(value.octets);
+  out.octets(std::span<const std::uint8_t>{value.bytes}.first(value.octets));
+  out.boolean(value.option_61);
+}
+
+bool dhcpv4_client_key(Reader &in, dhcpv4::ClientKey &value) {
+  return in.integer(value.octets) && value.octets != 0U &&
+         value.octets <= value.bytes.size() &&
+         in.octets(std::span<std::uint8_t>{value.bytes}.first(value.octets)) &&
+         in.boolean(value.option_61);
+}
+
+void dhcpv4_pool(Writer &out, const dhcpv4::Pool &value) {
+  out.integer(value.id);
+  dhcpv4_scope(out, value.scope);
+  ipv4(out, value.first);
+  ipv4(out, value.last);
+  ipv4(out, value.subnet_mask);
+  ipv4(out, value.router);
+  out.integer(value.lease_seconds);
+  out.integer(value.minimum_lease_seconds);
+  out.integer(value.maximum_lease_seconds);
+  out.integer(value.offer_seconds);
+  out.integer(value.maximum_declined);
+  out.integer(value.renewal_seconds);
+  out.integer(value.rebinding_seconds);
+  out.boolean(value.enabled);
+}
+
+bool dhcpv4_pool(Reader &in, dhcpv4::Pool &value) {
+  return in.integer(value.id) && dhcpv4_scope(in, value.scope) &&
+         ipv4(in, value.first) && ipv4(in, value.last) &&
+         ipv4(in, value.subnet_mask) && ipv4(in, value.router) &&
+         in.integer(value.lease_seconds) &&
+         in.integer(value.minimum_lease_seconds) &&
+         in.integer(value.maximum_lease_seconds) &&
+         in.integer(value.offer_seconds) &&
+         in.integer(value.maximum_declined) &&
+         in.integer(value.renewal_seconds) &&
+         in.integer(value.rebinding_seconds) && in.boolean(value.enabled);
+}
+
+void dhcpv4_reservation(Writer &out,
+                        const dhcpv4::Reservation &value) {
+  dhcpv4_scope(out, value.scope);
+  dhcpv4_client_key(out, value.client);
+  ipv4(out, value.address);
+}
+
+bool dhcpv4_reservation(Reader &in, dhcpv4::Reservation &value) {
+  return dhcpv4_scope(in, value.scope) &&
+         dhcpv4_client_key(in, value.client) && ipv4(in, value.address);
+}
+
+void dhcpv4_repository(Writer &out,
+                       const dhcpv4::LeaseRepositoryCheckpoint &value) {
+  count(out, value.pools);
+  for (const auto &pool : value.pools)
+    dhcpv4_pool(out, pool);
+  count(out, value.reservations);
+  for (const auto &reservation : value.reservations)
+    dhcpv4_reservation(out, reservation);
+  count(out, value.exclusions);
+  for (const auto &excluded : value.exclusions) {
+    dhcpv4_scope(out, excluded.scope);
+    ipv4(out, excluded.first);
+    ipv4(out, excluded.last);
+  }
+  count(out, value.leases);
+  for (const auto &lease : value.leases) {
+    dhcpv4_scope(out, lease.scope);
+    dhcpv4_client_key(out, lease.client);
+    out.octets(lease.hardware.address);
+    out.integer(lease.hardware.type);
+    out.integer(lease.hardware.length);
+    out.octets(lease.relay_agent_information);
+    out.integer(lease.relay_agent_information_octets);
+    ipv4(out, lease.address);
+    out.integer(lease.transaction_id);
+    out.integer(lease.offer_remaining_nanoseconds);
+    out.integer(lease.active_remaining_nanoseconds);
+    out.integer(lease.last_client_transaction_elapsed_nanoseconds);
+    out.integer(lease.last_state_change_elapsed_nanoseconds);
+    out.integer(lease.lease_seconds);
+    out.integer(lease.decline_sequence);
+    out.integer(lease.revision);
+    out.integer(lease.failover_state_started_absolute);
+    out.integer(lease.failover_partner_expiration_absolute);
+    out.integer(lease.failover_status);
+    out.integer(lease.state);
+    out.boolean(lease.sticky);
+    out.boolean(lease.failover_managed);
+  }
+  out.integer(value.offer_hold_nanoseconds);
+  out.integer(value.decline_hold_nanoseconds);
+  out.integer(value.next_decline_sequence);
+  out.integer(value.next_revision);
+}
+
+bool dhcpv4_repository(Reader &in,
+                       dhcpv4::LeaseRepositoryCheckpoint &value) {
+  std::uint32_t size{};
+  if (!count(in, size, device_catalog::dhcpv4_pools_per_server))
+    return false;
+  value.pools.resize(size);
+  for (auto &pool : value.pools)
+    if (!dhcpv4_pool(in, pool))
+      return false;
+  if (!count(in, size, device_catalog::dhcpv4_leases_per_server))
+    return false;
+  value.reservations.resize(size);
+  for (auto &reservation : value.reservations)
+    if (!dhcpv4_reservation(in, reservation))
+      return false;
+  if (!count(in, size, device_catalog::dhcpv4_leases_per_server))
+    return false;
+  value.exclusions.resize(size);
+  for (auto &excluded : value.exclusions)
+    if (!dhcpv4_scope(in, excluded.scope) ||
+        !ipv4(in, excluded.first) || !ipv4(in, excluded.last))
+      return false;
+  if (!count(in, size, device_catalog::dhcpv4_leases_per_server))
+    return false;
+  value.leases.resize(size);
+  for (auto &lease : value.leases)
+    if (!dhcpv4_scope(in, lease.scope) ||
+        !dhcpv4_client_key(in, lease.client) ||
+        !in.octets(lease.hardware.address) ||
+        !in.integer(lease.hardware.type) ||
+        !in.integer(lease.hardware.length) ||
+        !in.octets(lease.relay_agent_information) ||
+        !in.integer(lease.relay_agent_information_octets) ||
+        !ipv4(in, lease.address) || !in.integer(lease.transaction_id) ||
+        !in.integer(lease.offer_remaining_nanoseconds) ||
+        !in.integer(lease.active_remaining_nanoseconds) ||
+        !in.integer(lease.last_client_transaction_elapsed_nanoseconds) ||
+        !in.integer(lease.last_state_change_elapsed_nanoseconds) ||
+        !in.integer(lease.lease_seconds) ||
+        !in.integer(lease.decline_sequence) ||
+        !in.integer(lease.revision) ||
+        !in.integer(lease.failover_state_started_absolute) ||
+        !in.integer(lease.failover_partner_expiration_absolute) ||
+        !in.integer(lease.failover_status) ||
+        lease.failover_status > dhcpv4::failover::BindingStatus::backup ||
+        !in.integer(lease.state) ||
+        lease.state > dhcpv4::BindingState::reserved ||
+        !in.boolean(lease.sticky) ||
+        !in.boolean(lease.failover_managed))
+      return false;
+  return in.integer(value.offer_hold_nanoseconds) &&
+         in.integer(value.decline_hold_nanoseconds) &&
+         in.integer(value.next_decline_sequence) &&
+         in.integer(value.next_revision);
+}
+
+void dhcpv4_client_configuration(
+    Writer &out, const dhcpv4::ClientConfiguration &value) {
+  mac(out, value.hardware_address);
+  count(out, value.client_identifier);
+  out.octets(value.client_identifier);
+  count(out, value.parameter_request_list);
+  out.octets(value.parameter_request_list);
+  count(out, value.user_class);
+  out.octets(value.user_class);
+  out.octets(value.transaction_secret);
+  out.integer(value.maximum_message_size);
+  out.boolean(value.broadcast);
+}
+
+bool dhcpv4_client_configuration(
+    Reader &in, dhcpv4::ClientConfiguration &value) {
+  std::uint32_t size{};
+  if (!mac(in, value.hardware_address) || !count(in, size, 255U))
+    return false;
+  value.client_identifier.resize(size);
+  if (!in.octets(value.client_identifier) || !count(in, size, 255U))
+    return false;
+  value.parameter_request_list.resize(size);
+  if (!in.octets(value.parameter_request_list) || !count(in, size, 254U))
+    return false;
+  value.user_class.resize(size);
+  return in.octets(value.user_class) &&
+         in.octets(value.transaction_secret) &&
+         in.integer(value.maximum_message_size) &&
+         in.boolean(value.broadcast);
+}
+
+void dhcpv4_client_lease(Writer &out,
+                         const dhcpv4::ClientLeaseCheckpoint &value) {
+  ipv4(out, value.address);
+  ipv4(out, value.subnet_mask);
+  ipv4(out, value.router);
+  ipv4(out, value.server_identifier);
+  count(out, value.domain_name_servers);
+  for (const auto &server : value.domain_name_servers)
+    ipv4(out, server);
+  out.integer(value.renew_remaining_nanoseconds);
+  out.integer(value.rebind_remaining_nanoseconds);
+  out.integer(value.valid_remaining_nanoseconds);
+}
+
+bool dhcpv4_client_lease(Reader &in,
+                         dhcpv4::ClientLeaseCheckpoint &value) {
+  std::uint32_t size{};
+  if (!ipv4(in, value.address) || !ipv4(in, value.subnet_mask) ||
+      !ipv4(in, value.router) || !ipv4(in, value.server_identifier) ||
+      !count(in, size,
+             packet::dhcpv4::maximum_ipv4_addresses_per_option))
+    return false;
+  value.domain_name_servers.resize(size);
+  for (auto &server : value.domain_name_servers)
+    if (!ipv4(in, server))
+      return false;
+  return in.integer(value.renew_remaining_nanoseconds) &&
+         in.integer(value.rebind_remaining_nanoseconds) &&
+         in.integer(value.valid_remaining_nanoseconds);
+}
+
+void dhcpv4_client_checkpoint(Writer &out,
+                              const dhcpv4::ClientCheckpoint &value) {
+  dhcpv4_client_configuration(out, value.configuration);
+  out.boolean(value.lease.has_value());
+  if (value.lease)
+    dhcpv4_client_lease(out, *value.lease);
+  out.boolean(value.offered.has_value());
+  if (value.offered)
+    dhcpv4_client_lease(out, *value.offered);
+  out.boolean(value.pending.has_value());
+  if (value.pending)
+    dhcpv4_client_lease(out, *value.pending);
+  ipv4(out, value.inform_address);
+  out.integer(value.transaction_counter);
+  out.integer(value.transaction_id);
+  out.integer(value.random_state);
+  out.integer(value.attempts);
+  out.integer(value.timeout_nanoseconds);
+  out.integer(value.next_action_remaining_nanoseconds);
+  out.integer(value.exchange_elapsed_nanoseconds);
+  out.integer(value.state);
+  out.boolean(value.configured);
+}
+
+bool dhcpv4_client_checkpoint(Reader &in,
+                              dhcpv4::ClientCheckpoint &value) {
+  bool present{};
+  if (!dhcpv4_client_configuration(in, value.configuration) ||
+      !in.boolean(present))
+    return false;
+  if (present) {
+    value.lease.emplace();
+    if (!dhcpv4_client_lease(in, *value.lease))
+      return false;
+  }
+  if (!in.boolean(present))
+    return false;
+  if (present) {
+    value.offered.emplace();
+    if (!dhcpv4_client_lease(in, *value.offered))
+      return false;
+  }
+  if (!in.boolean(present))
+    return false;
+  if (present) {
+    value.pending.emplace();
+    if (!dhcpv4_client_lease(in, *value.pending))
+      return false;
+  }
+  if (!ipv4(in, value.inform_address))
+    return false;
+  return in.integer(value.transaction_counter) &&
+         in.integer(value.transaction_id) &&
+         in.integer(value.random_state) && in.integer(value.attempts) &&
+         in.integer(value.timeout_nanoseconds) &&
+         in.integer(value.next_action_remaining_nanoseconds) &&
+         in.integer(value.exchange_elapsed_nanoseconds) &&
+         in.integer(value.state) && value.state <= dhcpv4::ClientState::failed &&
+         in.boolean(value.configured);
+}
+
+void dhcpv4_server_configuration(
+    Writer &out, const dhcpv4::ServerConfiguration &value) {
+  out.integer(value.server_instance);
+  out.integer(value.routing_context);
+  ipv4(out, value.server_identifier);
+  count(out, value.domain_name_servers);
+  for (const auto &server : value.domain_name_servers)
+    ipv4(out, server);
+  out.integer(value.offer_hold.count());
+  out.integer(value.decline_hold.count());
+  out.boolean(value.authoritative);
+  out.boolean(value.force_renews);
+}
+
+bool dhcpv4_server_configuration(
+    Reader &in, dhcpv4::ServerConfiguration &value) {
+  std::uint32_t size{};
+  std::int64_t offer_seconds{};
+  std::int64_t decline_seconds{};
+  if (!in.integer(value.server_instance) ||
+      !in.integer(value.routing_context) ||
+      !ipv4(in, value.server_identifier) ||
+      !count(in, size,
+             packet::dhcpv4::maximum_ipv4_addresses_per_option))
+    return false;
+  value.domain_name_servers.resize(size);
+  for (auto &server : value.domain_name_servers)
+    if (!ipv4(in, server))
+      return false;
+  if (!in.integer(offer_seconds) || !in.integer(decline_seconds) ||
+      offer_seconds <= 0 || decline_seconds <= 0 ||
+      !in.boolean(value.authoritative) ||
+      !in.boolean(value.force_renews))
+    return false;
+  value.offer_hold = std::chrono::seconds{offer_seconds};
+  value.decline_hold = std::chrono::seconds{decline_seconds};
+  return true;
+}
+
+void dhcpv4_server_checkpoint(Writer &out,
+                              const dhcpv4::ServerCheckpoint &value) {
+  dhcpv4_server_configuration(out, value.configuration);
+  dhcpv4_repository(out, value.leases);
+  out.integer(value.statistics.rx_discover);
+  out.integer(value.statistics.rx_request);
+  out.integer(value.statistics.rx_release);
+  out.integer(value.statistics.rx_decline);
+  out.integer(value.statistics.rx_inform);
+  out.integer(value.statistics.rx_lease_query);
+  out.integer(value.statistics.tx_offer);
+  out.integer(value.statistics.tx_acknowledgement);
+  out.integer(value.statistics.tx_negative_acknowledgement);
+  out.integer(value.statistics.tx_force_renew);
+  out.integer(value.statistics.tx_lease_active);
+  out.integer(value.statistics.tx_lease_unassigned);
+  out.integer(value.statistics.tx_lease_unknown);
+  out.integer(value.statistics.dropped_bad_packet);
+  out.integer(value.statistics.dropped_unknown_scope);
+  out.integer(value.statistics.dropped_address_unavailable);
+  out.integer(value.statistics.dropped_resource_exhausted);
+  out.boolean(value.configured);
+}
+
+bool dhcpv4_server_checkpoint(Reader &in,
+                              dhcpv4::ServerCheckpoint &value) {
+  return dhcpv4_server_configuration(in, value.configuration) &&
+         dhcpv4_repository(in, value.leases) &&
+         in.integer(value.statistics.rx_discover) &&
+         in.integer(value.statistics.rx_request) &&
+         in.integer(value.statistics.rx_release) &&
+         in.integer(value.statistics.rx_decline) &&
+         in.integer(value.statistics.rx_inform) &&
+         in.integer(value.statistics.rx_lease_query) &&
+         in.integer(value.statistics.tx_offer) &&
+         in.integer(value.statistics.tx_acknowledgement) &&
+         in.integer(value.statistics.tx_negative_acknowledgement) &&
+         in.integer(value.statistics.tx_force_renew) &&
+         in.integer(value.statistics.tx_lease_active) &&
+         in.integer(value.statistics.tx_lease_unassigned) &&
+         in.integer(value.statistics.tx_lease_unknown) &&
+         in.integer(value.statistics.dropped_bad_packet) &&
+         in.integer(value.statistics.dropped_unknown_scope) &&
+         in.integer(value.statistics.dropped_address_unavailable) &&
+         in.integer(value.statistics.dropped_resource_exhausted) &&
+         in.boolean(value.configured);
+}
+
+void dhcpv4_pending(Writer &out,
+                    const HostDhcpv4PendingCheckpoint &value) {
+  ipv4(out, value.destination);
+  mac(out, value.destination_mac);
+  out.integer(value.destination_port);
+  out.integer(value.delivery);
+  out.boolean(value.active);
+  count(out, value.payload);
+  out.octets(value.payload);
+}
+
+bool dhcpv4_pending(Reader &in,
+                    HostDhcpv4PendingCheckpoint &value) {
+  std::uint32_t size{};
+  if (!ipv4(in, value.destination) || !mac(in, value.destination_mac) ||
+      !in.integer(value.destination_port) || !in.integer(value.delivery) ||
+      !in.boolean(value.active) ||
+      !count(in, size, packet::dhcpv4::maximum_message_octets))
+    return false;
+  value.payload.resize(size);
+  return in.octets(value.payload);
+}
+
+void dhcpv4_service(Writer &out,
+                    const HostDhcpv4ServiceCheckpoint &value) {
+  out.boolean(value.client.has_value());
+  if (value.client)
+    dhcpv4_client_checkpoint(out, *value.client);
+  out.boolean(value.server.has_value());
+  if (value.server)
+    dhcpv4_server_checkpoint(out, *value.server);
+  for (const auto &socket : {value.client_socket, value.server_socket}) {
+    out.boolean(socket.has_value());
+    if (socket) {
+      out.integer(socket->index);
+      out.integer(socket->generation);
+    }
+  }
+  dhcpv4_pending(out, value.client_pending);
+  dhcpv4_pending(out, value.server_pending);
+  ipv4(out, value.probe.candidate);
+  out.integer(value.probe.next_action_remaining_nanoseconds);
+  out.integer(value.probe.probes_sent);
+  out.boolean(value.probe.active);
+  ipv4(out, value.installed_address);
+}
+
+bool dhcpv4_service(Reader &in,
+                    HostDhcpv4ServiceCheckpoint &value) {
+  bool present{};
+  if (!in.boolean(present))
+    return false;
+  if (present) {
+    value.client.emplace();
+    if (!dhcpv4_client_checkpoint(in, *value.client))
+      return false;
+  }
+  if (!in.boolean(present))
+    return false;
+  if (present) {
+    value.server.emplace();
+    if (!dhcpv4_server_checkpoint(in, *value.server))
+      return false;
+  }
+  for (auto *socket : {&value.client_socket, &value.server_socket}) {
+    if (!in.boolean(present))
+      return false;
+    if (present) {
+      transport::UdpSocketHandle handle{};
+      if (!in.integer(handle.index) || !in.integer(handle.generation))
+        return false;
+      *socket = handle;
+    }
+  }
+  return dhcpv4_pending(in, value.client_pending) &&
+         dhcpv4_pending(in, value.server_pending) &&
+         ipv4(in, value.probe.candidate) &&
+         in.integer(value.probe.next_action_remaining_nanoseconds) &&
+         in.integer(value.probe.probes_sent) &&
+         in.boolean(value.probe.active) &&
+         ipv4(in, value.installed_address);
 }
 
 void dhcpv6_pending(Writer &out, const HostDhcpv6PendingCheckpoint &value) {
@@ -4480,6 +5367,9 @@ void host_state(Writer &out, const NetworkHostCheckpoint &state) {
   out.boolean(state.ping_pending);
   out.boolean(state.ping_reply);
   out.boolean(state.ipv6_autoconfiguration);
+  out.boolean(state.dhcpv4.has_value());
+  if (state.dhcpv4)
+    dhcpv4_service(out, *state.dhcpv4);
   out.boolean(state.dhcpv6.has_value());
   if (state.dhcpv6)
     dhcpv6_service(out, *state.dhcpv6);
@@ -4497,6 +5387,15 @@ bool host_state(Reader &in, NetworkHostCheckpoint &state) {
          in.boolean(state.link_signal) && in.boolean(state.ping_pending) &&
          in.boolean(state.ping_reply) &&
          in.boolean(state.ipv6_autoconfiguration) && ([&] {
+           bool present{};
+           if (!in.boolean(present))
+             return false;
+           if (!present)
+             return true;
+           state.dhcpv4.emplace();
+           return dhcpv4_service(in, *state.dhcpv4);
+         })() &&
+         ([&] {
            bool present{};
            if (!in.boolean(present))
              return false;
@@ -5656,6 +6555,26 @@ void network_state(Writer &out, const NetworkPlaneCheckpoint &state) {
   for (const auto &router : state.routers) {
     handle(out, router.device);
     forwarder_state(out, router.forwarding);
+    out.boolean(router.management_endpoint.has_value());
+    if (router.management_endpoint)
+      endpoint_state(out, *router.management_endpoint);
+    mac(out, router.management_mac);
+    ipv4(out, router.management_address);
+    ipv4(out, router.management_gateway);
+    out.integer(router.management_prefix_length);
+    out.integer(router.management_mtu);
+    out.integer(router.management_interface_id);
+    out.boolean(router.management_ipv6_autoconfiguration);
+    out.boolean(router.management_configured);
+    out.boolean(router.management_link_signal);
+    out.boolean(router.bof_dhcpv4.has_value());
+    if (router.bof_dhcpv4)
+      dhcpv4_service(out, *router.bof_dhcpv4);
+    out.boolean(router.bof_dhcpv6.has_value());
+    if (router.bof_dhcpv6)
+      dhcpv6_service(out, *router.bof_dhcpv6);
+    out.integer(router.bof_dhcpv4_timeout_remaining_nanoseconds);
+    out.integer(router.bof_dhcpv6_timeout_remaining_nanoseconds);
   }
   count(out, state.hosts);
   for (const auto &host : state.hosts)
@@ -5680,9 +6599,43 @@ bool network_state(Reader &in, NetworkPlaneCheckpoint &state) {
   if (!count(in, size, device_catalog::maximum_routers))
     return false;
   state.routers.resize(size);
-  for (auto &router : state.routers)
-    if (!handle(in, router.device) || !forwarder_state(in, router.forwarding))
+  for (auto &router : state.routers) {
+    bool present{};
+    if (!handle(in, router.device) || !forwarder_state(in, router.forwarding) ||
+        !in.boolean(present))
       return false;
+    if (present) {
+      router.management_endpoint.emplace();
+      if (!endpoint_state(in, *router.management_endpoint))
+        return false;
+    }
+    if (!mac(in, router.management_mac) ||
+        !ipv4(in, router.management_address) ||
+        !ipv4(in, router.management_gateway) ||
+        !in.integer(router.management_prefix_length) ||
+        !in.integer(router.management_mtu) ||
+        !in.integer(router.management_interface_id) ||
+        !in.boolean(router.management_ipv6_autoconfiguration) ||
+        !in.boolean(router.management_configured) ||
+        !in.boolean(router.management_link_signal) ||
+        !in.boolean(present))
+      return false;
+    if (present) {
+      router.bof_dhcpv4.emplace();
+      if (!dhcpv4_service(in, *router.bof_dhcpv4))
+        return false;
+    }
+    if (!in.boolean(present))
+      return false;
+    if (present) {
+      router.bof_dhcpv6.emplace();
+      if (!dhcpv6_service(in, *router.bof_dhcpv6))
+        return false;
+    }
+    if (!in.integer(router.bof_dhcpv4_timeout_remaining_nanoseconds) ||
+        !in.integer(router.bof_dhcpv6_timeout_remaining_nanoseconds))
+      return false;
+  }
   if (!count(in, size, device_catalog::maximum_hosts))
     return false;
   state.hosts.resize(size);
@@ -6153,6 +7106,10 @@ void portable_interface(Writer &out,
     out.boolean(group.starg);
     out.boolean(group.range);
   }
+  out.boolean(interface.dhcpv4_relay.has_value());
+  if (interface.dhcpv4_relay)
+    dhcpv4_relay_policy(out, *interface.dhcpv4_relay);
+  out.string(interface.dhcpv6_local_server);
 }
 
 bool portable_interface(Reader &in,
@@ -6326,6 +7283,34 @@ bool portable_interface(Reader &in,
     if (!in.boolean(group.starg) || !in.boolean(group.range))
       return false;
   }
+  bool dhcpv4_relay_present{};
+  if (!in.boolean(dhcpv4_relay_present))
+    return false;
+  if (dhcpv4_relay_present) {
+    interface.dhcpv4_relay.emplace();
+    if (!dhcpv4_relay_policy(in, *interface.dhcpv4_relay))
+      return false;
+    if (interface.dhcpv4_relay->admin_enabled) {
+      // Disabled candidate contexts may be incomplete. An enabled context must
+      // be publishable after deriving the default giaddr from its IPv4 parent.
+      // Validate a copy so the checkpoint preserves whether gi-address was
+      // explicitly configured for `info` and delete semantics.
+      auto effective = *interface.dhcpv4_relay;
+      if (!effective.gateway_address_configured)
+        effective.gateway_address = packet::Ipv4{
+            static_cast<std::uint8_t>(interface.address >> 24U),
+            static_cast<std::uint8_t>(interface.address >> 16U),
+            static_cast<std::uint8_t>(interface.address >> 8U),
+            static_cast<std::uint8_t>(interface.address)};
+      dhcpv4::RelayAgent validation;
+      if (!validation.configure(effective))
+        return false;
+    }
+  } else {
+    interface.dhcpv4_relay.reset();
+  }
+  if (!in.string(interface.dhcpv6_local_server, 32U))
+    return false;
   interface.mld_query_interval = std::chrono::seconds{mld_query_seconds};
   interface.mld_query_response_interval =
       std::chrono::milliseconds{mld_response_milliseconds};
@@ -6368,7 +7353,9 @@ bool portable_interface(Reader &in,
       interface.arp_timeout_configured || interface.arp_retry_configured ||
       interface.icmp_redirect_admin_configured ||
       interface.icmp_redirect_maximum_configured ||
-      interface.icmp_redirect_interval_configured;
+      interface.icmp_redirect_interval_configured ||
+      interface.dhcpv4_relay.has_value() ||
+      !interface.dhcpv6_local_server.empty();
   const auto scalar_present = [&](RouterAdvertisementLeaf leaf) noexcept {
     return (interface.router_advertisement_leaf_presence &
             static_cast<std::uint16_t>(leaf)) != 0U;
@@ -6450,7 +7437,16 @@ bool portable_interface(Reader &in,
       interface.port_configured == !interface.port_id.empty();
   const bool valid_ipv4 =
       (interface.address_configured || interface.address == 0U) &&
-      (interface.address_configured || interface.prefix_length == 0U);
+      (interface.address_configured || interface.prefix_length == 0U) &&
+      (!interface.dhcpv4_relay ||
+       (interface.address_configured &&
+        (!interface.dhcpv4_relay->gateway_address_configured ||
+         interface.dhcpv4_relay->gateway_address ==
+            packet::Ipv4{
+                static_cast<std::uint8_t>(interface.address >> 24U),
+                static_cast<std::uint8_t>(interface.address >> 16U),
+                static_cast<std::uint8_t>(interface.address >> 8U),
+                static_cast<std::uint8_t>(interface.address)})));
   const bool valid_icmp4 =
       interface.icmp_redirect_maximum >=
           device_catalog::icmp_redirect_minimum_maximum &&
@@ -7403,6 +8399,334 @@ bool ipsec_configuration(Reader &in, ipsec::configuration::Configuration &state,
   return ipsec::configuration::validate(state, allow_incomplete);
 }
 
+void dhcpv4_router_configuration(
+    Writer &out, const dhcpv4::configuration::RouterConfiguration &state) {
+  count(out, state.servers);
+  for (const auto &server : state.servers) {
+    out.integer(server.instance_id);
+    out.string(server.name);
+    out.string(server.description);
+    out.boolean(server.force_renews);
+    out.boolean(server.admin_enabled);
+    count(out, server.pools);
+    for (const auto &pool : server.pools) {
+      out.string(pool.name);
+      out.string(pool.description);
+      out.integer(pool.minimum_lease_seconds);
+      out.integer(pool.maximum_lease_seconds);
+      out.integer(pool.offer_seconds);
+      out.boolean(pool.nak_non_matching_subnet);
+      count(out, pool.options);
+      for (const auto &option : pool.options) {
+        out.integer(option.code);
+        out.integer(option.kind);
+        count(out, option.value);
+        out.octets(option.value);
+      }
+      count(out, pool.subnets);
+      for (const auto &subnet : pool.subnets) {
+        out.integer(subnet.allocation_scope_id);
+        ipv4(out, subnet.network);
+        out.integer(subnet.prefix_length);
+        out.integer(subnet.maximum_declined);
+        out.boolean(subnet.drain);
+        count(out, subnet.address_ranges);
+        for (const auto &range : subnet.address_ranges) {
+          ipv4(out, range.first);
+          ipv4(out, range.last);
+          out.integer(range.failover_control);
+        }
+        count(out, subnet.excluded_ranges);
+        for (const auto &excluded : subnet.excluded_ranges) {
+          ipv4(out, excluded.first);
+          ipv4(out, excluded.last);
+        }
+        count(out, subnet.options);
+        for (const auto &option : subnet.options) {
+          out.integer(option.code);
+          out.integer(option.kind);
+          count(out, option.value);
+          out.octets(option.value);
+        }
+      }
+    }
+  }
+}
+
+bool dhcpv4_option(Reader &in,
+                   dhcpv4::configuration::Option &option) noexcept {
+  std::uint32_t octets{};
+  if (!in.integer(option.code) || !in.integer(option.kind) ||
+      option.kind > dhcpv4::configuration::OptionValueKind::netbios_node_type ||
+      !count(in, octets, 255U))
+    return false;
+  option.value.resize(octets);
+  return in.octets(option.value);
+}
+
+bool dhcpv4_router_configuration(
+    Reader &in, dhcpv4::configuration::RouterConfiguration &state) {
+  std::uint32_t server_count{};
+  if (!count(in, server_count, device_catalog::dhcpv4_servers_per_router))
+    return false;
+  state.servers.resize(server_count);
+  for (auto &server : state.servers) {
+    std::uint32_t pool_count{};
+    if (!in.integer(server.instance_id) ||
+        !in.string(server.name, device_catalog::dhcpv4_server_name_bytes) ||
+        !in.string(server.description,
+                   device_catalog::dhcpv4_description_bytes) ||
+        !in.boolean(server.force_renews) ||
+        !in.boolean(server.admin_enabled) ||
+        !count(in, pool_count, device_catalog::dhcpv4_pools_per_server))
+      return false;
+    server.pools.resize(pool_count);
+    for (auto &pool : server.pools) {
+      std::uint32_t option_count{};
+      std::uint32_t subnet_count{};
+      if (!in.string(pool.name, device_catalog::dhcpv4_server_name_bytes) ||
+          !in.string(pool.description,
+                     device_catalog::dhcpv4_description_bytes) ||
+          !in.integer(pool.minimum_lease_seconds) ||
+          !in.integer(pool.maximum_lease_seconds) ||
+          !in.integer(pool.offer_seconds) ||
+          !in.boolean(pool.nak_non_matching_subnet) ||
+          !count(in, option_count,
+                 device_catalog::dhcpv4_option_occurrences_per_message))
+        return false;
+      pool.options.resize(option_count);
+      for (auto &option : pool.options)
+        if (!dhcpv4_option(in, option))
+          return false;
+      if (!count(in, subnet_count,
+                 device_catalog::dhcpv4_leases_per_server))
+        return false;
+      pool.subnets.resize(subnet_count);
+      for (auto &subnet : pool.subnets) {
+        std::uint32_t range_count{};
+        std::uint32_t excluded_count{};
+        if (!in.integer(subnet.allocation_scope_id) ||
+            !ipv4(in, subnet.network) ||
+            !in.integer(subnet.prefix_length) ||
+            !in.integer(subnet.maximum_declined) ||
+            !in.boolean(subnet.drain) ||
+            !count(in, range_count,
+                   device_catalog::dhcpv4_leases_per_server))
+          return false;
+        subnet.address_ranges.resize(range_count);
+        for (auto &range : subnet.address_ranges)
+          if (!ipv4(in, range.first) || !ipv4(in, range.last) ||
+              !in.integer(range.failover_control) ||
+              range.failover_control >
+                  dhcpv4::configuration::FailoverControlType::remote)
+            return false;
+        if (!count(in, excluded_count,
+                   device_catalog::dhcpv4_leases_per_server))
+          return false;
+        subnet.excluded_ranges.resize(excluded_count);
+        for (auto &excluded : subnet.excluded_ranges)
+          if (!ipv4(in, excluded.first) || !ipv4(in, excluded.last))
+            return false;
+        if (!count(in, option_count,
+                   device_catalog::dhcpv4_option_occurrences_per_message))
+          return false;
+        subnet.options.resize(option_count);
+        for (auto &option : subnet.options)
+          if (!dhcpv4_option(in, option))
+            return false;
+      }
+    }
+  }
+  return dhcpv4::configuration::validate(state, true) ==
+         dhcpv4::configuration::Status::valid;
+}
+
+void bof_autoconfigure(Writer &out,
+                       const bof::AutoconfigureIntent &state) {
+  const auto common = [&](const bof::DhcpClientIntent &client) {
+    out.string(client.client_id);
+    out.boolean(client.client_id_hex);
+    out.integer(client.timeout_seconds);
+    out.boolean(client.enabled);
+    out.boolean(client.include_user_class);
+  };
+  common(state.ipv4);
+  common(state.ipv6);
+  out.integer(state.ipv6.client_type);
+  out.octets(state.ipv4_transaction_secret);
+  out.octets(state.ipv6_transaction_secret);
+}
+
+bool bof_autoconfigure(Reader &in,
+                       bof::AutoconfigureIntent &state) noexcept {
+  const auto common = [&](bof::DhcpClientIntent &client,
+                          std::size_t maximum) {
+    return in.string(client.client_id, maximum * 2U + 2U) &&
+           in.boolean(client.client_id_hex) &&
+           in.integer(client.timeout_seconds) &&
+           in.boolean(client.enabled) &&
+           in.boolean(client.include_user_class);
+  };
+  if (!common(state.ipv4, 127U) || !common(state.ipv6, 124U) ||
+      !in.integer(state.ipv6.client_type) ||
+      state.ipv6.client_type > bof::Dhcpv6ClientType::duid_link_local ||
+      !in.octets(state.ipv4_transaction_secret) ||
+      !in.octets(state.ipv6_transaction_secret))
+    return false;
+  return bof::valid(state);
+}
+
+void dhcpv6_router_configuration(
+    Writer &out, const dhcpv6::configuration::RouterConfiguration &state) {
+  // DUIDs and allocation secrets are persistent protocol identities, not
+  // derived cache. Writing their exact octets ensures a restored router does
+  // not present a new server identity or remap every existing IA.
+  count(out, state.servers);
+  for (const auto &server : state.servers) {
+    out.integer(server.instance_id);
+    out.octets(server.duid);
+    out.integer(server.duid_octets);
+    out.string(server.name);
+    out.string(server.description);
+    count(out, server.dns_recursive_servers);
+    for (const auto &address : server.dns_recursive_servers)
+      ipv6(out, address);
+    out.integer(server.default_preferred_lifetime_seconds);
+    out.integer(server.default_valid_lifetime_seconds);
+    out.integer(server.default_renewal_time_seconds);
+    out.integer(server.default_rebinding_time_seconds);
+    out.boolean(server.default_preferred_lifetime_configured);
+    out.boolean(server.default_valid_lifetime_configured);
+    out.boolean(server.default_renewal_time_configured);
+    out.boolean(server.default_rebinding_time_configured);
+    out.integer(server.information_refresh_time_seconds);
+    out.integer(server.preference);
+    out.boolean(server.rapid_commit);
+    out.boolean(server.lease_query);
+    out.boolean(server.admin_enabled);
+    out.boolean(server.rapid_commit_configured);
+    out.boolean(server.lease_query_configured);
+    out.boolean(server.admin_state_configured);
+    count(out, server.pools);
+    for (const auto &pool : server.pools) {
+      out.string(pool.name);
+      out.string(pool.description);
+      out.integer(pool.delegated_length);
+      out.integer(pool.minimum_delegated_length);
+      out.integer(pool.maximum_delegated_length);
+      out.boolean(pool.delegated_length_configured);
+      out.boolean(pool.minimum_delegated_length_configured);
+      out.boolean(pool.maximum_delegated_length_configured);
+      count(out, pool.prefixes);
+      for (const auto &prefix : pool.prefixes) {
+        out.integer(prefix.allocation_scope_id);
+        ipv6(out, prefix.aggregate.network);
+        out.integer(prefix.aggregate.length);
+        out.octets(prefix.allocation_secret);
+        out.integer(prefix.preferred_lifetime_seconds);
+        out.integer(prefix.valid_lifetime_seconds);
+        out.integer(prefix.renewal_time_seconds);
+        out.integer(prefix.rebinding_time_seconds);
+        out.boolean(prefix.preferred_lifetime_configured);
+        out.boolean(prefix.valid_lifetime_configured);
+        out.boolean(prefix.renewal_time_configured);
+        out.boolean(prefix.rebinding_time_configured);
+        out.boolean(prefix.wan_host);
+        out.boolean(prefix.delegated_prefix);
+        out.boolean(prefix.drain);
+        out.boolean(prefix.drain_configured);
+        out.boolean(prefix.wan_host_configured);
+        out.boolean(prefix.delegated_prefix_configured);
+      }
+    }
+  }
+}
+
+bool dhcpv6_router_configuration(
+    Reader &in, dhcpv6::configuration::RouterConfiguration &state,
+    bool allow_incomplete = false) {
+  std::uint32_t server_count{};
+  if (!count(in, server_count, device_catalog::dhcpv6_servers_per_router))
+    return false;
+  state.servers.resize(server_count);
+  for (auto &server : state.servers) {
+    std::uint32_t dns_count{};
+    std::uint32_t pool_count{};
+    if (!in.integer(server.instance_id) || !in.octets(server.duid) ||
+        !in.integer(server.duid_octets) ||
+        !in.string(server.name, 32U) ||
+        !in.string(server.description, 80U) ||
+        !count(in, dns_count,
+               packet::dhcpv6::maximum_message_octets /
+                   packet::Ipv6{}.size()))
+      return false;
+    server.dns_recursive_servers.resize(dns_count);
+    for (auto &address : server.dns_recursive_servers)
+      if (!ipv6(in, address))
+        return false;
+    if (!in.integer(server.default_preferred_lifetime_seconds) ||
+        !in.integer(server.default_valid_lifetime_seconds) ||
+        !in.integer(server.default_renewal_time_seconds) ||
+        !in.integer(server.default_rebinding_time_seconds) ||
+        !in.boolean(server.default_preferred_lifetime_configured) ||
+        !in.boolean(server.default_valid_lifetime_configured) ||
+        !in.boolean(server.default_renewal_time_configured) ||
+        !in.boolean(server.default_rebinding_time_configured) ||
+        !in.integer(server.information_refresh_time_seconds) ||
+        !in.integer(server.preference) ||
+        !in.boolean(server.rapid_commit) ||
+        !in.boolean(server.lease_query) ||
+        !in.boolean(server.admin_enabled) ||
+        !in.boolean(server.rapid_commit_configured) ||
+        !in.boolean(server.lease_query_configured) ||
+        !in.boolean(server.admin_state_configured) ||
+        !count(in, pool_count,
+               device_catalog::dhcpv6_address_pools_per_server +
+                   device_catalog::dhcpv6_prefix_pools_per_server))
+      return false;
+    server.pools.resize(pool_count);
+    for (auto &pool : server.pools) {
+      std::uint32_t prefix_count{};
+      if (!in.string(pool.name, 32U) ||
+          !in.string(pool.description, 80U) ||
+          !in.integer(pool.delegated_length) ||
+          !in.integer(pool.minimum_delegated_length) ||
+          !in.integer(pool.maximum_delegated_length) ||
+          !in.boolean(pool.delegated_length_configured) ||
+          !in.boolean(pool.minimum_delegated_length_configured) ||
+          !in.boolean(pool.maximum_delegated_length_configured) ||
+          !count(in, prefix_count,
+                 device_catalog::dhcpv6_address_pools_per_server +
+                     device_catalog::dhcpv6_prefix_pools_per_server))
+        return false;
+      pool.prefixes.resize(prefix_count);
+      for (auto &prefix : pool.prefixes) {
+        if (!in.integer(prefix.allocation_scope_id) ||
+            !ipv6(in, prefix.aggregate.network) ||
+            !in.integer(prefix.aggregate.length) ||
+            !in.octets(prefix.allocation_secret) ||
+            !in.integer(prefix.preferred_lifetime_seconds) ||
+            !in.integer(prefix.valid_lifetime_seconds) ||
+            !in.integer(prefix.renewal_time_seconds) ||
+            !in.integer(prefix.rebinding_time_seconds) ||
+            !in.boolean(prefix.preferred_lifetime_configured) ||
+            !in.boolean(prefix.valid_lifetime_configured) ||
+            !in.boolean(prefix.renewal_time_configured) ||
+            !in.boolean(prefix.rebinding_time_configured) ||
+            !in.boolean(prefix.wan_host) ||
+            !in.boolean(prefix.delegated_prefix) ||
+            !in.boolean(prefix.drain) ||
+            !in.boolean(prefix.drain_configured) ||
+            !in.boolean(prefix.wan_host_configured) ||
+            !in.boolean(prefix.delegated_prefix_configured))
+          return false;
+      }
+    }
+  }
+  return dhcpv6::configuration::validate(state, allow_incomplete) ==
+         dhcpv6::configuration::Status::valid;
+}
+
 void ospf_configuration(Writer &out,
                         const ospf::RouterConfiguration &state) {
   // Keychains precede consumers so a hostile checkpoint cannot create an
@@ -7746,6 +9070,9 @@ void portable_router(Writer &out, const PortableRouterIntentCheckpoint &state) {
   tls_configuration(out, state.tls);
   ipsec_configuration(out, state.ipsec);
   ies_configuration(out, state.ies);
+  bof_autoconfigure(out, state.bof_autoconfigure);
+  dhcpv4_router_configuration(out, state.dhcpv4_servers);
+  dhcpv6_router_configuration(out, state.dhcpv6_servers);
   ospf_configuration(out, state.ospf);
   count(out, state.ports);
   for (const auto &port : state.ports) {
@@ -7812,6 +9139,9 @@ bool portable_router(Reader &in, PortableRouterIntentCheckpoint &state) {
       !tls_configuration(in, state.tls) ||
       !ipsec_configuration(in, state.ipsec) ||
       !ies_configuration(in, state.ies) ||
+      !bof_autoconfigure(in, state.bof_autoconfigure) ||
+      !dhcpv4_router_configuration(in, state.dhcpv4_servers) ||
+      !dhcpv6_router_configuration(in, state.dhcpv6_servers) ||
       !ospf_configuration(in, state.ospf) ||
       !count(in, size, device_catalog::maximum_ports_per_router))
     return false;
@@ -7907,6 +9237,9 @@ void portable_configuration(Writer &out,
   tls_configuration(out, state.tls);
   ipsec_configuration(out, state.ipsec);
   ies_configuration(out, state.ies);
+  bof_autoconfigure(out, state.bof_autoconfigure);
+  dhcpv4_router_configuration(out, state.dhcpv4_servers);
+  dhcpv6_router_configuration(out, state.dhcpv6_servers);
   ospf_configuration(out, state.ospf);
   for (const auto &card : state.cards) {
     out.string(card.provisioned);
@@ -7968,6 +9301,9 @@ bool portable_configuration(Reader &in,
       !tls_configuration(in, state.tls) ||
       !ipsec_configuration(in, state.ipsec, true) ||
       !ies_configuration(in, state.ies, true) ||
+      !bof_autoconfigure(in, state.bof_autoconfigure) ||
+      !dhcpv4_router_configuration(in, state.dhcpv4_servers) ||
+      !dhcpv6_router_configuration(in, state.dhcpv6_servers, true) ||
       !ospf_configuration(in, state.ospf))
     return false;
   for (auto &card : state.cards) {

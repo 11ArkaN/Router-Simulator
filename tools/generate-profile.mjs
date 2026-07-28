@@ -448,6 +448,13 @@ for (const command of cliSchema.commands ?? []) {
       command.tokens.at(-1) !== "detail") {
     throw new Error(`${command.id}: detail modifier requires a final detail token`);
   }
+  if (command.enters_context !== undefined &&
+      typeof command.enters_context !== "boolean") {
+    throw new Error(`${command.id}: enters_context must be boolean`);
+  }
+  if (command.enters_context && !command.engines.includes("md")) {
+    throw new Error(`${command.id}: enters_context currently models MD-CLI only`);
+  }
   maximumTokens = Math.max(maximumTokens, command.tokens.length);
   for (const token of command.tokens) {
     if (typeof token !== "string" && !parameterKinds.includes(token?.parameter)) {
@@ -472,9 +479,10 @@ const cliRows = cliSchema.commands.map((command) => {
   const mask = (command.engines.includes("md") ? 1 : 0) |
     (command.engines.includes("classic") ? 2 : 0);
   const modifierMask = command.modifier === "detail" ? 1 : 0;
+  const entersContext = command.enters_context === true;
   const tokens = command.tokens.map(cppToken);
   while (tokens.length < maximumTokens) tokens.push("{}");
-  return `    {CommandId::${command.id}, ${mask}, ${modifierMask}, ${command.tokens.length}, {{${tokens.join(", ")}}}, "${command.source_id}"}`;
+  return `    {CommandId::${command.id}, ${mask}, ${modifierMask}, ${entersContext}, ${command.tokens.length}, {{${tokens.join(", ")}}}, "${command.source_id}"}`;
 }).join(",\n");
 
 const cliHeader = `#pragma once
@@ -514,6 +522,7 @@ struct CommandSpec {
   CommandId id{};
   std::uint8_t engine_mask{};
   std::uint8_t output_modifier_mask{};
+  bool enters_context{};
   std::uint8_t token_count{};
   std::array<TokenSpec, maximum_tokens> tokens{};
   std::string_view source_id{};

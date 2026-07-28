@@ -5,6 +5,7 @@
 #include "dhcpv6_endpoint_service.hpp"
 
 #include "router/generated_device_catalog.hpp"
+#include "router/interface_identity.hpp"
 #include "router/network_plane.hpp"
 
 #include <algorithm>
@@ -241,7 +242,8 @@ Dhcpv6EndpointService::service(EndpointStack &endpoint, void *sink_context,
   std::optional<Clock::time_point> next;
   if (client_ && client_socket_) {
     for (std::size_t work = 0;
-         work < device_catalog::host_ipv6_work_budget_actions; ++work) {
+         work < device_catalog::host_application_work_budget_datagrams;
+         ++work) {
       const auto received = endpoint.receive_udp(*client_socket_, client_wire_);
       if (received.status != transport::UdpReceiveStatus::delivered)
         break;
@@ -283,10 +285,16 @@ Dhcpv6EndpointService::service(EndpointStack &endpoint, void *sink_context,
       const auto received =
           endpoint.receive_udp(*server_socket_, server_request_);
       if (received.status == transport::UdpReceiveStatus::delivered) {
+        // Direct clients are scoped by the endpoint's stable logical
+        // interface identity. Encoding it in network byte order before
+        // hashing gives the lease repository the same fixed-size link key
+        // used for relay link-address and Interface-ID tuples.
+        const auto link_identity =
+            lab::dhcpv6_link_identity(endpoint.interface_id());
         const auto processed = server_->process(
             std::span<const std::uint8_t>{server_request_}.first(
                 received.metadata.payload_octets),
-            server_response_, now);
+            server_response_, now, link_identity);
         if (processed.status == dhcpv6::ServerProcessStatus::response) {
           server_pending_ = {
               .destination = received.metadata.source_ipv6,

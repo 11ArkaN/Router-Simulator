@@ -16,6 +16,16 @@ void require(bool condition, const char *message) {
     throw std::runtime_error(message);
 }
 
+router::crypto::Sha256Digest transport_secret(std::uint8_t seed) {
+  // Tests supply distinct nonzero router identities through the same command
+  // field as production. A fixture must not rely on the invalid all-zero
+  // sentinel because that would bypass the entropy contract being tested.
+  router::crypto::Sha256Digest result{};
+  for (std::size_t index{}; index < result.size(); ++index)
+    result[index] = static_cast<std::uint8_t>(seed + index);
+  return result;
+}
+
 } // namespace
 
 void network_plane_worker_tests() {
@@ -104,6 +114,8 @@ void network_plane_worker_tests() {
     command->id = index + 1U;
     command->kind = NetworkCommandKind::add_router;
     command->device = {index, 1};
+    command->router_transport_secret =
+        transport_secret(static_cast<std::uint8_t>(0x21U + index));
     if (!worker->submit(*command))
       throw std::runtime_error(
           "network command ring rejected an in-bound entry");
@@ -173,6 +185,7 @@ void network_plane_worker_tests() {
   };
   relay_command->kind = NetworkCommandKind::add_router;
   relay_command->device = relay_router;
+  relay_command->router_transport_secret = transport_secret(0x61U);
   require(send(), "relay worker could not create its router owner");
   ForwardPort relay_port{.configured = true,
                          .operational = true,

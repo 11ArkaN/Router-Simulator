@@ -41,6 +41,11 @@ struct UdpBinding {
   // persisted with the socket because silently enabling broadcast on restore
   // would widen an application's network authority.
   bool ipv4_broadcast{};
+  // Address acquisition may receive a link-layer unicast whose IPv4
+  // destination is the offered address before the interface owns it. This
+  // receive-only authority is separate from SO_BROADCAST and must be requested
+  // explicitly by the protocol that owns the socket.
+  bool ipv4_unconfigured_unicast{};
 };
 
 enum class UdpIngressStatus : std::uint8_t {
@@ -197,7 +202,14 @@ public:
   // so malformed input cannot consume queue descriptors or payload blocks.
   [[nodiscard]] UdpIngressStatus ingest_ipv4(
       std::span<const std::uint8_t> datagram, packet::Ipv4 source,
-      packet::Ipv4 destination, std::uint64_t interface_id) noexcept;
+      packet::Ipv4 destination, std::uint64_t interface_id,
+      packet::Mac source_mac = {}) noexcept;
+  // Ethernet filtering remains the IP owner's responsibility. This query only
+  // proves that an occupied IPv4 socket granted pre-address unicast authority
+  // for the exact interface and destination port.
+  [[nodiscard]] bool accepts_ipv4_unconfigured_unicast(
+      std::uint64_t interface_id,
+      std::uint16_t destination_port) const noexcept;
   [[nodiscard]] UdpIngressStatus ingest_ipv6(
       std::span<const std::uint8_t> datagram, packet::Ipv6 source,
       packet::Ipv6 destination, std::uint64_t interface_id,

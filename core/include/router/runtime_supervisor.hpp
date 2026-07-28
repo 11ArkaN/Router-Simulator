@@ -4,6 +4,9 @@
 
 #pragma once
 
+#include "router/bof_autoconfigure.hpp"
+#include "router/dhcpv4_configuration.hpp"
+#include "router/dhcpv6_configuration.hpp"
 #include "router/ipsec_configuration.hpp"
 #include "router/lab_registry.hpp"
 #include "router/network_plane_worker.hpp"
@@ -211,12 +214,16 @@ struct RouterControlCheckpoint {
       router_advertisements{};
   std::array<MldInterfaceIntent, device_catalog::maximum_ports_per_router>
       mld_interfaces{};
+  // Checkpoints store only configured relay children. Keeping 800 optional
+  // vector-bearing objects per router made a second coherent checkpoint grow
+  // shared Wasm memory even when no DHCP relay existed. The relay carries its
+  // physical ordinal, so a sparse vector is lossless and bounded by the same
+  // generated per-router port capacity.
+  std::vector<dhcpv4::RelayInterfaceConfiguration> dhcpv4_relays{};
   // Service configuration remains control-owned even when hardware removes
   // the current forwarding object. Optional presence distinguishes an absent
   // DHCPv6 relay child from an empty but invalid server list.
-  std::array<std::optional<dhcpv6::RelayInterfaceConfig>,
-             device_catalog::maximum_ports_per_router>
-      dhcpv6_relays{};
+  std::vector<dhcpv6::RelayInterfaceConfig> dhcpv6_relays{};
   // The complete IES graph remains under the serialized control owner. The
   // forwarding checkpoint stores only its immutable packet-path projection;
   // retaining intent here is what allows later card reconciliation and CLI
@@ -381,6 +388,10 @@ struct PortableInterfaceIntentCheckpoint {
   std::string mld_import_policy;
   std::vector<MldSsmTranslation> mld_ssm_translations;
   std::vector<PortableMldStaticGroupIntentCheckpoint> mld_static_groups;
+  std::optional<dhcpv4::RelayConfiguration> dhcpv4_relay;
+  // The named DHCPv6 server attachment is management intent. Forwarding
+  // receives only its resolved stable link digest and never a CLI list key.
+  std::string dhcpv6_local_server;
 };
 
 struct PortableStaticRouteIntentCheckpoint {
@@ -453,6 +464,9 @@ struct PortableConfigurationCheckpoint {
   // only the compiled SAP and logical-interface generation, which is not
   // sufficient to reconstruct customer ownership or CLI presence semantics.
   service::Configuration ies;
+  bof::AutoconfigureIntent bof_autoconfigure;
+  dhcpv4::configuration::RouterConfiguration dhcpv4_servers;
+  dhcpv6::configuration::RouterConfiguration dhcpv6_servers;
   ospf::RouterConfiguration ospf;
   std::array<PortableCardConfigurationCheckpoint,
              device_catalog::maximum_card_slots>
@@ -486,6 +500,9 @@ struct PortableRouterIntentCheckpoint {
   tls_profile::Configuration tls;
   ipsec::configuration::Configuration ipsec;
   service::Configuration ies;
+  bof::AutoconfigureIntent bof_autoconfigure;
+  dhcpv4::configuration::RouterConfiguration dhcpv4_servers;
+  dhcpv6::configuration::RouterConfiguration dhcpv6_servers;
   ospf::RouterConfiguration ospf;
   PortableConfigurationCheckpoint global_candidate;
   bool global_candidate_initialized{};
@@ -604,6 +621,9 @@ public:
   [[nodiscard]] std::optional<DeviceHandle>
   create_router(std::string_view node_id, std::string_view profile_id,
                 std::string_view system_name);
+  [[nodiscard]] std::optional<DeviceHandle>
+  create_dhcp_server(std::string_view node_id, std::string_view profile_id,
+                     std::string_view name);
   [[nodiscard]] std::optional<HostHandle> create_host(std::string_view node_id,
                                                       std::string_view name);
   [[nodiscard]] std::optional<SwitchHandle>
@@ -774,6 +794,42 @@ public:
   // complete variable-length policy through the control-to-network SPSC ring.
   // No span, vector pointer or mutable service object crosses the shard
   // boundary. A false result leaves the prior forwarding generation active.
+  [[nodiscard]] bool configure_dhcpv4_relay(
+      DeviceHandle device, std::string_view port_id,
+      const dhcpv4::RelayInterfaceConfiguration &configuration) noexcept;
+  [[nodiscard]] bool remove_dhcpv4_relay(DeviceHandle device,
+                                         std::string_view port_id) noexcept;
+  [[nodiscard]] bool configure_router_dhcpv4_server(
+      const RouterDhcpv4ServerProgram &program) noexcept;
+  [[nodiscard]] bool configure_router_bof_management(
+      const RouterBofManagementProgram &program) noexcept;
+  [[nodiscard]] bool configure_router_bof_dhcpv4_client(
+      const RouterBofDhcpv4ClientProgram &program) noexcept;
+  [[nodiscard]] bool remove_router_bof_dhcpv4_client(
+      DeviceHandle device) noexcept;
+  [[nodiscard]] bool configure_router_bof_dhcpv6_client(
+      const RouterBofDhcpv6ClientProgram &program) noexcept;
+  [[nodiscard]] bool remove_router_bof_dhcpv6_client(
+      DeviceHandle device) noexcept;
+  [[nodiscard]] bool remove_router_dhcpv4_server(
+      DeviceHandle device, std::string_view name) noexcept;
+  [[nodiscard]] bool configure_router_dhcpv6_server(
+      const RouterDhcpv6ServerProgram &program) noexcept;
+  [[nodiscard]] bool remove_router_dhcpv6_server(
+      DeviceHandle device, std::string_view name) noexcept;
+  [[nodiscard]] bool clear_router_dhcpv6_server_leases(
+      DeviceHandle device, std::string_view name,
+      const dhcpv6::LeaseClearFilter &filter) noexcept;
+  [[nodiscard]] bool clear_router_dhcpv6_server_statistics(
+      DeviceHandle device, std::string_view name) noexcept;
+  [[nodiscard]] bool clear_router_dhcpv4_server_statistics(
+      DeviceHandle device, std::string_view name) noexcept;
+  [[nodiscard]] bool clear_router_dhcpv4_server_leases(
+      DeviceHandle device, std::string_view name,
+      const dhcpv4::LeaseClearFilter &filter) noexcept;
+  [[nodiscard]] dhcpv4::ForceRenewStatus send_router_dhcpv4_force_renew(
+      DeviceHandle device, std::string_view name,
+      packet::Ipv4 address) noexcept;
   [[nodiscard]] bool configure_dhcpv6_relay(
       DeviceHandle device, std::string_view port_id,
       const dhcpv6::RelayInterfaceConfig &configuration) noexcept;
@@ -899,6 +955,16 @@ public:
       const host::Ipv6InterfaceIdentifierConfiguration &ipv6_identifier,
       crypto::Sha256Digest transport_secret) noexcept;
   [[nodiscard]] bool
+  configure_host_dhcpv4_client(const HostDhcpv4ClientProgram &program) noexcept;
+  [[nodiscard]] bool remove_host_dhcpv4_client(HostHandle host) noexcept;
+  [[nodiscard]] bool
+  configure_host_dhcpv4_server(const HostDhcpv4ServerProgram &program) noexcept;
+  [[nodiscard]] bool remove_host_dhcpv4_server(HostHandle host) noexcept;
+  [[nodiscard]] std::optional<std::size_t>
+  host_dhcpv4_client_lease_count(HostHandle host) noexcept;
+  [[nodiscard]] std::optional<dhcpv4::ClientStatus>
+  host_dhcpv4_client_status(HostHandle host) noexcept;
+  [[nodiscard]] bool
   configure_host_dhcpv6_client(const HostDhcpv6ClientProgram &program) noexcept;
   [[nodiscard]] bool remove_host_dhcpv6_client(HostHandle host) noexcept;
   [[nodiscard]] bool
@@ -984,6 +1050,13 @@ private:
 
   [[nodiscard]] std::optional<ResolvedEndpoint>
   resolve(const LinkEndpoint &endpoint) noexcept;
+  // Router and dedicated-server roles share physical inventory and the
+  // multiport network engine. This private admission path is the only place
+  // allowed to select the immutable role and its transit-forwarding policy.
+  [[nodiscard]] std::optional<DeviceHandle>
+  create_network_device(std::string_view node_id, std::string_view profile_id,
+                        std::string_view name,
+                        device_catalog::DeviceRole expected_role);
   void deactivate(LinkHandle link) noexcept;
   void reconcile(LinkHandle link) noexcept;
   void reconcile(NodeHandle node) noexcept;
@@ -992,6 +1065,10 @@ private:
   // Internal replay already owns the stable coordinate ordinal. Keeping this
   // entry point ordinal-based avoids serializing a hardware path to text only
   // for the public API to parse it back during card reconciliation.
+  [[nodiscard]] bool
+  program_dhcpv4_relay(
+      DeviceHandle device, std::uint16_t port_ordinal,
+      const dhcpv4::RelayInterfaceConfiguration &configuration) noexcept;
   [[nodiscard]] bool
   program_dhcpv6_relay(DeviceHandle device, std::uint16_t port_ordinal,
                        const dhcpv6::RelayInterfaceConfig &configuration,

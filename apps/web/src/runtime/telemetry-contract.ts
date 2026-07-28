@@ -2,8 +2,9 @@
 // through sequence locks. JavaScript performs bounded read-only observations
 // and returns an immutable React projection only when visible values changed.
 
-import { PROFILE_CATALOG_COMPILED, type LabRuntimeSnapshotV6,
-  type RuntimeRouterV6 } from "@router-simulator/contracts";
+import { LAB_RUNTIME_PROTOCOL, PROFILE_CATALOG_COMPILED,
+  type LabRuntimeSnapshotV6, type RuntimeRouterV6
+} from "@router-simulator/contracts";
 
 export interface TelemetryLayout {
   abi: number; size: number; sequence: number; abiVersion: number;
@@ -54,7 +55,11 @@ function portOrdinal(id: string): number | undefined {
 export function readTelemetrySnapshot(page: TelemetryPage,
   base: LabRuntimeSnapshotV6): LabRuntimeSnapshotV6 {
   const layout = page.layout;
-  if (layout.abi !== base.abiVersion || layout.size !== page.size) return base;
+  // The telemetry page and JSON snapshot are independent wire contracts.
+  // Comparing the telemetry ABI with the snapshot ABI silently disabled every
+  // shared-memory projection as soon as either contract advanced alone.
+  if (layout.abi !== LAB_RUNTIME_PROTOCOL.telemetryAbi ||
+      layout.size !== page.size) return base;
   const globalSequence = new Uint32Array(page.buffer,
     page.offset + layout.sequence, 1);
   const before = Atomics.load(globalSequence, 0);

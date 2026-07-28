@@ -17,6 +17,7 @@ function host(id: string, octet: number): HostProjectV4 {
     address: `192.0.2.${octet}/24`, gateway: "192.0.2.1", mtu: 1500,
     mode: "ethernet",
     transportSecretHex: octet.toString(16).padStart(2, "0").repeat(32),
+    dhcpv4: { client: null, server: null },
     dns: { resolver: null, authoritative: null },
     ipv6: { autoconfiguration: true, interfaceId: hostInterfaceId(id),
       interfaceIdentifierMode: "modified-eui64", stableIidSecret: null,
@@ -280,7 +281,8 @@ describe("multi-router project format", () => {
     // cannot insert a card into a chassis without modular card slots.
     const router = createRouterProjectV4("r1", "7750-sr-1", "R1");
     expect(router.hardware.cards[0].equippedType).toBe("cpm-1");
-    expect(equippedRouterPorts(router)).toHaveLength(18);
+    expect(equippedRouterPorts(router)).toHaveLength(19);
+    expect(equippedRouterPorts(router).at(-1)?.id).toBe("management");
     const project = createEmptyProjectV4();
     project.routers.push(router);
     project.layout.nodes.r1 = { x: 100, y: 100 };
@@ -292,7 +294,8 @@ describe("multi-router project format", () => {
     // card would create ports that the user never added.
     for (const profileId of ["7750-sr-7", "7750-sr-12"] as const) {
       const router = createRouterProjectV4("r1", profileId, "R1");
-      expect(equippedRouterPorts(router)).toEqual([]);
+      expect(equippedRouterPorts(router).map((port) => port.id))
+        .toEqual(["management"]);
       expect(router.hardware.cards).toHaveLength(
         PROFILE_CATALOG.profiles.find((profile) => profile.id === profileId)!.card_slots);
     }
@@ -420,7 +423,8 @@ describe("multi-router project format", () => {
       },
       server: {
         duidHex: "00030001020000000003", preference: 127,
-        rapidCommit: true, dnsRecursiveServers: ["2001:db8::53"],
+        rapidCommit: true, leaseQuery: true,
+        dnsRecursiveServers: ["2001:db8::53"],
         informationRefreshTimeSeconds: 86400,
         solicitMaximumRetransmissionSeconds: 3600,
         informationMaximumRetransmissionSeconds: null,

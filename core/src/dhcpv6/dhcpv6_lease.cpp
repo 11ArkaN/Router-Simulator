@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <utility>
 
 namespace router::dhcpv6 {
@@ -106,6 +107,7 @@ bool LeaseRepository::valid_client(const ClientIdentity &client) noexcept {
 bool LeaseRepository::same_client(const ClientIdentity &left,
                                   const ClientIdentity &right) noexcept {
   return left.iaid == right.iaid && left.kind == right.kind &&
+         left.link_identity == right.link_identity &&
          left.duid_octets == right.duid_octets &&
          std::equal(left.duid.begin(),
                     left.duid.begin() + left.duid_octets,
@@ -118,7 +120,7 @@ bool LeaseRepository::configure(
     std::chrono::seconds decline_hold_time) noexcept {
   if (address_pools.size() > address_pools_.size() ||
       prefix_pools.size() > prefix_pools_.size() ||
-      decline_hold_time <= std::chrono::seconds::zero())
+      decline_hold_time < std::chrono::seconds::zero())
     return false;
   const auto valid_pool = [](const LeasePool &pool, bool prefix) {
     const bool canonical =
@@ -191,9 +193,9 @@ packet::Ipv6 LeaseRepository::candidate(
   const auto iaid = network_u32(client.iaid);
   const std::array<std::uint8_t, 1U> kind{
       static_cast<std::uint8_t>(client.kind)};
-  const std::array<std::span<const std::uint8_t>, 3U> message{
+  const std::array<std::span<const std::uint8_t>, 4U> message{
       std::span<const std::uint8_t>{client.duid}.first(client.duid_octets),
-      iaid, kind};
+      client.link_identity, iaid, kind};
   const auto digest = crypto::hmac_sha256(pool.allocation_secret, message);
   auto value = pool.prefix.network;
   // A keyed start hides sequential client identity while adding the attempt
@@ -269,6 +271,10 @@ LeaseResult LeaseRepository::assign(const ClientIdentity &client,
     existing->preferred_until =
         lease_deadline(now, pool.preferred_lifetime_seconds);
     existing->valid_until = lease_deadline(now, pool.valid_lifetime_seconds);
+    // Assignment and renewal are both client transactions for RFC 5007.
+    // Preview deliberately does not touch this timestamp because Solicit
+    // cannot create or refresh an authoritative binding.
+    existing->last_client_transaction = now;
     return result(*existing, now, LeaseStatus::renewed);
   }
   auto available = std::find_if(leases_.begin(), leases_.end(),
@@ -299,6 +305,7 @@ LeaseResult LeaseRepository::assign(const ClientIdentity &client,
                       lease_deadline(now, pool.preferred_lifetime_seconds),
                   .valid_until =
                       lease_deadline(now, pool.valid_lifetime_seconds),
+                  .last_client_transaction = now,
                   .pool_index = static_cast<std::uint16_t>(pool_index),
                   .prefix_length = prefix_length,
                   .occupied = true};
@@ -385,7 +392,16 @@ LeaseStatus LeaseRepository::decline(const ClientIdentity &client,
   lease->preferred_until = {};
   lease->valid_until = {};
   lease->declined = true;
-  lease->declined_until = now + decline_hold_time_;
+  // RFC 9915 section 18.2.7 requires a server to make a declined value
+  // unavailable, but defines no universal quarantine duration. SR OS exposes
+  // held DHCPv6 leases and an explicit reset operation instead of a documented
+  // DHCPv6 decline timer. A zero configured duration therefore means an
+  // indefinite held value, not immediate reuse.
+  lease->declined_until =
+      decline_hold_time_ == std::chrono::seconds::zero()
+          ? Clock::time_point::max()
+          : now + decline_hold_time_;
+  lease->last_client_transaction = now;
   return LeaseStatus::declined;
 }
 
@@ -411,11 +427,15 @@ std::size_t LeaseRepository::declined_values() const noexcept {
       }));
 }
 
-bool LeaseRepository::appropriate_address(packet::Ipv6 address) const noexcept {
+bool LeaseRepository::appropriate_address(
+    packet::Ipv6 address,
+    const crypto::Sha256Digest &link_identity) const noexcept {
   return std::any_of(address_pools_.begin(),
                      address_pools_.begin() + address_pool_count_,
                      [&](const LeasePool &pool) {
-                       return ip::contains(pool.prefix, address);
+                       return (!pool.link_scoped ||
+                               pool.link_identity == link_identity) &&
+                              ip::contains(pool.prefix, address);
                      });
 }
 
@@ -431,18 +451,28 @@ LeaseRepository::checkpoint(Clock::time_point now) const {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(duration)
         .count();
   };
+  const auto elapsed = [&](Clock::time_point timestamp) {
+    if (timestamp == Clock::time_point{} || timestamp >= now)
+      return std::int64_t{};
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               now - timestamp)
+        .count();
+  };
   for (const auto &lease : leases_) {
     if (!lease.occupied)
       continue;
     state.push_back({
         .client = lease.client,
         .value = lease.value,
+        .last_client_address = lease.last_client_address,
         .preferred_remaining_nanoseconds =
             lease.declined ? 0 : remaining(lease.preferred_until),
         .valid_remaining_nanoseconds =
             lease.declined ? 0 : remaining(lease.valid_until),
         .declined_remaining_nanoseconds =
             lease.declined ? remaining(lease.declined_until) : 0,
+        .last_client_transaction_ago_nanoseconds =
+            elapsed(lease.last_client_transaction),
         .pool_index = lease.pool_index,
         .prefix_length = lease.prefix_length,
         .declined = lease.declined});
@@ -474,7 +504,8 @@ bool LeaseRepository::validate_checkpoint(
                              lease.value)) ||
         lease.preferred_remaining_nanoseconds < -1 ||
         lease.valid_remaining_nanoseconds < -1 ||
-        lease.declined_remaining_nanoseconds < 0 ||
+        lease.declined_remaining_nanoseconds < -1 ||
+        lease.last_client_transaction_ago_nanoseconds < 0 ||
         (lease.declined
              ? lease.preferred_remaining_nanoseconds != 0 ||
                    lease.valid_remaining_nanoseconds != 0 ||
@@ -514,12 +545,24 @@ bool LeaseRepository::restore(std::span<const LeaseCheckpoint> state,
     return false;
   // The staged array is a cold checkpoint value. Live leases remain untouched
   // until every record has been converted back to owner-local deadlines.
-  std::array<Lease, device_catalog::dhcpv6_leases_per_server> staged{};
+  // A maximum-size DHCPv6 repository is deliberately dense. WebAssembly
+  // pthreads have a fixed stack, so a cold restore must stage this arena on
+  // the heap before one atomic publication instead of consuming the worker
+  // stack. Allocation failure leaves the live repository unchanged.
+  auto staged = std::unique_ptr<
+      std::array<Lease, device_catalog::dhcpv6_leases_per_server>>{};
+  try {
+    staged = std::make_unique<
+        std::array<Lease, device_catalog::dhcpv6_leases_per_server>>();
+  } catch (...) {
+    return false;
+  }
   for (std::size_t index = 0; index < state.size(); ++index) {
     const auto &saved = state[index];
-    staged[index] = {
+    (*staged)[index] = {
         .client = saved.client,
         .value = saved.value,
+        .last_client_address = saved.last_client_address,
         .preferred_until =
             saved.declined
                 ? Clock::time_point{}
@@ -536,16 +579,298 @@ bool LeaseRepository::restore(std::span<const LeaseCheckpoint> state,
                                   saved.valid_remaining_nanoseconds},
         .declined_until =
             saved.declined
-                ? now + std::chrono::nanoseconds{
-                            saved.declined_remaining_nanoseconds}
+                ? saved.declined_remaining_nanoseconds == -1
+                      ? Clock::time_point::max()
+                      : now + std::chrono::nanoseconds{
+                                  saved.declined_remaining_nanoseconds}
                 : Clock::time_point{},
+        .last_client_transaction =
+            now - std::chrono::nanoseconds{
+                      saved.last_client_transaction_ago_nanoseconds},
         .pool_index = saved.pool_index,
         .prefix_length = saved.prefix_length,
         .occupied = true,
         .declined = saved.declined};
   }
-  leases_ = std::move(staged);
+  leases_ = std::move(*staged);
   return true;
+}
+
+PartnerUpdateStatus LeaseRepository::apply_partner_updates(
+    std::span<const failover::BindingUpdateView> updates,
+    std::uint32_t absolute_now, Clock::time_point now) noexcept {
+  if (updates.empty() ||
+      updates.size() > device_catalog::dhcp_failover_updates_in_flight)
+    return PartnerUpdateStatus::invalid_update;
+
+  std::unique_ptr<LeaseRepository> staged;
+  try {
+    // The repository contains profile-sized fixed arenas. Staging on the heap
+    // avoids exhausting a Wasm pthread stack while preserving BNDUPD atomicity.
+    staged = std::make_unique<LeaseRepository>(*this);
+  } catch (...) {
+    return PartnerUpdateStatus::resource_exhausted;
+  }
+
+  bool changed{};
+  for (const auto &update : updates) {
+    const bool delegated =
+        update.association ==
+            failover::IdentityAssociationType::delegated_prefix ||
+        update.association ==
+            failover::IdentityAssociationType::unassociated_prefix;
+    if ((delegated && update.prefix_length > 128U) ||
+        (!delegated && update.prefix_length != 128U) ||
+        update.start_time_of_state == 0U)
+      return PartnerUpdateStatus::invalid_update;
+
+    const LeasePool *selected_pool{};
+    std::uint16_t selected_index{};
+    const auto select_pool = [&](const auto &pools, std::size_t count) {
+      for (std::size_t index{}; index < count; ++index) {
+        const auto &pool = pools[index];
+        const bool contains_value =
+            ip::contains(pool.prefix, update.value) &&
+            (!delegated || pool.delegated_length == update.prefix_length);
+        if (!contains_value)
+          continue;
+        if (selected_pool) {
+          selected_pool = nullptr;
+          selected_index = std::numeric_limits<std::uint16_t>::max();
+          return;
+        }
+        selected_pool = &pool;
+        selected_index = static_cast<std::uint16_t>(index);
+      }
+    };
+    if (delegated)
+      select_pool(staged->prefix_pools_, staged->prefix_pool_count_);
+    else
+      select_pool(staged->address_pools_, staged->address_pool_count_);
+    if (selected_index == std::numeric_limits<std::uint16_t>::max())
+      return PartnerUpdateStatus::ambiguous_value;
+    if (!selected_pool)
+      return PartnerUpdateStatus::unknown_value;
+
+    auto cursor = std::find_if(
+        staged->failover_bindings_.begin(),
+        staged->failover_bindings_.end(), [&](const auto &candidate) {
+          return candidate.occupied && candidate.value == update.value &&
+                 candidate.prefix_length == update.prefix_length &&
+                 candidate.association == update.association;
+        });
+    if (cursor != staged->failover_bindings_.end() &&
+        cursor->state_started_absolute >= update.start_time_of_state)
+      continue;
+    if (cursor == staged->failover_bindings_.end()) {
+      cursor = std::find_if(staged->failover_bindings_.begin(),
+                            staged->failover_bindings_.end(),
+                            [](const auto &candidate) {
+                              return !candidate.occupied;
+                            });
+      if (cursor == staged->failover_bindings_.end())
+        return PartnerUpdateStatus::resource_exhausted;
+    }
+
+    const auto kind =
+        delegated
+            ? LeaseKind::prefix
+            : update.association ==
+                      failover::IdentityAssociationType::temporary
+                  ? LeaseKind::temporary
+                  : LeaseKind::non_temporary;
+    ClientIdentity identity{.link_identity = selected_pool->link_identity,
+                            .iaid = update.iaid,
+                            .kind = kind};
+    if (!update.client_identifier.empty()) {
+      if (update.client_identifier.size() > identity.duid.size())
+        return PartnerUpdateStatus::invalid_update;
+      identity.duid_octets =
+          static_cast<std::uint16_t>(update.client_identifier.size());
+      std::ranges::copy(update.client_identifier, identity.duid.begin());
+    }
+    const bool active =
+        update.status == failover::BindingStatus::active;
+    if (active && !valid_client(identity))
+      return PartnerUpdateStatus::invalid_update;
+
+    auto lease = std::find_if(
+        staged->leases_.begin(), staged->leases_.end(),
+        [&](const auto &candidate) {
+          return candidate.occupied && candidate.value == update.value &&
+                 candidate.prefix_length == update.prefix_length;
+        });
+    if (active || update.status == failover::BindingStatus::abandoned) {
+      if (lease == staged->leases_.end()) {
+        lease = std::find_if(staged->leases_.begin(), staged->leases_.end(),
+                             [](const auto &candidate) {
+                               return !candidate.occupied;
+                             });
+        if (lease == staged->leases_.end())
+          return PartnerUpdateStatus::resource_exhausted;
+      }
+      if (!valid_client(identity))
+        return PartnerUpdateStatus::invalid_update;
+      const auto deadline = [&](std::uint32_t absolute) {
+        return absolute <= absolute_now
+                   ? now
+                   : now + std::chrono::seconds{absolute - absolute_now};
+      };
+      const auto preferred_absolute =
+          update.base_time >
+                  std::numeric_limits<std::uint32_t>::max() -
+                      update.preferred_lifetime
+              ? std::numeric_limits<std::uint32_t>::max()
+              : update.base_time + update.preferred_lifetime;
+      const auto valid_absolute =
+          update.expiration_time.value_or(
+              update.base_time >
+                      std::numeric_limits<std::uint32_t>::max() -
+                          update.valid_lifetime
+                  ? std::numeric_limits<std::uint32_t>::max()
+                  : update.base_time + update.valid_lifetime);
+      *lease = {.client = identity,
+                .value = update.value,
+                .preferred_until =
+                    active ? deadline(preferred_absolute)
+                           : Clock::time_point{},
+                .valid_until =
+                    active ? deadline(valid_absolute) : Clock::time_point{},
+                .declined_until =
+                    active ? Clock::time_point{} : Clock::time_point::max(),
+                .last_client_transaction =
+                    update.client_last_transaction_time &&
+                            *update.client_last_transaction_time <= absolute_now
+                        ? now - std::chrono::seconds{
+                                    absolute_now -
+                                    *update.client_last_transaction_time}
+                        : now,
+                .pool_index = selected_index,
+                .prefix_length = update.prefix_length,
+                .occupied = true,
+                .declined = !active};
+    } else if (lease != staged->leases_.end()) {
+      *lease = {};
+    }
+    *cursor = {.value = update.value,
+               .association = update.association,
+               .status = update.status,
+               .state_started_absolute = update.start_time_of_state,
+               .prefix_length = update.prefix_length,
+               .occupied = true};
+    changed = true;
+  }
+
+  if (!changed)
+    return PartnerUpdateStatus::duplicate;
+  *this = std::move(*staged);
+  return PartnerUpdateStatus::applied;
+}
+
+std::vector<FailoverBindingCheckpoint>
+LeaseRepository::failover_checkpoint() const {
+  std::vector<FailoverBindingCheckpoint> result;
+  result.reserve(std::count_if(
+      failover_bindings_.begin(), failover_bindings_.end(),
+      [](const auto &binding) { return binding.occupied; }));
+  for (const auto &binding : failover_bindings_)
+    if (binding.occupied)
+      result.push_back({.value = binding.value,
+                        .association = binding.association,
+                        .status = binding.status,
+                        .state_started_absolute =
+                            binding.state_started_absolute,
+                        .prefix_length = binding.prefix_length,
+                        .occupied = true});
+  return result;
+}
+
+bool LeaseRepository::validate_failover_checkpoint(
+    std::span<const FailoverBindingCheckpoint> state) const noexcept {
+  if (state.size() > failover_bindings_.size())
+    return false;
+  for (std::size_t index{}; index < state.size(); ++index) {
+    const auto &binding = state[index];
+    if (!binding.occupied || binding.state_started_absolute == 0U ||
+        binding.prefix_length > 128U ||
+        binding.association >
+            failover::IdentityAssociationType::unassociated_prefix ||
+        binding.status > failover::BindingStatus::reset)
+      return false;
+    for (std::size_t prior{}; prior < index; ++prior)
+      if (state[prior].value == binding.value &&
+          state[prior].prefix_length == binding.prefix_length &&
+          state[prior].association == binding.association)
+        return false;
+  }
+  return true;
+}
+
+bool LeaseRepository::restore_failover_checkpoint(
+    std::span<const FailoverBindingCheckpoint> state) noexcept {
+  if (!validate_failover_checkpoint(state))
+    return false;
+  failover_bindings_ = {};
+  for (std::size_t index{}; index < state.size(); ++index)
+    failover_bindings_[index] = {
+        .value = state[index].value,
+        .association = state[index].association,
+        .status = state[index].status,
+        .state_started_absolute = state[index].state_started_absolute,
+        .prefix_length = state[index].prefix_length,
+        .occupied = true};
+  return true;
+}
+
+bool LeaseRepository::note_client_address(const ClientIdentity &client,
+                                          packet::Ipv6 address) noexcept {
+  auto *lease = find(client);
+  if (!lease || ip::is_unspecified(address) || ip::is_multicast(address))
+    return false;
+  lease->last_client_address = address;
+  return true;
+}
+
+std::size_t LeaseRepository::clear(const LeaseClearFilter &filter,
+                                   Clock::time_point now) noexcept {
+  if (filter.prefix_length > 128U)
+    return 0U;
+  expire(now);
+
+  const auto state_of = [](const Lease &lease) noexcept {
+    // Preview-only Advertise values never become bindings. An active binding
+    // is therefore stable, while a declined value is held until its RFC
+    // conflict hold-down expires. Other SR OS states belong to failover or
+    // subscriber features and correctly match no record in this owner.
+    return lease.declined ? OperationalLeaseState::held
+                          : OperationalLeaseState::stable;
+  };
+  const auto type_of = [](const Lease &lease) noexcept {
+    return lease.client.kind == LeaseKind::prefix
+               ? LeaseClearFilter::Type::pd
+               : LeaseClearFilter::Type::wan;
+  };
+  const ip::Ipv6Prefix selected{
+      .network = ip::mask(filter.value, filter.prefix_length),
+      .length = filter.prefix_length};
+
+  std::size_t removed{};
+  for (auto &lease : leases_) {
+    if (!lease.occupied)
+      continue;
+    if (filter.value_specific &&
+        (filter.prefix_length == 128U
+             ? lease.value != filter.value
+             : !ip::contains(selected, lease.value)))
+      continue;
+    if (filter.state && *filter.state != state_of(lease))
+      continue;
+    if (filter.type && *filter.type != type_of(lease))
+      continue;
+    lease = {};
+    ++removed;
+  }
+  return removed;
 }
 
 } // namespace router::dhcpv6

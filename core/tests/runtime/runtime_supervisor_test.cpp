@@ -344,10 +344,31 @@ void runtime_supervisor_tests() {
 
   const auto r1 = runtime->create_router("r1", "7750-sr-1", "R1");
   const auto r2 = runtime->create_router("r2", "7750-sr-7", "R2");
+  const auto dhcp_server = runtime->create_dhcp_server(
+      "dhcp-a", "generic-dhcp-server-8", "DHCP A");
   const auto h1 = runtime->create_host("h1", "Host 1");
-  require(r1 && r2 && h1, "supervisor rejected valid mixed nodes");
+  require(r1 && r2 && dhcp_server && h1,
+          "supervisor rejected valid mixed nodes");
   require(!runtime->create_host("r1", "Duplicate"),
           "supervisor accepted cross-kind duplicate identity");
+  require(!runtime->create_router("wrong-role", "generic-dhcp-server-8",
+                                  "Wrong role") &&
+              !runtime->create_dhcp_server("wrong-role", "7750-sr-1",
+                                           "Wrong role"),
+          "profile role escaped device admission");
+  const auto mixed_checkpoint = runtime->checkpoint();
+  const auto server_forwarder =
+      mixed_checkpoint
+          ? std::find_if(mixed_checkpoint->network.routers.begin(),
+                         mixed_checkpoint->network.routers.end(),
+                         [&](const auto &entry) {
+                           return entry.device == *dhcp_server;
+                         })
+          : decltype(mixed_checkpoint->network.routers.begin()){};
+  require(mixed_checkpoint &&
+              server_forwarder != mixed_checkpoint->network.routers.end() &&
+              !server_forwarder->forwarding.transit_forwarding_enabled,
+          "dedicated server was admitted as a transit router");
 
   const auto router_link =
       runtime->create_link("r1-r2", {node(*r1), "1/1/1"}, {node(*r2), "1/1/1"},
@@ -376,7 +397,9 @@ void runtime_supervisor_tests() {
               runtime->topology().get(*host_link)->propagation_ns == 250U &&
               runtime->active_links() == 1,
           "link property edit deleted the object or lost propagation");
-  require(runtime->delete_router(*r1) && runtime->devices().size() == 1 &&
+  require(runtime->delete_router(*r1) &&
+              runtime->delete_router(*dhcp_server) &&
+              runtime->devices().size() == 1 &&
               runtime->topology().size() == 0 && runtime->active_links() == 0,
           "router deletion retained links or changed unrelated router");
 
@@ -999,6 +1022,9 @@ void runtime_supervisor_tests() {
        .tls = tls_fixture,
        .ipsec = ipsec_fixture,
        .ies = {},
+       .bof_autoconfigure = {},
+       .dhcpv4_servers = {},
+       .dhcpv6_servers = {},
        .ospf = {},
        .global_candidate = std::move(global_candidate),
        .global_candidate_initialized = true,
@@ -1314,6 +1340,7 @@ void runtime_supervisor_tests() {
                                               NetworkPlane::Clock::now()),
           "IES network plane rejected its validated forwarding image");
   restored_ies_network_probe.reset();
+  runtime.reset();
   runtime = std::make_unique<RuntimeSupervisor>();
   require(runtime->restore(std::move(*decoded_ies_checkpoint)),
           "portable restore rejected the active IES generation");

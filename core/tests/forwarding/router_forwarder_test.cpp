@@ -55,6 +55,46 @@ void router_forwarder_tests() {
     require(snapshot(*restored_service_forwarder)->sap_attachments.empty(),
             "physical port removal retained a stale SAP attachment");
   }
+  {
+    // A dedicated server reuses the multi-interface local stack but must not
+    // become a transit router merely because two connected routes exist.
+    // This wire-level case proves the distinction while also pinning it across
+    // checkpoint restore.
+    auto server = std::make_unique<RouterForwarder>();
+    const packet::Mac server_a{0x02, 0, 0, 0, 8, 1};
+    const packet::Mac server_b{0x02, 0, 0, 0, 8, 2};
+    require(server->configure_port(
+                {true, true, 0, 1514, 0x0a080001U, 0x0a080000U,
+                 10'000, 24, server_a}) &&
+                server->configure_port(
+                    {true, true, 1, 1514, 0x0a080101U, 0x0a080100U,
+                     10'000, 24, server_b}),
+            "multihomed server rejected valid local interfaces");
+    RouteTable server_rib;
+    const std::array server_connected{
+        ConnectedInput{true, true, 0x0a080000U, 0, 24},
+        ConnectedInput{true, true, 0x0a080100U, 1, 24}};
+    require(server_rib.rebuild(server_connected,
+                               std::span<const StaticInput>{}) &&
+                server->program_fib(server_rib.compile(1U)),
+            "multihomed server rejected its connected routes");
+    server->set_transit_forwarding(false);
+    const auto server_state = snapshot(*server);
+    auto restored_server = std::make_unique<RouterForwarder>();
+    require(restored_server->restore(*server_state) &&
+                !restored_server->transit_forwarding(),
+            "server checkpoint enabled IP transit forwarding");
+
+    std::vector<Emitted> server_emitted;
+    const auto transit =
+        packet::icmp_echo({0x02, 0, 0, 0, 8, 10}, server_a,
+                          {10, 8, 0, 10}, {10, 8, 1, 10}, false, 1U);
+    restored_server->receive(0U, transit, &server_emitted, collect);
+    require(server_emitted.empty() &&
+                restored_server->last_drop() ==
+                    ForwardDrop::transit_disabled,
+            "multihomed server forwarded a transit IPv4 packet");
+  }
   auto forwarder = std::make_unique<RouterForwarder>();
   const packet::Mac router_a{0x02, 0, 0, 0, 1, 1};
   const packet::Mac router_b{0x02, 0, 0, 0, 1, 2};
@@ -720,6 +760,26 @@ void router_forwarder_tests() {
   require(rib6.rebuild(connected6, std::span<const Ipv6StaticInput>{}) &&
               forwarder6->program_ipv6_fib(rib6.compile(1)),
           "forwarder rejected connected IPv6 FIB");
+  {
+    auto server6 = std::make_unique<RouterForwarder>();
+    require(server6->configure_port(port6_a) &&
+                server6->configure_port(port6_b) &&
+                server6->program_ipv6_addresses(native_addresses,
+                                                checkpoint_now) ==
+                    RouterIpv6AddressProgramStatus::accepted &&
+                server6->program_ipv6_fib(rib6.compile(1U)),
+            "multihomed server rejected its IPv6 local route table");
+    server6->set_transit_forwarding(false);
+    std::vector<Emitted> server6_emitted;
+    const auto transit6 = packet::icmpv6_echo(
+        host_a, router_a, address6("2001:db8:10::10"),
+        address6("2001:db8:11::10"), false, 1U);
+    server6->receive(0U, transit6, &server6_emitted, collect,
+                     checkpoint_now);
+    require(server6_emitted.empty() &&
+                server6->last_drop() == ForwardDrop::transit_disabled,
+            "multihomed server forwarded a transit IPv6 packet");
+  }
 
   // Static addresses remain tentative until link-local DAD and then global
   // DAD each send NS and wait one complete RetransTimer interval. Advancing

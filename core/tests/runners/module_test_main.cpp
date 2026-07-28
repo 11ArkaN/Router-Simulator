@@ -6,6 +6,14 @@
 #include <stdexcept>
 
 void capture_store_tests();
+void dhcpv4_client_tests();
+void dhcpv4_configuration_tests();
+void dhcpv4_failover_tests();
+void dhcpv4_lease_tests();
+void dhcpv4_leasequery_tests();
+void dhcpv4_packet_tests();
+void dhcpv4_relay_tests();
+void dhcpv4_server_tests();
 void dhcpv6_client_tests();
 void dhcpv6_lease_tests();
 void dhcpv6_packet_tests();
@@ -14,6 +22,7 @@ void dhcpv6_relay_lease_tests();
 void dhcpv6_relay_route_tests();
 void dhcpv6_retransmission_tests();
 void dhcpv6_server_tests();
+void dhcpv6_failover_tests();
 void dns_packet_tests();
 void ddr_discovery_tests();
 void dns_authoritative_tests();
@@ -59,6 +68,9 @@ void icmpv4_statistics_tests();
 void icmpv6_statistics_tests();
 void ies_service_tests();
 void ies_cli_configuration_tests();
+void dhcpv4_cli_configuration_tests();
+void dhcpv6_cli_configuration_tests();
+void bof_cli_configuration_tests();
 void ipv6_path_mtu_tests();
 void ipv4_path_mtu_tests();
 void ipv6_neighbor_cache_tests();
@@ -161,7 +173,16 @@ int main() {
     // Run low-level suites in dependency order. A thrown failure stops before a
     // higher layer can obscure which standalone contract was violated.
     capture_store_tests();
+    dhcpv4_client_tests();
+    dhcpv4_configuration_tests();
+    dhcpv4_failover_tests();
+    dhcpv4_lease_tests();
+    dhcpv4_leasequery_tests();
+    dhcpv4_packet_tests();
+    dhcpv4_relay_tests();
+    dhcpv4_server_tests();
     dhcpv6_client_tests();
+    dhcpv6_failover_tests();
     dhcpv6_lease_tests();
     dhcpv6_packet_tests();
     dhcpv6_relay_tests();
@@ -225,6 +246,9 @@ int main() {
     icmpv6_statistics_tests();
     ies_service_tests();
     ies_cli_configuration_tests();
+    dhcpv4_cli_configuration_tests();
+    dhcpv6_cli_configuration_tests();
+    bof_cli_configuration_tests();
     ipv4_path_mtu_tests();
     ipv6_path_mtu_tests();
     ipv6_neighbor_cache_tests();

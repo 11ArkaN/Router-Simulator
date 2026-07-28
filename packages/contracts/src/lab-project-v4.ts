@@ -206,6 +206,27 @@ export interface RouterProjectV4 {
   running: RouterRunningIntent;
 }
 
+export interface DhcpServerProjectV5 {
+  id: NodeId;
+  kind: "dhcp-server";
+  profileId: DeviceProfileId;
+  release: typeof LAB_RELEASE;
+  name: string;
+  // Dedicated servers share the physical inventory and routed-interface
+  // contracts with the packet engine. Validation below forbids router-only
+  // policy and OSPF state and the native role disables transit forwarding.
+  hardware: { cards: RouterCardIntent[] };
+  running: RouterRunningIntent;
+  dhcpv4Servers: Array<{
+    name: string;
+    configuration: HostDhcpv4ServerIntent;
+  }>;
+  dhcpv6Servers: Array<{
+    name: string;
+    configuration: HostDhcpv6ServerIntent;
+  }>;
+}
+
 export interface HostProjectV4 {
   id: NodeId;
   kind: "host";
@@ -219,6 +240,7 @@ export interface HostProjectV4 {
     // TCP ISN and timestamp entropy is portable private endpoint intent. It is
     // never rendered in telemetry and is domain-separated from SLAAC secrets.
     transportSecretHex: string;
+    dhcpv4: HostDhcpv4Intent;
     dns: HostDnsIntent;
     ipv6: {
       autoconfiguration: boolean;
@@ -246,6 +268,68 @@ export interface SwitchProjectV5 {
     speedMbps: number;
     mtu: number;
   }>;
+}
+
+export interface HostDhcpv4ClientIntent {
+  // Empty Client Identifier selects the RFC 2131 htype/chaddr identity. A
+  // configured value is the exact Option 61 body, not presentation text.
+  clientIdentifierHex: string;
+  transactionSecretHex: string;
+  parameterRequestList: number[];
+  maximumMessageSize: number;
+  broadcast: boolean;
+}
+
+export interface HostDhcpv4PoolIntent {
+  id: number;
+  serverInstance: number;
+  routingContext: number;
+  linkIdentity: string;
+  first: string;
+  last: string;
+  subnetMask: string;
+  router: string;
+  leaseSeconds: number;
+  renewalSeconds: number;
+  rebindingSeconds: number;
+  enabled: boolean;
+}
+
+export interface HostDhcpv4ReservationIntent {
+  serverInstance: number;
+  routingContext: number;
+  linkIdentity: string;
+  option61: boolean;
+  clientKeyHex: string;
+  address: string;
+}
+
+export interface HostDhcpv4ExcludedRangeIntent {
+  // An excluded interval belongs to one allocation scope. It is not a lease
+  // and therefore cannot acquire a client identity, lifetime or binding state.
+  serverInstance: number;
+  routingContext: number;
+  linkIdentity: string;
+  first: string;
+  last: string;
+}
+
+export interface HostDhcpv4ServerIntent {
+  serverIdentifier: string;
+  serverInstance: number;
+  routingContext: number;
+  offerHoldSeconds: number;
+  declineHoldSeconds: number;
+  authoritative: boolean;
+  domainNameServers: string[];
+  pools: HostDhcpv4PoolIntent[];
+  reservations: HostDhcpv4ReservationIntent[];
+  exclusions: HostDhcpv4ExcludedRangeIntent[];
+}
+
+export interface HostDhcpv4Intent {
+  client: HostDhcpv4ClientIntent | null;
+  server: HostDhcpv4ServerIntent | null;
 }
 
 export interface HostDhcpv6ClientIntent {
@@ -277,6 +361,7 @@ export interface HostDhcpv6ServerIntent {
   duidHex: string;
   preference: number;
   rapidCommit: boolean;
+  leaseQuery: boolean;
   dnsRecursiveServers: string[];
   informationRefreshTimeSeconds: number;
   solicitMaximumRetransmissionSeconds: number | null;
@@ -408,6 +493,7 @@ export interface LabProjectV4 {
   projectId: string;
   name: string;
   routers: RouterProjectV4[];
+  dhcpServers: DhcpServerProjectV5[];
   hosts: HostProjectV4[];
   switches: SwitchProjectV5[];
   links: LinkProjectV4[];
@@ -589,6 +675,123 @@ function validHexOctets(text: string, minimumOctets: number,
     text.length >= minimumOctets * 2 && text.length <= maximumOctets * 2;
 }
 
+function validateDhcpv4(hostId: string, intent: HostDhcpv4Intent): void {
+  assert(intent && typeof intent === "object" &&
+    (intent.client === null || typeof intent.client === "object") &&
+    (intent.server === null || typeof intent.server === "object"),
+  `${hostId} DHCPv4 intent is invalid`);
+  if (intent.client) {
+    const client = intent.client;
+    assert((client.clientIdentifierHex === "" ||
+      validHexOctets(client.clientIdentifierHex, 1, 255)) &&
+      stableIidSecretPattern.test(client.transactionSecretHex) &&
+      !/^0{64}$/.test(client.transactionSecretHex) &&
+      Array.isArray(client.parameterRequestList) &&
+      client.parameterRequestList.length <= 255 &&
+      new Set(client.parameterRequestList).size ===
+        client.parameterRequestList.length &&
+      client.parameterRequestList.every((option) =>
+        Number.isSafeInteger(option) && option > 0 && option < 255) &&
+      Number.isSafeInteger(client.maximumMessageSize) &&
+      client.maximumMessageSize >= 576 && client.maximumMessageSize <= 65535 &&
+      typeof client.broadcast === "boolean",
+    `${hostId} DHCPv4 client configuration is invalid`);
+  }
+  if (!intent.server) return;
+  const server = intent.server;
+  const serverIdentifier = parseIpv4(server.serverIdentifier);
+  assert(serverIdentifier !== undefined && serverIdentifier !== 0 &&
+    Number.isSafeInteger(server.serverInstance) && server.serverInstance > 0 &&
+    server.serverInstance <= maximumUint32 &&
+    Number.isSafeInteger(server.routingContext) &&
+    server.routingContext >= 0 && server.routingContext <= maximumUint32 &&
+    Number.isSafeInteger(server.offerHoldSeconds) &&
+    server.offerHoldSeconds > 0 &&
+    Number.isSafeInteger(server.declineHoldSeconds) &&
+    server.declineHoldSeconds > 0 &&
+    typeof server.authoritative === "boolean" &&
+    Array.isArray(server.domainNameServers) &&
+    server.domainNameServers.length <= 63 &&
+    server.domainNameServers.every((address) => {
+      const parsed = parseIpv4(address);
+      return parsed !== undefined && parsed !== 0;
+    }) &&
+    Array.isArray(server.pools) &&
+    server.pools.length <= PROFILE_CATALOG.runtime.dhcpv4_pools_per_server &&
+    Array.isArray(server.reservations) &&
+    server.reservations.length <=
+      PROFILE_CATALOG.runtime.dhcpv4_leases_per_server &&
+    Array.isArray(server.exclusions) &&
+    server.exclusions.length <=
+      PROFILE_CATALOG.runtime.dhcpv4_leases_per_server,
+  `${hostId} DHCPv4 server configuration is invalid`);
+  const poolIds = new Set<number>();
+  for (const pool of server.pools) {
+    const first = parseIpv4(pool.first);
+    const last = parseIpv4(pool.last);
+    const mask = parseIpv4(pool.subnetMask);
+    const router = parseIpv4(pool.router);
+    const linkIdentity = uint64Pattern.test(pool.linkIdentity)
+      ? BigInt(pool.linkIdentity) : 0n;
+    const maskValue = mask ?? 0;
+    const inverse = (~maskValue) >>> 0;
+    const contiguousMask = maskValue !== 0 &&
+      ((inverse + 1) & inverse) === 0;
+    assert(Number.isSafeInteger(pool.id) && pool.id > 0 &&
+      pool.id <= 0xffff && !poolIds.has(pool.id) &&
+      pool.serverInstance === server.serverInstance &&
+      pool.routingContext === server.routingContext &&
+      linkIdentity > 0n && linkIdentity <= maximumUint64 &&
+      first !== undefined && last !== undefined && first > 0 && first <= last &&
+      mask !== undefined && contiguousMask && router !== undefined &&
+      Number.isSafeInteger(pool.leaseSeconds) && pool.leaseSeconds > 0 &&
+      Number.isSafeInteger(pool.renewalSeconds) &&
+      pool.renewalSeconds >= 0 && pool.renewalSeconds < pool.leaseSeconds &&
+      Number.isSafeInteger(pool.rebindingSeconds) &&
+      pool.rebindingSeconds >= 0 &&
+      pool.rebindingSeconds < pool.leaseSeconds &&
+      (pool.renewalSeconds === 0 || pool.rebindingSeconds === 0 ||
+       pool.renewalSeconds < pool.rebindingSeconds) &&
+      typeof pool.enabled === "boolean",
+    `${hostId} DHCPv4 pool is invalid`);
+    poolIds.add(pool.id);
+  }
+  for (const reservation of server.reservations) {
+    const address = parseIpv4(reservation.address);
+    assert(reservation.serverInstance === server.serverInstance &&
+      reservation.routingContext === server.routingContext &&
+      uint64Pattern.test(reservation.linkIdentity) &&
+      BigInt(reservation.linkIdentity) > 0n &&
+      BigInt(reservation.linkIdentity) <= maximumUint64 &&
+      typeof reservation.option61 === "boolean" &&
+      validHexOctets(reservation.clientKeyHex, 1, 255) &&
+      address !== undefined && address !== 0,
+    `${hostId} DHCPv4 reservation is invalid`);
+  }
+  for (const excluded of server.exclusions) {
+    const first = parseIpv4(excluded.first);
+    const last = parseIpv4(excluded.last);
+    assert(excluded.serverInstance === server.serverInstance &&
+      excluded.routingContext === server.routingContext &&
+      uint64Pattern.test(excluded.linkIdentity) &&
+      BigInt(excluded.linkIdentity) > 0n &&
+      BigInt(excluded.linkIdentity) <= maximumUint64 &&
+      first !== undefined && last !== undefined && first <= last,
+    `${hostId} DHCPv4 excluded range is invalid`);
+
+    // A portable exclusion must resolve to exactly one configured pool in the
+    // same link scope. Rejecting zero or multiple matches here prevents the C++
+    // allocator from depending on serializer order after project restore.
+    const matches = server.pools.filter((pool) =>
+      pool.serverInstance === excluded.serverInstance &&
+      pool.routingContext === excluded.routingContext &&
+      pool.linkIdentity === excluded.linkIdentity &&
+      parseIpv4(pool.first)! <= first && parseIpv4(pool.last)! >= last);
+    assert(matches.length === 1,
+      `${hostId} DHCPv4 excluded range does not identify one pool`);
+  }
+}
+
 function validateDhcpv6(hostId: string, intent: HostDhcpv6Intent): void {
   // RFC 9915 option-length is an unsigned 16-bit octet count. OPTION_DNS_SERVERS
   // contains only complete 16-octet IPv6 addresses, so this is the exact wire
@@ -631,6 +834,7 @@ function validateDhcpv6(hostId: string, intent: HostDhcpv6Intent): void {
   assert(validHexOctets(server.duidHex, 3, 130) &&
     Number.isSafeInteger(server.preference) && server.preference >= 0 &&
     server.preference <= 255 && typeof server.rapidCommit === "boolean" &&
+    typeof server.leaseQuery === "boolean" &&
     Array.isArray(server.dnsRecursiveServers) &&
     server.dnsRecursiveServers.length <= maximumDnsAddressesPerOption &&
     server.dnsRecursiveServers.every((address) =>
@@ -841,7 +1045,12 @@ export function isPossibleRouterPort(profileId: DeviceProfileId, portId: string)
   // This test proves that a port can exist on the selected chassis. Carrier and
   // inventory are separate live-state questions evaluated by the runtime.
   const profile = profileById(profileId);
-  if (!profile || !portPattern.test(portId)) return false;
+  if (!profile) return false;
+  // The BOF management connector is not an invented card coordinate. Catalog
+  // capability admits its documented name only on chassis that physically
+  // provide the out-of-band Ethernet interface.
+  if (portId === "management") return profile.management_port;
+  if (!portPattern.test(portId)) return false;
   const [card, mda, port] = portId.split("/").map(Number);
   const maximumCard = profile.fixed ? 1 : profile.card_slots;
   const maximumMda = Math.max(...profile.cards.map((item) => item.mda_slots));
@@ -849,7 +1058,8 @@ export function isPossibleRouterPort(profileId: DeviceProfileId, portId: string)
     port >= 1 && port <= maximumPortForProfile(profile);
 }
 
-export function equippedRouterPorts(router: RouterProjectV4): RouterPortIntent[] {
+export function equippedRouterPorts(
+  router: RouterProjectV4 | DhcpServerProjectV5): RouterPortIntent[] {
   // Port inventory is derived from matching provisioned and equipped hardware.
   // A mismatch exposes no operational ports and never fabricates a fallback.
   const profile = profileById(router.profileId);
@@ -882,7 +1092,76 @@ export function equippedRouterPorts(router: RouterProjectV4): RouterPortIntent[]
       }
     }
   }
+  if (profile.management_port) {
+    // Integrated management Ethernet survives line-card changes. Preserve a
+    // saved BOF port intent when present, otherwise use documented 100 Mb/s
+    // speed and the project-wide Ethernet MTU without fabricating carrier.
+    const saved = router.running.ports.find((port) => port.id === "management");
+    result.push(saved ?? { id: "management", admin: "down",
+      mtu: PROFILE_CATALOG.ethernet.default_network_mtu, description: "",
+      speedMbps: 100 });
+  }
   return result;
+}
+
+export function equippedRouterPortSpeeds(
+  router: RouterProjectV4 | DhcpServerProjectV5,
+  portId: string): readonly number[] {
+  // Speed choices belong to the equipped MDA group, not to the link editor or
+  // a UI-wide list. Walking the same catalog hierarchy as equippedRouterPorts
+  // keeps a dedicated server NIC, a fixed router and a modular line card under
+  // one capability rule.
+  if (portId === "management") return [100];
+  const coordinates = portId.split("/").map(Number);
+  if (coordinates.length !== 3 || coordinates.some(
+    (value) => !Number.isInteger(value) || value < 1)) return [];
+  const [cardSlot, mdaSlot, physicalPort] = coordinates;
+  const profile = profileById(router.profileId);
+  const card = router.hardware.cards.find((item) => item.slot === cardSlot);
+  const cardProfile = profile && card &&
+    card.equippedType === card.provisionedType
+    ? cardByType(profile, card.equippedType ?? "") : undefined;
+  const mda = card?.mdas.find((item) => item.slot === mdaSlot);
+  if (!cardProfile || !mda?.equippedType ||
+      mda.equippedType !== mda.provisionedType ||
+      !cardProfile.mdas.includes(mda.equippedType as never)) return [];
+  const mdaProfile = mdaByType(mda.equippedType);
+  if (!mdaProfile) return [];
+  let firstPort = 1;
+  for (const group of mdaProfile.ports) {
+    const afterGroup = firstPort + group.count;
+    if (physicalPort >= firstPort && physicalPort < afterGroup)
+      return group.speeds_mbps;
+    firstPort = afterGroup;
+  }
+  return [];
+}
+
+export function physicalPortLinkIdentity(
+  router: RouterProjectV4 | DhcpServerProjectV5,
+  portId: string): string | undefined {
+  // The forwarding core assigns physical interface identities from the stable
+  // generated inventory ordinal, not from a user-visible port-name hash. Keep
+  // this portable projection beside equippedRouterPorts so the DHCP editor,
+  // project validator and C++ owner all use the same inventory ordering.
+  const ordinal = equippedRouterPorts(router).findIndex(
+    (port) => port.id === portId);
+  if (ordinal < 0 || portId === "management") return undefined;
+  // Bit 63 is the versioned physical-interface namespace documented by
+  // interface_identity.hpp. Decimal text preserves all 64 bits across JSON
+  // and JavaScript without passing the value through an unsafe Number.
+  return ((1n << 63n) | BigInt(ordinal)).toString();
+}
+
+export function dhcpv4RelayedScopeIdentity(serverInstance: number,
+  poolId: number): string {
+  // This is the portable mirror of lab::dhcpv4_allocation_scope_id. Relayed
+  // client networks are protocol scopes, not physical server interfaces.
+  // Keeping bit 62 disjoint from the physical bit 63 prevents a remote subnet
+  // from masquerading as the cable on which the server received the relay.
+  return ((1n << 62n) |
+    (BigInt(serverInstance >>> 0) << 32n) |
+    (BigInt(poolId >>> 0) & 0xffffffffn)).toString();
 }
 
 function emptyHardware(profile: typeof PROFILE_CATALOG.profiles[number]): RouterProjectV4["hardware"] {
@@ -913,7 +1192,7 @@ export function createRouterProjectV4(id: NodeId, profileId: DeviceProfileId,
   // operation therefore has no partially constructed project node to clean up.
   assert(identifierPattern.test(id), "Router ID is invalid");
   const profile = profileById(profileId);
-  assert(profile, "Router profile is not supported");
+  assert(profile?.role === "router", "Router profile is not supported");
   const router: RouterProjectV4 = {
     id, kind: "router", profileId, release: LAB_RELEASE, systemName,
     hardware: emptyHardware(profile),
@@ -925,6 +1204,36 @@ export function createRouterProjectV4(id: NodeId, profileId: DeviceProfileId,
   // remain at zero ports until the user provisions and equips hardware.
   router.running.ports = equippedRouterPorts(router);
   return router;
+}
+
+export function createDhcpServerProjectV5(id: NodeId,
+  profileId: DeviceProfileId = "generic-dhcp-server-8",
+  name = id.toUpperCase()): DhcpServerProjectV5 {
+  assert(identifierPattern.test(id), "DHCP server ID is invalid");
+  const profile = profileById(profileId);
+  assert(profile?.role === "dhcp-server",
+    "Dedicated DHCP server profile is not supported");
+  const server: DhcpServerProjectV5 = {
+    id, kind: "dhcp-server", profileId, release: LAB_RELEASE, name,
+    hardware: emptyHardware(profile),
+    running: {
+      systemName: name,
+      maximumEcmpPaths: 1,
+      ports: [],
+      interfaces: [],
+      staticRoutes: [],
+      ipv6StaticRoutes: [],
+      policyOptions: { prefixLists: [], statements: [] },
+      ospf: { instances: [] }
+    },
+    dhcpv4Servers: [],
+    dhcpv6Servers: []
+  };
+  server.running.ports = equippedRouterPorts({
+    id, kind: "router", profileId, release: LAB_RELEASE,
+    systemName: name, hardware: server.hardware, running: server.running
+  });
+  return server;
 }
 
 export function createSwitchProjectV5(id: NodeId, profileId: SwitchProfileId,
@@ -952,7 +1261,8 @@ export function createEmptyProjectV4(now = new Date()): LabProjectV4 {
     `lab-${now.getTime().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   return {
     format: "router-simulator-project", version: LAB_PROJECT_VERSION,
-    projectId: random, name: "Untitled lab", routers: [], hosts: [],
+    projectId: random, name: "Untitled lab", routers: [], dhcpServers: [],
+    hosts: [],
     switches: [], links: [],
     annotations: [], notes: "",
     layout: { nodes: {}, sidebarWidth: 194, inspectorWidth: 324,
@@ -971,7 +1281,7 @@ export function createAnnotationV4(id: string, x: number,
     border: false };
 }
 
-function validateHardware(router: RouterProjectV4,
+function validateHardware(router: RouterProjectV4 | DhcpServerProjectV5,
   profile: typeof PROFILE_CATALOG.profiles[number]): void {
   // Slot arrays are canonical and dense. A sparse or reordered array could
   // otherwise map configuration for one slot onto another during C++ import.
@@ -1028,8 +1338,17 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
     "Project ID is invalid");
   assert(typeof project.name === "string" && encoder.encode(project.name).length <= 128,
     "Project name is invalid");
-  assert(Array.isArray(project.routers) && project.routers.length <= PROFILE_CATALOG.limits.routers,
+  assert(Array.isArray(project.routers) &&
+    project.routers.length <= PROFILE_CATALOG.limits.sr_routers,
     "Project exceeds the router limit");
+  assert(Array.isArray(project.dhcpServers) &&
+    project.dhcpServers.length <= PROFILE_CATALOG.limits.dhcp_servers,
+    "Project exceeds the dedicated DHCP server limit");
+  // Both roles share the bounded packet-engine registry. Validate the combined
+  // envelope before replay so an otherwise valid document cannot leave a
+  // partially constructed runtime when the last device is admitted.
+  assert(project.routers.length + project.dhcpServers.length <=
+    PROFILE_CATALOG.limits.routers, "Project exceeds the network device limit");
   assert(Array.isArray(project.hosts) && project.hosts.length <= PROFILE_CATALOG.limits.hosts,
     "Project exceeds the host limit");
   assert(Array.isArray(project.switches) &&
@@ -1042,23 +1361,31 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
   assert(typeof project.updatedAt === "string" && Number.isFinite(Date.parse(project.updatedAt)),
     "Project update time is invalid");
 
-  const nodes = new Map<NodeId, "router" | "host" | "switch">();
+  const nodes = new Map<NodeId,
+    "router" | "dhcp-server" | "host" | "switch">();
   // Address uniqueness spans router interfaces and hosts. Separate local
   // validators would miss conflicts between those two node classes.
   const macs = new Set<string>();
   const addresses = new Set<number>();
   const ipv6Addresses = new Set<bigint>();
-  for (const router of project.routers) {
+  const routingNodes = [...project.routers, ...project.dhcpServers];
+  for (const router of routingNodes) {
     // Stable node IDs are registered before links are examined, but only after
     // the complete router record passes profile and configuration validation.
-    assert(router?.kind === "router" && identifierPattern.test(router.id) && !nodes.has(router.id),
-      "Router identity is invalid or duplicated");
+    assert((router?.kind === "router" || router?.kind === "dhcp-server") &&
+      identifierPattern.test(router.id) && !nodes.has(router.id),
+      "Routed node identity is invalid or duplicated");
     const profile = profileById(router.profileId);
-    assert(profile && router.release === LAB_RELEASE, `${router.id} profile or release is not supported`);
-    assert(typeof router.systemName === "string" && encoder.encode(router.systemName).length <= 64,
+    assert(profile && profile.role === router.kind &&
+      router.release === LAB_RELEASE,
+      `${router.id} profile or release is not supported`);
+    const deviceName = router.kind === "router" ? router.systemName : router.name;
+    assert(typeof deviceName === "string" &&
+      encoder.encode(deviceName).length <= 64,
       `${router.id} system name is invalid`);
     validateHardware(router, profile);
-    assert(router.running?.systemName === router.systemName && Array.isArray(router.running.ports) &&
+    assert(router.running?.systemName === deviceName &&
+      Array.isArray(router.running.ports) &&
       Array.isArray(router.running.interfaces) && Array.isArray(router.running.staticRoutes) &&
       Array.isArray(router.running.ipv6StaticRoutes) &&
       Array.isArray(router.running.policyOptions?.prefixLists) &&
@@ -1394,7 +1721,34 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
         }
       }
     }
-    nodes.set(router.id, "router");
+    if (router.kind === "dhcp-server") {
+      // A dedicated server is a multihomed host. It may install connected and
+      // configured return routes, but it never owns router protocol or route
+      // policy state and cannot enable multipath transit forwarding.
+      assert(router.running.systemName === router.name &&
+        router.running.maximumEcmpPaths === 1 &&
+        router.running.policyOptions.prefixLists.length === 0 &&
+        router.running.policyOptions.statements.length === 0 &&
+        router.running.ospf.instances.length === 0,
+      `${router.id} contains router-only configuration`);
+      const names4 = new Set<string>();
+      for (const server of router.dhcpv4Servers) {
+        assert(identifierPattern.test(server.name) && !names4.has(server.name),
+          `${router.id} DHCPv4 server name is invalid or duplicated`);
+        names4.add(server.name);
+        validateDhcpv4(`${router.id} ${server.name}`,
+          { client: null, server: server.configuration });
+      }
+      const names6 = new Set<string>();
+      for (const server of router.dhcpv6Servers) {
+        assert(identifierPattern.test(server.name) && !names6.has(server.name),
+          `${router.id} DHCPv6 server name is invalid or duplicated`);
+        names6.add(server.name);
+        validateDhcpv6(`${router.id} ${server.name}`,
+          { client: null, server: server.configuration });
+      }
+    }
+    nodes.set(router.id, router.kind);
   }
 
   for (const host of project.hosts) {
@@ -1429,16 +1783,22 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
       (!host.eth0.ipv6.autoconfiguration ||
         host.eth0.mtu >= PROFILE_CATALOG.ethernet.minimum_host_ipv6_mtu),
       `${host.id} Ethernet configuration is invalid`);
+    validateDhcpv4(host.id, host.eth0.dhcpv4);
     validateDhcpv6(host.id, host.eth0.ipv6.dhcpv6);
     validateDns(host.id, host.eth0.dns);
     const mask = address.length === 0 ? 0 : (0xffffffff << (32 - address.length)) >>> 0;
     // The gateway must share the configured prefix and cannot equal the host.
     // Reachability beyond that link remains a packet-path result.
-    assert(address.address !== gateway && (address.address & mask) === (gateway & mask) &&
-      !macs.has(host.eth0.mac.toLowerCase()) && !addresses.has(address.address),
+    const dynamicIpv4 = host.eth0.dhcpv4.client !== null &&
+      address.address === 0 && address.length === 0 && gateway === 0;
+    assert((dynamicIpv4 ||
+      (address.address !== gateway &&
+       (address.address & mask) === (gateway & mask))) &&
+      !macs.has(host.eth0.mac.toLowerCase()) &&
+      (dynamicIpv4 || !addresses.has(address.address)),
       `${host.id} address, gateway or MAC conflicts with the laboratory`);
     macs.add(host.eth0.mac.toLowerCase());
-    addresses.add(address.address);
+    if (!dynamicIpv4) addresses.add(address.address);
     nodes.set(host.id, "host");
   }
 
@@ -1498,8 +1858,8 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
       // equipped hardware leaves carrier down but does not delete the cable.
       const kind = nodes.get(endpoint.nodeId);
       assert(kind, `${link.id} contains a dangling endpoint`);
-      const router = kind === "router" ?
-        project.routers.find((item) => item.id === endpoint.nodeId) : undefined;
+      const router = kind === "router" || kind === "dhcp-server" ?
+        routingNodes.find((item) => item.id === endpoint.nodeId) : undefined;
       const ethernetSwitch = kind === "switch" ?
         project.switches.find((item) => item.id === endpoint.nodeId) : undefined;
       assert(kind === "host" ? endpoint.portId === "eth0" :
