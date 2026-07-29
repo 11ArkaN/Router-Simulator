@@ -448,6 +448,18 @@ void lab_runtime_tests() {
     throw std::runtime_error(
         std::string{"explicit workflow changed the operational root: "} +
         std::string{contextual_entry});
+  require(
+      runtime.command(message(lab_runtime_protocol::session_complete,
+                              {"context-console",
+                               "configure router inter", "tab"})) ==
+          "configure router interface",
+      "runtime completion exposed or required the default Base router key");
+  require(
+      contextual_command("configure router interface \"absolute-default\"")
+              .find("(ex)[/configure router \"Base\" interface "
+                    "\"absolute-default\"]") != std::string_view::npos,
+      "runtime absolute router navigation required the default Base key");
+  contextual_command("exit all");
   // The router list key defaults to Base in MD-CLI. Drive the shorthand used
   // on physical SR OS rather than hiding a broken default behind the canonical
   // full path. The prompt must still expose the resolved datastore identity.

@@ -55,6 +55,17 @@ parse_interface_address(std::string_view address,
 // path semantics as the fully tested terminal engine.
 [[nodiscard]] std::string resolve_session_input(const CliSession &session,
                                                 std::string_view input);
+
+// Applies MD-CLI default list keys to an already absolute command line without
+// resolving it against the session's present working context. The helper is
+// read-only and is used by schema-driven completion before token matching.
+[[nodiscard]] std::string
+apply_md_command_defaults(const CliSession &session, std::string_view input);
+
+// Removes only the internally supplied Base key from a completed absolute
+// command before the text is returned to the operator's editable line.
+[[nodiscard]] std::string
+hide_md_default_router_key(std::string_view input);
 // Stores a validated classic present-working-context after the runtime facade
 // has successfully applied a command that both creates and enters a list
 // instance. This narrow session-only operation cannot mutate configuration.

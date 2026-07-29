@@ -976,13 +976,20 @@ std::string apply_md_default_router_key(const CliSession &session,
   if (!std::string_view{value}.starts_with(descendant_prefix))
     return value;
   const auto remainder = std::string_view{value}.substr(prefix.size() + 1U);
-  if (remainder.empty() || remainder.starts_with('"') ||
-      remainder == "Base" || remainder.starts_with("Base "))
+  if (remainder.starts_with('"') || remainder == "Base" ||
+      remainder.starts_with("Base "))
     return value;
-  auto canonical = std::string{prefix} + " \"Base\" " +
-                   std::string{remainder};
+  // A separator after `router` asks for a child of the default Base router,
+  // not for the router key itself. Preserve that separator so Tab, Space and
+  // question-mark completion inspect the first child token. This case cannot
+  // be decided by complete-command parsing because the operator has not typed
+  // that child yet.
+  auto canonical = std::string{prefix} + " \"Base\" ";
+  canonical.append(remainder);
+  if (remainder.empty())
+    return canonical;
   if (parse_command(session.engine, session.md_workflow, canonical) ||
-      navigable_command_prefix(session, canonical))
+      command_prefix(session, canonical))
     return canonical;
   return value;
 }
@@ -1327,6 +1334,34 @@ std::string resolve_session_input(const CliSession &session,
   // fixed-size, NUL-terminated path invariant owned by CliSession. This
   // wrapper exposes only the resulting value and cannot leak path storage.
   return effective_input(session, input);
+}
+
+std::string apply_md_command_defaults(const CliSession &session,
+                                      std::string_view input) {
+  // Completion sometimes evaluates an absolute root command while the saved
+  // PWC points elsewhere. Expose default expansion independently of contextual
+  // path resolution so callers never fabricate `configure configure ...`.
+  // The returned string owns its storage and cannot expose session buffers.
+  return apply_md_default_router_key(session, std::string{input});
+}
+
+std::string hide_md_default_router_key(std::string_view input) {
+  // Base remains part of the canonical datastore path, but it is not part of
+  // operator-entered MD syntax when the default is used. Completion must not
+  // copy the internally inserted key back into the editable terminal line.
+  constexpr std::string_view configure_token{"configure"};
+  constexpr std::string_view router_token{"router"};
+  constexpr std::string_view base_token{"\"Base\""};
+  const auto visible_prefix =
+      std::string{configure_token} + ' ' + std::string{router_token};
+  const auto canonical_prefix =
+      visible_prefix + ' ' + std::string{base_token};
+  if (!input.starts_with(canonical_prefix))
+    return std::string{input};
+  const auto suffix = input.substr(canonical_prefix.size());
+  if (!suffix.empty() && suffix.front() != ' ')
+    return std::string{input};
+  return visible_prefix + std::string{suffix};
 }
 
 bool enter_classic_context(CliSession &session,
@@ -1814,14 +1849,18 @@ std::string complete_cli(const DeviceState &state, const CliSession &session,
   const auto effective = cli_detail::effective_input(session, input);
   const auto completed =
       cli_detail::complete_command(state, session, effective, trigger);
-  if (completed.empty() ||
-      cli_detail::session_path(session, session.engine).empty() ||
-      completed.find('\n') != std::string::npos)
+  if (completed.empty())
     return completed;
+  const auto visible =
+      session.engine == CliEngine::md
+          ? cli_detail::hide_md_default_router_key(completed)
+          : completed;
+  if (cli_detail::session_path(session, session.engine).empty() ||
+      visible.find('\n') != std::string::npos)
+    return visible;
   const auto prefix =
       std::string{cli_detail::session_path(session, session.engine)} + ' ';
-  return completed.starts_with(prefix) ? completed.substr(prefix.size())
-                                       : completed;
+  return visible.starts_with(prefix) ? visible.substr(prefix.size()) : visible;
 }
 
 std::string cli_prompt(const DeviceState &state, const CliSession &session) {

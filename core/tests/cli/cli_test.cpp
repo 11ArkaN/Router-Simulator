@@ -144,6 +144,20 @@ void cli_tests() {
   router::CliSession ospf_context_session;
   router::execute_cli(ospf_context_state, ospf_context_session,
                       "edit-config read-only", no_ping);
+  // The Base router key is a defaulted MD-CLI list key, not text an operator
+  // must enter. Exercise the complete absolute navigation form before testing
+  // relative traversal so a parser regression cannot be hidden by first
+  // entering the canonical `router "Base"` context.
+  require(
+      contains(router::execute_cli(ospf_context_state, ospf_context_session,
+                                   "configure router interface "
+                                   "\"implicit-base\"",
+                                   no_ping),
+               "(ro)[/configure router \"Base\" interface "
+               "\"implicit-base\"]"),
+      "MD absolute router path required the defaulted Base key");
+  router::execute_cli(ospf_context_state, ospf_context_session, "exit all",
+                      no_ping);
   require(contains(router::execute_cli(ospf_context_state,
                                        ospf_context_session, "configure",
                                        no_ping),
@@ -524,6 +538,23 @@ void cli_tests() {
   // Completion has engine-specific trigger semantics. MD Space completes only
   // keywords, classic Space may list keys, and Tab completes live model data.
   router::CliSession completion_session;
+  router::execute_cli(classic_state, completion_session,
+                      "edit-config read-only", no_ping);
+  const auto default_router_help = router::complete_cli(
+      classic_state, completion_session, "configure router ",
+      router::CliCompletionTrigger::question);
+  require(contains(default_router_help, "interface") &&
+              !contains(default_router_help, "\"Base\""),
+          "MD help exposed the default Base key instead of router children");
+  const auto default_router_completion = router::complete_cli(
+      classic_state, completion_session, "configure router inter",
+      router::CliCompletionTrigger::tab);
+  if (default_router_completion != "configure router interface")
+    throw std::runtime_error(
+        "MD completion required or exposed the default Base key: " +
+        default_router_completion);
+  router::execute_cli(classic_state, completion_session, "quit-config",
+                      no_ping);
   require(router::complete_cli(classic_state, completion_session, "sho",
                                router::CliCompletionTrigger::space) == "show",
           "Space did not complete a unique keyword");

@@ -22884,7 +22884,17 @@ std::string LabRuntime::complete_session(std::string_view session_id,
                spec.tokens[0].kind == cli_schema::TokenKind::literal &&
                spec.tokens[0].display.starts_with(first);
       });
-  if (!root_command) {
+  const bool md_root_default =
+      root_command && terminal->cli.engine == CliEngine::md;
+  if (md_root_default) {
+    // Root completion cannot use contextual resolution because the current
+    // PWC may itself be below /configure. It still needs MD default list keys
+    // before matching the canonical generated schema. The key is hidden again
+    // before a unique completion replaces the operator's editable line.
+    effective_storage =
+        cli_detail::apply_md_command_defaults(terminal->cli, input);
+    input = effective_storage;
+  } else if (!root_command) {
     // Completion is evaluated against the canonical root grammar, but xterm
     // edits a line relative to the current CLI context. Remember the implicit
     // path separately so a unique result can be translated back to exactly
@@ -23334,6 +23344,8 @@ std::string LabRuntime::complete_session(std::string_view session_id,
     // to that path. Root commands and display lists are never rewritten, and
     // an unexpected result remains intact instead of deleting a coincidental
     // prefix from a parameter value.
+    if (md_root_default)
+      return cli_detail::hide_md_default_router_key(result);
     return !context_prefix.empty() && result.starts_with(context_prefix)
                ? result.substr(context_prefix.size())
                : result;

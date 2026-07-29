@@ -1485,6 +1485,20 @@ records:
     tests: [core/tests/cli/cli_test.cpp]
     status: implemented
     notes: Both terminal engines change the shared system name, enforce the documented 1 to 64 character bound and use the result in router-owned prompts and operational output.
+  - id: nokia.sros.26_7.md_cli.base_router_default
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html
+    section: configure router
+    rfc_refs: []
+    yang_path: /configure/router[router-name='Base']
+    last_verified_at: 2026-07-29
+    implementation: [core/src/cli/cli.cpp, core/src/cli/cli_parser.cpp, core/src/runtime/lab_runtime.cpp]
+    tests: [core/tests/cli/cli_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
+    status: implemented
+    notes: The MD-CLI router-name list key defaults to Base. Execution, help and completion resolve the omitted key against the generated release grammar, while prompts and internal datastore paths retain the canonical Base identity.
   - id: nokia.sros.26_7.router_interface.configuration
     kind: cli-behavior
     release: 26.7.R1
@@ -1494,11 +1508,11 @@ records:
     section: Configuring the router interface
     rfc_refs: [RFC1812]
     yang_path: /configure/router/interface
-    last_verified_at: 2026-07-15
-    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/src/cli/cli.cpp, core/src/cli/cli_md.cpp, core/src/cli/cli_classic.cpp, core/src/runtime/lab_runtime.cpp, core/src/runtime/runtime_supervisor.cpp, core/src/runtime/runtime_supervisor_interfaces.cpp, core/src/runtime/runtime_supervisor_services.cpp, core/src/runtime/runtime_supervisor_routing.cpp, core/src/runtime/runtime_supervisor_hosts.cpp, core/src/runtime/runtime_supervisor_checkpoint.cpp, packages/contracts/src/lab-project-v4.ts, apps/web/src/ui/WorkspaceViews.tsx]
+    last_verified_at: 2026-07-29
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/src/cli/cli.cpp, core/src/cli/cli_parser.cpp, core/src/cli/cli_md.cpp, core/src/cli/cli_classic.cpp, core/src/runtime/lab_runtime.cpp, core/src/runtime/runtime_supervisor.cpp, core/src/runtime/runtime_supervisor_interfaces.cpp, core/src/runtime/runtime_supervisor_services.cpp, core/src/runtime/runtime_supervisor_routing.cpp, core/src/runtime/runtime_supervisor_hosts.cpp, core/src/runtime/runtime_supervisor_checkpoint.cpp, packages/contracts/src/lab-project-v4.ts, apps/web/src/ui/WorkspaceViews.tsx]
     tests: [core/tests/cli/cli_test.cpp, core/tests/runtime/runtime_supervisor_test.cpp, core/tests/runtime/lab_runtime_test.cpp, packages/contracts/tests/project-v4.test.ts, apps/web/src/ui/WorkspaceViews.test.tsx]
     status: implemented
-    notes: The profile-owned Base router interface names support independent physical-port association, primary IPv4 prefix, administrative state, connected-route selection and atomic project persistence in both terminal engines. The MD router list key defaults to Base when omitted. Primary IPv4 configuration accepts the documented compound address and prefix-length leaf without creating a context from the address value. Entering a new keyed interface context in an MD candidate creates the list instance with release defaults, while physical association and addressing remain independent leaves. Classic no address, no port and no interface plus the corresponding MD delete leaves and list deletion withdraw exactly the selected configuration. Leaf removal preserves IPv6, ND, RA and MLD children on the shared routed interface and reprograms forwarding through the ordinary transactional diff.
+    notes: The profile-owned Base router interface names support independent physical-port association, primary IPv4 prefix, administrative state, connected-route selection and atomic project persistence in both terminal engines. The MD router list key defaults to Base when omitted from execution, help and completion, while the canonical datastore path retains the resolved key. Primary IPv4 configuration accepts the documented compound address and prefix-length leaf without creating a context from the address value. Entering a new keyed interface context in an MD candidate creates the list instance with release defaults, while physical association and addressing remain independent leaves. Classic no address, no port and no interface plus the corresponding MD delete leaves and list deletion withdraw exactly the selected configuration. Leaf removal preserves IPv6, ND, RA and MLD children on the shared routed interface and reprograms forwarding through the ordinary transactional diff.
   - id: nokia.sros.26_7.system_interface.ipv4
     kind: cli-behavior
     release: 26.7.R1

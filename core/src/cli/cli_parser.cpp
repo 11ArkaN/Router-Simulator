@@ -1206,6 +1206,28 @@ bool navigable_command_prefix(const CliSession &session,
       });
 }
 
+bool command_prefix(const CliSession &session, std::string_view input) {
+  // This is deliberately broader than context navigation. A line ending at
+  // `... interface` is a valid grammar prefix even though its next token is
+  // the required interface key and therefore it cannot yet name a container.
+  // Keeping the match against generated rows prevents arbitrary text from
+  // being mistaken for a child of a defaulted list key.
+  const auto line = tokenize(trim_view(input), false);
+  if (!line.valid || !line.count)
+    return false;
+  return std::any_of(
+      cli_schema::commands.begin(), cli_schema::commands.end(),
+      [&](const cli_schema::CommandSpec &spec) {
+        if (!available(spec, session) || spec.token_count <= line.count)
+          return false;
+        for (std::size_t index = 0; index < line.count; ++index) {
+          if (!accepts(spec.tokens[index], line.tokens[index]))
+            return false;
+        }
+        return true;
+      });
+}
+
 std::string canonical_command_prefix(const CliSession &session,
                                      std::string_view input) {
   // Every descendant row of one real context has the same canonical tokens up

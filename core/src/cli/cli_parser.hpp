@@ -63,6 +63,13 @@ argument(const ParsedCommand &command, cli_schema::TokenKind kind) noexcept;
 [[nodiscard]] bool navigable_command_prefix(const CliSession &session,
                                             std::string_view input);
 
+// Returns true when every supplied token matches the beginning of at least one
+// longer generated command. Unlike navigable_command_prefix, the next token
+// may be a parameter because this predicate also serves incomplete-command
+// help and default-key expansion.
+[[nodiscard]] bool command_prefix(const CliSession &session,
+                                  std::string_view input);
+
 // Expands abbreviated literals in a validated context prefix while preserving
 // user-supplied list keys. Empty means the input is not one unambiguous path.
 [[nodiscard]] std::string canonical_command_prefix(const CliSession &session,
