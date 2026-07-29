@@ -106,92 +106,6 @@ constexpr std::uint8_t engine_mask(CliEngine engine) noexcept {
   return engine == CliEngine::md ? 1U : 2U;
 }
 
-bool configuration_only(cli_schema::CommandId id) noexcept {
-  // These rows are legal only after MD-CLI has entered a candidate workflow.
-  // Classic uses the same configuration rows with immediate semantics and is
-  // therefore unaffected by this MD-specific availability filter.
-  using enum cli_schema::CommandId;
-  // The generator preserves schema order. IPsec and TLS rows each form one
-  // explicitly reviewed contiguous MD block, allowing availability to stay
-  // data-sized instead of duplicating every release command in another switch.
-  if (id >= md_ike_transform_dh19 && id <= md_delete_tunnel_template)
-    return true;
-  if (id >= md_tls_use_pqc_only && id <= md_delete_tls_server_secondary)
-    return true;
-  switch (id) {
-  case configure_card_type:
-  case configure_mda_type:
-  case configure_system_name:
-  case md_card_enable:
-  case md_card_disable:
-  case md_mda_enable:
-  case md_mda_disable:
-  case md_port_enable:
-  case md_port_disable:
-  case md_port_description:
-  case md_port_mtu:
-  case md_interface_enable:
-  case md_interface_disable:
-  case md_interface_port:
-  case md_interface_ipv4_primary:
-  case md_delete_interface_port:
-  case md_delete_interface_ipv4_primary:
-  case md_interface_ipv6_address:
-  case md_interface_ipv6_address_dad:
-  case md_interface_ipv6_address_primary_preference:
-  case md_delete_interface_ipv6_address:
-  case md_delete_interface_ipv6_address_dad:
-  case md_delete_interface_ipv6_address_primary_preference:
-  case md_static_route:
-  case md_indirect_static_route:
-  case md_static_route_ipv6:
-  case md_indirect_static_route_ipv6:
-  case md_ecmp:
-  case md_delete_ecmp:
-  case md_delete_static_next_hop:
-  case md_delete_static_indirect:
-  case md_delete_static_route_ipv6:
-  case md_delete_static_next_hop_ipv6:
-  case md_delete_static_indirect_ipv6:
-  case md_ra_enable:
-  case md_ra_disable:
-  case md_ra_current_hop_limit:
-  case md_ra_managed_configuration:
-  case md_ra_other_configuration:
-  case md_ra_max_interval:
-  case md_ra_min_interval:
-  case md_ra_mtu:
-  case md_ra_preference:
-  case md_ra_reachable_time:
-  case md_ra_retransmit_time:
-  case md_ra_router_lifetime:
-  case md_ra_prefix_autonomous:
-  case md_ra_prefix_on_link:
-  case md_ra_prefix_preferred_lifetime:
-  case md_ra_prefix_valid_lifetime:
-  case md_ra_rdnss_server:
-  case md_ra_rdnss_lifetime:
-  case md_ra_include_dns:
-  case md_ra_global_rdnss_server:
-  case md_ra_global_rdnss_lifetime:
-  case md_delete_ra_include_dns:
-  case md_delete_ra_rdnss_server:
-  case md_delete_ra_rdnss_lifetime:
-  case md_delete_ra_global_rdnss_server:
-  case md_delete_ra_global_rdnss_lifetime:
-  case md_delete_card:
-  case md_delete_mda:
-  case md_delete_port_description:
-  case md_delete_static_route:
-  case md_compare:
-  case md_commit:
-  case md_discard:
-    return true;
-  default:
-    return false;
-  }
-}
-
 bool available(const cli_schema::CommandSpec &spec,
                const CliSession &session) noexcept {
   if (!(spec.engine_mask & engine_mask(session.engine)))
@@ -199,7 +113,7 @@ bool available(const cli_schema::CommandSpec &spec,
   if (session.engine != CliEngine::md)
     return true;
   const bool configuring = session.md_workflow != MdCliWorkflow::operational;
-  if (configuration_only(spec.id))
+  if (spec.configuration_command)
     return configuring;
   const auto is_implicit_entry = [](cli_schema::CommandId id) {
     using enum cli_schema::CommandId;
@@ -1007,6 +921,58 @@ std::optional<ParsedCommand> parse_command(CliEngine engine,
   return match && !ambiguous_at_best_specificity
              ? std::optional{ParsedCommand{match, line.tokens, line.count}}
              : std::nullopt;
+}
+
+std::optional<CommandFailure>
+diagnose_command_failure(CliEngine engine, MdCliWorkflow workflow,
+                         std::string_view input) {
+  CliSession session;
+  session.engine = engine;
+  session.md_workflow = workflow;
+  const auto line = tokenize(trim_view(input), false);
+  if (!line.valid || !line.count)
+    return std::nullopt;
+
+  // Diagnostics consume the same generated rows and token validators as
+  // execution. A second hand-written command tree would inevitably drift and
+  // could again blame the first relative keyword for a bad value much deeper
+  // in the current context.
+  std::size_t deepest{};
+  bool parameter_expected{};
+  bool candidate_reached{};
+  for (const auto &spec : cli_schema::commands) {
+    if (!available(spec, session))
+      continue;
+    std::size_t matched{};
+    const auto comparable =
+        std::min<std::size_t>(line.count, spec.token_count);
+    while (matched < comparable &&
+           accepts(spec.tokens[matched], line.tokens[matched]))
+      ++matched;
+
+    if (!candidate_reached || matched > deepest) {
+      deepest = matched;
+      candidate_reached = true;
+      parameter_expected =
+          matched < spec.token_count &&
+          spec.tokens[matched].kind != cli_schema::TokenKind::literal;
+    } else if (matched == deepest && matched < spec.token_count) {
+      // A typed branch at the deepest matching context means the operator
+      // supplied an invalid value. Literal siblings cannot turn that scalar
+      // into an unknown top-level command.
+      parameter_expected =
+          parameter_expected ||
+          spec.tokens[matched].kind != cli_schema::TokenKind::literal;
+    }
+  }
+  if (!candidate_reached)
+    return std::nullopt;
+
+  const auto failing = std::min<std::size_t>(deepest, line.count - 1U);
+  return CommandFailure{
+      parameter_expected ? CommandFailureKind::invalid_element_value
+                         : CommandFailureKind::unknown_element,
+      std::string{line.tokens[failing]}};
 }
 
 std::optional<std::string_view> argument(const ParsedCommand &command,

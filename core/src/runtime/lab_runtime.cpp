@@ -2586,189 +2586,13 @@ bool dhcpv6_interface_server_command(cli_schema::CommandId id) noexcept {
 }
 
 bool md_configuration_command(cli_schema::CommandId id) noexcept {
-  using enum cli_schema::CommandId;
-  if (bof_cli::is_md_command(id))
-    return true;
-  if (dhcpv4_cli::is_md_command(id))
-    return true;
-  if (dhcpv6_cli::is_md_command(id))
-    return true;
-  if (ospf_cli::is_md_command(id))
-    return true;
-  if (ipsec_cli::is_md_command(id))
-    return true;
-  if (tls_cli::is_md_command(id))
-    return true;
-  if (ies_cli::is_md_command(id))
-    return true;
-  switch (id) {
-  case configure_card_type:
-  case configure_mda_type:
-  case configure_system_name:
-  case md_card_enable:
-  case md_card_disable:
-  case md_mda_enable:
-  case md_mda_disable:
-  case md_port_enable:
-  case md_port_disable:
-  case md_port_description:
-  case md_port_mtu:
-  case md_interface_enable:
-  case md_interface_disable:
-  case md_delete_interface:
-  case md_interface_port:
-  case md_interface_ipv4_primary:
-  case md_interface_ipv4_arp_timeout:
-  case md_interface_ipv4_arp_retry_timer:
-  case md_interface_dhcpv6_local_server:
-  case md_delete_interface_dhcpv6_local_server:
-  case md_dhcpv4_relay_enable:
-  case md_dhcpv4_relay_disable:
-  case md_dhcpv4_relay_description:
-  case md_dhcpv4_relay_gi_address:
-  case md_dhcpv4_relay_server:
-  case md_dhcpv4_relay_source_auto:
-  case md_dhcpv4_relay_source_gi:
-  case md_dhcpv4_relay_trusted:
-  case md_dhcpv4_relay_plain_bootp:
-  case md_dhcpv4_relay_release_gi:
-  case md_dhcpv4_option82_keep:
-  case md_dhcpv4_option82_replace:
-  case md_dhcpv4_option82_drop:
-  case md_dhcpv4_circuit_none:
-  case md_dhcpv4_circuit_ascii_tuple:
-  case md_dhcpv4_circuit_if_name:
-  case md_dhcpv4_circuit_ifindex:
-  case md_dhcpv4_circuit_port_id:
-  case md_dhcpv4_remote_none:
-  case md_dhcpv4_remote_mac:
-  case md_dhcpv4_remote_ascii:
-  case md_delete_dhcpv4_relay:
-  case md_delete_dhcpv4_relay_description:
-  case md_delete_dhcpv4_relay_gi_address:
-  case md_delete_dhcpv4_relay_server:
-  case md_delete_dhcpv4_relay_source:
-  case md_delete_dhcpv4_relay_trusted:
-  case md_delete_dhcpv4_relay_plain_bootp:
-  case md_delete_dhcpv4_relay_release_gi:
-  case md_delete_dhcpv4_option82_action:
-  case md_delete_dhcpv4_circuit:
-  case md_delete_dhcpv4_remote:
-  case md_delete_interface_port:
-  case md_delete_interface_ipv4_primary:
-  case md_delete_interface_ipv4_arp_timeout:
-  case md_delete_interface_ipv4_arp_retry_timer:
-  case md_interface_ipv6_address:
-  case md_interface_ipv6_address_dad:
-  case md_interface_ipv6_address_eui64:
-  case md_interface_ipv6_address_primary_preference:
-  case md_interface_ipv6_address_tag:
-  case md_delete_interface_ipv6_address:
-  case md_delete_interface_ipv6_address_dad:
-  case md_delete_interface_ipv6_address_eui64:
-  case md_delete_interface_ipv6_address_primary_preference:
-  case md_delete_interface_ipv6_address_tag:
-  case md_static_ipv6_neighbor:
-  case md_delete_static_ipv6_neighbor:
-  case md_static_ipv4_neighbor:
-  case md_delete_static_ipv4_neighbor:
-  case md_ipv6_learn_unsolicited:
-  case md_delete_ipv6_learn_unsolicited:
-  case md_ipv6_nd_reachable_time:
-  case md_ipv6_nd_stale_time:
-  case md_interface_ipv6_nd_reachable_time:
-  case md_interface_ipv6_nd_stale_time:
-  case md_ipv6_proactive_refresh:
-  case md_ipv6_neighbor_limit_max_entries:
-  case md_ipv6_neighbor_limit_log_only:
-  case md_ipv6_neighbor_limit_threshold:
-  case md_delete_ipv6_nd_reachable_time:
-  case md_delete_ipv6_nd_stale_time:
-  case md_delete_interface_ipv6_nd_reachable_time:
-  case md_delete_interface_ipv6_nd_stale_time:
-  case md_delete_ipv6_proactive_refresh:
-  case md_delete_ipv6_neighbor_limit:
-  case md_delete_ipv6_neighbor_limit_max_entries:
-  case md_delete_ipv6_neighbor_limit_log_only:
-  case md_delete_ipv6_neighbor_limit_threshold:
-  case md_icmp6_redirect_admin_enable:
-  case md_icmp6_redirect_admin_disable:
-  case md_icmp6_redirect_number:
-  case md_icmp6_redirect_seconds:
-  case md_delete_icmp6_redirect_admin:
-  case md_delete_icmp6_redirect_number:
-  case md_delete_icmp6_redirect_seconds:
-  case md_icmp_redirect_admin_enable:
-  case md_icmp_redirect_admin_disable:
-  case md_icmp_redirect_number:
-  case md_icmp_redirect_seconds:
-  case md_delete_icmp_redirect_admin:
-  case md_delete_icmp_redirect_number:
-  case md_delete_icmp_redirect_seconds:
-  case md_static_route:
-  case md_indirect_static_route:
-  case md_static_route_ipv6:
-  case md_indirect_static_route_ipv6:
-  case md_ecmp:
-  case md_delete_ecmp:
-  case md_delete_card:
-  case md_delete_mda:
-  case md_delete_port_description:
-  case md_delete_static_route:
-  case md_delete_static_next_hop:
-  case md_delete_static_indirect:
-  case md_delete_static_route_ipv6:
-  case md_delete_static_next_hop_ipv6:
-  case md_delete_static_indirect_ipv6:
-  case md_ra_enable:
-  case md_ra_disable:
-  case md_ra_current_hop_limit:
-  case md_ra_managed_configuration:
-  case md_ra_other_configuration:
-  case md_ra_max_interval:
-  case md_ra_min_interval:
-  case md_ra_mtu:
-  case md_ra_preference:
-  case md_ra_reachable_time:
-  case md_ra_retransmit_time:
-  case md_ra_router_lifetime:
-  case md_ra_prefix_autonomous:
-  case md_ra_prefix_on_link:
-  case md_ra_prefix_preferred_lifetime:
-  case md_ra_prefix_valid_lifetime:
-  case md_ra_rdnss_server:
-  case md_ra_rdnss_lifetime:
-  case md_ra_include_dns:
-  case md_ra_global_rdnss_server:
-  case md_ra_global_rdnss_lifetime:
-  case md_delete_ra_admin_state:
-  case md_delete_ra_current_hop_limit:
-  case md_delete_ra_managed_configuration:
-  case md_delete_ra_other_configuration:
-  case md_delete_ra_max_interval:
-  case md_delete_ra_min_interval:
-  case md_delete_ra_mtu:
-  case md_delete_ra_preference:
-  case md_delete_ra_reachable_time:
-  case md_delete_ra_retransmit_time:
-  case md_delete_ra_router_lifetime:
-  case md_delete_ra_prefix:
-  case md_delete_ra_prefix_autonomous:
-  case md_delete_ra_prefix_on_link:
-  case md_delete_ra_prefix_preferred_lifetime:
-  case md_delete_ra_prefix_valid_lifetime:
-  case md_delete_ra_include_dns:
-  case md_delete_ra_rdnss_server:
-  case md_delete_ra_rdnss_lifetime:
-  case md_delete_ra_global_rdnss_server:
-  case md_delete_ra_global_rdnss_lifetime:
-  case md_compare:
-  case md_commit:
-  case md_discard:
-    return true;
-  default:
-    return md_mld_configuration_command(id);
-  }
+  // The generated command catalog owns workflow classification. This facade
+  // must not duplicate a feature list because a missing ID would let that
+  // command bypass candidate arbitration in the browser runtime.
+  const auto spec =
+      std::find_if(cli_schema::commands.begin(), cli_schema::commands.end(),
+                   [id](const auto &entry) { return entry.id == id; });
+  return spec != cli_schema::commands.end() && spec->configuration_command;
 }
 
 bool terminal_global_command(cli_schema::CommandId id) noexcept {
@@ -5805,11 +5629,12 @@ template <typename Interface>
 void md_base_interface_info(std::ostringstream &out,
                             const Interface &interface, std::size_t depth,
                             bool detail) {
-  // The Base interface is one typed list entry. Render its complete configured
-  // generation here so both terminal engines observe exactly the same
-  // candidate or running value. Presence flags decide whether plain `info`
-  // includes a defaulted leaf. `info detail` adds the effective release
-  // default without changing the datastore.
+  // The Base interface is one typed list entry. Render the canonical MD
+  // hierarchy here. Classic reads the same candidate or running values through
+  // its own grammar-specific renderer below, because flattening this tree
+  // would expose MD-only containers in classic CLI. Presence flags decide
+  // whether plain `info` includes a defaulted leaf. `info detail` adds the
+  // effective release default without changing the datastore.
   const auto leaf = [&](std::string_view name, const auto &value) {
     md_indent(out, depth);
     out << name << ' ' << value << '\n';
@@ -5825,8 +5650,9 @@ void md_base_interface_info(std::ostringstream &out,
       md_indent(out, depth + 1U);
       out << "primary {\n";
       md_indent(out, depth + 2U);
-      out << "address " << ipv4_text(interface.address)
-          << " prefix-length "
+      out << "address " << ipv4_text(interface.address) << '\n';
+      md_indent(out, depth + 2U);
+      out << "prefix-length "
           << static_cast<unsigned>(interface.prefix_length) << '\n';
       md_indent(out, depth + 1U);
       out << "}\n";
@@ -6514,9 +6340,13 @@ md_base_configuration_info(const Configuration &configuration,
   // braces and default-origin behavior at every navigation depth.
   if (tokens->size() == 6U && (*tokens)[5] == "ipv4") {
     if (interface->address_configured)
-      out << "primary {\n    address " << ipv4_text(interface->address)
-          << " prefix-length "
-          << static_cast<unsigned>(interface->prefix_length) << "\n}\n";
+      out << "primary {\n"
+             "    address "
+          << ipv4_text(interface->address)
+          << "\n"
+             "    prefix-length "
+          << static_cast<unsigned>(interface->prefix_length)
+          << "\n}\n";
     if (interface->dhcpv4_relay) {
       out << "dhcp {\n";
       md_dhcpv4_relay_info(out, *interface->dhcpv4_relay, 1U, detail);
@@ -6526,13 +6356,14 @@ md_base_configuration_info(const Configuration &configuration,
   }
   if (tokens->size() == 7U && (*tokens)[5] == "ipv4" &&
       (*tokens)[6] == "primary") {
-    // `primary` is a real container, while its address and prefix-length form
-    // one compound leaf command. Contextual info therefore reports the leaf
-    // without wrapping it in another `primary` block.
+    // Address and prefix-length are sibling leaves below `primary` in the
+    // 26.7 MD model. The edit remains atomic because prefix-length is
+    // mandatory, but `info` must not invent an address list container.
     if (interface->address_configured)
       out << "address " << ipv4_text(interface->address)
-          << " prefix-length "
-          << static_cast<unsigned>(interface->prefix_length) << '\n';
+          << "\nprefix-length "
+          << static_cast<unsigned>(interface->prefix_length)
+          << '\n';
     return out.str();
   }
   if (tokens->size() == 7U && (*tokens)[5] == "ipv4" &&
@@ -6935,11 +6766,275 @@ std::string classic_info_text(std::string_view md_text,
   return out.str();
 }
 
+template <typename Interface>
+std::string classic_base_interface_info(const Interface &interface,
+                                        bool detail) {
+  // Classic Base-interface configuration is not an alternative indentation
+  // of the MD tree. In particular, classic owns the flat `address A/P`
+  // command and has no `ipv4 primary` containers. Render the classic grammar
+  // directly from the shared typed datastore so future MD hierarchy changes
+  // cannot leak YANG node names into classic output.
+  std::ostringstream out;
+  out << "----------------------------------------------\n"
+      << (interface.admin_enabled ? "no shutdown\n" : "shutdown\n");
+  if (interface.port_configured)
+    out << "port " << interface.port_id << '\n';
+  if (interface.address_configured)
+    out << "address " << ipv4_text(interface.address) << '/'
+        << static_cast<unsigned>(interface.prefix_length) << '\n';
+  if (detail || interface.arp_timeout_configured)
+    out << "arp-timeout " << interface.arp_timeout_seconds << '\n';
+  if (detail || interface.arp_retry_configured)
+    out << "arp-retry-timer " << interface.arp_retry_deciseconds << '\n';
+  for (const auto &neighbor : interface.static_ipv4_neighbors)
+    out << "static-arp " << ipv4_text(neighbor.address) << ' '
+        << mac_text(neighbor.mac) << '\n';
+  if (detail || interface.icmp_redirect_admin_configured ||
+      interface.icmp_redirect_maximum_configured ||
+      interface.icmp_redirect_interval_configured) {
+    out << "icmp\n    ";
+    if (!interface.icmp_redirects_enabled) {
+      out << "no redirects\n";
+    } else {
+      out << "redirects";
+      if (interface.icmp_redirect_maximum_configured ||
+          interface.icmp_redirect_interval_configured || detail)
+        out << ' ' << interface.icmp_redirect_maximum << ' '
+            << interface.icmp_redirect_interval_seconds;
+      out << '\n';
+    }
+    out << "exit\n";
+  }
+
+  if (interface.dhcpv4_relay) {
+    const auto &relay = *interface.dhcpv4_relay;
+    out << "dhcp\n"
+        << "    " << (relay.admin_enabled ? "no shutdown" : "shutdown")
+        << '\n';
+    if (!relay.description.empty())
+      out << "    description \"" << relay.description << "\"\n";
+    if (relay.gateway_address_configured)
+      out << "    gi-address "
+          << ipv4_text(ipv4_value(relay.gateway_address)) << '\n';
+    for (const auto &server : relay.servers)
+      out << "    server " << ipv4_text(ipv4_value(server.address)) << '\n';
+    if (detail ||
+        relay.source_address != dhcpv4::RelaySourceAddress::automatic)
+      out << "    src-ip-addr "
+          << (relay.source_address == dhcpv4::RelaySourceAddress::automatic
+                  ? "auto"
+                  : "gi-address")
+          << '\n';
+    if (detail || relay.trusted_ingress)
+      out << "    " << (relay.trusted_ingress ? "trusted" : "no trusted")
+          << '\n';
+    if (detail || relay.relay_plain_bootp)
+      out << "    "
+          << (relay.relay_plain_bootp ? "relay-plain-bootp"
+                                     : "no relay-plain-bootp")
+          << '\n';
+    if (detail || relay.release_include_gateway_address)
+      out << "    "
+          << (relay.release_include_gateway_address
+                  ? "release-include-gi-address"
+                  : "no release-include-gi-address")
+          << '\n';
+    if (detail ||
+        relay.existing_information !=
+            dhcpv4::ExistingRelayInformationAction::keep ||
+        relay.circuit_id_source != dhcpv4::CircuitIdSource::ascii_tuple ||
+        relay.remote_id_source != dhcpv4::RemoteIdSource::none) {
+      out << "    option\n"
+          << "        action "
+          << dhcpv4_relay_action_text(relay.existing_information) << '\n'
+          << "        circuit-id "
+          << dhcpv4_circuit_id_text(relay.circuit_id_source) << '\n';
+      if (relay.remote_id_source == dhcpv4::RemoteIdSource::ascii_string)
+        out << "        remote-id ascii-string \""
+            << relay.remote_id_ascii << "\"\n";
+      else
+        out << "        remote-id "
+            << (relay.remote_id_source ==
+                        dhcpv4::RemoteIdSource::client_mac
+                    ? "mac"
+                    : "none")
+            << '\n';
+      out << "    exit\n";
+    }
+    out << "exit\n";
+  }
+
+  const bool ipv6_present =
+      !interface.ipv6_addresses.empty() ||
+      !interface.dhcpv6_local_server.empty() ||
+      !interface.static_ipv6_neighbors.empty() ||
+      interface.ipv6_unsolicited_learning_configured ||
+      interface.ipv6_nd_reachable_time_configured ||
+      interface.ipv6_nd_stale_time_configured ||
+      interface.ipv6_proactive_refresh_configured ||
+      interface.ipv6_neighbor_limit_configured ||
+      interface.icmp6_redirect_admin_configured ||
+      interface.icmp6_redirect_maximum_configured ||
+      interface.icmp6_redirect_interval_configured;
+  if (ipv6_present || detail) {
+    out << "ipv6\n";
+    for (const auto &address : interface.ipv6_addresses) {
+      out << "    address " << ip::format_ipv6(address.address) << '/'
+          << static_cast<unsigned>(address.prefix_length);
+      if (address.eui64)
+        out << " eui-64";
+      if (!address.duplicate_address_detection)
+        out << " dad-disable";
+      if (address.primary_preference)
+        out << " primary-preference " << address.primary_preference;
+      if (address.tag_configured)
+        out << " tag " << address.tag;
+      out << '\n';
+    }
+    if (!interface.dhcpv6_local_server.empty())
+      out << "    local-dhcp-server \"" << interface.dhcpv6_local_server
+          << "\"\n";
+    if (detail || interface.ipv6_unsolicited_learning_configured)
+      out << "    nd-learn-unsolicited "
+          << unsolicited_learning_text(interface.ipv6_unsolicited_learning)
+          << '\n';
+    if (detail || interface.ipv6_nd_reachable_time_configured)
+      out << "    reachable-time "
+          << interface.ipv6_nd_reachable_time_seconds << '\n';
+    if (detail || interface.ipv6_nd_stale_time_configured)
+      out << "    stale-time " << interface.ipv6_nd_stale_time_seconds
+          << '\n';
+    if (detail || interface.ipv6_proactive_refresh_configured)
+      out << "    nd-proactive-refresh "
+          << unsolicited_learning_text(interface.ipv6_proactive_refresh)
+          << '\n';
+    if (interface.ipv6_neighbor_limit_configured) {
+      out << "    neighbor-limit " << interface.ipv6_neighbor_limit;
+      if (interface.ipv6_neighbor_limit_log_only)
+        out << " log-only";
+      if (interface.ipv6_neighbor_limit_threshold_configured)
+        out << " threshold "
+            << static_cast<unsigned>(
+                   interface.ipv6_neighbor_limit_threshold_percent);
+      out << '\n';
+    }
+    for (const auto &neighbor : interface.static_ipv6_neighbors)
+      out << "    neighbor " << ip::format_ipv6(neighbor.address) << ' '
+          << mac_text(neighbor.mac) << '\n';
+    if (detail || interface.icmp6_redirect_admin_configured ||
+        interface.icmp6_redirect_maximum_configured ||
+        interface.icmp6_redirect_interval_configured) {
+      out << "    icmp6\n        ";
+      if (!interface.icmp6_redirects_enabled) {
+        out << "no redirects\n";
+      } else {
+        out << "redirects";
+        if (interface.icmp6_redirect_maximum_configured ||
+            interface.icmp6_redirect_interval_configured || detail)
+          out << ' ' << interface.icmp6_redirect_maximum << ' '
+              << interface.icmp6_redirect_interval_seconds;
+        out << '\n';
+      }
+      out << "    exit\n";
+    }
+    out << "exit\n";
+  }
+  out << "----------------------------------------------\n";
+  return out.str();
+}
+
+std::optional<std::string>
+classic_scoped_info(std::string_view full_info,
+                    std::span<const std::string> context) {
+  // The native classic interface renderer above produces one authoritative
+  // tree in classic syntax. A saved classic PWC must expose only the children
+  // of that node. Select the requested block by its four-space indentation
+  // rather than regenerating leaves at every depth, which previously allowed
+  // root and nested `info` to drift apart.
+  if (context.empty())
+    return std::string{full_info};
+  std::vector<std::string> lines;
+  std::istringstream input(std::string{full_info});
+  for (std::string line; std::getline(input, line);)
+    lines.push_back(std::move(line));
+  if (lines.size() < 2U)
+    return std::nullopt;
+
+  std::size_t begin = 1U;
+  std::size_t end = lines.size() - 1U;
+  std::size_t expected_depth{};
+  for (const auto &node : context) {
+    const auto expected_indent = expected_depth * 4U;
+    auto heading = end;
+    for (auto index = begin; index < end; ++index) {
+      const auto first = lines[index].find_first_not_of(' ');
+      if (first == expected_indent &&
+          lines[index].substr(first) == node) {
+        heading = index;
+        break;
+      }
+    }
+    if (heading == end)
+      return std::nullopt;
+    begin = heading + 1U;
+    auto block_end = begin;
+    for (; block_end < end; ++block_end) {
+      const auto first = lines[block_end].find_first_not_of(' ');
+      if (first == std::string::npos)
+        continue;
+      if (first <= expected_indent)
+        break;
+    }
+    end = block_end;
+    ++expected_depth;
+  }
+
+  std::ostringstream out;
+  out << "----------------------------------------------\n";
+  const auto remove = expected_depth * 4U;
+  for (auto index = begin; index < end; ++index) {
+    if (lines[index].size() >= remove)
+      out << lines[index].substr(remove) << '\n';
+  }
+  out << "----------------------------------------------\n";
+  return out.str();
+}
+
 template <typename Configuration>
 std::optional<std::string>
 classic_configuration_info(const Configuration &configuration,
                            const lab::RouterHardwareInventory *hardware,
                            std::string_view classic_path, bool detail) {
+  const auto classic_tokens = md_context_tokens(classic_path);
+  if (classic_tokens && classic_tokens->size() >= 4U &&
+      (*classic_tokens)[0] == "configure" &&
+      (*classic_tokens)[1] == "router" &&
+      (*classic_tokens)[2] == "interface") {
+    const auto interface = std::find_if(
+        configuration.interfaces.begin(), configuration.interfaces.end(),
+        [&](const auto &candidate) {
+          return candidate.name == (*classic_tokens)[3];
+        });
+    if (interface == configuration.interfaces.end())
+      return std::string{
+          "----------------------------------------------\n"
+          "----------------------------------------------\n"};
+    // A classic operator can enter the DHCP context before creating its
+    // presence configuration. `info detail` must still expose that context's
+    // effective release defaults. Build a read-only view with the default
+    // relay object instead of mutating running configuration merely because
+    // it was inspected.
+    auto info_interface = *interface;
+    if (detail && classic_tokens->size() > 4U &&
+        (*classic_tokens)[4] == "dhcp" &&
+        !info_interface.dhcpv4_relay)
+      info_interface.dhcpv4_relay.emplace();
+    const auto full = classic_base_interface_info(info_interface, detail);
+    return classic_scoped_info(
+        full, std::span<const std::string>{classic_tokens->data(),
+                                           classic_tokens->size()}
+                  .subspan(4U));
+  }
   const auto md_path = md_path_from_classic(classic_path);
   if (!md_path)
     return std::nullopt;

@@ -480,9 +480,23 @@ const cliRows = cliSchema.commands.map((command) => {
     (command.engines.includes("classic") ? 2 : 0);
   const modifierMask = command.modifier === "detail" ? 1 : 0;
   const entersContext = command.enters_context === true;
+  // Workflow ownership is generated from the documented root operator. This
+  // prevents every new feature family from requiring a second manual C++ list
+  // merely to keep its leaves out of MD operational mode.
+  const implicitEntry = [
+    "md_configure_exclusive",
+    "md_configure_global",
+    "md_configure_private",
+    "md_configure_read_only",
+  ].includes(command.id);
+  const configurationCommand =
+    command.engines.includes("md") &&
+    ((!implicitEntry &&
+      ["configure", "delete", "bof"].includes(command.tokens[0])) ||
+      ["md_compare", "md_commit", "md_discard"].includes(command.id));
   const tokens = command.tokens.map(cppToken);
   while (tokens.length < maximumTokens) tokens.push("{}");
-  return `    {CommandId::${command.id}, ${mask}, ${modifierMask}, ${entersContext}, ${command.tokens.length}, {{${tokens.join(", ")}}}, "${command.source_id}"}`;
+  return `    {CommandId::${command.id}, ${mask}, ${modifierMask}, ${entersContext}, ${configurationCommand}, ${command.tokens.length}, {{${tokens.join(", ")}}}, "${command.source_id}"}`;
 }).join(",\n");
 
 const cliHeader = `#pragma once
@@ -523,6 +537,7 @@ struct CommandSpec {
   std::uint8_t engine_mask{};
   std::uint8_t output_modifier_mask{};
   bool enters_context{};
+  bool configuration_command{};
   std::uint8_t token_count{};
   std::array<TokenSpec, maximum_tokens> tokens{};
   std::string_view source_id{};

@@ -1027,31 +1027,13 @@ std::string effective_input(const CliSession &session, std::string_view input) {
 }
 
 bool md_configuration_command(cli_schema::CommandId id) noexcept {
-  using enum cli_schema::CommandId;
-  if (router::lab::bof_cli::is_md_command(id))
-    return true;
-  switch (id) {
-  case configure_card_type:
-  case configure_mda_type:
-  case configure_system_name:
-  case md_port_enable:
-  case md_port_disable:
-  case md_port_description:
-  case md_port_mtu:
-  case md_interface_enable:
-  case md_interface_disable:
-  case md_static_route:
-  case md_delete_card:
-  case md_delete_mda:
-  case md_delete_port_description:
-  case md_delete_static_route:
-  case md_compare:
-  case md_commit:
-  case md_discard:
-    return true;
-  default:
-    return false;
-  }
+  // Workflow ownership belongs to the generated grammar. Looking up its bit
+  // keeps all feature families under identical candidate rules without a
+  // hand-maintained switch that can omit newly introduced commands.
+  const auto spec =
+      std::find_if(cli_schema::commands.begin(), cli_schema::commands.end(),
+                   [id](const auto &entry) { return entry.id == id; });
+  return spec != cli_schema::commands.end() && spec->configuration_command;
 }
 
 bool global_action(cli_schema::CommandId id, CliEngine engine) noexcept {
@@ -1533,6 +1515,20 @@ std::string execute_cli(DeviceState &state, CliSession &session,
   // configuration-looking path while the session remained operational. Every
   // following leaf was then rejected and `show router interface` remained
   // empty, which was both misleading and unlike SR OS.
+  if (!command && session.engine == CliEngine::md &&
+      session.md_workflow == MdCliWorkflow::operational) {
+    auto configuring_session = session;
+    configuring_session.md_workflow = MdCliWorkflow::explicit_exclusive;
+    if (cli_detail::navigable_command_prefix(configuring_session, effective)) {
+      // Candidate-only rows are intentionally absent from operational
+      // completion. Rechecking the same generated prefix with configuration
+      // availability distinguishes a forbidden model node from an unknown
+      // operational command without restoring a hand-written feature list.
+      output = "MINOR: CLI #2069: Operation not allowed - currently in "
+               "operational mode";
+      return output + cli_detail::prompt(state.configuration.running, session);
+    }
+  }
   if (!command &&
       cli_detail::navigable_command_prefix(session, effective)) {
     const auto canonical =
@@ -1602,9 +1598,25 @@ std::string execute_cli(DeviceState &state, CliSession &session,
       // already matched keyword is unknown.
       output = help;
     } else {
-      const auto separator = input.find(' ');
-      output = "MINOR: MGMT_CORE #2201: Unknown element - '" +
-               input.substr(0, separator) + "'";
+      const auto failure = cli_detail::diagnose_command_failure(
+          session.engine, session.md_workflow, effective);
+      if (failure &&
+          failure->kind ==
+              cli_detail::CommandFailureKind::invalid_element_value) {
+        // SR OS distinguishes a known leaf carrying an invalid typed value
+        // from an unknown element. The old first-token fallback incorrectly
+        // blamed `ipv4` when the address token contained MD-invalid CIDR text.
+        output = "MINOR: MGMT_CORE #2301: Invalid element value";
+      } else {
+        // Unknown-element wording reports the operator-owned token, not an
+        // implicit Base path inserted while resolving a relative command.
+        const auto separator = input.find(' ');
+        const auto bad = failure && !failure->token.empty()
+                             ? failure->token
+                             : input.substr(0, separator);
+        output = "MINOR: MGMT_CORE #2201: Unknown element - '" +
+                 bad + "'";
+      }
     }
   } else if (command->spec->id == cli_schema::CommandId::navigate_back ||
              command->spec->id == cli_schema::CommandId::navigate_back_levels ||

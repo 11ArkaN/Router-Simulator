@@ -497,6 +497,34 @@ void lab_runtime_tests() {
                   .find("MINOR:") == std::string_view::npos,
           "runtime could not configure an IPv4 prefix below an implicitly "
           "selected Base router interface");
+  const auto primary_info = contextual_command("info");
+  require(primary_info.find("address 192.0.2.1\n") !=
+                  std::string_view::npos &&
+              primary_info.find("prefix-length 30\n") !=
+                  std::string_view::npos &&
+              primary_info.find("address 192.0.2.1 {") ==
+                  std::string_view::npos,
+          "MD info did not render address and prefix-length as primary "
+          "siblings");
+  require(contextual_command("back 2")
+                  .find("interface \"absolute-default\"]") !=
+              std::string_view::npos,
+          "MD address diagnostic fixture could not return to the interface");
+  const auto unknown_ipv4_child = contextual_command("ipv4 not-a-child");
+  require(
+      unknown_ipv4_child.find("Unknown element - 'not-a-child'") !=
+              std::string_view::npos &&
+          unknown_ipv4_child.find("Unknown element - 'ipv4'") ==
+              std::string_view::npos,
+      "MD diagnostic blamed a valid relative parent instead of its bad child");
+  const auto md_cidr_address =
+      contextual_command("ipv4 primary address 192.0.2.2/30");
+  require(
+      md_cidr_address.find("MGMT_CORE #2301: Invalid element value") !=
+              std::string_view::npos &&
+          md_cidr_address.find("Unknown element - 'ipv4'") ==
+              std::string_view::npos,
+      "MD rejected classic CIDR syntax at the wrong grammar position");
   contextual_command("discard");
   contextual_command("exit all");
   // The router list key defaults to Base in MD-CLI. Drive the shorthand used
@@ -1082,6 +1110,63 @@ void lab_runtime_tests() {
           "valid classic router-interface edit failed: " +
           std::string{command} + " output=" + std::string{result});
   }
+  contextual_command("configure router interface classic-loop");
+  const auto classic_interface_info = contextual_command("info");
+  require(classic_interface_info.find("address 198.51.100.1/32") !=
+                  std::string_view::npos &&
+              classic_interface_info.find("\nipv4\n") ==
+                  std::string_view::npos &&
+              classic_interface_info.find("\nprimary\n") ==
+                  std::string_view::npos &&
+              classic_interface_info.find("prefix-length") ==
+                  std::string_view::npos &&
+              classic_interface_info.find('{') == std::string_view::npos,
+          "classic Base-interface info leaked the MD address hierarchy");
+  contextual_command("exit all");
+  for (const auto command :
+       {"configure router interface classic-loop ipv6 address "
+        "2001:db8:ffff::1/64",
+        "configure router interface classic-loop dhcp no shutdown",
+        "configure router interface classic-loop dhcp trusted",
+        "configure router interface classic-loop dhcp option action "
+        "replace"}) {
+    const auto result = contextual_command(command);
+    if (result.find("Error:") != std::string_view::npos ||
+        result.find("MINOR:") != std::string_view::npos)
+      throw std::runtime_error(
+          "classic nested interface fixture failed: " +
+          std::string{command} + " output=" + std::string{result});
+  }
+  contextual_command("exit all");
+  contextual_command("configure router interface classic-loop ipv6");
+  const auto classic_ipv6_info = contextual_command("info");
+  require(classic_ipv6_info.find("address 2001:db8:ffff::1/64") !=
+                  std::string_view::npos &&
+              classic_ipv6_info.find("prefix-length") ==
+                  std::string_view::npos &&
+              classic_ipv6_info.find("\nipv6\n") ==
+                  std::string_view::npos,
+          "classic IPv6 interface context leaked MD syntax or its parent");
+  contextual_command("exit all");
+  contextual_command("configure router interface classic-loop dhcp");
+  const auto classic_dhcp_info = contextual_command("info");
+  require(classic_dhcp_info.find("no shutdown") != std::string_view::npos &&
+              classic_dhcp_info.find("trusted") != std::string_view::npos &&
+              classic_dhcp_info.find("admin-state") ==
+                  std::string_view::npos &&
+              classic_dhcp_info.find("trusted true") ==
+                  std::string_view::npos,
+          "classic DHCP interface context leaked MD leaf spelling");
+  contextual_command("exit all");
+  contextual_command(
+      "configure router interface classic-loop dhcp option");
+  const auto classic_option_info = contextual_command("info");
+  require(classic_option_info.find("action replace") !=
+                  std::string_view::npos &&
+              classic_option_info.find("\noption\n") ==
+                  std::string_view::npos,
+          "classic Option 82 context did not scope info to its children");
+  contextual_command("exit all");
   const auto classic_interface_show =
       contextual_command("show router interface");
   require(classic_interface_show.find("classic-loop") !=

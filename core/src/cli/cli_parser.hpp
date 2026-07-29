@@ -30,6 +30,19 @@ struct ParsedCommand {
   }
 };
 
+enum class CommandFailureKind : std::uint8_t {
+  unknown_element,
+  invalid_element_value,
+};
+
+struct CommandFailure {
+  // The failing text is copied because canonical relative expansion is a
+  // temporary string. Diagnostics are terminal cold-path work, so one bounded
+  // token copy is preferable to a dangling view or a wrong raw-token guess.
+  CommandFailureKind kind{CommandFailureKind::unknown_element};
+  std::string token;
+};
+
 [[nodiscard]] std::optional<ParsedCommand>
 parse_command(const DeviceState &state, const CliSession &session,
               std::string_view input);
@@ -40,6 +53,14 @@ parse_command(const DeviceState &state, const CliSession &session,
 [[nodiscard]] std::optional<ParsedCommand>
 parse_command(CliEngine engine, MdCliWorkflow workflow,
               std::string_view input);
+
+// Classifies the first token that cannot continue any generated command row.
+// Preconditions: input is canonical and parsing has failed. The call is
+// read-only, allocates only the returned bounded token and may run on any CLI
+// shard.
+[[nodiscard]] std::optional<CommandFailure>
+diagnose_command_failure(CliEngine engine, MdCliWorkflow workflow,
+                         std::string_view input);
 
 [[nodiscard]] std::optional<std::string_view>
 argument(const ParsedCommand &command, cli_schema::TokenKind kind) noexcept;
