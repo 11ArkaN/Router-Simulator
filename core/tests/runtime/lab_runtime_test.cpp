@@ -459,6 +459,45 @@ void lab_runtime_tests() {
               .find("(ex)[/configure router \"Base\" interface "
                     "\"absolute-default\"]") != std::string_view::npos,
       "runtime absolute router navigation required the default Base key");
+  const auto interface_help = runtime.command(
+      message(lab_runtime_protocol::session_complete,
+              {"context-console", "", "question"}));
+  require(interface_help.find("ipv4") != std::string_view::npos &&
+              interface_help.find("admin-state") != std::string_view::npos &&
+              interface_help.find("show") == std::string_view::npos,
+          "empty MD help escaped the current router interface context");
+  require(contextual_command("ipv4")
+                  .find("interface \"absolute-default\" ipv4]") !=
+              std::string_view::npos,
+          "runtime could not enter IPv4 below an implicitly selected Base "
+          "router interface");
+  const auto ipv4_help = runtime.command(
+      message(lab_runtime_protocol::session_complete,
+              {"context-console", "", "question"}));
+  require(ipv4_help.find("primary") != std::string_view::npos &&
+              ipv4_help.find("neighbor-discovery") != std::string_view::npos &&
+              ipv4_help.find("configure") == std::string_view::npos,
+          "empty MD help escaped the current IPv4 context");
+  require(contextual_command("primary")
+                  .find("interface \"absolute-default\" ipv4 primary]") !=
+              std::string_view::npos,
+          "runtime could not enter the IPv4 primary context");
+  const auto primary_help = runtime.command(
+      message(lab_runtime_protocol::session_complete,
+              {"context-console", "", "question"}));
+  require(primary_help.find("address") != std::string_view::npos &&
+              primary_help.find("ipv4") == std::string_view::npos,
+          "empty MD help escaped the IPv4 primary context");
+  const auto prefix_help = runtime.command(
+      message(lab_runtime_protocol::session_complete,
+              {"context-console", "address 192.0.2.1 ", "question"}));
+  require(prefix_help.find("prefix-length") != std::string_view::npos,
+          "MD help did not expose prefix-length after the primary address");
+  require(contextual_command("address 192.0.2.1 prefix-length 30")
+                  .find("MINOR:") == std::string_view::npos,
+          "runtime could not configure an IPv4 prefix below an implicitly "
+          "selected Base router interface");
+  contextual_command("discard");
   contextual_command("exit all");
   // The router list key defaults to Base in MD-CLI. Drive the shorthand used
   // on physical SR OS rather than hiding a broken default behind the canonical

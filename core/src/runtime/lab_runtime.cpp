@@ -22877,13 +22877,19 @@ std::string LabRuntime::complete_session(std::string_view session_id,
   const auto first_separator = input.find_first_of(" \t");
   const auto first = input.substr(0, first_separator);
   const auto mask = terminal->cli.engine == CliEngine::classic ? 2U : 1U;
-  const bool root_command = std::any_of(
-      cli_schema::commands.begin(), cli_schema::commands.end(),
-      [&](const auto &spec) {
-        return (spec.engine_mask & mask) && spec.token_count &&
-               spec.tokens[0].kind == cli_schema::TokenKind::literal &&
-               spec.tokens[0].display.starts_with(first);
-      });
+  // An empty line followed by `?` asks for children of the current PWC. Every
+  // literal starts with an empty string, so treating that as a root keyword
+  // silently replaced interface-local help with the global command list.
+  // Require at least one operator-owned byte before checking root commands.
+  const bool root_command =
+      !first.empty() &&
+      std::any_of(cli_schema::commands.begin(), cli_schema::commands.end(),
+                  [&](const auto &spec) {
+                    return (spec.engine_mask & mask) && spec.token_count &&
+                           spec.tokens[0].kind ==
+                               cli_schema::TokenKind::literal &&
+                           spec.tokens[0].display.starts_with(first);
+                  });
   const bool md_root_default =
       root_command && terminal->cli.engine == CliEngine::md;
   if (md_root_default) {
