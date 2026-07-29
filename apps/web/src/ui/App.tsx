@@ -13,8 +13,8 @@ import { ANNOTATION_LIMITS, createAnnotationV4, createEmptyProjectV4,
   type TopologyAnnotationV4 } from "@router-simulator/contracts";
 import { MultiRouterRuntimeClient, type RouterTerminalState } from "../runtime/multi-router-client";
 import { waitForHostPing } from "../runtime/host-ping";
-import { materializeStableIidSecret,
-  secureRandomSecretHex } from "../runtime/secure-random";
+import { createUnconfiguredHost, materializeStableIidSecret } from
+  "../runtime/secure-random";
 import { createCheckpointManifestV4, downloadBinary,
   selectBinarySaveDestination,
   createProjectManifestV4, importNetsimV4, isProtectedNetsimV4,
@@ -308,11 +308,6 @@ export function App() {
   const [pendingRouterPosition, setPendingRouterPosition] = useState<
     { x: number; y: number; systemName: string; explicitPlacement: boolean }
     | undefined>();
-  const [pendingHost, setPendingHost] = useState<{
-    id: string; position: { x: number; y: number }; name: string; mac: string;
-    ipv4Configuration: "static" | "dhcp";
-    address: string; gateway: string; mtu: string; explicitPlacement: boolean;
-  }>();
   const [linkNodes, setLinkNodes] = useState<readonly [string, string]>();
   const [linkPorts, setLinkPorts] = useState<readonly [string, string]>(["", ""]);
   const [protectedFileAction, setProtectedFileAction] =
@@ -572,12 +567,29 @@ export function App() {
         ...project.hosts,
         ...project.switches].map((item) => item.id);
       const id = freeId("h", nodeIds);
-      // Addressing and MAC identity are network configuration, not canvas
-      // decoration. The host is therefore not created until the user supplies
-      // a complete interface record and project validation accepts it.
-      setPendingHost({ id, position: position ?? { x: 0, y: 0 },
-        explicitPlacement: Boolean(position), name: id.toUpperCase(), mac: "",
-        ipv4Configuration: "static", address: "", gateway: "", mtu: "" });
+      const host = createUnconfiguredHost(id, id.toUpperCase(),
+        new Set(project.hosts.map((item) => item.eth0.mac.toLowerCase())));
+      // Canvas placement creates a usable Ethernet endpoint immediately.
+      // Addressing remains an independent Inspector transaction, while the
+      // generated MAC and default MTU make the new physical port linkable.
+      const automaticNodes = automaticTopologyLayout(
+        [...project.routers.map((item) => item.id),
+          ...project.dhcpServers.map((item) => item.id),
+          ...project.switches.map((item) => item.id)],
+        [...project.hosts.map((item) => item.id), host.id]);
+      const next = { ...project, hosts: [...project.hosts, host], layout: {
+        ...project.layout, nodes: position
+          ? { ...project.layout.nodes, [host.id]: position }
+          : { ...project.layout.nodes, [host.id]: automaticNodes[host.id] } } };
+      void mutate(next, (client) => client.createConfiguredHost(host.id,
+        host.name, host.eth0.mac, host.eth0.address, host.eth0.gateway,
+        host.eth0.mtu, host.eth0.ipv6.interfaceId,
+        host.eth0.ipv6.autoconfiguration,
+        host.eth0.ipv6.interfaceIdentifierMode,
+        host.eth0.ipv6.stableIidSecret, host.eth0.ipv6.networkId,
+        host.eth0.transportSecretHex))
+        .then(() => setSelected(host.id))
+        .catch(() => undefined);
     } else {
       const profile = PROFILE_CATALOG.switch_profiles[0];
       if (!profile) return;
@@ -604,69 +616,6 @@ export function App() {
         .catch(() => undefined);
     }
   }, [mutate, project]);
-
-  const addHost = useCallback(() => {
-    if (!pendingHost) return;
-    const mtu = Number(pendingHost.mtu);
-    const dynamicIpv4 = pendingHost.ipv4Configuration === "dhcp";
-    const host: HostProjectV4 = { id: pendingHost.id, kind: "host",
-      name: pendingHost.name, eth0: { mac: pendingHost.mac,
-        // DHCP begins unnumbered. These sentinel values are part of the host
-        // client contract and never enter the uniqueness set for configured
-        // static addresses.
-        address: dynamicIpv4 ? "0.0.0.0/0" : pendingHost.address,
-        gateway: dynamicIpv4 ? "0.0.0.0" : pendingHost.gateway, mtu,
-        mode: "ethernet",
-        // The same audited Web Crypto adapter creates independent values for
-        // each owner. A transport secret is never reused as an RFC 7217 key.
-        transportSecretHex: secureRandomSecretHex(),
-        dhcpv4: { client: dynamicIpv4 ? {
-          clientIdentifierHex: "",
-          transactionSecretHex: secureRandomSecretHex(),
-          parameterRequestList: [1, 3, 6],
-          maximumMessageSize: 576,
-          broadcast: false
-        } : null, server: null },
-        dns: { resolver: null, authoritative: null },
-        ipv6: { autoconfiguration: true,
-          interfaceId: hostInterfaceId(pendingHost.id),
-          interfaceIdentifierMode: "modified-eui64",
-          stableIidSecret: null, networkId: "",
-          dhcpv6: { client: null, server: null } } } };
-    // Hosts obey the same ownership rule as routers: a drag owns its drop
-    // coordinate and a click receives only the generated coordinate for the
-    // new host. Existing coordinates are never rewritten as a side effect.
-    const automaticNodes = automaticTopologyLayout(
-      [...project.routers.map((item) => item.id),
-        ...project.dhcpServers.map((item) => item.id),
-        ...project.switches.map((item) => item.id)],
-      [...project.hosts.map((item) => item.id), host.id]);
-    const next = { ...project, hosts: [...project.hosts, host], layout: {
-      ...project.layout, nodes: pendingHost.explicitPlacement
-        ? { ...project.layout.nodes, [host.id]: pendingHost.position }
-        : { ...project.layout.nodes, [host.id]: automaticNodes[host.id] } } };
-    void mutate(next, async (client) => {
-      await client.createConfiguredHost(host.id,
-        host.name, host.eth0.mac, host.eth0.address, host.eth0.gateway,
-        host.eth0.mtu, host.eth0.ipv6.interfaceId,
-        host.eth0.ipv6.autoconfiguration,
-        host.eth0.ipv6.interfaceIdentifierMode,
-        host.eth0.ipv6.stableIidSecret, host.eth0.ipv6.networkId,
-        host.eth0.transportSecretHex);
-      try {
-        return await client.replaceHostDhcpv4(host.id, host.eth0.dhcpv4);
-      } catch (cause) {
-        // Creation is not published until the application owner accepts the
-        // client. If that second owner rejects, remove the isolated endpoint
-        // so a retry cannot collide with a hidden host or its stable identity.
-        await client.deleteHost(host.id);
-        throw cause;
-      }
-    }).then(() => {
-        setSelected(host.id); setPendingHost(undefined);
-      })
-      .catch(() => undefined);
-  }, [mutate, pendingHost, project]);
 
   const updateLayout = useCallback((id: string, position: { x: number; y: number }) => {
     if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
@@ -1386,7 +1335,6 @@ export function App() {
       setTopologyTool("select");
       setLinkNodes(undefined);
       setPendingRouterPosition(undefined);
-      setPendingHost(undefined);
       setConfirmDemoId(undefined);
       setProjectLoaded(true);
       setRuntimeError(undefined);
@@ -1467,20 +1415,6 @@ export function App() {
     {terminalOpen && activeSession && <TerminalPanel key={terminalGeneration} ready={Boolean(runtime && !runtimeError)} systemName={activeTerminalRouter?.systemName ?? "Router"} historyKey={`${project.projectId}:${activeTerminalSession?.routerId ?? "unknown"}:${activeSession}`} execute={execute} complete={complete} cancel={cancelTerminal} state={terminalState} restorePresentation={terminalPresentations[activeSession]} registerCheckpointProvider={registerTerminalCheckpointProvider} tabs={terminalTabs} activeTab={activeSession} selectTab={selectTerminalSession} newTab={() => { if (activeTerminalSession) createConsole(activeTerminalSession.routerId); }} closeTab={closeTerminalSession} height={project.layout.terminalHeight} onHeightChange={(value) => resizePanel("terminalHeight", value)} close={closeTerminal} />}
     {confirmDemo && <div className="modal-backdrop"><div className="lab-dialog"><header><strong>Replace current lab?</strong><button aria-label="Close dialog" disabled={Boolean(pendingDemoId)} onClick={() => setConfirmDemoId(undefined)}><X size={18} /></button></header><p className="dialog-copy">Launching {confirmDemo.title} will replace the active lab and close open console sessions.</p><div className="dialog-actions"><button disabled={Boolean(pendingDemoId)} onClick={() => setConfirmDemoId(undefined)}>Cancel</button><button className="primary" disabled={Boolean(pendingDemoId)} onClick={() => void launchDemo(confirmDemo.id)}>{pendingDemoId ? "Loading" : "Replace and launch"}</button></div></div></div>}
     {pendingRouterPosition && <div className="modal-backdrop"><div className="lab-dialog"><header><strong>Configure router</strong><button aria-label="Close dialog" onClick={() => setPendingRouterPosition(undefined)}><X size={18} /></button></header><label>System name<input value={pendingRouterPosition.systemName} maxLength={32} onChange={(event) => setPendingRouterPosition({ ...pendingRouterPosition, systemName: event.target.value })} /></label><div className="panel-kicker dialog-kicker">CHASSIS PROFILE</div>{PROFILE_CATALOG.profiles.filter((profile) => profile.role === "router").map((profile) => <button key={profile.id} className="primary" disabled={!pendingRouterPosition.systemName.trim()} onClick={() => addRouter(profile.id as DeviceProfileId)}>{profile.chassis}</button>)}</div></div>}
-    {pendingHost && <div className="modal-backdrop"><div className="lab-dialog"><header><strong>Configure host interface</strong><button aria-label="Close dialog" onClick={() => setPendingHost(undefined)}><X size={18} /></button></header>
-      <label>Name<input value={pendingHost.name} onChange={(event) => setPendingHost({ ...pendingHost, name: event.target.value })} /></label>
-      <label>MAC address<input placeholder="xx:xx:xx:xx:xx:xx" value={pendingHost.mac} onChange={(event) => setPendingHost({ ...pendingHost, mac: event.target.value })} /></label>
-      <label>IPv4 configuration<select value={pendingHost.ipv4Configuration}
-        onChange={(event) => setPendingHost({ ...pendingHost,
-          ipv4Configuration: event.target.value as "static" | "dhcp" })}>
-        <option value="static">static</option>
-        <option value="dhcp">DHCP</option></select></label>
-      {pendingHost.ipv4Configuration === "static" && <>
-        <label>IPv4 prefix<input placeholder="address/prefix-length" value={pendingHost.address} onChange={(event) => setPendingHost({ ...pendingHost, address: event.target.value })} /></label>
-        <label>Default gateway<input placeholder="IPv4 address" value={pendingHost.gateway} onChange={(event) => setPendingHost({ ...pendingHost, gateway: event.target.value })} /></label>
-      </>}
-      <label>Interface MTU<input inputMode="numeric" placeholder="bytes" value={pendingHost.mtu} onChange={(event) => setPendingHost({ ...pendingHost, mtu: event.target.value })} /></label>
-      <button className="primary" onClick={addHost}>Add host</button></div></div>}
     {linkNodes && <div className="modal-backdrop"><div className="lab-dialog"><header><strong>Connect physical ports</strong><button aria-label="Close dialog" onClick={() => { setLinkNodes(undefined); setTopologyTool("select"); }}><X size={18} /></button></header>{linkNodes.map((node, index) => <label key={node}>{node}<select value={linkPorts[index]} onChange={(event) => setLinkPorts(index === 0 ? [event.target.value, linkPorts[1]] : [linkPorts[0], event.target.value])}><option value="">Select a free port</option>{availablePorts(node).map((port) => <option key={port}>{port}</option>)}</select></label>)}<button className="primary" disabled={!linkPorts[0] || !linkPorts[1]} onClick={createLink}>Connect</button></div></div>}
     {protectedFileAction && <div className="modal-backdrop"><form className="lab-dialog" onSubmit={(event) => { event.preventDefault(); void runProtectedFileAction(); }}><header><strong>{protectedFileAction.kind === "import" ? "Unlock project" : "Protect project export"}</strong><button type="button" aria-label="Close dialog" disabled={passphraseBusy} onClick={() => setProtectedFileAction(undefined)}><X size={18} /></button></header><label>Passphrase<input type="password" autoComplete="new-password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} /></label>{protectedFileAction.kind !== "import" && <label>Confirm<input type="password" autoComplete="new-password" value={passphraseConfirmation} onChange={(event) => setPassphraseConfirmation(event.target.value)} /></label>}<button className="primary" type="submit" disabled={passphraseBusy || !passphrase || (protectedFileAction.kind !== "import" && passphrase !== passphraseConfirmation)}>{passphraseBusy ? "Working" : protectedFileAction.kind === "import" ? "Unlock and import" : "Encrypt and export"}</button></form></div>}
   </main>;

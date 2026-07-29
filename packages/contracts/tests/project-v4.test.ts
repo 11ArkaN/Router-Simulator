@@ -26,6 +26,16 @@ function host(id: string, octet: number): HostProjectV4 {
 }
 
 describe("multi-router project format", () => {
+  it("accepts a host whose IPv4 stack is not configured yet", () => {
+    const project = createEmptyProjectV4();
+    const endpoint = host("h1", 2);
+    endpoint.eth0.address = "0.0.0.0/0";
+    endpoint.eth0.gateway = "0.0.0.0";
+    project.hosts.push(endpoint);
+    project.layout.nodes.h1 = { x: 0, y: 0 };
+    expect(parseLabProjectV4(project).hosts[0].eth0.dhcpv4.client).toBeNull();
+  });
+
   it("ships the static IPv4 demo as current project intent", () => {
     const project = createStaticIpv4DemoLabV5(
       new Date("2026-07-26T00:00:00Z"));

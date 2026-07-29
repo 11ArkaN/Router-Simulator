@@ -1789,16 +1789,19 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
     const mask = address.length === 0 ? 0 : (0xffffffff << (32 - address.length)) >>> 0;
     // The gateway must share the configured prefix and cannot equal the host.
     // Reachability beyond that link remains a packet-path result.
-    const dynamicIpv4 = host.eth0.dhcpv4.client !== null &&
+    const unspecifiedIpv4 =
       address.address === 0 && address.length === 0 && gateway === 0;
-    assert((dynamicIpv4 ||
+    // A newly placed endpoint may intentionally own no IPv4 configuration.
+    // The same all-zero tuple is also the pre-lease state of a DHCP client;
+    // the presence of that client's configuration distinguishes the owners.
+    assert((unspecifiedIpv4 ||
       (address.address !== gateway &&
        (address.address & mask) === (gateway & mask))) &&
       !macs.has(host.eth0.mac.toLowerCase()) &&
-      (dynamicIpv4 || !addresses.has(address.address)),
+      (unspecifiedIpv4 || !addresses.has(address.address)),
       `${host.id} address, gateway or MAC conflicts with the laboratory`);
     macs.add(host.eth0.mac.toLowerCase());
-    if (!dynamicIpv4) addresses.add(address.address);
+    if (!unspecifiedIpv4) addresses.add(address.address);
     nodes.set(host.id, "host");
   }
 

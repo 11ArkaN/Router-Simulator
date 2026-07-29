@@ -249,12 +249,17 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
       <div className="inspector-title"><div><h2>{host.name}</h2><p>IP host</p></div><button aria-label="Close inspector" onClick={close}><X size={18} /></button></div>
       <div className="host-form">
         <label>Name<input value={editable.name} onChange={(event) => setHostDraft({ ...editable, name: event.target.value })} /></label>
-        <label>IPv4 configuration<select value={editable.eth0.dhcpv4.client ? "dhcp" : "static"} onChange={(event) => {
+        <label>IPv4 configuration<select value={
+          editable.eth0.dhcpv4.client ? "dhcp"
+            : editable.eth0.address === "0.0.0.0/0" &&
+              editable.eth0.gateway === "0.0.0.0"
+              ? "unconfigured" : "static"} onChange={(event) => {
           const dynamic = event.target.value === "dhcp";
+          const unconfigured = event.target.value === "unconfigured";
           setHostDraft({ ...editable, eth0: {
             ...editable.eth0,
-            address: dynamic ? "0.0.0.0/0" : "",
-            gateway: dynamic ? "0.0.0.0" : "",
+            address: dynamic || unconfigured ? "0.0.0.0/0" : "",
+            gateway: dynamic || unconfigured ? "0.0.0.0" : "",
             dhcpv4: { ...editable.eth0.dhcpv4, client: dynamic ? {
               clientIdentifierHex: "",
               transactionSecretHex: randomSecretHex(),
@@ -263,8 +268,11 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
               broadcast: false
             } : null }
           } });
-        }}><option value="static">static</option><option value="dhcp">DHCP</option></select></label>
-        {!editable.eth0.dhcpv4.client && <>
+        }}><option value="unconfigured">unconfigured</option>
+          <option value="static">static</option>
+          <option value="dhcp">DHCP</option></select></label>
+        {!editable.eth0.dhcpv4.client &&
+          editable.eth0.address !== "0.0.0.0/0" && <>
           <label>IPv4 prefix<input value={editable.eth0.address} onChange={(event) => setHostDraft({ ...editable, eth0: { ...editable.eth0, address: event.target.value } })} /></label>
           <label>Default gateway<input value={editable.eth0.gateway} onChange={(event) => setHostDraft({ ...editable, eth0: { ...editable.eth0, gateway: event.target.value } })} /></label>
         </>}

@@ -3,8 +3,10 @@
 // replacing Web Crypto with a fallback PRNG.
 
 import { describe, expect, it } from "vitest";
-import { createFourRouterReferenceLabV4 } from "@router-simulator/contracts";
-import { materializeStableIidSecret, secureRandomSecretHex,
+import { createEmptyProjectV4, createFourRouterReferenceLabV4, parseLabProjectV4,
+  PROFILE_CATALOG } from "@router-simulator/contracts";
+import { createUnconfiguredHost, materializeStableIidSecret,
+  secureRandomHostMac, secureRandomSecretHex,
   type RandomValuesSource } from "./secure-random";
 
 describe("secure project secret generation", () => {
@@ -45,5 +47,37 @@ describe("secure project secret generation", () => {
     expect(generated.eth0.ipv6.stableIidSecret).toBe("3c".repeat(32));
     expect(retained).toBe(generated);
     expect(host.eth0.ipv6.stableIidSecret).toBeNull();
+  });
+
+  it("creates a locally administered unicast MAC and retries collisions", () => {
+    let calls = 0;
+    const source: RandomValuesSource = { getRandomValues(array) {
+      const bytes = array as Uint8Array;
+      bytes.fill(calls++ === 0 ? 0xaa : 0xbb);
+      return array;
+    } };
+    expect(secureRandomHostMac(new Set(["AA:AA:AA:AA:AA:AA"]), source))
+      .toBe("ba:bb:bb:bb:bb:bb");
+    expect(calls).toBe(2);
+  });
+
+  it("creates a valid unconfigured endpoint with the catalog host MTU", () => {
+    let fill = 1;
+    const source: RandomValuesSource = { getRandomValues(array) {
+      (array as Uint8Array).fill(fill++);
+      return array;
+    } };
+    const host = createUnconfiguredHost("h1", "H1", new Set(), source);
+    const project = createEmptyProjectV4();
+    project.hosts.push(host);
+    project.layout.nodes.h1 = { x: 0, y: 0 };
+    expect(host.eth0).toMatchObject({
+      mac: "02:01:01:01:01:01",
+      address: "0.0.0.0/0",
+      gateway: "0.0.0.0",
+      mtu: PROFILE_CATALOG.ethernet.default_host_ipv4_mtu,
+      dhcpv4: { client: null, server: null }
+    });
+    expect(parseLabProjectV4(project).hosts[0]).toEqual(host);
   });
 });
