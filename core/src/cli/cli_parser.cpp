@@ -1154,9 +1154,20 @@ std::string incomplete_command_help(const DeviceState &state,
         }
         return true;
       });
-  return incomplete ? complete_command(state, session, input,
-                                       CliCompletionTrigger::question)
-                    : std::string{};
+  if (!incomplete)
+    return {};
+
+  // Enter has already accepted every supplied token as an exact prefix of a
+  // longer command. Completion must therefore inspect the following token,
+  // not reinterpret the final value as a partially typed replacement. This
+  // matters for compound leaves such as `address <ipv4> prefix-length <n>`:
+  // the address is complete, while `prefix-length` is the missing syntax.
+  // Appending one separator reuses the ordinary question-mark completion path
+  // and keeps this rule common to every command family.
+  auto completed_prefix = std::string{trim_view(input)};
+  completed_prefix += ' ';
+  return complete_command(state, session, completed_prefix,
+                          CliCompletionTrigger::question);
 }
 
 bool navigable_command_prefix(const CliSession &session,
@@ -1177,6 +1188,20 @@ bool navigable_command_prefix(const CliSession &session,
           if (!accepts(spec.tokens[index], line.tokens[index]))
             return false;
         }
+        // `primary address <ipv4> prefix-length <n>` is one compound MD leaf.
+        // The literal after the address is required syntax, not a child node.
+        // Without this distinction Enter after the address fabricated a PWC
+        // ending in `primary address <ipv4>`, from which prefix-length could
+        // never be executed. Other address parameters, such as an IPv6 list
+        // key with configurable children, remain navigable.
+        if (line.count >= 2U &&
+            spec.tokens[line.count - 1U].kind ==
+                cli_schema::TokenKind::ipv4 &&
+            spec.tokens[line.count - 2U].kind ==
+                cli_schema::TokenKind::literal &&
+            spec.tokens[line.count - 2U].display == "address" &&
+            spec.tokens[line.count].display == "prefix-length")
+          return false;
         return true;
       });
 }

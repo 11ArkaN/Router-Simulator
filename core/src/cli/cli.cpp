@@ -952,17 +952,52 @@ void previous_context(CliSession &session) noexcept {
   previous = current;
 }
 
+std::string apply_md_default_router_key(const CliSession &session,
+                                        std::string value) {
+  // The Base router list key has an MD-CLI default in SR OS 26.7.R1. Operators
+  // may therefore enter `router` or a descendant such as `router interface`
+  // without spelling the key. The generated grammar retains the canonical
+  // `"Base"` token so prompts, datastore paths and source-backed handlers have
+  // one representation. This boundary inserts the default only when the
+  // resulting line is a real command or container, preventing an arbitrary
+  // router name from being reinterpreted as a child keyword.
+  if (session.engine != CliEngine::md)
+    return value;
+  // Keep individual grammar words visible here, while the complete command
+  // remains owned by the generated schema. The dependency check intentionally
+  // rejects executable whole-command literals outside that schema.
+  constexpr std::string_view configure_token{"configure"};
+  constexpr std::string_view router_token{"router"};
+  const auto prefix =
+      std::string{configure_token} + ' ' + std::string{router_token};
+  if (value == prefix)
+    return value + " \"Base\"";
+  const auto descendant_prefix = prefix + ' ';
+  if (!std::string_view{value}.starts_with(descendant_prefix))
+    return value;
+  const auto remainder = std::string_view{value}.substr(prefix.size() + 1U);
+  if (remainder.empty() || remainder.starts_with('"') ||
+      remainder == "Base" || remainder.starts_with("Base "))
+    return value;
+  auto canonical = std::string{prefix} + " \"Base\" " +
+                   std::string{remainder};
+  if (parse_command(session.engine, session.md_workflow, canonical) ||
+      navigable_command_prefix(session, canonical))
+    return canonical;
+  return value;
+}
+
 std::string effective_input(const CliSession &session, std::string_view input) {
   // A leading slash selects the operational root. Otherwise a non-global line
   // is resolved below the engine's own saved working context.
   if (input.starts_with('/') ||
       (session.engine == CliEngine::classic && input.starts_with('\\'))) {
     input.remove_prefix(1);
-    return std::string{input};
+    return apply_md_default_router_key(session, std::string{input});
   }
   const auto path = session_path(session, session.engine);
   if (path.empty())
-    return std::string{input};
+    return apply_md_default_router_key(session, std::string{input});
   if (session.engine == CliEngine::md && input.starts_with("delete ") &&
       (path == "configure" || path.starts_with("configure ") ||
        path == "bof" || path.starts_with("bof "))) {
@@ -974,12 +1009,14 @@ std::string effective_input(const CliSession &session, std::string_view input) {
         path == "configure" || path == "bof"
             ? std::string_view{}
             : path.substr(bof ? 4U : 10U);
-    return std::string{"delete "} + (bof ? "bof " : "") +
-           (relative_path.empty() ? std::string{}
-                                  : std::string{relative_path} + ' ') +
-           std::string{input.substr(7)};
+    return apply_md_default_router_key(
+        session, std::string{"delete "} + (bof ? "bof " : "") +
+                     (relative_path.empty() ? std::string{}
+                                            : std::string{relative_path} + ' ') +
+                     std::string{input.substr(7)});
   }
-  return std::string{path} + ' ' + std::string{input};
+  return apply_md_default_router_key(
+      session, std::string{path} + ' ' + std::string{input});
 }
 
 bool md_configuration_command(cli_schema::CommandId id) noexcept {
@@ -1047,6 +1084,13 @@ bool global_action(cli_schema::CommandId id, CliEngine engine) noexcept {
   case md_delete_port_description:
   case md_delete_static_route:
     return engine == CliEngine::md;
+  case classic_info:
+  case classic_info_detail:
+    // Classic `info` is scoped by the saved configuration context just like
+    // MD `info`, even though its output syntax uses indentation and `exit`.
+    // Treating it as contextual grammar made availability depend on a
+    // duplicated command row at every depth.
+    return engine == CliEngine::classic;
   default:
     return false;
   }

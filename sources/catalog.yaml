@@ -1157,11 +1157,11 @@ records:
     section: info
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-07-24
-    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/runtime/lab_runtime.cpp]
+    last_verified_at: 2026-07-29
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli/cli.cpp, core/src/cli/cli_parser.cpp, core/src/runtime/lab_runtime.cpp]
     tests: [core/tests/runtime/lab_runtime_test.cpp]
     status: implemented
-    notes: The global info command resolves against the saved MD present working context and reads the session's private or shared candidate when an editor is active. Output is relative to that context, keeps braces around nested containers and lists, preserves model order, and uses explicit leaf presence for plain output while info detail adds effective release defaults.
+    notes: The global info command resolves against every saved MD present working context and reads the session's private or shared candidate when an editor is active. Output is relative to that context, keeps braces around nested containers and lists, preserves model order, and uses explicit leaf presence for plain output while info detail adds effective release defaults below existing list entries. Physical Ethernet contexts join port intent and Ethernet classification without exposing operational state. Card and MDA contexts render provisioned candidate identities and administrative intent without fabricating absent slot keys.
   - id: nokia.sros.26_7.classic_cli.info
     kind: cli-behavior
     release: 26.7.R1
@@ -1171,11 +1171,11 @@ records:
     section: Configuring physical ports with CLI
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-07-24
-    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/runtime/lab_runtime.cpp]
+    last_verified_at: 2026-07-29
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli/cli.cpp, core/src/runtime/lab_runtime.cpp]
     tests: [core/tests/runtime/lab_runtime_test.cpp]
     status: implemented
-    notes: Classic info and info detail display running configuration relative to the saved classic context, use indentation and exit delimiters instead of MD braces, and retain the documented classic shutdown and no shutdown spellings.
+    notes: Classic info and info detail are global within configuration mode, display running configuration relative to the saved classic context, use indentation and exit delimiters instead of MD braces, and retain the documented classic shutdown and no shutdown spellings for interfaces, cards and MDAs.
   - id: nokia.sros.26_7.classic_cli.navigation
     kind: cli-behavior
     release: 26.7.R1
@@ -1480,7 +1480,7 @@ records:
     section: configure system name
     rfc_refs: []
     yang_path: /configure/system/name
-    last_verified_at: 2026-07-15
+    last_verified_at: 2026-07-29
     implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/src/cli/cli_md.cpp, core/src/cli/cli_classic.cpp]
     tests: [core/tests/cli/cli_test.cpp]
     status: implemented
@@ -1498,7 +1498,7 @@ records:
     implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/src/cli/cli.cpp, core/src/cli/cli_md.cpp, core/src/cli/cli_classic.cpp, core/src/runtime/lab_runtime.cpp, core/src/runtime/runtime_supervisor.cpp, core/src/runtime/runtime_supervisor_interfaces.cpp, core/src/runtime/runtime_supervisor_services.cpp, core/src/runtime/runtime_supervisor_routing.cpp, core/src/runtime/runtime_supervisor_hosts.cpp, core/src/runtime/runtime_supervisor_checkpoint.cpp, packages/contracts/src/lab-project-v4.ts, apps/web/src/ui/WorkspaceViews.tsx]
     tests: [core/tests/cli/cli_test.cpp, core/tests/runtime/runtime_supervisor_test.cpp, core/tests/runtime/lab_runtime_test.cpp, packages/contracts/tests/project-v4.test.ts, apps/web/src/ui/WorkspaceViews.test.tsx]
     status: implemented
-    notes: The profile-owned Base router interface names support independent physical-port association, primary IPv4 prefix, administrative state, connected-route selection and atomic project persistence in both terminal engines. Entering a new keyed interface context in an MD candidate creates the list instance with release defaults, while physical association and addressing remain independent leaves. Classic no address, no port and no interface plus the corresponding MD delete leaves and list deletion withdraw exactly the selected configuration. Leaf removal preserves IPv6, ND, RA and MLD children on the shared routed interface and reprograms forwarding through the ordinary transactional diff.
+    notes: The profile-owned Base router interface names support independent physical-port association, primary IPv4 prefix, administrative state, connected-route selection and atomic project persistence in both terminal engines. The MD router list key defaults to Base when omitted. Primary IPv4 configuration accepts the documented compound address and prefix-length leaf without creating a context from the address value. Entering a new keyed interface context in an MD candidate creates the list instance with release defaults, while physical association and addressing remain independent leaves. Classic no address, no port and no interface plus the corresponding MD delete leaves and list deletion withdraw exactly the selected configuration. Leaf removal preserves IPv6, ND, RA and MLD children on the shared routed interface and reprograms forwarding through the ordinary transactional diff.
   - id: nokia.sros.26_7.system_interface.ipv4
     kind: cli-behavior
     release: 26.7.R1

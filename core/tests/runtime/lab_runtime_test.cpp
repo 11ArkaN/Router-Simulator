@@ -448,10 +448,13 @@ void lab_runtime_tests() {
     throw std::runtime_error(
         std::string{"explicit workflow changed the operational root: "} +
         std::string{contextual_entry});
-  require(contextual_command("configure router \"Base\"")
+  // The router list key defaults to Base in MD-CLI. Drive the shorthand used
+  // on physical SR OS rather than hiding a broken default behind the canonical
+  // full path. The prompt must still expose the resolved datastore identity.
+  require(contextual_command("configure router")
                   .find("(ex)[/configure router \"Base\"]") !=
               std::string_view::npos,
-          "Base router navigation selected the wrong context");
+          "MD router navigation did not apply the documented Base default");
   const auto contextual_system = contextual_command("interface \"system\"");
   if (contextual_system.find(
           "(ex)[/configure router \"Base\" interface \"system\"]") ==
@@ -473,6 +476,16 @@ void lab_runtime_tests() {
                             "\"system\" "
                             "ipv4 primary]") != std::string_view::npos,
           "IPv4 primary navigation lost the system interface list key");
+  const auto incomplete_primary =
+      contextual_command("address 10.255.255.1");
+  if (incomplete_primary.find("prefix-length") == std::string_view::npos ||
+      incomplete_primary.find("primary address 10.255.255.1]") !=
+          std::string_view::npos ||
+      incomplete_primary.find("interface \"system\" ipv4 primary]") ==
+          std::string_view::npos)
+    throw std::runtime_error(
+        std::string{"incomplete IPv4 address fabricated a leaf-value context: "} +
+        std::string{incomplete_primary});
   require(contextual_command("address 10.255.255.1 prefix-length 32")
                   .find("MINOR:") == std::string_view::npos &&
               contextual_command("back 2")
@@ -498,6 +511,108 @@ void lab_runtime_tests() {
             "show router interface lost a contextually committed system "
             "interface: "} +
         std::string{contextual_show});
+
+  // `info` is a configuration-mode command at every modeled PWC. Physical
+  // Ethernet is a join of port intent and service classification, so verify
+  // the actual deep context instead of accepting the previous empty fallback.
+  require(contextual_command("edit-config exclusive")
+                  .find("(ex)[/]") != std::string_view::npos &&
+              contextual_command("configure")
+                      .find("(ex)[/configure]") != std::string_view::npos &&
+              contextual_command("port 1/1/1")
+                      .find("port 1/1/1]") != std::string_view::npos &&
+              contextual_command("ethernet")
+                      .find("port 1/1/1 ethernet]") !=
+                  std::string_view::npos,
+          "physical Ethernet info fixture could not enter its MD context");
+  const auto fresh_ethernet_detail =
+      std::string{contextual_command("info detail")};
+  require(fresh_ethernet_detail.find("mtu ") != std::string_view::npos &&
+              fresh_ethernet_detail.find("mode network") !=
+                  std::string_view::npos &&
+              fresh_ethernet_detail.find("encap-type null") !=
+                  std::string_view::npos,
+          "info detail omitted defaults for an equipped unedited port");
+  require(contextual_command("mtu 9000").find("MINOR:") ==
+              std::string_view::npos,
+          "physical Ethernet fixture could not configure its MTU");
+  const auto ethernet_detail = contextual_command("info detail");
+  if (ethernet_detail.find("mtu ") == std::string_view::npos ||
+      ethernet_detail.find("mode network") == std::string_view::npos ||
+      ethernet_detail.find("encap-type null") == std::string_view::npos ||
+      ethernet_detail.find("MINOR:") != std::string_view::npos)
+    throw std::runtime_error(
+        std::string{
+            "info detail omitted modeled physical Ethernet configuration: "} +
+        std::string{ethernet_detail});
+  require(contextual_command("commit").find("MINOR:") ==
+                  std::string_view::npos &&
+              contextual_command("exit all").find("(ex)[/]") !=
+                  std::string_view::npos &&
+              contextual_command("quit-config")
+                      .find("CLI #2064: Exiting exclusive") !=
+                  std::string_view::npos,
+          "physical Ethernet info fixture could not leave its workflow");
+
+  // Card and MDA list entries are independent working contexts in both
+  // engines. A global `info` dispatcher alone can make the command appear to
+  // work while returning an empty body, so assert the typed card candidate and
+  // its effective administrative default at the actual list depth.
+  require(!runtime.command(message(lab_runtime_protocol::router_create,
+                                   {"r-info-card", "7750-sr-7", "R-CARD"}))
+                   .starts_with("ERROR:") &&
+              !runtime
+                   .command(message(lab_runtime_protocol::session_create,
+                                    {"card-info-console", "r-info-card",
+                                     "operational"}))
+                   .starts_with("ERROR:"),
+          "card info fixture could not create its SR-7 router and session");
+  const auto card_info_command = [&](std::string_view command) {
+    return runtime.command(message(lab_runtime_protocol::session_execute,
+                                   {"card-info-console", command}));
+  };
+  const std::string card_edit{card_info_command("edit-config exclusive")};
+  const std::string card_context{card_info_command("configure card 1")};
+  const std::string card_type{card_info_command("card-type iom4-e")};
+  const std::string mda_context{card_info_command("mda 1")};
+  const std::string mda_type{
+      card_info_command("mda-type me10-10gb-sfp+")};
+  const std::string mda_admin{card_info_command("admin-state enable")};
+  const std::string card_back{card_info_command("back")};
+  const std::string card_admin{card_info_command("admin-state enable")};
+  if (card_edit.find("(ex)[/]") == std::string_view::npos ||
+      card_context.find("card 1]") == std::string_view::npos ||
+      card_type.find("MINOR:") != std::string_view::npos ||
+      mda_context.find("mda 1]") == std::string_view::npos ||
+      mda_type.find("MINOR:") != std::string_view::npos ||
+      mda_admin.find("MINOR:") != std::string_view::npos ||
+      card_back.find("card 1]") == std::string_view::npos ||
+      card_admin.find("MINOR:") != std::string_view::npos)
+    throw std::runtime_error(
+        std::string{"card info fixture could not create its MD candidate "
+                    "list:\n"} +
+        std::string{card_edit} + std::string{card_context} +
+        std::string{card_type} + std::string{mda_context} +
+        std::string{mda_type} + std::string{mda_admin} +
+        std::string{card_back} + std::string{card_admin});
+  const auto md_card_detail = card_info_command("info detail");
+  if (md_card_detail.find("card-type iom4-e") == std::string_view::npos ||
+      md_card_detail.find("admin-state enable") == std::string_view::npos ||
+      md_card_detail.find("mda 1 {") == std::string_view::npos ||
+      md_card_detail.find("mda-type me10-10gb-sfp+") ==
+          std::string_view::npos)
+    throw std::runtime_error(
+        std::string{"MD info detail omitted the configured card or MDA "
+                    "candidate:\n"} +
+        std::string{md_card_detail});
+  require(card_info_command("commit").find("MINOR:") ==
+                  std::string_view::npos &&
+              card_info_command("exit all").find("(ex)[/]") !=
+                  std::string_view::npos &&
+              card_info_command("quit-config")
+                      .find("CLI #2064: Exiting exclusive") !=
+                  std::string_view::npos,
+          "card info fixture could not leave its MD workflow");
 
   // The immutable system interface is a special loopback and cannot prove
   // that ordinary keyed interfaces are created correctly. Exercise a new
@@ -559,9 +674,59 @@ void lab_runtime_tests() {
               classic_dhcp_detail.find("--------------------------------") !=
                   std::string_view::npos,
           "classic DHCP info detail did not map through the IPv4 model node");
-  require(contextual_command("//").find("MD-CLI engine") !=
-              std::string_view::npos,
-          "classic DHCP info fixture could not restore the MD engine");
+  // Classic `info` is global within configuration mode just as MD `info` is
+  // global within an editor. Exercise a different deep branch in the same
+  // session so dispatch cannot accidentally depend on the DHCP-specific path.
+  const auto classic_exit = std::string{contextual_command("exit all")};
+  const auto classic_configure = std::string{contextual_command("configure")};
+  const auto classic_port = std::string{contextual_command("port 1/1/1")};
+  const auto classic_ethernet = std::string{contextual_command("ethernet")};
+  if (classic_exit.find("A:R-CONTEXT#") == std::string_view::npos ||
+      classic_configure.find(">config#") == std::string_view::npos ||
+      classic_port.find(">config>port#") == std::string_view::npos ||
+      classic_ethernet.find(">port>ethernet#") == std::string_view::npos)
+    throw std::runtime_error(
+        std::string{"classic port fixture could not enter its Ethernet "
+                    "context:\n"} +
+        std::string{classic_exit} + std::string{classic_configure} +
+        std::string{classic_port} + std::string{classic_ethernet});
+  const auto classic_ethernet_detail = contextual_command("info detail");
+  require(classic_ethernet_detail.find("mtu 9000") !=
+                  std::string_view::npos &&
+              classic_ethernet_detail.find("mode network") !=
+                  std::string_view::npos &&
+              classic_ethernet_detail.find("encap-type null") !=
+                  std::string_view::npos &&
+              classic_ethernet_detail.find("Error:") ==
+                  std::string_view::npos,
+          "classic info detail omitted physical Ethernet configuration");
+  require(card_info_command("//").find("classic CLI engine") !=
+                  std::string_view::npos &&
+              card_info_command("configure").find(">config#") !=
+                  std::string_view::npos &&
+              card_info_command("card 1").find(">config>card#") !=
+                  std::string_view::npos,
+          "classic card info fixture could not enter its list context");
+  const auto classic_card_detail = card_info_command("info detail");
+  require(classic_card_detail.find("card-type iom4-e") !=
+                  std::string_view::npos &&
+              classic_card_detail.find("no shutdown") !=
+                  std::string_view::npos &&
+              classic_card_detail.find("mda 1") != std::string_view::npos &&
+              classic_card_detail.find("mda-type me10-10gb-sfp+") !=
+                  std::string_view::npos,
+          "classic info detail omitted the configured card or MDA");
+  require(!runtime
+               .command(message(lab_runtime_protocol::session_close,
+                                {"card-info-console"}))
+               .starts_with("ERROR:") &&
+              !runtime
+                   .command(message(lab_runtime_protocol::router_delete,
+                                    {"r-info-card"}))
+                   .starts_with("ERROR:") &&
+              contextual_command("//").find("MD-CLI engine") !=
+                  std::string_view::npos,
+          "card fixture cleanup or classic DHCP engine restore failed");
 
   // Validate OSPF MD navigation exactly as an interactive operator uses it.
   // A root-relative command can hide a broken saved working context because

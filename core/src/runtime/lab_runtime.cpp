@@ -4195,6 +4195,263 @@ md_bof_configuration_info(const Configuration &configuration,
 
 template <typename Configuration>
 std::optional<std::string>
+md_port_configuration_info(const Configuration &configuration,
+                           const lab::RouterHardwareInventory *hardware,
+                           std::string_view path, bool detail) {
+  // Physical port configuration is owned by the router candidate while
+  // Ethernet service classification is owned by the service model. `info`
+  // must nevertheless expose one SR OS subtree. This read-only join is keyed
+  // by the physical port coordinate and never copies operational carrier,
+  // counters or UI state into configuration output.
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->size() < 3U || (*tokens)[0] != "configure" ||
+      (*tokens)[1] != "port")
+    return std::nullopt;
+  const auto configured_port = std::find_if(
+      configuration.ports.begin(), configuration.ports.end(),
+      [&](const auto &candidate) { return candidate.id == (*tokens)[2]; });
+  const auto *physical = hardware ? hardware->find((*tokens)[2]) : nullptr;
+  if (configured_port == configuration.ports.end() && !physical)
+    return std::string{};
+  // An equipped port exists independently from an explicit candidate edit.
+  // Use inventory values until a configuration record overrides them so
+  // `info detail` reports effective defaults on a freshly provisioned port.
+  // Description is configuration-only and therefore remains absent in that
+  // case.
+  const auto port_id = configured_port == configuration.ports.end()
+                           ? (*tokens)[2]
+                           : configured_port->id;
+  const auto admin_enabled =
+      configured_port == configuration.ports.end()
+          ? physical->admin_enabled
+          : configured_port->admin_enabled;
+  const auto mtu = configured_port == configuration.ports.end()
+                       ? physical->mtu
+                       : configured_port->mtu;
+
+  const auto coordinate = [&]() -> std::optional<service::PhysicalPortCoordinate> {
+    std::array<unsigned, 3U> values{};
+    auto text = std::string_view{port_id};
+    for (std::size_t index{}; index < values.size(); ++index) {
+      const auto slash = text.find('/');
+      const auto component =
+          slash == std::string_view::npos ? text : text.substr(0U, slash);
+      const auto parsed = std::from_chars(component.data(),
+                                          component.data() + component.size(),
+                                          values[index]);
+      if (parsed.ec != std::errc{} ||
+          parsed.ptr != component.data() + component.size() ||
+          !values[index] || values[index] > 0xffffU ||
+          (index + 1U != values.size() &&
+           slash == std::string_view::npos) ||
+          (index + 1U == values.size() &&
+           slash != std::string_view::npos))
+        return std::nullopt;
+      if (slash != std::string_view::npos)
+        text.remove_prefix(slash + 1U);
+    }
+    return service::PhysicalPortCoordinate{
+        .ordinal = 0U,
+        .card = static_cast<std::uint16_t>(values[0]),
+        .mda = static_cast<std::uint16_t>(values[1]),
+        .port = static_cast<std::uint16_t>(values[2])};
+  }();
+  const auto service_port =
+      coordinate
+          ? std::find_if(configuration.ies.ports.begin(),
+                         configuration.ies.ports.end(),
+                         [&](const auto &candidate) {
+                           return candidate.coordinate.card == coordinate->card &&
+                                  candidate.coordinate.mda == coordinate->mda &&
+                                  candidate.coordinate.port == coordinate->port;
+                         })
+          : configuration.ies.ports.end();
+  const auto mode =
+      service_port == configuration.ies.ports.end()
+          ? service::EthernetPortMode::network
+          : service_port->mode;
+  const auto encapsulation =
+      service_port == configuration.ies.ports.end()
+          ? service::EthernetEncapsulation::null
+          : service_port->encapsulation;
+  const auto mode_text = mode == service::EthernetPortMode::access
+                             ? "access"
+                         : mode == service::EthernetPortMode::hybrid
+                             ? "hybrid"
+                             : "network";
+  const auto encapsulation_text =
+      encapsulation == service::EthernetEncapsulation::dot1q
+          ? "dot1q"
+      : encapsulation == service::EthernetEncapsulation::qinq ? "qinq"
+                                                               : "null";
+  const bool ethernet_present =
+      detail || mtu != device_catalog::default_network_mtu ||
+      mode != service::EthernetPortMode::network ||
+      encapsulation != service::EthernetEncapsulation::null;
+
+  const auto emit_ethernet = [&](std::ostringstream &out, std::size_t depth) {
+    if (detail || mtu != device_catalog::default_network_mtu) {
+      md_indent(out, depth);
+      out << "mtu " << mtu << '\n';
+    }
+    if (detail || mode != service::EthernetPortMode::network) {
+      md_indent(out, depth);
+      out << "mode " << mode_text << '\n';
+    }
+    if (detail || encapsulation != service::EthernetEncapsulation::null) {
+      md_indent(out, depth);
+      out << "encap-type " << encapsulation_text << '\n';
+    }
+  };
+
+  std::ostringstream out;
+  if (tokens->size() == 3U) {
+    out << "admin-state " << (admin_enabled ? "enable" : "disable")
+        << '\n';
+    if (configured_port != configuration.ports.end() &&
+        !configured_port->description.empty())
+      out << "description \"" << configured_port->description << "\"\n";
+    if (ethernet_present) {
+      out << "ethernet {\n";
+      emit_ethernet(out, 1U);
+      out << "}\n";
+    }
+    return out.str();
+  }
+  if (tokens->size() == 4U && (*tokens)[3] == "ethernet") {
+    emit_ethernet(out, 0U);
+    return out.str();
+  }
+  return std::nullopt;
+}
+
+template <typename Configuration>
+void md_hardware_configuration_body(std::ostringstream &out,
+                                    const Configuration &configuration,
+                                    std::size_t depth, bool detail) {
+  // Hardware configuration remains candidate-owned even when the equipped
+  // inventory is absent or mismatched. `info` therefore renders provisioned
+  // identities and administrative intent, never the operational equipped
+  // type. Array position is the stable SR OS slot key and is converted to its
+  // one-based spelling only at this presentation boundary.
+  for (std::size_t card_index{}; card_index < configuration.cards.size();
+       ++card_index) {
+    const auto &card = configuration.cards[card_index];
+    const auto has_mda = std::any_of(
+        card.mdas.begin(), card.mdas.end(),
+        [](const auto &mda) { return !mda.provisioned.empty(); });
+    // `detail` expands defaults below list entries that exist in the
+    // datastore. It does not manufacture every possible card key. A card
+    // exists here only when it or one of its child MDAs was provisioned.
+    if (card.provisioned.empty() && !has_mda)
+      continue;
+    md_indent(out, depth);
+    out << "card " << card_index + 1U << " {\n";
+    if (!card.provisioned.empty()) {
+      md_indent(out, depth + 1U);
+      out << "card-type " << card.provisioned << '\n';
+    }
+    if (!card.provisioned.empty() || detail) {
+      md_indent(out, depth + 1U);
+      out << "admin-state " << (card.admin_enabled ? "enable" : "disable")
+          << '\n';
+    }
+    for (std::size_t mda_index{}; mda_index < card.mdas.size(); ++mda_index) {
+      const auto &mda = card.mdas[mda_index];
+      // An unconfigured MDA slot is a possible key, not a candidate list
+      // instance. Keep it absent even for `info detail`.
+      if (mda.provisioned.empty())
+        continue;
+      md_indent(out, depth + 1U);
+      out << "mda " << mda_index + 1U << " {\n";
+      if (!mda.provisioned.empty()) {
+        md_indent(out, depth + 2U);
+        out << "mda-type " << mda.provisioned << '\n';
+      }
+      if (!mda.provisioned.empty() || detail) {
+        md_indent(out, depth + 2U);
+        out << "admin-state " << (mda.admin_enabled ? "enable" : "disable")
+            << '\n';
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+template <typename Configuration>
+std::optional<std::string>
+md_hardware_configuration_info(const Configuration &configuration,
+                               std::string_view path, bool detail) {
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->size() < 3U || (*tokens)[0] != "configure" ||
+      (*tokens)[1] != "card")
+    return std::nullopt;
+  unsigned card_slot{};
+  const auto card_text = std::string_view{(*tokens)[2]};
+  const auto parsed_card =
+      std::from_chars(card_text.data(), card_text.data() + card_text.size(),
+                      card_slot);
+  if (parsed_card.ec != std::errc{} ||
+      parsed_card.ptr != card_text.data() + card_text.size() || !card_slot ||
+      card_slot > configuration.cards.size())
+    return std::string{};
+  const auto &card = configuration.cards[card_slot - 1U];
+
+  const auto emit_card_leaves = [&](std::ostringstream &out,
+                                    std::size_t depth) {
+    if (!card.provisioned.empty()) {
+      md_indent(out, depth);
+      out << "card-type " << card.provisioned << '\n';
+    }
+    if (!card.provisioned.empty() || detail) {
+      md_indent(out, depth);
+      out << "admin-state " << (card.admin_enabled ? "enable" : "disable")
+          << '\n';
+    }
+  };
+
+  std::ostringstream out;
+  if (tokens->size() == 3U) {
+    emit_card_leaves(out, 0U);
+    for (std::size_t mda_index{}; mda_index < card.mdas.size(); ++mda_index) {
+      const auto &mda = card.mdas[mda_index];
+      if (mda.provisioned.empty())
+        continue;
+      out << "mda " << mda_index + 1U << " {\n";
+      if (!mda.provisioned.empty())
+        out << "    mda-type " << mda.provisioned << '\n';
+      if (!mda.provisioned.empty() || detail)
+        out << "    admin-state "
+            << (mda.admin_enabled ? "enable" : "disable") << '\n';
+      out << "}\n";
+    }
+    return out.str();
+  }
+  if (tokens->size() != 5U || (*tokens)[3] != "mda")
+    return std::nullopt;
+  unsigned mda_slot{};
+  const auto mda_text = std::string_view{(*tokens)[4]};
+  const auto parsed_mda =
+      std::from_chars(mda_text.data(), mda_text.data() + mda_text.size(),
+                      mda_slot);
+  if (parsed_mda.ec != std::errc{} ||
+      parsed_mda.ptr != mda_text.data() + mda_text.size() || !mda_slot ||
+      mda_slot > card.mdas.size())
+    return std::string{};
+  const auto &mda = card.mdas[mda_slot - 1U];
+  if (!mda.provisioned.empty())
+    out << "mda-type " << mda.provisioned << '\n';
+  if (!mda.provisioned.empty() || detail)
+    out << "admin-state " << (mda.admin_enabled ? "enable" : "disable")
+        << '\n';
+  return out.str();
+}
+
+template <typename Configuration>
+std::optional<std::string>
 md_base_configuration_info(const Configuration &configuration,
                            std::string_view path, bool detail) {
   const auto tokens = md_context_tokens(path);
@@ -4228,6 +4485,7 @@ md_base_configuration_info(const Configuration &configuration,
 
   std::ostringstream out;
   if (tokens->size() == 1U) {
+    md_hardware_configuration_body(out, configuration, 0U, detail);
     out << "system {\n    name \"" << configuration.system_name << "\"\n}\n";
     out << "router \"Base\" {\n";
     emit_router(out, 1U);
@@ -4272,6 +4530,17 @@ md_base_configuration_info(const Configuration &configuration,
       md_dhcpv4_relay_info(out, *interface->dhcpv4_relay, 1U, detail);
       out << "}\n";
     }
+    return out.str();
+  }
+  if (tokens->size() == 7U && (*tokens)[5] == "ipv4" &&
+      (*tokens)[6] == "primary") {
+    // `primary` is a real container, while its address and prefix-length form
+    // one compound leaf command. Contextual info therefore reports the leaf
+    // without wrapping it in another `primary` block.
+    if (interface->address_configured)
+      out << "address " << ipv4_text(interface->address)
+          << " prefix-length "
+          << static_cast<unsigned>(interface->prefix_length) << '\n';
     return out.str();
   }
   if (tokens->size() == 7U && (*tokens)[5] == "ipv4" &&
@@ -4447,6 +4716,7 @@ std::string classic_info_text(std::string_view md_text) {
 template <typename Configuration>
 std::optional<std::string>
 classic_configuration_info(const Configuration &configuration,
+                           const lab::RouterHardwareInventory *hardware,
                            std::string_view classic_path, bool detail) {
   const auto md_path = md_path_from_classic(classic_path);
   if (!md_path)
@@ -4455,6 +4725,12 @@ classic_configuration_info(const Configuration &configuration,
       md_router_advertisement_info(configuration, *md_path, detail);
   if (!rendered)
     rendered = md_bof_configuration_info(configuration, *md_path, detail);
+  if (!rendered)
+    rendered =
+        md_hardware_configuration_info(configuration, *md_path, detail);
+  if (!rendered)
+    rendered =
+        md_port_configuration_info(configuration, hardware, *md_path, detail);
   if (!rendered)
     rendered = md_ospf_info(configuration.ospf, *md_path, detail);
   if (!rendered)
@@ -11786,6 +12062,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     if (!rendered)
       rendered = md_bof_configuration_info(selected, path, detail);
     if (!rendered)
+      rendered = md_hardware_configuration_info(selected, path, detail);
+    if (!rendered)
+      rendered = md_port_configuration_info(
+          selected, supervisor_.hardware(intent->handle), path, detail);
+    if (!rendered)
       rendered = md_ospf_info(selected.ospf, path, detail);
     if (!rendered)
       rendered = md_dhcpv6_configuration_info(selected.dhcpv6_servers, path,
@@ -11816,7 +12097,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     // emits classic indentation and exit delimiters rather than MD braces.
     const auto running = running_configuration(*intent);
     const auto rendered = classic_configuration_info(
-        running, std::string_view{terminal->cli.classic_path.data()},
+        running, supervisor_.hardware(intent->handle),
+        std::string_view{terminal->cli.classic_path.data()},
         parsed->has_modifier(cli_schema::OutputModifier::detail));
     output = rendered
                  ? *rendered
