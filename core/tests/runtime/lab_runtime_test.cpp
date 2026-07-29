@@ -778,9 +778,9 @@ void lab_runtime_tests() {
                   std::string_view::npos &&
               candidate_root_info.find("MINOR:") == std::string_view::npos,
           "info did not map the explicit candidate root to /configure");
-  // Return to the deepest context before checking nested quit-config. This
+  // Return to the deepest context before checking global quit-config. This
   // proves that the root renderer did not mutate navigation state and keeps
-  // the following workflow assertion focused on the documented restriction.
+  // the following workflow assertion focused on global command resolution.
   require(contextual_command("configure router \"Base\"")
                   .find("router \"Base\"") != std::string_view::npos &&
               contextual_command("ospf 0").find("ospf 0") !=
@@ -792,22 +792,17 @@ void lab_runtime_tests() {
                   std::string_view::npos,
           "candidate root info changed the saved MD navigation state");
 
-  // SR OS accepts quit-config only from the operational root. The rejected
-  // nested attempt must not damage the working context; otherwise a typo can
-  // strand or silently relocate an editor session. The following exit-all
-  // and quit sequence verifies the documented route out of the editor.
-  const auto nested_quit = contextual_command("quit-config");
-  require(nested_quit.find("MINOR:") != std::string_view::npos &&
-              nested_quit.find("interface \"md-loop\"") !=
-                  std::string_view::npos &&
-              contextual_command("commit").find("MINOR:") ==
-                  std::string_view::npos &&
-              contextual_command("exit all").find("(ex)[/]") !=
+  // Nokia lists quit-config as an MD global command. Commit while the PWC is
+  // still deeply nested, then leave the explicit editor without an artificial
+  // `exit all` prerequisite. This is the exact path that previously resolved
+  // `quit-config` as a child of the interface and leaked an Unknown element
+  // error to the terminal.
+  require(contextual_command("commit").find("MINOR:") ==
                   std::string_view::npos &&
               contextual_command("quit-config")
                       .find("CLI #2064: Exiting exclusive") !=
                   std::string_view::npos,
-          "nested quit-config changed context or the documented exit failed");
+          "global quit-config failed from a nested MD context");
 
   // BOF DHCP is a presence container: entering `dhcp` both creates the
   // container and moves the PWC below it. A complete root-relative command
@@ -894,6 +889,90 @@ void lab_runtime_tests() {
         "committed DHCPv6 server was absent from operational state: " +
         std::string{dhcpv6_server_statistics});
 
+  // Each source-backed configuration family must own contextual rendering,
+  // not merely accept root-relative edits. This transcript creates one real
+  // typed object per recently added family, navigates to the object as an
+  // operator would, and rejects the former silent empty-output fallback. The
+  // schema-level info ownership gate complements this test by failing when a
+  // future command family is added without being assigned to either engine.
+  const auto require_context_info = [&](std::string_view enter,
+                                        std::string_view expected) {
+    const auto navigation = contextual_command(enter);
+    if (navigation.find("MINOR:") != std::string_view::npos)
+      throw std::runtime_error("MD info context navigation failed: " +
+                               std::string{enter} + " output=" +
+                               std::string{navigation});
+    const auto information = contextual_command("info detail");
+    if (information.find(expected) == std::string_view::npos ||
+        information.find("Command is not supported") !=
+            std::string_view::npos)
+      throw std::runtime_error("MD info detail did not render context: " +
+                               std::string{enter} + " output=" +
+                               std::string{information});
+    contextual_command("exit all");
+  };
+  require(contextual_command("edit-config exclusive")
+                  .find("(ex)[/]") != std::string_view::npos,
+          "contextual info coverage could not enter an MD candidate");
+  for (const auto command :
+       {"configure router \"Base\" dhcp-server dhcpv4 info-v4 description "
+        "\"Info DHCPv4\"",
+        "configure router \"Base\" mld admin-state disable",
+        "configure policy-options prefix-list info-prefix prefix "
+        "2001:db8:ffff::/64",
+        "configure system security keychains keychain info-keychain "
+        "bidirectional entry 1 algorithm hmac-sha-256",
+        "configure system security keychains keychain info-keychain "
+        "bidirectional entry 1 authentication-key info-secret",
+        "configure system security keychains keychain info-keychain "
+        "bidirectional entry 1 begin-time now",
+        "configure system security keychains keychain info-keychain "
+        "bidirectional entry 1 tolerance 30",
+        "configure system security tls use-pqc-only false",
+        "configure ipsec ike-transform 1 dh-group group-19",
+        "configure service customer info-customer customer-id 900",
+        "configure service ies info-ies service-id 900",
+        "configure service ies info-ies customer info-customer"}) {
+    const auto result = contextual_command(command);
+    if (result.find("MINOR:") != std::string_view::npos)
+      throw std::runtime_error("contextual info setup failed: " +
+                               std::string{command} + " output=" +
+                               std::string{result});
+  }
+  require_context_info(
+      "configure router \"Base\" dhcp-server dhcpv4 info-v4",
+      "description \"Info DHCPv4\"");
+  require_context_info("configure router \"Base\" mld", "admin-state disable");
+  require_context_info("configure policy-options prefix-list info-prefix",
+                       "prefix 2001:db8:ffff::/64");
+  require_context_info(
+      "configure system security keychains keychain info-keychain "
+      "bidirectional entry 1",
+      "algorithm hmac-sha-256");
+  require_context_info("configure system security tls", "use-pqc-only false");
+  // Present-context output contains the selected list entry's children, not
+  // the list header a second time. This assertion follows the same scoping
+  // rule as Nokia's documented MD-CLI `info` examples.
+  require_context_info("configure ipsec ike-transform 1",
+                       "dh-group group-19");
+  require_context_info("configure service ies info-ies", "service-id 900");
+  // `quit-config` is a global workflow command, not a child of the current
+  // model node. Exercise it from a deeply keyed path because root-only tests
+  // previously let execute_cli resolve the word below the PWC and reject it as
+  // an unknown leaf. Committing first keeps this test focused on command
+  // classification instead of the separate dirty-candidate confirmation.
+  require(contextual_command(
+              "configure system security keychains keychain info-keychain "
+              "bidirectional entry 1")
+                  .find("MINOR:") == std::string_view::npos,
+          "contextual info coverage could not enter its deep exit fixture");
+  require(contextual_command("commit").find("MINOR:") ==
+                  std::string_view::npos &&
+              contextual_command("quit-config")
+                      .find("CLI #2064: Exiting exclusive") !=
+                  std::string_view::npos,
+          "quit-config was not global from a deeply keyed MD context");
+
   // Classic CLI owns immediate running edits rather than an MD candidate.
   // Validate the root-relative form because operators commonly paste complete
   // commands instead of navigating one context at a time. The address command
@@ -902,6 +981,47 @@ void lab_runtime_tests() {
   require(contextual_command("//").find("Switching to the classic CLI") !=
               std::string_view::npos,
           "contextual fixture could not enter classic CLI");
+  // Engine switching restores the independent classic PWC by design. Reset
+  // that saved path before testing complete commands so the fixture does not
+  // accidentally concatenate them below a context used earlier in the same
+  // long-lived router session.
+  contextual_command("exit all");
+  const auto require_classic_context_info =
+      [&](std::string_view enter, std::string_view expected) {
+        const auto navigation = contextual_command(enter);
+        if (navigation.find("Error:") != std::string_view::npos ||
+            navigation.find("MINOR:") != std::string_view::npos)
+          throw std::runtime_error(
+              "classic info context navigation failed: " +
+              std::string{enter} + " output=" + std::string{navigation});
+        const auto information = contextual_command("info detail");
+        if (information.find(expected) == std::string_view::npos ||
+            information.find("Command is not supported") !=
+                std::string_view::npos ||
+            information.find('{') != std::string_view::npos)
+          throw std::runtime_error(
+              "classic info detail did not render native syntax: " +
+              std::string{enter} + " output=" + std::string{information});
+        contextual_command("exit all");
+      };
+  require_classic_context_info(
+      "configure router dhcp local-dhcp-server info-v4",
+      "description \"Info DHCPv4\"");
+  require_classic_context_info("configure router mld", "shutdown");
+  require_classic_context_info(
+      "configure router policy-options prefix-list info-prefix",
+      "prefix 2001:db8:ffff::/64");
+  require_classic_context_info(
+      "configure system security keychain info-keychain direction bi entry 1",
+      "key \"******\" algorithm hmac-sha-256");
+  require_classic_context_info(
+      "configure system security keychain info-keychain",
+      "direction bi");
+  require_classic_context_info("configure system security tls",
+                               "use-pqc-only false");
+  require_classic_context_info("configure ipsec ike-transform 1",
+                               "dh-group group-19");
+  require_classic_context_info("configure service ies 900", "service-id 900");
   for (const auto command :
        {"configure router interface classic-loop address 198.51.100.1/32",
         "configure router interface classic-loop no shutdown"}) {
@@ -977,19 +1097,19 @@ void lab_runtime_tests() {
           " output=" + std::string{result});
   }
   const auto classic_context_info = contextual_command("info");
-  require(classic_context_info.find(
-              "----------------------------------------------\n") !=
-                  std::string_view::npos &&
-              classic_context_info.find("passive\n") !=
-                  std::string_view::npos &&
-              classic_context_info.find('{') == std::string_view::npos &&
-              classic_context_info.find(">config>router>ospf>area>if#") !=
-                  std::string_view::npos &&
-              classic_context_info.find(">ospf>0>") ==
-                  std::string_view::npos &&
-              classic_context_info.find("MINOR:") == std::string_view::npos,
-          "classic info did not render running configuration in the current "
-          "OSPF interface context");
+  if (classic_context_info.find(
+          "----------------------------------------------\n") ==
+          std::string_view::npos ||
+      classic_context_info.find("passive\n") == std::string_view::npos ||
+      classic_context_info.find('{') != std::string_view::npos ||
+      classic_context_info.find(">config>router>ospf>area>if#") ==
+          std::string_view::npos ||
+      classic_context_info.find(">ospf>0>") != std::string_view::npos ||
+      classic_context_info.find("MINOR:") != std::string_view::npos)
+    throw std::runtime_error(
+        "classic info did not render running configuration in the current "
+        "OSPF interface context: " +
+        std::string{classic_context_info});
   const auto classic_context_detail = contextual_command("info detail");
   require(classic_context_detail.find("metric ") != std::string_view::npos &&
               classic_context_detail.find("hello-interval ") !=
@@ -2186,6 +2306,26 @@ void lab_runtime_tests() {
   require(tls_commit.find("MGMT_CORE #") == std::string_view::npos,
           "complete TLS 1.3 candidate did not commit atomically");
   require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1",
+                                   "system security tls"}))
+                  .find("MINOR:") == std::string_view::npos,
+          "MD TLS info fixture could not enter its documented context");
+  const std::string tls_md_info{runtime.command(message(
+      lab_runtime_protocol::session_execute, {"r1-console-1", "info"}))};
+  require(
+      tls_md_info.find(
+          "trust-anchor-profile \"lab-roots\" {\n"
+          "    trust-anchor \"root-ca\" { }\n"
+          "}") != std::string_view::npos &&
+          tls_md_info.find(
+              "client-cipher-list \"client-ciphers\" {\n"
+              "    tls13-cipher 1 {\n"
+              "        name tls-aes256-gcm-sha384\n"
+              "    }\n"
+              "}") != std::string_view::npos &&
+          tls_md_info.find("status-verify {\n") != std::string_view::npos,
+      "MD TLS info did not use the documented keyed-list hierarchy");
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1", "exit all"}))
                   .find("[/]") != std::string_view::npos,
           "clean exclusive workflow could not return to operational mode");
@@ -2251,6 +2391,26 @@ void lab_runtime_tests() {
           "valid TLS classic command failed: " + std::string{command} +
           " output=" + std::string{result});
   }
+  static_cast<void>(runtime.command(message(
+      lab_runtime_protocol::session_execute, {"r1-console-1", "exit all"})));
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1",
+                                   "configure system security tls"}))
+                  .find("Error:") == std::string_view::npos,
+          "classic TLS info fixture could not enter its documented context");
+  const std::string tls_classic_info{runtime.command(message(
+      lab_runtime_protocol::session_execute, {"r1-console-1", "info"}))};
+  require(
+      tls_classic_info.find(
+          "trust-anchor-profile \"lab-roots\" create\n"
+          "    trust-anchor \"root-ca\"\n"
+          "exit") != std::string_view::npos &&
+          tls_classic_info.find(
+              "client-cipher-list \"client-ciphers\" create\n"
+              "    tls13-cipher 1 name tls-aes256-gcm-sha384\n"
+              "exit") != std::string_view::npos &&
+          tls_classic_info.find('{') == std::string_view::npos,
+      "classic TLS info did not use documented create and flat-entry syntax");
   // Classic CLI edits the same router-owned canonical model immediately, but
   // retains its own create/no syntax and command semantics. Independent IDs
   // make it impossible for this path to pass by reusing the MD objects above.
@@ -2282,6 +2442,8 @@ void lab_runtime_tests() {
           "valid IPsec classic command failed: " + std::string{command} +
           " output=" + std::string{result});
   }
+  static_cast<void>(runtime.command(message(
+      lab_runtime_protocol::session_execute, {"r1-console-1", "exit all"})));
   require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1", "//"}))
                   .find("A:admin@candidate-r1#") != std::string_view::npos,

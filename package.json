@@ -5,6 +5,7 @@
   "packageManager": "pnpm@11.0.4",
   "scripts": {
     "build": "pnpm core:publish && pnpm --filter @router-simulator/web build",
+    "prebuild": "pnpm info:check",
     "dev": "pnpm --filter @router-simulator/web dev",
     "toolchain:bootstrap": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap-toolchain.ps1",
     "dependencies:bootstrap": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap-dependencies.ps1",
@@ -27,6 +28,8 @@
     "notices:generate": "node tools/generate-third-party-notices.mjs",
     "notices:check": "node tools/generate-third-party-notices.mjs --check",
     "test": "pnpm core:test && pnpm -r test",
+    "pretest": "pnpm info:check",
+    "info:check": "node tools/check-info-renderers.mjs",
     "typecheck": "pnpm -r typecheck",
     "verify": "pnpm sources:validate && pnpm profiles:check && pnpm architecture:check && pnpm public-release:check && pnpm notices:check && pnpm typecheck && pnpm test && pnpm benchmark:check && pnpm core:structure-benchmark:cached && pnpm core:runtime-benchmark:cached && pnpm core:publish:cached && pnpm --filter @router-simulator/web build"
   },

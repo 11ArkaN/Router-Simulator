@@ -108,8 +108,8 @@ records:
     rfc_refs: [RFC2328, RFC5709, RFC7166]
     yang_path: /configure/system/security/keychains/keychain/bidirectional/entry
     last_verified_at: 2026-07-24
-    implementation: [core/include/router/ospf_authentication.hpp, core/src/ospf/ospf_authentication.cpp, core/include/router/ospf_keychain.hpp, core/src/ospf/ospf_keychain.cpp]
-    tests: [core/tests/ospf/ospf_authentication_test.cpp, core/tests/ospf/ospf_keychain_test.cpp]
+    implementation: [schemas/cli/26.7.R1.yaml, schemas/cli/info-renderers.yaml, core/include/router/ospf_authentication.hpp, core/src/ospf/ospf_authentication.cpp, core/include/router/ospf_keychain.hpp, core/src/ospf/ospf_keychain.cpp, core/src/runtime/lab_runtime.cpp]
+    tests: [core/tests/ospf/ospf_authentication_test.cpp, core/tests/ospf/ospf_keychain_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
     status: implemented
     notes: The keychain owner selects the youngest active send key, accepts receive keys through their configured tolerance and resolves key material only through the per-router secret vault. OSPFv2 implements password, MD5, HMAC-SHA-1 and HMAC-SHA-256 authentication. OSPFv3 implements RFC 7166 authentication trailers. MD-CLI and classic CLI configure the same canonical keychain state without exposing cleartext operationally.
   - id: nokia.sros.26_7.ospf3.ipsec_authentication
@@ -1158,10 +1158,10 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-29
-    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli/cli.cpp, core/src/cli/cli_parser.cpp, core/src/runtime/lab_runtime.cpp]
+    implementation: [schemas/cli/26.7.R1.yaml, schemas/cli/info-renderers.yaml, tools/check-info-renderers.mjs, core/include/router/generated_cli_schema.hpp, core/src/cli/cli.cpp, core/src/cli/cli_parser.cpp, core/src/runtime/lab_runtime.cpp]
     tests: [core/tests/runtime/lab_runtime_test.cpp]
     status: implemented
-    notes: The global info command resolves against every saved MD present working context and reads the session's private or shared candidate when an editor is active. Output is relative to that context, keeps braces around nested containers and lists, preserves model order, and uses explicit leaf presence for plain output while info detail adds effective release defaults below existing list entries. Physical Ethernet contexts join port intent and Ethernet classification without exposing operational state. Card and MDA contexts render provisioned candidate identities and administrative intent without fabricating absent slot keys.
+    notes: The global info command resolves against every saved MD present working context and reads the session's private or shared candidate when an editor is active. Output is relative to that context, keeps braces around nested containers and lists, preserves model order, and uses explicit leaf presence for plain output while info detail adds effective release defaults below existing list entries. Physical Ethernet contexts join port intent and Ethernet classification without exposing operational state. Card and MDA contexts render provisioned candidate identities and administrative intent without fabricating absent slot keys. The release schema assigns every configuration source family to an explicit renderer owner. Missing ownership or a silent empty-render fallback blocks tests and production builds.
   - id: nokia.sros.26_7.classic_cli.info
     kind: cli-behavior
     release: 26.7.R1
@@ -1172,10 +1172,10 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-07-29
-    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli/cli.cpp, core/src/runtime/lab_runtime.cpp]
+    implementation: [schemas/cli/26.7.R1.yaml, schemas/cli/info-renderers.yaml, tools/check-info-renderers.mjs, core/include/router/generated_cli_schema.hpp, core/src/cli/cli.cpp, core/src/runtime/lab_runtime.cpp]
     tests: [core/tests/runtime/lab_runtime_test.cpp]
     status: implemented
-    notes: Classic info and info detail are global within configuration mode, display running configuration relative to the saved classic context, use indentation and exit delimiters instead of MD braces, and retain the documented classic shutdown and no shutdown spellings for interfaces, cards and MDAs.
+    notes: Classic info and info detail are global within configuration mode, display running configuration relative to the saved classic context, use indentation and exit delimiters instead of MD braces, and retain the documented classic shutdown and no shutdown spellings for interfaces, cards and MDAs. Classic ownership is validated independently from MD ownership, and typed source-family transcripts reject empty or MD-formatted classic output.
   - id: nokia.sros.26_7.classic_cli.navigation
     kind: cli-behavior
     release: 26.7.R1
@@ -1203,7 +1203,7 @@ records:
     implementation: [schemas/cli/26.7.R1.yaml, core/include/router/device.hpp, core/include/router/session_workflows.hpp, core/src/cli/cli.cpp, core/src/cli/cli_md.cpp, core/src/runtime/session_workflows.cpp, core/src/runtime/lab_checkpoint.cpp, core/src/runtime/lab_runtime.cpp]
     tests: [core/tests/cli/cli_test.cpp, core/tests/runtime/session_workflows_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
     status: implemented
-    notes: The multi-session datastore and terminal grammar implement global visibility, exclusive running locks, private baselines, read-only rejection, path-level merge conflicts, classic interaction with locks and dirty-exit policy. Operational monitoring and troubleshooting commands remain available from MD configuration mode and resolve from the operational root before relative configuration paths. Operational sessions cannot navigate into a configuration-looking path without first acquiring a candidate datastore.
+    notes: The multi-session datastore and terminal grammar implement global visibility, exclusive running locks, private baselines, read-only rejection, path-level merge conflicts, classic interaction with locks and dirty-exit policy. Operational monitoring and troubleshooting commands remain available from MD configuration mode and resolve from the operational root before relative configuration paths. Operational sessions cannot navigate into a configuration-looking path without first acquiring a candidate datastore. The global quit-config action remains available from every model context and releases an explicit candidate without resolving the command below the present working context.
   - id: nokia.sros.26_7.md_cli.command_completion
     kind: cli-behavior
     release: 26.7.R1

@@ -1404,6 +1404,11 @@ std::string ipv4_text(std::uint32_t value) {
          std::to_string(value & 255U);
 }
 
+std::string ipv4_text(const packet::Ipv4 &value) {
+  return std::to_string(value[0U]) + '.' + std::to_string(value[1U]) + '.' +
+         std::to_string(value[2U]) + '.' + std::to_string(value[3U]);
+}
+
 std::string_view
 dhcpv4_client_state_text(dhcpv4::ClientState state) noexcept {
   using enum dhcpv4::ClientState;
@@ -3051,25 +3056,166 @@ md_context_tokens(std::string_view path) {
   return tokens;
 }
 
-std::optional<std::uint32_t>
-ospf_area_identifier(std::string_view text) noexcept {
-  // Nokia accepts the area list key in unsigned or dotted-decimal notation.
-  // The canonical model uses the 32-bit wire value, so info must resolve both
-  // textual spellings exactly as configuration does.
-  if (text.find('.') != std::string_view::npos)
-    return ipv4(text);
-  std::uint32_t value{};
-  const auto result =
-      std::from_chars(text.data(), text.data() + text.size(), value);
-  return !text.empty() && result.ec == std::errc{} &&
-                 result.ptr == text.data() + text.size()
-             ? std::optional{value}
-             : std::nullopt;
-}
-
 void md_indent(std::ostringstream &out, std::size_t depth) {
   for (std::size_t index{}; index < depth; ++index)
     out << "    ";
+}
+
+void md_append_indented(std::ostringstream &out, std::string_view text,
+                        std::size_t depth) {
+  // Subtree renderers return context-relative MD text. Root aggregation adds
+  // only indentation and never reparses leaf values, which keeps one source of
+  // truth for quoting, defaults and list-key spelling at every navigation
+  // depth.
+  std::size_t begin{};
+  while (begin < text.size()) {
+    const auto end = text.find('\n', begin);
+    const auto line = text.substr(
+        begin, end == std::string_view::npos ? text.size() - begin
+                                             : end - begin);
+    if (!line.empty()) {
+      md_indent(out, depth);
+      out << line << '\n';
+    }
+    if (end == std::string_view::npos)
+      break;
+    begin = end + 1U;
+  }
+}
+
+bool ospf_area_key_equal(std::string_view left,
+                         std::string_view right) noexcept {
+  // OSPF area list keys accept both unsigned decimal and dotted-decimal
+  // spelling. The datastore renders the canonical dotted form, while a saved
+  // CLI PWC retains the operator's spelling. Context selection must compare
+  // their wire values rather than their presentation strings.
+  const auto parse = [](std::string_view text)
+      -> std::optional<std::uint32_t> {
+    if (text.find('.') != std::string_view::npos)
+      return ipv4(text);
+    std::uint32_t value{};
+    const auto result =
+        std::from_chars(text.data(), text.data() + text.size(), value);
+    if (text.empty() || result.ec != std::errc{} ||
+        result.ptr != text.data() + text.size())
+      return std::nullopt;
+    return value;
+  };
+  const auto parsed_left = parse(left);
+  const auto parsed_right = parse(right);
+  return parsed_left && parsed_right && *parsed_left == *parsed_right;
+}
+
+std::optional<std::string> md_rendered_context_body(
+    std::string_view body, const std::vector<std::string> &path,
+    std::size_t path_offset) {
+  // Nokia defines `info` as the configuration below the present working
+  // context. A renderer may therefore serialize one typed subtree once, but a
+  // deeper PWC must receive only the inside of its selected container. This
+  // selector operates on the canonical MD presentation after typed values
+  // have been rendered. It never reconstructs configuration from command
+  // text, and it accepts only exact container headers at the current depth.
+  // Official source:
+  // https://documentation.nokia.com/sr/26-7/7750-sr/books/
+  // md-cli-command-reference/_global.html#info-from-keyword
+  if (path_offset == path.size())
+    return std::string{body};
+
+  std::size_t line_begin{};
+  std::size_t nesting{};
+  while (line_begin < body.size()) {
+    const auto line_end = body.find('\n', line_begin);
+    const auto line = body.substr(
+        line_begin, line_end == std::string_view::npos
+                        ? body.size() - line_begin
+                        : line_end - line_begin);
+    const auto first = line.find_first_not_of(' ');
+    const auto content =
+        first == std::string_view::npos ? std::string_view{} : line.substr(first);
+
+    if (nesting == 0U && content.size() >= 2U &&
+        content.ends_with(" {")) {
+      const auto header =
+          content.substr(0U, content.size() - std::string_view{" {"}.size());
+      const auto header_tokens = md_context_tokens(header);
+      bool matches = header_tokens && !header_tokens->empty() &&
+                     path_offset + header_tokens->size() <= path.size();
+      if (matches) {
+        for (std::size_t index{}; index < header_tokens->size(); ++index) {
+          const bool area_key =
+              index && ((*header_tokens)[index - 1U] == "area" ||
+                        (*header_tokens)[index - 1U] == "transit-area");
+          if ((*header_tokens)[index] != path[path_offset + index] &&
+              !(area_key &&
+                ospf_area_key_equal((*header_tokens)[index],
+                                    path[path_offset + index]))) {
+            matches = false;
+            break;
+          }
+        }
+      }
+      if (matches) {
+        // Find the closing brace paired with this top-level container. Braces
+        // only delimit MD containers in the canonical renderer, so a simple
+        // depth counter is sufficient and cannot be confused by quoted leaf
+        // values.
+        std::size_t cursor =
+            line_end == std::string_view::npos ? body.size() : line_end + 1U;
+        std::size_t depth{1U};
+        const auto inner_begin = cursor;
+        while (cursor < body.size()) {
+          const auto candidate_end = body.find('\n', cursor);
+          const auto candidate = body.substr(
+              cursor, candidate_end == std::string_view::npos
+                          ? body.size() - cursor
+                          : candidate_end - cursor);
+          const auto candidate_first = candidate.find_first_not_of(' ');
+          const auto candidate_content =
+              candidate_first == std::string_view::npos
+                  ? std::string_view{}
+                  : candidate.substr(candidate_first);
+          if (candidate_content.ends_with(" {"))
+            ++depth;
+          else if (candidate_content == "}" && --depth == 0U) {
+            std::ostringstream relative;
+            std::size_t inner_cursor = inner_begin;
+            while (inner_cursor < cursor) {
+              const auto inner_end = body.find('\n', inner_cursor);
+              auto inner_line = body.substr(
+                  inner_cursor, inner_end == std::string_view::npos
+                                    ? cursor - inner_cursor
+                                    : inner_end - inner_cursor);
+              // Every child of the selected container has exactly one
+              // additional MD indentation level. Removing only that level
+              // preserves all nested formatting byte for byte.
+              if (inner_line.starts_with("    "))
+                inner_line.remove_prefix(4U);
+              relative << inner_line << '\n';
+              if (inner_end == std::string_view::npos || inner_end >= cursor)
+                break;
+              inner_cursor = inner_end + 1U;
+            }
+            return md_rendered_context_body(
+                relative.str(), path,
+                path_offset + header_tokens->size());
+          }
+          if (candidate_end == std::string_view::npos)
+            break;
+          cursor = candidate_end + 1U;
+        }
+        return std::nullopt;
+      }
+    }
+
+    if (content.ends_with(" {"))
+      ++nesting;
+    else if (content == "}" && nesting)
+      --nesting;
+    if (line_end == std::string_view::npos)
+      break;
+    line_begin = line_end + 1U;
+  }
+  return std::nullopt;
 }
 
 void md_dhcpv6_prefix_info(
@@ -3347,6 +3493,1660 @@ std::optional<std::string> md_dhcpv6_configuration_info(
   return std::nullopt;
 }
 
+void md_dhcpv4_subnet_info(
+    std::ostringstream &out,
+    const dhcpv4::configuration::Subnet &subnet, std::size_t depth,
+    bool detail) {
+  // The DHCPv4 intent currently stores effective values for these leaves.
+  // They are emitted for detail and whenever they differ from the documented
+  // release defaults. Range list entries have no implicit form and are always
+  // rendered because their keys are the actual allocation boundaries.
+  if (detail || subnet.maximum_declined !=
+                    device_catalog::dhcpv4_maximum_declined_default) {
+    md_indent(out, depth);
+    out << "maximum-declined-addresses " << subnet.maximum_declined << '\n';
+  }
+  if (detail || subnet.drain) {
+    md_indent(out, depth);
+    out << "drain " << (subnet.drain ? "true" : "false") << '\n';
+  }
+  for (const auto &range : subnet.address_ranges) {
+    md_indent(out, depth);
+    out << "address-range " << ipv4_text(range.first) << ' '
+        << ipv4_text(range.last) << " failover-control "
+        << (range.failover_control ==
+                    dhcpv4::configuration::FailoverControlType::local
+                ? "local"
+                : "remote")
+        << '\n';
+  }
+  for (const auto &range : subnet.excluded_ranges) {
+    md_indent(out, depth);
+    out << "exclude-address-range " << ipv4_text(range.first) << ' '
+        << ipv4_text(range.last) << '\n';
+  }
+}
+
+void md_dhcpv4_pool_info(std::ostringstream &out,
+                         const dhcpv4::configuration::Pool &pool,
+                         std::size_t depth, bool detail) {
+  if (!pool.description.empty()) {
+    md_indent(out, depth);
+    out << "description \"" << pool.description << "\"\n";
+  }
+  const auto duration = [&](std::string_view name, std::uint32_t value,
+                            std::uint32_t release_default) {
+    if (detail || value != release_default) {
+      md_indent(out, depth);
+      out << name << ' ' << value << '\n';
+    }
+  };
+  duration("minimum-lease-time", pool.minimum_lease_seconds,
+           device_catalog::dhcpv4_minimum_lease_time_seconds);
+  duration("maximum-lease-time", pool.maximum_lease_seconds,
+           device_catalog::dhcpv4_maximum_lease_time_seconds);
+  duration("offer-time", pool.offer_seconds,
+           device_catalog::dhcpv4_offer_time_seconds);
+  if (detail || pool.nak_non_matching_subnet) {
+    md_indent(out, depth);
+    out << "nak-non-matching-subnet "
+        << (pool.nak_non_matching_subnet ? "true" : "false") << '\n';
+  }
+  for (const auto &subnet : pool.subnets) {
+    md_indent(out, depth);
+    out << "subnet " << ipv4_text(subnet.network) << '/'
+        << static_cast<unsigned>(subnet.prefix_length) << " {\n";
+    md_dhcpv4_subnet_info(out, subnet, depth + 1U, detail);
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+void md_dhcpv4_server_info(std::ostringstream &out,
+                           const dhcpv4::configuration::Server &server,
+                           std::size_t depth, bool detail) {
+  if (!server.description.empty()) {
+    md_indent(out, depth);
+    out << "description \"" << server.description << "\"\n";
+  }
+  // Server list creation materializes both booleans in the canonical model.
+  // Rendering them prevents an existing object from disappearing at its own
+  // context and gives classic conversion the shutdown form it requires.
+  md_indent(out, depth);
+  out << "admin-state " << (server.admin_enabled ? "enable" : "disable")
+      << '\n';
+  if (detail || server.force_renews) {
+    md_indent(out, depth);
+    out << "force-renews " << (server.force_renews ? "true" : "false")
+        << '\n';
+  }
+  for (const auto &pool : server.pools) {
+    md_indent(out, depth);
+    out << "pool \"" << pool.name << "\" {\n";
+    md_dhcpv4_pool_info(out, pool, depth + 1U, detail);
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+std::optional<std::string> md_dhcpv4_configuration_info(
+    const dhcpv4::configuration::RouterConfiguration &configuration,
+    std::string_view path, bool detail) {
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->size() < 5U || (*tokens)[0] != "configure" ||
+      (*tokens)[1] != "router" || (*tokens)[2] != "Base" ||
+      (*tokens)[3] != "dhcp-server" || (*tokens)[4] != "dhcpv4")
+    return std::nullopt;
+
+  const auto emit_servers = [&](std::ostringstream &out, std::size_t depth) {
+    for (const auto &server : configuration.servers) {
+      md_indent(out, depth);
+      out << '"' << server.name << "\" {\n";
+      md_dhcpv4_server_info(out, server, depth + 1U, detail);
+      md_indent(out, depth);
+      out << "}\n";
+    }
+  };
+
+  std::ostringstream out;
+  if (tokens->size() == 5U) {
+    emit_servers(out, 0U);
+    return out.str();
+  }
+  const auto server = std::ranges::find(configuration.servers, (*tokens)[5],
+                                        &dhcpv4::configuration::Server::name);
+  if (server == configuration.servers.end())
+    return std::string{};
+  if (tokens->size() == 6U) {
+    md_dhcpv4_server_info(out, *server, 0U, detail);
+    return out.str();
+  }
+  if ((*tokens)[6] != "pool" || tokens->size() < 8U)
+    return std::nullopt;
+  const auto pool = std::ranges::find(server->pools, (*tokens)[7],
+                                      &dhcpv4::configuration::Pool::name);
+  if (pool == server->pools.end())
+    return std::string{};
+  if (tokens->size() == 8U) {
+    md_dhcpv4_pool_info(out, *pool, 0U, detail);
+    return out.str();
+  }
+  if ((*tokens)[8] != "subnet" || tokens->size() != 10U)
+    return std::nullopt;
+  const auto requested = ip::parse_ip_prefix((*tokens)[9]);
+  if (!requested || requested->network.family != ip::AddressFamily::ipv4)
+    return std::string{};
+  packet::Ipv4 network{requested->network.bytes[0U],
+                       requested->network.bytes[1U],
+                       requested->network.bytes[2U],
+                       requested->network.bytes[3U]};
+  const auto subnet = std::find_if(
+      pool->subnets.begin(), pool->subnets.end(), [&](const auto &candidate) {
+        return candidate.network == network &&
+               candidate.prefix_length == requested->length;
+      });
+  if (subnet == pool->subnets.end())
+    return std::string{};
+  md_dhcpv4_subnet_info(out, *subnet, 0U, detail);
+  return out.str();
+}
+
+template <typename Configuration>
+std::optional<std::string>
+md_dhcp_server_configuration_info(const Configuration &configuration,
+                                  std::string_view path, bool detail) {
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->size() != 4U || (*tokens)[0] != "configure" ||
+      (*tokens)[1] != "router" || (*tokens)[2] != "Base" ||
+      (*tokens)[3] != "dhcp-server")
+    return std::nullopt;
+  std::ostringstream out;
+  for (const auto &server : configuration.dhcpv4_servers.servers) {
+    out << "dhcpv4 \"" << server.name << "\" {\n";
+    md_dhcpv4_server_info(out, server, 1U, detail);
+    out << "}\n";
+  }
+  for (const auto &server : configuration.dhcpv6_servers.servers) {
+    out << "dhcpv6 \"" << server.name << "\" {\n";
+    md_dhcpv6_server_info(out, server, 1U, detail);
+    out << "}\n";
+  }
+  return out.str();
+}
+
+std::string_view policy_action_text(mld::ImportPolicyAction action) noexcept;
+
+std::string_view tls_protocol_text(tls_profile::ProtocolVersion value) {
+  switch (value) {
+  case tls_profile::ProtocolVersion::tls12:
+    return "tls-version12";
+  case tls_profile::ProtocolVersion::tls13:
+    return "tls-version13";
+  case tls_profile::ProtocolVersion::all:
+    return "tls-version-all";
+  }
+  return {};
+}
+
+std::string_view tls_status_text(tls_profile::StatusResult value) {
+  return value == tls_profile::StatusResult::good ? "good" : "revoked";
+}
+
+std::string_view tls_revocation_text(tls_profile::RevocationMethod value) {
+  switch (value) {
+  case tls_profile::RevocationMethod::none:
+    return "none";
+  case tls_profile::RevocationMethod::crl:
+    return "crl";
+  case tls_profile::RevocationMethod::ocsp:
+    return "ocsp";
+  }
+  return {};
+}
+
+void md_tls_status_info(std::ostringstream &out,
+                        const tls_profile::StatusVerification &status,
+                        std::size_t depth, bool detail) {
+  if (detail || status.default_result_configured) {
+    md_indent(out, depth);
+    out << "default-result " << tls_status_text(status.default_result) << '\n';
+  }
+  if (detail || status.primary_configured || status.secondary_configured) {
+    md_indent(out, depth);
+    out << "ee-revocation {\n";
+    if (detail || status.primary_configured) {
+      md_indent(out, depth + 1U);
+      out << "primary " << tls_revocation_text(status.primary) << '\n';
+    }
+    if (detail || status.secondary_configured) {
+      md_indent(out, depth + 1U);
+      out << "secondary " << tls_revocation_text(status.secondary) << '\n';
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+template <typename Profile>
+void md_tls_endpoint_profile_info(std::ostringstream &out,
+                                  const Profile &profile, std::size_t depth,
+                                  bool detail) {
+  if (detail || profile.admin_configured) {
+    md_indent(out, depth);
+    out << "admin-state " << (profile.admin_enabled ? "enable" : "disable")
+        << '\n';
+  }
+  const auto reference = [&](std::string_view name,
+                             const std::string &value) {
+    if (!value.empty()) {
+      md_indent(out, depth);
+      out << name << " \"" << value << "\"\n";
+    }
+  };
+  reference("cert-profile", profile.certificate_profile);
+  reference("cipher-list", profile.cipher_list);
+  reference("group-list", profile.group_list);
+  reference("signature-list", profile.signature_list);
+  if (detail || profile.protocol_version_configured) {
+    md_indent(out, depth);
+    out << "protocol-version " << tls_protocol_text(profile.protocol_version)
+        << '\n';
+  }
+  const auto &status = profile.status_verification;
+  if (detail || status.default_result_configured || status.primary_configured ||
+      status.secondary_configured) {
+    md_indent(out, depth);
+    out << "status-verify {\n";
+    md_tls_status_info(out, status, depth + 1U, detail);
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+void md_tls_configuration_body(std::ostringstream &out,
+                               const tls_profile::Configuration &tls,
+                               std::size_t depth, bool detail) {
+  if (detail || tls.use_pqc_only_configured) {
+    md_indent(out, depth);
+    out << "use-pqc-only " << (tls.use_pqc_only ? "true" : "false") << '\n';
+  }
+  for (const auto &profile : tls.certificate_profiles) {
+    md_indent(out, depth);
+    out << "cert-profile \"" << profile.name << "\" {\n";
+    if (detail || profile.admin_configured) {
+      md_indent(out, depth + 1U);
+      out << "admin-state " << (profile.admin_enabled ? "enable" : "disable")
+          << '\n';
+    }
+    for (const auto &entry : profile.entries) {
+      md_indent(out, depth + 1U);
+      out << "entry " << static_cast<unsigned>(entry.id) << " {\n";
+      if (!entry.certificate_file.empty()) {
+        md_indent(out, depth + 2U);
+        out << "certificate-file \"" << entry.certificate_file << "\"\n";
+      }
+      if (!entry.key_file.empty()) {
+        md_indent(out, depth + 2U);
+        out << "key-file \"" << entry.key_file << "\"\n";
+      }
+      if (!entry.send_chain_ca_profiles.empty()) {
+        md_indent(out, depth + 2U);
+        out << "send-chain {\n";
+        for (const auto &ca : entry.send_chain_ca_profiles) {
+          md_indent(out, depth + 3U);
+          out << "ca-profile \"" << ca << "\" { }\n";
+        }
+        md_indent(out, depth + 2U);
+        out << "}\n";
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  for (const auto &profile : tls.trust_anchor_profiles) {
+    md_indent(out, depth);
+    out << "trust-anchor-profile \"" << profile.name << "\" {\n";
+    for (const auto &ca : profile.ca_profiles) {
+      md_indent(out, depth + 1U);
+      // The CA reference is a key-only YANG list, not a scalar leaf. Nokia's
+      // 26.7 TLS example therefore renders an empty list block in MD-CLI.
+      out << "trust-anchor \"" << ca << "\" { }\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  const auto algorithm_lists = [&](std::string_view list_name,
+                                   std::string_view entry_name,
+                                   const auto &lists) {
+    for (const auto &list : lists) {
+      md_indent(out, depth);
+      out << list_name << " \"" << list.name << "\" {\n";
+      for (const auto &entry : list.entries) {
+        md_indent(out, depth + 1U);
+        out << entry_name << ' ' << static_cast<unsigned>(entry.index)
+            << " {\n";
+        md_indent(out, depth + 2U);
+        out << "name " << entry.name << '\n';
+        md_indent(out, depth + 1U);
+        out << "}\n";
+      }
+      md_indent(out, depth);
+      out << "}\n";
+    }
+  };
+  algorithm_lists("client-cipher-list", "tls13-cipher",
+                  tls.client_cipher_lists);
+  algorithm_lists("client-group-list", "tls13-group",
+                  tls.client_group_lists);
+  algorithm_lists("client-signature-list", "tls13-signature",
+                  tls.client_signature_lists);
+  algorithm_lists("server-cipher-list", "tls13-cipher",
+                  tls.server_cipher_lists);
+  algorithm_lists("server-group-list", "tls13-group",
+                  tls.server_group_lists);
+  algorithm_lists("server-signature-list", "tls13-signature",
+                  tls.server_signature_lists);
+  for (const auto &profile : tls.client_profiles) {
+    md_indent(out, depth);
+    out << "client-tls-profile \"" << profile.name << "\" {\n";
+    md_tls_endpoint_profile_info(out, profile, depth + 1U, detail);
+    if (!profile.trust_anchor_profile.empty()) {
+      md_indent(out, depth + 1U);
+      out << "trust-anchor-profile \"" << profile.trust_anchor_profile
+          << "\"\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  for (const auto &profile : tls.server_profiles) {
+    md_indent(out, depth);
+    out << "server-tls-profile \"" << profile.name << "\" {\n";
+    md_tls_endpoint_profile_info(out, profile, depth + 1U, detail);
+    if (!profile.client_trust_anchor_profile.empty() ||
+        !profile.client_common_name_list.empty()) {
+      md_indent(out, depth + 1U);
+      out << "authenticate-client {\n";
+      if (!profile.client_trust_anchor_profile.empty()) {
+        md_indent(out, depth + 2U);
+        out << "trust-anchor-profile \""
+            << profile.client_trust_anchor_profile << "\"\n";
+      }
+      if (!profile.client_common_name_list.empty()) {
+        md_indent(out, depth + 2U);
+        out << "common-name-list \"" << profile.client_common_name_list
+            << "\"\n";
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+std::optional<std::string>
+md_tls_configuration_info(const tls_profile::Configuration &tls,
+                          std::string_view path, bool detail) {
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->size() < 4U || (*tokens)[0] != "configure" ||
+      (*tokens)[1] != "system" || (*tokens)[2] != "security" ||
+      (*tokens)[3] != "tls")
+    return std::nullopt;
+  // Render once from the typed TLS model, then scope to the PWC. This avoids
+  // the former behavior where a cert-profile context printed the surrounding
+  // `cert-profile "name" { ... }` wrapper and where other TLS children printed
+  // the entire TLS tree. Both differ from SR OS present-context semantics.
+  std::ostringstream out;
+  md_tls_configuration_body(out, tls, 0U, detail);
+  return md_rendered_context_body(out.str(), *tokens, 4U);
+}
+
+void md_ies_relay_info(
+    std::ostringstream &out,
+    const service::Dhcpv6RelayConfiguration &relay, std::size_t depth,
+    bool detail) {
+  md_indent(out, depth);
+  out << "admin-state " << (relay.admin_enabled ? "enable" : "disable")
+      << '\n';
+  for (const auto &server : relay.servers) {
+    md_indent(out, depth);
+    out << "server " << ip::format_ipv6(server.address) << '\n';
+  }
+  if (relay.link_address) {
+    md_indent(out, depth);
+    out << "link-address " << ip::format_ipv6(*relay.link_address) << '\n';
+  }
+  if (relay.source_address) {
+    md_indent(out, depth);
+    out << "source-address " << ip::format_ipv6(*relay.source_address) << '\n';
+  }
+  if (detail || relay.neighbor_resolution) {
+    md_indent(out, depth);
+    out << "neighbor-resolution "
+        << (relay.neighbor_resolution ? "true" : "false") << '\n';
+  }
+  if (relay.interface_id_kind != service::RelayInterfaceIdKind::absent) {
+    md_indent(out, depth);
+    out << "option {\n";
+    md_indent(out, depth + 1U);
+    out << "interface-id ";
+    switch (relay.interface_id_kind) {
+    case service::RelayInterfaceIdKind::ascii_tuple:
+      out << "ascii-tuple\n";
+      break;
+    case service::RelayInterfaceIdKind::ifindex:
+      out << "ifindex\n";
+      break;
+    case service::RelayInterfaceIdKind::sap_id:
+      out << "sap-id\n";
+      break;
+    case service::RelayInterfaceIdKind::string:
+      out << "string \"" << relay.interface_id_string << "\"\n";
+      break;
+    case service::RelayInterfaceIdKind::absent:
+      break;
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  const bool lease_present =
+      relay.lease_population_limit || relay.route_populate_na ||
+      relay.route_populate_pd || relay.route_populate_ta ||
+      relay.route_populate_pd_exclude;
+  if (detail || lease_present) {
+    md_indent(out, depth);
+    out << "lease-populate {\n";
+    if (detail || relay.lease_population_limit) {
+      md_indent(out, depth + 1U);
+      out << "max-nbr-of-leases " << relay.lease_population_limit << '\n';
+    }
+    md_indent(out, depth + 1U);
+    out << "route-populate {\n";
+    md_indent(out, depth + 2U);
+    out << "na " << (relay.route_populate_na ? "true" : "false") << '\n';
+    md_indent(out, depth + 2U);
+    out << "pd {\n";
+    md_indent(out, depth + 3U);
+    out << "exclude "
+        << (relay.route_populate_pd_exclude ? "true" : "false") << '\n';
+    md_indent(out, depth + 2U);
+    out << "}\n";
+    md_indent(out, depth + 2U);
+    out << "ta " << (relay.route_populate_ta ? "true" : "false") << '\n';
+    md_indent(out, depth + 1U);
+    out << "}\n";
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+void md_ies_interface_info(std::ostringstream &out,
+                           const service::IesInterfaceConfiguration &interface,
+                           std::size_t depth, bool detail) {
+  if (!interface.description.empty()) {
+    md_indent(out, depth);
+    out << "description \"" << interface.description << "\"\n";
+  }
+  md_indent(out, depth);
+  out << "admin-state " << (interface.admin_enabled ? "enable" : "disable")
+      << '\n';
+  if (detail || interface.ip_mtu != 1500U) {
+    md_indent(out, depth);
+    out << "ip-mtu " << interface.ip_mtu << '\n';
+  }
+  if (interface.address_configured) {
+    md_indent(out, depth);
+    out << "ipv6 {\n";
+    md_indent(out, depth + 1U);
+    out << "address " << ip::format_ipv6(interface.address)
+        << " prefix-length " << static_cast<unsigned>(interface.prefix_length)
+        << '\n';
+    if (interface.dhcpv6_relay.configured) {
+      md_indent(out, depth + 1U);
+      out << "dhcp6 {\n";
+      md_indent(out, depth + 2U);
+      out << "relay {\n";
+      md_ies_relay_info(out, interface.dhcpv6_relay, depth + 3U, detail);
+      md_indent(out, depth + 2U);
+      out << "}\n";
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  std::array<char, 48U> sap_buffer{};
+  std::string_view sap_text;
+  if (service::format_sap_id(interface.sap, sap_buffer, sap_text)) {
+    md_indent(out, depth);
+    out << "sap \"" << sap_text << "\"\n";
+  }
+}
+
+void md_ies_service_info(std::ostringstream &out,
+                         const service::IesConfiguration &ies,
+                         std::size_t depth, bool detail) {
+  md_indent(out, depth);
+  out << "service-id " << ies.service_id << '\n';
+  md_indent(out, depth);
+  out << "customer \"" << ies.customer_id << "\"\n";
+  if (!ies.description.empty()) {
+    md_indent(out, depth);
+    out << "description \"" << ies.description << "\"\n";
+  }
+  md_indent(out, depth);
+  out << "admin-state " << (ies.admin_enabled ? "enable" : "disable") << '\n';
+  for (const auto &interface : ies.interfaces) {
+    md_indent(out, depth);
+    out << "interface \"" << interface.name << "\" {\n";
+    md_ies_interface_info(out, interface, depth + 1U, detail);
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+std::optional<std::string>
+md_ies_configuration_info(const service::Configuration &configuration,
+                          std::string_view path, bool detail) {
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->size() < 2U || (*tokens)[0] != "configure" ||
+      (*tokens)[1] != "service")
+    return std::nullopt;
+  std::ostringstream out;
+  if (tokens->size() == 2U) {
+    for (const auto &customer : configuration.customers) {
+      out << "customer \"" << customer.name << "\" {\n"
+          << "    customer-id " << customer.customer_id << '\n';
+      if (!customer.description.empty())
+        out << "    description \"" << customer.description << "\"\n";
+      out << "}\n";
+    }
+    for (const auto &ies : configuration.ies_services) {
+      out << "ies \"" << ies.name << "\" {\n";
+      md_ies_service_info(out, ies, 1U, detail);
+      out << "}\n";
+    }
+    return out.str();
+  }
+  if ((*tokens)[2] == "customer" && tokens->size() >= 4U) {
+    auto customer = std::ranges::find(configuration.customers, (*tokens)[3],
+                                      &service::CustomerConfiguration::name);
+    if (customer == configuration.customers.end()) {
+      std::uint32_t id{};
+      const auto key = std::string_view{(*tokens)[3]};
+      const auto parsed =
+          std::from_chars(key.data(), key.data() + key.size(), id);
+      if (parsed.ec == std::errc{} &&
+          parsed.ptr == key.data() + key.size())
+        customer = std::ranges::find(configuration.customers, id,
+                                     &service::CustomerConfiguration::
+                                         customer_id);
+    }
+    if (customer == configuration.customers.end())
+      return std::string{};
+    out << "customer-id " << customer->customer_id << '\n';
+    if (!customer->description.empty())
+      out << "description \"" << customer->description << "\"\n";
+    return out.str();
+  }
+  if ((*tokens)[2] != "ies" || tokens->size() < 4U)
+    return std::nullopt;
+  auto ies = std::ranges::find(configuration.ies_services, (*tokens)[3],
+                               &service::IesConfiguration::name);
+  if (ies == configuration.ies_services.end()) {
+    std::uint32_t id{};
+    const auto key = std::string_view{(*tokens)[3]};
+    const auto parsed =
+        std::from_chars(key.data(), key.data() + key.size(), id);
+    if (parsed.ec == std::errc{} && parsed.ptr == key.data() + key.size())
+      ies = std::ranges::find(configuration.ies_services, id,
+                              &service::IesConfiguration::service_id);
+  }
+  if (ies == configuration.ies_services.end())
+    return std::string{};
+  if (tokens->size() == 4U) {
+    md_ies_service_info(out, *ies, 0U, detail);
+    return out.str();
+  }
+  if ((*tokens)[4] != "interface" || tokens->size() < 6U)
+    return std::nullopt;
+  const auto interface =
+      std::ranges::find(ies->interfaces, (*tokens)[5],
+                        &service::IesInterfaceConfiguration::name);
+  if (interface == ies->interfaces.end())
+    return std::string{};
+  if (tokens->size() >= 9U && (*tokens)[6] == "ipv6" &&
+      (*tokens)[7] == "dhcp6" && (*tokens)[8] == "relay") {
+    if (!interface->dhcpv6_relay.configured && !detail)
+      return std::string{};
+    md_ies_relay_info(out, interface->dhcpv6_relay, 0U, detail);
+    return out.str();
+  }
+  md_ies_interface_info(out, *interface, 0U, detail);
+  return out.str();
+}
+
+std::string_view ipsec_authentication_text(
+    ipsec::configuration::AuthenticationMethod value) {
+  switch (value) {
+  case ipsec::configuration::AuthenticationMethod::psk:
+    return "psk";
+  case ipsec::configuration::AuthenticationMethod::certificate:
+    return "certificate";
+  case ipsec::configuration::AuthenticationMethod::symmetric:
+    return "symmetric";
+  }
+  return {};
+}
+
+void md_ipsec_configuration_body(
+    std::ostringstream &out,
+    const ipsec::configuration::Configuration &configuration,
+    std::size_t depth, bool detail) {
+  for (const auto &transform : configuration.ike_transforms) {
+    md_indent(out, depth);
+    out << "ike-transform " << transform.id << " {\n";
+    const auto leaf = [&](std::string_view name, const auto &value,
+                          bool configured) {
+      if (detail || configured) {
+        md_indent(out, depth + 1U);
+        out << name << ' ' << value << '\n';
+      }
+    };
+    leaf("dh-group", "group-19", transform.dh_group_configured);
+    leaf("ike-auth-algorithm", "auth-encryption",
+         transform.authentication_encryption_configured);
+    leaf("ike-encryption-algorithm",
+         ipsec::configuration::encryption_name(transform.encryption),
+         transform.encryption_configured);
+    leaf("ike-prf-algorithm", "sha-256",
+         transform.prf_sha256_configured);
+    leaf("isakmp-lifetime", transform.lifetime_seconds,
+         transform.lifetime_configured);
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  for (const auto &transform : configuration.ipsec_transforms) {
+    md_indent(out, depth);
+    out << "ipsec-transform " << transform.id << " {\n";
+    const auto leaf = [&](std::string_view name, const auto &value,
+                          bool configured) {
+      if (detail || configured) {
+        md_indent(out, depth + 1U);
+        out << name << ' ' << value << '\n';
+      }
+    };
+    leaf("esp-auth-algorithm", "auth-encryption",
+         transform.authentication_encryption_configured);
+    leaf("esp-encryption-algorithm",
+         ipsec::configuration::encryption_name(transform.encryption),
+         transform.encryption_configured);
+    leaf("extended-sequence-number",
+         transform.extended_sequence_number ? "true" : "false",
+         transform.extended_sequence_number_configured);
+    leaf("ipsec-lifetime", transform.lifetime_seconds,
+         transform.lifetime_configured);
+    if (detail || transform.pfs_group_configured) {
+      md_indent(out, depth + 1U);
+      out << "pfs-dh-group "
+          << (transform.pfs_enabled ? "group-19" : "none") << '\n';
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  for (const auto &policy : configuration.ike_policies) {
+    md_indent(out, depth);
+    out << "ike-policy " << policy.id << " {\n";
+    if (!policy.description.empty()) {
+      md_indent(out, depth + 1U);
+      out << "description \"" << policy.description << "\"\n";
+    }
+    for (const auto transform : policy.ike_transforms) {
+      md_indent(out, depth + 1U);
+      out << "ike-transform " << transform << '\n';
+    }
+    if (detail || policy.ike_version2_configured) {
+      md_indent(out, depth + 1U);
+      out << "ike-version-2 {\n";
+      if (detail || policy.peer_authentication_configured) {
+        md_indent(out, depth + 2U);
+        out << "auth-method "
+            << ipsec_authentication_text(policy.peer_authentication) << '\n';
+      }
+      if (detail || policy.own_authentication_configured) {
+        md_indent(out, depth + 2U);
+        out << "own-auth-method "
+            << ipsec_authentication_text(policy.own_authentication) << '\n';
+      }
+      if (detail || policy.fragmentation_configured) {
+        md_indent(out, depth + 2U);
+        out << "ikev2-fragment {\n";
+        if (detail || policy.fragmentation_mtu_configured) {
+          md_indent(out, depth + 3U);
+          out << "mtu " << policy.fragmentation_mtu << '\n';
+        }
+        if (detail || policy.fragmentation_reassembly_timeout_configured) {
+          md_indent(out, depth + 3U);
+          out << "reassembly-timeout "
+              << static_cast<unsigned>(
+                     policy.fragmentation_reassembly_timeout_seconds)
+              << '\n';
+        }
+        md_indent(out, depth + 2U);
+        out << "}\n";
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    if (detail || policy.dpd_configured) {
+      md_indent(out, depth + 1U);
+      out << "dpd {\n";
+      md_indent(out, depth + 2U);
+      out << "interval " << policy.dpd_interval_seconds << '\n';
+      md_indent(out, depth + 2U);
+      out << "max-retries " << static_cast<unsigned>(policy.dpd_max_retries)
+          << '\n';
+      md_indent(out, depth + 2U);
+      out << "reply-only " << (policy.dpd_reply_only ? "true" : "false")
+          << '\n';
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    if (detail || policy.nat_traversal_configured) {
+      md_indent(out, depth + 1U);
+      out << "nat-traversal {\n";
+      if (detail || policy.nat_force_configured) {
+        md_indent(out, depth + 2U);
+        out << "force " << (policy.nat_force ? "true" : "false") << '\n';
+      }
+      if (detail || policy.nat_force_keepalive_configured) {
+        md_indent(out, depth + 2U);
+        out << "force-keep-alive "
+            << (policy.nat_force_keepalive ? "true" : "false") << '\n';
+      }
+      if (detail || policy.nat_keepalive_interval_configured) {
+        md_indent(out, depth + 2U);
+        out << "keep-alive-interval "
+            << policy.nat_keepalive_interval_seconds << '\n';
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    if (detail || policy.ipsec_lifetime_configured) {
+      md_indent(out, depth + 1U);
+      out << "ipsec-lifetime " << policy.ipsec_lifetime_seconds << '\n';
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  for (const auto &association : configuration.static_sas) {
+    md_indent(out, depth);
+    out << "static-sa \"" << association.name << "\" {\n";
+    if (!association.description.empty()) {
+      md_indent(out, depth + 1U);
+      out << "description \"" << association.description << "\"\n";
+    }
+    if (detail || association.direction_configured) {
+      md_indent(out, depth + 1U);
+      const auto direction =
+          association.direction ==
+                  ipsec::configuration::StaticSaDirection::inbound
+              ? "inbound"
+          : association.direction ==
+                  ipsec::configuration::StaticSaDirection::outbound
+              ? "outbound"
+              : "bidirectional";
+      out << "direction " << direction << '\n';
+    }
+    if (detail || association.protocol_configured) {
+      md_indent(out, depth + 1U);
+      out << "security-protocol "
+          << (association.protocol == ipsec::SecurityProtocol::ah ? "ah"
+                                                                  : "esp")
+          << '\n';
+    }
+    if (association.spi_configured) {
+      md_indent(out, depth + 1U);
+      out << "spi " << association.spi << '\n';
+    }
+    if (association.authentication_container_configured) {
+      md_indent(out, depth + 1U);
+      out << "authentication {\n";
+      if (association.authentication_configured || detail) {
+        md_indent(out, depth + 2U);
+        out << "algorithm "
+            << (association.authentication ==
+                        ipsec::configuration::StaticSaAuthentication::md5
+                    ? "md5"
+                    : "sha1")
+            << '\n';
+      }
+      if (association.authentication_key_handle) {
+        md_indent(out, depth + 2U);
+        out << "key \"******\"\n";
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  for (const auto &profile : configuration.certificate_profiles) {
+    md_indent(out, depth);
+    out << "cert-profile \"" << profile.name << "\" {\n";
+    if (detail || profile.admin_state_configured) {
+      md_indent(out, depth + 1U);
+      out << "admin-state " << (profile.enabled ? "enable" : "disable")
+          << '\n';
+    }
+    for (const auto &entry : profile.entries) {
+      md_indent(out, depth + 1U);
+      out << "entry " << static_cast<unsigned>(entry.id) << " {\n";
+      if (!entry.certificate_file.empty()) {
+        md_indent(out, depth + 2U);
+        out << "cert \"" << entry.certificate_file << "\"\n";
+      }
+      if (!entry.private_key_file.empty()) {
+        md_indent(out, depth + 2U);
+        out << "key \"" << entry.private_key_file << "\"\n";
+      }
+      if (!entry.compare_chain_include.empty()) {
+        md_indent(out, depth + 2U);
+        out << "compare-chain-include \"" << entry.compare_chain_include
+            << "\"\n";
+      }
+      if (detail || entry.rsa_signature_configured) {
+        md_indent(out, depth + 2U);
+        out << "rsa-signature "
+            << (entry.rsa_signature ==
+                        ipsec::configuration::RsaSignature::pkcs1
+                    ? "pkcs1"
+                    : "pss")
+            << '\n';
+      }
+      if (!entry.send_chain_ca_profiles.empty()) {
+        md_indent(out, depth + 2U);
+        out << "send-chain {\n";
+        for (const auto &ca : entry.send_chain_ca_profiles) {
+          md_indent(out, depth + 3U);
+          out << "ca-profile \"" << ca << "\" { }\n";
+        }
+        md_indent(out, depth + 2U);
+        out << "}\n";
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  for (const auto &profile : configuration.trust_anchor_profiles) {
+    md_indent(out, depth);
+    out << "trust-anchor-profile \"" << profile.name << "\" {\n";
+    for (const auto &ca : profile.ca_profiles) {
+      md_indent(out, depth + 1U);
+      out << "trust-anchor \"" << ca << "\" { }\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  for (const auto &list : configuration.ppk_lists) {
+    md_indent(out, depth);
+    out << "ppk-list \"" << list.name << "\" {\n";
+    for (const auto &entry : list.entries) {
+      md_indent(out, depth + 1U);
+      out << "ppk \"" << entry.id << "\" {\n";
+      md_indent(out, depth + 2U);
+      // SR OS conceals secret values in normal configuration output. The
+      // datastore owns only a sealed handle, so no renderer can recover or
+      // leak the original secret bytes.
+      out << (entry.format == ipsec::configuration::PpkValueFormat::ascii
+                  ? "ascii-value"
+                  : "hex-value")
+          << " \"******\"\n";
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  for (const auto &list : configuration.traffic_selector_lists) {
+    md_indent(out, depth);
+    out << "ts-list \"" << list.name << "\" {\n";
+    const auto side = [&](std::string_view name, const auto &entries) {
+      md_indent(out, depth + 1U);
+      out << name << " {\n";
+      for (const auto &entry : entries) {
+        md_indent(out, depth + 2U);
+        out << "entry " << static_cast<unsigned>(entry.id) << " {\n";
+        if (entry.prefix) {
+          md_indent(out, depth + 3U);
+          out << "address {\n";
+          md_indent(out, depth + 4U);
+          out << "prefix " << ip::format_ip_prefix(*entry.prefix) << '\n';
+          md_indent(out, depth + 3U);
+          out << "}\n";
+        }
+        if (entry.range_begin || entry.range_end) {
+          md_indent(out, depth + 3U);
+          out << "address {\n";
+          md_indent(out, depth + 4U);
+          out << "range {\n";
+          if (entry.range_begin) {
+            md_indent(out, depth + 5U);
+            out << "begin " << ip::format_ip_address(*entry.range_begin)
+                << '\n';
+          }
+          if (entry.range_end) {
+            md_indent(out, depth + 5U);
+            out << "end " << ip::format_ip_address(*entry.range_end) << '\n';
+          }
+          md_indent(out, depth + 4U);
+          out << "}\n";
+          md_indent(out, depth + 3U);
+          out << "}\n";
+        }
+        if (entry.protocol_configured) {
+          if (entry.protocol ==
+              ipsec::configuration::SelectorProtocol::any) {
+            md_indent(out, depth + 3U);
+            out << "protocol any\n";
+          } else {
+            const auto protocol_name = [&]() -> std::string_view {
+              switch (entry.protocol) {
+              case ipsec::configuration::SelectorProtocol::icmp:
+                return "icmp";
+              case ipsec::configuration::SelectorProtocol::tcp:
+                return "tcp";
+              case ipsec::configuration::SelectorProtocol::udp:
+                return "udp";
+              case ipsec::configuration::SelectorProtocol::ipv6_mobility:
+                return "mipv6";
+              case ipsec::configuration::SelectorProtocol::icmpv6:
+                return "icmp6";
+              case ipsec::configuration::SelectorProtocol::sctp:
+                return "sctp";
+              case ipsec::configuration::SelectorProtocol::numeric:
+              case ipsec::configuration::SelectorProtocol::any:
+                return {};
+              }
+              return {};
+            }();
+            const bool icmp =
+                entry.protocol ==
+                    ipsec::configuration::SelectorProtocol::icmp ||
+                entry.protocol ==
+                    ipsec::configuration::SelectorProtocol::icmpv6;
+            const bool selector_range =
+                entry.selector_begin_configured ||
+                entry.selector_end_configured ||
+                entry.begin_icmp_type_configured ||
+                entry.begin_icmp_code_configured ||
+                entry.end_icmp_type_configured ||
+                entry.end_icmp_code_configured;
+            md_indent(out, depth + 3U);
+            out << "protocol {\n";
+            md_indent(out, depth + 4U);
+            out << "id {\n";
+            if (entry.protocol ==
+                    ipsec::configuration::SelectorProtocol::numeric ||
+                (!selector_range && !entry.opaque_ports)) {
+              md_indent(out, depth + 5U);
+              out << "protocol-id-with-any-port ";
+              if (entry.protocol ==
+                  ipsec::configuration::SelectorProtocol::numeric)
+                out << static_cast<unsigned>(entry.numeric_protocol);
+              else
+                out << protocol_name;
+              out << '\n';
+            } else {
+              md_indent(out, depth + 5U);
+              out << protocol_name << " {\n";
+              if (entry.opaque_ports) {
+                md_indent(out, depth + 6U);
+                out << "opaque\n";
+              } else {
+                md_indent(out, depth + 6U);
+                out << "port-range {\n";
+                if (icmp) {
+                  if (entry.begin_icmp_type_configured) {
+                    md_indent(out, depth + 7U);
+                    out << "begin-icmp-type "
+                        << static_cast<unsigned>(entry.ports.first >> 8U)
+                        << '\n';
+                  }
+                  if (entry.begin_icmp_code_configured) {
+                    md_indent(out, depth + 7U);
+                    out << "begin-icmp-code "
+                        << static_cast<unsigned>(entry.ports.first & 0xffU)
+                        << '\n';
+                  }
+                  if (entry.end_icmp_type_configured) {
+                    md_indent(out, depth + 7U);
+                    out << "end-icmp-type "
+                        << static_cast<unsigned>(entry.ports.last >> 8U)
+                        << '\n';
+                  }
+                  if (entry.end_icmp_code_configured) {
+                    md_indent(out, depth + 7U);
+                    out << "end-icmp-code "
+                        << static_cast<unsigned>(entry.ports.last & 0xffU)
+                        << '\n';
+                  }
+                } else {
+                  if (entry.selector_begin_configured) {
+                    md_indent(out, depth + 7U);
+                    out << "begin " << entry.ports.first << '\n';
+                  }
+                  if (entry.selector_end_configured) {
+                    md_indent(out, depth + 7U);
+                    out << "end " << entry.ports.last << '\n';
+                  }
+                }
+                md_indent(out, depth + 6U);
+                out << "}\n";
+              }
+              md_indent(out, depth + 5U);
+              out << "}\n";
+            }
+            md_indent(out, depth + 4U);
+            out << "}\n";
+            md_indent(out, depth + 3U);
+            out << "}\n";
+          }
+        }
+        md_indent(out, depth + 2U);
+        out << "}\n";
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    };
+    side("local", list.local);
+    side("remote", list.remote);
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  for (const auto &profile : configuration.transport_mode_profiles) {
+    md_indent(out, depth);
+    out << "ipsec-transport-mode-profile \"" << profile.name << "\" {\n";
+    if (!profile.description.empty()) {
+      md_indent(out, depth + 1U);
+      out << "description \"" << profile.description << "\"\n";
+    }
+    if (detail || profile.replay_window_configured) {
+      md_indent(out, depth + 1U);
+      out << "replay-window " << profile.replay_window << '\n';
+    }
+    const auto &dynamic = profile.dynamic;
+    const bool has_dynamic =
+        dynamic.ike_policy || !dynamic.ipsec_transforms.empty() ||
+        !dynamic.certificate_profile.empty() ||
+        !dynamic.trust_anchor_profile.empty() || !dynamic.ppk_list.empty() ||
+        !dynamic.ppk_id.empty() || dynamic.pre_shared_key_handle ||
+        !dynamic.identity.empty() || dynamic.auto_establish_configured ||
+        dynamic.default_revocation_result_configured ||
+        dynamic.primary_revocation_method_configured ||
+        dynamic.secondary_revocation_method_configured;
+    if (has_dynamic || detail) {
+      md_indent(out, depth + 1U);
+      out << "key-exchange {\n";
+      md_indent(out, depth + 2U);
+      out << "dynamic {\n";
+      if (detail || dynamic.auto_establish_configured) {
+        md_indent(out, depth + 3U);
+        out << "auto-establish "
+            << (dynamic.auto_establish ? "true" : "false") << '\n';
+      }
+      const bool has_cert =
+          !dynamic.certificate_profile.empty() ||
+          !dynamic.trust_anchor_profile.empty() ||
+          dynamic.default_revocation_result_configured ||
+          dynamic.primary_revocation_method_configured ||
+          dynamic.secondary_revocation_method_configured;
+      if (has_cert || detail) {
+        md_indent(out, depth + 3U);
+        out << "cert {\n";
+        if (!dynamic.certificate_profile.empty()) {
+          md_indent(out, depth + 4U);
+          out << "cert-profile \"" << dynamic.certificate_profile << "\"\n";
+        }
+        if (detail || dynamic.default_revocation_result_configured ||
+            dynamic.primary_revocation_method_configured ||
+            dynamic.secondary_revocation_method_configured) {
+          const auto revocation = [](auto method) -> std::string_view {
+            using Method = decltype(method);
+            switch (method) {
+            case Method::none:
+              return "none";
+            case Method::crl:
+              return "crl";
+            case Method::ocsp:
+              return "ocsp";
+            }
+            return {};
+          };
+          md_indent(out, depth + 4U);
+          out << "status-verify {\n";
+          if (detail || dynamic.default_revocation_result_configured) {
+            md_indent(out, depth + 5U);
+            out << "default-result "
+                << (dynamic.default_revocation_result ==
+                            ipsec::configuration::RevocationResult::good
+                        ? "good"
+                        : "revoked")
+                << '\n';
+          }
+          if (detail || dynamic.primary_revocation_method_configured) {
+            md_indent(out, depth + 5U);
+            out << "primary "
+                << revocation(dynamic.primary_revocation_method) << '\n';
+          }
+          if (detail || dynamic.secondary_revocation_method_configured) {
+            md_indent(out, depth + 5U);
+            out << "secondary "
+                << revocation(dynamic.secondary_revocation_method) << '\n';
+          }
+          md_indent(out, depth + 4U);
+          out << "}\n";
+        }
+        if (!dynamic.trust_anchor_profile.empty()) {
+          md_indent(out, depth + 4U);
+          out << "trust-anchor-profile \"" << dynamic.trust_anchor_profile
+              << "\"\n";
+        }
+        md_indent(out, depth + 3U);
+        out << "}\n";
+      }
+      if (!dynamic.identity.empty()) {
+        md_indent(out, depth + 3U);
+        out << "id {\n";
+        md_indent(out, depth + 4U);
+        switch (dynamic.identity_type) {
+        case ipsec::configuration::IdentityType::fqdn:
+          out << "fqdn";
+          break;
+        case ipsec::configuration::IdentityType::ipv4:
+          out << "ipv4";
+          break;
+        case ipsec::configuration::IdentityType::ipv6:
+          out << "ipv6";
+          break;
+        case ipsec::configuration::IdentityType::automatic:
+          out << "automatic";
+          break;
+        }
+        out << " \"" << dynamic.identity << "\"\n";
+        md_indent(out, depth + 3U);
+        out << "}\n";
+      }
+      if (dynamic.ike_policy) {
+        md_indent(out, depth + 3U);
+        out << "ike-policy " << dynamic.ike_policy << '\n';
+      }
+      for (const auto transform : dynamic.ipsec_transforms) {
+        md_indent(out, depth + 3U);
+        out << "ipsec-transform " << transform << '\n';
+      }
+      if (!dynamic.ppk_list.empty() || !dynamic.ppk_id.empty()) {
+        md_indent(out, depth + 3U);
+        out << "ppk {\n";
+        if (!dynamic.ppk_list.empty()) {
+          md_indent(out, depth + 4U);
+          out << "list \"" << dynamic.ppk_list << "\"\n";
+        }
+        if (!dynamic.ppk_id.empty()) {
+          md_indent(out, depth + 4U);
+          out << "id \"" << dynamic.ppk_id << "\"\n";
+        }
+        md_indent(out, depth + 3U);
+        out << "}\n";
+      }
+      if (dynamic.pre_shared_key_handle) {
+        md_indent(out, depth + 3U);
+        out << "pre-shared-key \"******\"\n";
+      }
+      md_indent(out, depth + 2U);
+      out << "}\n";
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    if (detail || profile.maximum_esp_history_records_configured ||
+        profile.maximum_ike_history_records_configured) {
+      md_indent(out, depth + 1U);
+      out << "max-history-key-records {\n";
+      if (detail || profile.maximum_esp_history_records_configured) {
+        md_indent(out, depth + 2U);
+        out << "esp "
+            << static_cast<unsigned>(profile.maximum_esp_history_records)
+            << '\n';
+      }
+      if (detail || profile.maximum_ike_history_records_configured) {
+        md_indent(out, depth + 2U);
+        out << "ike "
+            << static_cast<unsigned>(profile.maximum_ike_history_records)
+            << '\n';
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  for (const auto &tunnel : configuration.tunnel_templates) {
+    md_indent(out, depth);
+    out << "tunnel-template " << tunnel.id << " {\n";
+    if (!tunnel.description.empty()) {
+      md_indent(out, depth + 1U);
+      out << "description \"" << tunnel.description << "\"\n";
+    }
+    for (const auto transform : tunnel.ipsec_transforms) {
+      md_indent(out, depth + 1U);
+      out << "ipsec-transform " << transform << '\n';
+    }
+    const auto scalar = [&](std::string_view name, const auto &value,
+                            bool configured) {
+      if (detail || configured) {
+        md_indent(out, depth + 1U);
+        out << name << ' ' << value << '\n';
+      }
+    };
+    scalar("ip-mtu", tunnel.ip_mtu, tunnel.ip_mtu_configured);
+    scalar("encapsulated-ip-mtu", tunnel.encapsulated_ip_mtu,
+           tunnel.encapsulated_ip_mtu_configured);
+    scalar("replay-window", tunnel.replay_window,
+           tunnel.replay_window_configured);
+    scalar("pmtu-discovery-aging", tunnel.pmtu_discovery_aging_seconds,
+           tunnel.pmtu_discovery_aging_configured);
+    if (!tunnel.ppk_list.empty()) {
+      md_indent(out, depth + 1U);
+      out << "ppk-list \"" << tunnel.ppk_list << "\"\n";
+    }
+    scalar("private-tcp-mss-adjust", tunnel.private_tcp_mss_adjust,
+           tunnel.private_tcp_mss_adjust_configured);
+    if (detail || tunnel.public_tcp_mss_adjust_configured) {
+      md_indent(out, depth + 1U);
+      out << "public-tcp-mss-adjust ";
+      if (tunnel.public_tcp_mss_auto)
+        out << "auto\n";
+      else
+        out << tunnel.public_tcp_mss_adjust << '\n';
+    }
+    const auto rate_limit = [&](std::string_view family,
+                                std::string_view message,
+                                const auto &rate) {
+      if (!(detail || rate.enabled_configured || rate.interval_configured ||
+            rate.message_count_configured))
+        return;
+      md_indent(out, depth + 1U);
+      out << family << " {\n";
+      md_indent(out, depth + 2U);
+      out << message << " {\n";
+      if (detail || rate.enabled_configured) {
+        md_indent(out, depth + 3U);
+        out << "admin-state " << (rate.enabled ? "enable" : "disable")
+            << '\n';
+      }
+      if (detail || rate.interval_configured) {
+        md_indent(out, depth + 3U);
+        out << "interval " << static_cast<unsigned>(rate.interval_seconds)
+            << '\n';
+      }
+      if (detail || rate.message_count_configured) {
+        md_indent(out, depth + 3U);
+        out << "message-count " << rate.message_count << '\n';
+      }
+      md_indent(out, depth + 2U);
+      out << "}\n";
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    };
+    rate_limit("icmp-generation", "frag-required",
+               tunnel.ipv4_fragmentation_required);
+    rate_limit("icmp6-generation", "pkt-too-big", tunnel.ipv6_packet_too_big);
+    if (detail || tunnel.reverse_route_metric_configured ||
+        tunnel.reverse_route_preference_configured) {
+      md_indent(out, depth + 1U);
+      out << "reverse-route {\n";
+      if (detail || tunnel.reverse_route_metric_configured) {
+        md_indent(out, depth + 2U);
+        out << "metric " << tunnel.reverse_route_metric << '\n';
+      }
+      if (detail || tunnel.reverse_route_preference_configured) {
+        md_indent(out, depth + 2U);
+        out << "preference "
+            << static_cast<unsigned>(tunnel.reverse_route_preference) << '\n';
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    if (detail || tunnel.service_provider_reverse_route_configured) {
+      md_indent(out, depth + 1U);
+      out << "sp-reverse-route "
+          << (tunnel.service_provider_reverse_route ==
+                      ipsec::configuration::ServiceProviderReverseRoute::
+                          use_security_policy
+                  ? "use-security-policy"
+                  : "none")
+          << '\n';
+    }
+    scalar("clear-df-bit", tunnel.clear_df_bit ? "true" : "false",
+           tunnel.clear_df_bit_configured);
+    scalar("copy-traffic-class-upon-decapsulation",
+           tunnel.copy_traffic_class_upon_decapsulation ? "true" : "false",
+           tunnel.copy_traffic_class_configured);
+    scalar("ignore-default-route",
+           tunnel.ignore_default_route ? "true" : "false",
+           tunnel.ignore_default_route_configured);
+    scalar("propagate-pmtu-v4",
+           tunnel.propagate_pmtu_v4 ? "true" : "false",
+           tunnel.propagate_pmtu_v4_configured);
+    scalar("propagate-pmtu-v6",
+           tunnel.propagate_pmtu_v6 ? "true" : "false",
+           tunnel.propagate_pmtu_v6_configured);
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+std::optional<std::string>
+md_ipsec_configuration_info(
+    const ipsec::configuration::Configuration &configuration,
+    std::string_view path, bool detail) {
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->size() < 2U || (*tokens)[0] != "configure" ||
+      (*tokens)[1] != "ipsec")
+    return std::nullopt;
+  // IPsec has many nested keyed lists. Selecting the requested container from
+  // the canonical typed body keeps their PWC behavior uniform and prevents a
+  // deep `info` from leaking unrelated transforms, policies or SAs.
+  std::ostringstream out;
+  md_ipsec_configuration_body(out, configuration, 0U, detail);
+  return md_rendered_context_body(out.str(), *tokens, 2U);
+}
+
+template <typename Interface>
+void md_mld_interface_info(std::ostringstream &out,
+                           const Interface &interface, std::size_t depth,
+                           bool detail) {
+  const auto scalar = [&](std::string_view name, const auto &value,
+                          bool configured) {
+    if (detail || configured) {
+      md_indent(out, depth);
+      out << name << ' ' << value << '\n';
+    }
+  };
+  md_indent(out, depth);
+  out << "admin-state " << (interface.mld_enabled ? "enable" : "disable")
+      << '\n';
+  scalar("version", static_cast<unsigned>(interface.mld_version),
+         interface.mld_version_configured);
+  scalar("query-interval", interface.mld_query_interval.count(),
+         interface.mld_query_interval_configured);
+  scalar("query-response-interval",
+         std::chrono::duration_cast<std::chrono::seconds>(
+             interface.mld_query_response_interval)
+             .count(),
+         interface.mld_query_response_interval_configured);
+  scalar("query-last-member-interval",
+         std::chrono::duration_cast<std::chrono::seconds>(
+             interface.mld_last_listener_query_interval)
+             .count(),
+         interface.mld_last_listener_query_interval_configured);
+  scalar("robust-count",
+         static_cast<unsigned>(interface.mld_robustness_variable),
+         interface.mld_robustness_variable_configured);
+  scalar("maximum-number-groups", interface.mld_maximum_number_groups,
+         interface.mld_maximum_number_groups_configured);
+  scalar("maximum-number-group-sources",
+         interface.mld_maximum_number_group_sources,
+         interface.mld_maximum_number_group_sources_configured);
+  scalar("maximum-number-sources", interface.mld_maximum_number_sources,
+         interface.mld_maximum_number_sources_configured);
+  scalar("router-alert-check",
+         interface.mld_router_alert_check ? "true" : "false",
+         interface.mld_router_alert_check_configured);
+  if (!interface.mld_import_policy.empty()) {
+    md_indent(out, depth);
+    out << "import-policy \"" << interface.mld_import_policy << "\"\n";
+  }
+  if (!interface.mld_static_groups.empty()) {
+    md_indent(out, depth);
+    out << "static {\n";
+    for (const auto &group : interface.mld_static_groups) {
+      md_indent(out, depth + 1U);
+      if (group.range) {
+        out << "group-range start " << ip::format_ipv6(group.multicast_address)
+            << " end " << ip::format_ipv6(group.range_end) << " step "
+            << ip::format_ipv6(group.range_step) << " {\n";
+      } else {
+        out << "group " << ip::format_ipv6(group.multicast_address)
+            << " {\n";
+      }
+      if (group.starg) {
+        md_indent(out, depth + 2U);
+        out << "starg\n";
+      }
+      for (const auto &source : group.sources) {
+        md_indent(out, depth + 2U);
+        out << "source " << ip::format_ipv6(source) << '\n';
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+template <typename Configuration>
+std::optional<std::string>
+md_mld_configuration_info(const Configuration &configuration,
+                          std::string_view path, bool detail) {
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->size() < 4U || (*tokens)[0] != "configure" ||
+      (*tokens)[1] != "router" || (*tokens)[2] != "Base" ||
+      (*tokens)[3] != "mld")
+    return std::nullopt;
+  std::ostringstream out;
+  const auto global = [&] {
+    out << "admin-state "
+        << (configuration.mld.enabled ? "enable" : "disable") << '\n';
+    const auto scalar = [&](std::string_view name, const auto &value,
+                            bool configured) {
+      if (detail || configured)
+        out << name << ' ' << value << '\n';
+    };
+    scalar("query-interval", configuration.mld.query_interval.count(),
+           configuration.mld.query_interval_configured);
+    scalar("query-response-interval",
+           std::chrono::duration_cast<std::chrono::seconds>(
+               configuration.mld.query_response_interval)
+               .count(),
+           configuration.mld.query_response_interval_configured);
+    scalar("query-last-member-interval",
+           std::chrono::duration_cast<std::chrono::seconds>(
+               configuration.mld.last_listener_query_interval)
+               .count(),
+           configuration.mld.last_listener_query_interval_configured);
+    scalar("robust-count",
+           static_cast<unsigned>(configuration.mld.robustness_variable),
+           configuration.mld.robustness_variable_configured);
+  };
+  global();
+  for (const auto &interface : configuration.interfaces) {
+    if (!interface.mld_configured)
+      continue;
+    out << "interface \"" << interface.name << "\" {\n";
+    md_mld_interface_info(out, interface, 1U, detail);
+    out << "}\n";
+  }
+  return md_rendered_context_body(out.str(), *tokens, 4U);
+}
+
+template <typename Configuration>
+std::optional<std::string>
+md_policy_configuration_info(const Configuration &configuration,
+                             std::string_view path, bool detail) {
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->size() < 2U || (*tokens)[0] != "configure" ||
+      (*tokens)[1] != "policy-options")
+    return std::nullopt;
+
+  const auto emit_prefix_list = [&](std::ostringstream &out,
+                                    const auto &list, std::size_t depth) {
+    for (const auto &prefix : list.prefixes) {
+      md_indent(out, depth);
+      out << "prefix " << ip::format_ip_prefix(prefix) << '\n';
+    }
+  };
+  const auto emit_entry = [&](std::ostringstream &out, const auto &entry,
+                              std::size_t depth) {
+    const bool has_from = !entry.group_prefix_list.empty() ||
+                          entry.source_address ||
+                          !entry.source_prefix_list.empty() ||
+                          entry.protocol_mld ||
+                          !entry.route_prefix_list.empty() ||
+                          entry.route_source || entry.protocol_instance ||
+                          entry.route_tag;
+    if (has_from) {
+      md_indent(out, depth);
+      out << "from {\n";
+      if (!entry.group_prefix_list.empty()) {
+        md_indent(out, depth + 1U);
+        out << "group-address \"" << entry.group_prefix_list << "\"\n";
+      }
+      if (entry.source_address || !entry.source_prefix_list.empty()) {
+        md_indent(out, depth + 1U);
+        out << "source-address {\n";
+        if (entry.source_address) {
+          md_indent(out, depth + 2U);
+          out << "ip-address " << ip::format_ipv6(*entry.source_address)
+              << '\n';
+        }
+        if (!entry.source_prefix_list.empty()) {
+          md_indent(out, depth + 2U);
+          out << "prefix-list \"" << entry.source_prefix_list << "\"\n";
+        }
+        md_indent(out, depth + 1U);
+        out << "}\n";
+      }
+      if (!entry.route_prefix_list.empty()) {
+        md_indent(out, depth + 1U);
+        out << "prefix-list \"" << entry.route_prefix_list << "\"\n";
+      }
+      if (entry.protocol_mld || entry.route_source ||
+          entry.protocol_instance) {
+        md_indent(out, depth + 1U);
+        out << "protocol {\n";
+        if (entry.protocol_mld || entry.route_source) {
+          md_indent(out, depth + 2U);
+          out << "name ";
+          if (entry.protocol_mld) {
+            out << "mld\n";
+          } else {
+            switch (*entry.route_source) {
+            case routing::RouteSource::connected:
+              out << "direct\n";
+              break;
+            case routing::RouteSource::static_route:
+              out << "static\n";
+              break;
+            case routing::RouteSource::ospf:
+              out << "ospf\n";
+              break;
+            case routing::RouteSource::ospf3:
+              out << "ospf3\n";
+              break;
+            }
+          }
+        }
+        if (entry.protocol_instance) {
+          md_indent(out, depth + 2U);
+          out << "instance " << static_cast<unsigned>(*entry.protocol_instance)
+              << '\n';
+        }
+        md_indent(out, depth + 1U);
+        out << "}\n";
+      }
+      if (entry.route_tag) {
+        md_indent(out, depth + 1U);
+        out << "tag " << *entry.route_tag << '\n';
+      }
+      md_indent(out, depth);
+      out << "}\n";
+    }
+    if (entry.action_configured || entry.set_metric ||
+        entry.set_metric_type || entry.set_route_tag || detail) {
+      md_indent(out, depth);
+      out << "action {\n";
+      if (entry.action_configured || detail) {
+        md_indent(out, depth + 1U);
+        out << "action-type " << policy_action_text(entry.action) << '\n';
+      }
+      if (entry.set_metric) {
+        md_indent(out, depth + 1U);
+        out << "metric {\n";
+        md_indent(out, depth + 2U);
+        out << "set " << *entry.set_metric << '\n';
+        md_indent(out, depth + 1U);
+        out << "}\n";
+      }
+      if (entry.set_metric_type) {
+        md_indent(out, depth + 1U);
+        out << "type "
+            << (*entry.set_metric_type ==
+                        routing::OspfPathType::external_type_1
+                    ? "type-1"
+                    : "type-2")
+            << '\n';
+      }
+      if (entry.set_route_tag) {
+        md_indent(out, depth + 1U);
+        out << "tag " << *entry.set_route_tag << '\n';
+      }
+      md_indent(out, depth);
+      out << "}\n";
+    }
+  };
+  const auto emit_statement = [&](std::ostringstream &out,
+                                   const auto &statement,
+                                   std::size_t depth) {
+    for (const auto &entry : statement.entries) {
+      md_indent(out, depth);
+      out << "entry " << entry.number << " {\n";
+      emit_entry(out, entry, depth + 1U);
+      md_indent(out, depth);
+      out << "}\n";
+    }
+    if (statement.default_action_configured || detail) {
+      md_indent(out, depth);
+      out << "default-action {\n";
+      md_indent(out, depth + 1U);
+      out << "action-type " << policy_action_text(statement.default_action)
+          << '\n';
+      md_indent(out, depth);
+      out << "}\n";
+    }
+  };
+
+  std::ostringstream out;
+  for (const auto &list : configuration.mld_prefix_lists) {
+    out << "prefix-list \"" << list.name << "\" {\n";
+    emit_prefix_list(out, list, 1U);
+    out << "}\n";
+  }
+  for (const auto &statement : configuration.mld_import_policies) {
+    out << "policy-statement \"" << statement.name << "\" {\n";
+    emit_statement(out, statement, 1U);
+    out << "}\n";
+  }
+  if (tokens->size() == 2U)
+    return out.str();
+  return md_rendered_context_body(out.str(), *tokens, 2U);
+}
+
 void md_ospf_interface_info(
     std::ostringstream &out,
     const ospf::InterfaceConfigurationIntent &interface, std::size_t depth,
@@ -3432,6 +5232,47 @@ void md_ospf_area_info(std::ostringstream &out,
     md_indent(out, depth);
     out << "}\n";
   }
+  for (const auto &link : area.virtual_links) {
+    md_indent(out, depth);
+    out << "virtual-link " << ipv4_text(link.remote_router_id)
+        << " transit-area " << ipv4_text(link.transit_area_id) << " {\n";
+    md_indent(out, depth + 1U);
+    out << "admin-state " << (link.admin_enabled ? "enable" : "disable")
+        << '\n';
+    md_indent(out, depth + 1U);
+    out << "hello-interval " << link.hello_interval_seconds << '\n';
+    md_indent(out, depth + 1U);
+    out << "dead-interval " << link.dead_interval_seconds << '\n';
+    md_indent(out, depth + 1U);
+    out << "retransmit-interval " << link.retransmit_interval_seconds << '\n';
+    md_indent(out, depth + 1U);
+    out << "transit-delay " << link.transmit_delay_seconds << '\n';
+    if (!link.ipsec_sa_inbound.empty() || !link.ipsec_sa_outbound.empty()) {
+      md_indent(out, depth + 1U);
+      out << "authentication {\n";
+      if (link.ipsec_sa_inbound == link.ipsec_sa_outbound) {
+        md_indent(out, depth + 2U);
+        out << "bidirectional {\n";
+        md_indent(out, depth + 3U);
+        out << "sa-name \"" << link.ipsec_sa_inbound << "\"\n";
+        md_indent(out, depth + 2U);
+        out << "}\n";
+      } else {
+        if (!link.ipsec_sa_inbound.empty()) {
+          md_indent(out, depth + 2U);
+          out << "inbound \"" << link.ipsec_sa_inbound << "\"\n";
+        }
+        if (!link.ipsec_sa_outbound.empty()) {
+          md_indent(out, depth + 2U);
+          out << "outbound \"" << link.ipsec_sa_outbound << "\"\n";
+        }
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
 }
 
 void md_ospf_instance_info(std::ostringstream &out,
@@ -3463,18 +5304,31 @@ void md_ospf_instance_info(std::ostringstream &out,
        instance.graceful_restart_helper ? "true" : "false");
   leaf("loopfree-alternates",
        instance.loopfree_alternates ? "true" : "false");
-  leaf("timers spf-wait spf-initial-wait",
-       instance.spf_initial_wait_milliseconds);
-  leaf("timers spf-wait spf-second-wait",
-       instance.spf_second_wait_milliseconds);
-  leaf("timers spf-wait spf-max-wait",
-       instance.spf_maximum_wait_milliseconds);
-  leaf("timers lsa-generate lsa-initial-wait",
-       instance.lsa_initial_wait_milliseconds);
-  leaf("timers lsa-generate lsa-second-wait",
-       instance.lsa_second_wait_milliseconds);
-  leaf("timers lsa-generate max-lsa-wait",
-       instance.lsa_maximum_wait_milliseconds);
+  md_indent(out, depth);
+  out << "timers {\n";
+  md_indent(out, depth + 1U);
+  out << "spf-wait {\n";
+  md_indent(out, depth + 2U);
+  out << "spf-initial-wait " << instance.spf_initial_wait_milliseconds << '\n';
+  md_indent(out, depth + 2U);
+  out << "spf-second-wait " << instance.spf_second_wait_milliseconds << '\n';
+  md_indent(out, depth + 2U);
+  out << "spf-max-wait " << instance.spf_maximum_wait_milliseconds << '\n';
+  md_indent(out, depth + 1U);
+  out << "}\n";
+  md_indent(out, depth + 1U);
+  out << "lsa-generate {\n";
+  md_indent(out, depth + 2U);
+  out << "lsa-initial-wait " << instance.lsa_initial_wait_milliseconds
+      << '\n';
+  md_indent(out, depth + 2U);
+  out << "lsa-second-wait " << instance.lsa_second_wait_milliseconds << '\n';
+  md_indent(out, depth + 2U);
+  out << "max-lsa-wait " << instance.lsa_maximum_wait_milliseconds << '\n';
+  md_indent(out, depth + 1U);
+  out << "}\n";
+  md_indent(out, depth);
+  out << "}\n";
   for (const auto &area : instance.areas) {
     md_indent(out, depth);
     out << "area " << ipv4_text(area.area_id) << " {\n";
@@ -3482,6 +5336,95 @@ void md_ospf_instance_info(std::ostringstream &out,
     md_indent(out, depth);
     out << "}\n";
   }
+}
+
+std::string_view
+ospf_keychain_algorithm_text(ospf::KeychainAlgorithm algorithm) noexcept {
+  switch (algorithm) {
+  case ospf::KeychainAlgorithm::password:
+    return "password";
+  case ospf::KeychainAlgorithm::message_digest:
+    return "message-digest";
+  case ospf::KeychainAlgorithm::hmac_sha1:
+    return "hmac-sha-1";
+  case ospf::KeychainAlgorithm::hmac_sha256:
+    return "hmac-sha-256";
+  }
+  return {};
+}
+
+std::string rfc3339_utc(std::int64_t epoch_seconds) {
+  // Keychain activation is persisted as UTC epoch seconds because protocol
+  // selection must survive restart. MD-CLI exposes the corresponding
+  // ietf-yang-types date-and-time value, so presentation converts to a stable
+  // UTC string and never depends on the browser or host locale.
+  const auto value = static_cast<std::time_t>(epoch_seconds);
+  std::tm utc{};
+#ifdef _WIN32
+  gmtime_s(&utc, &value);
+#else
+  gmtime_r(&value, &utc);
+#endif
+  std::ostringstream out;
+  out << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
+  return out.str();
+}
+
+void md_keychain_configuration_body(
+    std::ostringstream &out, const ospf::RouterConfiguration &configuration,
+    std::size_t depth, bool detail) {
+  for (const auto &keychain : configuration.keychains) {
+    md_indent(out, depth);
+    out << "keychain \"" << keychain.name << "\" {\n";
+    if (!keychain.bidirectional.empty()) {
+      md_indent(out, depth + 1U);
+      out << "bidirectional {\n";
+      for (const auto &entry : keychain.bidirectional) {
+        md_indent(out, depth + 2U);
+        out << "entry " << static_cast<unsigned>(entry.id) << " {\n";
+        if (detail || entry.algorithm_configured) {
+          md_indent(out, depth + 3U);
+          out << "algorithm "
+              << ospf_keychain_algorithm_text(entry.algorithm) << '\n';
+        }
+        if (entry.secret_configured) {
+          md_indent(out, depth + 3U);
+          // The vault deliberately has no plaintext read API. Configuration
+          // output therefore preserves the leaf and conceals its value, just
+          // as SR OS conceals sensitive key material.
+          out << "authentication-key \"******\"\n";
+        }
+        if (entry.begin_utc_seconds) {
+          md_indent(out, depth + 3U);
+          out << "begin-time " << rfc3339_utc(entry.begin_utc_seconds) << '\n';
+        }
+        if (detail || entry.tolerance_seconds) {
+          md_indent(out, depth + 3U);
+          out << "tolerance " << entry.tolerance_seconds << '\n';
+        }
+        md_indent(out, depth + 2U);
+        out << "}\n";
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+std::optional<std::string>
+md_keychain_configuration_info(
+    const ospf::RouterConfiguration &configuration, std::string_view path,
+    bool detail) {
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->size() < 4U || (*tokens)[0] != "configure" ||
+      (*tokens)[1] != "system" || (*tokens)[2] != "security" ||
+      (*tokens)[3] != "keychains")
+    return std::nullopt;
+  std::ostringstream out;
+  md_keychain_configuration_body(out, configuration, 0U, detail);
+  return md_rendered_context_body(out.str(), *tokens, 4U);
 }
 
 std::optional<std::string>
@@ -3493,76 +5436,27 @@ md_ospf_info(const ospf::RouterConfiguration &configuration,
       ((*tokens)[3] != "ospf" && (*tokens)[3] != "ospf3"))
     return std::nullopt;
 
+  // The full typed tree is rendered once and the common present-context
+  // selector walks the exact OSPF list keys and containers. This is essential
+  // for paths such as timers>spf-wait and virtual-link, which were previously
+  // rejected because the dispatcher understood only instance, area and
+  // interface depths.
   std::ostringstream out;
-  if (tokens->size() == 4U) {
-    for (const auto &instance : configuration.instances) {
-      const bool version_matches =
-          (*tokens)[3] == "ospf"
-              ? instance.address_family == ospf::AddressFamily::ipv4
-              : instance.address_family != ospf::AddressFamily::ipv4;
-      if (!version_matches)
-        continue;
-      out << (*tokens)[3] << ' '
-          << static_cast<unsigned>(instance.instance_id) << " {\n";
-      md_ospf_instance_info(out, instance, 1U, detail);
-      out << "}\n";
-    }
-    return out.str();
+  for (const auto &instance : configuration.instances) {
+    const bool version_matches =
+        (*tokens)[3] == "ospf"
+            ? instance.address_family == ospf::AddressFamily::ipv4
+            : instance.address_family != ospf::AddressFamily::ipv4;
+    if (!version_matches)
+      continue;
+    out << (*tokens)[3] << ' '
+        << static_cast<unsigned>(instance.instance_id) << " {\n";
+    md_ospf_instance_info(out, instance, 1U, detail);
+    out << "}\n";
   }
-  if (tokens->size() < 5U)
-    return std::nullopt;
-  unsigned instance_id{};
-  const auto parsed_instance =
-      std::from_chars((*tokens)[4].data(),
-                      (*tokens)[4].data() + (*tokens)[4].size(), instance_id);
-  if (parsed_instance.ec != std::errc{} ||
-      parsed_instance.ptr != (*tokens)[4].data() + (*tokens)[4].size() ||
-      instance_id > std::numeric_limits<std::uint8_t>::max())
-    return std::nullopt;
-  const auto instance = std::find_if(
-      configuration.instances.begin(), configuration.instances.end(),
-      [&](const auto &candidate) {
-        const bool version_matches =
-            (*tokens)[3] == "ospf"
-                ? candidate.address_family == ospf::AddressFamily::ipv4
-                : candidate.address_family != ospf::AddressFamily::ipv4;
-        return version_matches && candidate.instance_id == instance_id;
-      });
-  if (instance == configuration.instances.end())
-    return std::string{};
-  if (tokens->size() == 5U) {
-    // `info` is relative to the present working context. Nokia's MD-CLI omits
-    // the current list key and prints its children at column one; only nested
-    // descendants retain braces. `info full-context` is the distinct command
-    // that would include the complete path to this instance.
-    md_ospf_instance_info(out, *instance, 0U, detail);
+  if (tokens->size() == 4U)
     return out.str();
-  }
-  if (tokens->size() < 7U || (*tokens)[5] != "area")
-    return std::nullopt;
-  const auto area_id = ospf_area_identifier((*tokens)[6]);
-  if (!area_id)
-    return std::nullopt;
-  const auto area = std::find_if(
-      instance->areas.begin(), instance->areas.end(),
-      [&](const auto &candidate) { return candidate.area_id == *area_id; });
-  if (area == instance->areas.end())
-    return std::string{};
-  if (tokens->size() == 7U) {
-    md_ospf_area_info(out, *area, 0U, detail);
-    return out.str();
-  }
-  if (tokens->size() != 9U || (*tokens)[7] != "interface")
-    return std::nullopt;
-  const auto interface = std::find_if(
-      area->interfaces.begin(), area->interfaces.end(),
-      [&](const auto &candidate) {
-        return candidate.interface_name == (*tokens)[8];
-      });
-  if (interface == area->interfaces.end())
-    return std::string{};
-  md_ospf_interface_info(out, *interface, 0U, detail);
-  return out.str();
+  return md_rendered_context_body(out.str(), *tokens, 3U);
 }
 
 std::string_view
@@ -4459,7 +6353,38 @@ md_base_configuration_info(const Configuration &configuration,
     return std::nullopt;
 
   const auto emit_router = [&](std::ostringstream &out, std::size_t depth) {
+    if (!configuration.dhcpv4_servers.servers.empty()) {
+      md_indent(out, depth);
+      out << "dhcp-server {\n";
+      for (const auto &server : configuration.dhcpv4_servers.servers) {
+        md_indent(out, depth + 1U);
+        out << "dhcpv4 \"" << server.name << "\" {\n";
+        md_dhcpv4_server_info(out, server, depth + 2U, detail);
+        md_indent(out, depth + 1U);
+        out << "}\n";
+      }
+      md_indent(out, depth);
+      out << "}\n";
+    }
     md_dhcpv6_servers_info(out, configuration.dhcpv6_servers, depth, detail);
+    if (configuration.mld.configured || detail) {
+      md_indent(out, depth);
+      out << "mld {\n";
+      if (const auto mld = md_mld_configuration_info(
+              configuration, "configure router Base mld", detail))
+        md_append_indented(out, *mld, depth + 1U);
+      md_indent(out, depth);
+      out << "}\n";
+    }
+    for (const auto &instance : configuration.ospf.instances) {
+      md_indent(out, depth);
+      out << (instance.address_family == ospf::AddressFamily::ipv4 ? "ospf "
+                                                                  : "ospf3 ")
+          << static_cast<unsigned>(instance.instance_id) << " {\n";
+      md_ospf_instance_info(out, instance, depth + 1U, detail);
+      md_indent(out, depth);
+      out << "}\n";
+    }
     for (const auto &interface : configuration.interfaces) {
       md_indent(out, depth);
       out << "interface \"" << interface.name << "\" {\n";
@@ -4486,15 +6411,82 @@ md_base_configuration_info(const Configuration &configuration,
   std::ostringstream out;
   if (tokens->size() == 1U) {
     md_hardware_configuration_body(out, configuration, 0U, detail);
-    out << "system {\n    name \"" << configuration.system_name << "\"\n}\n";
+    out << "system {\n    name \"" << configuration.system_name << "\"\n";
+    if (!configuration.tls.certificate_profiles.empty() ||
+        !configuration.tls.trust_anchor_profiles.empty() ||
+        !configuration.tls.client_cipher_lists.empty() ||
+        !configuration.tls.client_group_lists.empty() ||
+        !configuration.tls.client_signature_lists.empty() ||
+        !configuration.tls.client_profiles.empty() ||
+        !configuration.tls.server_cipher_lists.empty() ||
+        !configuration.tls.server_group_lists.empty() ||
+        !configuration.tls.server_signature_lists.empty() ||
+        !configuration.tls.server_profiles.empty() ||
+        configuration.tls.use_pqc_only_configured || detail) {
+      out << "    security {\n        tls {\n";
+      md_tls_configuration_body(out, configuration.tls, 3U, detail);
+      out << "        }\n    }\n";
+    }
+    out << "}\n";
     out << "router \"Base\" {\n";
     emit_router(out, 1U);
     out << "}\n";
+    if (!configuration.mld_prefix_lists.empty() ||
+        !configuration.mld_import_policies.empty()) {
+      out << "policy-options {\n";
+      if (const auto policy = md_policy_configuration_info(
+              configuration, "configure policy-options", detail))
+        md_append_indented(out, *policy, 1U);
+      out << "}\n";
+    }
+    if (!configuration.ies.customers.empty() ||
+        !configuration.ies.ies_services.empty()) {
+      out << "service {\n";
+      if (const auto service = md_ies_configuration_info(
+              configuration.ies, "configure service", detail))
+        md_append_indented(out, *service, 1U);
+      out << "}\n";
+    }
+    if (!configuration.ipsec.ike_transforms.empty() ||
+        !configuration.ipsec.ipsec_transforms.empty() ||
+        !configuration.ipsec.ike_policies.empty() ||
+        !configuration.ipsec.static_sas.empty() ||
+        !configuration.ipsec.certificate_profiles.empty() ||
+        !configuration.ipsec.trust_anchor_profiles.empty() ||
+        !configuration.ipsec.ppk_lists.empty() ||
+        !configuration.ipsec.traffic_selector_lists.empty() ||
+        !configuration.ipsec.transport_mode_profiles.empty() ||
+        !configuration.ipsec.tunnel_templates.empty()) {
+      out << "ipsec {\n";
+      md_ipsec_configuration_body(out, configuration.ipsec, 1U, detail);
+      out << "}\n";
+    }
     return out.str();
   }
   if ((*tokens)[1] == "system") {
     if (tokens->size() == 2U) {
       out << "name \"" << configuration.system_name << "\"\n";
+      if (!configuration.tls.certificate_profiles.empty() ||
+          !configuration.tls.trust_anchor_profiles.empty() ||
+          !configuration.tls.client_cipher_lists.empty() ||
+          !configuration.tls.client_group_lists.empty() ||
+          !configuration.tls.client_signature_lists.empty() ||
+          !configuration.tls.client_profiles.empty() ||
+          !configuration.tls.server_cipher_lists.empty() ||
+          !configuration.tls.server_group_lists.empty() ||
+          !configuration.tls.server_signature_lists.empty() ||
+          !configuration.tls.server_profiles.empty() ||
+          configuration.tls.use_pqc_only_configured || detail) {
+        out << "security {\n    tls {\n";
+        md_tls_configuration_body(out, configuration.tls, 2U, detail);
+        out << "    }\n}\n";
+      }
+      return out.str();
+    }
+    if (tokens->size() == 3U && (*tokens)[2] == "security") {
+      out << "tls {\n";
+      md_tls_configuration_body(out, configuration.tls, 1U, detail);
+      out << "}\n";
       return out.str();
     }
     return std::nullopt;
@@ -4629,6 +6621,66 @@ md_path_from_classic(std::string_view classic_path) {
     }
     return out.str();
   }
+  if (tokens->size() >= 4U && (*tokens)[0] == "configure" &&
+      (*tokens)[1] == "router" && (*tokens)[2] == "dhcp" &&
+      (*tokens)[3] == "local-dhcp-server") {
+    // Classic places DHCPv4 below router>dhcp and uses local-dhcp-server as
+    // the list name. The canonical MD datastore uses dhcp-server>dhcpv4.
+    // Convert only hierarchy here; classic_info_text later owns leaf spelling.
+    out << "configure router \"Base\" dhcp-server dhcpv4";
+    for (std::size_t index = 4U; index < tokens->size(); ++index) {
+      const auto &token = (*tokens)[index];
+      const bool quote = token.find(' ') != std::string::npos;
+      out << ' ' << (quote ? "\"" : "") << token << (quote ? "\"" : "");
+    }
+    return out.str();
+  }
+  if (tokens->size() >= 3U && (*tokens)[0] == "configure" &&
+      (*tokens)[1] == "router" && (*tokens)[2] == "policy-options") {
+    out << "configure policy-options";
+    for (std::size_t index = 3U; index < tokens->size(); ++index) {
+      const auto &token = (*tokens)[index];
+      // begin, commit and abort are classic transaction controls. They never
+      // become saved contexts and therefore cannot appear in classic_path.
+      const bool quote = token.find(' ') != std::string::npos;
+      out << ' ' << (quote ? "\"" : "") << token << (quote ? "\"" : "");
+    }
+    return out.str();
+  }
+  if (tokens->size() >= 4U && (*tokens)[0] == "configure" &&
+      (*tokens)[1] == "system" && (*tokens)[2] == "security" &&
+      (*tokens)[3] == "keychain") {
+    // Classic elides the plural `keychains` container and names the
+    // bidirectional branch `direction bi`. The configuration owner still
+    // stores the canonical MD path, so normalize only the saved PWC.
+    out << "configure system security keychains keychain";
+    for (std::size_t index = 4U; index < tokens->size(); ++index) {
+      const auto &token = (*tokens)[index];
+      if (token == "direction" && index + 1U < tokens->size() &&
+          (*tokens)[index + 1U] == "bi") {
+        out << " bidirectional";
+        ++index;
+        continue;
+      }
+      const bool quote = token.find(' ') != std::string::npos;
+      out << ' ' << (quote ? "\"" : "") << token << (quote ? "\"" : "");
+    }
+    return out.str();
+  }
+  if (tokens->size() >= 2U && (*tokens)[0] == "configure" &&
+      (*tokens)[1] == "service") {
+    out << "configure service";
+    for (std::size_t index = 2U; index < tokens->size(); ++index) {
+      const auto &token = (*tokens)[index];
+      if (token == "dhcp6-relay") {
+        out << " dhcp6 relay";
+        continue;
+      }
+      const bool quote = token.find(' ') != std::string::npos;
+      out << ' ' << (quote ? "\"" : "") << token << (quote ? "\"" : "");
+    }
+    return out.str();
+  }
   if (tokens->size() >= 5U && (*tokens)[0] == "configure" &&
       (*tokens)[1] == "router" && (*tokens)[2] == "interface" &&
       (*tokens)[4] == "dhcp") {
@@ -4664,13 +6716,18 @@ md_path_from_classic(std::string_view classic_path) {
   return out.str();
 }
 
-std::string classic_info_text(std::string_view md_text) {
+std::string classic_info_text(std::string_view md_text,
+                              std::string_view md_context) {
   std::ostringstream out;
   out << "----------------------------------------------\n";
   std::istringstream lines(std::string{md_text});
-  std::string line;
+  std::vector<std::string> rendered_lines;
+  for (std::string line; std::getline(lines, line);)
+    rendered_lines.push_back(std::move(line));
   std::size_t depth{};
-  while (std::getline(lines, line)) {
+  for (std::size_t line_index{}; line_index < rendered_lines.size();
+       ++line_index) {
+    const auto &line = rendered_lines[line_index];
     const auto first = line.find_first_not_of(' ');
     if (first == std::string::npos)
       continue;
@@ -4685,15 +6742,170 @@ std::string classic_info_text(std::string_view md_text) {
     if (content.size() >= 2U &&
         content.compare(content.size() - 2U, 2U, " {") == 0) {
       content.resize(content.size() - 2U);
+
+      // The shared keychain datastore follows the MD hierarchy
+      // `keychains>keychain>bidirectional`. Classic SR OS names the same
+      // container `direction bi`. Keeping this rewrite beside the classic
+      // renderer prevents either parser from storing presentation-only node
+      // names and also makes root and deeply scoped `info` use one rule.
+      const bool system_keychain_context =
+          md_context.starts_with(
+              "configure system security keychains keychain ");
+      if (system_keychain_context && content == "bidirectional")
+        content = "direction bi";
+
+      // MD OSPF models an IPsec authentication association as nested
+      // containers. Classic SR OS exposes the same association as one
+      // command. Collapse only the exact typed shape emitted by the OSPF
+      // renderer so an unrelated authentication container cannot be
+      // accidentally reinterpreted.
+      const bool ospf_context =
+          md_context.starts_with("configure router \"Base\" ospf");
+      if (ospf_context && content == "authentication" &&
+          line_index + 4U < rendered_lines.size()) {
+        const auto trimmed = [&](std::size_t offset) -> std::string_view {
+          const auto &candidate = rendered_lines[line_index + offset];
+          const auto begin = candidate.find_first_not_of(' ');
+          return begin == std::string::npos
+                     ? std::string_view{}
+                     : std::string_view{candidate}.substr(begin);
+        };
+        const auto direction = trimmed(1U);
+        const auto sa_name = trimmed(2U);
+        if (direction == "bidirectional {" &&
+            sa_name.starts_with("sa-name ") && trimmed(3U) == "}" &&
+            trimmed(4U) == "}") {
+          md_indent(out, depth);
+          out << "authentication bidirectional "
+              << sa_name.substr(std::string_view{"sa-name "}.size()) << '\n';
+          line_index += 4U;
+          continue;
+        }
+      }
+
+      // MD algorithm entries are keyed containers, while the classic TLS CLI
+      // represents the same index and algorithm name as one command. Collapse
+      // only the documented three TLS 1.3 list entry types, and only when the
+      // canonical body has exactly one `name` leaf followed by its closing
+      // brace. This keeps unrelated containers hierarchical.
+      const bool tls_algorithm =
+          content.starts_with("tls13-cipher ") ||
+          content.starts_with("tls13-group ") ||
+          content.starts_with("tls13-signature ");
+      if (tls_algorithm && line_index + 2U < rendered_lines.size()) {
+        const auto next_first =
+            rendered_lines[line_index + 1U].find_first_not_of(' ');
+        const auto close_first =
+            rendered_lines[line_index + 2U].find_first_not_of(' ');
+        const auto next =
+            next_first == std::string::npos
+                ? std::string_view{}
+                : std::string_view{rendered_lines[line_index + 1U]}
+                      .substr(next_first);
+        const auto close =
+            close_first == std::string::npos
+                ? std::string_view{}
+                : std::string_view{rendered_lines[line_index + 2U]}
+                      .substr(close_first);
+        if (next.starts_with("name ") && close == "}") {
+          md_indent(out, depth);
+          out << content << ' ' << next << '\n';
+          line_index += 2U;
+          continue;
+        }
+      }
+
+      // Nokia classic configuration output appends `create` to keyed TLS
+      // objects. The keyword is a presentation and creation-mode detail, not
+      // part of the MD datastore key, so it belongs in this engine-specific
+      // formatter.
+      const auto classic_created_list = [&] {
+        static constexpr std::array<std::string_view, 19U> prefixes{
+            "cert-profile ",
+            "trust-anchor-profile ",
+            "client-cipher-list ",
+            "client-group-list ",
+            "client-signature-list ",
+            "server-cipher-list ",
+            "server-group-list ",
+            "server-signature-list ",
+            "client-tls-profile ",
+            "server-tls-profile ",
+            "ike-transform ",
+            "ipsec-transform ",
+            "ike-policy ",
+            "ts-list ",
+            "ppk-list ",
+            "ipsec-transport-mode-profile ",
+            "tunnel-template ",
+            "static-sa ",
+            "entry "};
+        const bool is_ipsec_context =
+            md_context == "configure ipsec" ||
+            md_context.starts_with("configure ipsec ");
+        return std::ranges::any_of(
+            prefixes, [&](std::string_view prefix) {
+              if (prefix == "entry " && !is_ipsec_context)
+                return false;
+              return content.starts_with(prefix);
+            });
+      }();
+      if (classic_created_list)
+        content += " create";
       md_indent(out, depth);
       out << content << '\n';
       ++depth;
       continue;
     }
 
+    // Key-only MD lists use the compact `{ }` form. Their classic equivalent
+    // is a scalar-looking command and must not leak braces into classic CLI.
+    if (content.ends_with(" { }")) {
+      const auto key_only =
+          content.substr(0U, content.size() - std::string_view{" { }"}.size());
+      if (key_only.starts_with("trust-anchor ") ||
+          key_only.starts_with("ca-profile ")) {
+        // Both documented key-only lists retain their node name in classic
+        // CLI. Other inline blocks must remain visible until an explicit
+        // engine mapping is added, rather than being silently flattened.
+        md_indent(out, depth);
+        out << key_only << '\n';
+        continue;
+      }
+    }
+
     // The two engines share one typed datastore but not leaf spelling.
     // Translate the classic administrative and presence forms here instead
     // of leaking MD/YANG terms into classic output.
+    const bool system_keychain_context =
+        md_context.starts_with(
+            "configure system security keychains keychain ");
+    if (system_keychain_context && content.starts_with("algorithm ") &&
+        line_index + 1U < rendered_lines.size()) {
+      const auto &candidate = rendered_lines[line_index + 1U];
+      const auto begin = candidate.find_first_not_of(' ');
+      const auto next =
+          begin == std::string::npos
+              ? std::string_view{}
+              : std::string_view{candidate}.substr(begin);
+      if (next.starts_with("authentication-key ")) {
+        // Classic stores the key and algorithm through one atomic command.
+        // Secrets remain concealed; `info` must never reconstruct or expose
+        // the project-vault bytes used by the protocol owner.
+        md_indent(out, depth);
+        out << "key "
+            << next.substr(std::string_view{"authentication-key "}.size())
+            << " algorithm "
+            << content.substr(std::string_view{"algorithm "}.size()) << '\n';
+        ++line_index;
+        continue;
+      }
+    }
+
+    const bool ospf_context =
+        md_context.starts_with("configure router \"Base\" ospf");
+    if (ospf_context && content.starts_with("keychain "))
+      content.replace(0U, std::string{"keychain"}.size(), "auth-keychain");
     if (content == "admin-state enable")
       content = "no shutdown";
     else if (content == "admin-state disable")
@@ -4706,6 +6918,16 @@ std::string classic_info_text(std::string_view md_text) {
       content = "mtu-ignore";
     else if (content == "mtu-ignore false")
       content = "no mtu-ignore";
+    else if (content.starts_with("certificate-file "))
+      content.replace(0U, std::string{"certificate-file"}.size(), "cert");
+    else if (content.starts_with("key-file "))
+      content.replace(0U, std::string{"key-file"}.size(), "key");
+    else if (content.starts_with("common-name-list "))
+      content.replace(0U, std::string{"common-name-list"}.size(),
+                      "cn-authentication");
+    else if (md_context.starts_with("configure ipsec static-sa ") &&
+             content.starts_with("security-protocol "))
+      content.replace(0U, std::string{"security-protocol"}.size(), "protocol");
     md_indent(out, depth);
     out << content << '\n';
   }
@@ -4732,19 +6954,42 @@ classic_configuration_info(const Configuration &configuration,
     rendered =
         md_port_configuration_info(configuration, hardware, *md_path, detail);
   if (!rendered)
+    rendered =
+        md_keychain_configuration_info(configuration.ospf, *md_path, detail);
+  if (!rendered)
     rendered = md_ospf_info(configuration.ospf, *md_path, detail);
+  if (!rendered)
+    rendered =
+        md_dhcp_server_configuration_info(configuration, *md_path, detail);
   if (!rendered)
     rendered = md_dhcpv6_configuration_info(configuration.dhcpv6_servers,
                                             *md_path, detail);
   if (!rendered)
+    rendered = md_dhcpv4_configuration_info(configuration.dhcpv4_servers,
+                                            *md_path, detail);
+  if (!rendered)
+    rendered = md_mld_configuration_info(configuration, *md_path, detail);
+  if (!rendered)
+    rendered = md_policy_configuration_info(configuration, *md_path, detail);
+  if (!rendered)
+    rendered = md_tls_configuration_info(configuration.tls, *md_path, detail);
+  if (!rendered)
+    rendered = md_ies_configuration_info(configuration.ies, *md_path, detail);
+  if (!rendered)
+    rendered =
+        md_ipsec_configuration_info(configuration.ipsec, *md_path, detail);
+  if (!rendered)
     rendered = md_base_configuration_info(configuration, *md_path, detail);
-  if (!rendered) {
-    const auto tokens = md_context_tokens(*md_path);
-    if (!tokens || tokens->empty() || (*tokens)[0] != "configure")
-      return std::nullopt;
-    rendered = std::string{};
-  }
-  return classic_info_text(*rendered);
+  // nullopt has exactly one meaning across the formatter boundary: no typed
+  // renderer owns this context. It must propagate to the dispatcher as an
+  // unsupported command. Treating it as an empty configuration used to hide
+  // missing classic renderers behind a visually valid pair of separators.
+  // Schema coverage verification now rejects such gaps before a build can be
+  // accepted, but the runtime remains strict in case a development build is
+  // launched without running that gate.
+  if (!rendered)
+    return std::nullopt;
+  return classic_info_text(*rendered, *md_path);
 }
 
 std::string_view policy_action_text(mld::ImportPolicyAction action) noexcept {
@@ -12067,23 +14312,35 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       rendered = md_port_configuration_info(
           selected, supervisor_.hardware(intent->handle), path, detail);
     if (!rendered)
+      rendered = md_keychain_configuration_info(selected.ospf, path, detail);
+    if (!rendered)
       rendered = md_ospf_info(selected.ospf, path, detail);
+    if (!rendered)
+      rendered = md_dhcp_server_configuration_info(selected, path, detail);
     if (!rendered)
       rendered = md_dhcpv6_configuration_info(selected.dhcpv6_servers, path,
                                               detail);
     if (!rendered)
+      rendered = md_dhcpv4_configuration_info(selected.dhcpv4_servers, path,
+                                              detail);
+    if (!rendered)
+      rendered = md_mld_configuration_info(selected, path, detail);
+    if (!rendered)
+      rendered = md_policy_configuration_info(selected, path, detail);
+    if (!rendered)
+      rendered = md_tls_configuration_info(selected.tls, path, detail);
+    if (!rendered)
+      rendered = md_ies_configuration_info(selected.ies, path, detail);
+    if (!rendered)
+      rendered = md_ipsec_configuration_info(selected.ipsec, path, detail);
+    if (!rendered)
       rendered = md_base_configuration_info(selected, path, detail);
     if (!rendered) {
-      // `info` is a global configuration-mode command on SR OS. A valid
-      // configured context with no present children returns an empty body,
-      // never an "unsupported" error. Renderers above contribute typed state
-      // for modeled subtrees; this fallback covers empty presence containers
-      // and keeps command availability independent of the current depth.
-      const auto tokens = md_context_tokens(path);
-      output = tokens && !tokens->empty() &&
-                       ((*tokens)[0] == "configure" || (*tokens)[0] == "bof")
-                   ? std::string{}
-                   : "MINOR: CLI #2001: Command is not supported in this context";
+      // A missing formatter is a programming defect, not an empty datastore.
+      // Production still reports a normal CLI error instead of terminating the
+      // router session, while the schema coverage test turns the same defect
+      // into a mandatory local-build failure.
+      output = "MINOR: CLI #2001: Command is not supported in this context";
     } else {
       output = *rendered;
     }

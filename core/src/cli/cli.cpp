@@ -1074,6 +1074,7 @@ bool global_action(cli_schema::CommandId id, CliEngine engine) noexcept {
   case md_edit_config_global:
   case md_edit_config_private:
   case md_edit_config_read_only:
+  case md_quit_config:
   case md_info:
   case md_info_detail:
   case md_compare:

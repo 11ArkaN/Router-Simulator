@@ -1,0 +1,112 @@
+# Contextual configuration output ownership for the pinned SR OS release.
+# The validator joins this catalog with every generated configuration command.
+# A source omitted here has no accepted info implementation and blocks tests
+# and production builds. Engines are listed separately because classic output
+# cannot inherit MD formatting merely by sharing the same typed datastore.
+
+release: 26.7.R1
+
+renderers:
+  - id: bof
+    engines: [md]
+    runtime_function: md_bof_configuration_info
+    source_ids:
+      - nokia.sros.26_7.bof.autoconfigure
+
+  - id: hardware
+    engines: [md, classic]
+    runtime_function: md_hardware_configuration_info
+    source_ids:
+      - nokia.sros.26_7.physical_port.provisioning
+
+  - id: port
+    engines: [md, classic]
+    runtime_function: md_port_configuration_info
+    source_ids:
+      - nokia.sros.26_7.port.configuration
+      - nokia.sros.26_7.port.description
+
+  - id: router-base
+    engines: [md, classic]
+    runtime_function: md_base_configuration_info
+    source_ids:
+      - nokia.sros.26_7.arp.aging
+      - nokia.sros.26_7.dhcpv4.option82
+      - nokia.sros.26_7.dhcpv4.relay
+      - nokia.sros.26_7.ecmp.configuration
+      - nokia.sros.26_7.ipv4.icmp_redirects
+      - nokia.sros.26_7.ipv6.icmp6_redirects
+      - nokia.sros.26_7.ipv6.interface_address
+      - nokia.sros.26_7.ipv6.neighbor_configuration
+      - nokia.sros.26_7.ipv6.neighbor_policy
+      - nokia.sros.26_7.router_interface.configuration
+      - nokia.sros.26_7.static_arp
+      - nokia.sros.26_7.static_route.configuration
+      - nokia.sros.26_7.static_route.indirect
+      - nokia.sros.26_7.system.name
+
+  - id: router-advertisement
+    engines: [md, classic]
+    runtime_function: md_router_advertisement_info
+    source_ids:
+      - nokia.sros.26_7.ipv6.router_advertisement
+
+  - id: ospf
+    engines: [md, classic]
+    runtime_function: md_ospf_info
+    source_ids:
+      - nokia.sros.26_7.ospf.configuration_model
+      - nokia.sros.26_7.ospf.redistribution
+      - nokia.sros.26_7.ospf.virtual_link
+
+  - id: system-keychain
+    engines: [md, classic]
+    runtime_function: md_keychain_configuration_info
+    source_ids:
+      - nokia.sros.26_7.ospf.keychain
+
+  - id: dhcpv6-server
+    engines: [md, classic]
+    runtime_function: md_dhcpv6_configuration_info
+    source_ids:
+      - nokia.sros.26_7.dhcpv6.local_server
+
+  - id: dhcpv4-server
+    engines: [md, classic]
+    runtime_function: md_dhcpv4_configuration_info
+    source_ids:
+      - nokia.sros.26_7.dhcpv4.local_server
+
+  - id: mld
+    engines: [md, classic]
+    runtime_function: md_mld_configuration_info
+    source_ids:
+      - nokia.sros.26_7.mld.configuration
+
+  - id: policy-options
+    engines: [md, classic]
+    runtime_function: md_policy_configuration_info
+    source_ids:
+      - nokia.sros.26_7.mld.import_policy
+
+  - id: tls
+    engines: [md, classic]
+    runtime_function: md_tls_configuration_info
+    source_ids:
+      - nokia.sros.26_7.tls_algorithm_support
+      - nokia.sros.26_7.tls_profiles
+
+  - id: ies
+    engines: [md, classic]
+    runtime_function: md_ies_configuration_info
+    source_ids:
+      - nokia.sros.26_7.ies.dhcpv6_lease_population
+      - nokia.sros.26_7.ies.dhcpv6_neighbor_resolution
+      - nokia.sros.26_7.ies.dhcpv6_relay
+      - nokia.sros.26_7.ies.service_model
+
+  - id: ipsec
+    engines: [md, classic]
+    runtime_function: md_ipsec_configuration_info
+    source_ids:
+      - nokia.sros.26_7.ipsec.configuration

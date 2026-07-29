@@ -55,6 +55,7 @@ let continuityRecovery: RuntimeRecoveryController | undefined;
 let continuityBridgeUnavailable = false;
 let captureFileHandle: FileSystemFileHandle | undefined;
 let captureAccess: FileSystemSyncAccessHandle | undefined;
+let captureStorageFileName = "capture.pcapng";
 let captureOffset = 0;
 let capturePending: Uint8Array | undefined;
 let capturePendingWritten = 0;
@@ -193,11 +194,27 @@ async function bindCaptureStorage(projectId: string): Promise<void> {
   const root = await navigator.storage.getDirectory();
   const projects = await root.getDirectoryHandle("projects", { create: true });
   const directory = await projects.getDirectoryHandle(projectId, { create: true });
-  captureFileHandle = await directory.getFileHandle("capture.pcapng", { create: true });
+  captureFileHandle = await directory.getFileHandle(captureStorageFileName,
+    { create: true });
   // A dedicated Worker may use the synchronous OPFS handle. It gives the
   // capture bridge positional writes and flush without blocking React or
   // opening one atomic replacement stream for every short capture chunk.
-  captureAccess = await captureFileHandle.createSyncAccessHandle();
+  try {
+    captureAccess = await captureFileHandle.createSyncAccessHandle();
+  } catch {
+    // OPFS access handles are exclusive across every tab in the browser
+    // profile. A second view of the same project must still own a complete
+    // runtime and capture its own traffic instead of failing application
+    // startup because another tab is inspecting that project. The fallback is
+    // created only after the canonical project capture is proven busy. Its
+    // random identity prevents two concurrent fallback workers from racing for
+    // another shared name and never changes packet or capture semantics inside
+    // either runtime.
+    captureStorageFileName = `capture-${crypto.randomUUID()}.pcapng`;
+    captureFileHandle = await directory.getFileHandle(captureStorageFileName,
+      { create: true });
+    captureAccess = await captureFileHandle.createSyncAccessHandle();
+  }
   captureOffset = captureAccess.getSize();
 }
 
