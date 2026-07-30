@@ -64,6 +64,15 @@ function ipv4Attachment(address: string): {
     String((mask >>> shift) & 0xff)).join(".") };
 }
 
+function isIpv4Address(address: string): boolean {
+  // The Inspector validates only dotted-decimal syntax. Reachability, local
+  // source state, route selection, ARP and ICMP outcomes remain forwarding
+  // decisions and are never inferred from the project graph.
+  const octets = address.split(".");
+  return octets.length === 4 && octets.every((octet) =>
+    /^(0|[1-9][0-9]{0,2})$/.test(octet) && Number(octet) <= 255);
+}
+
 function randomDuidUuid(): string {
   // RFC 6355 DUID-UUID stores type 4 followed by the 128-bit UUID. The value
   // is generated once in the draft and then persisted with the project, so
@@ -129,6 +138,7 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
   openConsole, close }: Props) {
   const [pingResult, setPingResult] = useState("");
   const [pingBusy, setPingBusy] = useState(false);
+  const [pingDestination, setPingDestination] = useState("");
   const host = project.hosts.find((item) => item.id === selected);
   const dhcpServer = project.dhcpServers.find((item) => item.id === selected);
   const router = project.routers.find((item) => item.id === selected);
@@ -145,8 +155,6 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
   const profile = useMemo(() => router
     ? PROFILE_CATALOG.profiles.find((item) => item.id === router.profileId)
     : undefined, [router]);
-  const hostPeer = host ? project.hosts.find((item) => item.id !== host.id)
-    : undefined;
   const [hostDraft, setHostDraft] = useState<HostProjectV4>();
   const [dhcpServerDraft, setDhcpServerDraft] =
     useState<DhcpServerProjectV5>();
@@ -170,12 +178,13 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
     setSwitchNameDraft(ethernetSwitch?.name ?? "");
   }, [ethernetSwitch]);
   useEffect(() => {
-    // Echo-test output belongs to the current host pair. Demo replacement can
-    // reuse stable node IDs, so clear this local UI state when the addresses
-    // behind those IDs change.
+    // Echo-test input and output belong to the selected host. A project can
+    // reuse a stable node ID for a different endpoint, so neither a target nor
+    // an old result may survive that ownership change.
+    setPingDestination("");
     setPingResult("");
     setPingBusy(false);
-  }, [host?.id, host?.eth0.address, hostPeer?.id, hostPeer?.eth0.address]);
+  }, [host?.id, host?.eth0.address]);
   const resizeHandle = <PanelResizeHandle axis="x" className="inspector-resizer"
     defaultValue={324} direction={-1} label="Resize inspector" min={64}
     max={Math.max(64, window.innerWidth - 64)} value={width}
@@ -237,11 +246,10 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
 
   if (host) {
     const editable = hostDraft ?? host;
-    const peer = hostPeer;
     const runPing = async () => {
-      if (!peer || pingBusy) return;
+      if (!isIpv4Address(pingDestination) || pingBusy) return;
       setPingBusy(true);
-      try { setPingResult(await ping(host.id, peer.eth0.address.split("/")[0])); }
+      try { setPingResult(await ping(host.id, pingDestination)); }
       catch { setPingResult("The echo test could not be completed."); }
       finally { setPingBusy(false); }
     };
@@ -306,7 +314,24 @@ export function Inspector({ selected, tab, onTabChange, project, snapshot,
         <label>IPv6 interface identifier<select value={editable.eth0.ipv6.interfaceIdentifierMode} onChange={(event) => { const mode = event.target.value as "modified-eui64" | "stable-opaque"; setHostDraft({ ...editable, eth0: { ...editable.eth0, ipv6: { ...editable.eth0.ipv6, interfaceIdentifierMode: mode, stableIidSecret: mode === "modified-eui64" ? null : editable.eth0.ipv6.stableIidSecret } } }); }}><option value="modified-eui64">modified EUI-64</option><option value="stable-opaque">stable opaque</option></select></label>
         {editable.eth0.ipv6.interfaceIdentifierMode === "stable-opaque" && <label>IPv6 network identity<input value={editable.eth0.ipv6.networkId} maxLength={PROFILE_CATALOG.runtime.ipv6_stable_iid_network_id_octets} onChange={(event) => setHostDraft({ ...editable, eth0: { ...editable.eth0, ipv6: { ...editable.eth0.ipv6, networkId: event.target.value } } })} /></label>}
         <div className="button-pair"><button onClick={() => setHostDraft(structuredClone(host))}>Discard</button><button className="inspector-action" onClick={() => updateHost(editable)}>Apply</button></div>
-        <button className="inspector-action" disabled={!peer || pingBusy} onClick={() => void runPing()}>{pingBusy ? "Pinging" : `Ping ${peer?.name ?? "peer"}`}</button>
+        <label>Ping destination<input inputMode="decimal"
+          placeholder="IPv4 address" value={pingDestination}
+          aria-invalid={pingDestination.length > 0 &&
+            !isIpv4Address(pingDestination)}
+          onChange={(event) => {
+            setPingDestination(event.target.value.trim());
+            setPingResult("");
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void runPing();
+            }
+          }} /></label>
+        <button className="inspector-action"
+          disabled={!isIpv4Address(pingDestination) || pingBusy}
+          onClick={() => void runPing()}>
+          {pingBusy ? "Pinging" : "Ping"}</button>
         <button className="secondary-action" onClick={() => deleteNode(host.id)}>Delete host</button>
         {pingResult && <pre className="operation-result">{pingResult}</pre>}
       </div>{resizeHandle}

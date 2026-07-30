@@ -58,13 +58,16 @@ describe("host IPv6 inspector", () => {
     expect(screen.queryByLabelText("Stable IID secret")).toBeNull();
   });
 
-  it("clears a stale host ping result when a demo reuses the selected node", async () => {
+  it("pings an entered IPv4 address and clears it when the host changes", async () => {
     const user = userEvent.setup();
-    const ping = vi.fn().mockResolvedValue("Reply received from 192.0.2.6.");
+    const ping = vi.fn().mockResolvedValue("Reply received from 203.0.113.77.");
     const rendered = renderInspector(createStaticIpv4DemoLabV5(), ping);
 
-    await user.click(screen.getByRole("button", { name: "Ping Host B" }));
-    expect(await screen.findByText("Reply received from 192.0.2.6."))
+    const destination = screen.getByLabelText("Ping destination");
+    await user.type(destination, "203.0.113.77");
+    await user.click(screen.getByRole("button", { name: "Ping" }));
+    expect(ping).toHaveBeenCalledWith("h1", "203.0.113.77");
+    expect(await screen.findByText("Reply received from 203.0.113.77."))
       .toBeTruthy();
 
     rendered.rerender(<Inspector selected="h1" tab="chassis"
@@ -78,9 +81,20 @@ describe("host IPv6 inspector", () => {
       width={324} onWidthChange={vi.fn()} openConsole={vi.fn()}
       close={vi.fn()} />);
 
-    expect(screen.queryByText("Reply received from 192.0.2.6.")).toBeNull();
-    expect(screen.getByRole("button", { name: "Ping Data center host" }))
-      .toBeTruthy();
+    expect(screen.queryByText("Reply received from 203.0.113.77.")).toBeNull();
+    expect((screen.getByLabelText("Ping destination") as HTMLInputElement).value)
+      .toBe("");
+  });
+
+  it("does not submit an invalid IPv4 destination", async () => {
+    const user = userEvent.setup();
+    const ping = vi.fn();
+    renderInspector(createStaticIpv4DemoLabV5(), ping);
+
+    await user.type(screen.getByLabelText("Ping destination"), "300.1.2.3");
+    expect((screen.getByRole("button", { name: "Ping" }) as HTMLButtonElement)
+      .disabled).toBe(true);
+    expect(ping).not.toHaveBeenCalled();
   });
 });
 
