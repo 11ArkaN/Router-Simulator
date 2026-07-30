@@ -550,6 +550,12 @@ struct NetworkHostCheckpoint {
   bool link_signal{};
   bool ping_pending{};
   bool ping_reply{};
+  // Ping timing is relative to the checkpoint instant because steady_clock
+  // epochs are process-local. A value of -1 means that ARP has not yet released
+  // the retained Echo Request onto the link.
+  std::int64_t ping_sent_elapsed_nanoseconds{-1};
+  std::uint64_t ping_reply_rtt_nanoseconds{};
+  std::uint8_t ping_reply_ttl{};
   bool ipv6_autoconfiguration{};
   std::optional<HostDhcpv4ServiceCheckpoint> dhcpv4;
   std::optional<HostDhcpv6ServiceCheckpoint> dhcpv6;
@@ -866,6 +872,8 @@ public:
                            std::uint16_t sequence) noexcept;
   [[nodiscard]] bool host_ping_reply(HostHandle host,
                                      std::uint16_t sequence) noexcept;
+  [[nodiscard]] std::uint64_t
+  host_ping_outcome(HostHandle host, std::uint16_t sequence) noexcept;
 
   // pump runs one bounded forwarding and medium turn at steady-clock now. It
   // never advances a virtual clock and never executes work from a global heap.

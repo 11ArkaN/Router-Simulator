@@ -38,10 +38,10 @@ struct EthernetSwitchProfile {
 // One release owns this entire generated catalog. Runtime capability output
 // consumes this value instead of repeating the release pin in hand-written C++.
 inline constexpr std::string_view release{"26.7.R1"};
-inline constexpr std::uint64_t catalog_hash = 0xbeffdbc0ca23127fULL;
-inline constexpr std::uint64_t checkpoint_schema_hash = 0x5ca8da0d50e71435ULL;
-inline constexpr std::uint64_t runtime_protocol_hash = 0x513c19fec444dbd2ULL;
-inline constexpr std::uint64_t build_hash = 0x4d0354803b7cb5a0ULL;
+inline constexpr std::uint64_t catalog_hash = 0x7e766c2229de2671ULL;
+inline constexpr std::uint64_t checkpoint_schema_hash = 0x23b42724ffac6c04ULL;
+inline constexpr std::uint64_t runtime_protocol_hash = 0x0bc477cf9500a83bULL;
+inline constexpr std::uint64_t build_hash = 0x163a9553ac87d134ULL;
 
 inline constexpr std::size_t maximum_routers = 16;
 inline constexpr std::size_t maximum_sr_routers = 16;
@@ -513,6 +513,8 @@ inline constexpr std::chrono::seconds ra_max_initial_advertisement_interval{
     16};
 inline constexpr std::uint8_t ra_max_initial_advertisements =
     3;
+inline constexpr std::uint32_t default_ping_count =
+    5U;
 inline constexpr std::size_t default_ping_payload_octets =
     56;
 inline constexpr std::size_t minimum_ping_payload_octets =

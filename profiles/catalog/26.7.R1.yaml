@@ -623,6 +623,7 @@ protocol_defaults:
   ra_max_initial_advertisements: 3
   # RFC 792 does not mandate an Echo data size. This is the documented SR OS
   # ping default and belongs to the release profile rather than terminal UI.
+  ping_default_count: 5
   ping_payload_octets: 56
   ping_minimum_payload_octets: 12
   ping_maximum_payload_octets: 1472

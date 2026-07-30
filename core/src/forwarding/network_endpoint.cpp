@@ -1896,6 +1896,7 @@ EndpointFrames EndpointStack::receive(const packet::Frame &frame,
   } else if (probe_source && icmp->type == 0 &&
              icmp->sequence == expected_sequence) {
     result.echo_reply = true;
+    result.echo_reply_ttl = ip->ttl;
     // Success promotes an upward test only when the reply came from the exact
     // retained destination. A guessed sequence from another source cannot
     // change path state.

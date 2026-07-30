@@ -61,9 +61,9 @@ const cppBoolean = (value) => value ? "true" : "false";
 if (catalog.release !== "26.7.R1") fail("release must match the pinned baseline");
 if (protocol.version !== 4 || protocol.snapshot_abi !== 9 ||
     protocol.telemetry_abi !== 6 ||
-    protocol.checkpoint_abi !== 7 ||
-    !protocol.operations || checkpoint.version !== 7)
-  fail("runtime protocol 4, snapshot ABI 8, telemetry ABI 6 and checkpoint schema 7 are required");
+    protocol.checkpoint_abi !== 8 ||
+    !protocol.operations || checkpoint.version !== 8)
+  fail("runtime protocol 4, snapshot ABI 9, telemetry ABI 6 and checkpoint schema 8 are required");
 for (const [name, value] of Object.entries(catalog.limits ?? {})) exactInteger(value, `limits.${name}`, 1);
 if (catalog.limits.routers !== 16 ||
     catalog.limits.sr_routers !== 16 ||
@@ -1115,6 +1115,8 @@ inline constexpr std::chrono::seconds ra_max_initial_advertisement_interval{
     ${catalog.protocol_defaults.ra_max_initial_advertisement_interval_seconds}};
 inline constexpr std::uint8_t ra_max_initial_advertisements =
     ${catalog.protocol_defaults.ra_max_initial_advertisements};
+inline constexpr std::uint32_t default_ping_count =
+    ${catalog.protocol_defaults.ping_default_count}U;
 inline constexpr std::size_t default_ping_payload_octets =
     ${catalog.protocol_defaults.ping_payload_octets};
 inline constexpr std::size_t minimum_ping_payload_octets =

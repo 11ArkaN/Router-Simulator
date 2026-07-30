@@ -561,6 +561,7 @@ export const PROFILE_CATALOG = {
     "ra_min_delay_between_advertisements_seconds": 3,
     "ra_max_initial_advertisement_interval_seconds": 16,
     "ra_max_initial_advertisements": 3,
+    "ping_default_count": 5,
     "ping_payload_octets": 56,
     "ping_minimum_payload_octets": 12,
     "ping_maximum_payload_octets": 1472,
@@ -1184,5 +1185,5 @@ export const PROFILE_CATALOG_COMPILED = {
   "maximumMdaSlotsPerCard": 2,
   "maximumPortsPerMda": 40
 } as const;
-export const PROFILE_CATALOG_HASH = "beffdbc0ca23127f" as const;
-export const LAB_BUILD_HASH = "4d0354803b7cb5a0" as const;
+export const PROFILE_CATALOG_HASH = "7e766c2229de2671" as const;
+export const LAB_BUILD_HASH = "163a9553ac87d134" as const;

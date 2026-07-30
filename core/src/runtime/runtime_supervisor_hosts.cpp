@@ -856,13 +856,19 @@ bool RuntimeSupervisor::start_host_ping(HostHandle host,
 
 bool RuntimeSupervisor::host_ping_reply(HostHandle host,
                                         std::uint16_t sequence) noexcept {
+  return (host_ping_outcome(host, sequence) & 0xffU) == 1U;
+}
+
+std::uint64_t
+RuntimeSupervisor::host_ping_outcome(HostHandle host,
+                                     std::uint16_t sequence) noexcept {
   if (!hosts_.get(host))
-    return false;
+    return 0U;
   auto &command = prepare(NetworkCommandKind::host_ping_status);
   command.host = host;
   command.sequence = sequence;
   const auto result = dispatch(command);
-  return result && result->success && result->value != 0;
+  return result && result->success ? result->value : 0U;
 }
 
 bool RuntimeSupervisor::delete_router(DeviceHandle device) noexcept {

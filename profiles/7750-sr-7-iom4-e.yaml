@@ -168,9 +168,10 @@ abi:
   telemetry: 6
   # Protocol 4 adds dual-stack host identity and rejects older field graphs.
   runtime_messages: 4
-  # ABI 7 adds switch ports, FDB entries and queued Ethernet frames. Old
+  # ABI 8 adds host Echo TTL, RTT and relative send timing after ABI 7 added
+  # switch ports, FDB entries and queued Ethernet frames. Old
   # checkpoint images are intentionally not accepted by this WIP project.
-  checkpoint: 7
+  checkpoint: 8
 link_defaults:
   # Propagation belongs to the cable or circuit, not to the Nokia port. The
   # project copies this value into each new physical link and may override it

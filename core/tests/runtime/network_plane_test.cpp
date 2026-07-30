@@ -813,13 +813,20 @@ void network_plane_tests() {
   for (std::size_t turn = 1; turn <= 40 && !plane->host_ping_reply(host_a, 12);
        ++turn)
     plane->pump(host_origin + std::chrono::microseconds{turn * 10U});
-  require(plane->host_ping_reply(host_a, 12),
-          "host MTU was ignored instead of fragmenting and reassembling Echo");
+  const auto host_ping_outcome = plane->host_ping_outcome(host_a, 12);
+  require((host_ping_outcome & 0xffU) == 1U &&
+              ((host_ping_outcome >> 8U) & 0xffU) ==
+                  device_catalog::default_ip_hop_limit &&
+              (host_ping_outcome >> 16U) != 0U,
+          "host Echo omitted the forwarding-owned reply TTL or RTT");
   const auto host_checkpoint = network_checkpoint(*plane);
   require(host_checkpoint.hosts.size() == 2 &&
               host_checkpoint.hosts[0].mtu == 68 &&
-              host_checkpoint.hosts[1].mtu == 1500,
-          "host checkpoint omitted interface MTU ownership");
+              host_checkpoint.hosts[1].mtu == 1500 &&
+              host_checkpoint.hosts[0].ping_reply_ttl ==
+                  device_catalog::default_ip_hop_limit &&
+              host_checkpoint.hosts[0].ping_reply_rtt_nanoseconds != 0U,
+          "host checkpoint omitted interface MTU or Echo observation ownership");
 
   // DHCPv4 is exercised on a fresh two-owner network so an unconfigured
   // client starts at 0.0.0.0 and reaches the server only by the RFC 2131
@@ -1112,7 +1119,7 @@ void network_plane_tests() {
       plane->restore(dhcpv4_checkpoint, NetworkPlane::Clock::now()) &&
           plane->host_dhcpv4_client_lease_count(dhcpv4_client_host)
                   .value_or(0U) == 1U,
-      "DHCPv4 client, server, UDP handles or relative timers were lost");
+          "DHCPv4 client, server, UDP handles or relative timers were lost");
   require(plane->remove_host_dhcpv4_client(dhcpv4_client_host) &&
               plane->remove_host_dhcpv4_server(dhcpv4_server_host),
           "DHCPv4 roles could not release their UDP sockets before reconfigure");

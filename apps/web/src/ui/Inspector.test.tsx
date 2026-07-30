@@ -60,14 +60,18 @@ describe("host IPv6 inspector", () => {
 
   it("pings an entered IPv4 address and clears it when the host changes", async () => {
     const user = userEvent.setup();
-    const ping = vi.fn().mockResolvedValue("Reply received from 203.0.113.77.");
+    const report = "PING 203.0.113.77 56 data bytes\n" +
+      "64 bytes from 203.0.113.77: icmp_seq=1 ttl=63 time=1.25ms.\n" +
+      "---- 203.0.113.77 PING Statistics ----\n" +
+      "1 packets transmitted, 1 packets received, 0.00% packet loss\n";
+    const ping = vi.fn().mockResolvedValue(report);
     const rendered = renderInspector(createStaticIpv4DemoLabV5(), ping);
 
     const destination = screen.getByLabelText("Ping destination");
     await user.type(destination, "203.0.113.77");
     await user.click(screen.getByRole("button", { name: "Ping" }));
     expect(ping).toHaveBeenCalledWith("h1", "203.0.113.77");
-    expect(await screen.findByText("Reply received from 203.0.113.77."))
+    expect(await screen.findByText(/PING 203\.0\.113\.77 56 data bytes/))
       .toBeTruthy();
 
     rendered.rerender(<Inspector selected="h1" tab="chassis"
@@ -81,7 +85,7 @@ describe("host IPv6 inspector", () => {
       width={324} onWidthChange={vi.fn()} openConsole={vi.fn()}
       close={vi.fn()} />);
 
-    expect(screen.queryByText("Reply received from 203.0.113.77.")).toBeNull();
+    expect(screen.queryByText(/PING 203\.0\.113\.77 56 data bytes/)).toBeNull();
     expect((screen.getByLabelText("Ping destination") as HTMLInputElement).value)
       .toBe("");
   });

@@ -24750,10 +24750,19 @@ std::string_view LabRuntime::command(std::string_view message) {
       fail("invalid host ping status query");
       return response_;
     }
-    succeed(supervisor_.host_ping_reply(endpoint->handle,
-                                        static_cast<std::uint16_t>(sequence))
-                ? "reply"
-                : "pending");
+    const auto outcome = supervisor_.host_ping_outcome(
+        endpoint->handle, static_cast<std::uint16_t>(sequence));
+    if ((outcome & 0xffU) == 1U) {
+      // The browser receives the forwarding timestamp and on-wire TTL, not
+      // the time at which its status request happened to run. Colons keep the
+      // three scalar fields within the existing one-field protocol response.
+      succeed("reply:" +
+              std::to_string(static_cast<std::uint8_t>((outcome >> 8U) &
+                                                       0xffU)) +
+              ":" + std::to_string(outcome >> 16U));
+    } else {
+      succeed("pending");
+    }
     return response_;
   } else {
     fail("unknown or malformed protocol 4 operation");

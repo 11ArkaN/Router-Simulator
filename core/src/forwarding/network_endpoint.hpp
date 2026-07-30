@@ -59,6 +59,10 @@ struct EndpointFrames {
   std::uint8_t count{};
   bool start_echo_clock{};
   bool echo_reply{};
+  // The IPv4 header belongs to the received Echo Reply, so forwarding records
+  // its actual remaining TTL rather than substituting the endpoint default.
+  // It is meaningful only when echo_reply is true.
+  std::uint8_t echo_reply_ttl{};
   bool ttl_expired{};
   bool mtu_exceeded{};
 };

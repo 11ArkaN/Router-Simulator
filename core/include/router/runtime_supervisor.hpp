@@ -987,6 +987,8 @@ public:
                                      std::uint16_t sequence) noexcept;
   [[nodiscard]] bool host_ping_reply(HostHandle host,
                                      std::uint16_t sequence) noexcept;
+  [[nodiscard]] std::uint64_t
+  host_ping_outcome(HostHandle host, std::uint16_t sequence) noexcept;
 
   [[nodiscard]] RouterHardwareInventory *hardware(DeviceHandle device) noexcept;
   [[nodiscard]] const RouterHardwareInventory *

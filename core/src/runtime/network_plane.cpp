@@ -829,6 +829,13 @@ struct NetworkPlane::Impl {
     bool link_signal{};
     bool ping_pending{};
     bool ping_reply{};
+    // Only the forwarding owner reads or writes these timestamps. The clock
+    // starts when the encoded Echo Request, rather than a preceding ARP
+    // request, is admitted to the fabric.
+    bool ping_clock_started{};
+    Clock::time_point ping_sent_at{};
+    std::chrono::nanoseconds ping_reply_rtt{};
+    std::uint8_t ping_reply_ttl{};
     struct Dhcpv4ClientStaging {
       dhcpv4::ClientConfiguration configuration;
       bool active{};
@@ -1530,11 +1537,25 @@ struct NetworkPlane::Impl {
     const auto result =
         endpoint->stack.receive(delivery.frame, endpoint->expected_sequence,
                                 endpoint->ping_pending, owner.now);
+    // ARP may release a retained Echo Request into the synchronous fabric.
+    // Install the timestamp before sending those frames because a zero-delay
+    // link can deliver the reply reentrantly from owner.send().
+    if (result.start_echo_clock) {
+      endpoint->ping_clock_started = true;
+      endpoint->ping_sent_at = owner.now;
+    }
     for (std::size_t index = 0; index < result.count; ++index)
       static_cast<void>(owner.send(node(handle), 0, result.frames[index]));
     if (result.echo_reply) {
       endpoint->ping_reply = true;
       endpoint->ping_pending = false;
+      endpoint->ping_reply_ttl = result.echo_reply_ttl;
+      endpoint->ping_reply_rtt =
+          endpoint->ping_clock_started && owner.now >= endpoint->ping_sent_at
+              ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    owner.now - endpoint->ping_sent_at)
+              : std::chrono::nanoseconds::zero();
+      endpoint->ping_clock_started = false;
     }
   }
 
@@ -2677,6 +2698,12 @@ ForwardResult NetworkPlane::Impl::apply_forward_command(
       endpoint->configured = true;
       endpoint->ping_pending = false;
       endpoint->ping_reply = false;
+      // Reconfiguration invalidates observations tied to the previous source
+      // address and interface identity. Clearing the complete observation,
+      // rather than only its two legacy flags, keeps checkpoint state atomic.
+      endpoint->ping_clock_started = false;
+      endpoint->ping_reply_rtt = std::chrono::nanoseconds::zero();
+      endpoint->ping_reply_ttl = 0U;
       result.success = true;
     }
     break;
@@ -3600,8 +3627,13 @@ ForwardResult NetworkPlane::Impl::apply_forward_command(
       endpoint->expected_sequence = command.sequence;
       endpoint->ping_pending = true;
       endpoint->ping_reply = false;
-      const auto frames = endpoint->stack.begin_echo(command.host_destination,
-                                                     command.sequence);
+      endpoint->ping_clock_started = false;
+      endpoint->ping_reply_rtt = std::chrono::nanoseconds::zero();
+      endpoint->ping_reply_ttl = 0U;
+      const auto started_at = Clock::now();
+      const auto frames = endpoint->stack.begin_echo(
+          command.host_destination, command.sequence,
+          device_catalog::default_ping_payload_octets, false, started_at);
       bool accepted = frames.count > 0;
       auto &worker = *owner.forwarding_shards[shard_index];
       for (std::size_t index = 0; index < frames.count; ++index)
@@ -3610,6 +3642,10 @@ ForwardResult NetworkPlane::Impl::apply_forward_command(
                    accepted;
       if (!accepted)
         endpoint->ping_pending = false;
+      else if (frames.start_echo_clock) {
+        endpoint->ping_clock_started = true;
+        endpoint->ping_sent_at = started_at;
+      }
       result.success = accepted;
     }
     break;
@@ -3628,8 +3664,15 @@ ForwardResult NetworkPlane::Impl::apply_forward_command(
   case ForwardCommandKind::host_ping_status:
     if (const auto *endpoint = owner.host(command.host)) {
       result.success = true;
-      result.value = endpoint->ping_reply &&
-                     endpoint->expected_sequence == command.sequence;
+      if (endpoint->ping_reply &&
+          endpoint->expected_sequence == command.sequence) {
+        constexpr auto maximum_elapsed = (std::uint64_t{1} << 48U) - 1U;
+        const auto elapsed = static_cast<std::uint64_t>(
+            std::max<std::int64_t>(0, endpoint->ping_reply_rtt.count()));
+        result.value =
+            1U | static_cast<std::uint64_t>(endpoint->ping_reply_ttl) << 8U |
+            std::min(elapsed, maximum_elapsed) << 16U;
+      }
     }
     break;
   case ForwardCommandKind::pause:
@@ -3690,12 +3733,25 @@ void NetworkPlane::Impl::apply_forward_ingress(
   const auto frames =
       endpoint->stack.receive(ingress.frame, endpoint->expected_sequence,
                               endpoint->ping_pending, received_at);
+  // Queue-based forwarding is not reentrant, but publishing the clock before
+  // egress also keeps both execution layouts under one ordering invariant.
+  if (frames.start_echo_clock) {
+    endpoint->ping_clock_started = true;
+    endpoint->ping_sent_at = received_at;
+  }
   for (std::size_t index = 0; index < frames.count; ++index)
     static_cast<void>(
         owner.queue_egress(&worker, node(handle), 0, frames.frames[index]));
   if (frames.echo_reply) {
     endpoint->ping_reply = true;
     endpoint->ping_pending = false;
+    endpoint->ping_reply_ttl = frames.echo_reply_ttl;
+    endpoint->ping_reply_rtt =
+        endpoint->ping_clock_started && received_at >= endpoint->ping_sent_at
+            ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  received_at - endpoint->ping_sent_at)
+            : std::chrono::nanoseconds::zero();
+    endpoint->ping_clock_started = false;
   }
 }
 
@@ -6007,6 +6063,9 @@ bool NetworkPlane::configure_host(const HostNetworkProgram &program) noexcept {
   // independently owned physical carrier established by configure_link.
   host->ping_pending = false;
   host->ping_reply = false;
+  host->ping_clock_started = false;
+  host->ping_reply_rtt = std::chrono::nanoseconds::zero();
+  host->ping_reply_ttl = 0U;
   return true;
 }
 
@@ -7297,6 +7356,15 @@ NetworkPlane::checkpoint(Clock::time_point now) {
     host.link_signal = slot.link_signal;
     host.ping_pending = slot.ping_pending;
     host.ping_reply = slot.ping_reply;
+    host.ping_sent_elapsed_nanoseconds =
+        slot.ping_clock_started && now >= slot.ping_sent_at
+            ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  now - slot.ping_sent_at)
+                  .count()
+            : -1;
+    host.ping_reply_rtt_nanoseconds = static_cast<std::uint64_t>(
+        std::max<std::int64_t>(0, slot.ping_reply_rtt.count()));
+    host.ping_reply_ttl = slot.ping_reply_ttl;
     host.ipv6_autoconfiguration = slot.stack.ipv6_enabled();
     if (slot.dhcpv4)
       host.dhcpv4 = slot.dhcpv4->checkpoint(now);
@@ -7588,7 +7656,9 @@ bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
             host.mtu != device_catalog::default_host_ipv4_mtu ||
             host.interface_id != 0U || host.ipv6_autoconfiguration ||
             host.dhcpv4 || host.dhcpv6 || host.dns || host.ping_pending ||
-            host.ping_reply)
+            host.ping_reply || host.ping_sent_elapsed_nanoseconds != -1 ||
+            host.ping_reply_rtt_nanoseconds != 0U ||
+            host.ping_reply_ttl != 0U)
           return false;
       }
       if (host.dhcpv4) {
@@ -7624,6 +7694,32 @@ bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
       target.link_signal = host.link_signal;
       target.ping_pending = host.ping_pending;
       target.ping_reply = host.ping_reply;
+      if (host.ping_sent_elapsed_nanoseconds < -1 ||
+          host.ping_sent_elapsed_nanoseconds >
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  device_catalog::checkpoint_max_relative_deadline)
+                  .count() ||
+          host.ping_reply_rtt_nanoseconds >
+              static_cast<std::uint64_t>(
+                  std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      device_catalog::checkpoint_max_relative_deadline)
+                      .count()) ||
+          (host.ping_reply && host.ping_reply_ttl == 0U) ||
+          (!host.ping_reply &&
+           (host.ping_reply_rtt_nanoseconds != 0U ||
+            host.ping_reply_ttl != 0U)) ||
+          (!host.ping_pending && host.ping_sent_elapsed_nanoseconds >= 0))
+        return false;
+      target.ping_clock_started =
+          host.ping_sent_elapsed_nanoseconds >= 0;
+      if (target.ping_clock_started)
+        target.ping_sent_at =
+            now - std::chrono::nanoseconds{
+                      host.ping_sent_elapsed_nanoseconds};
+      target.ping_reply_rtt =
+          std::chrono::nanoseconds{static_cast<std::int64_t>(
+              host.ping_reply_rtt_nanoseconds)};
+      target.ping_reply_ttl = host.ping_reply_ttl;
     }
     std::size_t switch_queued_frames{};
     for (const auto &saved : state.switches) {
@@ -7959,12 +8055,22 @@ bool NetworkPlane::start_host_ping(HostHandle handle, packet::Ipv4 destination,
   host->expected_sequence = sequence;
   host->ping_pending = true;
   host->ping_reply = false;
-  const auto frames = host->stack.begin_echo(destination, sequence);
+  host->ping_clock_started = false;
+  host->ping_reply_rtt = std::chrono::nanoseconds::zero();
+  host->ping_reply_ttl = 0U;
+  const auto started_at = Clock::now();
+  const auto frames = host->stack.begin_echo(
+      destination, sequence, device_catalog::default_ping_payload_octets,
+      false, started_at);
   bool accepted = frames.count > 0;
   for (std::size_t index = 0; index < frames.count; ++index)
     accepted = impl_->send(node(handle), 0, frames.frames[index]) && accepted;
   if (!accepted)
     host->ping_pending = false;
+  else if (frames.start_echo_clock) {
+    host->ping_clock_started = true;
+    host->ping_sent_at = started_at;
+  }
   return accepted;
 }
 
@@ -8009,15 +8115,27 @@ NetworkPlane::router_ping_outcome(DeviceHandle device,
 
 bool NetworkPlane::host_ping_reply(HostHandle handle,
                                    std::uint16_t sequence) noexcept {
+  return (host_ping_outcome(handle, sequence) & 0xffU) == 1U;
+}
+
+std::uint64_t
+NetworkPlane::host_ping_outcome(HostHandle handle,
+                                std::uint16_t sequence) noexcept {
   if (impl_->parallel()) {
     const auto result =
         impl_->execute_forward({.kind = ForwardCommandKind::host_ping_status,
                                 .host = handle,
                                 .sequence = sequence});
-    return result.success && result.value;
+    return result.success ? result.value : 0U;
   }
   const auto *host = impl_->host(handle);
-  return host && host->ping_reply && host->expected_sequence == sequence;
+  if (!host || !host->ping_reply || host->expected_sequence != sequence)
+    return 0U;
+  constexpr auto maximum_elapsed = (std::uint64_t{1} << 48U) - 1U;
+  const auto elapsed = static_cast<std::uint64_t>(
+      std::max<std::int64_t>(0, host->ping_reply_rtt.count()));
+  return 1U | static_cast<std::uint64_t>(host->ping_reply_ttl) << 8U |
+         std::min(elapsed, maximum_elapsed) << 16U;
 }
 
 bool NetworkPlane::router_ipv6_ping_reply(DeviceHandle device,

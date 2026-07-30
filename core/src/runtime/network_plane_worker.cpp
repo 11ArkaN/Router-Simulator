@@ -2038,7 +2038,7 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
     break;
   case NetworkCommandKind::host_ping_status:
     result.success = true;
-    result.value = plane_.host_ping_reply(command.host, command.sequence);
+    result.value = plane_.host_ping_outcome(command.host, command.sequence);
     break;
   case NetworkCommandKind::active_link_count:
     result.success = true;

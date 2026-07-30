@@ -5366,6 +5366,9 @@ void host_state(Writer &out, const NetworkHostCheckpoint &state) {
   out.boolean(state.link_signal);
   out.boolean(state.ping_pending);
   out.boolean(state.ping_reply);
+  out.integer(state.ping_sent_elapsed_nanoseconds);
+  out.integer(state.ping_reply_rtt_nanoseconds);
+  out.integer(state.ping_reply_ttl);
   out.boolean(state.ipv6_autoconfiguration);
   out.boolean(state.dhcpv4.has_value());
   if (state.dhcpv4)
@@ -5386,6 +5389,9 @@ bool host_state(Reader &in, NetworkHostCheckpoint &state) {
          in.integer(state.expected_sequence) && in.boolean(state.configured) &&
          in.boolean(state.link_signal) && in.boolean(state.ping_pending) &&
          in.boolean(state.ping_reply) &&
+         in.integer(state.ping_sent_elapsed_nanoseconds) &&
+         in.integer(state.ping_reply_rtt_nanoseconds) &&
+         in.integer(state.ping_reply_ttl) &&
          in.boolean(state.ipv6_autoconfiguration) && ([&] {
            bool present{};
            if (!in.boolean(present))
