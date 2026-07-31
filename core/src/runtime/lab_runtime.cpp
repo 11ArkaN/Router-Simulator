@@ -4735,6 +4735,34 @@ void md_mld_interface_info(std::ostringstream &out,
     md_indent(out, depth);
     out << "import-policy \"" << interface.mld_import_policy << "\"\n";
   }
+  if (!interface.mld_ssm_translations.empty()) {
+    // Nokia models SSM translation as a group-range list containing source
+    // list entries. The runtime stores one normalized tuple per source for
+    // efficient packet lookup, so fold equal ranges back into the documented
+    // MD-CLI hierarchy without changing ownership of the forwarding data.
+    md_indent(out, depth);
+    out << "ssm-translate {\n";
+    for (std::size_t index = 0;
+         index < interface.mld_ssm_translations.size();) {
+      const auto &range = interface.mld_ssm_translations[index];
+      md_indent(out, depth + 1U);
+      out << "group-range start " << ip::format_ipv6(range.start) << " end "
+          << ip::format_ipv6(range.end) << " {\n";
+      for (; index < interface.mld_ssm_translations.size() &&
+             interface.mld_ssm_translations[index].start == range.start &&
+             interface.mld_ssm_translations[index].end == range.end;
+           ++index) {
+        md_indent(out, depth + 2U);
+        out << "source "
+            << ip::format_ipv6(interface.mld_ssm_translations[index].source)
+            << " { }\n";
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
   if (!interface.mld_static_groups.empty()) {
     md_indent(out, depth);
     out << "static {\n";
@@ -4799,6 +4827,24 @@ md_mld_configuration_info(const Configuration &configuration,
            configuration.mld.robustness_variable_configured);
   };
   global();
+  if (!configuration.mld.ssm_translations.empty()) {
+    out << "ssm-translate {\n";
+    for (std::size_t index = 0;
+         index < configuration.mld.ssm_translations.size();) {
+      const auto &range = configuration.mld.ssm_translations[index];
+      out << "    group-range start " << ip::format_ipv6(range.start)
+          << " end " << ip::format_ipv6(range.end) << " {\n";
+      for (; index < configuration.mld.ssm_translations.size() &&
+             configuration.mld.ssm_translations[index].start == range.start &&
+             configuration.mld.ssm_translations[index].end == range.end;
+           ++index)
+        out << "        source "
+            << ip::format_ipv6(configuration.mld.ssm_translations[index].source)
+            << " { }\n";
+      out << "    }\n";
+    }
+    out << "}\n";
+  }
   for (const auto &interface : configuration.interfaces) {
     if (!interface.mld_configured)
       continue;
@@ -5678,28 +5724,6 @@ void md_base_interface_info(std::ostringstream &out,
       md_indent(out, depth + 1U);
       out << "}\n";
     }
-    if (detail || interface.icmp_redirect_admin_configured ||
-        interface.icmp_redirect_maximum_configured ||
-        interface.icmp_redirect_interval_configured) {
-      md_indent(out, depth + 1U);
-      out << "icmp {\n";
-      if (detail || interface.icmp_redirect_admin_configured) {
-        md_indent(out, depth + 2U);
-        out << "redirects "
-            << (interface.icmp_redirects_enabled ? "true" : "false") << '\n';
-      }
-      if (detail || interface.icmp_redirect_maximum_configured) {
-        md_indent(out, depth + 2U);
-        out << "maximum-redirects " << interface.icmp_redirect_maximum << '\n';
-      }
-      if (detail || interface.icmp_redirect_interval_configured) {
-        md_indent(out, depth + 2U);
-        out << "redirect-timeout "
-            << interface.icmp_redirect_interval_seconds << '\n';
-      }
-      md_indent(out, depth + 1U);
-      out << "}\n";
-    }
     if (interface.dhcpv4_relay) {
       md_indent(out, depth + 1U);
       out << "dhcp {\n";
@@ -5707,6 +5731,38 @@ void md_base_interface_info(std::ostringstream &out,
       md_indent(out, depth + 1U);
       out << "}\n";
     }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+
+  // IPv4 ICMP is a direct child of the router interface in the 26.7 MD
+  // model. It is not nested below `ipv4`. Redirect controls form their own
+  // presence container and use admin-state, number and seconds leaf names.
+  // Keeping the exact hierarchy here is required for both root `info` and PWC
+  // scoping through md_rendered_context_body().
+  if (detail || interface.icmp_redirect_admin_configured ||
+      interface.icmp_redirect_maximum_configured ||
+      interface.icmp_redirect_interval_configured) {
+    md_indent(out, depth);
+    out << "icmp {\n";
+    md_indent(out, depth + 1U);
+    out << "redirects {\n";
+    if (detail || interface.icmp_redirect_admin_configured) {
+      md_indent(out, depth + 2U);
+      out << "admin-state "
+          << (interface.icmp_redirects_enabled ? "enable" : "disable")
+          << '\n';
+    }
+    if (detail || interface.icmp_redirect_maximum_configured) {
+      md_indent(out, depth + 2U);
+      out << "number " << interface.icmp_redirect_maximum << '\n';
+    }
+    if (detail || interface.icmp_redirect_interval_configured) {
+      md_indent(out, depth + 2U);
+      out << "seconds " << interface.icmp_redirect_interval_seconds << '\n';
+    }
+    md_indent(out, depth + 1U);
+    out << "}\n";
     md_indent(out, depth);
     out << "}\n";
   }
@@ -5728,9 +5784,10 @@ void md_base_interface_info(std::ostringstream &out,
     out << "ipv6 {\n";
     for (const auto &address : interface.ipv6_addresses) {
       md_indent(out, depth + 1U);
-      out << "address " << ip::format_ipv6(address.address)
-          << " prefix-length " << static_cast<unsigned>(address.prefix_length)
-          << " {\n";
+      out << "address " << ip::format_ipv6(address.address) << " {\n";
+      md_indent(out, depth + 2U);
+      out << "prefix-length "
+          << static_cast<unsigned>(address.prefix_length) << '\n';
       if (detail || !address.duplicate_address_detection) {
         md_indent(out, depth + 2U);
         out << "duplicate-address-detection "
@@ -5740,6 +5797,10 @@ void md_base_interface_info(std::ostringstream &out,
       if (detail || address.primary_preference) {
         md_indent(out, depth + 2U);
         out << "primary-preference " << address.primary_preference << '\n';
+      }
+      if (detail || address.eui64) {
+        md_indent(out, depth + 2U);
+        out << "eui-64 " << (address.eui64 ? "true" : "false") << '\n';
       }
       if (address.tag_configured) {
         md_indent(out, depth + 2U);
@@ -5784,7 +5845,9 @@ void md_base_interface_info(std::ostringstream &out,
       }
       if (interface.ipv6_neighbor_limit_configured) {
         md_indent(out, depth + 2U);
-        out << "limit " << interface.ipv6_neighbor_limit << " {\n";
+        out << "limit {\n";
+        md_indent(out, depth + 3U);
+        out << "max-entries " << interface.ipv6_neighbor_limit << '\n';
         if (detail || interface.ipv6_neighbor_limit_log_only_configured) {
           md_indent(out, depth + 3U);
           out << "log-only "
@@ -5814,22 +5877,25 @@ void md_base_interface_info(std::ostringstream &out,
         interface.icmp6_redirect_interval_configured) {
       md_indent(out, depth + 1U);
       out << "icmp6 {\n";
+      md_indent(out, depth + 2U);
+      out << "redirects {\n";
       if (detail || interface.icmp6_redirect_admin_configured) {
-        md_indent(out, depth + 2U);
-        out << "redirects "
-            << (interface.icmp6_redirects_enabled ? "true" : "false")
+        md_indent(out, depth + 3U);
+        out << "admin-state "
+            << (interface.icmp6_redirects_enabled ? "enable" : "disable")
             << '\n';
       }
       if (detail || interface.icmp6_redirect_maximum_configured) {
-        md_indent(out, depth + 2U);
-        out << "maximum-redirects " << interface.icmp6_redirect_maximum
-            << '\n';
+        md_indent(out, depth + 3U);
+        out << "number " << interface.icmp6_redirect_maximum << '\n';
       }
       if (detail || interface.icmp6_redirect_interval_configured) {
-        md_indent(out, depth + 2U);
-        out << "redirect-timeout "
-            << interface.icmp6_redirect_interval_seconds << '\n';
+        md_indent(out, depth + 3U);
+        out << "seconds " << interface.icmp6_redirect_interval_seconds
+            << '\n';
       }
+      md_indent(out, depth + 2U);
+      out << "}\n";
       md_indent(out, depth + 1U);
       out << "}\n";
     }
@@ -5873,44 +5939,44 @@ md_bof_configuration_info(const Configuration &configuration,
 
   const auto &intent = configuration.bof_autoconfigure;
   std::ostringstream out;
-  if (tokens->size() == 1U) {
-    out << "auto-configure {\n";
-    if (intent.ipv4.enabled) {
-      out << "    ipv4 {\n        dhcp {\n";
-      std::ostringstream body;
-      emit_client(body, intent.ipv4, false);
-      std::istringstream lines(body.str());
-      std::string line;
-      while (std::getline(lines, line))
-        out << "            " << line << '\n';
-      out << "        }\n    }\n";
-    }
-    if (intent.ipv6.enabled) {
-      out << "    ipv6 {\n        dhcp {\n";
-      std::ostringstream body;
-      emit_client(body, intent.ipv6, true);
-      std::istringstream lines(body.str());
-      std::string line;
-      while (std::getline(lines, line))
-        out << "            " << line << '\n';
-      out << "        }\n    }\n";
-    }
-    out << "}\n";
-    return out.str();
-  }
-  if (tokens->size() < 4U || (*tokens)[1] != "auto-configure" ||
-      ((*tokens)[2] != "ipv4" && (*tokens)[2] != "ipv6") ||
-      (*tokens)[3] != "dhcp")
-    return std::nullopt;
-  const bool ipv6 = (*tokens)[2] == "ipv6";
-  const auto &client = ipv6
-                           ? static_cast<const bof::DhcpClientIntent &>(
-                                 intent.ipv6)
-                           : intent.ipv4;
-  if ((ipv6 ? intent.ipv6.enabled : intent.ipv4.enabled) ||
-      tokens->size() == 4U)
-    emit_client(out, client, ipv6);
-  return out.str();
+  out << "auto-configure {\n";
+  const auto emit_family = [&](std::string_view family, const auto &client,
+                               bool ipv6) {
+    // Plain info omits an absent presence container. Detail still exposes the
+    // effective client defaults below the family PWC, which is how an
+    // operator can inspect a supported but not explicitly enabled branch.
+    if (!client.enabled && !detail)
+      return;
+    out << "    " << family << " {\n        dhcp {\n";
+    std::ostringstream body;
+    emit_client(body, client, ipv6);
+    std::istringstream lines(body.str());
+    for (std::string line; std::getline(lines, line);)
+      out << "            " << line << '\n';
+    out << "        }\n    }\n";
+  };
+  emit_family("ipv4", intent.ipv4, false);
+  emit_family("ipv6", intent.ipv6, true);
+  out << "}\n";
+  // BOF has three real nested PWCs before the DHCP leaves. The previous
+  // implementation recognized only the deepest one and reported `info` as
+  // unsupported in `auto-configure`, `ipv4` and `ipv6`. Select every level
+  // from the same canonical tree used by BOF root output.
+  if (const auto scoped = md_rendered_context_body(out.str(), *tokens, 1U))
+    return scoped;
+
+  // A valid but absent BOF presence container has no configured children for
+  // plain `info`. Return a successful empty body only for the exact typed BOF
+  // paths. This is not a dispatcher fallback: malformed or unrelated paths
+  // still return nullopt and are rejected by the caller.
+  if (tokens->size() >= 2U && (*tokens)[1] == "auto-configure" &&
+      (tokens->size() == 2U ||
+       (tokens->size() >= 3U &&
+        ((*tokens)[2] == "ipv4" || (*tokens)[2] == "ipv6") &&
+        (tokens->size() == 3U ||
+         (tokens->size() == 4U && (*tokens)[3] == "dhcp")))))
+    return std::string{};
+  return std::nullopt;
 }
 
 template <typename Configuration>
@@ -6178,6 +6244,107 @@ md_base_configuration_info(const Configuration &configuration,
   if (!tokens || tokens->empty() || (*tokens)[0] != "configure")
     return std::nullopt;
 
+  // Static routes are stored as one row per next hop because that is the
+  // shape consumed by RIB programming. The MD model groups those rows below
+  // one destination list entry. Keep that presentation conversion here, at
+  // the management boundary, rather than changing the route manager's
+  // ownership model or duplicating configuration solely for CLI rendering.
+  const auto static_route_prefixes = [&] {
+    std::vector<std::string> prefixes;
+    prefixes.reserve(configuration.routes.size() +
+                     configuration.ipv6_routes.size());
+    const auto append_once = [&](std::string prefix) {
+      if (std::find(prefixes.begin(), prefixes.end(), prefix) ==
+          prefixes.end())
+        prefixes.push_back(std::move(prefix));
+    };
+    for (const auto &route : configuration.routes)
+      append_once(ipv4_text(route.network) + "/" +
+                  std::to_string(route.prefix_length));
+    for (const auto &route : configuration.ipv6_routes)
+      append_once(ip::format_ipv6(route.network) + "/" +
+                  std::to_string(route.prefix_length));
+    return prefixes;
+  };
+
+  const auto emit_static_route_next_hops =
+      [&](std::ostringstream &out, std::string_view prefix,
+          std::size_t depth) {
+        for (const auto &route : configuration.routes) {
+          const auto candidate = ipv4_text(route.network) + "/" +
+                                 std::to_string(route.prefix_length);
+          if (candidate != prefix)
+            continue;
+          md_indent(out, depth);
+          out << (route.indirect ? "indirect " : "next-hop ")
+              << ipv4_text(route.next_hop) << " {\n";
+          md_indent(out, depth);
+          out << "}\n";
+        }
+        for (const auto &route : configuration.ipv6_routes) {
+          const auto candidate = ip::format_ipv6(route.network) + "/" +
+                                 std::to_string(route.prefix_length);
+          if (candidate != prefix)
+            continue;
+          md_indent(out, depth);
+          out << (route.indirect ? "indirect " : "next-hop ")
+              << ip::format_ipv6(route.next_hop) << " {\n";
+          md_indent(out, depth);
+          out << "}\n";
+        }
+      };
+
+  const auto emit_static_route =
+      [&](std::ostringstream &out, std::string_view prefix,
+          std::size_t depth, bool include_route_key) {
+        if (include_route_key) {
+          md_indent(out, depth);
+          out << "route " << prefix << " route-type unicast {\n";
+          emit_static_route_next_hops(out, prefix, depth + 1U);
+          md_indent(out, depth);
+          out << "}\n";
+          return;
+        }
+        md_indent(out, depth);
+        out << "route-type unicast {\n";
+        emit_static_route_next_hops(out, prefix, depth + 1U);
+        md_indent(out, depth);
+        out << "}\n";
+      };
+
+  const auto emit_router_ipv6 = [&](std::ostringstream &out,
+                                    std::size_t depth) {
+    const bool neighbor_discovery =
+        detail || configuration.ipv6_nd_reachable_time_configured ||
+        configuration.ipv6_nd_stale_time_configured;
+    if (neighbor_discovery) {
+      md_indent(out, depth);
+      out << "neighbor-discovery {\n";
+      if (detail || configuration.ipv6_nd_reachable_time_configured) {
+        md_indent(out, depth + 1U);
+        out << "reachable-time "
+            << configuration.ipv6_nd_reachable_time_seconds << '\n';
+      }
+      if (detail || configuration.ipv6_nd_stale_time_configured) {
+        md_indent(out, depth + 1U);
+        out << "stale-time " << configuration.ipv6_nd_stale_time_seconds
+            << '\n';
+      }
+      md_indent(out, depth);
+      out << "}\n";
+    }
+    if (const auto router_advertisement = md_router_advertisement_info(
+            configuration,
+            "configure router Base ipv6 router-advertisement", detail);
+        router_advertisement && !router_advertisement->empty()) {
+      md_indent(out, depth);
+      out << "router-advertisement {\n";
+      md_append_indented(out, *router_advertisement, depth + 1U);
+      md_indent(out, depth);
+      out << "}\n";
+    }
+  };
+
   const auto emit_router = [&](std::ostringstream &out, std::size_t depth) {
     if (!configuration.dhcpv4_servers.servers.empty()) {
       md_indent(out, depth);
@@ -6218,19 +6385,22 @@ md_base_configuration_info(const Configuration &configuration,
       md_indent(out, depth);
       out << "}\n";
     }
-    for (const auto &route : configuration.routes) {
+    {
+      std::ostringstream ipv6;
+      emit_router_ipv6(ipv6, depth + 1U);
+      if (!ipv6.str().empty()) {
+        md_indent(out, depth);
+        out << "ipv6 {\n" << ipv6.str();
+        md_indent(out, depth);
+        out << "}\n";
+      }
+    }
+    const auto prefixes = static_route_prefixes();
+    if (!prefixes.empty()) {
       md_indent(out, depth);
-      out << "static-route-entry "
-          << ipv4_text(route.network) << '/'
-          << static_cast<unsigned>(route.prefix_length) << " {\n";
-      md_indent(out, depth + 1U);
-      // A next-hop is a typed IPv4 key, not a string key. Canonical MD output
-      // therefore prints the address directly, matching accepted input.
-      out << "next-hop " << ipv4_text(route.next_hop) << " {\n";
-      md_indent(out, depth + 2U);
-      out << "indirect " << (route.indirect ? "true" : "false") << '\n';
-      md_indent(out, depth + 1U);
-      out << "}\n";
+      out << "static-routes {\n";
+      for (const auto &prefix : prefixes)
+        emit_static_route(out, prefix, depth + 1U, true);
       md_indent(out, depth);
       out << "}\n";
     }
@@ -6326,6 +6496,84 @@ md_base_configuration_info(const Configuration &configuration,
     emit_router(out, 0U);
     return out.str();
   }
+  if ((*tokens)[3] == "static-routes") {
+    const auto prefixes = static_route_prefixes();
+    if (tokens->size() == 4U) {
+      for (const auto &prefix : prefixes)
+        emit_static_route(out, prefix, 0U, true);
+      return out.str();
+    }
+    if (tokens->size() < 6U || (*tokens)[4] != "route")
+      return std::nullopt;
+
+    // A keyed route context remains a valid schema node even when its
+    // candidate entry has no next hop yet. In that case plain `info` is
+    // intentionally empty at deeper nodes, but it is still handled and must
+    // never be reported as an unsupported command.
+    const auto prefix = std::string_view{(*tokens)[5]};
+    const auto configured =
+        std::find(prefixes.begin(), prefixes.end(), prefix) != prefixes.end();
+    if (tokens->size() == 6U) {
+      if (configured)
+        emit_static_route(out, prefix, 0U, false);
+      return out.str();
+    }
+    if ((*tokens)[6] != "route-type")
+      return std::nullopt;
+    if (tokens->size() == 7U) {
+      if (configured) {
+        out << "unicast {\n";
+        emit_static_route_next_hops(out, prefix, 1U);
+        out << "}\n";
+      }
+      return out.str();
+    }
+    if ((*tokens)[7] != "unicast")
+      return std::nullopt;
+    if (tokens->size() == 8U) {
+      if (configured)
+        emit_static_route_next_hops(out, prefix, 0U);
+      return out.str();
+    }
+    if (tokens->size() == 9U &&
+        ((*tokens)[8] == "next-hop" || (*tokens)[8] == "indirect")) {
+      const bool indirect = (*tokens)[8] == "indirect";
+      for (const auto &route : configuration.routes) {
+        const auto candidate = ipv4_text(route.network) + "/" +
+                               std::to_string(route.prefix_length);
+        if (candidate == prefix && route.indirect == indirect)
+          out << ipv4_text(route.next_hop) << " {\n}\n";
+      }
+      for (const auto &route : configuration.ipv6_routes) {
+        const auto candidate = ip::format_ipv6(route.network) + "/" +
+                               std::to_string(route.prefix_length);
+        if (candidate == prefix && route.indirect == indirect)
+          out << ip::format_ipv6(route.next_hop) << " {\n}\n";
+      }
+      return out.str();
+    }
+    if (tokens->size() == 10U &&
+        ((*tokens)[8] == "next-hop" || (*tokens)[8] == "indirect"))
+      return out.str();
+    return std::nullopt;
+  }
+  if ((*tokens)[3] == "ipv6") {
+    if (tokens->size() == 4U) {
+      emit_router_ipv6(out, 0U);
+      return out.str();
+    }
+    if (tokens->size() == 5U &&
+        (*tokens)[4] == "neighbor-discovery") {
+      if (detail || configuration.ipv6_nd_reachable_time_configured)
+        out << "reachable-time "
+            << configuration.ipv6_nd_reachable_time_seconds << '\n';
+      if (detail || configuration.ipv6_nd_stale_time_configured)
+        out << "stale-time " << configuration.ipv6_nd_stale_time_seconds
+            << '\n';
+      return out.str();
+    }
+    return std::nullopt;
+  }
   if ((*tokens)[3] != "interface" || tokens->size() < 5U)
     return std::nullopt;
   const auto interface = std::find_if(
@@ -6336,6 +6584,18 @@ md_base_configuration_info(const Configuration &configuration,
   if (tokens->size() == 5U) {
     md_base_interface_info(out, *interface, 0U, detail);
     return out.str();
+  }
+  {
+    // Scope all brace-delimited interface children through the canonical
+    // interface tree before considering the few compound-leaf exceptions
+    // below. This replaces the old whitelist of ipv4, primary, dhcp and ipv6,
+    // which incorrectly rejected valid ICMP and neighbor-discovery PWCs even
+    // though their configuration was already rendered at the interface root.
+    std::ostringstream full;
+    md_base_interface_info(full, *interface, 0U, detail);
+    const auto scoped = md_rendered_context_body(full.str(), *tokens, 5U);
+    if (scoped)
+      return *scoped;
   }
   // Nested interface renderers are intentionally selected by their canonical
   // path rather than trimming text after rendering. This preserves list keys,
@@ -6417,6 +6677,30 @@ md_base_configuration_info(const Configuration &configuration,
           << "\"\n";
     return out.str();
   }
+  if (tokens->size() == 8U && (*tokens)[5] == "ipv6" &&
+      (*tokens)[6] == "address") {
+    const auto requested = ip::parse_ipv6((*tokens)[7]);
+    if (!requested)
+      return std::string{};
+    const auto address = std::find_if(
+        interface->ipv6_addresses.begin(), interface->ipv6_addresses.end(),
+        [&](const auto &candidate) {
+          return candidate.address == *requested;
+        });
+    if (address == interface->ipv6_addresses.end())
+      return std::string{};
+    if (detail || !address->duplicate_address_detection)
+      out << "duplicate-address-detection "
+          << (address->duplicate_address_detection ? "true" : "false")
+          << '\n';
+    if (detail || address->primary_preference)
+      out << "primary-preference " << address->primary_preference << '\n';
+    if (detail || address->eui64)
+      out << "eui-64 " << (address->eui64 ? "true" : "false") << '\n';
+    if (address->tag_configured)
+      out << "tag " << address->tag << '\n';
+    return out.str();
+  }
   return std::nullopt;
 }
 
@@ -6438,12 +6722,11 @@ md_path_from_classic(std::string_view classic_path) {
     // Classic collapses the MD router list key and renames the server
     // containers. Converting the saved context before rendering keeps one
     // datastore traversal while preserving the syntax of both engines.
-    out << "configure router \"Base\" dhcp-server";
+    out << "configure router \"Base\" dhcp-server dhcpv6";
     if (tokens->size() == 3U)
       return out.str();
     if ((*tokens)[3] != "local-dhcp-server")
       return std::nullopt;
-    out << " dhcpv6";
     for (std::size_t index = 4U; index < tokens->size(); ++index) {
       out << ' ';
       const auto &token = (*tokens)[index];
@@ -6454,13 +6737,16 @@ md_path_from_classic(std::string_view classic_path) {
     }
     return out.str();
   }
-  if (tokens->size() >= 4U && (*tokens)[0] == "configure" &&
-      (*tokens)[1] == "router" && (*tokens)[2] == "dhcp" &&
-      (*tokens)[3] == "local-dhcp-server") {
+  if (tokens->size() >= 3U && (*tokens)[0] == "configure" &&
+      (*tokens)[1] == "router" && (*tokens)[2] == "dhcp") {
     // Classic places DHCPv4 below router>dhcp and uses local-dhcp-server as
     // the list name. The canonical MD datastore uses dhcp-server>dhcpv4.
     // Convert only hierarchy here; classic_info_text later owns leaf spelling.
     out << "configure router \"Base\" dhcp-server dhcpv4";
+    if (tokens->size() == 3U)
+      return out.str();
+    if ((*tokens)[3] != "local-dhcp-server")
+      return std::nullopt;
     for (std::size_t index = 4U; index < tokens->size(); ++index) {
       const auto &token = (*tokens)[index];
       const bool quote = token.find(' ') != std::string::npos;
@@ -6558,6 +6844,7 @@ std::string classic_info_text(std::string_view md_text,
   for (std::string line; std::getline(lines, line);)
     rendered_lines.push_back(std::move(line));
   std::size_t depth{};
+  std::vector<std::string> container_stack;
   for (std::size_t line_index{}; line_index < rendered_lines.size();
        ++line_index) {
     const auto &line = rendered_lines[line_index];
@@ -6568,13 +6855,56 @@ std::string classic_info_text(std::string_view md_text,
     if (content == "}") {
       if (depth)
         --depth;
+      if (!container_stack.empty())
+        container_stack.pop_back();
       md_indent(out, depth);
       out << "exit\n";
+      continue;
+    }
+    if (content == "static-routes {") {
+      // Classic SR OS represents each static next hop as one flat
+      // `static-route-entry` command. The shared datastore is rendered first
+      // in its canonical MD list hierarchy, so collapse that exact hierarchy
+      // here instead of leaking MD-only route and route-type containers into
+      // classic `info`.
+      std::string prefix;
+      std::size_t route_depth{1U};
+      for (++line_index; line_index < rendered_lines.size(); ++line_index) {
+        const auto nested_first =
+            rendered_lines[line_index].find_first_not_of(' ');
+        if (nested_first == std::string::npos)
+          continue;
+        auto nested =
+            std::string_view{rendered_lines[line_index]}.substr(nested_first);
+        if (nested.ends_with(" {")) {
+          const auto header =
+              nested.substr(0U, nested.size() - std::string_view{" {"}.size());
+          const auto header_tokens = md_context_tokens(header);
+          if (header_tokens && header_tokens->size() == 4U &&
+              (*header_tokens)[0] == "route" &&
+              (*header_tokens)[2] == "route-type" &&
+              (*header_tokens)[3] == "unicast") {
+            prefix = (*header_tokens)[1];
+          } else if (header_tokens && header_tokens->size() == 2U &&
+                     ((*header_tokens)[0] == "next-hop" ||
+                      (*header_tokens)[0] == "indirect") &&
+                     !prefix.empty()) {
+            md_indent(out, depth);
+            out << "static-route-entry " << prefix << ' '
+                << (*header_tokens)[0] << ' ' << (*header_tokens)[1] << '\n';
+          }
+          ++route_depth;
+          continue;
+        }
+        if (nested == "}" && --route_depth == 0U)
+          break;
+      }
       continue;
     }
     if (content.size() >= 2U &&
         content.compare(content.size() - 2U, 2U, " {") == 0) {
       content.resize(content.size() - 2U);
+      const auto canonical_container = content;
 
       // The shared keychain datastore follows the MD hierarchy
       // `keychains>keychain>bidirectional`. Classic SR OS names the same
@@ -6586,6 +6916,19 @@ std::string classic_info_text(std::string_view md_text,
               "configure system security keychains keychain ");
       if (system_keychain_context && content == "bidirectional")
         content = "direction bi";
+
+      const bool mld_context =
+          md_context.find(" mld") != std::string_view::npos ||
+          std::ranges::find(container_stack, "mld") != container_stack.end();
+      if (mld_context && content.starts_with("group-range start ")) {
+        // The MD list key labels both bounds, while classic uses the compact
+        // `grp-range <start> <end>` command documented for the same MLD
+        // translation. Convert the canonical header only in the MLD tree.
+        const auto key = md_context_tokens(content);
+        if (key && key->size() == 5U && (*key)[0] == "group-range" &&
+            (*key)[1] == "start" && (*key)[3] == "end")
+          content = "grp-range " + (*key)[2] + ' ' + (*key)[4];
+      }
 
       // MD OSPF models an IPsec authentication association as nested
       // containers. Classic SR OS exposes the same association as one
@@ -6687,6 +7030,7 @@ std::string classic_info_text(std::string_view md_text,
         content += " create";
       md_indent(out, depth);
       out << content << '\n';
+      container_stack.push_back(canonical_container);
       ++depth;
       continue;
     }
@@ -6697,7 +7041,11 @@ std::string classic_info_text(std::string_view md_text,
       const auto key_only =
           content.substr(0U, content.size() - std::string_view{" { }"}.size());
       if (key_only.starts_with("trust-anchor ") ||
-          key_only.starts_with("ca-profile ")) {
+          key_only.starts_with("ca-profile ") ||
+          ((md_context.find(" mld") != std::string_view::npos ||
+            std::ranges::find(container_stack, "mld") !=
+                container_stack.end()) &&
+           key_only.starts_with("source "))) {
         // Both documented key-only lists retain their node name in classic
         // CLI. Other inline blocks must remain visible until an explicit
         // engine mapping is added, rather than being silently flattened.
@@ -22961,8 +23309,19 @@ std::string LabRuntime::complete_session(std::string_view session_id,
                            : nullptr;
   const auto *intent = device ? router(device->node_id) : nullptr;
   if (!terminal || !session_record || !device || !intent ||
-      (trigger != "tab" && trigger != "question" && trigger != "space"))
+      (trigger != "tab" && trigger != "question" && trigger != "space" &&
+       trigger != "contexts"))
     return {};
+
+  // The terminal calls Space completion immediately before executing a line
+  // with Enter. `//` is already the complete engine-switch command. Treating
+  // its first slash as an absolute-path marker would resolve the remaining
+  // slash through the schema and then prepend the saved marker, producing
+  // `///`. That has different SR OS semantics because it becomes an inline
+  // other-engine command whose payload is `/`, so it switches twice and ends
+  // in the original engine. Preserve the exact complete token instead.
+  if (input == "//")
+    return std::string{input};
 
   // Root navigation markers are syntax owned by the operator's editable line.
   // resolve_session_input removes them to match the canonical schema, so keep
@@ -23442,9 +23801,33 @@ std::string LabRuntime::complete_session(std::string_view session_id,
     }
   }
   std::sort(candidates.begin(), candidates.end());
+
+  if (trigger == "contexts") {
+    // Verification needs the same definition of a context that Enter uses.
+    // Inferring containers from question-mark text is unsound because the
+    // public help list intentionally contains both child nodes and executable
+    // leaves. Filter concrete completion candidates through the parser's
+    // navigable-prefix predicate instead. This is a read-only protocol view:
+    // it neither enters a PWC nor executes presence leaves while auditing the
+    // complete reachable tree.
+    std::erase_if(candidates, [&](const std::string &candidate) {
+      std::string path;
+      for (std::size_t index = 0; index < completed; ++index) {
+        if (!path.empty())
+          path.push_back(' ');
+        path.append(tokens[index]);
+      }
+      if (!path.empty())
+        path.push_back(' ');
+      path.append(candidate);
+      return !cli_detail::navigable_command_prefix(terminal->cli, path);
+    });
+  }
+
   if (candidates.empty())
     return {};
   if (candidates.size() == 1U && trigger != "question" &&
+      trigger != "contexts" &&
       candidates.front().front() != '<') {
     std::string result;
     for (std::size_t index = 0; index < completed; ++index) {

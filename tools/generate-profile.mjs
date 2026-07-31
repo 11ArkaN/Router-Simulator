@@ -423,6 +423,14 @@ for (const kind of parameterKinds) {
       typeof description !== "string" || !description.length) {
     throw new Error(`Missing CLI help metadata for parameter ${kind}`);
   }
+  const continuesContextKey =
+    cliSchema.parameters?.[kind]?.continues_context_key;
+  if (continuesContextKey !== undefined &&
+      typeof continuesContextKey !== "boolean") {
+    throw new Error(
+      `${kind}: continues_context_key must be boolean`,
+    );
+  }
 }
 // Command IDs and token counts become enum and array extents. Validate them
 // before template emission so malformed YAML cannot yield partial C++ syntax.
@@ -472,7 +480,7 @@ if (cliSchema.release !== profile.release) {
 
 const cppToken = (token) => typeof token === "string"
   ? `{TokenKind::literal, ${cppString(token)}, ${cppString(cliSchema.literals[token])}}`
-  : `{TokenKind::${token.parameter}, ${cppString(cliSchema.parameters[token.parameter].display)}, ${cppString(cliSchema.parameters[token.parameter].description)}}`;
+  : `{TokenKind::${token.parameter}, ${cppString(cliSchema.parameters[token.parameter].display)}, ${cppString(cliSchema.parameters[token.parameter].description)}, ${cliSchema.parameters[token.parameter].continues_context_key === true}}`;
 const cliRows = cliSchema.commands.map((command) => {
   // Engine membership is a compact bit mask in generated C++. Both engines use
   // the same grammar row while retaining separate execution semantics.
@@ -528,6 +536,10 @@ struct TokenSpec {
   TokenKind kind{TokenKind::literal};
   std::string_view display{};
   std::string_view description{};
+  // True when this parameter is only the first part of a compound list key.
+  // The parser must consume the remaining labeled key fields before exposing
+  // a present working context.
+  bool continues_context_key{};
 };
 
 inline constexpr std::size_t maximum_tokens = ${maximumTokens};

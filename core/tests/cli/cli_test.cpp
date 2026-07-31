@@ -565,6 +565,9 @@ void cli_tests() {
                                router::CliCompletionTrigger::space) ==
               "show port",
           "Enter/Space completion could not expand the final MD keyword");
+  require(router::complete_cli(classic_state, completion_session, "//",
+                               router::CliCompletionTrigger::space) == "//",
+          "Enter completion changed the exact terminal-engine command");
   require(router::complete_cli(classic_state, completion_session, "ping ",
                                router::CliCompletionTrigger::space)
               .empty(),

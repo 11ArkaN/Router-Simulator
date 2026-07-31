@@ -1154,9 +1154,35 @@ bool navigable_command_prefix(const CliSession &session,
   return std::any_of(
       cli_schema::commands.begin(), cli_schema::commands.end(),
       [&](const cli_schema::CommandSpec &spec) {
-        if (!available(spec, session) || spec.token_count <= line.count ||
+        if (!available(spec, session) ||
+            spec.token_count <= line.count + 1U ||
             spec.tokens[line.count].kind != cli_schema::TokenKind::literal)
           return false;
+        // `no` is the classic deletion operator. Descendant command rows make
+        // it a syntactic prefix, but Nokia never exposes it as a configuration
+        // node or prompt component. Reject it before the general literal-child
+        // rule so `no <object>` remains an incomplete action. The empty root
+        // has no preceding token and must remain safe for completion callers.
+        if (line.count > 0U &&
+            spec.tokens[line.count - 1U].kind ==
+                cli_schema::TokenKind::literal &&
+            spec.tokens[line.count - 1U].display == "no")
+          return false;
+        if ((line.count > 0U &&
+             spec.tokens[line.count - 1U].continues_context_key) ||
+            spec.tokens[line.count + 1U].continues_context_key)
+          return false;
+        // A final literal after the supplied path is a value of a leaf, not a
+        // child context. For example, BOF `client-type` is followed by either
+        // `duid-enterprise` or `duid-link-local`; accepting the common prefix
+        // as a PWC fabricated a context that the Nokia command tree does not
+        // contain. A real container must have at least one token beyond its
+        // immediate child. Keyed lists and route-type branches still satisfy
+        // that rule because their child owns further configurable elements.
+        // Compound list keys can include labeled fields such as
+        // `group-range start <address> end <address>`. Schema metadata marks
+        // the non-final key parameter so neither the list name nor a partial
+        // key becomes a fabricated PWC.
         for (std::size_t index = 0; index < line.count; ++index) {
           if (!accepts(spec.tokens[index], line.tokens[index]))
             return false;

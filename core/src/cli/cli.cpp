@@ -1858,6 +1858,15 @@ std::string complete_cli(const DeviceState &state, const CliSession &session,
   while (!input.empty() && std::string_view{" \r\n\t"}.find(input.front()) !=
                                std::string_view::npos)
     input.remove_prefix(1);
+  // `//` is a complete global command, not an absolute-path marker followed
+  // by a second slash. Enter completion runs before execution in MD-CLI. If
+  // the generic absolute-path reconstruction below handled this exact token,
+  // it would prepend the preserved slash to the already completed `//` and
+  // submit `///`. SR OS assigns `//` to switching the persistent terminal
+  // engine, while `//command` is the separate inline-engine form, so neither
+  // is allowed to gain another path marker during completion.
+  if (input == "//")
+    return std::string{input};
   // Absolute navigation is an operator-owned part of the editable command,
   // although effective_input removes it before matching the root grammar.
   // Save the exact engine-supported marker so a unique replacement cannot

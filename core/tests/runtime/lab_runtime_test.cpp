@@ -459,6 +459,10 @@ void lab_runtime_tests() {
                               {"context-console", "/sho", "tab"})) == "/show",
       "runtime completion removed the MD absolute-path slash");
   require(
+      runtime.command(message(lab_runtime_protocol::session_complete,
+                              {"context-console", "//", "space"})) == "//",
+      "runtime Enter completion changed the exact terminal-engine command");
+  require(
       contextual_command("configure router interface \"absolute-default\"")
               .find("(ex)[/configure router \"Base\" interface "
                     "\"absolute-default\"]") != std::string_view::npos,
@@ -980,18 +984,34 @@ void lab_runtime_tests() {
   // future command family is added without being assigned to either engine.
   const auto require_context_info = [&](std::string_view enter,
                                         std::string_view expected) {
+    // Every probe starts from the MD editor root. An absolute-looking
+    // `configure ...` line is still resolved relative to the current PWC by
+    // SR OS, so reusing a previous deep context would test invalid navigation
+    // rather than the renderer named by this row.
+    const auto reset = contextual_command("exit all");
+    if (reset.find("MINOR:") != std::string_view::npos)
+      throw std::runtime_error(
+          "MD info context probe could not reset its PWC: " +
+          std::string{reset});
     const auto navigation = contextual_command(enter);
     if (navigation.find("MINOR:") != std::string_view::npos)
       throw std::runtime_error("MD info context navigation failed: " +
                                std::string{enter} + " output=" +
                                std::string{navigation});
-    const auto information = contextual_command("info detail");
-    if (information.find(expected) == std::string_view::npos ||
-        information.find("Command is not supported") !=
-            std::string_view::npos)
-      throw std::runtime_error("MD info detail did not render context: " +
-                               std::string{enter} + " output=" +
-                               std::string{information});
+    // Both forms are independently dispatched by the terminal. Checking only
+    // `info detail` previously allowed plain `info` to retain an unsupported
+    // fallback at the same valid PWC. Require the configured value from both
+    // commands so a renderer declaration cannot mask a missing runtime path.
+    for (const auto command : {"info", "info detail"}) {
+      const auto information = contextual_command(command);
+      if (information.find(expected) == std::string_view::npos ||
+          information.find("Command is not supported") !=
+              std::string_view::npos)
+        throw std::runtime_error(
+            "MD contextual info did not render context: " +
+            std::string{enter} + " command=" + command + " output=" +
+            std::string{information});
+    }
     contextual_command("exit all");
   };
   require(contextual_command("edit-config exclusive")
@@ -1000,7 +1020,40 @@ void lab_runtime_tests() {
   for (const auto command :
        {"configure router \"Base\" dhcp-server dhcpv4 info-v4 description "
         "\"Info DHCPv4\"",
+        "configure router \"Base\" interface md-loop ipv4 "
+        "neighbor-discovery timeout 120",
+        "configure router \"Base\" interface md-loop ipv4 "
+        "neighbor-discovery retry-timer 25",
+        "configure router \"Base\" interface md-loop ipv4 dhcp admin-state "
+        "enable",
+        "configure router \"Base\" interface md-loop ipv4 dhcp option-82 "
+        "action replace",
+        "configure router \"Base\" interface md-loop icmp redirects "
+        "admin-state enable",
+        "configure router \"Base\" interface md-loop icmp redirects number "
+        "30",
+        "configure router \"Base\" interface md-loop icmp redirects seconds "
+        "5",
+        "configure router \"Base\" interface md-loop ipv6 address "
+        "2001:db8:ffff::1 prefix-length 64",
+        "configure router \"Base\" interface md-loop ipv6 "
+        "neighbor-discovery reachable-time 90",
+        "configure router \"Base\" interface md-loop ipv6 "
+        "neighbor-discovery limit max-entries 4096",
+        "configure router \"Base\" interface md-loop ipv6 icmp6 redirects "
+        "admin-state enable",
+        "configure router \"Base\" interface md-loop ipv6 icmp6 redirects "
+        "number 40",
+        "configure router \"Base\" interface md-loop ipv6 icmp6 redirects "
+        "seconds 6",
+        "configure router \"Base\" ipv6 neighbor-discovery reachable-time 75",
+        "configure router \"Base\" ipv6 neighbor-discovery stale-time 19000",
         "configure router \"Base\" mld admin-state disable",
+        "configure router \"Base\" mld ssm-translate group-range start "
+        "ff3e::100 end ff3e::10f source 2001:db8:ffff::10",
+        "configure router \"Base\" mld interface md-loop ssm-translate "
+        "group-range start ff3e::200 end ff3e::20f source "
+        "2001:db8:ffff::20",
         "configure policy-options prefix-list info-prefix prefix "
         "2001:db8:ffff::/64",
         "configure system security keychains keychain info-keychain "
@@ -1025,6 +1078,44 @@ void lab_runtime_tests() {
   require_context_info(
       "configure router \"Base\" dhcp-server dhcpv4 info-v4",
       "description \"Info DHCPv4\"");
+  require_context_info("bof", "auto-configure {");
+  require_context_info("bof auto-configure", "ipv4 {");
+  require_context_info("bof auto-configure ipv4", "dhcp {");
+  require_context_info("bof auto-configure ipv4 dhcp",
+                       "client-id \"browser-oob\"");
+  require_context_info("configure router interface md-loop ipv4",
+                       "primary {");
+  require_context_info(
+      "configure router interface md-loop ipv4 neighbor-discovery",
+      "timeout 120");
+  require_context_info("configure router interface md-loop ipv4 dhcp",
+                       "admin-state enable");
+  require_context_info(
+      "configure router interface md-loop ipv4 dhcp option-82",
+      "action replace");
+  require_context_info("configure router interface md-loop icmp",
+                       "redirects {");
+  require_context_info("configure router interface md-loop icmp redirects",
+                       "admin-state enable");
+  require_context_info("configure router interface md-loop ipv6",
+                       "address 2001:db8:ffff::1 {");
+  require_context_info(
+      "configure router interface md-loop ipv6 address 2001:db8:ffff::1",
+      "prefix-length 64");
+  require_context_info(
+      "configure router interface md-loop ipv6 neighbor-discovery",
+      "reachable-time 90");
+  require_context_info(
+      "configure router interface md-loop ipv6 neighbor-discovery limit",
+      "max-entries 4096");
+  require_context_info("configure router interface md-loop ipv6 icmp6",
+                       "redirects {");
+  require_context_info(
+      "configure router interface md-loop ipv6 icmp6 redirects",
+      "admin-state enable");
+  require_context_info("configure router ipv6", "neighbor-discovery {");
+  require_context_info("configure router ipv6 neighbor-discovery",
+                       "reachable-time 75");
   require_context_info("configure router \"Base\" mld", "admin-state disable");
   require_context_info("configure policy-options prefix-list info-prefix",
                        "prefix 2001:db8:ffff::/64");
@@ -1081,15 +1172,135 @@ void lab_runtime_tests() {
     throw std::runtime_error(
         "interactive static-route next hop was not stored in the candidate: " +
         std::string{static_route_compare});
+  // Exercise every navigable parent in the MD static-route hierarchy. The
+  // source catalog used to assign this family to the Base renderer without
+  // proving that the renderer accepted any of these paths, so `info` reached
+  // the generic unsupported response despite a valid configured route.
+  for (const auto &[context, expected] :
+       std::array<std::pair<std::string_view, std::string_view>, 4U>{
+           std::pair{"configure router static-routes",
+                     "route 203.0.114.0/24 route-type unicast {"},
+           std::pair{"configure router static-routes route 203.0.114.0/24",
+                     "route-type unicast {"},
+           std::pair{
+               "configure router static-routes route 203.0.114.0/24 "
+               "route-type",
+               "unicast {"},
+           std::pair{
+               "configure router static-routes route 203.0.114.0/24 "
+               "route-type unicast",
+               "next-hop 192.0.2.2 {"}}) {
+    require_context_info(context, expected);
+  }
   require(contextual_command("exit all").find("MINOR:") ==
               std::string_view::npos,
           "static-route fixture could not return to root");
+
+  // Walk the actual context tree classified by the same generated parser
+  // predicate that Enter uses rather than a second hand-maintained path list.
+  // Both info forms must dispatch from every reachable PWC without the generic
+  // unsupported response. This executable walk is the missing half of the
+  // source-family ownership check: a renderer name in YAML cannot make a
+  // context pass unless the runtime can really enter and render it.
+  std::size_t audited_info_contexts{};
+  std::vector<std::string> audited_path;
+  const auto restore_audited_path = [&] {
+    const auto reset = contextual_command("exit all");
+    if (reset.find("MINOR:") != std::string_view::npos)
+      throw std::runtime_error(
+          "MD info context audit could not reset to the editor root: " +
+          std::string{reset});
+    for (const auto &component : audited_path) {
+      const auto navigation = contextual_command(component);
+      if (navigation.find("MINOR:") != std::string_view::npos ||
+          navigation.find("Unknown element") != std::string_view::npos)
+        throw std::runtime_error(
+            "MD info context audit could not restore path component " +
+            component + ": " + std::string{navigation});
+    }
+  };
+  const auto audit_contexts = [&](auto &&self, std::size_t depth) -> void {
+    if (depth > 16U)
+      throw std::runtime_error("MD info context audit exceeded schema depth");
+    // Every branch starts from a known root and is replayed one context token
+    // at a time. This both exercises relative navigation and prevents a faulty
+    // `back` implementation or a defaulted list key from contaminating the
+    // next sibling's result.
+    restore_audited_path();
+    for (const auto command : {"info", "info detail"}) {
+      const auto information = contextual_command(command);
+      if (information.find("Command is not supported in this context") !=
+              std::string_view::npos ||
+          information.find("Unknown element") != std::string_view::npos) {
+        std::string path;
+        for (const auto &component : audited_path)
+          path += (path.empty() ? "" : " ") + component;
+        throw std::runtime_error(
+            "MD info context audit rejected a reachable PWC: path=" + path +
+            " command=" + command + " output=" + std::string{information});
+      }
+    }
+    ++audited_info_contexts;
+
+    const auto context_children = runtime.command(
+        message(lab_runtime_protocol::session_complete,
+                {"context-console", "", "contexts"}));
+    std::vector<std::string> children;
+    std::size_t begin{};
+    while (begin < context_children.size()) {
+      const auto end = context_children.find('\n', begin);
+      const auto token = std::string_view{context_children}.substr(
+          begin, end == std::string::npos ? context_children.size() - begin
+                                          : end - begin);
+      if (!token.empty() && !token.starts_with('<') &&
+          std::find(children.begin(), children.end(), token) == children.end())
+        children.emplace_back(token);
+      if (end == std::string::npos)
+        break;
+      begin = end + 1U;
+    }
+
+    static constexpr std::array<std::string_view, 15U> global_commands{
+        "/",          "//",       "back",    "clear",  "commit",
+        "compare",    "discard",  "edit-config", "exit",   "info",
+        "ping",       "quit-config", "reset", "show",   "tools"};
+    for (const auto &child : children) {
+      const bool root = audited_path.empty();
+      if (root && child != "configure" && child != "bof")
+        continue;
+      if (!root &&
+          std::find(global_commands.begin(), global_commands.end(), child) !=
+              global_commands.end())
+        continue;
+      restore_audited_path();
+      const auto navigation = contextual_command(child);
+      if (navigation.find("MINOR:") != std::string_view::npos ||
+          navigation.find("Unknown element") != std::string_view::npos)
+        throw std::runtime_error(
+            "MD info context audit could not enter help-advertised child: " +
+            child + " output=" + std::string{navigation});
+      audited_path.push_back(child);
+      self(self, depth + 1U);
+      audited_path.pop_back();
+    }
+  };
+  audit_contexts(audit_contexts, 0U);
+  if (audited_info_contexts < 20U)
+    throw std::runtime_error(
+        "MD info context audit traversed too little of the configured tree: " +
+        std::to_string(audited_info_contexts) + " root-help=" +
+        std::string{runtime.command(
+            message(lab_runtime_protocol::session_complete,
+                    {"context-console", "", "contexts"}))});
 
   // `quit-config` is a global workflow command, not a child of the current
   // model node. Exercise it from a deeply keyed path because root-only tests
   // previously let execute_cli resolve the word below the PWC and reject it as
   // an unknown leaf. Committing first keeps this test focused on command
   // classification instead of the separate dirty-candidate confirmation.
+  require(contextual_command("exit all").find("MINOR:") ==
+              std::string_view::npos,
+          "contextual info audit could not leave its final PWC");
   require(contextual_command(
               "configure system security keychains keychain info-keychain "
               "bidirectional entry 1")
@@ -1117,20 +1328,24 @@ void lab_runtime_tests() {
   contextual_command("exit all");
   const auto require_classic_context_info =
       [&](std::string_view enter, std::string_view expected) {
+        contextual_command("exit all");
         const auto navigation = contextual_command(enter);
         if (navigation.find("Error:") != std::string_view::npos ||
             navigation.find("MINOR:") != std::string_view::npos)
           throw std::runtime_error(
               "classic info context navigation failed: " +
               std::string{enter} + " output=" + std::string{navigation});
-        const auto information = contextual_command("info detail");
-        if (information.find(expected) == std::string_view::npos ||
-            information.find("Command is not supported") !=
-                std::string_view::npos ||
-            information.find('{') != std::string_view::npos)
-          throw std::runtime_error(
-              "classic info detail did not render native syntax: " +
-              std::string{enter} + " output=" + std::string{information});
+        for (const auto command : {"info", "info detail"}) {
+          const auto information = contextual_command(command);
+          if (information.find(expected) == std::string_view::npos ||
+              information.find("Command is not supported") !=
+                  std::string_view::npos ||
+              information.find('{') != std::string_view::npos)
+            throw std::runtime_error(
+                "classic contextual info did not render native syntax: " +
+                std::string{enter} + " command=" + command + " output=" +
+                std::string{information});
+        }
         contextual_command("exit all");
       };
   require_classic_context_info(
@@ -1151,6 +1366,9 @@ void lab_runtime_tests() {
   require_classic_context_info("configure ipsec ike-transform 1",
                                "dh-group group-19");
   require_classic_context_info("configure service ies 900", "service-id 900");
+  require_classic_context_info(
+      "configure router",
+      "static-route-entry 203.0.114.0/24 next-hop 192.0.2.2");
   for (const auto command :
        {"configure router interface classic-loop address 198.51.100.1/32",
         "configure router interface classic-loop no shutdown"}) {
@@ -1217,6 +1435,102 @@ void lab_runtime_tests() {
                   std::string_view::npos,
           "classic Option 82 context did not scope info to its children");
   contextual_command("exit all");
+
+  // Classic has an independent saved PWC and a different presentation
+  // grammar, so the MD walk cannot prove its coverage. Traverse the concrete
+  // classic configuration tree with the same parser-owned context view and
+  // execute both native info forms at every reachable node. The audit rejects
+  // MD braces as well as missing dispatch, ensuring a shared datastore does
+  // not accidentally become a shared terminal renderer.
+  std::size_t audited_classic_info_contexts{};
+  std::vector<std::string> audited_classic_path{"configure"};
+  const auto restore_classic_path = [&] {
+    contextual_command("exit all");
+    for (const auto &component : audited_classic_path) {
+      const auto navigation = contextual_command(component);
+      if (navigation.find("MINOR:") != std::string_view::npos ||
+          navigation.find("Error:") != std::string_view::npos ||
+          navigation.find("Unknown element") != std::string_view::npos)
+        throw std::runtime_error(
+            "Classic info context audit could not restore path component " +
+            component + ": " + std::string{navigation});
+    }
+  };
+  const auto audit_classic_contexts =
+      [&](auto &&self, std::size_t depth) -> void {
+    if (depth > 16U)
+      throw std::runtime_error(
+          "Classic info context audit exceeded schema depth");
+    restore_classic_path();
+    for (const auto command : {"info", "info detail"}) {
+      const auto information = contextual_command(command);
+      if (information.find("Command is not supported in this context") !=
+              std::string_view::npos ||
+          information.find("Unknown element") != std::string_view::npos ||
+          information.find("Error:") != std::string_view::npos ||
+          information.find('{') != std::string_view::npos) {
+        std::string path;
+        for (const auto &component : audited_classic_path)
+          path += (path.empty() ? "" : " ") + component;
+        throw std::runtime_error(
+            "Classic info context audit rejected a reachable PWC: path=" +
+            path + " command=" + command +
+            " output=" + std::string{information});
+      }
+    }
+    ++audited_classic_info_contexts;
+
+    const auto context_children = runtime.command(
+        message(lab_runtime_protocol::session_complete,
+                {"context-console", "", "contexts"}));
+    std::vector<std::string> children;
+    std::size_t begin{};
+    while (begin < context_children.size()) {
+      const auto end = context_children.find('\n', begin);
+      const auto token = std::string_view{context_children}.substr(
+          begin, end == std::string::npos ? context_children.size() - begin
+                                          : end - begin);
+      if (!token.empty() && !token.starts_with('<') &&
+          std::find(children.begin(), children.end(), token) == children.end())
+        children.emplace_back(token);
+      if (end == std::string::npos)
+        break;
+      begin = end + 1U;
+    }
+
+    static constexpr std::array<std::string_view, 12U> global_commands{
+        "\\",   "back", "clear", "exit", "help", "info",
+        "ping", "show", "tools", "admin", "environment", "monitor"};
+    for (const auto &child : children) {
+      if (std::find(global_commands.begin(), global_commands.end(), child) !=
+          global_commands.end())
+        continue;
+      restore_classic_path();
+      const auto navigation = contextual_command(child);
+      if (navigation.find("MINOR:") != std::string_view::npos ||
+          navigation.find("Error:") != std::string_view::npos ||
+          navigation.find("Unknown element") != std::string_view::npos)
+        throw std::runtime_error(
+            "Classic info context audit could not enter parser-advertised "
+            "child " +
+            child + ": " + std::string{navigation});
+      audited_classic_path.push_back(child);
+      self(self, depth + 1U);
+      audited_classic_path.pop_back();
+    }
+  };
+  audit_classic_contexts(audit_classic_contexts, 0U);
+  // The classic schema exposes fewer concrete list keys than MD because
+  // several objects are created only after their complete command. Keep a
+  // floor well below the current configured count so the assertion detects a
+  // disabled walk without coupling the gate to an incidental command total.
+  if (audited_classic_info_contexts < 10U)
+    throw std::runtime_error(
+        "Classic info context audit traversed too little of the configured "
+        "tree: " +
+        std::to_string(audited_classic_info_contexts));
+  contextual_command("exit all");
+
   const auto classic_interface_show =
       contextual_command("show router interface");
   require(classic_interface_show.find("classic-loop") !=

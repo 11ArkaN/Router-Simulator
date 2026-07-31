@@ -11,12 +11,22 @@ import YAML from "yaml";
 const root = resolve(import.meta.dirname, "..");
 const schemaPath = resolve(root, "schemas/cli/26.7.R1.yaml");
 const coveragePath = resolve(root, "schemas/cli/info-renderers.yaml");
+const sourceCatalogPath = resolve(root, "sources/catalog.yaml");
 const runtimePath = resolve(root, "core/src/runtime/lab_runtime.cpp");
+const runtimeTestPath = resolve(
+  root,
+  "core/tests/runtime/lab_runtime_test.cpp",
+);
 
 const schema = YAML.parse(fs.readFileSync(schemaPath, "utf8"));
 const coverage = YAML.parse(fs.readFileSync(coveragePath, "utf8"));
+const sourceCatalog = YAML.parse(fs.readFileSync(sourceCatalogPath, "utf8"));
 const runtime = fs.readFileSync(runtimePath, "utf8");
+const runtimeTest = fs.readFileSync(runtimeTestPath, "utf8");
 const errors = [];
+const sourceRecords = new Map(
+  (sourceCatalog.records ?? []).map((record) => [record.id, record]),
+);
 
 if (coverage.release !== schema.release) {
   errors.push(
@@ -67,6 +77,31 @@ for (const renderer of coverage.renderers ?? []) {
       }
     }
   }
+  for (const sourceId of renderer.source_ids) {
+    const record = sourceRecords.get(sourceId);
+    if (!record) {
+      errors.push(`${renderer.id}: source ${sourceId} is absent from catalog`);
+      continue;
+    }
+    // Contextual output spelling, hierarchy and defaults are vendor CLI
+    // behavior. RFCs can justify protocol state, but cannot justify how SR OS
+    // renders that state. Requiring Nokia's pinned documentation here prevents
+    // a formatter from passing merely because it cites the protocol standard.
+    const officialNokiaType =
+      record.source_type === "nokia-official-doc" ||
+      record.source_type === "nokia-official-yang";
+    const officialNokiaLocation =
+      record.source_url?.startsWith("https://documentation.nokia.com/") ||
+      record.source_url?.startsWith(
+        "https://github.com/nokia/7x50_YangModels/",
+      );
+    if (!officialNokiaType || !officialNokiaLocation ||
+        typeof record.section !== "string" || !record.section.trim()) {
+      errors.push(
+        `${renderer.id}: source ${sourceId} does not identify an official Nokia documentation or YANG section`,
+      );
+    }
+  }
 }
 
 const required = new Set();
@@ -103,6 +138,26 @@ if (/rendered\s*=\s*std::string\{\s*\}/u.test(runtime)) {
 if (/valid configured context with no present children returns an empty body/u
     .test(runtime)) {
   errors.push("MD info dispatcher contains an empty-render fallback");
+}
+
+// Catalog ownership is necessary but cannot prove that a renderer accepts the
+// PWC produced by the command trie. Keep the executable tree walk mandatory:
+// it asks the parser for real navigable contexts and invokes both info forms
+// in each one. These checks prevent that runtime half of the gate from being
+// removed while the declarative catalog still reports full coverage.
+if (!/lab_runtime_protocol::session_complete[\s\S]*"contexts"/u.test(
+      runtimeTest,
+    ) ||
+    !/for \(const auto command : \{"info", "info detail"\}\)/u.test(
+      runtimeTest,
+    ) ||
+    !/Classic info context audit rejected a reachable PWC/u.test(
+      runtimeTest,
+    ) ||
+    !/Command is not supported in this context/u.test(runtimeTest)) {
+  errors.push(
+    "runtime tests do not execute info and info detail across reachable contexts",
+  );
 }
 
 if (errors.length) {

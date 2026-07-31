@@ -28,7 +28,7 @@ parameters:
   ipv6: { display: "<ipv6-address>", description: "IPv6 address" }
   ipv6_with_zone: { display: "<ipv6-address[-interface]>", description: "IPv6 address with a mandatory interface zone for link-local scope" }
   ipv6_source: { display: "<source-ipv6-address>", description: "IPv6 multicast source address" }
-  ipv6_range_start: { display: "<start-ipv6-address>", description: "Lower IPv6 multicast group bound" }
+  ipv6_range_start: { display: "<start-ipv6-address>", description: "Lower IPv6 multicast group bound", continues_context_key: true }
   ipv6_range_end: { display: "<end-ipv6-address>", description: "Upper IPv6 multicast group bound" }
   ipv6_range_step: { display: "<step-ipv6-address>", description: "IPv6 multicast group range increment" }
   ipv6_key: { display: "<ipv6-address>", description: "IPv6 next-hop address" }
