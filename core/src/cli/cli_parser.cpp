@@ -1151,6 +1151,15 @@ bool navigable_command_prefix(const CliSession &session,
   const auto line = tokenize(trim_view(input), false);
   if (!line.valid || !line.count)
     return false;
+  // `delete` is an edit operator, never a model container. Generated delete
+  // rows necessarily share prefixes while the operator is still entering a
+  // keyed target, for example `delete ... route <prefix>` before the required
+  // route type. Treating that incomplete action as an ordinary grammar parent
+  // moved the PWC into a fabricated `/delete ...` path and made the remaining
+  // key impossible to enter. Keep every incomplete delete at the caller's PWC;
+  // complete rows are executed before this predicate is consulted.
+  if (line.tokens[0] == "delete")
+    return false;
   return std::any_of(
       cli_schema::commands.begin(), cli_schema::commands.end(),
       [&](const cli_schema::CommandSpec &spec) {

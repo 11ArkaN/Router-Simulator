@@ -2261,11 +2261,17 @@ commands:
   - id: md_static_route_ipv6
     engines: [md]
     source_id: nokia.sros.26_7.static_route.configuration
+    enters_context: true
     tokens: [configure, router, '"Base"', static-routes, route, { parameter: ipv6_prefix }, route-type, unicast, next-hop, { parameter: ipv6_key }]
   - id: md_indirect_static_route_ipv6
     engines: [md]
     source_id: nokia.sros.26_7.static_route.indirect
+    enters_context: true
     tokens: [configure, router, '"Base"', static-routes, route, { parameter: ipv6_prefix }, route-type, unicast, indirect, { parameter: ipv6_key }]
+  - { id: md_static_route_enable_ipv6, engines: [md], source_id: nokia.sros.26_7.static_route.configuration, tokens: [configure, router, '"Base"', static-routes, route, { parameter: ipv6_prefix }, route-type, unicast, next-hop, { parameter: ipv6_key }, admin-state, enable] }
+  - { id: md_static_route_disable_ipv6, engines: [md], source_id: nokia.sros.26_7.static_route.configuration, tokens: [configure, router, '"Base"', static-routes, route, { parameter: ipv6_prefix }, route-type, unicast, next-hop, { parameter: ipv6_key }, admin-state, disable] }
+  - { id: md_indirect_static_route_enable_ipv6, engines: [md], source_id: nokia.sros.26_7.static_route.indirect, tokens: [configure, router, '"Base"', static-routes, route, { parameter: ipv6_prefix }, route-type, unicast, indirect, { parameter: ipv6_key }, admin-state, enable] }
+  - { id: md_indirect_static_route_disable_ipv6, engines: [md], source_id: nokia.sros.26_7.static_route.indirect, tokens: [configure, router, '"Base"', static-routes, route, { parameter: ipv6_prefix }, route-type, unicast, indirect, { parameter: ipv6_key }, admin-state, disable] }
   - id: md_ra_enable
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
@@ -2353,11 +2359,29 @@ commands:
   - id: md_static_route
     engines: [md]
     source_id: nokia.sros.26_7.static_route.configuration
+    enters_context: true
     tokens: [configure, router, '"Base"', static-routes, route, { parameter: ipv4_prefix }, route-type, unicast, next-hop, { parameter: ipv4_key }]
   - id: md_indirect_static_route
     engines: [md]
     source_id: nokia.sros.26_7.static_route.indirect
+    enters_context: true
     tokens: [configure, router, '"Base"', static-routes, route, { parameter: ipv4_prefix }, route-type, unicast, indirect, { parameter: ipv4_key }]
+  - id: md_static_route_enable
+    engines: [md]
+    source_id: nokia.sros.26_7.static_route.configuration
+    tokens: [configure, router, '"Base"', static-routes, route, { parameter: ipv4_prefix }, route-type, unicast, next-hop, { parameter: ipv4_key }, admin-state, enable]
+  - id: md_static_route_disable
+    engines: [md]
+    source_id: nokia.sros.26_7.static_route.configuration
+    tokens: [configure, router, '"Base"', static-routes, route, { parameter: ipv4_prefix }, route-type, unicast, next-hop, { parameter: ipv4_key }, admin-state, disable]
+  - id: md_indirect_static_route_enable
+    engines: [md]
+    source_id: nokia.sros.26_7.static_route.indirect
+    tokens: [configure, router, '"Base"', static-routes, route, { parameter: ipv4_prefix }, route-type, unicast, indirect, { parameter: ipv4_key }, admin-state, enable]
+  - id: md_indirect_static_route_disable
+    engines: [md]
+    source_id: nokia.sros.26_7.static_route.indirect
+    tokens: [configure, router, '"Base"', static-routes, route, { parameter: ipv4_prefix }, route-type, unicast, indirect, { parameter: ipv4_key }, admin-state, disable]
   - id: md_ecmp
     engines: [md]
     source_id: nokia.sros.26_7.ecmp.configuration
@@ -2956,19 +2980,21 @@ commands:
   - id: classic_static_route
     engines: [classic]
     source_id: nokia.sros.26_7.static_route.configuration
+    enters_context: true
     tokens: [configure, router, static-route-entry, { parameter: ipv4_prefix }, next-hop, { parameter: ipv4 }]
   - id: classic_indirect_static_route
     engines: [classic]
     source_id: nokia.sros.26_7.static_route.indirect
+    enters_context: true
     tokens: [configure, router, static-route-entry, { parameter: ipv4_prefix }, indirect, { parameter: ipv4 }]
   - id: classic_remove_static_next_hop
     engines: [classic]
     source_id: nokia.sros.26_7.static_route.configuration
-    tokens: [configure, router, static-route-entry, { parameter: ipv4_prefix }, no, next-hop, { parameter: ipv4 }]
+    tokens: [configure, router, no, static-route-entry, { parameter: ipv4_prefix }, next-hop, { parameter: ipv4 }]
   - id: classic_remove_static_indirect
     engines: [classic]
     source_id: nokia.sros.26_7.static_route.indirect
-    tokens: [configure, router, static-route-entry, { parameter: ipv4_prefix }, no, indirect, { parameter: ipv4 }]
+    tokens: [configure, router, no, static-route-entry, { parameter: ipv4_prefix }, indirect, { parameter: ipv4 }]
   - id: classic_remove_static_route
     engines: [classic]
     source_id: nokia.sros.26_7.static_route.configuration
@@ -2976,23 +3002,33 @@ commands:
   - id: classic_static_route_ipv6
     engines: [classic]
     source_id: nokia.sros.26_7.static_route.configuration
+    enters_context: true
     tokens: [configure, router, static-route-entry, { parameter: ipv6_prefix }, next-hop, { parameter: ipv6 }]
   - id: classic_indirect_static_route_ipv6
     engines: [classic]
     source_id: nokia.sros.26_7.static_route.indirect
+    enters_context: true
     tokens: [configure, router, static-route-entry, { parameter: ipv6_prefix }, indirect, { parameter: ipv6 }]
   - id: classic_remove_static_next_hop_ipv6
     engines: [classic]
     source_id: nokia.sros.26_7.static_route.configuration
-    tokens: [configure, router, static-route-entry, { parameter: ipv6_prefix }, no, next-hop, { parameter: ipv6 }]
+    tokens: [configure, router, no, static-route-entry, { parameter: ipv6_prefix }, next-hop, { parameter: ipv6 }]
   - id: classic_remove_static_indirect_ipv6
     engines: [classic]
     source_id: nokia.sros.26_7.static_route.indirect
-    tokens: [configure, router, static-route-entry, { parameter: ipv6_prefix }, no, indirect, { parameter: ipv6 }]
+    tokens: [configure, router, no, static-route-entry, { parameter: ipv6_prefix }, indirect, { parameter: ipv6 }]
   - id: classic_remove_static_route_ipv6
     engines: [classic]
     source_id: nokia.sros.26_7.static_route.configuration
     tokens: [configure, router, no, static-route-entry, { parameter: ipv6_prefix }]
+  - { id: classic_static_route_shutdown, engines: [classic], source_id: nokia.sros.26_7.static_route.configuration, tokens: [configure, router, static-route-entry, { parameter: ipv4_prefix }, next-hop, { parameter: ipv4 }, shutdown] }
+  - { id: classic_static_route_no_shutdown, engines: [classic], source_id: nokia.sros.26_7.static_route.configuration, tokens: [configure, router, static-route-entry, { parameter: ipv4_prefix }, next-hop, { parameter: ipv4 }, no, shutdown] }
+  - { id: classic_indirect_static_route_shutdown, engines: [classic], source_id: nokia.sros.26_7.static_route.indirect, tokens: [configure, router, static-route-entry, { parameter: ipv4_prefix }, indirect, { parameter: ipv4 }, shutdown] }
+  - { id: classic_indirect_static_route_no_shutdown, engines: [classic], source_id: nokia.sros.26_7.static_route.indirect, tokens: [configure, router, static-route-entry, { parameter: ipv4_prefix }, indirect, { parameter: ipv4 }, no, shutdown] }
+  - { id: classic_static_route_shutdown_ipv6, engines: [classic], source_id: nokia.sros.26_7.static_route.configuration, tokens: [configure, router, static-route-entry, { parameter: ipv6_prefix }, next-hop, { parameter: ipv6 }, shutdown] }
+  - { id: classic_static_route_no_shutdown_ipv6, engines: [classic], source_id: nokia.sros.26_7.static_route.configuration, tokens: [configure, router, static-route-entry, { parameter: ipv6_prefix }, next-hop, { parameter: ipv6 }, no, shutdown] }
+  - { id: classic_indirect_static_route_shutdown_ipv6, engines: [classic], source_id: nokia.sros.26_7.static_route.indirect, tokens: [configure, router, static-route-entry, { parameter: ipv6_prefix }, indirect, { parameter: ipv6 }, shutdown] }
+  - { id: classic_indirect_static_route_no_shutdown_ipv6, engines: [classic], source_id: nokia.sros.26_7.static_route.indirect, tokens: [configure, router, static-route-entry, { parameter: ipv6_prefix }, indirect, { parameter: ipv6 }, no, shutdown] }
   - id: classic_ecmp
     engines: [classic]
     source_id: nokia.sros.26_7.ecmp.configuration

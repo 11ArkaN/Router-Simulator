@@ -232,6 +232,27 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
       return "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
     return changed(before != candidate.static_routes);
   }
+  case md_static_route_enable:
+  case md_static_route_disable: {
+    const auto route = parse_static_route(
+        *argument(command, cli_schema::TokenKind::ipv4_prefix),
+        unquote(*argument(command, cli_schema::TokenKind::ipv4_key)));
+    if (!route)
+      return "MINOR: MGMT_CORE #2301: Invalid element value";
+    const auto current = std::find_if(
+        candidate.static_routes.begin(), candidate.static_routes.end(),
+        [&](const auto &entry) {
+          return entry.valid && entry.network == route->network &&
+                 entry.prefix_length == route->prefix &&
+                 entry.next_hop == route->next_hop;
+        });
+    if (current == candidate.static_routes.end())
+      return "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+    const auto before = *current;
+    current->admin_enabled = command.spec->id == md_static_route_enable;
+    current->admin_state_configured = true;
+    return changed(before != *current);
+  }
   case md_delete_card:
     if (!profile_card_slot(command))
       return "MINOR: MGMT_CORE #2301: Invalid element value";
@@ -262,6 +283,19 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
     return changed(modified);
   }
   case md_delete_static_route: {
+    const auto route = parse_static_route(
+        *argument(command, cli_schema::TokenKind::ipv4_prefix), "0.0.0.0");
+    const auto current =
+        route ? std::find_if(candidate.static_routes.begin(),
+                             candidate.static_routes.end(),
+                             [&](const auto &entry) {
+                               return entry.valid &&
+                                      entry.network == route->network &&
+                                      entry.prefix_length == route->prefix;
+                             })
+              : candidate.static_routes.end();
+    if (current == candidate.static_routes.end() || current->admin_enabled)
+      return "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
     const auto before = candidate.static_routes;
     if (!remove_static(candidate,
                        *argument(command, cli_schema::TokenKind::ipv4_prefix)))

@@ -534,7 +534,8 @@ std::optional<std::string> operational_command(const DeviceState &state,
     }
     for (std::size_t index = 0; index < running.static_routes.size(); ++index) {
       const auto &route = running.static_routes[index];
-      if (!route.valid || !resolving_interface(state, route.next_hop))
+      if (!route.valid || !route.admin_enabled ||
+          !resolving_interface(state, route.next_hop))
         continue;
       ++count;
       const auto prefix = ipv4_value_text(route.network) + '/' +
@@ -577,7 +578,8 @@ std::optional<std::string> operational_command(const DeviceState &state,
           << ')';
     }
     for (const auto &route : running.static_routes) {
-      if (!route.valid || !resolving_interface(state, route.next_hop))
+      if (!route.valid || !route.admin_enabled ||
+          !resolving_interface(state, route.next_hop))
         continue;
       ++count;
       const auto prefix = ipv4_value_text(route.network) + '/' +
@@ -774,7 +776,9 @@ bool install_static(DeviceConfiguration &configuration,
   *slot = {.valid = true,
            .network = route.network,
            .next_hop = route.next_hop,
-           .prefix_length = route.prefix};
+           .prefix_length = route.prefix,
+           .admin_enabled = true,
+           .admin_state_configured = false};
   return true;
 }
 
@@ -966,31 +970,40 @@ std::string apply_md_default_router_key(const CliSession &session,
   // Keep individual grammar words visible here, while the complete command
   // remains owned by the generated schema. The dependency check intentionally
   // rejects executable whole-command literals outside that schema.
-  constexpr std::string_view configure_token{"configure"};
   constexpr std::string_view router_token{"router"};
-  const auto prefix =
-      std::string{configure_token} + ' ' + std::string{router_token};
-  if (value == prefix)
-    return value + " \"Base\"";
-  const auto descendant_prefix = prefix + ' ';
-  if (!std::string_view{value}.starts_with(descendant_prefix))
+  // Both MD edit operators address the same configuration model. The default
+  // list key therefore applies equally to `configure router ...` and
+  // `delete router ...`. Keeping the operator list here, rather than teaching
+  // individual feature handlers about Base, makes every generated router
+  // subtree inherit the Nokia default without feature-specific exceptions.
+  constexpr std::array<std::string_view, 2> edit_operators{"configure",
+                                                            "delete"};
+  for (const auto edit_operator : edit_operators) {
+    const auto prefix =
+        std::string{edit_operator} + ' ' + std::string{router_token};
+    if (value == prefix)
+      return value + " \"Base\"";
+    const auto descendant_prefix = prefix + ' ';
+    if (!std::string_view{value}.starts_with(descendant_prefix))
+      continue;
+    const auto remainder = std::string_view{value}.substr(prefix.size() + 1U);
+    if (remainder.starts_with('"') || remainder == "Base" ||
+        remainder.starts_with("Base "))
+      return value;
+    // A separator after `router` asks for a child of the default Base router,
+    // not for the router key itself. Preserve that separator so Tab, Space and
+    // question-mark completion inspect the first child token. This case cannot
+    // be decided by complete-command parsing because the operator has not
+    // typed that child yet.
+    auto canonical = std::string{prefix} + " \"Base\" ";
+    canonical.append(remainder);
+    if (remainder.empty())
+      return canonical;
+    if (parse_command(session.engine, session.md_workflow, canonical) ||
+        command_prefix(session, canonical))
+      return canonical;
     return value;
-  const auto remainder = std::string_view{value}.substr(prefix.size() + 1U);
-  if (remainder.starts_with('"') || remainder == "Base" ||
-      remainder.starts_with("Base "))
-    return value;
-  // A separator after `router` asks for a child of the default Base router,
-  // not for the router key itself. Preserve that separator so Tab, Space and
-  // question-mark completion inspect the first child token. This case cannot
-  // be decided by complete-command parsing because the operator has not typed
-  // that child yet.
-  auto canonical = std::string{prefix} + " \"Base\" ";
-  canonical.append(remainder);
-  if (remainder.empty())
-    return canonical;
-  if (parse_command(session.engine, session.md_workflow, canonical) ||
-      command_prefix(session, canonical))
-    return canonical;
+  }
   return value;
 }
 
@@ -1331,19 +1344,23 @@ std::string hide_md_default_router_key(std::string_view input) {
   // Base remains part of the canonical datastore path, but it is not part of
   // operator-entered MD syntax when the default is used. Completion must not
   // copy the internally inserted key back into the editable terminal line.
-  constexpr std::string_view configure_token{"configure"};
   constexpr std::string_view router_token{"router"};
   constexpr std::string_view base_token{"\"Base\""};
-  const auto visible_prefix =
-      std::string{configure_token} + ' ' + std::string{router_token};
-  const auto canonical_prefix =
-      visible_prefix + ' ' + std::string{base_token};
-  if (!input.starts_with(canonical_prefix))
-    return std::string{input};
-  const auto suffix = input.substr(canonical_prefix.size());
-  if (!suffix.empty() && suffix.front() != ' ')
-    return std::string{input};
-  return visible_prefix + std::string{suffix};
+  constexpr std::array<std::string_view, 2> edit_operators{"configure",
+                                                            "delete"};
+  for (const auto edit_operator : edit_operators) {
+    const auto visible_prefix =
+        std::string{edit_operator} + ' ' + std::string{router_token};
+    const auto canonical_prefix =
+        visible_prefix + ' ' + std::string{base_token};
+    if (!input.starts_with(canonical_prefix))
+      continue;
+    const auto suffix = input.substr(canonical_prefix.size());
+    if (!suffix.empty() && suffix.front() != ' ')
+      return std::string{input};
+    return visible_prefix + std::string{suffix};
+  }
+  return std::string{input};
 }
 
 bool enter_classic_context(CliSession &session,
@@ -1819,9 +1836,22 @@ std::string execute_cli(DeviceState &state, CliSession &session,
     output = *common;
   } else if (session.engine == CliEngine::md) {
     output = cli_detail::execute_md(state.configuration, session, *command);
+    if (output.empty() && command->spec->enters_context) {
+      // Presence and keyed list commands that are also containers move the MD
+      // PWC only after the candidate owner accepts the edit. The generated
+      // release grammar owns this property for every applicable command.
+      cli_detail::move_session_path(session, effective);
+    }
   } else {
     output =
         cli_detail::execute_classic(state.configuration, session, *command);
+    if (output.empty() && command->spec->enters_context) {
+      // Classic keyed objects such as a static route next hop are executable
+      // creation commands and configuration contexts at the same time. The
+      // release schema identifies that dual behavior; move only after the
+      // owner accepts the edit so an invalid key cannot fabricate a prompt.
+      cli_detail::move_session_path(session, effective);
+    }
     // In classic CLI, selecting an OSPF instance is both an immediate
     // configuration operation and a context transition. The schema therefore
     // contains an executable row for the exact same token sequence that is
@@ -1832,7 +1862,7 @@ std::string execute_cli(DeviceState &state, CliSession &session,
     // when instance creation or validation fails and prevents a context that
     // has no corresponding running configuration from being fabricated.
     using enum cli_schema::CommandId;
-    if (output.empty() &&
+    if (output.empty() && !command->spec->enters_context &&
         (command->spec->id == classic_ospf_create ||
          command->spec->id == classic_ospf3_create)) {
       cli_detail::move_session_path(session, effective);

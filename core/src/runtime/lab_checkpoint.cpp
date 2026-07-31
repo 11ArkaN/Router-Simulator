@@ -7559,6 +7559,8 @@ void portable_ipv6_route(Writer &out,
   out.string(route.outgoing_port_id);
   out.integer(route.prefix_length);
   out.boolean(route.indirect);
+  out.boolean(route.admin_enabled);
+  out.boolean(route.admin_state_configured);
 }
 
 bool portable_ipv6_route(Reader &in,
@@ -7566,6 +7568,8 @@ bool portable_ipv6_route(Reader &in,
   if (!ipv6(in, route.network) || !ipv6(in, route.next_hop) ||
       !in.string(route.outgoing_port_id, 32) ||
       !in.integer(route.prefix_length) || !in.boolean(route.indirect) ||
+      !in.boolean(route.admin_enabled) ||
+      !in.boolean(route.admin_state_configured) ||
       route.prefix_length > ip::ipv6_address_bits ||
       ip::is_unspecified(route.next_hop) || ip::is_multicast(route.next_hop) ||
       route.network != ip::mask(route.network, route.prefix_length))
@@ -9097,6 +9101,8 @@ void portable_router(Writer &out, const PortableRouterIntentCheckpoint &state) {
     out.integer(route.next_hop);
     out.integer(route.prefix_length);
     out.boolean(route.indirect);
+    out.boolean(route.admin_enabled);
+    out.boolean(route.admin_state_configured);
   }
   count(out, state.ipv6_routes);
   for (const auto &route : state.ipv6_routes)
@@ -9183,7 +9189,8 @@ bool portable_router(Reader &in, PortableRouterIntentCheckpoint &state) {
   for (auto &route : state.routes) {
     if (!in.integer(route.network) || !in.integer(route.next_hop) ||
         !route.next_hop || !in.integer(route.prefix_length) ||
-        !in.boolean(route.indirect) ||
+        !in.boolean(route.indirect) || !in.boolean(route.admin_enabled) ||
+        !in.boolean(route.admin_state_configured) ||
         route.prefix_length > 32U ||
         route.network !=
             (route.network & routing::prefix_mask(route.prefix_length)))
@@ -9272,6 +9279,8 @@ void portable_configuration(Writer &out,
     out.integer(route.next_hop);
     out.integer(route.prefix_length);
     out.boolean(route.indirect);
+    out.boolean(route.admin_enabled);
+    out.boolean(route.admin_state_configured);
   }
   count(out, state.ipv6_routes);
   for (const auto &route : state.ipv6_routes)
@@ -9353,7 +9362,8 @@ bool portable_configuration(Reader &in,
   for (auto &route : state.routes)
     if (!in.integer(route.network) || !in.integer(route.next_hop) ||
         !route.next_hop || !in.integer(route.prefix_length) ||
-        !in.boolean(route.indirect) ||
+        !in.boolean(route.indirect) || !in.boolean(route.admin_enabled) ||
+        !in.boolean(route.admin_state_configured) ||
         route.prefix_length > 32U ||
         route.network !=
             (route.network & routing::prefix_mask(route.prefix_length)))

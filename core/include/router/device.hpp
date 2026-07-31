@@ -60,6 +60,13 @@ struct StaticRouteConfiguration {
   std::uint32_t network{};
   std::uint32_t next_hop{};
   std::uint8_t prefix_length{};
+  // The classic next-hop context is administratively enabled by default.
+  // Shutdown retains the configured path but removes it from route selection;
+  // deletion is a separate operation and is accepted only for a disabled
+  // path. The configured bit lets MD info distinguish an explicit leaf from
+  // the effective default.
+  bool admin_enabled{true};
+  bool admin_state_configured{};
   bool operator==(const StaticRouteConfiguration &) const = default;
 };
 

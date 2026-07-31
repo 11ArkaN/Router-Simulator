@@ -257,7 +257,42 @@ std::string execute_classic(ConfigurationState &configuration,
       return "Error: Bad command.";
     return finish(before != running.static_routes, "");
   }
+  case classic_static_route_shutdown:
+  case classic_static_route_no_shutdown: {
+    const auto route = parse_static_route(
+        *argument(command, cli_schema::TokenKind::ipv4_prefix),
+        *argument(command, cli_schema::TokenKind::ipv4));
+    if (!route)
+      return "Error: Bad command.";
+    const auto current = std::find_if(
+        running.static_routes.begin(), running.static_routes.end(),
+        [&](const auto &entry) {
+          return entry.valid && entry.network == route->network &&
+                 entry.prefix_length == route->prefix &&
+                 entry.next_hop == route->next_hop;
+        });
+    if (current == running.static_routes.end())
+      return "Error: Bad command.";
+    const auto before = *current;
+    current->admin_enabled = command.spec->id ==
+                             classic_static_route_no_shutdown;
+    current->admin_state_configured = true;
+    return finish(before != *current, "");
+  }
   case classic_remove_static_route: {
+    const auto parsed = parse_static_route(
+        *argument(command, cli_schema::TokenKind::ipv4_prefix), "0.0.0.0");
+    const auto current =
+        parsed ? std::find_if(running.static_routes.begin(),
+                              running.static_routes.end(),
+                              [&](const auto &entry) {
+                                return entry.valid &&
+                                       entry.network == parsed->network &&
+                                       entry.prefix_length == parsed->prefix;
+                              })
+               : running.static_routes.end();
+    if (current == running.static_routes.end() || current->admin_enabled)
+      return "Error: Bad command.";
     const auto before = running.static_routes;
     if (!remove_static(running,
                        *argument(command, cli_schema::TokenKind::ipv4_prefix)))

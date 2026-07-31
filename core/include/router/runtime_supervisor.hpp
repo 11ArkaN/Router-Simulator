@@ -399,6 +399,10 @@ struct PortableStaticRouteIntentCheckpoint {
   std::uint32_t next_hop{};
   std::uint8_t prefix_length{};
   bool indirect{};
+  // Administrative state is configuration, not derived RIB state, and must
+  // survive both project persistence and runtime checkpoints.
+  bool admin_enabled{true};
+  bool admin_state_configured{};
 };
 
 struct PortableIpv6StaticRouteIntentCheckpoint {
@@ -410,6 +414,8 @@ struct PortableIpv6StaticRouteIntentCheckpoint {
   std::string outgoing_port_id;
   std::uint8_t prefix_length{};
   bool indirect{};
+  bool admin_enabled{true};
+  bool admin_state_configured{};
 };
 
 struct PortableFacilityAlarmCheckpoint {

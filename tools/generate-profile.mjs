@@ -460,9 +460,26 @@ for (const command of cliSchema.commands ?? []) {
       typeof command.enters_context !== "boolean") {
     throw new Error(`${command.id}: enters_context must be boolean`);
   }
-  if (command.enters_context && !command.engines.includes("md")) {
-    throw new Error(`${command.id}: enters_context currently models MD-CLI only`);
+  if (command.enters_context === true) {
+    // `delete` in MD-CLI and `no` in classic CLI are edit operators. They
+    // mutate the node selected by the remaining path but can never own a PWC
+    // themselves. Rejecting this at generation time protects every feature
+    // family from reintroducing fabricated `/delete` or `>no` contexts when a
+    // future schema row is added.
+    const literalTokens = command.tokens.filter(
+      (token) => typeof token === "string",
+    );
+    if (literalTokens[0] === "delete" || literalTokens.includes("no")) {
+      throw new Error(
+        `${command.id}: delete and no operators cannot enter a context`,
+      );
+    }
   }
+  // Both terminal engines contain executable nodes that also select a child
+  // context. MD presence containers and classic keyed objects differ in
+  // syntax, but the parser postcondition is identical: enter the canonical
+  // path only after the owner accepted the edit. Keeping this property in the
+  // release schema avoids command-ID switches for every affected family.
   maximumTokens = Math.max(maximumTokens, command.tokens.length);
   for (const token of command.tokens) {
     if (typeof token !== "string" && !parameterKinds.includes(token?.parameter)) {

@@ -261,6 +261,14 @@ void cli_tests() {
       "router \"Base\" static-routes route 203.0.113.0/24 route-type unicast "
       "next-hop 198.51.100.2",
       no_ping);
+  const auto active_md_delete = router::execute_cli(
+      state, session,
+      "/delete router static-routes route 203.0.113.0/24 "
+      "route-type unicast",
+      no_ping);
+  require(contains(active_md_delete, "currently not allowed"),
+          "MD deleted a static route while its next hop was enabled");
+  router::execute_cli(state, session, "admin-state disable", no_ping);
   const auto route_compare =
       router::execute_cli(state, session, "compare", no_ping);
   require(contains(route_compare,
@@ -273,13 +281,26 @@ void cli_tests() {
   router::execute_cli(state, session, "commit", no_ping);
   require(state.configuration.running.static_routes[0].valid,
           "Documented MD static-route syntax did not install the candidate");
+  // Delete is an operator over a modeled path, not a configuration context.
+  // An incomplete keyed deletion must display the missing route-type syntax
+  // while retaining the caller's PWC and leaving the committed route intact.
+  const auto incomplete_route_delete = router::execute_cli(
+      state, session,
+      "/delete router static-routes route 203.0.113.0/24", no_ping);
+  require(contains(incomplete_route_delete, "route-type") &&
+              contains(incomplete_route_delete,
+                       "next-hop 198.51.100.2]") &&
+              !contains(incomplete_route_delete, "/delete") &&
+              state.configuration.running.static_routes[0].valid,
+          "Incomplete MD delete fabricated a delete context or changed state");
   router::execute_cli(state, session,
-                      "delete router \"Base\" static-routes route "
+                      "/delete router static-routes route "
                       "203.0.113.0/24 route-type unicast",
                       no_ping);
   router::execute_cli(state, session, "commit", no_ping);
   require(!state.configuration.running.static_routes[0].valid,
           "MD delete did not remove the keyed static-route entry");
+  router::execute_cli(state, session, "top", no_ping);
 
   // System reports consume modeled state rather than fixed demo text. Uptime,
   // pinned image identity and the unsaved configuration indicator must exist.
@@ -392,10 +413,16 @@ void cli_tests() {
   // MD navigation accepts both the closing-brace shortcut and a bounded level
   // count. Crossing above /configure leaves an implicit workflow, as do slash,
   // exit all and Ctrl-Z on hardware.
-  router::execute_cli(state, session, "card 1 mda 1", no_ping);
-  router::execute_cli(state, session, "}", no_ping);
-  require(contains(router::cli_prompt(state, session), "/configure card 1]"),
-          "Closing brace did not move to the MD parent context");
+  const auto mda_navigation =
+      router::execute_cli(state, session, "configure card 1 mda 1", no_ping);
+  const auto closing_brace =
+      router::execute_cli(state, session, "}", no_ping);
+  const auto closing_prompt = router::cli_prompt(state, session);
+  if (!contains(closing_prompt, "/configure card 1]"))
+    throw std::runtime_error(
+        "Closing brace did not move to the MD parent context: navigation=" +
+        mda_navigation + " close=" + closing_brace +
+        " prompt=" + closing_prompt);
   router::execute_cli(state, session, "back 2", no_ping);
   require(session.md_workflow == router::MdCliWorkflow::operational &&
               router::cli_prompt(state, session) == "\n[/]\nA:admin@R1# ",
@@ -429,11 +456,18 @@ void cli_tests() {
                       "configure router static-route-entry 203.0.113.0/24 "
                       "next-hop 198.51.100.2",
                       no_ping);
+  router::execute_cli(state, session, "shutdown", no_ping);
+  router::execute_cli(state, session, "exit all", no_ping);
   router::execute_cli(state, session,
                       "configure router no static-route-entry 203.0.113.0/24",
                       no_ping);
   require(!state.configuration.running.static_routes[0].valid,
           "Classic no static-route-entry did not remove the route");
+  const auto incomplete_classic_no =
+      router::execute_cli(state, session, "configure router no", no_ping);
+  require(contains(incomplete_classic_no, "Error: Bad command.") &&
+              !contains(router::cli_prompt(state, session), ">no#"),
+          "Incomplete classic no fabricated a configuration context");
   const auto classic_help =
       router::execute_cli(state, session, "help edit", no_ping);
   require(contains(classic_help, "Delete current character") &&

@@ -274,6 +274,14 @@ private:
     std::uint32_t next_hop{};
     std::uint8_t prefix_length{};
     bool indirect{};
+    // SR OS owns administrative state per concrete path, not per destination
+    // prefix. A disabled sibling remains in configuration and in `info`, but
+    // the routing owner must not publish it into RIB or FIB.
+    bool admin_enabled{true};
+    // MD `info` distinguishes the default enabled value from an explicitly
+    // configured admin-state leaf. Classic rendering still prints shutdown or
+    // no shutdown unconditionally, as documented for generated config files.
+    bool admin_state_configured{};
     bool operator==(const StaticRouteIntent &) const = default;
   };
 
@@ -283,6 +291,11 @@ private:
     std::string outgoing_port_id;
     std::uint8_t prefix_length{};
     bool indirect{};
+    // The IPv6 list has the same keyed-child lifecycle as IPv4. Keeping this
+    // bit beside the path key makes candidate comparison and checkpoint
+    // restoration preserve shutdown state without a parallel side table.
+    bool admin_enabled{true};
+    bool admin_state_configured{};
     bool operator==(const Ipv6StaticRouteIntent &) const = default;
   };
 

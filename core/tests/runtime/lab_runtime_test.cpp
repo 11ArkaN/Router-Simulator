@@ -1172,6 +1172,18 @@ void lab_runtime_tests() {
     throw std::runtime_error(
         "interactive static-route next hop was not stored in the candidate: " +
         std::string{static_route_compare});
+  const auto disabled_static_path = contextual_command("admin-state disable");
+  const auto disabled_static_info = contextual_command("info");
+  require(disabled_static_path.find("MINOR:") == std::string_view::npos &&
+              disabled_static_info.find("admin-state disable") !=
+                  std::string_view::npos,
+          "MD static next-hop context did not retain disabled state");
+  const auto enabled_static_path = contextual_command("admin-state enable");
+  const auto enabled_static_info = contextual_command("info detail");
+  require(enabled_static_path.find("MINOR:") == std::string_view::npos &&
+              enabled_static_info.find("admin-state enable") !=
+                  std::string_view::npos,
+          "MD static next-hop context did not restore enabled state");
   // Exercise every navigable parent in the MD static-route hierarchy. The
   // source catalog used to assign this family to the Base renderer without
   // proving that the renderer accepted any of these paths, so `info` reached
@@ -1368,7 +1380,8 @@ void lab_runtime_tests() {
   require_classic_context_info("configure service ies 900", "service-id 900");
   require_classic_context_info(
       "configure router",
-      "static-route-entry 203.0.114.0/24 next-hop 192.0.2.2");
+      "static-route-entry 203.0.114.0/24\n    next-hop 192.0.2.2\n"
+      "        no shutdown");
   for (const auto command :
        {"configure router interface classic-loop address 198.51.100.1/32",
         "configure router interface classic-loop no shutdown"}) {
@@ -2188,10 +2201,17 @@ void lab_runtime_tests() {
           "valid IPv6 MD command failed: " + std::string{command} +
           " output=" + std::string{result});
   }
+  // The final keyed static-route command selects its next-hop context. Return
+  // to the configuration root before traversing an unrelated RA branch,
+  // exactly as an operator must do after entering a list instance.
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "top"}))
+                  .find("MINOR:") == std::string_view::npos,
+          "MD static-route context could not return to configuration root");
   const auto ra_context_navigation = runtime.command(message(
       lab_runtime_protocol::session_execute,
       {"r1-console-1",
-       "router \"Base\" ipv6 router-advertisement interface edge"}));
+       "configure router \"Base\" ipv6 router-advertisement interface edge"}));
   if (ra_context_navigation.find("router-advertisement") ==
           std::string_view::npos ||
       ra_context_navigation.find("interface") == std::string_view::npos ||
@@ -2237,14 +2257,14 @@ void lab_runtime_tests() {
   // children. Indirect intent is accepted even while inactive because no
   // dynamic protocol has published a resolver for it in this fixture.
   for (const auto command : {
-           "router \"Base\" ecmp 2",
-           "router \"Base\" static-routes route 203.0.113.0/24 route-type "
+           "/configure router \"Base\" ecmp 2",
+           "/configure router \"Base\" static-routes route 203.0.113.0/24 route-type "
            "unicast next-hop \"192.0.2.2\"",
-           "router \"Base\" static-routes route 203.0.113.0/24 route-type "
+           "/configure router \"Base\" static-routes route 203.0.113.0/24 route-type "
            "unicast next-hop \"192.0.2.3\"",
-           "router \"Base\" static-routes route 198.51.100.0/24 route-type "
+           "/configure router \"Base\" static-routes route 198.51.100.0/24 route-type "
            "unicast indirect \"10.0.0.1\"",
-           "router \"Base\" static-routes route 2001:db8:dead::/64 "
+           "/configure router \"Base\" static-routes route 2001:db8:dead::/64 "
            "route-type unicast indirect \"2001:db8:ffff::1\""}) {
     const auto result = runtime.command(message(
         lab_runtime_protocol::session_execute, {"r1-console-1", command}));
@@ -2253,6 +2273,13 @@ void lab_runtime_tests() {
                                std::string{command} + " output=" +
                                std::string{result});
   }
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "top"}))
+                  .find("MINOR:") == std::string_view::npos &&
+              runtime.command(message(lab_runtime_protocol::session_execute,
+                                      {"r1-console-1", "configure"}))
+                      .find("MINOR:") == std::string_view::npos,
+          "MD static-route sibling test could not restore /configure");
   // Configure the complete referential chain exposed by the IPsec release
   // grammar through terminal bytes. Transform objects must exist before IKE
   // policy and profile leafrefs, while traffic-selector entries remain normal
@@ -3175,7 +3202,7 @@ void lab_runtime_tests() {
                                   {"r1-console-1", "show router static-arp"}))
                   .find("192.0.2.2") != std::string_view::npos,
       "classic ARP filtering, report columns or owner clear failed");
-  const std::array<std::string_view, 27> classic_ipv6_commands{
+  const std::array<std::string_view, 30> classic_ipv6_commands{
       "configure router interface edge ipv6 address 2001:db8:1::1/64",
       "configure router interface edge ipv6 address 2001:db8:3::1/64 "
       "dad-disable primary-preference 30 tag 900",
@@ -3207,6 +3234,12 @@ void lab_runtime_tests() {
       "400",
       "configure router static-route-entry 2001:db8:aaaa::/64 next-hop "
       "2001:db8:1::2",
+      // Classic SR OS retains a static path while it is shut down and
+      // requires that administrative transition before the path can be
+      // deleted. The prefix form then removes the disabled route and all of
+      // its children rather than manufacturing a `no` child context.
+      "configure router static-route-entry 2001:db8:aaaa::/64 next-hop "
+      "2001:db8:1::2 shutdown",
       "configure router no static-route-entry 2001:db8:aaaa::/64",
       "configure router no ecmp",
       "configure router ecmp 2",
@@ -3216,17 +3249,95 @@ void lab_runtime_tests() {
       "192.0.2.3",
       "configure router static-route-entry 198.51.101.0/24 indirect "
       "10.0.0.1",
-      "configure router static-route-entry 203.0.114.0/24 no next-hop "
+      "configure router static-route-entry 203.0.114.0/24 next-hop "
+      "192.0.2.3 shutdown",
+      "configure router no static-route-entry 203.0.114.0/24 next-hop "
       "192.0.2.3",
-      "configure router static-route-entry 198.51.101.0/24 no indirect "
+      "configure router static-route-entry 198.51.101.0/24 indirect "
+      "10.0.0.1 shutdown",
+      "configure router no static-route-entry 198.51.101.0/24 indirect "
       "10.0.0.1"};
   for (const auto command : classic_ipv6_commands) {
+    // These rows are independent root-form fixtures. A successful keyed path
+    // now selects its classic context, so the following independent row must
+    // use classic's documented backslash absolute-path operator rather than
+    // relying on the previous implementation accidentally retaining root.
+    auto submitted = std::string{command};
+    if (submitted.starts_with("configure"))
+      submitted.insert(submitted.begin(), '\\');
     const std::string result{runtime.command(message(
-        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+        lab_runtime_protocol::session_execute, {"r1-console-1", submitted}))};
     if (result.find("Error:") != std::string::npos)
       throw std::runtime_error("valid classic IPv6 command failed: " +
                                std::string{command} + " output=" + result);
   }
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "exit all"}))
+                  .find("Error:") == std::string_view::npos,
+          "classic root-form route fixtures could not leave their final PWC");
+  // The remaining 203.0.114.0/24 sibling is administratively active. A
+  // classic deletion must therefore fail without changing either the route
+  // intent or the installed RIB entry. This is a lifecycle constraint, not a
+  // parser special case: shutdown changes the child state, while the later
+  // `no static-route-entry` owns removal of that uniquely identified child.
+  const auto active_path_delete = runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1",
+       "configure router no static-route-entry 203.0.114.0/24 next-hop "
+       "192.0.2.2"}));
+  require(active_path_delete.find("Error: Bad command.") !=
+              std::string_view::npos,
+          "classic removed an active static next hop without shutdown");
+
+  // Exercise the real classic PWC hierarchy rather than sending another
+  // absolute root command. Each navigation component is deliberately issued
+  // as an operator would type it so parser context, state transition and
+  // classic `info` presentation are verified by one observable workflow.
+  for (const auto command : {
+           "configure router static-route-entry 203.0.114.0/24",
+           "next-hop 192.0.2.2", "shutdown"}) {
+    const auto result = runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}));
+    if (result.find("Error:") != std::string_view::npos)
+      throw std::runtime_error(
+          "classic static-route context transition failed: " +
+          std::string{command} + " output=" + std::string{result});
+  }
+  const auto disabled_path_info = runtime.command(message(
+      lab_runtime_protocol::session_execute, {"r1-console-1", "info"}));
+  if (disabled_path_info.find("shutdown") == std::string_view::npos ||
+      disabled_path_info.find("admin-state") != std::string_view::npos)
+    throw std::runtime_error(
+        "classic static next-hop info did not render shutdown state: " +
+        std::string{disabled_path_info});
+  const auto disabled_route_table = runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1", "\\show router route-table protocol static"}));
+  if (disabled_route_table.find("\n203.0.114.0/24") !=
+      std::string_view::npos)
+    throw std::runtime_error(
+        "shutdown static path remained installed in the route table: " +
+        std::string{disabled_route_table});
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "no shutdown"}))
+                  .find("Error:") == std::string_view::npos,
+          "classic no shutdown did not reactivate the selected next hop");
+  const auto enabled_path_info = runtime.command(message(
+      lab_runtime_protocol::session_execute, {"r1-console-1", "info detail"}));
+  require(enabled_path_info.find("no shutdown") != std::string_view::npos &&
+              enabled_path_info.find("admin-state") ==
+                  std::string_view::npos,
+          "classic static next-hop info detail leaked MD admin-state");
+  const auto enabled_route_table = runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1", "\\show router route-table protocol static"}));
+  require(enabled_route_table.find("\n203.0.114.0/24") !=
+              std::string_view::npos,
+          "no shutdown did not reinstall the static path in the route table");
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "exit all"}))
+                  .find("Error:") == std::string_view::npos,
+          "classic static-route lifecycle test could not return to root");
   require(runtime.command(message(lab_runtime_protocol::snapshot))
                   .find("\"address\":\"2001:db8:4::/64\","
                         "\"duplicateAddressDetection\":true,"
