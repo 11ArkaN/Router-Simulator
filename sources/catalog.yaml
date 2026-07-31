@@ -1145,9 +1145,9 @@ records:
     yang_path: null
     last_verified_at: 2026-07-21
     implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli/cli.cpp, core/src/cli/cli_parser.cpp, core/src/cli/cli_md.cpp, apps/web/src/ui/TerminalPanel.tsx, apps/web/src/ui/terminal-model.ts, apps/web/src/persistence.ts, packages/contracts/src/index.ts]
-    tests: [core/tests/cli/cli_test.cpp, core/tests/runtime/session_workflows_test.cpp, core/tests/runtime/lab_runtime_test.cpp, apps/web/src/ui/terminal-model.test.ts, apps/web/src/persistence-v4.test.ts]
+    tests: [core/tests/cli/cli_test.cpp, core/tests/runtime/session_workflows_test.cpp, core/tests/runtime/lab_runtime_test.cpp, apps/web/src/ui/TerminalPanel.test.tsx, apps/web/src/ui/terminal-model.test.ts, apps/web/src/persistence-v4.test.ts]
     status: implemented
-    notes: MD-CLI retains its working context and implements slash, closing-brace, back with an optional level count, exit, exit all, top, editing keys, separate operational and configuration histories, engine-switch messages and prompt markers for the exposed tree. Navigation above /configure exits implicit mode and dirty exits preserve context until confirmed.
+    notes: MD-CLI retains its working context and implements slash, closing-brace, back with an optional level count, exit, exit all, top, editing keys, separate operational and configuration histories, engine-switch messages and prompt markers for the exposed tree. A slash beginning an absolute command remains in the editable line after unique Tab or Spacebar completion. Navigation above /configure exits implicit mode and dirty exits preserve context until confirmed.
   - id: nokia.sros.26_7.md_cli.info
     kind: cli-behavior
     release: 26.7.R1
@@ -1215,9 +1215,9 @@ records:
     yang_path: null
     last_verified_at: 2026-07-21
     implementation: [schemas/cli/26.7.R1.yaml, core/include/router/generated_cli_schema.hpp, core/src/cli/cli_parser.cpp, apps/web/src/ui/TerminalPanel.tsx]
-    tests: [core/tests/cli/cli_test.cpp]
+    tests: [core/tests/cli/cli_test.cpp, core/tests/runtime/lab_runtime_test.cpp, apps/web/src/ui/TerminalPanel.test.tsx]
     status: implemented
-    notes: Tab, Spacebar, Enter and question-mark input query only commands available in the active engine, workflow and working context. Enter completes a unique MD keyword before execution, while variable completion remains Tab-only. Question-mark help includes schema-owned descriptions, parameter type labels and the documented context plus or leaf minus marker without exposing project endpoints as address choices.
+    notes: Tab, Spacebar, Enter and question-mark input query only commands available in the active engine, workflow and working context. Tab and Spacebar terminate a unique completed element with one editable separator, while an exact keyword followed by Tab can display its child elements without changing the line. Enter completes a unique MD keyword before execution, while variable completion remains Tab-only. Question-mark help includes schema-owned descriptions, parameter type labels and the documented context plus or leaf minus marker without exposing project endpoints as address choices.
   - id: nokia.sros.26_7.cli.pagination
     kind: cli-behavior
     release: 26.7.R1
@@ -1550,11 +1550,11 @@ records:
     section: configure router static-routes route
     rfc_refs: [RFC 1812]
     yang_path: /configure/router/static-routes/route
-    last_verified_at: 2026-07-15
-    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/ip_address.hpp, core/include/router/lab_runtime.hpp, core/include/router/multi_device_routing.hpp, core/src/cli/cli_parser.cpp, core/src/ip/ip_address.cpp, core/src/runtime/lab_runtime.cpp, core/src/forwarding/multi_device_routing.cpp, core/src/runtime/runtime_supervisor.cpp, core/src/runtime/runtime_supervisor_interfaces.cpp, core/src/runtime/runtime_supervisor_services.cpp, core/src/runtime/runtime_supervisor_routing.cpp, core/src/runtime/runtime_supervisor_hosts.cpp, core/src/runtime/runtime_supervisor_checkpoint.cpp]
+    last_verified_at: 2026-07-31
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/ip_address.hpp, core/include/router/lab_runtime.hpp, core/include/router/multi_device_routing.hpp, core/src/cli/cli_md.cpp, core/src/cli/cli_parser.cpp, core/src/ip/ip_address.cpp, core/src/runtime/lab_runtime.cpp, core/src/forwarding/multi_device_routing.cpp, core/src/runtime/runtime_supervisor.cpp, core/src/runtime/runtime_supervisor_interfaces.cpp, core/src/runtime/runtime_supervisor_services.cpp, core/src/runtime/runtime_supervisor_routing.cpp, core/src/runtime/runtime_supervisor_hosts.cpp, core/src/runtime/runtime_supervisor_checkpoint.cpp]
     tests: [core/tests/cli/cli_test.cpp, core/tests/forwarding/routing_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
     status: implemented
-    notes: IPv4 and IPv6 unicast routes retain independently keyed direct next hops, support selective or whole-prefix removal in both engines, and require an interface zone for IPv6 link-local next hops. Equal direct candidates participate in the router-wide ECMP selection. Optional attributes not listed by the capability matrix remain unsupported and are rejected explicitly.
+    notes: IPv4 and IPv6 unicast routes retain independently keyed direct next hops, accept and render their typed IP keys without string-key quotation, support selective or whole-prefix removal in both engines, and require an interface zone for IPv6 link-local next hops. Equal direct candidates participate in the router-wide ECMP selection. Optional attributes not listed by the capability matrix remain unsupported and are rejected explicitly.
   - id: nokia.sros.26_7.static_route.indirect
     kind: routing-behavior
     release: 26.7.R1

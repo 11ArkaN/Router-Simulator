@@ -131,10 +131,19 @@ describe("terminal raw-key transcript", () => {
           historyRegion: "classic", prompt: "A:R1# " };
         return "A:R1# ";
       }
-      return command === "show" ? `System information\n${terminalState.prompt}`
+      const submitted = command.trim();
+      return submitted === "show" || submitted === "/show info"
+        ? `System information\n${terminalState.prompt}`
         : terminalState.prompt;
     });
-    const complete = vi.fn(async (input: string) => input === "sho" ? "show" : input);
+    const complete = vi.fn(async (input: string) => {
+      // The runtime returns the completed token sequence without terminal
+      // presentation bytes. TerminalPanel must add the SR OS separator after
+      // the unique Tab result before the next printable byte is accepted.
+      if (input === "/sho") return "/show";
+      if (input === "/show i") return "/show info";
+      return input;
+    });
     const resize = globalThis.ResizeObserver;
     globalThis.ResizeObserver = TestResizeObserver;
     try {
@@ -148,11 +157,18 @@ describe("terminal raw-key transcript", () => {
       // Each value below is a real xterm onData sequence. Tab completes the
       // keyword, Enter submits it, and `//` is ordinary router input rather
       // than an application-level mode button.
-      recorder.current!.emit("sho");
+      recorder.current!.emit("/sho");
       recorder.current!.emit("\t");
-      await waitFor(() => expect(complete).toHaveBeenCalledWith("sho", "tab"));
+      await waitFor(() => expect(complete).toHaveBeenCalledWith("/sho", "tab"));
+      // A second keyword entered immediately after Tab proves that completion
+      // ended `/show` with a separator instead of merging it into `/showi`.
+      // Keeping the slash also protects absolute context navigation while the
+      // completed text crosses the C++ to xterm presentation boundary.
+      recorder.current!.emit("i");
+      recorder.current!.emit("\t");
+      await waitFor(() => expect(complete).toHaveBeenCalledWith("/show i", "tab"));
       recorder.current!.emit("\r");
-      await waitFor(() => expect(execute).toHaveBeenCalledWith("show"));
+      await waitFor(() => expect(execute).toHaveBeenCalledWith("/show info "));
       recorder.current!.emit("//");
       recorder.current!.emit("\r");
       await waitFor(() => expect(execute).toHaveBeenCalledWith("//"));
@@ -183,8 +199,10 @@ describe("terminal raw-key transcript", () => {
       expect(recorder.current!.writes).toEqual([
         "SR OS 26.7.R1\r\n",
         "A:admin@R1# ",
-        "\r\u001b[2KA:admin@R1# sho",
-        "\r\u001b[2KA:admin@R1# show",
+        "\r\u001b[2KA:admin@R1# /sho",
+        "\r\u001b[2KA:admin@R1# /show ",
+        "\r\u001b[2KA:admin@R1# /show i",
+        "\r\u001b[2KA:admin@R1# /show info ",
         "\r\n",
         "System information\r\nA:admin@R1# ",
         "\r\u001b[2KA:admin@R1# //",

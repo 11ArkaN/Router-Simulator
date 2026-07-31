@@ -213,7 +213,11 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
     case ipv4:
       return ipv4_text(value);
     case ipv4_key:
-      return ipv4_text(unquote_value(value));
+      // A typed YANG list key keeps key identity without becoming a quoted
+      // string. SR OS accepts the canonical dotted address directly; retaining
+      // scalar_text also permits explicit quoting where the generic MD lexer
+      // allows it, while help and rendered configuration use the typed form.
+      return ipv4_text(scalar_text(value));
     case ipv4_prefix:
       return ipv4_prefix_text(value);
     case ip_prefix:
@@ -275,7 +279,10 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
                  : !has_zone;
     }
     case ipv6_key:
-      return ip::parse_ipv6(unquote_value(value)).has_value();
+      // IPv6 static-route next hops follow the same typed-key rule as IPv4.
+      // Reusing the scalar normalizer prevents the two address families from
+      // diverging only because the schema node is keyed.
+      return ip::parse_ipv6(scalar_text(value)).has_value();
     case ipv6_prefix:
       return ip::parse_ipv6_prefix(value).has_value();
     case ipv6_address_prefix: {

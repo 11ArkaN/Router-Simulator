@@ -1858,6 +1858,17 @@ std::string complete_cli(const DeviceState &state, const CliSession &session,
   while (!input.empty() && std::string_view{" \r\n\t"}.find(input.front()) !=
                                std::string_view::npos)
     input.remove_prefix(1);
+  // Absolute navigation is an operator-owned part of the editable command,
+  // although effective_input removes it before matching the root grammar.
+  // Save the exact engine-supported marker so a unique replacement cannot
+  // silently turn an absolute command into a relative one. Display-only
+  // candidate lists do not replace the editor and therefore need no marker.
+  const char absolute_marker =
+      !input.empty() &&
+              (input.front() == '/' ||
+               (session.engine == CliEngine::classic && input.front() == '\\'))
+          ? input.front()
+          : '\0';
   const auto effective = cli_detail::effective_input(session, input);
   const auto completed =
       cli_detail::complete_command(state, session, effective, trigger);
@@ -1867,12 +1878,17 @@ std::string complete_cli(const DeviceState &state, const CliSession &session,
       session.engine == CliEngine::md
           ? cli_detail::hide_md_default_router_key(completed)
           : completed;
-  if (cli_detail::session_path(session, session.engine).empty() ||
-      visible.find('\n') != std::string::npos)
+  if (visible.find('\n') != std::string::npos)
     return visible;
-  const auto prefix =
-      std::string{cli_detail::session_path(session, session.engine)} + ' ';
-  return visible.starts_with(prefix) ? visible.substr(prefix.size()) : visible;
+  const auto path = cli_detail::session_path(session, session.engine);
+  const auto prefix = std::string{path} + ' ';
+  const auto editable =
+      path.empty() || !visible.starts_with(prefix)
+          ? visible
+          : visible.substr(prefix.size());
+  return absolute_marker == '\0'
+             ? editable
+             : std::string{absolute_marker} + editable;
 }
 
 std::string cli_prompt(const DeviceState &state, const CliSession &session) {

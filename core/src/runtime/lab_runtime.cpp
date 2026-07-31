@@ -6224,7 +6224,9 @@ md_base_configuration_info(const Configuration &configuration,
           << ipv4_text(route.network) << '/'
           << static_cast<unsigned>(route.prefix_length) << " {\n";
       md_indent(out, depth + 1U);
-      out << "next-hop \"" << ipv4_text(route.next_hop) << "\" {\n";
+      // A next-hop is a typed IPv4 key, not a string key. Canonical MD output
+      // therefore prints the address directly, matching accepted input.
+      out << "next-hop " << ipv4_text(route.next_hop) << " {\n";
       md_indent(out, depth + 2U);
       out << "indirect " << (route.indirect ? "true" : "false") << '\n';
       md_indent(out, depth + 1U);
@@ -22962,6 +22964,19 @@ std::string LabRuntime::complete_session(std::string_view session_id,
       (trigger != "tab" && trigger != "question" && trigger != "space"))
     return {};
 
+  // Root navigation markers are syntax owned by the operator's editable line.
+  // resolve_session_input removes them to match the canonical schema, so keep
+  // the exact marker independently and restore it only for a unique completion
+  // that replaces the line. Candidate lists are display-only and leave the
+  // original slash or classic backslash untouched in xterm.
+  const char absolute_marker =
+      !input.empty() &&
+              (input.front() == '/' ||
+               (terminal->cli.engine == CliEngine::classic &&
+                input.front() == '\\'))
+          ? input.front()
+          : '\0';
+
   // Completion follows the saved terminal context just like execution. Keep
   // genuine root commands such as compare, show and configure unprefixed, but
   // resolve child input below the active MD or classic path. This prevents a
@@ -23445,11 +23460,14 @@ std::string LabRuntime::complete_session(std::string_view session_id,
     // to that path. Root commands and display lists are never rewritten, and
     // an unexpected result remains intact instead of deleting a coincidental
     // prefix from a parameter value.
-    if (md_root_default)
-      return cli_detail::hide_md_default_router_key(result);
-    return !context_prefix.empty() && result.starts_with(context_prefix)
-               ? result.substr(context_prefix.size())
-               : result;
+    std::string visible =
+        md_root_default ? cli_detail::hide_md_default_router_key(result)
+        : !context_prefix.empty() && result.starts_with(context_prefix)
+            ? result.substr(context_prefix.size())
+            : result;
+    if (absolute_marker != '\0')
+      visible.insert(visible.begin(), absolute_marker);
+    return visible;
   }
   std::ostringstream out;
   for (std::size_t index = 0; index < candidates.size(); ++index) {

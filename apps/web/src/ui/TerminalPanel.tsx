@@ -206,7 +206,15 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
         if (!result.includes("\n") && trigger !== "question") {
           // A unique result replaces the editable buffer. Redrawing the current
           // line avoids synthesizing key presses or bypassing normal execution.
-          active.replace(result + (trigger === "space" ? " " : ""));
+          //
+          // SR OS treats a unique Tab completion as a completed CLI element,
+          // just like completion triggered by Spacebar. Keep the separator in
+          // the editor rather than in C++ completion output: the result string
+          // is the router-owned token replacement, while this adapter owns the
+          // physical key and cursor presentation. An already present separator
+          // is retained as one byte so a future completion transport can carry
+          // the same presentation without producing doubled spaces.
+          active.replace(result.endsWith(" ") ? result : `${result} `);
           redraw();
         } else {
           terminal.write(`\r\n${result.replaceAll("\n", "\r\n")}\r\n`);

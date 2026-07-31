@@ -23,7 +23,7 @@ parameters:
   relay_lease_limit: { display: "<number>", description: "Maximum DHCPv6 relay lease entries" }
   interface_name: { display: "<interface-name>", description: "Router interface name" }
   ipv4: { display: "<ip-address>", description: "IPv4 address in dotted-decimal notation" }
-  ipv4_key: { display: '"<ip-address>"', description: "Quoted IPv4 next-hop key" }
+  ipv4_key: { display: "<ip-address>", description: "IPv4 next-hop address" }
   ipv4_prefix: { display: "<ip-prefix/prefix-length>", description: "IPv4 prefix and prefix length" }
   ipv6: { display: "<ipv6-address>", description: "IPv6 address" }
   ipv6_with_zone: { display: "<ipv6-address[-interface]>", description: "IPv6 address with a mandatory interface zone for link-local scope" }
@@ -31,7 +31,7 @@ parameters:
   ipv6_range_start: { display: "<start-ipv6-address>", description: "Lower IPv6 multicast group bound" }
   ipv6_range_end: { display: "<end-ipv6-address>", description: "Upper IPv6 multicast group bound" }
   ipv6_range_step: { display: "<step-ipv6-address>", description: "IPv6 multicast group range increment" }
-  ipv6_key: { display: '"<ipv6-address>"', description: "Quoted IPv6 next-hop key" }
+  ipv6_key: { display: "<ipv6-address>", description: "IPv6 next-hop address" }
   ipv6_prefix: { display: "<ipv6-prefix/prefix-length>", description: "IPv6 prefix and prefix length" }
   ipv6_address_prefix: { display: "<ipv6-address/prefix-length>", description: "IPv6 interface address and prefix length" }
   ipv6_primary_preference: { display: "<primary-preference>", description: "IPv6 primary address preference index" }

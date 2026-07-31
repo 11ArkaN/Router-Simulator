@@ -455,6 +455,10 @@ void lab_runtime_tests() {
           "configure router interface",
       "runtime completion exposed or required the default Base router key");
   require(
+      runtime.command(message(lab_runtime_protocol::session_complete,
+                              {"context-console", "/sho", "tab"})) == "/show",
+      "runtime completion removed the MD absolute-path slash");
+  require(
       contextual_command("configure router interface \"absolute-default\"")
               .find("(ex)[/configure router \"Base\" interface "
                     "\"absolute-default\"]") != std::string_view::npos,
@@ -1035,6 +1039,52 @@ void lab_runtime_tests() {
   require_context_info("configure ipsec ike-transform 1",
                        "dh-group group-19");
   require_context_info("configure service ies info-ies", "service-id 900");
+
+  // Build a direct static route exactly as an operator traverses the MD tree.
+  // Root-form coverage cannot detect a broken saved context because it sends
+  // the destination, route type and next-hop key in one parser invocation.
+  // A direct next hop is valid configuration even when it is not currently
+  // resolvable; operational route selection reports it inactive until a
+  // connected interface can resolve the address.
+  // Commit the preceding context-renderer fixtures before this independent
+  // edit. Candidate change tracking is deliberately bounded; allowing an
+  // unrelated capacity limit to decide whether a valid IPv4 scalar is
+  // accepted would turn this into a misleading parser test.
+  require(contextual_command("commit").find("MINOR:") ==
+              std::string_view::npos,
+          "context-info fixture could not commit before static-route test");
+  require(contextual_command("exit all").find("(ex)[/]") !=
+              std::string_view::npos,
+          "static-route context fixture did not return to MD root");
+  for (const auto command :
+       {"configure", "router", "static-routes",
+        "route 203.0.114.0/24", "route-type unicast"}) {
+    const auto result = contextual_command(command);
+    if (result.find("MINOR:") != std::string_view::npos ||
+        result.find("Unknown element") != std::string_view::npos)
+      throw std::runtime_error(
+          "interactive static-route context navigation failed: " +
+          std::string{command} + " output=" + std::string{result});
+  }
+  const auto direct_next_hop = contextual_command("next-hop 192.0.2.2");
+  if (direct_next_hop.find("MINOR:") != std::string_view::npos ||
+      direct_next_hop.find("Unknown element") != std::string_view::npos)
+    throw std::runtime_error(
+        "interactive static-route next hop was rejected: " +
+        std::string{direct_next_hop});
+  // `compare` is a global MD command and remains callable from this deep route
+  // context. Its copyable hierarchy proves that execution stored the typed
+  // address rather than merely accepting the syntax as a no-op.
+  const auto static_route_compare = contextual_command("compare");
+  if (static_route_compare.find("next-hop 192.0.2.2") ==
+      std::string_view::npos)
+    throw std::runtime_error(
+        "interactive static-route next hop was not stored in the candidate: " +
+        std::string{static_route_compare});
+  require(contextual_command("exit all").find("MINOR:") ==
+              std::string_view::npos,
+          "static-route fixture could not return to root");
+
   // `quit-config` is a global workflow command, not a child of the current
   // model node. Exercise it from a deeply keyed path because root-only tests
   // previously let execute_cli resolve the word below the PWC and reject it as

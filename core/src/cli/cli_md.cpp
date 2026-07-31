@@ -407,13 +407,13 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
                                      const StaticRouteConfiguration &route) {
               // A list instance added or removed by compare carries the sign on
               // every line. The hierarchy matches `info` and is valid MD-CLI
-              // input when copied back, including the route-type and quoted
-              // next-hop list keys required by the Nokia YANG model.
+              // input when copied back, including route-type and the typed
+              // next-hop address key used by the Nokia YANG model.
               const auto [prefix, next_hop] = route_values(route);
               const std::string marker{sign};
               append(marker + "           route " + prefix +
                      " route-type unicast {");
-              append(marker + "               next-hop \"" + next_hop + "\" {");
+              append(marker + "               next-hop " + next_hop + " {");
               append(marker + "               }");
               append(marker + "           }");
             };

@@ -103,6 +103,9 @@ void cli_tests() {
               contains(absolute_show, "iom4-e") &&
               contains(absolute_show, "[ex:/configure]"),
           "Absolute MD show did not preserve working context");
+  require(router::complete_cli(state, session, "/sho",
+                               router::CliCompletionTrigger::tab) == "/show",
+          "MD completion removed the absolute-path slash");
   const auto forbidden_navigation =
       router::execute_cli(state, session, "/show", no_ping);
   require(contains(forbidden_navigation,
@@ -245,7 +248,7 @@ void cli_tests() {
           "Canceled implicit exit did not restore its working context");
 
   // MD static routes are keyed by prefix and route type, and next-hop is a
-  // quoted string key. The former shortened syntax must not mutate candidate.
+  // typed address key. The former shortened syntax must not mutate candidate.
   const auto old_route =
       router::execute_cli(state, session,
                           "router \"Base\" static-routes route 203.0.113.0/24 "
@@ -256,14 +259,14 @@ void cli_tests() {
   router::execute_cli(
       state, session,
       "router \"Base\" static-routes route 203.0.113.0/24 route-type unicast "
-      "next-hop \"198.51.100.2\"",
+      "next-hop 198.51.100.2",
       no_ping);
   const auto route_compare =
       router::execute_cli(state, session, "compare", no_ping);
   require(contains(route_compare,
                    "+           route 203.0.113.0/24 route-type unicast {") &&
               contains(route_compare,
-                       "+               next-hop \"198.51.100.2\" {") &&
+                       "+               next-hop 198.51.100.2 {") &&
               !contains(route_compare,
                         "route 203.0.113.0/24 next-hop 198.51.100.2"),
           "MD compare did not emit copyable static-route hierarchy");
