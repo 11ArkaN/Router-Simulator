@@ -71,7 +71,8 @@ hide_md_default_router_key(std::string_view input);
 // instance. This narrow session-only operation cannot mutate configuration.
 // Preconditions: control-shard affinity and a canonical resolved command path.
 // Postcondition: the classic path and reversible previous path are updated
-// together, or neither changes when the bounded session storage is exceeded.
+// together, or neither changes when storage is exceeded or the supplied path
+// contains an unquoted edit operator such as no or delete.
 [[nodiscard]] bool enter_classic_context(CliSession &session,
                                          std::string_view path) noexcept;
 // Stores a validated MD-CLI present-working-context after the runtime facade
@@ -80,7 +81,8 @@ hide_md_default_router_key(std::string_view input);
 // a command has that dual role; this helper only owns the session transition.
 // Preconditions: control-shard affinity, MD-CLI engine, canonical command path.
 // Postcondition: current and reversible previous paths change atomically, or
-// neither changes when the bounded session path cannot contain the new value.
+// neither changes when the path is too large or contains an unquoted edit
+// operator. Quoted list keys with the same text remain valid model data.
 [[nodiscard]] bool enter_md_context(CliSession &session,
                                     std::string_view path) noexcept;
 

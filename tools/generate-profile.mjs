@@ -469,7 +469,7 @@ for (const command of cliSchema.commands ?? []) {
     const literalTokens = command.tokens.filter(
       (token) => typeof token === "string",
     );
-    if (literalTokens[0] === "delete" || literalTokens.includes("no")) {
+    if (literalTokens.includes("delete") || literalTokens.includes("no")) {
       throw new Error(
         `${command.id}: delete and no operators cannot enter a context`,
       );

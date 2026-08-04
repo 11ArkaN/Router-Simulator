@@ -475,6 +475,10 @@ if(ROUTER_BUILD_TESTS)
     tests/runtime/network_plane_worker_test.cpp
   )
   target_link_libraries(core_tests PRIVATE router_core)
+  # CLI contract tests inspect parser invariants shared by all generated
+  # command families. Production consumers still see only the public API;
+  # this private path does not widen the router_core dependency boundary.
+  target_include_directories(core_tests PRIVATE src)
   if(EMSCRIPTEN)
     target_compile_options(core_tests PRIVATE -pthread)
     # Checkpoint integration deliberately keeps the source and restored

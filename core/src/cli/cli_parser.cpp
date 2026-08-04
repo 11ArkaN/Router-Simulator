@@ -1151,14 +1151,17 @@ bool navigable_command_prefix(const CliSession &session,
   const auto line = tokenize(trim_view(input), false);
   if (!line.valid || !line.count)
     return false;
-  // `delete` is an edit operator, never a model container. Generated delete
-  // rows necessarily share prefixes while the operator is still entering a
-  // keyed target, for example `delete ... route <prefix>` before the required
-  // route type. Treating that incomplete action as an ordinary grammar parent
-  // moved the PWC into a fabricated `/delete ...` path and made the remaining
-  // key impossible to enter. Keep every incomplete delete at the caller's PWC;
-  // complete rows are executed before this predicate is consulted.
-  if (line.tokens[0] == "delete")
+  // `delete` and `no` are edit operators, never model containers. Their
+  // position is deliberately not assumed here: MD-CLI permits `delete` before
+  // a relative child in the middle of a path, while classic command trees put
+  // `no` immediately before the command whose configured value is removed or
+  // reset. Looking only at the first or final supplied token allowed another
+  // valid placement to fabricate a PWC containing the operator. Scanning the
+  // whole input makes the invariant independent of every feature grammar.
+  if (std::any_of(line.tokens.begin(), line.tokens.begin() + line.count,
+                  [](const auto token) {
+                    return token == "delete" || token == "no";
+                  }))
     return false;
   return std::any_of(
       cli_schema::commands.begin(), cli_schema::commands.end(),
@@ -1166,16 +1169,6 @@ bool navigable_command_prefix(const CliSession &session,
         if (!available(spec, session) ||
             spec.token_count <= line.count + 1U ||
             spec.tokens[line.count].kind != cli_schema::TokenKind::literal)
-          return false;
-        // `no` is the classic deletion operator. Descendant command rows make
-        // it a syntactic prefix, but Nokia never exposes it as a configuration
-        // node or prompt component. Reject it before the general literal-child
-        // rule so `no <object>` remains an incomplete action. The empty root
-        // has no preceding token and must remain safe for completion callers.
-        if (line.count > 0U &&
-            spec.tokens[line.count - 1U].kind ==
-                cli_schema::TokenKind::literal &&
-            spec.tokens[line.count - 1U].display == "no")
           return false;
         if ((line.count > 0U &&
              spec.tokens[line.count - 1U].continues_context_key) ||

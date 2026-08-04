@@ -2995,6 +2995,10 @@ commands:
     engines: [classic]
     source_id: nokia.sros.26_7.static_route.indirect
     tokens: [configure, router, no, static-route-entry, { parameter: ipv4_prefix }, indirect, { parameter: ipv4 }]
+  - id: classic_remove_static_indirect_child
+    engines: [classic]
+    source_id: nokia.sros.26_7.static_route.indirect
+    tokens: [configure, router, static-route-entry, { parameter: ipv4_prefix }, no, indirect, { parameter: ipv4 }]
   - id: classic_remove_static_route
     engines: [classic]
     source_id: nokia.sros.26_7.static_route.configuration
@@ -3017,6 +3021,10 @@ commands:
     engines: [classic]
     source_id: nokia.sros.26_7.static_route.indirect
     tokens: [configure, router, no, static-route-entry, { parameter: ipv6_prefix }, indirect, { parameter: ipv6 }]
+  - id: classic_remove_static_indirect_child_ipv6
+    engines: [classic]
+    source_id: nokia.sros.26_7.static_route.indirect
+    tokens: [configure, router, static-route-entry, { parameter: ipv6_prefix }, no, indirect, { parameter: ipv6 }]
   - id: classic_remove_static_route_ipv6
     engines: [classic]
     source_id: nokia.sros.26_7.static_route.configuration

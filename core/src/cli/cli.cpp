@@ -902,6 +902,42 @@ bool valid_cli_string(std::string_view value) noexcept {
 
 namespace {
 
+bool context_path_has_edit_operator(std::string_view path) noexcept {
+  // PWC storage receives canonical CLI paths from several call sites. Parser
+  // classification is intentionally not trusted as the final safety boundary:
+  // a complete presence command and a runtime-owned context transition can
+  // bypass incomplete-prefix navigation. Reject edit operators here so no
+  // current or future command handler can persist `delete` or `no` as a model
+  // node. Quoted list keys remain data, therefore an interface named `"no"`
+  // is legal and must not be confused with the unquoted classic operator.
+  std::size_t cursor{};
+  while (cursor < path.size()) {
+    while (cursor < path.size() &&
+           (path[cursor] == ' ' || path[cursor] == '\t' ||
+            path[cursor] == '\r' || path[cursor] == '\n'))
+      ++cursor;
+    if (cursor == path.size())
+      break;
+    const auto begin = cursor;
+    if (path[cursor] == '"') {
+      ++cursor;
+      while (cursor < path.size() && path[cursor] != '"')
+        ++cursor;
+      if (cursor < path.size())
+        ++cursor;
+    } else {
+      while (cursor < path.size() && path[cursor] != ' ' &&
+             path[cursor] != '\t' && path[cursor] != '\r' &&
+             path[cursor] != '\n')
+        ++cursor;
+      const auto token = path.substr(begin, cursor - begin);
+      if (token == "delete" || token == "no")
+        return true;
+    }
+  }
+  return false;
+}
+
 std::string_view session_path(const CliSession &session,
                               CliEngine engine) noexcept {
   // Path storage is always NUL-terminated by set_session_path. A bounded view
@@ -914,7 +950,7 @@ std::string_view session_path(const CliSession &session,
 bool set_session_path(CliSession &session, CliEngine engine,
                       std::string_view value) noexcept {
   auto &path = engine == CliEngine::md ? session.md_path : session.classic_path;
-  if (value.size() >= path.size())
+  if (value.size() >= path.size() || context_path_has_edit_operator(value))
     return false;
   path.fill('\0');
   std::copy(value.begin(), value.end(), path.begin());
@@ -930,6 +966,15 @@ std::array<char, 160> &previous_session_path(CliSession &session,
 void move_session_path(CliSession &session, std::string_view value) noexcept {
   // A navigation records the origin for exit. back deliberately bypasses this
   // helper because repeatedly walking parents must not bounce between paths.
+  // Validate before changing previous-path storage. A rejected operator path
+  // must leave both halves of reversible navigation untouched, not merely keep
+  // the visible current path while corrupting the next `exit` destination.
+  const auto capacity = session.engine == CliEngine::md
+                            ? session.md_path.size()
+                            : session.classic_path.size();
+  if (value.size() >= capacity ||
+      context_path_has_edit_operator(value))
+    return;
   auto &previous = previous_session_path(session, session.engine);
   previous.fill('\0');
   const auto current = session_path(session, session.engine);
@@ -1018,25 +1063,36 @@ std::string effective_input(const CliSession &session, std::string_view input) {
   const auto path = session_path(session, session.engine);
   if (path.empty())
     return apply_md_default_router_key(session, std::string{input});
-  if (session.engine == CliEngine::md && input.starts_with("delete ") &&
+  auto contextual = std::string{path} + ' ' + std::string{input};
+  if (session.engine == CliEngine::md &&
       (path == "configure" || path.starts_with("configure ") ||
        path == "bof" || path.starts_with("bof "))) {
-    // MD delete is an operator applied to a path. From /configure card 1,
-    // "delete mda 1" denotes the same modeled node as the root form
-    // "delete card 1 mda 1". The generated command row remains canonical.
-    const bool bof = path == "bof" || path.starts_with("bof ");
-    const auto relative_path =
-        path == "configure" || path == "bof"
-            ? std::string_view{}
-            : path.substr(bof ? 4U : 10U);
-    return apply_md_default_router_key(
-        session, std::string{"delete "} + (bof ? "bof " : "") +
-                     (relative_path.empty() ? std::string{}
-                                            : std::string{relative_path} + ' ') +
-                     std::string{input.substr(7)});
+    // Nokia permits the MD edit operator at the point where the selected
+    // child appears, for example `timers delete lsa-generate`, as well as at
+    // the start of a line relative to the PWC. Generated mutation rows keep a
+    // single canonical leading-operator shape. Move exactly the operator, not
+    // the selected path, before matching so both documented spellings reach
+    // the same owner and neither can become part of the saved PWC.
+    const auto marker = contextual.find(" delete ");
+    if (marker != std::string::npos) {
+      const bool bof = contextual.starts_with("bof ");
+      const auto root_length = bof ? 4U : 10U;
+      const auto selected = marker < root_length
+                                ? std::string_view{}
+                                : std::string_view{contextual}.substr(
+                                      root_length, marker - root_length);
+      const auto child = std::string_view{contextual}.substr(marker + 8U);
+      contextual = "delete ";
+      if (bof)
+        contextual += "bof ";
+      if (!selected.empty()) {
+        contextual.append(selected);
+        contextual.push_back(' ');
+      }
+      contextual.append(child);
+    }
   }
-  return apply_md_default_router_key(
-      session, std::string{path} + ' ' + std::string{input});
+  return apply_md_default_router_key(session, std::move(contextual));
 }
 
 bool md_configuration_command(cli_schema::CommandId id) noexcept {
@@ -1366,7 +1422,8 @@ std::string hide_md_default_router_key(std::string_view input) {
 bool enter_classic_context(CliSession &session,
                            std::string_view path) noexcept {
   if (session.engine != CliEngine::classic ||
-      path.size() >= session.classic_path.size())
+      path.size() >= session.classic_path.size() ||
+      context_path_has_edit_operator(path))
     return false;
   move_session_path(session, path);
   return true;
@@ -1377,7 +1434,8 @@ bool enter_md_context(CliSession &session, std::string_view path) noexcept {
   // preserves exit's reversible-origin invariant. Reimplementing it in the
   // runtime facade would update only md_path and make `exit` jump to stale
   // storage after entering a presence container such as BOF DHCP.
-  if (session.engine != CliEngine::md || path.size() >= session.md_path.size())
+  if (session.engine != CliEngine::md || path.size() >= session.md_path.size() ||
+      context_path_has_edit_operator(path))
     return false;
   move_session_path(session, path);
   return true;

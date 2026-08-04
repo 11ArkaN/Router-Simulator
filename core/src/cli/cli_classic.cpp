@@ -279,6 +279,27 @@ std::string execute_classic(ConfigurationState &configuration,
     current->admin_state_configured = true;
     return finish(before != *current, "");
   }
+  case classic_remove_static_next_hop: {
+    const auto route = parse_static_route(
+        *argument(command, cli_schema::TokenKind::ipv4_prefix),
+        *argument(command, cli_schema::TokenKind::ipv4));
+    if (!route)
+      return "Error: Bad command.";
+    const auto current = std::find_if(
+        running.static_routes.begin(), running.static_routes.end(),
+        [&](const auto &entry) {
+          return entry.valid && entry.network == route->network &&
+                 entry.prefix_length == route->prefix &&
+                 entry.next_hop == route->next_hop;
+        });
+    // A configured next hop is an independently administered child. Nokia
+    // requires shutdown before the qualified parent `no` form can remove it;
+    // a failed precondition leaves running configuration untouched.
+    if (current == running.static_routes.end() || current->admin_enabled)
+      return "Error: Bad command.";
+    *current = {};
+    return finish(true, "");
+  }
   case classic_remove_static_route: {
     const auto parsed = parse_static_route(
         *argument(command, cli_schema::TokenKind::ipv4_prefix), "0.0.0.0");
@@ -291,13 +312,16 @@ std::string execute_classic(ConfigurationState &configuration,
                                        entry.prefix_length == parsed->prefix;
                               })
                : running.static_routes.end();
-    if (current == running.static_routes.end() || current->admin_enabled)
+    // The bounded native helper stores one route per destination. Therefore
+    // the prefix identifies it unambiguously and the no form removes the
+    // disabled route directly. The multi-router owner additionally rejects an
+    // unqualified prefix when several next-hop children exist.
+    if (current != running.static_routes.end() && current->admin_enabled)
       return "Error: Bad command.";
-    const auto before = running.static_routes;
-    if (!remove_static(running,
-                       *argument(command, cli_schema::TokenKind::ipv4_prefix)))
-      return "Error: Bad command.";
-    return finish(before != running.static_routes, "");
+    if (current == running.static_routes.end())
+      return finish(false, "");
+    *current = {};
+    return finish(true, "");
   }
   default:
     return "Error: Bad command.";

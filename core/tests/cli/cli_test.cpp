@@ -3,6 +3,8 @@
 
 #include "router/cli.hpp"
 #include "router/hardware.hpp"
+#include "cli/cli_internal.hpp"
+#include "cli/cli_parser.hpp"
 
 #include <chrono>
 #include <stdexcept>
@@ -30,6 +32,68 @@ void cli_tests() {
                           bool) {
     return std::string{};
   };
+
+  // Exhaust every released edit command rather than preserving a pair of
+  // hand-picked regressions. Parameters need not be valid here because the
+  // operator invariant precedes model matching: from the first `delete` or
+  // `no` token through every longer incomplete prefix, navigation must remain
+  // impossible. This guards all 26.7 command families and every operator
+  // position in one check while leaving command-specific mutation semantics
+  // to their owning module tests.
+  for (const auto &spec : router::cli_schema::commands) {
+    std::optional<std::size_t> operator_index;
+    for (std::size_t index = 0; index < spec.token_count; ++index) {
+      if (spec.tokens[index].kind ==
+              router::cli_schema::TokenKind::literal &&
+          (spec.tokens[index].display == "delete" ||
+           spec.tokens[index].display == "no")) {
+        operator_index = index;
+        break;
+      }
+    }
+    if (!operator_index)
+      continue;
+    router::CliSession operator_session;
+    operator_session.engine = (spec.engine_mask & 1U) != 0U
+                                  ? router::CliEngine::md
+                                  : router::CliEngine::classic;
+    operator_session.md_workflow =
+        router::MdCliWorkflow::explicit_private;
+    std::string prefix;
+    for (std::size_t index = 0; index < spec.token_count; ++index) {
+      if (!prefix.empty())
+        prefix.push_back(' ');
+      prefix.append(spec.tokens[index].display);
+      if (index >= *operator_index)
+        require(!router::cli_detail::navigable_command_prefix(
+                    operator_session, prefix),
+                "An edit operator became a generated CLI context");
+    }
+  }
+
+  // The path owner is the final invariant boundary. Parser coverage above is
+  // not sufficient because runtime-owned successful presence edits can enter
+  // contexts directly. Neither engine may accept a literal edit operator from
+  // any caller, while a quoted list key with the same bytes remains ordinary
+  // configuration data.
+  router::CliSession guarded_context;
+  guarded_context.engine = router::CliEngine::classic;
+  require(!router::cli_detail::enter_classic_context(
+              guarded_context, "configure router no interface edge"),
+          "classic path owner accepted no as a context node");
+  require(guarded_context.classic_path[0] == '\0',
+          "rejected classic operator path changed the current context");
+  guarded_context.engine = router::CliEngine::md;
+  require(!router::cli_detail::enter_md_context(
+              guarded_context,
+              "configure router \"Base\" delete interface edge"),
+          "MD path owner accepted delete as a context node");
+  require(guarded_context.md_path[0] == '\0',
+          "rejected MD operator path changed the current context");
+  guarded_context.engine = router::CliEngine::classic;
+  require(router::cli_detail::enter_classic_context(
+              guarded_context, "configure router interface \"no\""),
+          "path owner confused a quoted list key with the no operator");
 
   // A new MD-CLI session starts at operational root. It does not silently own
   // an exclusive candidate, and a read-only route report is available there.
@@ -80,7 +144,10 @@ void cli_tests() {
       no_ping);
   require(contains(oversized_description, "MINOR: MGMT_CORE #2301"),
           "MD port description accepted more than 80 characters");
-  router::execute_cli(state, session, "delete port 1/1/1 description", no_ping);
+  // MD-CLI accepts the edit operator at the selected child as well as at the
+  // beginning of a relative line. This spelling exercises the mid-path form
+  // and must resolve to the same generated delete owner without changing PWC.
+  router::execute_cli(state, session, "port 1/1/1 delete description", no_ping);
   require(state.configuration.candidate.ports[0].description[0] == '\0',
           "MD delete did not remove the port description leaf");
   router::execute_cli(state, session, "commit", no_ping);

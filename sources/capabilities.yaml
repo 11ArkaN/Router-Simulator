@@ -1,6 +1,9 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  cli.edit_operators:
+    status: implemented
+    source_ids: [nokia.sros.26_7.md_cli.delete_path, nokia.sros.26_7.classic_cli.no_forms]
   ui.demo_lab_catalog:
     status: implemented
     source_ids: [project.router_lab.demo_catalog]

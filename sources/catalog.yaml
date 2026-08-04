@@ -1541,20 +1541,48 @@ records:
     tests: [core/tests/cli/cli_test.cpp]
     status: implemented
     notes: Description accepts 1 to 80 printable 7-bit ASCII characters. MD delete and classic no remove the leaf instead of storing an empty compatibility value.
+  - id: nokia.sros.26_7.md_cli.delete_path
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/25-7/7x50-shared/md-cli-user/edit-configuration.html
+    section: Deleting configuration elements and delete command placed before the lsa-generate element
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-08-04
+    implementation: [schemas/cli/26.7.R1.yaml, tools/generate-profile.mjs, core/src/cli/cli.cpp, core/src/cli/cli_parser.cpp]
+    tests: [core/tests/cli/cli_test.cpp]
+    status: implemented
+    notes: Delete selects an absolute or relative configuration path and never becomes part of the present working context. Relative placement inside a path is normalized to the same generated mutation owner before execution.
+  - id: nokia.sros.26_7.classic_cli.no_forms
+    kind: cli-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/titles/classic-cli-command-reference.html
+    section: Classic CLI command contexts and command-specific no forms
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-08-04
+    implementation: [schemas/cli/26.7.R1.yaml, tools/generate-profile.mjs, core/src/cli/cli_parser.cpp, core/src/cli/cli_classic.cpp, core/src/runtime/lab_runtime.cpp]
+    tests: [core/tests/cli/cli_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
+    status: implemented
+    notes: No is an operator in the owning classic command context and never a context node. Each generated command retains its documented effect, including default restoration, disablement, child removal and parent dependency validation.
   - id: nokia.sros.26_7.static_route.configuration
     kind: cli-behavior
     release: 26.7.R1
     platforms: [7750 SR-7]
     source_type: nokia-official-doc
-    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html
-    section: configure router static-routes route
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-s-commands-stat-5.html
+    section: configure router static-route-entry and configure router static-routes route
     rfc_refs: [RFC 1812]
     yang_path: /configure/router/static-routes/route
     last_verified_at: 2026-07-31
     implementation: [schemas/cli/26.7.R1.yaml, core/include/router/ip_address.hpp, core/include/router/lab_runtime.hpp, core/include/router/multi_device_routing.hpp, core/src/cli/cli_md.cpp, core/src/cli/cli_parser.cpp, core/src/ip/ip_address.cpp, core/src/runtime/lab_runtime.cpp, core/src/forwarding/multi_device_routing.cpp, core/src/runtime/runtime_supervisor.cpp, core/src/runtime/runtime_supervisor_interfaces.cpp, core/src/runtime/runtime_supervisor_services.cpp, core/src/runtime/runtime_supervisor_routing.cpp, core/src/runtime/runtime_supervisor_hosts.cpp, core/src/runtime/runtime_supervisor_checkpoint.cpp]
     tests: [core/tests/cli/cli_test.cpp, core/tests/forwarding/routing_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
     status: implemented
-    notes: IPv4 and IPv6 unicast routes retain independently keyed direct next hops, accept and render their typed IP keys without string-key quotation, support selective or whole-prefix removal in both engines, and require an interface zone for IPv6 link-local next hops. Equal direct candidates participate in the router-wide ECMP selection. Optional attributes not listed by the capability matrix remain unsupported and are rejected explicitly.
+    notes: IPv4 and IPv6 unicast routes retain independently keyed direct next hops, accept and render their typed IP keys without string-key quotation, support selective removal in both engines, and require an interface zone for IPv6 link-local next hops. Classic removal requires shutdown. A destination with one route can be removed by prefix, while multiple next hops require a qualified no form that identifies the exact child. Equal direct candidates participate in the router-wide ECMP selection. Optional attributes not listed by the capability matrix remain unsupported and are rejected explicitly.
   - id: nokia.sros.26_7.static_route.indirect
     kind: routing-behavior
     release: 26.7.R1

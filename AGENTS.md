@@ -51,6 +51,7 @@ Make implementation decisions in this order:
 - Do not guess SR OS behavior, commands, default values or platform limits.
 - A production feature requires a source-catalog record, a test and a capability-matrix entry.
 - An unimplemented feature must return an explicit error. A successful no-op is prohibited.
+- Every schema node for which the selected SR OS CLI engine documents `delete`, `no` or another removal form must implement that exact operator with the node-specific dependency, shutdown, cascade, default-restoration and error semantics. Apply this rule to the complete generated command surface, not to individual examples. An edit operator must never become a configuration context or prompt component. Generated-schema validation and tests must fail when a supported node lacks its documented removal behavior or can navigate into an operator path.
 - The baseline profile is Nokia SR OS 26.7.R1, but the interface must not use the Nokia logo.
 
 ## Style

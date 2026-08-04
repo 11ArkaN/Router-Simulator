@@ -2431,11 +2431,13 @@ bool classic_configuration_command(cli_schema::CommandId id) noexcept {
   case classic_remove_static_route:
   case classic_remove_static_next_hop:
   case classic_remove_static_indirect:
+  case classic_remove_static_indirect_child:
   case classic_static_route_ipv6:
   case classic_indirect_static_route_ipv6:
   case classic_remove_static_route_ipv6:
   case classic_remove_static_next_hop_ipv6:
   case classic_remove_static_indirect_ipv6:
+  case classic_remove_static_indirect_child_ipv6:
   case classic_static_route_shutdown:
   case classic_static_route_no_shutdown:
   case classic_indirect_static_route_shutdown:
@@ -16933,6 +16935,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           id == classic_indirect_static_route_no_shutdown ||
           id == classic_remove_static_next_hop ||
           id == classic_remove_static_indirect ||
+          id == classic_remove_static_indirect_child ||
           id == classic_static_route_ipv6 ||
           id == classic_indirect_static_route_ipv6 ||
           id == classic_static_route_shutdown_ipv6 ||
@@ -16940,7 +16943,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           id == classic_indirect_static_route_shutdown_ipv6 ||
           id == classic_indirect_static_route_no_shutdown_ipv6 ||
           id == classic_remove_static_next_hop_ipv6 ||
-          id == classic_remove_static_indirect_ipv6) {
+          id == classic_remove_static_indirect_ipv6 ||
+          id == classic_remove_static_indirect_child_ipv6) {
         const auto next_hop = argument(
             id == classic_static_route ||
                     id == classic_indirect_static_route ||
@@ -16949,7 +16953,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                     id == classic_indirect_static_route_shutdown ||
                     id == classic_indirect_static_route_no_shutdown ||
                     id == classic_remove_static_next_hop ||
-                    id == classic_remove_static_indirect
+                    id == classic_remove_static_indirect ||
+                    id == classic_remove_static_indirect_child
                 ? cli_schema::TokenKind::ipv4
                 : cli_schema::TokenKind::ipv6);
         if (next_hop) {
@@ -17509,7 +17514,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                   id == classic_indirect_static_route_no_shutdown_ipv6 ||
                   id == classic_remove_static_route_ipv6 ||
                   id == classic_remove_static_next_hop_ipv6 ||
-                  id == classic_remove_static_indirect_ipv6)) {
+                  id == classic_remove_static_indirect_ipv6 ||
+                  id == classic_remove_static_indirect_child_ipv6)) {
         auto next = before_running;
         const auto destination = argument(cli_schema::TokenKind::ipv6_prefix);
         const auto parsed_destination =
@@ -17520,10 +17526,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         const bool indirect = id == classic_indirect_static_route_ipv6 ||
                               id == classic_indirect_static_route_shutdown_ipv6 ||
                               id == classic_indirect_static_route_no_shutdown_ipv6 ||
-                              id == classic_remove_static_indirect_ipv6;
+                              id == classic_remove_static_indirect_ipv6 ||
+                              id == classic_remove_static_indirect_child_ipv6;
         const bool deleting_path =
             id == classic_remove_static_next_hop_ipv6 ||
-            id == classic_remove_static_indirect_ipv6;
+            id == classic_remove_static_indirect_ipv6 ||
+            id == classic_remove_static_indirect_child_ipv6;
         std::optional<packet::Ipv6> next_hop;
         std::string outgoing_port;
         if (applied && !deleting_prefix) {
@@ -17568,16 +17576,20 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             return entry.network == parsed_destination->network &&
                    entry.prefix_length == parsed_destination->length;
           };
-          applied = std::any_of(next.ipv6_routes.begin(),
-                                next.ipv6_routes.end(), matches) &&
-                    std::none_of(next.ipv6_routes.begin(),
-                                 next.ipv6_routes.end(),
-                                 [&](const auto &entry) {
-                                   return matches(entry) &&
-                                          entry.admin_enabled;
-                                 });
-          if (applied)
-            std::erase_if(next.ipv6_routes, matches);
+          const auto matching = std::count_if(
+              next.ipv6_routes.begin(), next.ipv6_routes.end(), matches);
+          const auto route_to_remove =
+              matching == 1U ? std::find_if(next.ipv6_routes.begin(),
+                                            next.ipv6_routes.end(), matches)
+                             : next.ipv6_routes.end();
+          // Prefix-only removal is valid only when it identifies one disabled
+          // route. ECMP siblings require the qualified child form, preventing
+          // vector order from deciding which path the operator removes.
+          applied = matching == 0U ||
+                    (route_to_remove != next.ipv6_routes.end() &&
+                     !route_to_remove->admin_enabled);
+          if (applied && route_to_remove != next.ipv6_routes.end())
+            next.ipv6_routes.erase(route_to_remove);
         } else if (applied && deleting_path) {
           applied = route != next.ipv6_routes.end() && !route->admin_enabled;
           if (applied)
@@ -18402,7 +18414,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                   id == classic_indirect_static_route_no_shutdown ||
                   id == classic_remove_static_route ||
                   id == classic_remove_static_next_hop ||
-                  id == classic_remove_static_indirect)) {
+                  id == classic_remove_static_indirect ||
+                  id == classic_remove_static_indirect_child)) {
         auto next = before_running;
         const auto destination = argument(cli_schema::TokenKind::ipv4_prefix);
         const auto parsed_destination =
@@ -18412,9 +18425,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         const bool indirect = id == classic_indirect_static_route ||
                               id == classic_indirect_static_route_shutdown ||
                               id == classic_indirect_static_route_no_shutdown ||
-                              id == classic_remove_static_indirect;
+                              id == classic_remove_static_indirect ||
+                              id == classic_remove_static_indirect_child;
         const bool deleting_path = id == classic_remove_static_next_hop ||
-                                   id == classic_remove_static_indirect;
+                                   id == classic_remove_static_indirect ||
+                                   id == classic_remove_static_indirect_child;
         const auto next_hop_text = deleting_prefix
                                        ? std::optional<std::string_view>{}
                                        : argument(cli_schema::TokenKind::ipv4);
@@ -18435,15 +18450,21 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             return entry.network == parsed_destination->address &&
                    entry.prefix_length == parsed_destination->length;
           };
-          applied = std::any_of(next.routes.begin(), next.routes.end(),
-                                matches) &&
-                    std::none_of(next.routes.begin(), next.routes.end(),
-                                 [&](const auto &entry) {
-                                   return matches(entry) &&
-                                          entry.admin_enabled;
-                                 });
-          if (applied)
-            std::erase_if(next.routes, matches);
+          const auto matching =
+              std::count_if(next.routes.begin(), next.routes.end(), matches);
+          const auto route_to_remove =
+              matching == 1U
+                  ? std::find_if(next.routes.begin(), next.routes.end(), matches)
+                  : next.routes.end();
+          // Nokia accepts the prefix-only no form when the destination
+          // identifies one route. Multiple next hops require enough
+          // parameters to select one exact child. Shutdown remains a required
+          // dependency and a rejected operation leaves all siblings intact.
+          applied = matching == 0U ||
+                    (route_to_remove != next.routes.end() &&
+                     !route_to_remove->admin_enabled);
+          if (applied && route_to_remove != next.routes.end())
+            next.routes.erase(route_to_remove);
         } else if (applied && deleting_path) {
           applied = route != next.routes.end() && !route->admin_enabled;
           if (applied)

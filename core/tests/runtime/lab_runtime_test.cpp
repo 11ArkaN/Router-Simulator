@@ -3235,9 +3235,10 @@ void lab_runtime_tests() {
       "configure router static-route-entry 2001:db8:aaaa::/64 next-hop "
       "2001:db8:1::2",
       // Classic SR OS retains a static path while it is shut down and
-      // requires that administrative transition before the path can be
-      // deleted. The prefix form then removes the disabled route and all of
-      // its children rather than manufacturing a `no` child context.
+      // requires that administrative transition before the qualified parent
+      // command can remove that exact child. Removing the now-empty route
+      // entry is a separate operation and neither command may create a `no`
+      // PWC.
       "configure router static-route-entry 2001:db8:aaaa::/64 next-hop "
       "2001:db8:1::2 shutdown",
       "configure router no static-route-entry 2001:db8:aaaa::/64",
@@ -3255,7 +3256,7 @@ void lab_runtime_tests() {
       "192.0.2.3",
       "configure router static-route-entry 198.51.101.0/24 indirect "
       "10.0.0.1 shutdown",
-      "configure router no static-route-entry 198.51.101.0/24 indirect "
+      "configure router static-route-entry 198.51.101.0/24 no indirect "
       "10.0.0.1"};
   for (const auto command : classic_ipv6_commands) {
     // These rows are independent root-form fixtures. A successful keyed path
@@ -3279,7 +3280,8 @@ void lab_runtime_tests() {
   // classic deletion must therefore fail without changing either the route
   // intent or the installed RIB entry. This is a lifecycle constraint, not a
   // parser special case: shutdown changes the child state, while the later
-  // `no static-route-entry` owns removal of that uniquely identified child.
+  // the qualified `no static-route-entry ... next-hop ...` owns removal of
+  // that uniquely identified child.
   const auto active_path_delete = runtime.command(message(
       lab_runtime_protocol::session_execute,
       {"r1-console-1",
@@ -3288,6 +3290,19 @@ void lab_runtime_tests() {
   require(active_path_delete.find("Error: Bad command.") !=
               std::string_view::npos,
           "classic removed an active static next hop without shutdown");
+  const auto populated_parent_delete = runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1",
+       "configure router no static-route-entry 203.0.114.0/24"}));
+  require(populated_parent_delete.find("Error: Bad command.") !=
+              std::string_view::npos,
+          "classic recursively removed a route entry with a next-hop child");
+  const auto prompt_after_failed_no = runtime.command(message(
+      lab_runtime_protocol::session_execute, {"r1-console-1", ""}));
+  require(prompt_after_failed_no.find(" no ") == std::string_view::npos &&
+              prompt_after_failed_no.find("/no") == std::string_view::npos &&
+              prompt_after_failed_no.find(">no") == std::string_view::npos,
+          "failed classic no command became part of the current context");
 
   // Exercise the real classic PWC hierarchy rather than sending another
   // absolute root command. Each navigation component is deliberately issued
@@ -3335,9 +3350,25 @@ void lab_runtime_tests() {
               std::string_view::npos,
           "no shutdown did not reinstall the static path in the route table");
   require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "shutdown"}))
+                  .find("Error:") == std::string_view::npos,
+          "classic could not shut down the unique route before parent no");
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1", "exit all"}))
                   .find("Error:") == std::string_view::npos,
           "classic static-route lifecycle test could not return to root");
+  require(runtime.command(message(
+              lab_runtime_protocol::session_execute,
+              {"r1-console-1",
+               "configure router no static-route-entry 203.0.114.0/24"}))
+                  .find("Error:") == std::string_view::npos,
+          "classic prefix-only no did not remove one unique disabled route");
+  const auto removed_route_table = runtime.command(message(
+      lab_runtime_protocol::session_execute,
+      {"r1-console-1", "show router route-table protocol static"}));
+  require(removed_route_table.find("\n203.0.114.0/24") ==
+              std::string_view::npos,
+          "prefix-only classic no left the removed route installed");
   require(runtime.command(message(lab_runtime_protocol::snapshot))
                   .find("\"address\":\"2001:db8:4::/64\","
                         "\"duplicateAddressDetection\":true,"
