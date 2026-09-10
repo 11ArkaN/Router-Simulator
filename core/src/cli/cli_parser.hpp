@@ -101,4 +101,11 @@ argument(const ParsedCommand &command, cli_schema::TokenKind kind) noexcept;
 [[nodiscard]] std::string parent_command_prefix(const CliSession &session,
                                                 std::string_view input);
 
+// Builds the PWC stored after a successful create-and-enter command.
+// Trailing classic `create` is never a model node. context_token_count, when
+// set, drops create-time arguments such as IES customer or OSPF router-id.
+[[nodiscard]] std::string
+context_command_path(const cli_schema::CommandSpec &spec,
+                     std::string_view effective);
+
 } // namespace router::cli_detail

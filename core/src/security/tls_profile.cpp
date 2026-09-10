@@ -154,10 +154,7 @@ validate_profile_references(const Profile &profile,
                                    "authenticate-client trust-anchor-profile"))
       return issue;
   }
-  if (profile.status_verification.primary == RevocationMethod::none ||
-      (profile.status_verification.secondary != RevocationMethod::none &&
-       profile.status_verification.secondary ==
-           profile.status_verification.primary))
+  if (profile.status_verification.primary == RevocationMethod::none)
     return problem(Error::invalid_revocation_policy, profile.name);
   return std::nullopt;
 }

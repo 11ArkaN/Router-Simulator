@@ -3513,9 +3513,9 @@ std::string_view policy_action_text(mld::ImportPolicyAction action) noexcept;
 std::string_view tls_protocol_text(tls_profile::ProtocolVersion value) {
   switch (value) {
   case tls_profile::ProtocolVersion::tls12:
-    return "tls-version12";
+    return "tls-version-12";
   case tls_profile::ProtocolVersion::tls13:
-    return "tls-version13";
+    return "tls-version-13";
   case tls_profile::ProtocolVersion::all:
     return "tls-version-all";
   }
@@ -3993,7 +3993,8 @@ void md_ipsec_configuration_body(
     leaf("ike-auth-algorithm", "auth-encryption",
          transform.authentication_encryption_configured);
     leaf("ike-encryption-algorithm",
-         ipsec::configuration::encryption_name(transform.encryption),
+         ipsec::configuration::configured_encryption_name(
+             transform.encryption, transform.encryption_configured),
          transform.encryption_configured);
     leaf("ike-prf-algorithm", "sha-256",
          transform.prf_sha256_configured);
@@ -4015,7 +4016,8 @@ void md_ipsec_configuration_body(
     leaf("esp-auth-algorithm", "auth-encryption",
          transform.authentication_encryption_configured);
     leaf("esp-encryption-algorithm",
-         ipsec::configuration::encryption_name(transform.encryption),
+         ipsec::configuration::configured_encryption_name(
+             transform.encryption, transform.encryption_configured),
          transform.encryption_configured);
     leaf("extended-sequence-number",
          transform.extended_sequence_number ? "true" : "false",
@@ -5099,8 +5101,8 @@ void md_ospf_area_info(std::ostringstream &out,
          area.nssa_translate_always ? "true" : "false");
   for (const auto &range : area.ranges) {
     md_indent(out, depth);
-    out << "area-range " << ip::format_ip_prefix(range.prefix) << ' '
-        << (range.advertise ? "advertise" : "not-advertise");
+    out << "area-range " << ip::format_ip_prefix(range.prefix)
+        << " advertise " << (range.advertise ? "true" : "false");
     if (range.advertised_metric)
       out << " metric " << *range.advertised_metric;
     out << '\n';
@@ -13410,9 +13412,23 @@ std::string LabRuntime::execute_session(std::string_view session_id,
   const auto workflow = terminal->cli.md_workflow;
   const auto effective =
       cli_detail::resolve_session_input(terminal->cli, input);
+  auto trimmed_line = cli_detail::trim(std::string{input});
+  std::string_view classic_line{trimmed_line};
+  if (engine == CliEngine::classic &&
+      (classic_line.starts_with('\\') || classic_line.starts_with('/')))
+    classic_line.remove_prefix(1U);
+  const bool classic_configure =
+      engine == CliEngine::classic &&
+      (classic_line == "configure" ||
+       classic_line.starts_with("configure "));
+  auto matched_command_text = std::string{input};
   auto parsed = cli_detail::parse_command(engine, workflow, input);
-  if (!parsed || !terminal_global_command(parsed->spec->id))
+  if (!parsed ||
+      (!terminal_global_command(parsed->spec->id) && !classic_configure)) {
     parsed = cli_detail::parse_command(engine, workflow, effective);
+    if (parsed)
+      matched_command_text = effective;
+  }
   std::string output;
   if (!parsed) {
     // Container navigation, incomplete syntax help and bad-command wording are
@@ -13517,18 +13533,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     interface.mld_ssm_translations.clear();
     interface.mld_static_groups.clear();
   };
-  const auto reset_icmp6_redirects = [](auto &interface) {
-    // Removing IPv6 removes this child context. Defaults are release-owned and
-    // explicit leaf-presence flags must be cleared with the effective values.
-    interface.icmp6_redirect_maximum =
-        device_catalog::icmp6_redirect_default_maximum;
-    interface.icmp6_redirect_interval_seconds = static_cast<std::uint16_t>(
-        device_catalog::icmp6_redirect_default_interval.count());
-    interface.icmp6_redirects_enabled = true;
-    interface.icmp6_redirect_admin_configured = false;
-    interface.icmp6_redirect_maximum_configured = false;
-    interface.icmp6_redirect_interval_configured = false;
-  };
   const auto reset_icmp_redirects = [](auto &interface) {
     // The IPv4 ICMP subtree cannot outlive its parent address. Reset both the
     // effective policy and MD leaf-presence state, otherwise adding IPv4 back
@@ -13541,27 +13545,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     interface.icmp_redirect_admin_configured = false;
     interface.icmp_redirect_maximum_configured = false;
     interface.icmp_redirect_interval_configured = false;
-  };
-  const auto reset_neighbor_discovery = [](auto &interface) {
-    // Both children belong to the IPv6 interface. Retaining either after the
-    // address leaf is deleted would produce configuration that the 26.7 YANG
-    // constraints and classic CLI context cannot represent.
-    interface.ipv6_unsolicited_learning = Ipv6UnsolicitedLearning::none;
-    interface.ipv6_unsolicited_learning_configured = false;
-    interface.ipv6_nd_reachable_time_seconds = 0U;
-    interface.ipv6_nd_stale_time_seconds = 0U;
-    interface.ipv6_proactive_refresh = Ipv6UnsolicitedLearning::none;
-    interface.ipv6_neighbor_limit = 0U;
-    interface.ipv6_neighbor_limit_threshold_percent =
-        device_catalog::nd_default_neighbor_limit_threshold_percent;
-    interface.ipv6_nd_reachable_time_configured = false;
-    interface.ipv6_nd_stale_time_configured = false;
-    interface.ipv6_proactive_refresh_configured = false;
-    interface.ipv6_neighbor_limit_configured = false;
-    interface.ipv6_neighbor_limit_log_only = false;
-    interface.ipv6_neighbor_limit_log_only_configured = false;
-    interface.ipv6_neighbor_limit_threshold_configured = false;
-    interface.static_ipv6_neighbors.clear();
   };
   const auto edit_global_ipv6_neighbor_policy =
       [&](ConfigurationIntent &configuration, cli_schema::CommandId id) {
@@ -15226,13 +15209,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                                         CliEngine::md, &secrets);
                 }();
       if (ipsec_edit.recognized) {
-        valid = ipsec_edit.changed;
+        valid = ipsec_edit.valid;
         instance = ipsec_edit.instance;
       } else if (tls_edit.recognized) {
-        valid = tls_edit.changed;
+        valid = tls_edit.valid;
         instance = tls_edit.instance;
       } else if (ies_edit.recognized) {
-        valid = ies_edit.changed;
+        valid = ies_edit.valid;
         instance = ies_edit.instance;
       } else if (dhcpv4_edit.recognized) {
         valid = dhcpv4_edit.valid;
@@ -15525,24 +15508,41 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               const bool next_eui64 =
                   id == md_delete_interface_ipv6_address_eui64 ? false
                                                                : enabled;
-              configured_address->eui64 = next_eui64;
-              if (!next_eui64) {
-                configured_address->eui64_source_mac = {};
-              } else if (std::none_of(
-                             configured_address->eui64_source_mac.begin(),
-                             configured_address->eui64_source_mac.end(),
-                             [](auto byte) { return byte != 0U; })) {
-                const auto *hardware = supervisor_.hardware(intent->handle);
-                const auto source =
-                    hardware && current->port_configured
-                        ? hardware->physical_mac(current->port_id)
-                    : hardware
-                        ? std::optional<packet::Mac>{hardware
-                                                         ->chassis_base_mac()}
-                        : std::nullopt;
-                valid = source.has_value();
-                if (valid)
-                  configured_address->eui64_source_mac = *source;
+              const auto running_interface = std::find_if(
+                  intent->interfaces.begin(), intent->interfaces.end(),
+                  [&](const auto &entry) { return entry.name == name; });
+              if (running_interface != intent->interfaces.end()) {
+                const auto running_address = std::find_if(
+                    running_interface->ipv6_addresses.begin(),
+                    running_interface->ipv6_addresses.end(),
+                    [&](const auto &entry) {
+                      return entry.address == *parsed_address;
+                    });
+                if (running_address !=
+                        running_interface->ipv6_addresses.end() &&
+                    running_address->eui64 != next_eui64)
+                  valid = false;
+              }
+              if (valid) {
+                configured_address->eui64 = next_eui64;
+                if (!next_eui64) {
+                  configured_address->eui64_source_mac = {};
+                } else if (std::none_of(
+                               configured_address->eui64_source_mac.begin(),
+                               configured_address->eui64_source_mac.end(),
+                               [](auto byte) { return byte != 0U; })) {
+                  const auto *hardware = supervisor_.hardware(intent->handle);
+                  const auto source =
+                      hardware && current->port_configured
+                          ? hardware->physical_mac(current->port_id)
+                      : hardware
+                          ? std::optional<packet::Mac>{hardware
+                                                           ->chassis_base_mac()}
+                          : std::nullopt;
+                  valid = source.has_value();
+                  if (valid)
+                    configured_address->eui64_source_mac = *source;
+                }
               }
             }
           } else if (id == md_interface_ipv6_address_primary_preference ||
@@ -15622,22 +15622,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 current->ipv6_addresses.erase(configured);
               if (current->ipv6_addresses.empty()) {
                 current->ipv6_address = {};
-                current->ipv6_link_local = {};
                 current->ipv6_prefix_length = 0;
                 current->ipv6_address_configured = false;
-                // Removing the last address removes the IPv6 interface child
-                // and every configuration subtree that depends on it.
-                current->router_advertisement = {};
-                current->router_advertisement_configured = false;
-                current->router_advertisement_enabled = false;
-                current->router_advertisement_leaf_presence = 0U;
-                current->router_advertisement_prefix_leaf_presence.fill(0U);
-                current->router_advertisement_rdnss_lifetime_configured = false;
-                current->router_advertisement_include_dns = true;
-                current->router_advertisement_include_dns_configured = false;
-                reset_icmp6_redirects(*current);
-                reset_neighbor_discovery(*current);
-                reset_mld_interface(*current);
               } else {
                 const auto primary =
                     std::min_element(current->ipv6_addresses.begin(),
@@ -15663,7 +15649,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             unsigned bits{};
             valid = parsed_address && !ip::is_unspecified(*parsed_address) &&
                     !ip::is_multicast(*parsed_address) && length &&
-                    decimal(*length, bits) && bits >= 1U &&
+                    decimal(*length, bits) && bits >= 4U &&
                     bits <= ip::ipv6_address_bits;
             if (valid) {
               auto configured = std::find_if(
@@ -16980,15 +16966,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         IpsecVaultSink vault_sink{secret_vault_ ? &*secret_vault_ : nullptr};
         const auto ipsec_edit = ipsec_cli::edit(
             next.ipsec, *parsed, CliEngine::classic, &vault_sink);
-        applied = ipsec_edit.recognized && ipsec_edit.changed &&
-                  apply_configuration(*intent, next);
+        applied = ipsec_edit.recognized && ipsec_edit.valid &&
+                  (!ipsec_edit.changed || apply_configuration(*intent, next));
         instance = ipsec_edit.instance;
       } else if (applied && tls_cli::is_classic_command(id)) {
         auto next = before_running;
         const auto tls_edit =
             tls_cli::edit(next.tls, *parsed, CliEngine::classic);
-        applied = tls_edit.recognized && tls_edit.changed &&
-                  apply_configuration(*intent, next);
+        applied = tls_edit.recognized && tls_edit.valid &&
+                  (!tls_edit.changed || apply_configuration(*intent, next));
         instance = tls_edit.instance;
       } else if (applied && ies_cli::is_classic_command(id)) {
         auto next = before_running;
@@ -16997,8 +16983,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             inventory ? ies_cli::edit(next.ies, *parsed, CliEngine::classic,
                                       *inventory, next.system_name)
                       : ies_cli::EditResult{};
-        applied = ies_edit.recognized && ies_edit.changed &&
-                  apply_configuration(*intent, next);
+        applied = ies_edit.recognized && ies_edit.valid &&
+                  (!ies_edit.changed || apply_configuration(*intent, next));
         instance = ies_edit.instance;
       } else if (applied && dhcpv4_cli::is_classic_command(id)) {
         auto next = before_running;
@@ -17173,11 +17159,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         const auto current =
             std::find_if(next.interfaces.begin(), next.interfaces.end(),
                          [&](const auto &entry) { return entry.name == name; });
-        applied = !name.empty() && current != next.interfaces.end();
+        applied = !name.empty() && current != next.interfaces.end() &&
+                  !current->admin_enabled;
         if (applied) {
           // Classic immediate mode removes the same canonical list instance,
           // but apply_configuration still supplies atomic rollback across RIB,
-          // forwarding and protocol-child owners if teardown fails.
+          // forwarding and protocol-child owners if teardown fails. An
+          // administratively enabled interface must be shut down first.
           next.interfaces.erase(current);
           applied = apply_configuration(*intent, next);
         }
@@ -17382,20 +17370,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               interface->ipv6_addresses.erase(configured);
             if (interface->ipv6_addresses.empty()) {
               interface->ipv6_address = {};
-              interface->ipv6_link_local = {};
               interface->ipv6_prefix_length = 0U;
               interface->ipv6_address_configured = false;
-              interface->router_advertisement = {};
-              interface->router_advertisement_configured = false;
-              interface->router_advertisement_enabled = false;
-              interface->router_advertisement_leaf_presence = 0U;
-              interface->router_advertisement_prefix_leaf_presence.fill(0U);
-              interface->router_advertisement_rdnss_lifetime_configured = false;
-              interface->router_advertisement_include_dns = true;
-              interface->router_advertisement_include_dns_configured = false;
-              reset_icmp6_redirects(*interface);
-              reset_neighbor_discovery(*interface);
-              reset_mld_interface(*interface);
             } else {
               const auto primary = std::min_element(
                   interface->ipv6_addresses.begin(),
@@ -18527,40 +18503,18 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       // runtime owns the real configuration transaction, while this narrow
       // postcondition updates only the same terminal session's PWC after that
       // transaction succeeds.
-      if (applied &&
-          parsed->spec->enters_context) {
+      if (applied && parsed->spec->enters_context) {
         // A successful classic creation command can also select the exact
-        // keyed child it created. Static next-hop and indirect paths use this
-        // rule so their relative `shutdown`, `no shutdown` and `info`
-        // commands operate on the selected path rather than its destination
-        // parent. The release schema owns which commands have this dual
-        // behavior; failed edits never move the PWC.
-        const auto context =
-            cli_detail::resolve_session_input(terminal->cli, input);
-        if (!cli_detail::enter_classic_context(terminal->cli, context))
+        // keyed child it created. Trailing `create` and create-time arguments
+        // stay out of the stored PWC. Failed edits never move the prompt.
+        const auto context = cli_detail::context_command_path(
+            *parsed->spec, matched_command_text);
+        if (context.empty() ||
+            !cli_detail::enter_classic_context(terminal->cli, context))
           output = "Error: Bad command.";
         else
           static_cast<void>(
               supervisor_.set_cli_session(terminal->handle, terminal->cli));
-      } else if (applied &&
-          (id == classic_ospf_create || id == classic_ospf3_create ||
-           id == classic_ospf_create_router_id ||
-           id == classic_ospf3_create_router_id)) {
-        auto context =
-            cli_detail::resolve_session_input(terminal->cli, input);
-        if (id == classic_ospf_create_router_id ||
-            id == classic_ospf3_create_router_id) {
-          // The optional router ID initializes a leaf but is not a list key.
-          const auto separator = context.find_last_of(' ');
-          if (separator != std::string::npos)
-            context.resize(separator);
-        }
-        if (!cli_detail::enter_classic_context(terminal->cli, context)) {
-          output = "Error: Bad command.";
-        } else {
-          static_cast<void>(
-              supervisor_.set_cli_session(terminal->handle, terminal->cli));
-        }
       }
     }
     output += cli_prompt(view, terminal->cli);
@@ -20556,7 +20510,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             << (item.authentication_encryption_configured ? "auth-encryption"
                                                           : "sha256")
             << std::setw(17)
-            << ipsec::configuration::encryption_name(item.encryption)
+            << ipsec::configuration::configured_encryption_name(
+                   item.encryption, item.encryption_configured)
             << item.lifetime_seconds;
       }
       out << '\n'
@@ -20581,14 +20536,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             << (item.authentication_encryption_configured ? "auth-encryption"
                                                           : "sha256")
             << std::setw(17)
-            << ipsec::configuration::encryption_name(item.encryption)
+            << ipsec::configuration::configured_encryption_name(
+                   item.encryption, item.encryption_configured)
             << std::setw(7)
             << (item.extended_sequence_number ? "true" : "false")
             << std::setw(12)
             << (item.lifetime_configured ? std::to_string(item.lifetime_seconds)
                                          : std::string{"Inherited"})
             << (item.pfs_group_configured
-                    ? (item.pfs_enabled ? "group-19" : "none")
+                    ? (item.pfs_enabled ? "19" : "none")
                     : "Inherited");
       }
       out << '\n'

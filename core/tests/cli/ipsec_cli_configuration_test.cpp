@@ -636,4 +636,38 @@ void ipsec_cli_configuration_tests() {
               classic.tunnel_templates[0].service_provider_reverse_route ==
                   ServiceProviderReverseRoute::use_security_policy,
           "classic selector address or protocol grammar lost wire values");
+
+  const auto existing_create = parse(
+      CliEngine::classic, "configure ipsec ike-transform 1 create");
+  const auto selected = router::lab::ipsec_cli::edit(
+      classic, existing_create, CliEngine::classic);
+  require(selected.recognized && selected.valid && !selected.changed,
+          "classic IKE transform create of an existing object was not a select");
+
+  Configuration gcm;
+  edit(gcm, CliEngine::classic, "configure ipsec ipsec-transform 3 create");
+  const auto gcm_without_auth = parse(
+      CliEngine::classic,
+      "configure ipsec ipsec-transform 3 esp-encryption-algorithm "
+      "aes128-gcm16");
+  const auto gcm_result = router::lab::ipsec_cli::edit(
+      gcm, gcm_without_auth, CliEngine::classic);
+  require(gcm_result.recognized && !gcm_result.valid && !gcm_result.changed,
+          "GCM encryption was accepted without auth-encryption");
+
+  edit(classic, CliEngine::classic,
+       "configure ipsec ipsec-transform 1 pfs-dh-group 19");
+  require(find_ipsec(classic, 1U)->pfs_enabled &&
+              find_ipsec(classic, 1U)->pfs_group_configured,
+          "classic numeric PFS group 19 was rejected");
+  edit(classic, CliEngine::classic,
+       "configure ipsec ipsec-transform 1 esp-encryption-algorithm "
+       "aes128-gcm16");
+  edit(classic, CliEngine::classic,
+       "configure ipsec ipsec-transform 1 no esp-encryption-algorithm");
+  require(!find_ipsec(classic, 1U)->encryption_configured &&
+              ipsec::configuration::configured_encryption_name(
+                  find_ipsec(classic, 1U)->encryption,
+                  find_ipsec(classic, 1U)->encryption_configured) == "aes-128",
+          "delete encryption did not restore the YANG aes-128 default");
 }

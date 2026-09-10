@@ -219,6 +219,11 @@ encryption_name(AesGcmKeySize value) noexcept {
   return {};
 }
 
+[[nodiscard]] constexpr std::string_view
+configured_encryption_name(AesGcmKeySize value, bool configured) noexcept {
+  return configured ? encryption_name(value) : "aes-128";
+}
+
 // Returns true only for a canonical, reference-complete configuration. This
 // validates persisted or externally reconstructed state; interactive candidate
 // editing may temporarily contain an unreferenced or partially specified list
@@ -289,9 +294,13 @@ encryption_name(AesGcmKeySize value) noexcept {
   for (const auto &transform : state.ike_transforms) {
     // The implemented release profile intentionally exposes only the ECP-256
     // group and authenticated AES-GCM suites that have a real packet path.
+    // YANG requires esp/ike-auth-algorithm auth-encryption whenever a GCM
+    // encryption-algorithm leaf is present.
     if (transform.dh_group != DiffieHellmanGroup::ecp256 ||
         (transform.encryption != AesGcmKeySize::aes128 &&
          transform.encryption != AesGcmKeySize::aes256) ||
+        (transform.encryption_configured &&
+         !transform.authentication_encryption_configured) ||
         transform.lifetime_seconds < 1'200U ||
         transform.lifetime_seconds > 31'536'000U)
       return false;
@@ -301,6 +310,8 @@ encryption_name(AesGcmKeySize value) noexcept {
         (transform.encryption != AesGcmKeySize::aes128 &&
          transform.encryption != AesGcmKeySize::aes192 &&
          transform.encryption != AesGcmKeySize::aes256) ||
+        (transform.encryption_configured &&
+         !transform.authentication_encryption_configured) ||
         (transform.lifetime_configured &&
          (transform.lifetime_seconds < 1'200U ||
           transform.lifetime_seconds > 31'536'000U)))

@@ -17,9 +17,10 @@ namespace router::lab::ies_cli {
 
 struct EditResult {
   // recognized distinguishes an invalid IES edit from a command owned by a
-  // different configuration module. changed is true only when the canonical
-  // value changed and passed the validation appropriate to the CLI engine.
+  // different configuration module. valid is true for an accepted select or
+  // idempotent write. changed is true only when the canonical value moved.
   bool recognized{};
+  bool valid{};
   bool changed{};
   std::string instance;
 };

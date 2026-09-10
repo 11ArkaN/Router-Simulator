@@ -134,7 +134,9 @@ bool version_three(CommandId id) noexcept {
   case md_delete_ospf3_asbr:
   case md_ospf3_overload:
   case md_ospf3_graceful_restart:
+  case md_delete_ospf3_graceful_restart:
   case md_ospf3_loopfree_alternates:
+  case md_delete_ospf3_loopfree_alternates:
   case md_ospf3_spf_initial_wait:
   case md_ospf3_spf_second_wait:
   case md_ospf3_spf_max_wait:
@@ -169,7 +171,6 @@ bool version_three(CommandId id) noexcept {
   case md_ospf3_interface_metric:
   case md_ospf3_interface_priority:
   case md_ospf3_interface_passive:
-  case md_ospf3_interface_mtu_ignore:
   case md_ospf3_interface_hello:
   case md_ospf3_interface_dead:
   case md_ospf3_interface_retransmit:
@@ -299,7 +300,7 @@ default_interface(std::string_view name) {
       .transmit_delay_seconds = static_cast<std::uint16_t>(
           device_catalog::ospf_transmit_delay.count()),
       .priority = device_catalog::ospf_interface_priority,
-      .network_type = ospf::NetworkType::point_to_point,
+      .network_type = ospf::NetworkType::broadcast,
       .admin_enabled = true};
 }
 
@@ -330,7 +331,7 @@ network_type(std::string_view text) noexcept {
     return ospf::NetworkType::broadcast;
   if (text == "non-broadcast")
     return ospf::NetworkType::non_broadcast;
-  if (text == "point-to-multipoint")
+  if (text == "point-to-multipoint" || text == "p2mp-nbma")
     return ospf::NetworkType::point_to_multipoint;
   return std::nullopt;
 }
@@ -542,6 +543,8 @@ EditResult edit(ospf::RouterConfiguration &configuration,
   if (delete_instance) {
     if (!instance)
       return {.recognized = true, .changed = false, .instance = {}};
+    if (engine == CliEngine::classic && instance->admin_enabled)
+      return {.recognized = true, .changed = false, .instance = {}};
     std::erase_if(next.instances, [&](const auto &candidate) {
       return candidate.address_family == family &&
              candidate.instance_id == instance_id;
@@ -644,27 +647,25 @@ EditResult edit(ospf::RouterConfiguration &configuration,
                    instance->overload))
         return {.recognized = true, .changed = false, .instance = {}};
     } else if (id == CommandId::classic_ospf_graceful_restart ||
-               id == CommandId::classic_ospf3_graceful_restart) {
+               id == CommandId::classic_ospf3_graceful_restart ||
+               id == CommandId::md_ospf_graceful_restart ||
+               id == CommandId::md_ospf3_graceful_restart) {
       instance->graceful_restart_helper = true;
     } else if (id == CommandId::classic_ospf_no_graceful_restart ||
-               id == CommandId::classic_ospf3_no_graceful_restart) {
+               id == CommandId::classic_ospf3_no_graceful_restart ||
+               id == CommandId::md_delete_ospf_graceful_restart ||
+               id == CommandId::md_delete_ospf3_graceful_restart) {
       instance->graceful_restart_helper = false;
-    } else if (id == CommandId::md_ospf_graceful_restart ||
-               id == CommandId::md_ospf3_graceful_restart) {
-      if (!boolean(argument_text(command, TokenKind::boolean),
-                   instance->graceful_restart_helper))
-        return {.recognized = true, .changed = false, .instance = {}};
     } else if (id == CommandId::classic_ospf_loopfree_alternates ||
-               id == CommandId::classic_ospf3_loopfree_alternates) {
+               id == CommandId::classic_ospf3_loopfree_alternates ||
+               id == CommandId::md_ospf_loopfree_alternates ||
+               id == CommandId::md_ospf3_loopfree_alternates) {
       instance->loopfree_alternates = true;
     } else if (id == CommandId::classic_ospf_no_loopfree_alternates ||
-               id == CommandId::classic_ospf3_no_loopfree_alternates) {
+               id == CommandId::classic_ospf3_no_loopfree_alternates ||
+               id == CommandId::md_delete_ospf_loopfree_alternates ||
+               id == CommandId::md_delete_ospf3_loopfree_alternates) {
       instance->loopfree_alternates = false;
-    } else if (id == CommandId::md_ospf_loopfree_alternates ||
-               id == CommandId::md_ospf3_loopfree_alternates) {
-      if (!boolean(argument_text(command, TokenKind::boolean),
-                   instance->loopfree_alternates))
-        return {.recognized = true, .changed = false, .instance = {}};
     } else if (id == CommandId::md_ospf_spf_initial_wait ||
                id == CommandId::md_ospf_spf_second_wait ||
                id == CommandId::md_ospf_spf_max_wait ||
@@ -1043,8 +1044,12 @@ EditResult edit(ospf::RouterConfiguration &configuration,
               id == CommandId::md_ospf3_interface_type ||
               id == CommandId::classic_ospf_interface_type ||
               id == CommandId::classic_ospf3_interface_type) {
-            const auto type = network_type(
-                argument_text(command, TokenKind::ospf_interface_type));
+            auto type_text =
+                argument_text(command, TokenKind::md_ospf_interface_type);
+            if (type_text.empty())
+              type_text =
+                  argument_text(command, TokenKind::ospf_interface_type);
+            const auto type = network_type(type_text);
             if (!type)
               return {.recognized = true, .changed = false, .instance = {}};
             interface->network_type = *type;
@@ -1083,11 +1088,6 @@ EditResult edit(ospf::RouterConfiguration &configuration,
                      id == CommandId::md_ospf3_interface_passive) {
             if (!boolean(argument_text(command, TokenKind::boolean),
                          interface->passive))
-              return {.recognized = true, .changed = false, .instance = {}};
-          } else if (id == CommandId::md_ospf_interface_mtu_ignore ||
-                     id == CommandId::md_ospf3_interface_mtu_ignore) {
-            if (!boolean(argument_text(command, TokenKind::boolean),
-                         interface->mtu_mismatch_ignore))
               return {.recognized = true, .changed = false, .instance = {}};
           } else if (
               id == CommandId::md_ospf_interface_auth_password ||

@@ -407,7 +407,6 @@ tls:
     - { sros: tls-aes256-gcm-sha384, openssl: TLS_AES_256_GCM_SHA384, pqc: true }
     - { sros: tls-chacha20-poly1305-sha256, openssl: TLS_CHACHA20_POLY1305_SHA256, pqc: false }
     - { sros: tls-aes128-ccm-sha256, openssl: TLS_AES_128_CCM_SHA256, pqc: false }
-    - { sros: tls-aes128-ccm8-sha256, openssl: TLS_AES_128_CCM_8_SHA256, pqc: false }
   tls13_groups:
     - { sros: tls-ecdhe-256, openssl: P-256, pqc: false }
     - { sros: tls-ecdhe-384, openssl: P-384, pqc: false }
@@ -416,9 +415,6 @@ tls:
     - { sros: tls-x448, openssl: X448, pqc: false }
     - { sros: tls-ml-kem1024, openssl: MLKEM1024, pqc: true }
   tls13_signatures:
-    - { sros: tls-rsa-pkcs1-sha256, openssl: rsa_pkcs1_sha256, pqc: false }
-    - { sros: tls-rsa-pkcs1-sha384, openssl: rsa_pkcs1_sha384, pqc: false }
-    - { sros: tls-rsa-pkcs1-sha512, openssl: rsa_pkcs1_sha512, pqc: false }
     - { sros: tls-ecdsa-secp256r1-sha256, openssl: ecdsa_secp256r1_sha256, pqc: false }
     - { sros: tls-ecdsa-secp384r1-sha384, openssl: ecdsa_secp384r1_sha384, pqc: false }
     - { sros: tls-ecdsa-secp521r1-sha512, openssl: ecdsa_secp521r1_sha512, pqc: false }

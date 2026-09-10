@@ -1571,9 +1571,17 @@ std::string execute_cli(DeviceState &state, CliSession &session,
   // context while classic relative commands still follow its saved tree.
   auto effective = input;
   auto command = cli_detail::parse_command(state, session, effective);
+  auto classic_line = std::string_view{input};
+  if (session.engine == CliEngine::classic &&
+      (classic_line.starts_with('\\') || classic_line.starts_with('/')))
+    classic_line.remove_prefix(1U);
+  const bool classic_configure =
+      session.engine == CliEngine::classic &&
+      (classic_line == "configure" || classic_line.starts_with("configure "));
   if (command &&
       !cli_detail::global_action(command->spec->id, session.engine) &&
-      !cli_detail::session_path(session, session.engine).empty()) {
+      !cli_detail::session_path(session, session.engine).empty() &&
+      !classic_configure) {
     command.reset();
   }
   if (!command) {
@@ -1898,40 +1906,22 @@ std::string execute_cli(DeviceState &state, CliSession &session,
       // Presence and keyed list commands that are also containers move the MD
       // PWC only after the candidate owner accepts the edit. The generated
       // release grammar owns this property for every applicable command.
-      cli_detail::move_session_path(session, effective);
+      const auto context =
+          cli_detail::context_command_path(*command->spec, effective);
+      if (!context.empty())
+        cli_detail::move_session_path(session, context);
     }
   } else {
     output =
         cli_detail::execute_classic(state.configuration, session, *command);
     if (output.empty() && command->spec->enters_context) {
-      // Classic keyed objects such as a static route next hop are executable
-      // creation commands and configuration contexts at the same time. The
-      // release schema identifies that dual behavior; move only after the
-      // owner accepts the edit so an invalid key cannot fabricate a prompt.
-      cli_detail::move_session_path(session, effective);
-    }
-    // In classic CLI, selecting an OSPF instance is both an immediate
-    // configuration operation and a context transition. The schema therefore
-    // contains an executable row for the exact same token sequence that is
-    // also the parent of area and interface commands. Prefix-only navigation
-    // cannot handle this overlap because the complete command wins parsing.
-    //
-    // Move only after successful execution. This preserves the current prompt
-    // when instance creation or validation fails and prevents a context that
-    // has no corresponding running configuration from being fabricated.
-    using enum cli_schema::CommandId;
-    if (output.empty() && !command->spec->enters_context &&
-        (command->spec->id == classic_ospf_create ||
-         command->spec->id == classic_ospf3_create)) {
-      cli_detail::move_session_path(session, effective);
-    } else if (output.empty() &&
-               (command->spec->id == classic_ospf_create_router_id ||
-                command->spec->id == classic_ospf3_create_router_id)) {
-      // The optional router ID is a creation argument, not a context key.
-      // Strip it from the canonical command before storing the classic PWC.
-      const auto separator = effective.find_last_of(' ');
-      if (separator != std::string::npos)
-        cli_detail::move_session_path(session, effective.substr(0, separator));
+      // Classic keyed objects are executable creation commands and
+      // configuration contexts at the same time. Trailing `create` and
+      // create-time arguments stay out of the stored PWC.
+      const auto context =
+          cli_detail::context_command_path(*command->spec, effective);
+      if (!context.empty())
+        cli_detail::move_session_path(session, context);
     }
   }
   return output + cli_detail::prompt(state.configuration.running, session);

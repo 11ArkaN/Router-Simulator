@@ -600,7 +600,7 @@ bool edit_impl(Configuration &configuration,
     auto *customer = customer_by_id(configuration, *number);
     if (id == classic_service_customer_create) {
       if (customer)
-        return false;
+        return true;
       configuration.customers.push_back({.name = std::to_string(*number),
                                          .customer_id = *number});
       return true;
@@ -678,8 +678,14 @@ bool edit_impl(Configuration &configuration,
     ies = service_by_id(configuration, *service_id);
     if (id == classic_ies_create) {
       const auto customer_id = decimal<std::uint32_t>(value(command, TokenKind::customer_id));
-      if (ies || !customer_id || !customer_by_id(configuration, *customer_id))
+      if (!customer_id || !customer_by_id(configuration, *customer_id))
         return false;
+      if (ies) {
+        if (ies->customer_id != *customer_id)
+          return false;
+        instance = instance_path(ies->name);
+        return true;
+      }
       configuration.ies_services.push_back({.service_id = *service_id,
                                             .customer_id = *customer_id,
                                             .name = std::to_string(*service_id),
@@ -692,7 +698,12 @@ bool edit_impl(Configuration &configuration,
     return false;
   instance = instance_path(ies->name, interface_name);
 
-  if (id == md_delete_ies || id == classic_ies_no_service) {
+  if (id == md_delete_ies) {
+    configuration.ies_services.erase(configuration.ies_services.begin() +
+                                     (ies - configuration.ies_services.data()));
+    return true;
+  }
+  if (id == classic_ies_no_service) {
     if (ies->admin_enabled || !ies->interfaces.empty())
       return false;
     configuration.ies_services.erase(configuration.ies_services.begin() +
@@ -714,10 +725,14 @@ bool edit_impl(Configuration &configuration,
   if (id == md_ies_description || id == classic_ies_description)
     return set_distinct(ies->description,
                         std::string{value(command, TokenKind::description)});
-  if (id == md_ies_admin_enable || id == classic_ies_no_shutdown)
-    return set_distinct(ies->admin_enabled, true);
-  if (id == md_ies_admin_disable || id == classic_ies_shutdown)
-    return set_distinct(ies->admin_enabled, false);
+  if (id == md_ies_admin_enable || id == classic_ies_no_shutdown) {
+    set_distinct(ies->admin_enabled, true);
+    return true;
+  }
+  if (id == md_ies_admin_disable || id == classic_ies_shutdown) {
+    set_distinct(ies->admin_enabled, false);
+    return true;
+  }
 
   IesInterfaceConfiguration *interface{};
   if (engine == CliEngine::md) {
@@ -728,7 +743,7 @@ bool edit_impl(Configuration &configuration,
     interface = interface_by_name(*ies, interface_name);
     if (id == classic_ies_interface_create) {
       if (interface)
-        return false;
+        return true;
       const auto logical_id = next_logical_id(configuration);
       if (!logical_id || interface_name.empty())
         return false;
@@ -741,7 +756,12 @@ bool edit_impl(Configuration &configuration,
   }
   if (!interface)
     return false;
-  if (id == md_delete_ies_interface || id == classic_ies_no_interface) {
+  if (id == md_delete_ies_interface) {
+    ies->interfaces.erase(ies->interfaces.begin() +
+                          (interface - ies->interfaces.data()));
+    return true;
+  }
+  if (id == classic_ies_no_interface) {
     if (interface->admin_enabled || interface->sap != SapKey{})
       return false;
     ies->interfaces.erase(ies->interfaces.begin() +
@@ -749,11 +769,15 @@ bool edit_impl(Configuration &configuration,
     return true;
   }
   if (id == md_ies_interface_admin_enable ||
-      id == classic_ies_interface_no_shutdown)
-    return set_distinct(interface->admin_enabled, true);
+      id == classic_ies_interface_no_shutdown) {
+    set_distinct(interface->admin_enabled, true);
+    return true;
+  }
   if (id == md_ies_interface_admin_disable ||
-      id == classic_ies_interface_shutdown)
-    return set_distinct(interface->admin_enabled, false);
+      id == classic_ies_interface_shutdown) {
+    set_distinct(interface->admin_enabled, false);
+    return true;
+  }
   if (id == md_ies_interface_description ||
       id == classic_ies_interface_description)
     return set_distinct(interface->description,
@@ -765,7 +789,8 @@ bool edit_impl(Configuration &configuration,
   if (id == md_ies_interface_ipv6_address) {
     const auto address = ip::parse_ipv6(value(command, TokenKind::ipv6));
     const auto prefix = decimal<std::uint8_t>(value(command, TokenKind::ipv6_prefix_length));
-    return address && prefix && set_address(*interface, *address, *prefix);
+    return address && prefix && *prefix >= 4U &&
+           set_address(*interface, *address, *prefix);
   }
   if (id == classic_ies_interface_ipv6_address) {
     const auto prefix = parse_interface_address(
@@ -792,7 +817,11 @@ bool edit_impl(Configuration &configuration,
     const auto mac = sap ? inventory.physical_mac(
                                sap_text.substr(0U, sap_text.find(':')))
                          : std::optional<packet::Mac>{};
-    if (!sap || !mac || interface->sap != SapKey{})
+    if (!sap || !mac)
+      return false;
+    if (interface->sap == *sap)
+      return true;
+    if (interface->sap != SapKey{})
       return false;
     interface->sap = *sap;
     interface->mac = *mac;
@@ -863,12 +892,20 @@ EditResult edit(Configuration &configuration,
   const auto validation = engine == CliEngine::md
                               ? service::validate_candidate(configuration)
                               : service::validate(configuration);
-  const bool valid = validation == service::ValidationError::none;
-  if (!structurally_changed || !valid) {
+  const bool valid = edited && validation == service::ValidationError::none;
+  if (!valid) {
     configuration = before;
-    return {.recognized = true, .changed = false, .instance = std::move(instance)};
+    return {.recognized = true,
+            .valid = false,
+            .changed = false,
+            .instance = std::move(instance)};
   }
-  return {.recognized = true, .changed = true, .instance = std::move(instance)};
+  if (!structurally_changed)
+    configuration = before;
+  return {.recognized = true,
+          .valid = true,
+          .changed = structurally_changed,
+          .instance = std::move(instance)};
 }
 
 } // namespace router::lab::ies_cli

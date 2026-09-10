@@ -965,7 +965,7 @@ void lab_runtime_tests() {
                   std::string_view::npos,
           "DHCPv6 server candidate could not leave its workflow");
   const auto dhcpv6_server_statistics = contextual_command(
-      "show router \"Base\" dhcp-server dhcpv6 browser-v6 server-stats");
+      "show router dhcp6 local-dhcp-server browser-v6 server-stats");
   if (dhcpv6_server_statistics.find("Statistics for DHCPv6 Server") ==
           std::string_view::npos ||
       dhcpv6_server_statistics.find("browser-v6") ==
@@ -2876,6 +2876,7 @@ void lab_runtime_tests() {
         "configure router interface system no address",
         "configure router interface system address 10.255.0.1/32",
         "configure router interface system no shutdown",
+        "configure router interface system shutdown",
         "configure router no interface system",
         "configure router interface system address 10.255.0.1/32",
         "configure router interface system no shutdown"}) {
@@ -3834,6 +3835,10 @@ void lab_runtime_tests() {
                                     {"r1-console-1", command}))
                     .find("Error:") == std::string_view::npos,
             "classic ICMPv6 clear did not reach forwarding ownership");
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "exit all"}))
+                  .find("Error:") == std::string_view::npos,
+          "ICMPv6 reset fixture could not leave classic configuration context");
   require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1", "//"}))
                   .find("A:admin@private-first#") != std::string_view::npos,

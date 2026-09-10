@@ -36,19 +36,6 @@ Item *named(std::vector<Item> &items, std::string_view name) {
 }
 
 template <typename Item>
-bool create_named(std::vector<Item> &items, std::string_view name) {
-  // Classic `create` must create a new list instance. Treating an existing
-  // instance as success would violate both SR OS intent and the project-wide
-  // prohibition on successful no-op compatibility commands.
-  if (named(items, name))
-    return false;
-  Item item{};
-  item.name.assign(name);
-  items.push_back(std::move(item));
-  return true;
-}
-
-template <typename Item>
 bool erase_named(std::vector<Item> &items, std::string_view name) {
   const auto found = std::find_if(items.begin(), items.end(),
                                   [name](const Item &item) {
@@ -58,6 +45,35 @@ bool erase_named(std::vector<Item> &items, std::string_view name) {
     return false;
   items.erase(found);
   return true;
+}
+
+template <typename Item>
+bool create_named(std::vector<Item> &items, std::string_view name,
+                  bool &created) {
+  // Classic `name [create]` of an existing keyed object is a select, not a
+  // rejected no-op. The caller reports valid && !changed so the runtime can
+  // still enter the object's present working context.
+  created = false;
+  if (name.empty())
+    return false;
+  if (named(items, name))
+    return true;
+  Item item{};
+  item.name.assign(name);
+  items.push_back(std::move(item));
+  created = true;
+  return true;
+}
+
+template <typename Item>
+bool remove_named(std::vector<Item> &items, std::string_view name,
+                  CliEngine engine, bool require_shutdown) {
+  auto *item = named(items, name);
+  if (!item)
+    return false;
+  if (engine == CliEngine::classic && require_shutdown && item->admin_enabled)
+    return false;
+  return erase_named(items, name);
 }
 
 template <typename Item>
@@ -389,6 +405,7 @@ EditResult edit(Configuration &configuration,
 
   const auto before = configuration;
   bool changed{};
+  bool selected{};
   std::string instance{"/system/security/tls"};
   const auto key = [&](TokenKind kind) {
     const auto result = value(command, kind);
@@ -415,6 +432,7 @@ EditResult edit(Configuration &configuration,
                key(TokenKind::tls_cert_profile_name);
            !certificate_profile_name.empty() &&
            (id == classic_tls_cert_profile_create ||
+            id == classic_tls_cert_entry_create ||
             id == md_delete_tls_cert_profile ||
             id == classic_tls_cert_profile_remove ||
             id == md_tls_cert_profile_enable ||
@@ -435,12 +453,14 @@ EditResult edit(Configuration &configuration,
             id == md_delete_tls_cert_entry_ca ||
             id == classic_tls_cert_entry_no_ca)) {
     if (id == classic_tls_cert_profile_create)
-      changed = create_named(configuration.certificate_profiles,
-                             certificate_profile_name);
-    else if (id == md_delete_tls_cert_profile ||
-             id == classic_tls_cert_profile_remove)
+      selected = create_named(configuration.certificate_profiles,
+                              certificate_profile_name, changed);
+    else if (id == md_delete_tls_cert_profile)
       changed = erase_named(configuration.certificate_profiles,
                             certificate_profile_name);
+    else if (id == classic_tls_cert_profile_remove)
+      changed = remove_named(configuration.certificate_profiles,
+                             certificate_profile_name, engine, true);
     else {
       auto *profile =
           md ? md_named(configuration.certificate_profiles,
@@ -460,9 +480,20 @@ EditResult edit(Configuration &configuration,
                               profile->admin_configured, false);
       else if (profile) {
         const auto entry_id = index(command);
+        if (id == classic_tls_cert_entry_create) {
+          const bool existed =
+              entry_id &&
+              certificate_entry(*profile, *entry_id, false) != nullptr;
+          auto *entry =
+              entry_id ? certificate_entry(*profile, *entry_id, true) : nullptr;
+          changed = entry && !existed;
+          selected = entry != nullptr;
+        }
         auto *entry = entry_id ? certificate_entry(*profile, *entry_id, true)
                                : nullptr;
-        if (entry && (id == md_tls_cert_entry_certificate ||
+        if (id == classic_tls_cert_entry_create)
+          ;
+        else if (entry && (id == md_tls_cert_entry_certificate ||
                       id == classic_tls_cert_entry_certificate))
           changed = assign(&CertificateEntry::certificate_file, *entry,
                            value(command, TokenKind::tls_certificate_file));
@@ -498,8 +529,8 @@ EditResult edit(Configuration &configuration,
               id == classic_tls_trust_anchor ||
               id == classic_tls_no_trust_anchor)) {
     if (id == classic_tls_trust_anchor_profile_create)
-      changed = create_named(configuration.trust_anchor_profiles,
-                             trust_anchor_profile_name);
+      selected = create_named(configuration.trust_anchor_profiles,
+                              trust_anchor_profile_name, changed);
     else if (id == md_delete_tls_trust_anchor_profile ||
              id == classic_tls_trust_anchor_profile_remove)
       changed = erase_named(configuration.trust_anchor_profiles,
@@ -529,8 +560,10 @@ EditResult edit(Configuration &configuration,
       const auto name = key(list_kind);
       if (name.empty())
         return false;
-      if (id == create_id)
-        return create_named(lists, name);
+      if (id == create_id) {
+        selected = create_named(lists, name, changed);
+        return changed;
+      }
       if (id == remove_list_id)
         return erase_named(lists, name);
       auto *list = md ? md_named(lists, name) : named(lists, name);
@@ -615,12 +648,14 @@ EditResult edit(Configuration &configuration,
                  key(TokenKind::tls_client_profile_name);
              !client_profile_name.empty()) {
       if (id == classic_tls_client_profile_create)
-        changed = create_named(configuration.client_profiles,
-                               client_profile_name);
-      else if (id == md_delete_tls_client_profile ||
-               id == classic_tls_client_profile_remove)
+        selected = create_named(configuration.client_profiles,
+                                client_profile_name, changed);
+      else if (id == md_delete_tls_client_profile)
         changed = erase_named(configuration.client_profiles,
                               client_profile_name);
+      else if (id == classic_tls_client_profile_remove)
+        changed = remove_named(configuration.client_profiles,
+                               client_profile_name, engine, true);
       else {
         auto *profile =
             md ? md_named(configuration.client_profiles, client_profile_name)
@@ -665,12 +700,14 @@ EditResult edit(Configuration &configuration,
                    key(TokenKind::tls_server_profile_name);
                !server_profile_name.empty()) {
       if (id == classic_tls_server_profile_create)
-        changed = create_named(configuration.server_profiles,
-                               server_profile_name);
-      else if (id == md_delete_tls_server_profile ||
-               id == classic_tls_server_profile_remove)
+        selected = create_named(configuration.server_profiles,
+                                server_profile_name, changed);
+      else if (id == md_delete_tls_server_profile)
         changed = erase_named(configuration.server_profiles,
                               server_profile_name);
+      else if (id == classic_tls_server_profile_remove)
+        changed = remove_named(configuration.server_profiles,
+                               server_profile_name, engine, true);
       else {
         auto *profile =
             md ? md_named(configuration.server_profiles, server_profile_name)
@@ -725,11 +762,17 @@ EditResult edit(Configuration &configuration,
 
   // Cross-reference and PQC rules are validated after the complete atomic
   // edit. A rejected command cannot leave a half-created list entry behind.
-  if (!changed || tls_profile::validate(configuration)) {
+  if (changed && tls_profile::validate(configuration)) {
     configuration = before;
-    changed = false;
+    return {.recognized = true,
+            .valid = false,
+            .changed = false,
+            .instance = std::move(instance)};
   }
+  if (!changed)
+    configuration = before;
   return {.recognized = true,
+          .valid = changed || selected,
           .changed = changed,
           .instance = std::move(instance)};
 }

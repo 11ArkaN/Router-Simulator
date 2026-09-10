@@ -320,7 +320,6 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
       // editor because the release grammar alone cannot resolve a port.
       return !value.empty() && value.size() <= 45U;
     case prefix_length:
-    case ipv6_prefix_length:
     case ipv6_primary_preference:
     case ipv6_address_tag:
     case customer_id:
@@ -368,6 +367,20 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
     case history_ike_records:
     case bof_timeout_seconds:
       return decimal_text(value);
+    case ipv6_prefix_length: {
+      if (!decimal_text(value))
+        return false;
+      unsigned length{};
+      for (const auto byte : value)
+        length = length * 10U + static_cast<unsigned>(byte - '0');
+      return length >= 4U && length <= ip::ipv6_address_bits;
+    }
+    case ospf_interface_type:
+      return value == "point-to-point" || value == "broadcast" ||
+             value == "non-broadcast" || value == "point-to-multipoint";
+    case md_ospf_interface_type:
+      return value == "point-to-point" || value == "broadcast" ||
+             value == "non-broadcast" || value == "p2mp-nbma";
     case bof_client_id: {
       // The BOF model accepts either a quoted character string or an opaque
       // hexadecimal spelling. Family-specific limits differ, so the grammar
@@ -785,11 +798,16 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
                   token.description, context);
     break;
   case ospf_interface_type:
-    // The network type is a closed SR OS enumeration. Supplying the four real
-    // values makes Tab and question-mark help useful without teaching the
-    // parser any command path or runtime behavior.
+    // Classic CLI retains point-to-multipoint. MD-CLI uses the YANG
+    // p2mp-nbma spelling for the same network type.
     for (const auto value : {"point-to-point", "broadcast", "non-broadcast",
                              "point-to-multipoint"})
+      add_candidate(items, value, true, false, partial, token.description,
+                    context);
+    break;
+  case md_ospf_interface_type:
+    for (const auto value : {"point-to-point", "broadcast", "non-broadcast",
+                             "p2mp-nbma"})
       add_candidate(items, value, true, false, partial, token.description,
                     context);
     break;
@@ -1351,6 +1369,28 @@ std::string parent_command_prefix(const CliSession &session,
       return canonical_command_prefix(session, candidate);
   }
   return {};
+}
+
+std::string context_command_path(const cli_schema::CommandSpec &spec,
+                                 std::string_view effective) {
+  const auto line = tokenize(trim_view(effective), false);
+  if (!line.valid || line.count == 0)
+    return {};
+  std::uint8_t count = spec.context_token_count;
+  if (count == 0) {
+    count = line.count;
+    if (line.tokens[count - 1U] == "create")
+      --count;
+  }
+  if (count == 0 || count > line.count)
+    return {};
+  std::string path;
+  for (std::uint8_t index = 0; index < count; ++index) {
+    if (!path.empty())
+      path += ' ';
+    path += line.tokens[index];
+  }
+  return path;
 }
 
 } // namespace router::cli_detail

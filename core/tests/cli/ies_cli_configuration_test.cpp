@@ -157,4 +157,21 @@ void ies_cli_configuration_tests() {
   require(repeated_result.recognized && !repeated_result.changed &&
               md == before_repeat,
           "repeated MD leaf was accepted as a successful no-op");
+
+  const auto existing_ies = parse(
+      CliEngine::classic, "configure service ies 100 customer 10 create");
+  const auto selected_ies = router::lab::ies_cli::edit(
+      classic, existing_ies, CliEngine::classic, hardware, "edge-a");
+  require(selected_ies.recognized && selected_ies.valid &&
+              !selected_ies.changed,
+          "classic IES create of an existing service was not a select");
+
+  router::service::Configuration md_delete = md;
+  const auto delete_enabled = parse(
+      CliEngine::md, "delete service ies internet");
+  const auto deleted = router::lab::ies_cli::edit(
+      md_delete, delete_enabled, CliEngine::md, hardware, "edge-a");
+  require(deleted.recognized && deleted.valid && deleted.changed &&
+              md_delete.ies_services.empty(),
+          "MD delete ies retained an enabled service with interfaces");
 }

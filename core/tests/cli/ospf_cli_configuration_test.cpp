@@ -153,9 +153,9 @@ void ospf_cli_configuration_tests() {
        "configure router \"Base\" ospf3 0 area 1 nssa");
   edit(md, CliEngine::md,
        "configure router \"Base\" ospf3 0 area 1 area-range "
-       "2001:db8:100::/48 not-advertise");
+       "2001:db8:100::/48 advertise false");
   edit(md, CliEngine::md,
-       "configure router \"Base\" ospf3 0 loopfree-alternates true");
+       "configure router \"Base\" ospf3 0 loopfree-alternate");
   edit(md, CliEngine::md,
        "configure router \"Base\" ospf3 0 asbr");
   require(router::ospf::validate(md) ==
@@ -402,4 +402,57 @@ void ospf_cli_configuration_tests() {
        "transit-area 1");
   require(md_virtual.instances[0].areas[1].virtual_links.empty(),
           "MD delete virtual-link retained the configured endpoint");
+
+  router::ospf::RouterConfiguration ethernet;
+  edit(ethernet, CliEngine::classic,
+       "configure router ospf 0 area 0 interface to-r2 metric 10");
+  require(ethernet.instances[0].areas[0].interfaces[0].network_type ==
+              router::ospf::NetworkType::broadcast,
+          "classic OSPF Ethernet interface did not default to broadcast");
+  edit(ethernet, CliEngine::md,
+       "configure router \"Base\" ospf 0 area 0 interface nbma "
+       "interface-type p2mp-nbma");
+  require(ethernet.instances[0].areas[0].interfaces[1].network_type ==
+              router::ospf::NetworkType::point_to_multipoint,
+          "MD p2mp-nbma did not map to the point-to-multipoint network type");
+
+  router::ospf::RouterConfiguration presence;
+  edit(presence, CliEngine::md,
+       "configure router \"Base\" ospf 0 graceful-restart");
+  edit(presence, CliEngine::md,
+       "configure router \"Base\" ospf 0 asbr");
+  require(presence.instances[0].graceful_restart_helper &&
+              presence.instances[0].asbr,
+          "MD OSPF presence containers did not materialize");
+  edit(presence, CliEngine::md,
+       "delete router \"Base\" ospf 0 graceful-restart");
+  require(!presence.instances[0].graceful_restart_helper,
+          "MD delete graceful-restart retained the presence container");
+
+  router::ospf::RouterConfiguration classic_delete;
+  edit(classic_delete, CliEngine::classic, "configure router ospf 0");
+  edit(classic_delete, CliEngine::classic,
+       "configure router ospf 0 no shutdown");
+  const auto enabled_remove = parse(CliEngine::classic,
+                                    "configure router no ospf 0");
+  const auto enabled_result = router::lab::ospf_cli::edit(
+      classic_delete, enabled_remove, CliEngine::classic);
+  require(enabled_result.recognized && !enabled_result.valid &&
+              !enabled_result.changed &&
+              classic_delete.instances.size() == 1U,
+          "classic no ospf removed an administratively enabled instance");
+  edit(classic_delete, CliEngine::classic, "configure router ospf 0 shutdown");
+  edit(classic_delete, CliEngine::classic, "configure router no ospf 0");
+  require(classic_delete.instances.empty(),
+          "classic no ospf after shutdown retained the instance");
+
+  const auto existing_create = parse(CliEngine::classic,
+                                     "configure router ospf 0");
+  router::ospf::RouterConfiguration select;
+  edit(select, CliEngine::classic, "configure router ospf 0");
+  const auto selected = router::lab::ospf_cli::edit(
+      select, existing_create, CliEngine::classic);
+  require(selected.recognized && selected.valid && !selected.changed &&
+              select.instances.size() == 1U,
+          "classic ospf create of an existing instance was not a select");
 }

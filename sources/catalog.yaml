@@ -302,7 +302,7 @@ records:
     source_url: https://www.rfc-editor.org/rfc/rfc5286
     section: Sections 3.1 and 3.2
     rfc_refs: [RFC5286, RFC2328, RFC5340]
-    yang_path: /configure/router/ospf/loopfree-alternates
+    yang_path: /configure/router/ospf/loopfree-alternate
     last_verified_at: 2026-07-23
     implementation: [core/include/router/ospf_route_calculator.hpp, core/src/ospf/ospf_route_calculator.cpp, core/include/router/multi_device_routing.hpp, core/src/forwarding/multi_device_routing.cpp, core/src/forwarding/router_forwarder.cpp]
     tests: [core/tests/ospf/ospf_route_calculator_test.cpp, core/tests/forwarding/multi_device_routing_test.cpp, core/tests/forwarding/router_forwarder_test.cpp, core/tests/forwarding/router_forwarder_ospfv3_test.cpp, core/tests/forwarding/router_forwarder_local_ipv4_test.cpp, core/tests/forwarding/router_forwarder_ipv4_redirect_test.cpp]

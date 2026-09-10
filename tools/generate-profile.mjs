@@ -460,15 +460,29 @@ for (const command of cliSchema.commands ?? []) {
       typeof command.enters_context !== "boolean") {
     throw new Error(`${command.id}: enters_context must be boolean`);
   }
+  if (command.context_token_count !== undefined) {
+    if (command.enters_context !== true) {
+      throw new Error(
+        `${command.id}: context_token_count requires enters_context`,
+      );
+    }
+    if (!Number.isInteger(command.context_token_count) ||
+        command.context_token_count < 1 ||
+        command.context_token_count > command.tokens.length) {
+      throw new Error(`${command.id}: invalid context_token_count`);
+    }
+  }
   if (command.enters_context === true) {
     // `delete` in MD-CLI and `no` in classic CLI are edit operators. They
     // mutate the node selected by the remaining path but can never own a PWC
     // themselves. Rejecting this at generation time protects every feature
     // family from reintroducing fabricated `/delete` or `>no` contexts when a
     // future schema row is added.
-    const literalTokens = command.tokens.filter(
-      (token) => typeof token === "string",
-    );
+    const literalTokens = command.tokens.flatMap((token) => {
+      if (typeof token === "string") return [token];
+      if (typeof token?.literal === "string") return [token.literal];
+      return [];
+    });
     if (literalTokens.includes("delete") || literalTokens.includes("no")) {
       throw new Error(
         `${command.id}: delete and no operators cannot enter a context`,
@@ -482,12 +496,26 @@ for (const command of cliSchema.commands ?? []) {
   // release schema avoids command-ID switches for every affected family.
   maximumTokens = Math.max(maximumTokens, command.tokens.length);
   for (const token of command.tokens) {
-    if (typeof token !== "string" && !parameterKinds.includes(token?.parameter)) {
-      throw new Error(`${command.id}: invalid CLI parameter ${token?.parameter}`);
+    if (typeof token === "string") {
+      if (typeof cliSchema.literals?.[token] !== "string") {
+        throw new Error(`${command.id}: missing help description for literal ${token}`);
+      }
+      continue;
     }
-    if (typeof token === "string" &&
-        typeof cliSchema.literals?.[token] !== "string") {
-      throw new Error(`${command.id}: missing help description for literal ${token}`);
+    if (typeof token?.literal === "string") {
+      if (token.description !== undefined && typeof token.description !== "string") {
+        throw new Error(`${command.id}: literal description must be a string`);
+      }
+      const description = token.description ?? cliSchema.literals?.[token.literal];
+      if (typeof description !== "string") {
+        throw new Error(
+          `${command.id}: missing help description for literal ${token.literal}`,
+        );
+      }
+      continue;
+    }
+    if (!parameterKinds.includes(token?.parameter)) {
+      throw new Error(`${command.id}: invalid CLI parameter ${token?.parameter}`);
     }
   }
 }
@@ -495,9 +523,16 @@ if (cliSchema.release !== profile.release) {
   throw new Error(`CLI schema ${cliSchema.release} does not match profile ${profile.release}`);
 }
 
-const cppToken = (token) => typeof token === "string"
-  ? `{TokenKind::literal, ${cppString(token)}, ${cppString(cliSchema.literals[token])}}`
-  : `{TokenKind::${token.parameter}, ${cppString(cliSchema.parameters[token.parameter].display)}, ${cppString(cliSchema.parameters[token.parameter].description)}, ${cliSchema.parameters[token.parameter].continues_context_key === true}}`;
+const cppToken = (token) => {
+  if (typeof token === "string") {
+    return `{TokenKind::literal, ${cppString(token)}, ${cppString(cliSchema.literals[token])}}`;
+  }
+  if (typeof token?.literal === "string") {
+    const description = token.description ?? cliSchema.literals[token.literal];
+    return `{TokenKind::literal, ${cppString(token.literal)}, ${cppString(description)}}`;
+  }
+  return `{TokenKind::${token.parameter}, ${cppString(cliSchema.parameters[token.parameter].display)}, ${cppString(cliSchema.parameters[token.parameter].description)}, ${cliSchema.parameters[token.parameter].continues_context_key === true}}`;
+};
 const cliRows = cliSchema.commands.map((command) => {
   // Engine membership is a compact bit mask in generated C++. Both engines use
   // the same grammar row while retaining separate execution semantics.
@@ -505,6 +540,7 @@ const cliRows = cliSchema.commands.map((command) => {
     (command.engines.includes("classic") ? 2 : 0);
   const modifierMask = command.modifier === "detail" ? 1 : 0;
   const entersContext = command.enters_context === true;
+  const contextTokenCount = command.context_token_count ?? 0;
   // Workflow ownership is generated from the documented root operator. This
   // prevents every new feature family from requiring a second manual C++ list
   // merely to keep its leaves out of MD operational mode.
@@ -521,7 +557,7 @@ const cliRows = cliSchema.commands.map((command) => {
       ["md_compare", "md_commit", "md_discard"].includes(command.id));
   const tokens = command.tokens.map(cppToken);
   while (tokens.length < maximumTokens) tokens.push("{}");
-  return `    {CommandId::${command.id}, ${mask}, ${modifierMask}, ${entersContext}, ${configurationCommand}, ${command.tokens.length}, {{${tokens.join(", ")}}}, "${command.source_id}"}`;
+  return `    {CommandId::${command.id}, ${mask}, ${modifierMask}, ${entersContext}, ${configurationCommand}, ${command.tokens.length}, ${contextTokenCount}, {{${tokens.join(", ")}}}, "${command.source_id}"}`;
 }).join(",\n");
 
 const cliHeader = `#pragma once
@@ -568,6 +604,10 @@ struct CommandSpec {
   bool enters_context{};
   bool configuration_command{};
   std::uint8_t token_count{};
+  // Zero keeps every executable token except a trailing classic create keyword.
+  // A positive count selects an explicit prefix when create-time arguments
+  // such as IES customer or OSPF router-id must not become PWC components.
+  std::uint8_t context_token_count{};
   std::array<TokenSpec, maximum_tokens> tokens{};
   std::string_view source_id{};
 };

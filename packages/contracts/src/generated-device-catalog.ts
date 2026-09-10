@@ -322,11 +322,6 @@ export const PROFILE_CATALOG = {
         "sros": "tls-aes128-ccm-sha256",
         "openssl": "TLS_AES_128_CCM_SHA256",
         "pqc": false
-      },
-      {
-        "sros": "tls-aes128-ccm8-sha256",
-        "openssl": "TLS_AES_128_CCM_8_SHA256",
-        "pqc": false
       }
     ],
     "tls13_groups": [
@@ -362,21 +357,6 @@ export const PROFILE_CATALOG = {
       }
     ],
     "tls13_signatures": [
-      {
-        "sros": "tls-rsa-pkcs1-sha256",
-        "openssl": "rsa_pkcs1_sha256",
-        "pqc": false
-      },
-      {
-        "sros": "tls-rsa-pkcs1-sha384",
-        "openssl": "rsa_pkcs1_sha384",
-        "pqc": false
-      },
-      {
-        "sros": "tls-rsa-pkcs1-sha512",
-        "openssl": "rsa_pkcs1_sha512",
-        "pqc": false
-      },
       {
         "sros": "tls-ecdsa-secp256r1-sha256",
         "openssl": "ecdsa_secp256r1_sha256",
@@ -1185,5 +1165,5 @@ export const PROFILE_CATALOG_COMPILED = {
   "maximumMdaSlotsPerCard": 2,
   "maximumPortsPerMda": 40
 } as const;
-export const PROFILE_CATALOG_HASH = "7e766c2229de2671" as const;
-export const LAB_BUILD_HASH = "163a9553ac87d134" as const;
+export const PROFILE_CATALOG_HASH = "e9da4d759b0a4cf8" as const;
+export const LAB_BUILD_HASH = "df2652da2b832af7" as const;

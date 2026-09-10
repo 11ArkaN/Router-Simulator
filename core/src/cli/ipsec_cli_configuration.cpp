@@ -505,6 +505,88 @@ ipsec::configuration::TrafficSelectorEntry *materialize_selector(
   return &entries.back();
 }
 
+bool classic_create_selects_existing(CommandId id, const Configuration &state,
+                                     const cli_detail::ParsedCommand &command) {
+  using enum CommandId;
+  const auto named = [&](TokenKind kind, const auto &items) {
+    const auto text = cli_detail::argument(command, kind);
+    return text && ipsec::configuration::find_named(items, *text) != nullptr;
+  };
+  switch (id) {
+  case classic_static_sa_create:
+    return named(TokenKind::static_sa_name, state.static_sas);
+  case classic_ike_transform_create: {
+    const auto value = number(command, TokenKind::ike_transform_id);
+    return value && ipsec::configuration::find_ike(
+                        state, static_cast<std::uint16_t>(*value));
+  }
+  case classic_ipsec_transform_create: {
+    const auto value = number(command, TokenKind::ipsec_transform_id);
+    return value && ipsec::configuration::find_ipsec(
+                        state, static_cast<std::uint16_t>(*value));
+  }
+  case classic_ike_policy_create: {
+    const auto value = number(command, TokenKind::ike_policy_id);
+    return value && ipsec::configuration::find_policy(
+                        state, static_cast<std::uint16_t>(*value));
+  }
+  case classic_ts_list_create:
+    return named(TokenKind::ts_list_name, state.traffic_selector_lists);
+  case classic_ipsec_cert_profile_create:
+    return named(TokenKind::ipsec_cert_profile_name,
+                 state.certificate_profiles);
+  case classic_ipsec_trust_profile_create:
+    return named(TokenKind::ipsec_trust_anchor_profile_name,
+                 state.trust_anchor_profiles);
+  case classic_ipsec_ppk_list_create:
+    return named(TokenKind::ppk_list_name, state.ppk_lists);
+  case classic_transport_create:
+    return named(TokenKind::transport_profile_name,
+                 state.transport_mode_profiles);
+  case classic_tunnel_create: {
+    const auto value = number(command, TokenKind::tunnel_template_id);
+    return value &&
+           std::any_of(state.tunnel_templates.begin(),
+                       state.tunnel_templates.end(),
+                       [&](const auto &item) { return item.id == *value; });
+  }
+  case classic_ipsec_cert_entry_create: {
+    const auto profile_name =
+        cli_detail::argument(command, TokenKind::ipsec_cert_profile_name);
+    const auto entry_id =
+        number(command, TokenKind::ipsec_certificate_entry_id);
+    const auto *profile =
+        profile_name ? ipsec::configuration::find_named(
+                           state.certificate_profiles, *profile_name)
+                     : nullptr;
+    return profile && entry_id &&
+           std::any_of(profile->entries.begin(), profile->entries.end(),
+                       [&](const auto &entry) {
+                         return entry.id == *entry_id;
+                       });
+  }
+  case classic_ts_local_entry_create:
+  case classic_ts_remote_entry_create: {
+    const auto list_name =
+        cli_detail::argument(command, TokenKind::ts_list_name);
+    const auto entry_id = number(command, TokenKind::ts_entry_id);
+    const auto *list =
+        list_name ? ipsec::configuration::find_named(
+                        state.traffic_selector_lists, *list_name)
+                  : nullptr;
+    if (!list || !entry_id)
+      return false;
+    const auto &entries = id == classic_ts_local_entry_create ? list->local
+                                                              : list->remote;
+    return std::any_of(entries.begin(), entries.end(), [&](const auto &entry) {
+      return entry.id == *entry_id;
+    });
+  }
+  default:
+    return false;
+  }
+}
+
 } // namespace
 
 bool is_md_command(CommandId id) noexcept {
@@ -1104,9 +1186,11 @@ EditResult edit(Configuration &state,
         else if (id == md_ike_transform_aes128_gcm16 ||
                  id == md_ike_transform_aes256_gcm16 ||
                  id == classic_ike_transform_aes128_gcm16 ||
-                 id == classic_ike_transform_aes256_gcm16)
-          changed = configure(item->encryption, item->encryption_configured,
-                              encryption(id));
+                 id == classic_ike_transform_aes256_gcm16) {
+          if (item->authentication_encryption_configured)
+            changed = configure(item->encryption, item->encryption_configured,
+                                encryption(id));
+        }
         else if (id == md_ike_transform_prf_sha256 ||
                  id == classic_ike_transform_prf_sha256)
           changed = configure_flag(item->prf_sha256_configured);
@@ -1166,9 +1250,11 @@ EditResult edit(Configuration &state,
                  id == md_ipsec_transform_aes256_gcm16 ||
                  id == classic_ipsec_transform_aes128_gcm16 ||
                  id == classic_ipsec_transform_aes192_gcm16 ||
-                 id == classic_ipsec_transform_aes256_gcm16)
-          changed = configure(item->encryption, item->encryption_configured,
-                              encryption(id));
+                 id == classic_ipsec_transform_aes256_gcm16) {
+          if (item->authentication_encryption_configured)
+            changed = configure(item->encryption, item->encryption_configured,
+                                encryption(id));
+        }
         else if (id == md_ipsec_transform_esn_true ||
                  id == md_ipsec_transform_esn_false ||
                  id == classic_ipsec_transform_esn_true ||
@@ -2473,7 +2559,11 @@ EditResult edit(Configuration &state,
   // list entries from appearing after a rejected terminal command.
   if (!changed)
     state = before;
-  return {.recognized = true, .changed = changed, .instance = std::move(instance)};
+  return {.recognized = true,
+          .valid = changed ||
+                   classic_create_selects_existing(id, state, command),
+          .changed = changed,
+          .instance = std::move(instance)};
 }
 
 } // namespace router::lab::ipsec_cli
