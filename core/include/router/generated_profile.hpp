@@ -90,7 +90,7 @@ inline constexpr std::size_t fib_route_capacity = 18;
 inline constexpr std::uint32_t runtime_worker_count = 2U;
 inline constexpr std::uint32_t pthread_pool_min = 2U;
 inline constexpr std::uint32_t pthread_pool_max = 4U;
-inline constexpr std::size_t command_message_bytes = 4096;
+inline constexpr std::size_t command_message_bytes = 8192;
 inline constexpr std::size_t response_message_bytes = 16384;
 inline constexpr std::size_t packet_pool_bytes = 67108864U;
 inline constexpr std::size_t link_queue_capacity = 256;
@@ -102,7 +102,7 @@ inline constexpr std::size_t forwarding_ring_capacity = 16;
 inline constexpr std::size_t cli_input_queue_bytes = 65536U;
 inline constexpr std::size_t cli_output_queue_bytes = 1048576U;
 inline constexpr std::size_t system_name_bytes = 64;
-inline constexpr std::size_t port_description_bytes = 80;
+inline constexpr std::size_t port_description_bytes = 255;
 inline constexpr std::size_t host_name_bytes = 64;
 inline constexpr std::size_t project_name_bytes = 128;
 inline constexpr std::uint32_t default_ping_count = 5U;
@@ -115,9 +115,9 @@ inline constexpr std::uint32_t runtime_snapshot_abi = 9;
 inline constexpr std::uint32_t telemetry_abi = 6;
 inline constexpr std::uint32_t runtime_message_abi = 4;
 inline constexpr std::uint32_t checkpoint_abi = 8;
-inline constexpr std::uint64_t profile_hash = 0xf2ec50ffe81bcbfaULL;
+inline constexpr std::uint64_t profile_hash = 0x8c0fadddafa2c13bULL;
 inline constexpr std::uint64_t checkpoint_schema_hash = 0x23b42724ffac6c04ULL;
-inline constexpr std::uint64_t build_hash = 0xe68ebd9d620a0481ULL;
+inline constexpr std::uint64_t build_hash = 0xa3da94f56abb9ef3ULL;
 
 // Hardware initialization values are experimental emulator timing profiles,
 // not claims about physical platform boot guarantees.

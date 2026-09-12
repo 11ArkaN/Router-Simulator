@@ -2089,9 +2089,11 @@ void lab_runtime_tests() {
         // SR OS treats the system interface as a loopback and therefore
         // accepts an IPv6 host address without a physical port.  This command
         // guards the contextual candidate editor that previously rejected all
-        // IPv6 system-interface leaves with MGMT_CORE #2301.
+        // IPv6 system-interface leaves with MGMT_CORE #2301. The address must
+        // stay distinct from checkpoint-edge: assigning the same IPv6 address
+        // twice is rejected at commit.
         "router \"Base\" interface system ipv6 address "
-        "2001:db8:ffff::1 prefix-length 128",
+        "2001:db8:ffff::ffff prefix-length 128",
         "router \"Base\" interface system admin-state enable"}) {
     const auto result = runtime.command(message(
         lab_runtime_protocol::session_execute, {"r1-console-1", command}));
@@ -2100,21 +2102,26 @@ void lab_runtime_tests() {
           "valid system interface MD edit failed: " + std::string{command} +
           " output=" + std::string{result});
   }
+  // The system interface is permanent in SR OS: MD delete of the list entry
+  // is an explicit error in both engines, never a successful removal. The
+  // failed delete must leave the configured system leaves intact.
   require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1",
                                    "delete router \"Base\" interface system"}))
-                  .find("MINOR:") == std::string_view::npos,
-          "MD could not remove the complete system-interface list entry");
+                  .find("MINOR:") != std::string_view::npos,
+          "MD delete wrongly removed the permanent system interface");
   for (const auto command :
        {"router \"Base\" interface system ipv4 primary address "
         "10.255.0.1 prefix-length 32",
+        // The system loopback address must not duplicate checkpoint-edge:
+        // assigning the same IPv6 address twice is rejected at commit.
         "router \"Base\" interface system ipv6 address "
-        "2001:db8:ffff::1 prefix-length 128",
+        "2001:db8:ffff::ffff prefix-length 128",
         "router \"Base\" interface system admin-state enable"})
     require(runtime.command(message(lab_runtime_protocol::session_execute,
                                     {"r1-console-1", command}))
                     .find("MINOR:") == std::string_view::npos,
-            "MD could not recreate the system interface after list deletion");
+            "MD could not edit the system interface after rejected deletion");
 
   // The system-interface address must survive candidate publication and be
   // visible through the same operational report used by Browser Use.  Looking
@@ -2127,7 +2134,7 @@ void lab_runtime_tests() {
   const auto dual_stack_system = runtime.command(message(
       lab_runtime_protocol::session_execute,
       {"r1-console-1", "//show router interface system detail"}));
-  require(dual_stack_system.find("2001:db8:ffff::1/128") !=
+  require(dual_stack_system.find("2001:db8:ffff::ffff/128") !=
               std::string_view::npos,
           "show router interface omitted the committed IPv6 system address");
 
@@ -2877,7 +2884,6 @@ void lab_runtime_tests() {
         "configure router interface system address 10.255.0.1/32",
         "configure router interface system no shutdown",
         "configure router interface system shutdown",
-        "configure router no interface system",
         "configure router interface system address 10.255.0.1/32",
         "configure router interface system no shutdown"}) {
     const auto result = runtime.command(message(
@@ -2887,6 +2893,13 @@ void lab_runtime_tests() {
                                std::string{command} +
                                " output=" + std::string{result});
   }
+  // The system interface is permanent: classic removal fails explicitly even
+  // after shutdown, and the shutdown interface stays editable afterwards.
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1",
+                                   "configure router no interface system"}))
+                  .find("Error:") != std::string_view::npos,
+          "classic wrongly removed the permanent system interface");
   const std::vector<std::string_view> tls_classic_commands{
       "configure system security tls no use-pqc-only",
       "configure system security tls client-cipher-list classic-ciphers create",

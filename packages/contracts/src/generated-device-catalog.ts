@@ -421,6 +421,8 @@ export const PROFILE_CATALOG = {
   },
   "protocol_defaults": {
     "dhcpv4_server_name_bytes": 32,
+    "dhcpv4_pool_name_bytes": 64,
+    "dhcpv6_pool_name_bytes": 64,
     "dhcpv4_description_bytes": 80,
     "dhcpv4_lease_time_minimum_seconds": 10,
     "dhcpv4_lease_time_maximum_seconds": 315446399,
@@ -1165,5 +1167,5 @@ export const PROFILE_CATALOG_COMPILED = {
   "maximumMdaSlotsPerCard": 2,
   "maximumPortsPerMda": 40
 } as const;
-export const PROFILE_CATALOG_HASH = "e9da4d759b0a4cf8" as const;
-export const LAB_BUILD_HASH = "df2652da2b832af7" as const;
+export const PROFILE_CATALOG_HASH = "4df9434732c56780" as const;
+export const LAB_BUILD_HASH = "28bdd976e763f4b6" as const;

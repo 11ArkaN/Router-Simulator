@@ -21,12 +21,16 @@ namespace router::service {
 
 inline constexpr std::uint32_t minimum_identifier = 1U;
 inline constexpr std::uint32_t maximum_identifier = 2'147'483'647U;
+// SR OS documents service identifiers 1 through 2147483648. The bound needs
+// the full unsigned 32-bit range; it is not INT32_MAX. Customer identifiers
+// keep the shared maximum above.
+inline constexpr std::uint32_t maximum_service_identifier = 2'147'483'648U;
 inline constexpr std::size_t maximum_service_name_octets = 64U;
 inline constexpr std::size_t maximum_interface_name_octets = 32U;
 inline constexpr std::size_t maximum_description_octets = 80U;
 inline constexpr std::size_t maximum_relay_interface_id_octets = 80U;
 inline constexpr std::uint16_t maximum_vlan_identifier = 4094U;
-inline constexpr std::uint16_t maximum_relay_leases = 8000U;
+inline constexpr std::uint16_t maximum_relay_leases = 32767U;
 
 enum class EthernetPortMode : std::uint8_t { network, access, hybrid };
 enum class EthernetEncapsulation : std::uint8_t { null, dot1q, qinq };

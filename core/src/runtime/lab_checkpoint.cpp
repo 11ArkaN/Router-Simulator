@@ -7698,6 +7698,8 @@ void tls_configuration(Writer &out, const tls_profile::Configuration &state) {
     out.string(profile.client_common_name_list);
     out.integer(profile.protocol_version);
     out.boolean(profile.protocol_version_configured);
+    out.integer(profile.renegotiate_timer_seconds);
+    out.boolean(profile.renegotiate_timer_configured);
     tls_status_verification(out, profile.status_verification);
   }
 }
@@ -7806,6 +7808,9 @@ bool tls_configuration(Reader &in, tls_profile::Configuration &state) {
         !in.integer(profile.protocol_version) ||
         !in.boolean(profile.protocol_version_configured) ||
         profile.protocol_version > tls_profile::ProtocolVersion::all ||
+        !in.integer(profile.renegotiate_timer_seconds) ||
+        !in.boolean(profile.renegotiate_timer_configured) ||
+        profile.renegotiate_timer_seconds > 65000U ||
         !tls_status_verification(in, profile.status_verification))
       return false;
   }
@@ -8563,6 +8568,7 @@ void bof_autoconfigure(Writer &out,
   common(state.ipv4);
   common(state.ipv6);
   out.integer(state.ipv6.client_type);
+  out.boolean(state.ipv6.client_type_configured);
   out.octets(state.ipv4_transaction_secret);
   out.octets(state.ipv6_transaction_secret);
 }
@@ -8580,6 +8586,7 @@ bool bof_autoconfigure(Reader &in,
   if (!common(state.ipv4, 127U) || !common(state.ipv6, 124U) ||
       !in.integer(state.ipv6.client_type) ||
       state.ipv6.client_type > bof::Dhcpv6ClientType::duid_link_local ||
+      !in.boolean(state.ipv6.client_type_configured) ||
       !in.octets(state.ipv4_transaction_secret) ||
       !in.octets(state.ipv6_transaction_secret))
     return false;

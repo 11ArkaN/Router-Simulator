@@ -134,7 +134,7 @@ Pool *pool_by_name(Server &server, std::string_view name) noexcept {
 Pool *ensure_pool(Server &server, std::string_view name) {
   if (auto *existing = pool_by_name(server, name))
     return existing;
-  if (name.empty() || name.size() > 32U ||
+  if (name.empty() || name.size() > device_catalog::dhcpv6_pool_name_bytes ||
       server.pools.size() >=
           device_catalog::dhcpv6_address_pools_per_server +
               device_catalog::dhcpv6_prefix_pools_per_server)
@@ -335,8 +335,15 @@ EditResult edit(RouterConfiguration &configuration,
     break;
   case md_delete_dhcpv6_server:
   case classic_dhcpv6_server_remove:
-    next.servers.erase(
-        std::ranges::find(next.servers, *server_name, &Server::name));
+    // Classic requires shutdown before removal, matching the DHCPv4, IES and
+    // OSPF object lifecycle. MD delete removes the list entry directly.
+    // Absent servers already fail above without materializing state.
+    accepted = server != nullptr &&
+               (id == CommandId::md_delete_dhcpv6_server ||
+                !server->admin_enabled);
+    if (accepted)
+      next.servers.erase(
+          std::ranges::find(next.servers, *server_name, &Server::name));
     break;
   case md_dhcpv6_default_preferred_lifetime:
   case classic_dhcpv6_default_preferred_lifetime:

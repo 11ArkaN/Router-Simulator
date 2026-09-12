@@ -38,10 +38,10 @@ struct EthernetSwitchProfile {
 // One release owns this entire generated catalog. Runtime capability output
 // consumes this value instead of repeating the release pin in hand-written C++.
 inline constexpr std::string_view release{"26.7.R1"};
-inline constexpr std::uint64_t catalog_hash = 0xe9da4d759b0a4cf8ULL;
+inline constexpr std::uint64_t catalog_hash = 0x4df9434732c56780ULL;
 inline constexpr std::uint64_t checkpoint_schema_hash = 0x23b42724ffac6c04ULL;
 inline constexpr std::uint64_t runtime_protocol_hash = 0x0bc477cf9500a83bULL;
-inline constexpr std::uint64_t build_hash = 0xdf2652da2b832af7ULL;
+inline constexpr std::uint64_t build_hash = 0x28bdd976e763f4b6ULL;
 
 inline constexpr std::size_t maximum_routers = 16;
 inline constexpr std::size_t maximum_sr_routers = 16;
@@ -267,6 +267,10 @@ inline constexpr std::chrono::seconds dynamic_arp_timeout{
     14400};
 inline constexpr std::size_t dhcpv4_server_name_bytes =
     32;
+inline constexpr std::size_t dhcpv4_pool_name_bytes =
+    64;
+inline constexpr std::size_t dhcpv6_pool_name_bytes =
+    64;
 inline constexpr std::size_t dhcpv4_description_bytes =
     80;
 inline constexpr std::uint32_t dhcpv4_lease_time_minimum_seconds =

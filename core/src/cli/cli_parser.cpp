@@ -375,9 +375,9 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
         length = length * 10U + static_cast<unsigned>(byte - '0');
       return length >= 4U && length <= ip::ipv6_address_bits;
     }
-    case ospf_interface_type:
+    case classic_ospf_interface_type:
       return value == "point-to-point" || value == "broadcast" ||
-             value == "non-broadcast" || value == "point-to-multipoint";
+             value == "non-broadcast";
     case md_ospf_interface_type:
       return value == "point-to-point" || value == "broadcast" ||
              value == "non-broadcast" || value == "p2mp-nbma";
@@ -758,6 +758,7 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case ospf_preference:
   case ospf_authentication_key:
   case ospf_key_id:
+  case ospf_md5_key_id:
   case ospf_keychain_name:
   case ospf_keychain_time:
   case ospf_tolerance:
@@ -797,11 +798,11 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
     add_candidate(items, std::string{token.display}, false, false, partial,
                   token.description, context);
     break;
-  case ospf_interface_type:
-    // Classic CLI retains point-to-multipoint. MD-CLI uses the YANG
-    // p2mp-nbma spelling for the same network type.
-    for (const auto value : {"point-to-point", "broadcast", "non-broadcast",
-                             "point-to-multipoint"})
+  case classic_ospf_interface_type:
+    // Classic CLI documents only the broadcast, point-to-point and
+    // non-broadcast network types. MD-CLI uses the YANG p2mp-nbma spelling
+    // for the same network type.
+    for (const auto value : {"point-to-point", "broadcast", "non-broadcast"})
       add_candidate(items, value, true, false, partial, token.description,
                     context);
     break;

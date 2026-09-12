@@ -932,7 +932,13 @@ EditResult edit(Configuration &state,
           state.certificate_profiles.end(), [&](const auto &profile) {
             return profile.name == *certificate_name;
           });
-      if (!referenced_by_transport && found != state.certificate_profiles.end()) {
+      // Classic removal requires shutdown first, matching the TLS profile
+      // lifecycle. MD delete removes the list entry directly.
+      const bool shutdown =
+          id == md_delete_ipsec_cert_profile ||
+          (found != state.certificate_profiles.end() && !found->enabled);
+      if (shutdown && !referenced_by_transport &&
+          found != state.certificate_profiles.end()) {
         state.certificate_profiles.erase(found);
         changed = true;
       }
@@ -980,7 +986,11 @@ EditResult edit(Configuration &state,
                 [numeric_id](const auto &entry) {
                   return entry.id == numeric_id;
                 });
-            if (found != profile->entries.end()) {
+            // Classic entry removal requires a shut down profile, mirroring
+            // the profile-level gate above. MD delete needs no such cascade.
+            const bool shutdown = id == md_delete_ipsec_cert_entry ||
+                                  !profile->enabled;
+            if (shutdown && found != profile->entries.end()) {
               profile->entries.erase(found);
               changed = true;
             }
@@ -1542,12 +1552,17 @@ EditResult edit(Configuration &state,
                           id == classic_ike_policy_no_nat)) {
         changed = item->nat_traversal_configured;
         clear_nat_traversal(*item);
-      } else if (item && id == md_ike_policy_lifetime) {
+      } else if (item && (id == md_ike_policy_lifetime ||
+                          id == classic_ike_policy_lifetime)) {
         const auto value = number(command, TokenKind::ipsec_lifetime);
         changed = value && *value >= 1'200U && *value <= 31'536'000U &&
                   configure(item->ipsec_lifetime_seconds,
                             item->ipsec_lifetime_configured,
                             static_cast<std::uint32_t>(*value));
+      } else if (item && (id == md_delete_ike_policy_lifetime ||
+                          id == classic_ike_policy_no_lifetime)) {
+        changed = remove(item->ipsec_lifetime_seconds,
+                         item->ipsec_lifetime_configured, 3'600U);
       }
     }
   } else if (ts_name) {

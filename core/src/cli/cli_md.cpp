@@ -294,8 +294,10 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
                                       entry.prefix_length == route->prefix;
                              })
               : candidate.static_routes.end();
-    if (current == candidate.static_routes.end() || current->admin_enabled)
+    if (current == candidate.static_routes.end())
       return "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+    // MD delete removes the entry regardless of its admin-state leaf. The
+    // classic shutdown precondition never applies to candidate edits.
     const auto before = candidate.static_routes;
     if (!remove_static(candidate,
                        *argument(command, cli_schema::TokenKind::ipv4_prefix)))

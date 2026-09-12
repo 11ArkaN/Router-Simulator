@@ -120,7 +120,7 @@ Pool *ensure_pool(Server &server, std::string_view name) {
   if (auto *existing = pool_by_name(server, name))
     return existing;
   if (name.empty() ||
-      name.size() > device_catalog::dhcpv4_server_name_bytes ||
+      name.size() > device_catalog::dhcpv4_pool_name_bytes ||
       server.pools.size() >= device_catalog::dhcpv4_pools_per_server)
     return nullptr;
   server.pools.push_back({.name = std::string{name}});
@@ -291,10 +291,20 @@ EditResult edit(RouterConfiguration &configuration,
     server->force_renews = false;
     break;
   case md_delete_dhcpv4_server:
-  case classic_dhcpv4_server_remove:
-    next.servers.erase(std::ranges::find(next.servers, *server_name,
-                                         &Server::name));
+  case classic_dhcpv4_server_remove: {
+    // Removing an absent server is an explicit error, not a silent no-op.
+    // Classic additionally requires shutdown first, matching the IES and
+    // OSPF object lifecycle; MD delete removes the list entry directly.
+    const bool existed =
+        server_by_name(configuration, *server_name) != nullptr;
+    const bool shutdown =
+        id == CommandId::md_delete_dhcpv4_server || !server->admin_enabled;
+    accepted = existed && shutdown;
+    if (accepted)
+      next.servers.erase(std::ranges::find(next.servers, *server_name,
+                                           &Server::name));
     break;
+  }
   case md_dhcpv4_pool_description:
   case classic_dhcpv4_pool_description: {
     const auto value = argument_at(command, TokenKind::description);

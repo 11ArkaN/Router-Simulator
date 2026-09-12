@@ -110,7 +110,7 @@ resources:
   pthread_pool_max: 4
   # One command slot must hold the complete atomic running datastore with ten
   # maximum-length port descriptions. Partial configuration is never streamed.
-  command_message_bytes: 4096
+  command_message_bytes: 8192
   response_message_bytes: 16384
   static_route_capacity: 8
   fib_route_capacity: 18
@@ -142,8 +142,9 @@ timing:
   autosave_debounce_milliseconds: 400
 limits:
   system_name_bytes: 64
-  # The port description leaf accepts 1 to 80 printable ASCII characters.
-  port_description_bytes: 80
+  # The port description leaf accepts 1 to 255 printable ASCII characters,
+  # matching the 26.7.R1 very-long-description range.
+  port_description_bytes: 255
   host_name_bytes: 64
   project_name_bytes: 128
   # Notes are portable project metadata, not an SR OS leaf. The bound prevents

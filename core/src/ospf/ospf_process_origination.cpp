@@ -916,10 +916,16 @@ ReceiveStatus InstanceProcess::receive_validated(
         return ReceiveStatus::authentication_failure;
       const auto algorithm =
           selected->algorithm == KeychainAlgorithm::hmac_sha1
-              ? authentication::V3CryptographicAlgorithm::hmac_sha1
-              : authentication::V3CryptographicAlgorithm::hmac_sha256;
-      if (!authentication::verify_v3_authentication_trailer(
-              decoded, ipv6_source, algorithm,
+              ? std::optional{
+                    authentication::V3CryptographicAlgorithm::hmac_sha1}
+          : selected->algorithm == KeychainAlgorithm::hmac_sha256
+              ? std::optional{
+                    authentication::V3CryptographicAlgorithm::hmac_sha256}
+              : std::optional<
+                    authentication::V3CryptographicAlgorithm>{};
+      if (!algorithm ||
+          !authentication::verify_v3_authentication_trailer(
+              decoded, ipv6_source, *algorithm,
               std::span<const std::uint8_t>{
                   selected->key.data(), selected->key_size}))
         return ReceiveStatus::authentication_failure;

@@ -133,17 +133,18 @@ void cli_tests() {
           "MD card edit was not silent or did not mark the candidate");
   router::execute_cli(state, session, "card 1 mda 1 mda-type me10-10gb-sfp+",
                       no_ping);
-  const auto maximum_description = std::string(80, 'x');
+  // The 26.7 very-long-description range allows 1 through 255 characters.
+  const auto maximum_description = std::string(255, 'x');
   router::execute_cli(state, session,
                       "port 1/1/1 description \"" + maximum_description + "\"",
                       no_ping);
-  require(state.configuration.candidate.ports[0].description[79] == 'x',
-          "MD port description rejected the documented 80-character limit");
+  require(state.configuration.candidate.ports[0].description[254] == 'x',
+          "MD port description rejected the documented 255-character limit");
   const auto oversized_description = router::execute_cli(
-      state, session, "port 1/1/1 description \"" + std::string(81, 'x') + "\"",
-      no_ping);
+      state, session,
+      "port 1/1/1 description \"" + std::string(256, 'x') + "\"", no_ping);
   require(contains(oversized_description, "MINOR: MGMT_CORE #2301"),
-          "MD port description accepted more than 80 characters");
+          "MD port description accepted more than 255 characters");
   // MD-CLI accepts the edit operator at the selected child as well as at the
   // beginning of a relative line. This spelling exercises the mid-path form
   // and must resolve to the same generated delete owner without changing PWC.
@@ -328,13 +329,6 @@ void cli_tests() {
       "router \"Base\" static-routes route 203.0.113.0/24 route-type unicast "
       "next-hop 198.51.100.2",
       no_ping);
-  const auto active_md_delete = router::execute_cli(
-      state, session,
-      "/delete router static-routes route 203.0.113.0/24 "
-      "route-type unicast",
-      no_ping);
-  require(contains(active_md_delete, "currently not allowed"),
-          "MD deleted a static route while its next hop was enabled");
   router::execute_cli(state, session, "admin-state disable", no_ping);
   const auto route_compare =
       router::execute_cli(state, session, "compare", no_ping);
@@ -368,6 +362,33 @@ void cli_tests() {
   require(!state.configuration.running.static_routes[0].valid,
           "MD delete did not remove the keyed static-route entry");
   router::execute_cli(state, session, "top", no_ping);
+
+  // MD delete removes a list entry regardless of its admin-state leaf. The
+  // classic shutdown precondition never applies to candidate edits, so an
+  // enabled route is removed instead of rejected with an explicit error.
+  router::DeviceState enabled_state;
+  router::CliSession enabled_session;
+  router::execute_cli(enabled_state, enabled_session, "configure exclusive",
+                      no_ping);
+  router::execute_cli(
+      enabled_state, enabled_session,
+      "router \"Base\" static-routes route 203.0.113.0/24 route-type unicast "
+      "next-hop 198.51.100.2",
+      no_ping);
+  const auto enabled_delete = router::execute_cli(
+      enabled_state, enabled_session,
+      "/delete router static-routes route 203.0.113.0/24 "
+      "route-type unicast",
+      no_ping);
+  require(!contains(enabled_delete, "Invalid element") &&
+              !contains(enabled_delete, "not allowed") &&
+              !contains(enabled_delete, "Unknown element"),
+          "MD delete of an enabled static route was rejected");
+  const auto enabled_compare =
+      router::execute_cli(enabled_state, enabled_session, "compare", no_ping);
+  require(!contains(enabled_compare, "+           route") &&
+              !contains(enabled_compare, "-           route"),
+          "MD delete left a removed static route in the candidate");
 
   // System reports consume modeled state rather than fixed demo text. Uptime,
   // pinned image identity and the unsaved configuration indicator must exist.

@@ -286,6 +286,33 @@ features:
   cli.ospf_interface_detail:
     status: implemented
     source_ids: [nokia.sros.26_7.ospf.interface_detail]
+  cli.ospf_area_hierarchy:
+    status: implemented
+    source_ids: [nokia.sros.26_7.ospf.configuration_model]
+  cli.ospf_virtual_link_auth:
+    status: implemented
+    source_ids: [nokia.sros.26_7.ospf.virtual_link]
+  cli.system_interface_permanence:
+    status: implemented
+    source_ids: [nokia.sros.26_7.router_interface.configuration]
+  cli.show_reset_filters:
+    status: implemented
+    source_ids: [nokia.sros.26_7.show.fib, nokia.sros.26_7.show.arp, nokia.sros.26_7.ipv6.neighbor_operational, nokia.sros.26_7.clear.arp]
+  management.pki_configuration:
+    status: unsupported
+    source_ids: [nokia.sros.26_7.pki.configuration]
+  management.chassis_configuration:
+    status: unsupported
+    source_ids: [nokia.sros.26_7.chassis.configuration]
+  cli.traceroute:
+    status: unsupported
+    source_ids: [nokia.sros.26_7.traceroute]
+  cli.tls12_cipher_configuration:
+    status: unsupported
+    source_ids: [nokia.sros.26_7.tls.tls12_cipher]
+  ipsec.client_database:
+    status: unsupported
+    source_ids: [nokia.sros.26_7.ipsec.client_database]
   ipv6.duplicate_address_detection:
     status: implemented
     source_ids: [ietf.ipv6.dad.rfc4862]

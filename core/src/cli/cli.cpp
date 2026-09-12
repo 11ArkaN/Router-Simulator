@@ -552,23 +552,80 @@ std::optional<std::string> operational_command(const DeviceState &state,
         << table_rule;
     return out.str();
   }
-  if (command.spec->id == show_router_fib) {
+  if (command.spec->id == show_router_fib ||
+      command.spec->id == show_router_fib_ipv4 ||
+      command.spec->id == show_router_fib_ipv6 ||
+      command.spec->id == show_router_fib_prefix_ipv4 ||
+      command.spec->id == show_router_fib_prefix_ipv4_longer ||
+      command.spec->id == show_router_fib_prefix_ipv6 ||
+      command.spec->id == show_router_fib_prefix_ipv6_longer ||
+      command.spec->id == show_router_fib_summary) {
     const auto slot = argument(command, cli_schema::TokenKind::card_slot);
     if (!slot || *slot != std::to_string(profile::line_card_slot))
       return "MINOR: MGMT_CORE #2301: Invalid element value";
+    // This legacy device render path carries no IPv6 FIB. IPv6 selectors are
+    // served by the runtime supervisor path; here they report explicitly
+    // instead of fabricating an empty forwarding table.
+    if (command.spec->id == show_router_fib_ipv6 ||
+        command.spec->id == show_router_fib_prefix_ipv6 ||
+        command.spec->id == show_router_fib_prefix_ipv6_longer)
+      return "MINOR: CLI #2001: Command is not supported";
+    const bool summary = command.spec->id == show_router_fib_summary;
+    const bool longer = command.spec->id == show_router_fib_prefix_ipv4_longer;
+    std::uint32_t selected_network{};
+    unsigned selected_length{};
+    bool prefix_filter = false;
+    if (command.spec->id == show_router_fib_prefix_ipv4 || longer) {
+      const auto text = argument(command, cli_schema::TokenKind::ipv4_prefix);
+      const auto slash =
+          text ? text->find('/') : std::string_view::npos;
+      if (!text || slash == std::string_view::npos)
+        return "MINOR: MGMT_CORE #2301: Invalid element value";
+      const auto network = ipv4_value(text->substr(0, slash));
+      unsigned length{};
+      const auto parsed =
+          std::from_chars(text->data() + slash + 1,
+                          text->data() + text->size(), length);
+      if (!network || parsed.ec != std::errc{} ||
+          parsed.ptr != text->data() + text->size() || length > 32U)
+        return "MINOR: MGMT_CORE #2301: Invalid element value";
+      const auto mask = routing::prefix_mask(static_cast<std::uint8_t>(length));
+      if ((*network & mask) != *network)
+        return "MINOR: MGMT_CORE #2301: Invalid element value";
+      selected_network = *network;
+      selected_length = length;
+      prefix_filter = true;
+    }
+    const auto prefix_matches = [&](std::uint32_t network,
+                                    unsigned length) {
+      if (!prefix_filter)
+        return true;
+      if (length < selected_length)
+        return false;
+      const auto mask = routing::prefix_mask(
+          static_cast<std::uint8_t>(selected_length));
+      if ((network & mask) != selected_network)
+        return false;
+      return longer || length == selected_length;
+    };
     std::ostringstream out;
     out << table_rule << "\nFIB Display\n"
-        << table_rule
-        << "\nPrefix [Flags]                                              "
-           "Protocol\n"
-        << "  NextHop\n"
-        << row_rule;
+        << table_rule;
+    if (!summary)
+      out << "\nPrefix [Flags]                                              "
+             "Protocol\n"
+          << "  NextHop\n"
+          << row_rule;
     std::size_t count{};
     for (std::size_t index = 0; index < running.interface_count; ++index) {
       const auto &interface = running.interfaces[index];
       if (!interface.valid || !state.interface_operational(index))
         continue;
+      if (!prefix_matches(interface.network, interface.prefix_length))
+        continue;
       ++count;
+      if (summary)
+        continue;
       out << '\n'
           << std::left << std::setw(61)
           << (ipv4_value_text(interface.network) + '/' +
@@ -581,7 +638,11 @@ std::optional<std::string> operational_command(const DeviceState &state,
       if (!route.valid || !route.admin_enabled ||
           !resolving_interface(state, route.next_hop))
         continue;
+      if (!prefix_matches(route.network, route.prefix_length))
+        continue;
       ++count;
+      if (summary)
+        continue;
       const auto prefix = ipv4_value_text(route.network) + '/' +
                           std::to_string(route.prefix_length);
       const auto interface_index = resolving_interface(state, route.next_hop);
@@ -785,16 +846,27 @@ bool install_static(DeviceConfiguration &configuration,
 bool remove_static(DeviceConfiguration &configuration,
                    std::string_view prefix) {
   // The route list key is destination prefix plus route type. The milestone
-  // exposes only unicast, so parsing with a throwaway valid next hop reuses the
-  // same strict host-bit and prefix-length validation as route creation.
-  const auto parsed = parse_static_route(prefix, "0.0.0.0");
-  if (!parsed)
+  // exposes only unicast, so only the prefix half of strict creation
+  // validation applies here. A next hop is never part of a prefix deletion.
+  const auto slash = prefix.find('/');
+  if (slash == std::string_view::npos)
+    return false;
+  const auto network = ipv4_value(prefix.substr(0, slash));
+  unsigned length{};
+  const auto text = prefix.substr(slash + 1U);
+  const auto parsed =
+      std::from_chars(text.data(), text.data() + text.size(), length);
+  if (!network || parsed.ec != std::errc{} ||
+      parsed.ptr != text.data() + text.size() || length > 32U)
+    return false;
+  const auto mask = routing::prefix_mask(static_cast<std::uint8_t>(length));
+  if ((*network & mask) != *network)
     return false;
   const auto existing = std::find_if(
       configuration.static_routes.begin(), configuration.static_routes.end(),
-      [&parsed](const StaticRouteConfiguration &route) {
-        return route.valid && route.network == parsed->network &&
-               route.prefix_length == parsed->prefix;
+      [&](const StaticRouteConfiguration &route) {
+        return route.valid && route.network == *network &&
+               route.prefix_length == static_cast<std::uint8_t>(length);
       });
   if (existing == configuration.static_routes.end())
     return false;

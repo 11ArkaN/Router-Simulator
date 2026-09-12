@@ -386,6 +386,18 @@ bool edit_relay(const Configuration &configuration,
     relay.servers.clear();
     return true;
   }
+  if (id == classic_ies_relay_no_server_address) {
+    const auto destination = relay_destination(
+        configuration, value(command, TokenKind::ipv6_with_zone));
+    if (!destination)
+      return false;
+    const auto found = std::find(relay.servers.begin(), relay.servers.end(),
+                                 *destination);
+    if (found == relay.servers.end())
+      return false;
+    relay.servers.erase(found);
+    return true;
+  }
 
   const auto address_leaf = [&](std::optional<packet::Ipv6> &leaf,
                                 bool deleting) {
@@ -673,7 +685,8 @@ bool edit_impl(Configuration &configuration,
                               : md_service(configuration, service_name);
   } else {
     const auto service_id = decimal<std::uint32_t>(value(command, TokenKind::service_id));
-    if (!service_id)
+    if (!service_id || *service_id < service::minimum_identifier ||
+        *service_id > service::maximum_service_identifier)
       return false;
     ies = service_by_id(configuration, *service_id);
     if (id == classic_ies_create) {
@@ -713,7 +726,7 @@ bool edit_impl(Configuration &configuration,
   if (id == md_ies_service_id) {
     const auto number = decimal<std::uint32_t>(value(command, TokenKind::service_id));
     return number && *number >= service::minimum_identifier &&
-           *number <= service::maximum_identifier &&
+           *number <= service::maximum_service_identifier &&
            !service_by_id(configuration, *number) &&
            set_distinct(ies->service_id, *number);
   }

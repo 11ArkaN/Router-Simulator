@@ -33,6 +33,10 @@ struct DhcpClientIntent {
 
 struct Dhcpv6ClientIntent : DhcpClientIntent {
   Dhcpv6ClientType client_type{Dhcpv6ClientType::duid_enterprise};
+  // YANG defines no default for client-type. Presence is tracked separately
+  // so delete clears the leaf instead of inventing a default value. Boot
+  // transmission falls back to DUID-EN only as an emulator default.
+  bool client_type_configured{};
 
   bool operator==(const Dhcpv6ClientIntent &) const = default;
 };

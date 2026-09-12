@@ -127,9 +127,11 @@ bool version_three(CommandId id) noexcept {
   case md_ospf3_admin_disable:
   case md_ospf3_router_id:
   case md_ospf3_reference_bandwidth:
+  case md_delete_ospf3_reference_bandwidth:
   case md_ospf3_preference:
   case md_ospf3_external_preference:
   case md_ospf3_export_policy:
+  case md_delete_ospf3_export_policy:
   case md_ospf3_asbr:
   case md_delete_ospf3_asbr:
   case md_ospf3_overload:
@@ -147,8 +149,9 @@ bool version_three(CommandId id) noexcept {
   case md_delete_ospf3_area_stub:
   case md_ospf3_area_nssa:
   case md_delete_ospf3_area_nssa:
-  case md_ospf3_area_summaries:
-  case md_ospf3_area_default_metric:
+  case md_ospf3_stub_summaries:
+  case md_ospf3_nssa_summaries:
+  case md_ospf3_stub_default_metric:
   case md_ospf3_area_range_advertise:
   case md_ospf3_area_range_suppress:
   case md_delete_ospf3_area_range:
@@ -162,7 +165,8 @@ bool version_three(CommandId id) noexcept {
   case md_delete_ospf3_virtual_link_retransmit:
   case md_ospf3_virtual_link_transit_delay:
   case md_delete_ospf3_virtual_link_transit_delay:
-  case md_ospf3_virtual_link_auth_bidirectional:
+  case md_ospf3_virtual_link_admin_enable:
+  case md_ospf3_virtual_link_admin_disable:
   case md_ospf3_virtual_link_auth_directional:
   case md_delete_ospf3_virtual_link_authentication:
   case md_ospf3_interface_type:
@@ -172,12 +176,15 @@ bool version_three(CommandId id) noexcept {
   case md_ospf3_interface_priority:
   case md_ospf3_interface_passive:
   case md_ospf3_interface_hello:
+  case md_delete_ospf3_interface_hello:
   case md_ospf3_interface_dead:
+  case md_delete_ospf3_interface_dead:
   case md_ospf3_interface_retransmit:
+  case md_delete_ospf3_interface_retransmit:
   case md_ospf3_interface_transit_delay:
+  case md_delete_ospf3_interface_transit_delay:
   case md_ospf3_interface_neighbor:
   case md_delete_ospf3_interface_neighbor:
-  case md_ospf3_interface_auth_keychain:
   case md_ospf3_interface_auth_directional:
   case md_delete_ospf3_interface_authentication:
   case md_delete_ospf3_interface:
@@ -189,9 +196,12 @@ bool version_three(CommandId id) noexcept {
   case classic_ospf3_shutdown:
   case classic_ospf3_no_shutdown:
   case classic_ospf3_reference_bandwidth:
+  case classic_ospf3_no_reference_bandwidth:
   case classic_ospf3_preference:
   case classic_ospf3_external_preference:
   case classic_ospf3_export_policy:
+  case classic_ospf3_no_export_policy:
+  case classic_ospf3_no_export:
   case classic_ospf3_asbr:
   case classic_ospf3_no_asbr:
   case classic_ospf3_overload:
@@ -210,9 +220,12 @@ bool version_three(CommandId id) noexcept {
   case classic_ospf3_area_no_stub:
   case classic_ospf3_area_nssa:
   case classic_ospf3_area_no_nssa:
-  case classic_ospf3_area_no_summaries:
-  case classic_ospf3_area_summaries:
-  case classic_ospf3_area_default_metric:
+  case classic_ospf3_stub_no_summaries:
+  case classic_ospf3_stub_summaries:
+  case classic_ospf3_nssa_no_summaries:
+  case classic_ospf3_nssa_summaries:
+  case classic_ospf3_stub_default_metric:
+  case classic_ospf3_stub_no_default_metric:
   case classic_ospf3_area_range_advertise:
   case classic_ospf3_area_range_suppress:
   case classic_ospf3_area_no_range:
@@ -226,10 +239,22 @@ bool version_three(CommandId id) noexcept {
   case classic_ospf3_virtual_link_no_retransmit:
   case classic_ospf3_virtual_link_transit_delay:
   case classic_ospf3_virtual_link_no_transit_delay:
+  case classic_ospf3_virtual_link_shutdown:
+  case classic_ospf3_virtual_link_no_shutdown:
   case classic_ospf3_virtual_link_auth_bidirectional:
   case classic_ospf3_virtual_link_auth_directional:
   case classic_ospf3_virtual_link_no_authentication:
   case classic_ospf3_interface_type:
+  case classic_ospf3_interface_shutdown:
+  case classic_ospf3_interface_no_shutdown:
+  case classic_ospf3_interface_hello:
+  case classic_ospf3_interface_no_hello:
+  case classic_ospf3_interface_dead:
+  case classic_ospf3_interface_no_dead:
+  case classic_ospf3_interface_retransmit:
+  case classic_ospf3_interface_no_retransmit:
+  case classic_ospf3_interface_transit_delay:
+  case classic_ospf3_interface_no_transit_delay:
   case classic_ospf3_interface_metric:
   case classic_ospf3_interface_priority:
   case classic_ospf3_interface_passive:
@@ -240,6 +265,7 @@ bool version_three(CommandId id) noexcept {
   case classic_ospf3_interface_auth_directional:
   case classic_ospf3_interface_no_authentication:
   case classic_ospf3_no_interface:
+  case classic_no_ospf3_area:
     return true;
   default:
     return false;
@@ -458,14 +484,47 @@ EditResult edit(ospf::RouterConfiguration &configuration,
         const bool hmac_sha256 =
             id == CommandId::md_keychain_entry_hmac_sha256 ||
             id == CommandId::classic_keychain_entry_hmac_sha256;
-        if (password || message_digest || hmac_sha1 || hmac_sha256) {
+        const bool hmac_md5 =
+            id == CommandId::md_keychain_entry_hmac_md5 ||
+            id == CommandId::classic_keychain_entry_hmac_md5;
+        const bool hmac_sha_1_96 =
+            id == CommandId::md_keychain_entry_hmac_sha_1_96 ||
+            id == CommandId::classic_keychain_entry_hmac_sha_1_96;
+        const bool aes_128_cmac_96 =
+            id == CommandId::md_keychain_entry_aes_128_cmac_96 ||
+            id == CommandId::classic_keychain_entry_aes_128_cmac_96;
+        const bool aes_128_cmac_128 =
+            id == CommandId::md_keychain_entry_aes_128_cmac_128 ||
+            id == CommandId::classic_keychain_entry_aes_128_cmac_128;
+        const bool aes_128_gcm_16 =
+            id == CommandId::md_keychain_entry_aes_128_gcm_16 ||
+            id == CommandId::classic_keychain_entry_aes_128_gcm_16;
+        const bool hmac_sha_256_96 =
+            id == CommandId::md_keychain_entry_hmac_sha_256_96 ||
+            id == CommandId::classic_keychain_entry_hmac_sha_256_96;
+        const bool hmac_sha_256_128 =
+            id == CommandId::md_keychain_entry_hmac_sha_256_128 ||
+            id == CommandId::classic_keychain_entry_hmac_sha_256_128;
+        if (password || message_digest || hmac_sha1 || hmac_sha256 ||
+            hmac_md5 || hmac_sha_1_96 || aes_128_cmac_96 ||
+            aes_128_cmac_128 || aes_128_gcm_16 || hmac_sha_256_96 ||
+            hmac_sha_256_128) {
           entry->algorithm =
               password
                   ? ospf::KeychainAlgorithm::password
               : message_digest
                   ? ospf::KeychainAlgorithm::message_digest
               : hmac_sha1 ? ospf::KeychainAlgorithm::hmac_sha1
-                          : ospf::KeychainAlgorithm::hmac_sha256;
+              : hmac_sha256 ? ospf::KeychainAlgorithm::hmac_sha256
+              : hmac_md5 ? ospf::KeychainAlgorithm::hmac_md5
+              : hmac_sha_1_96 ? ospf::KeychainAlgorithm::hmac_sha_1_96
+              : aes_128_cmac_96 ? ospf::KeychainAlgorithm::aes_128_cmac_96
+              : aes_128_cmac_128
+                  ? ospf::KeychainAlgorithm::aes_128_cmac_128
+              : aes_128_gcm_16 ? ospf::KeychainAlgorithm::aes_128_gcm_16
+              : hmac_sha_256_96
+                  ? ospf::KeychainAlgorithm::hmac_sha_256_96
+                  : ospf::KeychainAlgorithm::hmac_sha_256_128;
           entry->algorithm_configured = true;
         }
         const bool carries_key =
@@ -473,7 +532,14 @@ EditResult edit(ospf::RouterConfiguration &configuration,
             id == CommandId::classic_keychain_entry_password ||
             id == CommandId::classic_keychain_entry_message_digest ||
             id == CommandId::classic_keychain_entry_hmac_sha1 ||
-            id == CommandId::classic_keychain_entry_hmac_sha256;
+            id == CommandId::classic_keychain_entry_hmac_sha256 ||
+            id == CommandId::classic_keychain_entry_hmac_md5 ||
+            id == CommandId::classic_keychain_entry_hmac_sha_1_96 ||
+            id == CommandId::classic_keychain_entry_aes_128_cmac_96 ||
+            id == CommandId::classic_keychain_entry_aes_128_cmac_128 ||
+            id == CommandId::classic_keychain_entry_aes_128_gcm_16 ||
+            id == CommandId::classic_keychain_entry_hmac_sha_256_96 ||
+            id == CommandId::classic_keychain_entry_hmac_sha_256_128;
         if (carries_key) {
           const auto plaintext =
               argument_text(command, TokenKind::ospf_authentication_key);
@@ -494,7 +560,8 @@ EditResult edit(ospf::RouterConfiguration &configuration,
               std::chrono::duration_cast<std::chrono::seconds>(
                   std::chrono::system_clock::now().time_since_epoch())
                   .count();
-        } else if (id == CommandId::md_keychain_entry_begin_time) {
+        } else if (id == CommandId::md_keychain_entry_begin_time ||
+                   id == CommandId::classic_keychain_entry_begin_time) {
           const auto parsed = utc_timestamp(
               argument_text(command, TokenKind::ospf_keychain_time));
           if (!parsed)
@@ -510,6 +577,14 @@ EditResult edit(ospf::RouterConfiguration &configuration,
             return {.recognized = true, .changed = false, .instance = {}};
           entry->tolerance_seconds =
               static_cast<std::uint32_t>(*tolerance);
+        } else if (id == CommandId::md_keychain_entry_tolerance_infinite ||
+                   id == CommandId::
+                               classic_keychain_entry_tolerance_infinite) {
+          // YANG models an infinite receive-key overlap beside the numeric
+          // range. The maximum 32-bit value is the stored sentinel; key
+          // selection compares against it without date arithmetic overflow.
+          entry->tolerance_seconds =
+              std::numeric_limits<std::uint32_t>::max();
         }
       }
     }
@@ -576,9 +651,16 @@ EditResult edit(ospf::RouterConfiguration &configuration,
     } else if (set_reference_bandwidth) {
       const auto bandwidth = decimal<std::uint64_t>(
           argument_text(command, TokenKind::ospf_reference_bandwidth));
-      if (!bandwidth)
+      // YANG reference-bandwidth-ext spans 1 through 1000000000 kbps.
+      if (!bandwidth || *bandwidth == 0U || *bandwidth > 1000000000ULL)
         return {.recognized = true, .changed = false, .instance = {}};
       instance->reference_bandwidth_kbps = *bandwidth;
+    } else if (id == CommandId::md_delete_ospf_reference_bandwidth ||
+               id == CommandId::md_delete_ospf3_reference_bandwidth ||
+               id == CommandId::classic_ospf_no_reference_bandwidth ||
+               id == CommandId::classic_ospf3_no_reference_bandwidth) {
+      instance->reference_bandwidth_kbps =
+          device_catalog::ospf_reference_bandwidth_kbps;
     } else if (id == CommandId::md_ospf_admin_enable ||
                id == CommandId::md_ospf3_admin_enable ||
                id == CommandId::classic_ospf_no_shutdown ||
@@ -614,7 +696,26 @@ EditResult edit(ospf::RouterConfiguration &configuration,
       const auto name = argument_text(command, TokenKind::policy_name);
       if (name.empty() || name.size() > 64U)
         return {.recognized = true, .changed = false, .instance = {}};
+      // YANG models export-policy as a leaf-list of up to five entries. This
+      // slice stores a single entry; configuring a different policy while one
+      // is present is an explicit error rather than a silent replacement, and
+      // repeating the configured policy is idempotent.
+      if (!instance->export_policy.empty() && instance->export_policy != name)
+        return {.recognized = true, .changed = false, .instance = {}};
       instance->export_policy = name;
+    } else if (id == CommandId::md_delete_ospf_export_policy ||
+               id == CommandId::md_delete_ospf3_export_policy ||
+               id == CommandId::classic_ospf_no_export_policy ||
+               id == CommandId::classic_ospf3_no_export_policy) {
+      const auto name = argument_text(command, TokenKind::policy_name);
+      if (name.empty() || instance->export_policy != name)
+        return {.recognized = true, .changed = false, .instance = {}};
+      instance->export_policy.clear();
+    } else if (id == CommandId::classic_ospf_no_export ||
+               id == CommandId::classic_ospf3_no_export) {
+      if (instance->export_policy.empty())
+        return {.recognized = true, .changed = false, .instance = {}};
+      instance->export_policy.clear();
     } else if (id == CommandId::md_ospf_asbr ||
                id == CommandId::md_ospf3_asbr ||
                id == CommandId::classic_ospf_asbr ||
@@ -732,7 +833,9 @@ EditResult edit(ospf::RouterConfiguration &configuration,
           argument_text(command, TokenKind::interface_name);
       const bool delete_area =
           id == CommandId::md_delete_ospf_area ||
-          id == CommandId::md_delete_ospf3_area;
+          id == CommandId::md_delete_ospf3_area ||
+          id == CommandId::classic_no_ospf_area ||
+          id == CommandId::classic_no_ospf3_area;
       // Area leaves are complete operations in both CLIs. They must not be
       // rejected for lacking an interface argument, which was the former
       // source of silently unusable stub, NSSA and range configuration.
@@ -741,25 +844,30 @@ EditResult edit(ospf::RouterConfiguration &configuration,
           id == CommandId::md_delete_ospf_area_stub ||
           id == CommandId::md_ospf_area_nssa ||
           id == CommandId::md_delete_ospf_area_nssa ||
-          id == CommandId::md_ospf_area_summaries ||
-          id == CommandId::md_ospf_area_default_metric ||
+          id == CommandId::md_ospf_stub_summaries ||
+          id == CommandId::md_ospf_nssa_summaries ||
+          id == CommandId::md_ospf_stub_default_metric ||
           id == CommandId::md_ospf_area_range_advertise ||
           id == CommandId::md_ospf_area_range_suppress ||
           id == CommandId::md_delete_ospf_area_range ||
           id == CommandId::md_ospf_virtual_link ||
           id == CommandId::md_delete_ospf_virtual_link ||
+          id == CommandId::md_ospf_virtual_link_admin_enable ||
+          id == CommandId::md_ospf_virtual_link_admin_disable ||
           id == CommandId::md_ospf3_area_stub ||
           id == CommandId::md_delete_ospf3_area_stub ||
           id == CommandId::md_ospf3_area_nssa ||
           id == CommandId::md_delete_ospf3_area_nssa ||
-          id == CommandId::md_ospf3_area_summaries ||
-          id == CommandId::md_ospf3_area_default_metric ||
+          id == CommandId::md_ospf3_stub_summaries ||
+          id == CommandId::md_ospf3_nssa_summaries ||
+          id == CommandId::md_ospf3_stub_default_metric ||
           id == CommandId::md_ospf3_area_range_advertise ||
           id == CommandId::md_ospf3_area_range_suppress ||
           id == CommandId::md_delete_ospf3_area_range ||
           id == CommandId::md_ospf3_virtual_link ||
           id == CommandId::md_delete_ospf3_virtual_link ||
-          id == CommandId::md_ospf3_virtual_link_auth_bidirectional ||
+          id == CommandId::md_ospf3_virtual_link_admin_enable ||
+          id == CommandId::md_ospf3_virtual_link_admin_disable ||
           id == CommandId::md_ospf3_virtual_link_auth_directional ||
           id == CommandId::
                     md_delete_ospf3_virtual_link_authentication ||
@@ -767,28 +875,36 @@ EditResult edit(ospf::RouterConfiguration &configuration,
           id == CommandId::classic_ospf_area_no_stub ||
           id == CommandId::classic_ospf_area_nssa ||
           id == CommandId::classic_ospf_area_no_nssa ||
-          id == CommandId::classic_ospf_area_no_summaries ||
-          id == CommandId::classic_ospf_area_summaries ||
-          id == CommandId::classic_ospf_area_default_metric ||
+          id == CommandId::classic_ospf_stub_no_summaries ||
+          id == CommandId::classic_ospf_stub_summaries ||
+          id == CommandId::classic_ospf_nssa_no_summaries ||
+          id == CommandId::classic_ospf_nssa_summaries ||
+          id == CommandId::classic_ospf_stub_default_metric ||
+          id == CommandId::classic_ospf_stub_no_default_metric ||
           id == CommandId::classic_ospf_area_range_advertise ||
           id == CommandId::classic_ospf_area_range_suppress ||
           id == CommandId::classic_ospf_area_no_range ||
           id == CommandId::classic_ospf_virtual_link ||
           id == CommandId::classic_ospf_no_virtual_link ||
+          id == CommandId::classic_ospf_virtual_link_shutdown ||
+          id == CommandId::classic_ospf_virtual_link_no_shutdown ||
           id == CommandId::classic_ospf3_area_stub ||
           id == CommandId::classic_ospf3_area_no_stub ||
           id == CommandId::classic_ospf3_area_nssa ||
           id == CommandId::classic_ospf3_area_no_nssa ||
-          id == CommandId::classic_ospf3_area_no_summaries ||
-          id == CommandId::classic_ospf3_area_summaries ||
-          id == CommandId::classic_ospf3_area_default_metric ||
+          id == CommandId::classic_ospf3_stub_no_summaries ||
+          id == CommandId::classic_ospf3_stub_summaries ||
+          id == CommandId::classic_ospf3_nssa_no_summaries ||
+          id == CommandId::classic_ospf3_nssa_summaries ||
+          id == CommandId::classic_ospf3_stub_default_metric ||
+          id == CommandId::classic_ospf3_stub_no_default_metric ||
           id == CommandId::classic_ospf3_area_range_advertise ||
           id == CommandId::classic_ospf3_area_range_suppress ||
           id == CommandId::classic_ospf3_area_no_range ||
           id == CommandId::classic_ospf3_virtual_link ||
           id == CommandId::classic_ospf3_no_virtual_link ||
-          id == CommandId::
-                    classic_ospf3_virtual_link_auth_bidirectional ||
+          id == CommandId::classic_ospf3_virtual_link_shutdown ||
+          id == CommandId::classic_ospf3_virtual_link_no_shutdown ||
           id == CommandId::
                     classic_ospf3_virtual_link_auth_directional ||
           id == CommandId::
@@ -843,7 +959,29 @@ EditResult edit(ospf::RouterConfiguration &configuration,
                         .changed = false,
                         .instance = {}};
               area->virtual_links.erase(found);
-            } else if (has_literal(*command.spec, "authentication")) {
+            } else if (has_literal(*command.spec, "authentication") ||
+                       id == CommandId::md_ospf_virtual_link_auth_password ||
+                       id == CommandId::
+                                 md_ospf_virtual_link_auth_message_digest ||
+                       id == CommandId::
+                                 md_ospf_virtual_link_authentication_key ||
+                       id == CommandId::
+                                 md_ospf_virtual_link_message_digest_key ||
+                       id == CommandId::md_ospf_virtual_link_auth_keychain ||
+                       id == CommandId::
+                                 md_delete_ospf_virtual_link_authentication ||
+                       id == CommandId::
+                                 classic_ospf_virtual_link_auth_password ||
+                       id == CommandId::
+                                 classic_ospf_virtual_link_auth_message_digest ||
+                       id == CommandId::
+                                 classic_ospf_virtual_link_authentication_key ||
+                       id == CommandId::
+                                 classic_ospf_virtual_link_message_digest_key ||
+                       id == CommandId::
+                                 classic_ospf_virtual_link_auth_keychain ||
+                       id == CommandId::
+                                 classic_ospf_virtual_link_no_authentication) {
               if (found == area->virtual_links.end())
                 return {.recognized = true,
                         .changed = false,
@@ -857,6 +995,72 @@ EditResult edit(ospf::RouterConfiguration &configuration,
                 found->keychain.clear();
                 found->ipsec_sa_inbound.clear();
                 found->ipsec_sa_outbound.clear();
+                found->authentication_secret = 0U;
+                found->authentication_key_id = 0U;
+              } else if (has_literal(*command.spec, "password") ||
+                         has_literal(*command.spec, "message-digest")) {
+                // OSPFv2 virtual links carry the same interface
+                // authentication leaves as physical interfaces. OSPFv3
+                // virtual links use only the inbound/outbound SA form below.
+                found->authentication =
+                    has_literal(*command.spec, "password")
+                        ? ospf::AuthenticationMode::simple_password
+                        : ospf::AuthenticationMode::message_digest;
+                found->keychain.clear();
+                found->ipsec_sa_inbound.clear();
+                found->ipsec_sa_outbound.clear();
+              } else if (has_literal(*command.spec, "authentication-key") ||
+                         has_literal(*command.spec, "message-digest-key") ||
+                         has_literal(*command.spec, "authentication-keychain") ||
+                         has_literal(*command.spec, "auth-keychain")) {
+                if (has_literal(*command.spec, "authentication-keychain") ||
+                    has_literal(*command.spec, "auth-keychain")) {
+                  const auto name = argument_text(
+                      command, TokenKind::ospf_keychain_name);
+                  if (name.empty() || name.size() > 32U)
+                    return {.recognized = true,
+                            .changed = false,
+                            .instance = {}};
+                  found->authentication =
+                      ospf::AuthenticationMode::keychain;
+                  found->keychain = name;
+                  found->ipsec_sa_inbound.clear();
+                  found->ipsec_sa_outbound.clear();
+                  found->authentication_secret = 0U;
+                  found->authentication_key_id = 0U;
+                } else {
+                  const auto plaintext = argument_text(
+                      command, TokenKind::ospf_authentication_key);
+                  const bool digest = has_literal(*command.spec,
+                                                  "message-digest-key");
+                  if (!secrets || plaintext.empty() ||
+                      plaintext.size() > (digest ? 16U : 8U))
+                    return {.recognized = true,
+                            .changed = false,
+                            .instance = {}};
+                  const auto handle = secrets->seal(
+                      std::span<const std::uint8_t>{
+                          reinterpret_cast<const std::uint8_t *>(
+                              plaintext.data()),
+                          plaintext.size()});
+                  if (!handle)
+                    return {.recognized = true,
+                            .changed = false,
+                            .instance = {}};
+                  found->authentication_secret = *handle;
+                  if (digest) {
+                    const auto key_id = decimal<unsigned>(argument_text(
+                        command, TokenKind::ospf_md5_key_id));
+                    if (!key_id || *key_id == 0U || *key_id > 255U)
+                      return {.recognized = true,
+                              .changed = false,
+                              .instance = {}};
+                    found->authentication_key_id =
+                        static_cast<std::uint8_t>(*key_id);
+                  } else {
+                    found->authentication_key_id = 0U;
+                  }
+                }
               } else {
                 const auto inbound =
                     argument_text(command, TokenKind::static_sa_name);
@@ -920,6 +1124,18 @@ EditResult edit(ospf::RouterConfiguration &configuration,
               else
                 found->transmit_delay_seconds =
                     reset ? defaults.transmit_delay_seconds : value;
+            } else if (has_literal(*command.spec, "admin-state") ||
+                       has_literal(*command.spec, "shutdown")) {
+              if (found == area->virtual_links.end())
+                return {.recognized = true,
+                        .changed = false,
+                        .instance = {}};
+              // MD uses admin-state enable/disable; classic uses shutdown and
+              // no shutdown for the same YANG leaf.
+              const bool enable =
+                  has_literal(*command.spec, "enable") ||
+                  has_literal(*command.spec, "no");
+              found->admin_enabled = enable;
             } else {
               if (found != area->virtual_links.end())
                 return {.recognized = true,
@@ -954,31 +1170,43 @@ EditResult edit(ospf::RouterConfiguration &configuration,
             area->type = ospf::AreaType::nssa;
           } else if (make_normal) {
             area->type = ospf::AreaType::normal;
-          } else if (id == CommandId::md_ospf_area_summaries ||
-                     id == CommandId::md_ospf3_area_summaries) {
+          } else if (id == CommandId::md_ospf_stub_summaries ||
+                     id == CommandId::md_ospf_nssa_summaries ||
+                     id == CommandId::md_ospf3_stub_summaries ||
+                     id == CommandId::md_ospf3_nssa_summaries) {
+            // YANG places summaries only under area/stub and area/nssa.
             if (!boolean(argument_text(command, TokenKind::boolean),
                          area->summaries))
               return {.recognized = true, .changed = false, .instance = {}};
-          } else if (id == CommandId::classic_ospf_area_no_summaries ||
-                     id == CommandId::classic_ospf3_area_no_summaries) {
+          } else if (id == CommandId::classic_ospf_stub_no_summaries ||
+                     id == CommandId::classic_ospf_nssa_no_summaries ||
+                     id == CommandId::classic_ospf3_stub_no_summaries ||
+                     id == CommandId::classic_ospf3_nssa_no_summaries) {
             area->summaries = false;
             if (area->type == ospf::AreaType::stub)
               area->type = ospf::AreaType::totally_stub;
-          } else if (id == CommandId::classic_ospf_area_summaries ||
-                     id == CommandId::classic_ospf3_area_summaries) {
+          } else if (id == CommandId::classic_ospf_stub_summaries ||
+                     id == CommandId::classic_ospf_nssa_summaries ||
+                     id == CommandId::classic_ospf3_stub_summaries ||
+                     id == CommandId::classic_ospf3_nssa_summaries) {
             area->summaries = true;
             if (area->type == ospf::AreaType::totally_stub)
               area->type = ospf::AreaType::stub;
-          } else if (id == CommandId::md_ospf_area_default_metric ||
-                     id == CommandId::md_ospf3_area_default_metric ||
-                     id == CommandId::classic_ospf_area_default_metric ||
-                     id == CommandId::classic_ospf3_area_default_metric) {
+          } else if (id == CommandId::md_ospf_stub_default_metric ||
+                     id == CommandId::md_ospf3_stub_default_metric ||
+                     id == CommandId::classic_ospf_stub_default_metric ||
+                     id == CommandId::classic_ospf3_stub_default_metric) {
+            // default-metric lives only under area/stub in YANG.
             const auto value = decimal<std::uint32_t>(
                 argument_text(command, TokenKind::ospf_metric));
             if (!value || *value < 1U ||
                 *value > device_catalog::ospf_interface_metric_maximum)
               return {.recognized = true, .changed = false, .instance = {}};
             area->default_metric = *value;
+          } else if (id == CommandId::classic_ospf_stub_no_default_metric ||
+                     id == CommandId::
+                               classic_ospf3_stub_no_default_metric) {
+            area->default_metric = 1U;
           } else {
             const auto prefix =
                 ip::parse_ip_prefix(argument_text(command, TokenKind::ip_prefix));
@@ -1032,6 +1260,12 @@ EditResult edit(ospf::RouterConfiguration &configuration,
         if (delete_interface) {
           if (!interface)
             return {.recognized = true, .changed = false, .instance = {}};
+          // Classic removes an interface only after shutdown, mirroring the
+          // instance gate above. MD delete removes the list entry directly.
+          if ((id == CommandId::classic_ospf_no_interface ||
+               id == CommandId::classic_ospf3_no_interface) &&
+              interface->admin_enabled)
+            return {.recognized = true, .changed = false, .instance = {}};
           std::erase_if(area->interfaces, [&](const auto &candidate) {
             return candidate.interface_name == interface_name;
           });
@@ -1047,17 +1281,21 @@ EditResult edit(ospf::RouterConfiguration &configuration,
             auto type_text =
                 argument_text(command, TokenKind::md_ospf_interface_type);
             if (type_text.empty())
-              type_text =
-                  argument_text(command, TokenKind::ospf_interface_type);
+              type_text = argument_text(
+                  command, TokenKind::classic_ospf_interface_type);
             const auto type = network_type(type_text);
             if (!type)
               return {.recognized = true, .changed = false, .instance = {}};
             interface->network_type = *type;
           } else if (id == CommandId::md_ospf_interface_admin_enable ||
-                     id == CommandId::md_ospf3_interface_admin_enable) {
+                     id == CommandId::md_ospf3_interface_admin_enable ||
+                     id == CommandId::classic_ospf_interface_no_shutdown ||
+                     id == CommandId::classic_ospf3_interface_no_shutdown) {
             interface->admin_enabled = true;
           } else if (id == CommandId::md_ospf_interface_admin_disable ||
-                     id == CommandId::md_ospf3_interface_admin_disable) {
+                     id == CommandId::md_ospf3_interface_admin_disable ||
+                     id == CommandId::classic_ospf_interface_shutdown ||
+                     id == CommandId::classic_ospf3_interface_shutdown) {
             interface->admin_enabled = false;
           } else if (id == CommandId::md_ospf_interface_metric ||
                      id == CommandId::md_ospf3_interface_metric ||
@@ -1065,7 +1303,10 @@ EditResult edit(ospf::RouterConfiguration &configuration,
                      id == CommandId::classic_ospf3_interface_metric) {
             const auto value = decimal<std::uint32_t>(
                 argument_text(command, TokenKind::ospf_metric));
-            if (!value ||
+            // YANG metric spans 1 through 65535. Zero is explicitly rejected
+            // here because the stored zero retains its separate unconfigured
+            // meaning from default_interface.
+            if (!value || *value < 1U ||
                 *value > device_catalog::ospf_interface_metric_maximum)
               return {.recognized = true, .changed = false, .instance = {}};
             interface->cost = *value;
@@ -1137,9 +1378,11 @@ EditResult edit(ospf::RouterConfiguration &configuration,
             if (id == CommandId::md_ospf_interface_message_digest_key ||
                 id == CommandId::
                           classic_ospf_interface_message_digest_key) {
-              const auto key_id = decimal<unsigned>(
-                  argument_text(command, TokenKind::ospf_key_id));
-              if (!key_id || *key_id > 255U)
+              const auto key_id = decimal<unsigned>(argument_text(
+                  command, TokenKind::ospf_md5_key_id));
+              // YANG message-digest key IDs span 1 through 255. Zero is
+              // rejected explicitly; it is not a null key entry.
+              if (!key_id || *key_id == 0U || *key_id > 255U)
                 return {.recognized = true,
                         .changed = false,
                         .instance = {}};
@@ -1165,7 +1408,6 @@ EditResult edit(ospf::RouterConfiguration &configuration,
             interface->authentication_secret = 0U;
             interface->authentication_key_id = 0U;
           } else if (
-              id == CommandId::md_ospf3_interface_auth_keychain ||
               id == CommandId::classic_ospf3_interface_auth_keychain ||
               id == CommandId::md_ospf3_interface_auth_directional ||
               id == CommandId::classic_ospf3_interface_auth_directional) {
@@ -1209,6 +1451,47 @@ EditResult edit(ospf::RouterConfiguration &configuration,
             interface->ipsec_sa_outbound.clear();
             interface->authentication_secret = 0U;
             interface->authentication_key_id = 0U;
+          } else if (
+              id ==
+                  CommandId::md_delete_ospf_interface_authentication_key ||
+              id == CommandId::
+                        classic_ospf_interface_no_authentication_key) {
+            // Per-leaf removal clears only the simple-password secret. The
+            // authentication-type selection stays until its own operator runs.
+            if (interface->authentication_secret == 0U)
+              return {.recognized = true,
+                      .changed = false,
+                      .instance = {}};
+            interface->authentication_secret = 0U;
+          } else if (
+              id == CommandId::
+                        md_delete_ospf_interface_message_digest_key ||
+              id == CommandId::
+                        classic_ospf_interface_no_message_digest_key) {
+            const auto key_id = decimal<unsigned>(argument_text(
+                command, TokenKind::ospf_md5_key_id));
+            if (!key_id || *key_id == 0U || *key_id > 255U ||
+                interface->authentication_secret == 0U ||
+                interface->authentication_key_id !=
+                    static_cast<std::uint8_t>(*key_id))
+              return {.recognized = true,
+                      .changed = false,
+                      .instance = {}};
+            interface->authentication_secret = 0U;
+            interface->authentication_key_id = 0U;
+          } else if (
+              id == CommandId::md_delete_ospf_interface_auth_keychain ||
+              id == CommandId::classic_ospf_interface_no_auth_keychain) {
+            if (interface->keychain.empty())
+              return {.recognized = true,
+                      .changed = false,
+                      .instance = {}};
+            // Dropping the reference leaves keychain mode without a target,
+            // which whole-model validation rejects even for incomplete
+            // candidates. Fall back to no authentication like the full
+            // context removal does.
+            interface->authentication = ospf::AuthenticationMode::none;
+            interface->keychain.clear();
           } else if (
               id == CommandId::md_ospf_interface_neighbor ||
               id == CommandId::md_delete_ospf_interface_neighbor ||
@@ -1278,24 +1561,79 @@ EditResult edit(ospf::RouterConfiguration &configuration,
                        static_cast<std::uint16_t>(
                            device_catalog::ospf_poll_interval.count())});
             }
-          } else {
+          } else if (
+              id == CommandId::md_ospf_interface_hello ||
+              id == CommandId::md_ospf3_interface_hello ||
+              id == CommandId::md_ospf_interface_dead ||
+              id == CommandId::md_ospf3_interface_dead ||
+              id == CommandId::md_ospf_interface_retransmit ||
+              id == CommandId::md_ospf3_interface_retransmit ||
+              id == CommandId::md_ospf_interface_transit_delay ||
+              id == CommandId::md_ospf3_interface_transit_delay ||
+              id == CommandId::md_delete_ospf_interface_hello ||
+              id == CommandId::md_delete_ospf3_interface_hello ||
+              id == CommandId::md_delete_ospf_interface_dead ||
+              id == CommandId::md_delete_ospf3_interface_dead ||
+              id == CommandId::md_delete_ospf_interface_retransmit ||
+              id == CommandId::md_delete_ospf3_interface_retransmit ||
+              id == CommandId::md_delete_ospf_interface_transit_delay ||
+              id == CommandId::md_delete_ospf3_interface_transit_delay ||
+              id == CommandId::classic_ospf_interface_hello ||
+              id == CommandId::classic_ospf3_interface_hello ||
+              id == CommandId::classic_ospf_interface_no_hello ||
+              id == CommandId::classic_ospf3_interface_no_hello ||
+              id == CommandId::classic_ospf_interface_dead ||
+              id == CommandId::classic_ospf3_interface_dead ||
+              id == CommandId::classic_ospf_interface_no_dead ||
+              id == CommandId::classic_ospf3_interface_no_dead ||
+              id == CommandId::classic_ospf_interface_retransmit ||
+              id == CommandId::classic_ospf3_interface_retransmit ||
+              id == CommandId::classic_ospf_interface_no_retransmit ||
+              id == CommandId::classic_ospf3_interface_no_retransmit ||
+              id == CommandId::classic_ospf_interface_transit_delay ||
+              id == CommandId::classic_ospf3_interface_transit_delay ||
+              id == CommandId::classic_ospf_interface_no_transit_delay ||
+              id == CommandId::classic_ospf3_interface_no_transit_delay) {
+            // MD delete and classic no reset the leaf to the release default.
+            // Whole-model validation below enforces the YANG ranges and the
+            // dead >= 2*hello relationship.
+            const bool reset =
+                command.spec->tokens[0].display == "delete" ||
+                has_literal(*command.spec, "no");
+            const auto defaults =
+                default_interface(interface->interface_name);
             const auto value = decimal<unsigned>(
                 argument_text(command, TokenKind::ospf_interval));
-            if (!value ||
-                *value > std::numeric_limits<std::uint16_t>::max())
+            if (!reset &&
+                (!value ||
+                 *value > std::numeric_limits<std::uint16_t>::max()))
               return {.recognized = true, .changed = false, .instance = {}};
             auto *target =
-                id == CommandId::md_ospf_interface_hello ||
-                        id == CommandId::md_ospf3_interface_hello
+                has_literal(*command.spec, "hello-interval")
                     ? &interface->hello_interval_seconds
-                : id == CommandId::md_ospf_interface_dead ||
-                          id == CommandId::md_ospf3_interface_dead
+                : has_literal(*command.spec, "dead-interval")
                     ? &interface->dead_interval_seconds
-                : id == CommandId::md_ospf_interface_retransmit ||
-                          id == CommandId::md_ospf3_interface_retransmit
+                : has_literal(*command.spec, "retransmit-interval")
                     ? &interface->retransmit_interval_seconds
-                    : &interface->transmit_delay_seconds;
-            *target = static_cast<std::uint16_t>(*value);
+                : has_literal(*command.spec, "transit-delay")
+                    ? &interface->transmit_delay_seconds
+                    : nullptr;
+            if (!target)
+              return {.recognized = true, .changed = false, .instance = {}};
+            if (reset) {
+              if (has_literal(*command.spec, "hello-interval"))
+                *target = defaults.hello_interval_seconds;
+              else if (has_literal(*command.spec, "dead-interval"))
+                *target = defaults.dead_interval_seconds;
+              else if (has_literal(*command.spec, "retransmit-interval"))
+                *target = defaults.retransmit_interval_seconds;
+              else
+                *target = defaults.transmit_delay_seconds;
+            } else {
+              *target = static_cast<std::uint16_t>(*value);
+            }
+          } else {
+            return {.recognized = true, .changed = false, .instance = {}};
           }
         }
         }

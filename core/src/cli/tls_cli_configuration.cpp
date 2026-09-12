@@ -7,6 +7,7 @@
 #include "cli_internal.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <optional>
 #include <string_view>
 
@@ -384,15 +385,16 @@ bool edit_common_profile(Profile &profile, CommandId id,
 
 bool is_md_command(CommandId id) noexcept {
   using enum CommandId;
-  static_assert(md_tls_use_pqc_only < md_delete_tls_server_secondary);
-  return id >= md_tls_use_pqc_only && id <= md_delete_tls_server_secondary;
+  static_assert(md_tls_use_pqc_only < md_delete_tls_server_renegotiate_timer);
+  return id >= md_tls_use_pqc_only && id <= md_delete_tls_server_renegotiate_timer;
 }
 
 bool is_classic_command(CommandId id) noexcept {
   using enum CommandId;
-  static_assert(classic_tls_use_pqc_only < classic_tls_server_no_secondary);
+  static_assert(classic_tls_use_pqc_only <
+                classic_tls_server_no_renegotiate_timer);
   return id >= classic_tls_use_pqc_only &&
-         id <= classic_tls_server_no_secondary;
+         id <= classic_tls_server_no_renegotiate_timer;
 }
 
 EditResult edit(Configuration &configuration,
@@ -516,7 +518,10 @@ EditResult edit(Configuration &configuration,
           changed = erase_value(
               entry->send_chain_ca_profiles,
               value(command, TokenKind::tls_ca_profile_name));
-      }
+        else if (entry && id == md_delete_tls_cert_entry_send_chain) {
+          changed = !entry->send_chain_ca_profiles.empty();
+          entry->send_chain_ca_profiles.clear();
+        }      }
     }
   } else if (const auto trust_anchor_profile_name =
                  key(TokenKind::tls_trust_anchor_profile_name);
@@ -754,6 +759,29 @@ EditResult edit(Configuration &configuration,
         else if (profile && (id == md_delete_tls_server_common_name ||
                              id == classic_tls_server_no_common_name))
           changed = clear(&ServerProfile::client_common_name_list, *profile);
+        else if (profile && (id == md_tls_server_renegotiate_timer ||
+                             id == classic_tls_server_renegotiate_timer)) {
+          // YANG tls-re-negotiate-timer spans 0 through 65000 seconds with a
+          // default of 0. Values outside the range are explicit errors.
+          const auto text = value(command, TokenKind::seconds);
+          unsigned timer{};
+          const auto parsed =
+              text.empty()
+                  ? std::from_chars(text.data(), text.data(), timer)
+                  : std::from_chars(text.data(), text.data() + text.size(),
+                                    timer);
+          if (!text.empty() && parsed.ec == std::errc{} &&
+              parsed.ptr == text.data() + text.size() && timer <= 65000U) {
+            changed = configure_leaf(profile->renegotiate_timer_seconds,
+                                     profile->renegotiate_timer_configured,
+                                     static_cast<std::uint16_t>(timer));
+          }
+        } else if (profile && (id == md_delete_tls_server_renegotiate_timer ||
+                               id ==
+                                   classic_tls_server_no_renegotiate_timer))
+          changed = delete_leaf(profile->renegotiate_timer_seconds,
+                                profile->renegotiate_timer_configured,
+                                std::uint16_t{});
         else if (profile)
           changed = edit_common_profile(*profile, id, command);
       }

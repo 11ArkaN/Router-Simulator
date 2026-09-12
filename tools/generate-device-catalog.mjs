@@ -873,6 +873,10 @@ inline constexpr std::chrono::seconds dynamic_arp_timeout{
     ${catalog.protocol_defaults.dynamic_arp_timeout_seconds}};
 inline constexpr std::size_t dhcpv4_server_name_bytes =
     ${catalog.protocol_defaults.dhcpv4_server_name_bytes};
+inline constexpr std::size_t dhcpv4_pool_name_bytes =
+    ${catalog.protocol_defaults.dhcpv4_pool_name_bytes};
+inline constexpr std::size_t dhcpv6_pool_name_bytes =
+    ${catalog.protocol_defaults.dhcpv6_pool_name_bytes};
 inline constexpr std::size_t dhcpv4_description_bytes =
     ${catalog.protocol_defaults.dhcpv4_description_bytes};
 inline constexpr std::uint32_t dhcpv4_lease_time_minimum_seconds =
