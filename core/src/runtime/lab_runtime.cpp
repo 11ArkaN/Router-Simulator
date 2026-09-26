@@ -11117,7 +11117,7 @@ bool LabRuntime::replace_router_configuration(
         !next_netstring(payload, speed_text) ||
         !next_netstring(payload, description) || !boolean(admin_text, admin) ||
         !decimal(mtu_text, mtu) || mtu > 0xffffU ||
-        !decimal(speed_text, speed) || description.size() > 80U ||
+        !decimal(speed_text, speed) || description.size() > 255U ||
         !inventory->coordinate_ordinal(id) ||
         std::any_of(next.ports.begin(), next.ports.end(),
                     [id](const auto &item) { return item.id == id; }))

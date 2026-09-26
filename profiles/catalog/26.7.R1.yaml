@@ -434,8 +434,8 @@ protocol_defaults:
   dhcpv4_server_name_bytes: 32
   # YANG list pool keys allow 1..64 characters for both DHCPv4 and DHCPv6
   # local servers. Server names stay at 1..32 per their own key definition.
-  dhcpv4_pool_name_bytes: 64
-  dhcpv6_pool_name_bytes: 64
+  dhcpv4_pool_name_bytes: 32
+  dhcpv6_pool_name_bytes: 32
   dhcpv4_description_bytes: 80
   dhcpv4_lease_time_minimum_seconds: 10
   dhcpv4_lease_time_maximum_seconds: 315446399

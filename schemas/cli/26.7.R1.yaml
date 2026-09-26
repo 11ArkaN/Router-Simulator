@@ -47,7 +47,7 @@ parameters:
   arp_retry_deciseconds: { display: "<deciseconds>", description: "ARP retry interval in 100 ms units" }
   dhcp_remote_id_ascii: { display: "<ascii-string>", description: "DHCP relay Remote ID string from 1 through 32 characters" }
   dhcp_server_name: { display: "<server-name>", description: "Local DHCP server name from 1 through 32 characters" }
-  dhcp_pool_name: { display: "<pool-name>", description: "Local DHCP address pool name from 1 through 64 characters" }
+  dhcp_pool_name: { display: "<pool-name>", description: "Local DHCP address pool name from 1 through 32 characters" }
   dhcp_lease_seconds: { display: "<seconds>", description: "DHCP lease time from 10 through 315446399 seconds" }
   dhcp_offer_seconds: { display: "<seconds>", description: "DHCP offer retention time from 10 through 600 seconds" }
   dhcp_maximum_declined: { display: "<maximum-declined>", description: "Maximum number of declined addresses" }

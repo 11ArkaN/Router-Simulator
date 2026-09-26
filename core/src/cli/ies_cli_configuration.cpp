@@ -799,7 +799,8 @@ bool edit_impl(Configuration &configuration,
                         std::string{value(command, TokenKind::description)});
   if (id == md_ies_interface_mtu || id == classic_ies_interface_mtu) {
     const auto mtu = decimal<std::uint16_t>(value(command, TokenKind::mtu));
-    return mtu && *mtu >= 1280U && set_distinct(interface->ip_mtu, *mtu);
+    return mtu && *mtu >= 512U && *mtu <= 9786U &&
+           set_distinct(interface->ip_mtu, *mtu);
   }
   if (id == md_ies_interface_ipv6_address) {
     const auto address = ip::parse_ipv6(value(command, TokenKind::ipv6));
