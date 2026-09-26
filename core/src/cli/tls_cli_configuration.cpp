@@ -466,7 +466,7 @@ EditResult edit(Configuration &configuration,
                             certificate_profile_name);
     else if (id == classic_tls_cert_profile_remove)
       changed = remove_named(configuration.certificate_profiles,
-                             certificate_profile_name, engine, true);
+                             certificate_profile_name, engine, false);
     else {
       auto *profile =
           md ? md_named(configuration.certificate_profiles,
@@ -664,7 +664,7 @@ EditResult edit(Configuration &configuration,
                               client_profile_name);
       else if (id == classic_tls_client_profile_remove)
         changed = remove_named(configuration.client_profiles,
-                               client_profile_name, engine, true);
+                               client_profile_name, engine, false);
       else {
         auto *profile =
             md ? md_named(configuration.client_profiles, client_profile_name)
@@ -716,7 +716,7 @@ EditResult edit(Configuration &configuration,
                               server_profile_name);
       else if (id == classic_tls_server_profile_remove)
         changed = remove_named(configuration.server_profiles,
-                               server_profile_name, engine, true);
+                               server_profile_name, engine, false);
       else {
         auto *profile =
             md ? md_named(configuration.server_profiles, server_profile_name)

@@ -316,10 +316,10 @@ std::string execute_classic(ConfigurationState &configuration,
     // the prefix identifies it unambiguously and the no form removes the
     // disabled route directly. The multi-router owner additionally rejects an
     // unqualified prefix when several next-hop children exist.
-    if (current != running.static_routes.end() && current->admin_enabled)
+    // A classic no form on an absent element is a rejected command, never
+    // a successful no-op, and an enabled route must be shut down first.
+    if (current == running.static_routes.end() || current->admin_enabled)
       return "Error: Bad command.";
-    if (current == running.static_routes.end())
-      return finish(false, "");
     *current = {};
     return finish(true, "");
   }

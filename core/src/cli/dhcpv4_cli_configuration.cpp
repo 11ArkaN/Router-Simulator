@@ -293,13 +293,10 @@ EditResult edit(RouterConfiguration &configuration,
   case md_delete_dhcpv4_server:
   case classic_dhcpv4_server_remove: {
     // Removing an absent server is an explicit error, not a silent no-op.
-    // Classic additionally requires shutdown first, matching the IES and
-    // OSPF object lifecycle; MD delete removes the list entry directly.
+    // The documented classic no form carries no shutdown precondition.
     const bool existed =
         server_by_name(configuration, *server_name) != nullptr;
-    const bool shutdown =
-        id == CommandId::md_delete_dhcpv4_server || !server->admin_enabled;
-    accepted = existed && shutdown;
+    accepted = existed;
     if (accepted)
       next.servers.erase(std::ranges::find(next.servers, *server_name,
                                            &Server::name));

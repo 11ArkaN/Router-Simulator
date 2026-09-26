@@ -64,10 +64,12 @@ void ospf_cli_configuration_tests() {
        "configure router ospf 0 asbr trace-path 7");
   edit(classic, CliEngine::classic,
        "configure router ospf 0 overload");
-  // Graceful restart defaults to present per YANG, so configuring it on a
-  // fresh instance is an idempotent no-change rather than an edit.
-  require(classic.instances[0].graceful_restart_helper,
-          "classic graceful-restart did not default to present");
+  // YANG models graceful-restart as a plain presence container with no
+  // default, so a fresh instance starts without it.
+  require(!classic.instances[0].graceful_restart_helper,
+          "classic graceful-restart did not default to absent");
+  edit(classic, CliEngine::classic,
+       "configure router ospf 0 graceful-restart");
   edit(classic, CliEngine::classic,
        "configure router ospf 0 loopfree-alternate");
   edit(classic, CliEngine::classic,
@@ -422,6 +424,8 @@ void ospf_cli_configuration_tests() {
   router::ospf::RouterConfiguration presence;
   edit(presence, CliEngine::md,
        "configure router \"Base\" ospf 0 asbr");
+  edit(presence, CliEngine::md,
+       "configure router \"Base\" ospf 0 graceful-restart");
   require(presence.instances[0].graceful_restart_helper &&
               presence.instances[0].asbr,
           "MD OSPF presence containers did not materialize");
@@ -641,13 +645,13 @@ void ospf_cli_configuration_tests() {
               router::device_catalog::ospf_reference_bandwidth_kbps,
           "MD delete reference-bandwidth did not restore the default");
 
-  // Graceful restart defaults to present per YANG; keychain accepts the full
+  // Graceful restart defaults to absent per YANG; keychain accepts the full
   // 26.7 algorithm set, infinite tolerance and classic begin-time dates.
   router::ospf::RouterConfiguration defaults;
   edit(defaults, CliEngine::md,
        "configure router \"Base\" ospf 0 overload true");
-  require(defaults.instances[0].graceful_restart_helper,
-          "graceful-restart did not default to present");
+  require(!defaults.instances[0].graceful_restart_helper,
+          "graceful-restart did not default to absent");
   edit(defaults, CliEngine::md,
        "configure system security keychains keychain main bidirectional "
        "entry 1 algorithm aes-128-gcm-16");

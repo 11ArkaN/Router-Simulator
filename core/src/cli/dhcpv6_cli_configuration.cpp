@@ -335,12 +335,10 @@ EditResult edit(RouterConfiguration &configuration,
     break;
   case md_delete_dhcpv6_server:
   case classic_dhcpv6_server_remove:
-    // Classic requires shutdown before removal, matching the DHCPv4, IES and
-    // OSPF object lifecycle. MD delete removes the list entry directly.
-    // Absent servers already fail above without materializing state.
-    accepted = server != nullptr &&
-               (id == CommandId::md_delete_dhcpv6_server ||
-                !server->admin_enabled);
+    // The documented classic no form carries no shutdown precondition. MD
+    // delete removes the list entry directly. Absent servers already fail
+    // above without materializing state.
+    accepted = server != nullptr;
     if (accepted)
       next.servers.erase(
           std::ranges::find(next.servers, *server_name, &Server::name));

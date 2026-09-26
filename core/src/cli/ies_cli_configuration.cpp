@@ -775,7 +775,9 @@ bool edit_impl(Configuration &configuration,
     return true;
   }
   if (id == classic_ies_no_interface) {
-    if (interface->admin_enabled || interface->sap != SapKey{})
+    // The documented classic no interface removes the interface while it is
+    // administratively shut down; a configured SAP does not block removal.
+    if (interface->admin_enabled)
       return false;
     ies->interfaces.erase(ies->interfaces.begin() +
                           (interface - ies->interfaces.data()));
