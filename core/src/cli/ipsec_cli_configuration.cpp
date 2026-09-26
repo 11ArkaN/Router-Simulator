@@ -2447,17 +2447,23 @@ EditResult edit(Configuration &state,
                             id != md_tunnel_icmp_disable);
       } else if (item && (id == md_delete_tunnel_icmp_admin ||
                           id == classic_tunnel_no_frag_required)) {
-        // In classic CLI the no form disables the containing mechanism; it
-        // does not remove the MD leaf's presence. Recording an explicit false
-        // preserves that observable difference when engines are switched.
-        if (id == classic_tunnel_no_frag_required)
+        // In classic CLI the no form disables the containing mechanism and
+        // reverts the interval and message-count children to their defaults;
+        // it does not remove the MD leaf's presence. Recording an explicit
+        // false preserves that observable difference across engines.
+        if (id == classic_tunnel_no_frag_required) {
           changed = configure(item->ipv4_fragmentation_required.enabled,
                               item->ipv4_fragmentation_required.enabled_configured,
                               false);
-        else
+          item->ipv4_fragmentation_required.interval_seconds = 10U;
+          item->ipv4_fragmentation_required.interval_configured = false;
+          item->ipv4_fragmentation_required.message_count = 100U;
+          item->ipv4_fragmentation_required.message_count_configured = false;
+        } else {
           changed = remove(item->ipv4_fragmentation_required.enabled,
                            item->ipv4_fragmentation_required.enabled_configured,
                            true);
+        }
       } else if (item && (id == md_tunnel_icmp_interval ||
                           id == classic_tunnel_frag_interval)) {
         const auto value = number(command, TokenKind::tunnel_rate_interval);
@@ -2477,8 +2483,7 @@ EditResult edit(Configuration &state,
                   configure(item->ipv4_fragmentation_required.message_count,
                             item->ipv4_fragmentation_required.message_count_configured,
                             static_cast<std::uint16_t>(*value));
-      } else if (item && (id == md_delete_tunnel_icmp_count ||
-                          id == classic_tunnel_no_frag_count)) {
+      } else if (item && id == md_delete_tunnel_icmp_count) {
         changed = remove(item->ipv4_fragmentation_required.message_count,
                          item->ipv4_fragmentation_required.message_count_configured,
                          static_cast<std::uint16_t>(100U));
@@ -2490,13 +2495,18 @@ EditResult edit(Configuration &state,
                             id != md_tunnel_icmp6_disable);
       } else if (item && (id == md_delete_tunnel_icmp6_admin ||
                           id == classic_tunnel_no_pkt_too_big)) {
-        if (id == classic_tunnel_no_pkt_too_big)
+        if (id == classic_tunnel_no_pkt_too_big) {
           changed = configure(item->ipv6_packet_too_big.enabled,
                               item->ipv6_packet_too_big.enabled_configured,
                               false);
-        else
+          item->ipv6_packet_too_big.interval_seconds = 10U;
+          item->ipv6_packet_too_big.interval_configured = false;
+          item->ipv6_packet_too_big.message_count = 100U;
+          item->ipv6_packet_too_big.message_count_configured = false;
+        } else {
           changed = remove(item->ipv6_packet_too_big.enabled,
                            item->ipv6_packet_too_big.enabled_configured, true);
+        }
       } else if (item && (id == md_tunnel_icmp6_interval ||
                           id == classic_tunnel_pkt_interval)) {
         const auto value = number(command, TokenKind::tunnel_rate_interval);
@@ -2516,8 +2526,7 @@ EditResult edit(Configuration &state,
                   configure(item->ipv6_packet_too_big.message_count,
                             item->ipv6_packet_too_big.message_count_configured,
                             static_cast<std::uint16_t>(*value));
-      } else if (item && (id == md_delete_tunnel_icmp6_count ||
-                          id == classic_tunnel_no_pkt_count)) {
+      } else if (item && id == md_delete_tunnel_icmp6_count) {
         changed = remove(item->ipv6_packet_too_big.message_count,
                          item->ipv6_packet_too_big.message_count_configured,
                          static_cast<std::uint16_t>(100U));

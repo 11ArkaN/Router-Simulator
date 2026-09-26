@@ -975,7 +975,7 @@ records:
     section: configure router dhcp-server dhcpv6 and configure router interface ipv6 local-dhcp-server
     rfc_refs: [RFC9915, RFC6355]
     yang_path: /nokia-conf:configure/router/dhcp-server/dhcpv6
-    last_verified_at: 2026-09-12
+    last_verified_at: 2026-09-26
     implementation: [schemas/cli/26.7.R1.yaml, core/include/router/dhcpv6_configuration.hpp, core/src/dhcpv6/dhcpv6_configuration.cpp, core/src/cli/dhcpv6_cli_configuration.hpp, core/src/cli/dhcpv6_cli_configuration.cpp, core/src/runtime/lab_runtime.cpp, core/src/runtime/lab_checkpoint.cpp]
     tests: [core/tests/cli/dhcpv6_cli_configuration_test.cpp, core/tests/dhcpv6/dhcpv6_server_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
     status: partially-implemented

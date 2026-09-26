@@ -597,23 +597,26 @@ EditResult edit(RouterConfiguration &configuration,
     break;
   case md_delete_dhcpv6_prefix_preferred_lifetime:
   case classic_dhcpv6_prefix_no_preferred_lifetime:
+    // The pool prefix leaves carry fixed YANG defaults (3600, 86400, 1800
+    // and 2880 seconds). The delete and no forms restore those defaults;
+    // they do not fall back to the server level defaults.
     prefix->preferred_lifetime_configured = false;
-    prefix->preferred_lifetime_seconds = 0U;
+    prefix->preferred_lifetime_seconds = 3600U;
     break;
   case md_delete_dhcpv6_prefix_valid_lifetime:
   case classic_dhcpv6_prefix_no_valid_lifetime:
     prefix->valid_lifetime_configured = false;
-    prefix->valid_lifetime_seconds = 0U;
+    prefix->valid_lifetime_seconds = 86400U;
     break;
   case md_delete_dhcpv6_prefix_renew_time:
   case classic_dhcpv6_prefix_no_renew_time:
     prefix->renewal_time_configured = false;
-    prefix->renewal_time_seconds = 0U;
+    prefix->renewal_time_seconds = 1800U;
     break;
   case md_delete_dhcpv6_prefix_rebind_time:
   case classic_dhcpv6_prefix_no_rebind_time:
     prefix->rebinding_time_configured = false;
-    prefix->rebinding_time_seconds = 0U;
+    prefix->rebinding_time_seconds = 2880U;
     break;
   default:
     return {.recognized = true};

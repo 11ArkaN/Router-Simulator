@@ -3084,11 +3084,9 @@ std::optional<std::string> md_rendered_context_body(
   return std::nullopt;
 }
 
-void md_dhcpv6_prefix_info(
-    std::ostringstream &out,
-    const dhcpv6::configuration::Prefix &prefix,
-    const dhcpv6::configuration::Server &server, std::size_t depth,
-    bool detail) {
+void md_dhcpv6_prefix_info(std::ostringstream &out,
+                           const dhcpv6::configuration::Prefix &prefix,
+                           std::size_t depth, bool detail) {
   // Presence bits distinguish inherited values from explicit overrides.
   // `info detail` resolves inheritance at the server renderer before calling
   // this function, while ordinary `info` prints only configured leaves.
@@ -3116,29 +3114,28 @@ void md_dhcpv6_prefix_info(
   scalar("preferred-lifetime",
          prefix.preferred_lifetime_configured
              ? prefix.preferred_lifetime_seconds
-             : server.default_preferred_lifetime_seconds,
+             : 3600U,
          prefix.preferred_lifetime_configured);
+  // The prefix lifetime leaves carry fixed YANG defaults (3600, 86400,
+  // 1800 and 2880 seconds); an unset leaf renders its default, not the
+  // server level default leaves.
   scalar("valid-lifetime",
-         prefix.valid_lifetime_configured
-             ? prefix.valid_lifetime_seconds
-             : server.default_valid_lifetime_seconds,
+         prefix.valid_lifetime_configured ? prefix.valid_lifetime_seconds
+                                          : 86400U,
          prefix.valid_lifetime_configured);
   scalar("renew-time",
-         prefix.renewal_time_configured
-             ? prefix.renewal_time_seconds
-             : server.default_renewal_time_seconds,
+         prefix.renewal_time_configured ? prefix.renewal_time_seconds
+                                        : 1800U,
          prefix.renewal_time_configured);
   scalar("rebind-time",
-         prefix.rebinding_time_configured
-             ? prefix.rebinding_time_seconds
-             : server.default_rebinding_time_seconds,
+         prefix.rebinding_time_configured ? prefix.rebinding_time_seconds
+                                          : 2880U,
          prefix.rebinding_time_configured);
 }
 
-void md_dhcpv6_pool_info(
-    std::ostringstream &out, const dhcpv6::configuration::Pool &pool,
-    const dhcpv6::configuration::Server &server, std::size_t depth,
-    bool detail) {
+void md_dhcpv6_pool_info(std::ostringstream &out,
+                         const dhcpv6::configuration::Pool &pool,
+                         std::size_t depth, bool detail) {
   if (!pool.description.empty()) {
     md_indent(out, depth);
     out << "description \"" << pool.description << "\"\n";
@@ -3170,7 +3167,7 @@ void md_dhcpv6_pool_info(
     md_indent(out, depth);
     out << "prefix " << ip::format_ipv6(prefix.aggregate.network) << '/'
         << static_cast<unsigned>(prefix.aggregate.length) << " {\n";
-    md_dhcpv6_prefix_info(out, prefix, server, depth + 1U, detail);
+    md_dhcpv6_prefix_info(out, prefix, depth + 1U, detail);
     md_indent(out, depth);
     out << "}\n";
   }
@@ -3226,7 +3223,7 @@ void md_dhcpv6_server_info(
   for (const auto &pool : server.pools) {
     md_indent(out, depth);
     out << "pool \"" << pool.name << "\" {\n";
-    md_dhcpv6_pool_info(out, pool, server, depth + 1U, detail);
+    md_dhcpv6_pool_info(out, pool, depth + 1U, detail);
     md_indent(out, depth);
     out << "}\n";
   }
@@ -3314,7 +3311,7 @@ std::optional<std::string> md_dhcpv6_configuration_info(
   if (pool == server->pools.end())
     return std::string{};
   if (tokens->size() == 8U) {
-    md_dhcpv6_pool_info(out, *pool, *server, 0U, detail);
+    md_dhcpv6_pool_info(out, *pool, 0U, detail);
     return out.str();
   }
   if ((*tokens)[8] == "delegated-prefix" && tokens->size() == 9U) {
@@ -3344,7 +3341,7 @@ std::optional<std::string> md_dhcpv6_configuration_info(
   if (prefix == pool->prefixes.end())
     return std::string{};
   if (tokens->size() == 10U) {
-    md_dhcpv6_prefix_info(out, *prefix, *server, 0U, detail);
+    md_dhcpv6_prefix_info(out, *prefix, 0U, detail);
     return out.str();
   }
   if ((*tokens)[10] == "prefix-type" && tokens->size() == 11U) {

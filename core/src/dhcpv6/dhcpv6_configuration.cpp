@@ -69,19 +69,20 @@ Status validate(const RouterConfiguration &configuration,
             prefix.aggregate.length <= 128U &&
             ip::mask(prefix.aggregate.network, prefix.aggregate.length) ==
                 prefix.aggregate.network;
-        const auto preferred =
-            prefix.preferred_lifetime_configured
-                ? prefix.preferred_lifetime_seconds
-                : server.default_preferred_lifetime_seconds;
+        // The pool prefix lifetime leaves carry fixed YANG defaults; an
+        // unset leaf does not inherit the server level default leaves.
+        const auto preferred = prefix.preferred_lifetime_configured
+                                   ? prefix.preferred_lifetime_seconds
+                                   : 3600U;
         const auto valid = prefix.valid_lifetime_configured
                                ? prefix.valid_lifetime_seconds
-                               : server.default_valid_lifetime_seconds;
+                               : 86400U;
         const auto renewal = prefix.renewal_time_configured
                                  ? prefix.renewal_time_seconds
-                                 : server.default_renewal_time_seconds;
+                                 : 1800U;
         const auto rebinding = prefix.rebinding_time_configured
                                    ? prefix.rebinding_time_seconds
-                                   : server.default_rebinding_time_seconds;
+                                   : 2880U;
         // The pool-wide minimum may be shorter than one aggregate. It is a
         // client hint policy, not a promise that every aggregate can supply
         // that length. For a /56 aggregate and a configured 48..64 policy,
