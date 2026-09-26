@@ -933,9 +933,10 @@ void mld_policy_prefix_lists(
   for (const auto &list : lists) {
     out.string(list.name);
     count(out, list.prefixes);
-    for (const auto &prefix : list.prefixes) {
-      ip_address(out, prefix.network);
-      out.integer(prefix.length);
+    for (const auto &entry : list.prefixes) {
+      ip_address(out, entry.prefix.network);
+      out.integer(entry.prefix.length);
+      out.integer(entry.type);
     }
   }
 }
@@ -959,16 +960,20 @@ bool mld_policy_prefix_lists(
     } catch (const std::bad_alloc &) {
       return false;
     }
-    for (auto &prefix : list.prefixes)
-      if (!ip_address(in, prefix.network) || !in.integer(prefix.length) ||
-          prefix.length > ip::address_bits(prefix.network.family) ||
-          ip::mask(prefix.network, prefix.length) != prefix.network)
+    for (auto &entry : list.prefixes)
+      if (!ip_address(in, entry.prefix.network) ||
+          !in.integer(entry.prefix.length) ||
+          !in.integer(entry.type) ||
+          entry.type > MldPrefixListType::address_mask ||
+          entry.prefix.length > ip::address_bits(entry.prefix.network.family) ||
+          ip::mask(entry.prefix.network, entry.prefix.length) !=
+              entry.prefix.network)
         return false;
     std::sort(list.prefixes.begin(), list.prefixes.end(),
               [](const auto &left, const auto &right) {
-                return left.length < right.length ||
-                       (left.length == right.length &&
-                        left.network < right.network);
+                return left.prefix.length < right.prefix.length ||
+                       (left.prefix.length == right.prefix.length &&
+                        left.prefix.network < right.prefix.network);
               });
     if (std::adjacent_find(list.prefixes.begin(), list.prefixes.end()) !=
         list.prefixes.end())
@@ -7698,7 +7703,7 @@ void tls_configuration(Writer &out, const tls_profile::Configuration &state) {
     out.string(profile.client_common_name_list);
     out.integer(profile.protocol_version);
     out.boolean(profile.protocol_version_configured);
-    out.integer(profile.renegotiate_timer_seconds);
+    out.integer(profile.renegotiate_timer_minutes);
     out.boolean(profile.renegotiate_timer_configured);
     tls_status_verification(out, profile.status_verification);
   }
@@ -7808,9 +7813,9 @@ bool tls_configuration(Reader &in, tls_profile::Configuration &state) {
         !in.integer(profile.protocol_version) ||
         !in.boolean(profile.protocol_version_configured) ||
         profile.protocol_version > tls_profile::ProtocolVersion::all ||
-        !in.integer(profile.renegotiate_timer_seconds) ||
+        !in.integer(profile.renegotiate_timer_minutes) ||
         !in.boolean(profile.renegotiate_timer_configured) ||
-        profile.renegotiate_timer_seconds > 65000U ||
+        profile.renegotiate_timer_minutes > 65000U ||
         !tls_status_verification(in, profile.status_verification))
       return false;
   }

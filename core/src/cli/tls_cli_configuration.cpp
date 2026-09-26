@@ -767,7 +767,7 @@ EditResult edit(Configuration &configuration,
                              id == classic_tls_server_renegotiate_timer)) {
           // YANG tls-re-negotiate-timer spans 0 through 65000 seconds with a
           // default of 0. Values outside the range are explicit errors.
-          const auto text = value(command, TokenKind::seconds);
+          const auto text = value(command, TokenKind::tls_timer_minutes);
           unsigned timer{};
           const auto parsed =
               text.empty()
@@ -776,14 +776,14 @@ EditResult edit(Configuration &configuration,
                                     timer);
           if (!text.empty() && parsed.ec == std::errc{} &&
               parsed.ptr == text.data() + text.size() && timer <= 65000U) {
-            changed = configure_leaf(profile->renegotiate_timer_seconds,
+            changed = configure_leaf(profile->renegotiate_timer_minutes,
                                      profile->renegotiate_timer_configured,
                                      static_cast<std::uint16_t>(timer));
           }
         } else if (profile && (id == md_delete_tls_server_renegotiate_timer ||
                                id ==
                                    classic_tls_server_no_renegotiate_timer))
-          changed = delete_leaf(profile->renegotiate_timer_seconds,
+          changed = delete_leaf(profile->renegotiate_timer_minutes,
                                 profile->renegotiate_timer_configured,
                                 std::uint16_t{});
         else if (profile)

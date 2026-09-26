@@ -145,12 +145,29 @@ struct MldGlobalIntent {
   bool operator==(const MldGlobalIntent &) const = default;
 };
 
+// YANG keys the policy-options prefix list by (ip-prefix, type). The match
+// type values mirror the nokia-conf enumeration exactly.
+enum class MldPrefixListType : std::uint8_t {
+  exact,
+  longer,
+  through,
+  range,
+  to,
+  address_mask
+};
+
+struct MldPolicyPrefixListEntryIntent {
+  ip::IpPrefix prefix{};
+  MldPrefixListType type{MldPrefixListType::exact};
+  bool operator==(const MldPolicyPrefixListEntryIntent &) const = default;
+};
+
 struct MldPolicyPrefixListIntent {
   std::string name;
   // policy-options is shared by IPv4 and IPv6 consumers. MLD compiles only
   // IPv6 rows from this canonical dual-stack list while preserving every row
   // for CLI editing, candidate comparison and checkpoint reconstruction.
-  std::vector<ip::IpPrefix> prefixes;
+  std::vector<MldPolicyPrefixListEntryIntent> prefixes;
   bool operator==(const MldPolicyPrefixListIntent &) const = default;
 };
 

@@ -1028,11 +1028,11 @@ void lab_runtime_tests() {
         "enable",
         "configure router \"Base\" interface md-loop ipv4 dhcp option-82 "
         "action replace",
-        "configure router \"Base\" interface md-loop icmp redirects "
+        "configure router \"Base\" interface md-loop ipv4 icmp redirects "
         "admin-state enable",
-        "configure router \"Base\" interface md-loop icmp redirects number "
+        "configure router \"Base\" interface md-loop ipv4 icmp redirects number "
         "30",
-        "configure router \"Base\" interface md-loop icmp redirects seconds "
+        "configure router \"Base\" interface md-loop ipv4 icmp redirects seconds "
         "5",
         "configure router \"Base\" interface md-loop ipv6 address "
         "2001:db8:ffff::1 prefix-length 64",
@@ -1055,7 +1055,7 @@ void lab_runtime_tests() {
         "group-range start ff3e::200 end ff3e::20f source "
         "2001:db8:ffff::20",
         "configure policy-options prefix-list info-prefix prefix "
-        "2001:db8:ffff::/64",
+        "2001:db8:ffff::/64 type exact",
         "configure system security keychains keychain info-keychain "
         "bidirectional entry 1 algorithm hmac-sha-256",
         "configure system security keychains keychain info-keychain "
@@ -1093,9 +1093,9 @@ void lab_runtime_tests() {
   require_context_info(
       "configure router interface md-loop ipv4 dhcp option-82",
       "action replace");
-  require_context_info("configure router interface md-loop icmp",
+  require_context_info("configure router interface md-loop ipv4 icmp",
                        "redirects {");
-  require_context_info("configure router interface md-loop icmp redirects",
+  require_context_info("configure router interface md-loop ipv4 icmp redirects",
                        "admin-state enable");
   require_context_info("configure router interface md-loop ipv6",
                        "address 2001:db8:ffff::1 {");
@@ -1118,7 +1118,7 @@ void lab_runtime_tests() {
                        "reachable-time 75");
   require_context_info("configure router \"Base\" mld", "admin-state disable");
   require_context_info("configure policy-options prefix-list info-prefix",
-                       "prefix 2001:db8:ffff::/64");
+                       "prefix 2001:db8:ffff::/64 type exact");
   require_context_info(
       "configure system security keychains keychain info-keychain "
       "bidirectional entry 1",
@@ -1366,7 +1366,7 @@ void lab_runtime_tests() {
   require_classic_context_info("configure router mld", "shutdown");
   require_classic_context_info(
       "configure router policy-options prefix-list info-prefix",
-      "prefix 2001:db8:ffff::/64");
+      "prefix 2001:db8:ffff::/64 type exact");
   require_classic_context_info(
       "configure system security keychain info-keychain direction bi entry 1",
       "key \"******\" algorithm hmac-sha-256");
@@ -2142,9 +2142,9 @@ void lab_runtime_tests() {
   // not merely accepted grammar. Exercise MD leaf presence and exact release
   // ranges before the shared dual-stack commit publishes it to forwarding.
   for (const auto command :
-       {"router \"Base\" interface edge icmp redirects admin-state disable",
-        "router \"Base\" interface edge icmp redirects number 321",
-        "router \"Base\" interface edge icmp redirects seconds 17"}) {
+       {"router \"Base\" interface edge ipv4 icmp redirects admin-state disable",
+        "router \"Base\" interface edge ipv4 icmp redirects number 321",
+        "router \"Base\" interface edge ipv4 icmp redirects seconds 17"}) {
     const auto result = runtime.command(message(
         lab_runtime_protocol::session_execute, {"r1-console-1", command}));
     if (result.find("MINOR:") != std::string_view::npos)
@@ -2153,10 +2153,10 @@ void lab_runtime_tests() {
           " output=" + std::string{result});
   }
   for (const auto command :
-       {"router \"Base\" interface edge icmp redirects number 9",
-        "router \"Base\" interface edge icmp redirects number 1001",
-        "router \"Base\" interface edge icmp redirects seconds 0",
-        "router \"Base\" interface edge icmp redirects seconds 61"})
+       {"router \"Base\" interface edge ipv4 icmp redirects number 9",
+        "router \"Base\" interface edge ipv4 icmp redirects number 1001",
+        "router \"Base\" interface edge ipv4 icmp redirects seconds 0",
+        "router \"Base\" interface edge ipv4 icmp redirects seconds 61"})
     require(runtime.command(message(lab_runtime_protocol::session_execute,
                                     {"r1-console-1", command}))
                     .find("MINOR:") != std::string_view::npos,
@@ -2195,7 +2195,7 @@ void lab_runtime_tests() {
       "router \"Base\" ipv6 router-advertisement dns-options "
       "rdnss-lifetime 1200",
       "router \"Base\" ipv6 router-advertisement interface edge "
-      "dns-options include-dns true",
+      "dns-options include-rdnss true",
       "router \"Base\" ipv6 router-advertisement interface edge "
       "admin-state enable",
       "router \"Base\" static-routes route 2001:db8:ffff::/64 "
@@ -3880,9 +3880,9 @@ void lab_runtime_tests() {
   const std::array<std::string_view, 9> classic_mld_commands{
       "configure router mld no shutdown",
       "configure router mld query-interval 126",
+      "configure router mld robust-count 3",
       "configure router mld interface edge no shutdown",
       "configure router mld interface edge version 2",
-      "configure router mld interface edge robust-count 3",
       "configure router mld interface edge max-groups 16000",
       "configure router mld interface edge max-grp-sources 32000",
       "configure router mld interface edge max-sources 1000",
@@ -3901,11 +3901,11 @@ void lab_runtime_tests() {
   for (const auto command :
        {"configure router policy-options begin",
         "configure router policy-options prefix-list MLD-GROUPS prefix "
-        "192.0.2.0/24",
+        "192.0.2.0/24 type exact",
         "configure router policy-options prefix-list MLD-GROUPS prefix "
-        "ff3e:500::/40",
+        "ff3e:500::/40 type exact",
         "configure router policy-options prefix-list MLD-SOURCES prefix "
-        "2001:db8:1::/64",
+        "2001:db8:1::/64 type exact",
         "configure router policy-options policy-statement MLD-IN entry 10 "
         "from group-address MLD-GROUPS",
         "configure router policy-options policy-statement MLD-IN entry 10 "
@@ -4428,11 +4428,11 @@ void lab_runtime_tests() {
   // generated candidate-key resource test with policy semantics.
   for (const auto command :
        {"policy-options prefix-list CHECKPOINT-MLD-GROUPS prefix "
-        "ff3e:d000::/52",
+        "ff3e:d000::/52 type exact",
         "policy-options prefix-list CHECKPOINT-MLD-GROUPS prefix "
-        "198.51.100.0/24",
+        "198.51.100.0/24 type exact",
         "policy-options prefix-list CHECKPOINT-MLD-SOURCES prefix "
-        "2001:db8:ffff::/64",
+        "2001:db8:ffff::/64 type exact",
         "policy-options policy-statement CHECKPOINT-MLD-IN entry 10 from "
         "group-address CHECKPOINT-MLD-GROUPS",
         "policy-options policy-statement CHECKPOINT-MLD-IN entry 10 from "
@@ -4510,7 +4510,7 @@ void lab_runtime_tests() {
   require(
       checkpoint_prefix_list != precommit_candidate.mld_prefix_lists.end() &&
           checkpoint_prefix_list->prefixes.size() == 2U &&
-          checkpoint_prefix_list->prefixes.front().network.family ==
+          checkpoint_prefix_list->prefixes.front().prefix.network.family ==
               ip::AddressFamily::ipv4 &&
           checkpoint_policy != precommit_candidate.mld_import_policies.end() &&
           checkpoint_policy->entries.size() == 1U &&

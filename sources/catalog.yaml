@@ -2558,7 +2558,7 @@ records:
     section: Configuring Base-router MLD with CLI, excluding multicast admission control
     rfc_refs: [RFC2710, RFC3590, RFC3810]
     yang_path: /configure/router/mld
-    last_verified_at: 2026-07-17
+    last_verified_at: 2026-09-26
     implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, schemas/cli/26.7.R1.yaml, core/include/router/mld_router.hpp, core/include/router/network_plane_messages.hpp, core/include/router/runtime_supervisor.hpp, core/include/router/lab_runtime.hpp, core/src/ip/mld_router.cpp, core/src/forwarding/router_forwarder.cpp, core/src/runtime/network_plane.cpp, core/src/runtime/network_plane_worker.cpp, core/src/runtime/runtime_supervisor.cpp, core/src/runtime/runtime_supervisor_interfaces.cpp, core/src/runtime/runtime_supervisor_services.cpp, core/src/runtime/runtime_supervisor_routing.cpp, core/src/runtime/runtime_supervisor_hosts.cpp, core/src/runtime/runtime_supervisor_checkpoint.cpp, core/src/runtime/lab_runtime.cpp, core/src/runtime/lab_checkpoint.cpp]
     tests: [core/tests/ip/mld_router_test.cpp, core/tests/forwarding/router_forwarder_test.cpp, core/tests/forwarding/router_forwarder_ospfv3_test.cpp, core/tests/forwarding/router_forwarder_local_ipv4_test.cpp, core/tests/forwarding/router_forwarder_ipv4_redirect_test.cpp, core/tests/runtime/network_plane_test.cpp, core/tests/runtime/runtime_supervisor_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
     status: implemented

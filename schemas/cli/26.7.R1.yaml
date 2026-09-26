@@ -70,12 +70,14 @@ parameters:
   system_name: { display: "<system-name>", description: "System name" }
   description: { display: "<description>", description: "Description text" }
   seconds: { display: "<seconds>", description: "Time in seconds" }
+  tls_timer_minutes: { display: "<minutes>", description: "TLS renegotiation timer in minutes from 0 through 65000" }
   milliseconds: { display: "<milliseconds>", description: "Time in milliseconds" }
   hop_limit: { display: "<hop-limit>", description: "IPv6 hop limit" }
   boolean: { display: "<boolean>", description: "Boolean true or false" }
   router_preference: { display: "<preference>", description: "Default router preference" }
   mld_version: { display: "<version>", description: "MLD protocol version" }
   robust_count: { display: "<robust-count>", description: "MLD robustness variable" }
+  prefix_list_type: { display: "<exact|longer|through|range|to|address-mask>", description: "Prefix list match type" }
   mld_limit: { display: "<limit>", description: "MLD interface admission limit" }
   policy_name: { display: "<policy-name>", description: "Route policy statement name" }
   prefix_list_name: { display: "<prefix-list-name>", description: "Policy prefix list name" }
@@ -385,6 +387,7 @@ literals:
   retransmit-time: "Configure the advertised retransmission timer"
   router-lifetime: "Configure the advertised router lifetime"
   dns-options: "Configure Router Advertisement DNS options"
+  include-rdnss: "Include the Recursive DNS Server option"
   include-dns: "Include the Recursive DNS Server option"
   server: "Configure a recursive DNS server"
   rdnss-lifetime: "Configure the Recursive DNS Server lifetime"
@@ -2071,10 +2074,6 @@ commands:
     engines: [md]
     source_id: nokia.sros.26_7.mld.configuration
     tokens: [configure, router, '"Base"', mld, interface, { parameter: interface_name }, query-last-member-interval, { parameter: seconds }]
-  - id: md_mld_interface_robust_count
-    engines: [md]
-    source_id: nokia.sros.26_7.mld.configuration
-    tokens: [configure, router, '"Base"', mld, interface, { parameter: interface_name }, robust-count, { parameter: robust_count }]
   - id: md_mld_interface_maximum_number_groups
     engines: [md]
     source_id: nokia.sros.26_7.mld.configuration
@@ -2151,10 +2150,6 @@ commands:
     engines: [md]
     source_id: nokia.sros.26_7.mld.configuration
     tokens: [delete, router, '"Base"', mld, interface, { parameter: interface_name }, query-last-member-interval]
-  - id: md_delete_mld_interface_robust_count
-    engines: [md]
-    source_id: nokia.sros.26_7.mld.configuration
-    tokens: [delete, router, '"Base"', mld, interface, { parameter: interface_name }, robust-count]
   - id: md_delete_mld_interface_maximum_number_groups
     engines: [md]
     source_id: nokia.sros.26_7.mld.configuration
@@ -2469,19 +2464,19 @@ commands:
   - id: md_icmp_redirect_admin_enable
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, icmp, redirects, admin-state, enable]
+    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, redirects, admin-state, enable]
   - id: md_icmp_redirect_admin_disable
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, icmp, redirects, admin-state, disable]
+    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, redirects, admin-state, disable]
   - id: md_icmp_redirect_number
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, icmp, redirects, number, { parameter: redirect_number }]
+    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, redirects, number, { parameter: redirect_number }]
   - id: md_icmp_redirect_seconds
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, icmp, redirects, seconds, { parameter: redirect_seconds }]
+    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, redirects, seconds, { parameter: redirect_seconds }]
   - id: md_static_route_ipv6
     engines: [md]
     source_id: nokia.sros.26_7.static_route.configuration
@@ -2571,7 +2566,7 @@ commands:
   - id: md_ra_include_dns
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
-    tokens: [configure, router, '"Base"', ipv6, router-advertisement, interface, { parameter: interface_name }, dns-options, include-dns, { parameter: boolean }]
+    tokens: [configure, router, '"Base"', ipv6, router-advertisement, interface, { parameter: interface_name }, dns-options, include-rdnss, { parameter: boolean }]
   - id: md_ra_global_rdnss_server
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
@@ -2721,15 +2716,15 @@ commands:
   - id: md_delete_icmp_redirect_admin
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, icmp, redirects, admin-state]
+    tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, redirects, admin-state]
   - id: md_delete_icmp_redirect_number
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, icmp, redirects, number]
+    tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, redirects, number]
   - id: md_delete_icmp_redirect_seconds
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, icmp, redirects, seconds]
+    tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, redirects, seconds]
   - id: md_delete_static_route_ipv6
     engines: [md]
     source_id: nokia.sros.26_7.static_route.configuration
@@ -2745,7 +2740,7 @@ commands:
   - id: md_delete_ra_include_dns
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
-    tokens: [delete, router, '"Base"', ipv6, router-advertisement, interface, { parameter: interface_name }, dns-options, include-dns]
+    tokens: [delete, router, '"Base"', ipv6, router-advertisement, interface, { parameter: interface_name }, dns-options, include-rdnss]
   - id: md_delete_ra_admin_state
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
@@ -3529,14 +3524,6 @@ commands:
     engines: [classic]
     source_id: nokia.sros.26_7.mld.configuration
     tokens: [configure, router, mld, interface, { parameter: interface_name }, no, query-last-listener-interval]
-  - id: classic_mld_interface_robust_count
-    engines: [classic]
-    source_id: nokia.sros.26_7.mld.configuration
-    tokens: [configure, router, mld, interface, { parameter: interface_name }, robust-count, { parameter: robust_count }]
-  - id: classic_mld_interface_no_robust_count
-    engines: [classic]
-    source_id: nokia.sros.26_7.mld.configuration
-    tokens: [configure, router, mld, interface, { parameter: interface_name }, no, robust-count]
   - id: classic_mld_interface_max_groups
     engines: [classic]
     source_id: nokia.sros.26_7.mld.configuration
@@ -3693,8 +3680,8 @@ commands:
   # MLD import policy configuration uses the shared route-policy datastore.
   # MD edits its normal candidate while classic policy-options has its own
   # begin/commit transaction, exactly as documented for SR OS route policies.
-  - { id: md_policy_prefix, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, policy-options, prefix-list, { parameter: prefix_list_name }, prefix, { parameter: ip_prefix }] }
-  - { id: md_delete_policy_prefix, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [delete, policy-options, prefix-list, { parameter: prefix_list_name }, prefix, { parameter: ip_prefix }] }
+  - { id: md_policy_prefix, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, policy-options, prefix-list, { parameter: prefix_list_name }, prefix, { parameter: ip_prefix }, type, { parameter: prefix_list_type }] }
+  - { id: md_delete_policy_prefix, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [delete, policy-options, prefix-list, { parameter: prefix_list_name }, prefix, { parameter: ip_prefix }, type, { parameter: prefix_list_type }] }
   - { id: md_delete_policy_prefix_list, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [delete, policy-options, prefix-list, { parameter: prefix_list_name }] }
   - { id: md_policy_group_address, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, group-address, { parameter: prefix_list_name }] }
   - { id: md_delete_policy_group_address, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, group-address] }
@@ -3729,8 +3716,8 @@ commands:
   - { id: classic_policy_begin, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, begin] }
   - { id: classic_policy_commit, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, commit] }
   - { id: classic_policy_abort, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, abort] }
-  - { id: classic_policy_prefix, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, prefix-list, { parameter: prefix_list_name }, prefix, { parameter: ip_prefix }] }
-  - { id: classic_policy_no_prefix, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, prefix-list, { parameter: prefix_list_name }, no, prefix, { parameter: ip_prefix }] }
+  - { id: classic_policy_prefix, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, prefix-list, { parameter: prefix_list_name }, prefix, { parameter: ip_prefix }, type, { parameter: prefix_list_type }] }
+  - { id: classic_policy_no_prefix, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, prefix-list, { parameter: prefix_list_name }, no, prefix, { parameter: ip_prefix }, type, { parameter: prefix_list_type }] }
   - { id: classic_policy_no_prefix_list, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, no, prefix-list, { parameter: prefix_list_name }] }
   - { id: classic_policy_group_address, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, group-address, { parameter: prefix_list_name }] }
   - { id: classic_policy_no_group_address, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, no, group-address] }
@@ -4470,7 +4457,7 @@ commands:
   - { id: md_tls_server_secondary_crl, engines: [md], source_id: nokia.sros.26_7.tls_profiles, tokens: [configure, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }, status-verify, ee-revocation, secondary, crl] }
   - { id: md_tls_server_secondary_ocsp, engines: [md], source_id: nokia.sros.26_7.tls_profiles, tokens: [configure, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }, status-verify, ee-revocation, secondary, ocsp] }
   - { id: md_delete_tls_server_secondary, engines: [md], source_id: nokia.sros.26_7.tls_profiles, tokens: [delete, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }, status-verify, ee-revocation, secondary] }
-  - { id: md_tls_server_renegotiate_timer, engines: [md], source_id: nokia.sros.26_7.tls_profiles, tokens: [configure, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }, tls-re-negotiate-timer, { parameter: seconds }] }
+  - { id: md_tls_server_renegotiate_timer, engines: [md], source_id: nokia.sros.26_7.tls_profiles, tokens: [configure, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }, tls-re-negotiate-timer, { parameter: tls_timer_minutes }] }
   - { id: md_delete_tls_server_renegotiate_timer, engines: [md], source_id: nokia.sros.26_7.tls_profiles, tokens: [delete, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }, tls-re-negotiate-timer] }
 
   # Classic CLI creates named objects explicitly and applies each accepted
@@ -4575,7 +4562,7 @@ commands:
   - { id: classic_tls_server_secondary_crl, engines: [classic], source_id: nokia.sros.26_7.tls_profiles, tokens: [configure, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }, status-verify, ee-revocation, secondary, crl] }
   - { id: classic_tls_server_secondary_ocsp, engines: [classic], source_id: nokia.sros.26_7.tls_profiles, tokens: [configure, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }, status-verify, ee-revocation, secondary, ocsp] }
   - { id: classic_tls_server_no_secondary, engines: [classic], source_id: nokia.sros.26_7.tls_profiles, tokens: [configure, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }, status-verify, ee-revocation, no, secondary] }
-  - { id: classic_tls_server_renegotiate_timer, engines: [classic], source_id: nokia.sros.26_7.tls_profiles, tokens: [configure, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }, tls-re-negotiate-timer, { parameter: seconds }] }
+  - { id: classic_tls_server_renegotiate_timer, engines: [classic], source_id: nokia.sros.26_7.tls_profiles, tokens: [configure, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }, tls-re-negotiate-timer, { parameter: tls_timer_minutes }] }
   - { id: classic_tls_server_no_renegotiate_timer, engines: [classic], source_id: nokia.sros.26_7.tls_profiles, tokens: [configure, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }, no, tls-re-negotiate-timer] }
 
   # BOF is a separate model-driven configuration region. These rows mirror

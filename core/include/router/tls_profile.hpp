@@ -101,7 +101,7 @@ struct ServerProfile {
   // YANG tls-re-negotiate-timer spans 0..65000 with a default of 0. Presence
   // is tracked so delete restores the default instead of storing zero as an
   // explicit operator value.
-  std::uint16_t renegotiate_timer_seconds{};
+  std::uint16_t renegotiate_timer_minutes{};
   bool admin_configured{};
   bool protocol_version_configured{};
   bool renegotiate_timer_configured{};

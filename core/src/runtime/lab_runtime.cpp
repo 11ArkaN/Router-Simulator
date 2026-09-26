@@ -713,16 +713,17 @@ bool valid_mld_import_policies(
       return false;
     for (std::size_t prefix_index = 0; prefix_index < list.prefixes.size();
          ++prefix_index) {
-      const auto &prefix = list.prefixes[prefix_index];
+      const auto &entry = list.prefixes[prefix_index];
       // policy-options owns a generic IP prefix set. The MLD consumer limits
       // the runtime value to a multicast group or unicast source, but it does
       // not impose an extra address-family subset on configured list entries.
-      if (prefix.length > ip::address_bits(prefix.network.family) ||
-          ip::mask(prefix.network, prefix.length) != prefix.network ||
+      if (entry.prefix.length > ip::address_bits(entry.prefix.network.family) ||
+          ip::mask(entry.prefix.network, entry.prefix.length) !=
+              entry.prefix.network ||
           std::find(list.prefixes.begin(),
                     list.prefixes.begin() +
                         static_cast<std::ptrdiff_t>(prefix_index),
-                    prefix) !=
+                    entry) !=
               list.prefixes.begin() + static_cast<std::ptrdiff_t>(prefix_index))
         return false;
     }
@@ -824,20 +825,23 @@ std::optional<routing::RoutePolicyProgram> compile_route_policy(
             .set_metric_type = entry.set_metric_type,
             .set_tag = entry.set_route_tag};
         if (destinations) {
-          const auto &prefix = destinations->prefixes[term];
+          const auto &entry = destinations->prefixes[term];
           output.destination =
               routing::PolicyPrefix{.ipv6 =
-                                        prefix.network.family ==
+                                        entry.prefix.network.family ==
                                         ip::AddressFamily::ipv6,
-                                    .length = prefix.length};
+                                    .length = entry.prefix.length};
           if (output.destination->ipv6) {
-            output.destination->ipv6_network = prefix.network.bytes;
+            output.destination->ipv6_network = entry.prefix.network.bytes;
           } else {
             output.destination->ipv4_network =
-                static_cast<std::uint32_t>(prefix.network.bytes[0U]) << 24U |
-                static_cast<std::uint32_t>(prefix.network.bytes[1U]) << 16U |
-                static_cast<std::uint32_t>(prefix.network.bytes[2U]) << 8U |
-                prefix.network.bytes[3U];
+                static_cast<std::uint32_t>(entry.prefix.network.bytes[0U])
+                    << 24U |
+                static_cast<std::uint32_t>(entry.prefix.network.bytes[1U])
+                    << 16U |
+                static_cast<std::uint32_t>(entry.prefix.network.bytes[2U])
+                    << 8U |
+                entry.prefix.network.bytes[3U];
           }
         }
         compiled.push_back(std::move(output));
@@ -904,11 +908,11 @@ std::optional<mld::ImportPolicyCheckpoint> compile_mld_import_policy(
         if (!list)
           return;
         output.reserve(list->prefixes.size());
-        for (const auto &prefix : list->prefixes) {
-          if (prefix.network.family != ip::AddressFamily::ipv6)
+        for (const auto &entry : list->prefixes) {
+          if (entry.prefix.network.family != ip::AddressFamily::ipv6)
             continue;
-          output.push_back(
-              {.network = prefix.network.bytes, .length = prefix.length});
+          output.push_back({.network = entry.prefix.network.bytes,
+                            .length = entry.prefix.length});
         }
       };
       collect_ipv6(groups, group_prefixes);
@@ -1007,6 +1011,28 @@ route_policy_metric_type(std::string_view text) noexcept {
   return std::nullopt;
 }
 
+// Maps the documented prefix list match type spelling to its YANG
+// enumeration value. The generated grammar restricts the token to these six
+// names, so any other text is a rejected value.
+std::optional<MldPrefixListType> prefix_list_type_value(
+    std::optional<std::string_view> text) noexcept {
+  if (!text)
+    return std::nullopt;
+  if (*text == "exact")
+    return MldPrefixListType::exact;
+  if (*text == "longer")
+    return MldPrefixListType::longer;
+  if (*text == "through")
+    return MldPrefixListType::through;
+  if (*text == "range")
+    return MldPrefixListType::range;
+  if (*text == "to")
+    return MldPrefixListType::to;
+  if (*text == "address-mask")
+    return MldPrefixListType::address_mask;
+  return std::nullopt;
+}
+
 template <typename Configuration>
 bool edit_mld_import_policy(Configuration &configuration,
                             const cli_detail::ParsedCommand &command) {
@@ -1047,15 +1073,20 @@ bool edit_mld_import_policy(Configuration &configuration,
     const auto raw_prefix = argument(cli_schema::TokenKind::ip_prefix);
     const auto prefix = raw_prefix ? ip::parse_ip_prefix(*raw_prefix)
                                    : std::optional<ip::IpPrefix>{};
-    if (!prefix)
+    // YANG keys the prefix list by (ip-prefix, type); both tokens are
+    // mandatory in the 26.7 grammar for the set and the delete form.
+    const auto raw_type = argument(cli_schema::TokenKind::prefix_list_type);
+    const auto type = prefix_list_type_value(raw_type);
+    if (!prefix || !type)
       return false;
+    const MldPolicyPrefixListEntryIntent entry{*prefix, *type};
     const bool removing =
         id == md_delete_policy_prefix || id == classic_policy_no_prefix;
     if (removing) {
       if (list == configuration.mld_prefix_lists.end())
         return false;
       const auto found =
-          std::find(list->prefixes.begin(), list->prefixes.end(), *prefix);
+          std::find(list->prefixes.begin(), list->prefixes.end(), entry);
       if (found == list->prefixes.end())
         return false;
       list->prefixes.erase(found);
@@ -1066,15 +1097,15 @@ bool edit_mld_import_policy(Configuration &configuration,
           {.name = std::string{*name}, .prefixes = {}});
       list = std::prev(configuration.mld_prefix_lists.end());
     }
-    if (std::find(list->prefixes.begin(), list->prefixes.end(), *prefix) !=
+    if (std::find(list->prefixes.begin(), list->prefixes.end(), entry) !=
         list->prefixes.end())
       return true;
-    list->prefixes.push_back(*prefix);
+    list->prefixes.push_back(entry);
     std::sort(list->prefixes.begin(), list->prefixes.end(),
               [](const auto &left, const auto &right) {
-                return left.network < right.network ||
-                       (left.network == right.network &&
-                        left.length < right.length);
+                return left.prefix.network < right.prefix.network ||
+                       (left.prefix.network == right.prefix.network &&
+                        left.prefix.length < right.prefix.length);
               });
     return true;
   }
@@ -2114,8 +2145,6 @@ bool classic_mld_configuration_command(cli_schema::CommandId id) noexcept {
   case classic_mld_interface_no_query_response_interval:
   case classic_mld_interface_last_listener_interval:
   case classic_mld_interface_no_last_listener_interval:
-  case classic_mld_interface_robust_count:
-  case classic_mld_interface_no_robust_count:
   case classic_mld_interface_max_groups:
   case classic_mld_interface_no_max_groups:
   case classic_mld_interface_max_group_sources:
@@ -2250,7 +2279,6 @@ bool md_mld_configuration_command(cli_schema::CommandId id) noexcept {
   case md_mld_interface_query_interval:
   case md_mld_interface_query_response_interval:
   case md_mld_interface_last_member_interval:
-  case md_mld_interface_robust_count:
   case md_mld_interface_maximum_number_groups:
   case md_mld_interface_maximum_number_group_sources:
   case md_mld_interface_maximum_number_sources:
@@ -2265,7 +2293,6 @@ bool md_mld_configuration_command(cli_schema::CommandId id) noexcept {
   case md_delete_mld_interface_query_interval:
   case md_delete_mld_interface_query_response_interval:
   case md_delete_mld_interface_last_member_interval:
-  case md_delete_mld_interface_robust_count:
   case md_delete_mld_interface_maximum_number_groups:
   case md_delete_mld_interface_maximum_number_group_sources:
   case md_delete_mld_interface_maximum_number_sources:
@@ -3705,7 +3732,7 @@ void md_tls_configuration_body(std::ostringstream &out,
     md_tls_endpoint_profile_info(out, profile, depth + 1U, detail);
     if (detail || profile.renegotiate_timer_configured) {
       md_indent(out, depth + 1U);
-      out << "tls-re-negotiate-timer " << profile.renegotiate_timer_seconds
+      out << "tls-re-negotiate-timer " << profile.renegotiate_timer_minutes
           << '\n';
     }
     if (!profile.client_trust_anchor_profile.empty() ||
@@ -4888,11 +4915,29 @@ md_policy_configuration_info(const Configuration &configuration,
       (*tokens)[1] != "policy-options")
     return std::nullopt;
 
+  const auto prefix_type_name = [](MldPrefixListType type) {
+    switch (type) {
+    case MldPrefixListType::exact:
+      return "exact";
+    case MldPrefixListType::longer:
+      return "longer";
+    case MldPrefixListType::through:
+      return "through";
+    case MldPrefixListType::range:
+      return "range";
+    case MldPrefixListType::to:
+      return "to";
+    case MldPrefixListType::address_mask:
+      return "address-mask";
+    }
+    return "exact";
+  };
   const auto emit_prefix_list = [&](std::ostringstream &out,
                                     const auto &list, std::size_t depth) {
-    for (const auto &prefix : list.prefixes) {
+    for (const auto &entry : list.prefixes) {
       md_indent(out, depth);
-      out << "prefix " << ip::format_ip_prefix(prefix) << '\n';
+      out << "prefix " << ip::format_ip_prefix(entry.prefix)
+          << " type " << prefix_type_name(entry.type) << '\n';
     }
   };
   const auto emit_entry = [&](std::ostringstream &out, const auto &entry,
@@ -5783,38 +5828,37 @@ void md_base_interface_info(std::ostringstream &out,
       md_indent(out, depth + 1U);
       out << "}\n";
     }
-    md_indent(out, depth);
-    out << "}\n";
-  }
-
-  // IPv4 ICMP is a direct child of the router interface in the 26.7 MD
-  // model. It is not nested below `ipv4`. Redirect controls form their own
-  // presence container and use admin-state, number and seconds leaf names.
-  // Keeping the exact hierarchy here is required for both root `info` and PWC
-  // scoping through md_rendered_context_body().
-  if (detail || interface.icmp_redirect_admin_configured ||
-      interface.icmp_redirect_maximum_configured ||
-      interface.icmp_redirect_interval_configured) {
-    md_indent(out, depth);
-    out << "icmp {\n";
-    md_indent(out, depth + 1U);
-    out << "redirects {\n";
-    if (detail || interface.icmp_redirect_admin_configured) {
+    // YANG nests IPv4 ICMP redirects under the interface ipv4 container
+    // (nokia-conf.yang:306737). The redirects presence container keeps the
+    // admin-state, number and seconds leaf names. Rendering the exact
+    // hierarchy is required for both root `info` and PWC scoping through
+    // md_rendered_context_body().
+    if (detail || interface.icmp_redirect_admin_configured ||
+        interface.icmp_redirect_maximum_configured ||
+        interface.icmp_redirect_interval_configured) {
+      md_indent(out, depth + 1U);
+      out << "icmp {\n";
       md_indent(out, depth + 2U);
-      out << "admin-state "
-          << (interface.icmp_redirects_enabled ? "enable" : "disable")
-          << '\n';
-    }
-    if (detail || interface.icmp_redirect_maximum_configured) {
+      out << "redirects {\n";
+      if (detail || interface.icmp_redirect_admin_configured) {
+        md_indent(out, depth + 3U);
+        out << "admin-state "
+            << (interface.icmp_redirects_enabled ? "enable" : "disable")
+            << '\n';
+      }
+      if (detail || interface.icmp_redirect_maximum_configured) {
+        md_indent(out, depth + 3U);
+        out << "number " << interface.icmp_redirect_maximum << '\n';
+      }
+      if (detail || interface.icmp_redirect_interval_configured) {
+        md_indent(out, depth + 3U);
+        out << "seconds " << interface.icmp_redirect_interval_seconds << '\n';
+      }
       md_indent(out, depth + 2U);
-      out << "number " << interface.icmp_redirect_maximum << '\n';
+      out << "}\n";
+      md_indent(out, depth + 1U);
+      out << "}\n";
     }
-    if (detail || interface.icmp_redirect_interval_configured) {
-      md_indent(out, depth + 2U);
-      out << "seconds " << interface.icmp_redirect_interval_seconds << '\n';
-    }
-    md_indent(out, depth + 1U);
-    out << "}\n";
     md_indent(out, depth);
     out << "}\n";
   }
@@ -7614,7 +7658,8 @@ void json_policy_options(std::ostringstream &out,
          ++prefix_index) {
       if (prefix_index)
         out << ',';
-      json_string(out, ip::format_ip_prefix(list.prefixes[prefix_index]));
+      json_string(
+          out, ip::format_ip_prefix(list.prefixes[prefix_index].prefix));
     }
     out << "]}";
   }
@@ -11328,7 +11373,8 @@ bool LabRuntime::replace_router_configuration(
       const auto parsed = ip::parse_ip_prefix(prefix_text);
       if (!parsed)
         return false;
-      list.prefixes.push_back(*parsed);
+      list.prefixes.push_back({.prefix = *parsed,
+                               .type = MldPrefixListType::exact});
     }
     next.mld_prefix_lists.push_back(std::move(list));
   }
@@ -16423,7 +16469,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             id == md_mld_interface_query_interval ||
             id == md_mld_interface_query_response_interval ||
             id == md_mld_interface_last_member_interval ||
-            id == md_mld_interface_robust_count ||
             id == md_mld_interface_maximum_number_groups ||
             id == md_mld_interface_maximum_number_group_sources ||
             id == md_mld_interface_maximum_number_sources ||
@@ -16434,7 +16479,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             id == md_delete_mld_interface_query_interval ||
             id == md_delete_mld_interface_query_response_interval ||
             id == md_delete_mld_interface_last_member_interval ||
-            id == md_delete_mld_interface_robust_count ||
             id == md_delete_mld_interface_maximum_number_groups ||
             id == md_delete_mld_interface_maximum_number_group_sources ||
             id == md_delete_mld_interface_maximum_number_sources ||
@@ -16472,7 +16516,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 id == md_delete_mld_interface_query_interval ||
                 id == md_delete_mld_interface_query_response_interval ||
                 id == md_delete_mld_interface_last_member_interval ||
-                id == md_delete_mld_interface_robust_count ||
                 id == md_delete_mld_interface_maximum_number_groups ||
                 id == md_delete_mld_interface_maximum_number_group_sources ||
                 id == md_delete_mld_interface_maximum_number_sources ||
@@ -16502,27 +16545,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 interface->mld_version_configured = false;
               } else if (valid) {
                 interface->mld_version_configured = true;
-              }
-            } else if (valid && (id == md_mld_interface_robust_count ||
-                                 id == md_delete_mld_interface_robust_count)) {
-              if (id == md_delete_mld_interface_robust_count) {
-                valid = interface->mld_robustness_variable_configured;
-                if (valid) {
-                  interface->mld_robustness_variable = 0U;
-                  interface->mld_robustness_variable_configured = false;
-                }
-              } else {
-                unsigned value{};
-                const auto text = argument(cli_schema::TokenKind::robust_count);
-                valid =
-                    text && decimal(*text, value) &&
-                    value >= device_catalog::mld_minimum_robustness_variable &&
-                    value <= device_catalog::mld_maximum_robustness_variable;
-                if (valid) {
-                  interface->mld_robustness_variable =
-                      static_cast<std::uint8_t>(value);
-                  interface->mld_robustness_variable_configured = true;
-                }
               }
             } else if (
                 valid &&
@@ -18115,8 +18137,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             id == classic_mld_interface_no_query_response_interval ||
             id == classic_mld_interface_last_listener_interval ||
             id == classic_mld_interface_no_last_listener_interval ||
-            id == classic_mld_interface_robust_count ||
-            id == classic_mld_interface_no_robust_count ||
             id == classic_mld_interface_max_groups ||
             id == classic_mld_interface_no_max_groups ||
             id == classic_mld_interface_max_group_sources ||
@@ -18156,7 +18176,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 id == classic_mld_interface_no_query_interval ||
                 id == classic_mld_interface_no_query_response_interval ||
                 id == classic_mld_interface_no_last_listener_interval ||
-                id == classic_mld_interface_no_robust_count ||
                 id == classic_mld_interface_no_max_groups ||
                 id == classic_mld_interface_no_max_group_sources ||
                 id == classic_mld_interface_no_max_sources ||
@@ -18188,28 +18207,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 if (applied) {
                   interface->mld_version = static_cast<std::uint8_t>(version);
                   interface->mld_version_configured = true;
-                }
-              }
-            } else if (applied &&
-                       (id == classic_mld_interface_robust_count ||
-                        id == classic_mld_interface_no_robust_count)) {
-              if (id == classic_mld_interface_no_robust_count) {
-                applied = interface->mld_robustness_variable_configured;
-                if (applied) {
-                  interface->mld_robustness_variable = 0U;
-                  interface->mld_robustness_variable_configured = false;
-                }
-              } else {
-                unsigned value{};
-                const auto text = argument(cli_schema::TokenKind::robust_count);
-                applied =
-                    text && decimal(*text, value) &&
-                    value >= device_catalog::mld_minimum_robustness_variable &&
-                    value <= device_catalog::mld_maximum_robustness_variable;
-                if (applied) {
-                  interface->mld_robustness_variable =
-                      static_cast<std::uint8_t>(value);
-                  interface->mld_robustness_variable_configured = true;
                 }
               }
             } else if (applied &&
