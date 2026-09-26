@@ -616,8 +616,12 @@ EditResult edit(ospf::RouterConfiguration &configuration,
       id == CommandId::classic_no_ospf ||
       id == CommandId::classic_no_ospf3;
   if (delete_instance) {
-    if (!instance)
-      return {.recognized = true, .changed = false, .instance = {}};
+    if (!instance) {
+      // MD-CLI deletes an absent element without displaying a warning.
+      // Classic no forms require the element to exist and stay rejected.
+      return {.recognized = true, .valid = engine == CliEngine::md,
+              .changed = false, .instance = {}};
+    }
     if (engine == CliEngine::classic && instance->admin_enabled)
       return {.recognized = true, .changed = false, .instance = {}};
     std::erase_if(next.instances, [&](const auto &candidate) {
@@ -626,6 +630,14 @@ EditResult edit(ospf::RouterConfiguration &configuration,
     });
   } else {
     if (!instance) {
+      // MD-CLI materializes absent ancestors only while configuring a leaf.
+      // A delete below an absent element is a documented silent no-op and
+      // never creates configuration. Classic context entry materializes the
+      // context, so classic keeps the create-then-edit path.
+      if (engine == CliEngine::md &&
+          cli_detail::removal_command(*command.spec))
+        return {.recognized = true, .valid = true, .changed = false,
+                .instance = {}};
       next.instances.push_back(ospf::default_instance(family, instance_id));
       instance = &next.instances.back();
     }
@@ -919,12 +931,20 @@ EditResult edit(ospf::RouterConfiguration &configuration,
       auto *area = find_area(*instance, *parsed_area);
       if (delete_area) {
         if (!area)
-          return {.recognized = true, .changed = false, .instance = {}};
+          return {.recognized = true, .valid = engine == CliEngine::md,
+                  .changed = false, .instance = {}};
         std::erase_if(instance->areas, [&](const auto &candidate) {
           return candidate.area_id == *parsed_area;
         });
       } else {
         if (!area) {
+          // Same absent-ancestor rule as the instance level: an MD delete
+          // below a missing area is silent, classic still materializes the
+          // area through context entry.
+          if (engine == CliEngine::md &&
+              cli_detail::removal_command(*command.spec))
+            return {.recognized = true, .valid = true, .changed = false,
+                    .instance = {}};
           instance->areas.push_back({.area_id = *parsed_area});
           area = &instance->areas.back();
         }
@@ -955,9 +975,8 @@ EditResult edit(ospf::RouterConfiguration &configuration,
                 id == CommandId::classic_ospf3_no_virtual_link;
             if (remove) {
               if (found == area->virtual_links.end())
-                return {.recognized = true,
-                        .changed = false,
-                        .instance = {}};
+                return {.recognized = true, .valid = engine == CliEngine::md,
+                        .changed = false, .instance = {}};
               area->virtual_links.erase(found);
             } else if (has_literal(*command.spec, "authentication") ||
                        id == CommandId::md_ospf_virtual_link_auth_password ||
@@ -983,9 +1002,8 @@ EditResult edit(ospf::RouterConfiguration &configuration,
                        id == CommandId::
                                  classic_ospf_virtual_link_no_authentication) {
               if (found == area->virtual_links.end())
-                return {.recognized = true,
-                        .changed = false,
-                        .instance = {}};
+                return {.recognized = true, .valid = engine == CliEngine::md,
+                        .changed = false, .instance = {}};
               const bool reset =
                   command.spec->tokens[0].display == "delete" ||
                   has_literal(*command.spec, "no");
@@ -1090,9 +1108,8 @@ EditResult edit(ospf::RouterConfiguration &configuration,
                        has_literal(*command.spec, "retransmit-interval") ||
                        has_literal(*command.spec, "transit-delay")) {
               if (found == area->virtual_links.end())
-                return {.recognized = true,
-                        .changed = false,
-                        .instance = {}};
+                return {.recognized = true, .valid = engine == CliEngine::md,
+                        .changed = false, .instance = {}};
 
               // MD delete and classic no reset a leaf to the selected release
               // default. A configured value is parsed into uint16 only after
@@ -1127,9 +1144,8 @@ EditResult edit(ospf::RouterConfiguration &configuration,
             } else if (has_literal(*command.spec, "admin-state") ||
                        has_literal(*command.spec, "shutdown")) {
               if (found == area->virtual_links.end())
-                return {.recognized = true,
-                        .changed = false,
-                        .instance = {}};
+                return {.recognized = true, .valid = engine == CliEngine::md,
+                        .changed = false, .instance = {}};
               // MD uses admin-state enable/disable; classic uses shutdown and
               // no shutdown for the same YANG leaf.
               const bool enable =
@@ -1259,7 +1275,8 @@ EditResult edit(ospf::RouterConfiguration &configuration,
         auto *interface = find_interface(*area, interface_name);
         if (delete_interface) {
           if (!interface)
-            return {.recognized = true, .changed = false, .instance = {}};
+            return {.recognized = true, .valid = engine == CliEngine::md,
+                    .changed = false, .instance = {}};
           // Classic removes an interface only after shutdown, mirroring the
           // instance gate above. MD delete removes the list entry directly.
           if ((id == CommandId::classic_ospf_no_interface ||
@@ -1271,6 +1288,13 @@ EditResult edit(ospf::RouterConfiguration &configuration,
           });
         } else {
           if (!interface) {
+            // Interface level of the same absent-ancestor rule: an MD delete
+            // below a missing interface is silent, classic still materializes
+            // the interface through context entry.
+            if (engine == CliEngine::md &&
+                cli_detail::removal_command(*command.spec))
+              return {.recognized = true, .valid = true, .changed = false,
+                      .instance = {}};
             area->interfaces.push_back(default_interface(interface_name));
             interface = &area->interfaces.back();
           }

@@ -418,6 +418,10 @@ EditResult edit(Configuration &configuration,
     return result;
   };
   const bool md = engine == CliEngine::md;
+  const bool removal = cli_detail::removal_command(*command.spec);
+  // Entry and list index ranges are owned by the generated grammar, so every
+  // parsed removal here is either a real element deletion or an absent-element
+  // no-op. Cross-reference rules keep their separate rejected path above.
   using enum CommandId;
 
   if (id == md_tls_use_pqc_only || id == classic_tls_use_pqc_only) {
@@ -800,7 +804,10 @@ EditResult edit(Configuration &configuration,
   if (!changed)
     configuration = before;
   return {.recognized = true,
-          .valid = changed || selected,
+          // A no-change delete is the documented MD-CLI silent no-op: the
+          // element was absent or already at its default. Classic keeps the
+          // rejected result for the same input.
+          .valid = changed || selected || (md && removal),
           .changed = changed,
           .instance = std::move(instance)};
 }

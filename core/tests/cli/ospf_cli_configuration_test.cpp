@@ -664,4 +664,29 @@ void ospf_cli_configuration_tests() {
        "begin-time 2026-01-01T00:00:00Z");
   require(defaults.keychains[0].bidirectional[0].begin_utc_seconds > 0,
           "classic keychain begin-time did not parse RFC 3339");
+
+  // MD-CLI deletes of absent elements are documented silent no-ops that never
+  // create configuration at any ancestor level; classic no forms stay
+  // rejected for the same input.
+  router::ospf::RouterConfiguration absent;
+  const auto absent_edit = [&](CliEngine engine, std::string_view text) {
+    const auto before = absent;
+    const auto result =
+        router::lab::ospf_cli::edit(absent, parse(engine, text), engine);
+    require(result.recognized, "absent-element command was not recognized");
+    require(result.valid == (engine == CliEngine::md),
+            "absent-element delete validity did not follow the engine");
+    require(!result.changed, "absent-element delete changed configuration");
+    require(absent == before, "absent-element delete persisted ancestors");
+  };
+  absent_edit(CliEngine::md,
+              "delete router \"Base\" ospf 7 reference-bandwidth");
+  absent_edit(CliEngine::md, "delete router \"Base\" ospf 7");
+  absent_edit(CliEngine::md, "delete router \"Base\" ospf 7 area 0.0.0.0");
+  absent_edit(CliEngine::md,
+              "delete router \"Base\" ospf 7 area 0.0.0.0 stub");
+  absent_edit(CliEngine::md,
+              "delete router \"Base\" ospf 7 area 0.0.0.0 interface eth "
+              "hello-interval");
+  absent_edit(CliEngine::classic, "configure router no ospf 7");
 }
