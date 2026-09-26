@@ -158,7 +158,7 @@ parameters:
   global_if_index: { display: "<global-if-index>", description: "Global interface index from 1 through 262144" }
   ospf_area_id: { display: "<area-id>", description: "OSPF area identifier in dotted-decimal or unsigned form" }
   ospf_transit_area_id: { display: "<transit-area-id>", description: "Non-backbone OSPF transit area identifier" }
-  classic_ospf_interface_type: { display: "<point-to-point|broadcast|non-broadcast>", description: "Classic CLI OSPF network type" }
+  classic_ospf_interface_type: { display: "<broadcast|point-to-point|non-broadcast|p2mp-nbma>", description: "Classic CLI OSPF network type" }
   md_ospf_interface_type: { display: "<point-to-point|broadcast|non-broadcast|p2mp-nbma>", description: "OSPF network type" }
   ospf_metric: { display: "<metric>", description: "OSPF interface metric from 1 through 65535" }
   ospf_priority: { display: "<priority>", description: "OSPF DR election priority" }
@@ -389,6 +389,7 @@ literals:
   dns-options: "Configure Router Advertisement DNS options"
   include-rdnss: "Include the Recursive DNS Server option"
   include-dns: "Include the Recursive DNS Server option"
+  forever: "Never expire the key overlap"
   server: "Configure a recursive DNS server"
   rdnss-lifetime: "Configure the Recursive DNS Server lifetime"
   neighbor: "Display the IPv6 neighbor cache"
@@ -738,8 +739,8 @@ commands:
   - { id: md_ospf_overload, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, overload, { parameter: boolean }] }
   - { id: md_ospf_graceful_restart, engines: [md], enters_context: true, source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, graceful-restart] }
   - { id: md_delete_ospf_graceful_restart, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }, graceful-restart] }
-  - { id: md_ospf_loopfree_alternates, engines: [md], enters_context: true, source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, loopfree-alternate] }
-  - { id: md_delete_ospf_loopfree_alternates, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }, loopfree-alternate] }
+  - { id: md_ospf_loopfree_alternates, engines: [md], enters_context: true, source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, loopfree-alternates] }
+  - { id: md_delete_ospf_loopfree_alternates, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf, { parameter: ospf_instance }, loopfree-alternates] }
   - { id: md_ospf_spf_initial_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, timers, spf-wait, spf-initial-wait, { parameter: ospf_timer_milliseconds }] }
   - { id: md_ospf_spf_second_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, timers, spf-wait, spf-second-wait, { parameter: ospf_timer_milliseconds }] }
   - { id: md_ospf_spf_max_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf, { parameter: ospf_instance }, timers, spf-wait, spf-max-wait, { parameter: ospf_timer_milliseconds }] }
@@ -803,8 +804,8 @@ commands:
   - { id: md_ospf3_overload, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, overload, { parameter: boolean }] }
   - { id: md_ospf3_graceful_restart, engines: [md], enters_context: true, source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, graceful-restart] }
   - { id: md_delete_ospf3_graceful_restart, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, graceful-restart] }
-  - { id: md_ospf3_loopfree_alternates, engines: [md], enters_context: true, source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, loopfree-alternate] }
-  - { id: md_delete_ospf3_loopfree_alternates, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, loopfree-alternate] }
+  - { id: md_ospf3_loopfree_alternates, engines: [md], enters_context: true, source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, loopfree-alternates] }
+  - { id: md_delete_ospf3_loopfree_alternates, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, loopfree-alternates] }
   - { id: md_ospf3_spf_initial_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, timers, spf-wait, spf-initial-wait, { parameter: ospf_timer_milliseconds }] }
   - { id: md_ospf3_spf_second_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, timers, spf-wait, spf-second-wait, { parameter: ospf_timer_milliseconds }] }
   - { id: md_ospf3_spf_max_wait, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, timers, spf-wait, spf-max-wait, { parameter: ospf_timer_milliseconds }] }
@@ -866,7 +867,6 @@ commands:
   - { id: classic_ospf_preference, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, preference, { parameter: ospf_preference }] }
   - { id: classic_ospf_external_preference, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, external-preference, { parameter: ospf_preference }] }
   - { id: classic_ospf_export_policy, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, export, { parameter: policy_name }] }
-  - { id: classic_ospf_no_export_policy, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, no, export, { parameter: policy_name }] }
   - { id: classic_ospf_no_export, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, no, export] }
   - { id: classic_ospf_asbr, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, asbr] }
   - { id: classic_ospf_asbr_trace_path, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, asbr, trace-path, { parameter: ospf_domain_id }] }
@@ -875,8 +875,8 @@ commands:
   - { id: classic_ospf_no_overload, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, no, overload] }
   - { id: classic_ospf_graceful_restart, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, graceful-restart] }
   - { id: classic_ospf_no_graceful_restart, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, no, graceful-restart] }
-  - { id: classic_ospf_loopfree_alternates, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, loopfree-alternate] }
-  - { id: classic_ospf_no_loopfree_alternates, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, no, loopfree-alternate] }
+  - { id: classic_ospf_loopfree_alternates, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, loopfree-alternates] }
+  - { id: classic_ospf_no_loopfree_alternates, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, no, loopfree-alternates] }
   - { id: classic_ospf_spf_initial_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, timers, spf-wait, spf-initial-wait, { parameter: ospf_timer_milliseconds }] }
   - { id: classic_ospf_spf_second_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, timers, spf-wait, spf-second-wait, { parameter: ospf_timer_milliseconds }] }
   - { id: classic_ospf_spf_max_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf, { parameter: ospf_instance }, timers, spf-wait, spf-max-wait, { parameter: ospf_timer_milliseconds }] }
@@ -938,7 +938,6 @@ commands:
   - { id: classic_ospf3_preference, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, preference, { parameter: ospf_preference }] }
   - { id: classic_ospf3_external_preference, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, external-preference, { parameter: ospf_preference }] }
   - { id: classic_ospf3_export_policy, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, export, { parameter: policy_name }] }
-  - { id: classic_ospf3_no_export_policy, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, no, export, { parameter: policy_name }] }
   - { id: classic_ospf3_no_export, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, no, export] }
   - { id: classic_ospf3_asbr, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, asbr] }
   - { id: classic_ospf3_no_asbr, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, no, asbr] }
@@ -946,8 +945,8 @@ commands:
   - { id: classic_ospf3_no_overload, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, no, overload] }
   - { id: classic_ospf3_graceful_restart, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, graceful-restart] }
   - { id: classic_ospf3_no_graceful_restart, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, no, graceful-restart] }
-  - { id: classic_ospf3_loopfree_alternates, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, loopfree-alternate] }
-  - { id: classic_ospf3_no_loopfree_alternates, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, no, loopfree-alternate] }
+  - { id: classic_ospf3_loopfree_alternates, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, loopfree-alternates] }
+  - { id: classic_ospf3_no_loopfree_alternates, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, no, loopfree-alternates] }
   - { id: classic_ospf3_spf_initial_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, timers, spf-wait, spf-initial-wait, { parameter: ospf_timer_milliseconds }] }
   - { id: classic_ospf3_spf_second_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, timers, spf-wait, spf-second-wait, { parameter: ospf_timer_milliseconds }] }
   - { id: classic_ospf3_spf_max_wait, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, timers, spf-wait, spf-max-wait, { parameter: ospf_timer_milliseconds }] }
@@ -1052,7 +1051,6 @@ commands:
   - { id: md_keychain_entry_hmac_sha_256_96, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychains, keychain, { parameter: ospf_keychain_name }, bidirectional, entry, { parameter: ospf_key_id }, algorithm, hmac-sha-256-96] }
   - { id: md_keychain_entry_hmac_sha_256_128, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychains, keychain, { parameter: ospf_keychain_name }, bidirectional, entry, { parameter: ospf_key_id }, algorithm, hmac-sha-256-128] }
   - { id: md_keychain_entry_key, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychains, keychain, { parameter: ospf_keychain_name }, bidirectional, entry, { parameter: ospf_key_id }, authentication-key, { parameter: ospf_authentication_key }] }
-  - { id: md_keychain_entry_begin_now, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychains, keychain, { parameter: ospf_keychain_name }, bidirectional, entry, { parameter: ospf_key_id }, begin-time, now] }
   - { id: md_keychain_entry_begin_time, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychains, keychain, { parameter: ospf_keychain_name }, bidirectional, entry, { parameter: ospf_key_id }, begin-time, { parameter: ospf_keychain_time }] }
   - { id: md_keychain_entry_tolerance, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychains, keychain, { parameter: ospf_keychain_name }, bidirectional, entry, { parameter: ospf_key_id }, tolerance, { parameter: ospf_tolerance }] }
   - { id: md_keychain_entry_tolerance_infinite, engines: [md], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychains, keychain, { parameter: ospf_keychain_name }, bidirectional, entry, { parameter: ospf_key_id }, tolerance, infinite] }
@@ -1072,7 +1070,7 @@ commands:
   - { id: classic_keychain_entry_begin_now, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychain, { parameter: ospf_keychain_name }, direction, bi, entry, { parameter: ospf_key_id }, begin-time, now] }
   - { id: classic_keychain_entry_begin_time, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychain, { parameter: ospf_keychain_name }, direction, bi, entry, { parameter: ospf_key_id }, begin-time, { parameter: ospf_keychain_time }] }
   - { id: classic_keychain_entry_tolerance, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychain, { parameter: ospf_keychain_name }, direction, bi, entry, { parameter: ospf_key_id }, tolerance, { parameter: ospf_tolerance }] }
-  - { id: classic_keychain_entry_tolerance_infinite, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychain, { parameter: ospf_keychain_name }, direction, bi, entry, { parameter: ospf_key_id }, tolerance, infinite] }
+  - { id: classic_keychain_entry_tolerance_forever, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychain, { parameter: ospf_keychain_name }, direction, bi, entry, { parameter: ospf_key_id }, tolerance, forever] }
   - { id: classic_keychain_no_entry, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychain, { parameter: ospf_keychain_name }, direction, bi, no, entry, { parameter: ospf_key_id }] }
   - { id: classic_no_keychain, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, no, keychain, { parameter: ospf_keychain_name }] }
 
@@ -2924,9 +2922,8 @@ commands:
   - { id: classic_dhcpv4_circuit_ifindex, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, circuit-id, ifindex] }
   - { id: classic_dhcpv4_circuit_port_id, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, circuit-id, port-id] }
   - { id: classic_dhcpv4_circuit_no, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, no, circuit-id] }
-  - { id: classic_dhcpv4_remote_none, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, remote-id, none] }
   - { id: classic_dhcpv4_remote_mac, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, remote-id, mac] }
-  - { id: classic_dhcpv4_remote_ascii, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, remote-id, ascii-string, { parameter: dhcp_remote_id_ascii }] }
+  - { id: classic_dhcpv4_remote_ascii, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, remote-id, string, { parameter: dhcp_remote_id_ascii }] }
   - { id: classic_dhcpv4_remote_no, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, no, remote-id] }
   - { id: classic_dhcpv4_server_shutdown, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, shutdown] }
   - { id: classic_dhcpv4_server_no_shutdown, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, no, shutdown] }

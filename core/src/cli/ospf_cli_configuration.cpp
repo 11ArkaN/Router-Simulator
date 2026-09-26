@@ -200,7 +200,6 @@ bool version_three(CommandId id) noexcept {
   case classic_ospf3_preference:
   case classic_ospf3_external_preference:
   case classic_ospf3_export_policy:
-  case classic_ospf3_no_export_policy:
   case classic_ospf3_no_export:
   case classic_ospf3_asbr:
   case classic_ospf3_no_asbr:
@@ -554,8 +553,7 @@ EditResult edit(ospf::RouterConfiguration &configuration,
           entry->secret = *handle;
           entry->secret_configured = true;
         }
-        if (id == CommandId::md_keychain_entry_begin_now ||
-            id == CommandId::classic_keychain_entry_begin_now) {
+        if (id == CommandId::classic_keychain_entry_begin_now) {
           entry->begin_utc_seconds =
               std::chrono::duration_cast<std::chrono::seconds>(
                   std::chrono::system_clock::now().time_since_epoch())
@@ -579,7 +577,7 @@ EditResult edit(ospf::RouterConfiguration &configuration,
               static_cast<std::uint32_t>(*tolerance);
         } else if (id == CommandId::md_keychain_entry_tolerance_infinite ||
                    id == CommandId::
-                               classic_keychain_entry_tolerance_infinite) {
+                               classic_keychain_entry_tolerance_forever) {
           // YANG models an infinite receive-key overlap beside the numeric
           // range. The maximum 32-bit value is the stored sentinel; key
           // selection compares against it without date arithmetic overflow.
@@ -716,9 +714,7 @@ EditResult edit(ospf::RouterConfiguration &configuration,
         return {.recognized = true, .changed = false, .instance = {}};
       instance->export_policy = name;
     } else if (id == CommandId::md_delete_ospf_export_policy ||
-               id == CommandId::md_delete_ospf3_export_policy ||
-               id == CommandId::classic_ospf_no_export_policy ||
-               id == CommandId::classic_ospf3_no_export_policy) {
+               id == CommandId::md_delete_ospf3_export_policy) {
       const auto name = argument_text(command, TokenKind::policy_name);
       if (name.empty() || instance->export_policy != name)
         return {.recognized = true, .changed = false, .instance = {}};

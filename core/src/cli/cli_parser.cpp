@@ -380,7 +380,7 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
     }
     case classic_ospf_interface_type:
       return value == "point-to-point" || value == "broadcast" ||
-             value == "non-broadcast";
+             value == "non-broadcast" || value == "p2mp-nbma";
     case md_ospf_interface_type:
       return value == "point-to-point" || value == "broadcast" ||
              value == "non-broadcast" || value == "p2mp-nbma";

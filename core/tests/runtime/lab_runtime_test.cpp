@@ -1061,7 +1061,7 @@ void lab_runtime_tests() {
         "configure system security keychains keychain info-keychain "
         "bidirectional entry 1 authentication-key info-secret",
         "configure system security keychains keychain info-keychain "
-        "bidirectional entry 1 begin-time now",
+        "bidirectional entry 1 begin-time 2026-07-16T12:00:00Z",
         "configure system security keychains keychain info-keychain "
         "bidirectional entry 1 tolerance 30",
         "configure system security tls use-pqc-only false",

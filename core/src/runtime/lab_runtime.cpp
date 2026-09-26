@@ -2409,7 +2409,6 @@ bool classic_configuration_command(cli_schema::CommandId id) noexcept {
   case classic_dhcpv4_circuit_ifindex:
   case classic_dhcpv4_circuit_port_id:
   case classic_dhcpv4_circuit_no:
-  case classic_dhcpv4_remote_none:
   case classic_dhcpv4_remote_mac:
   case classic_dhcpv4_remote_ascii:
   case classic_dhcpv4_remote_no:
@@ -2610,7 +2609,6 @@ bool dhcpv4_relay_configuration_command(
   case classic_dhcpv4_circuit_ifindex:
   case classic_dhcpv4_circuit_port_id:
   case classic_dhcpv4_circuit_no:
-  case classic_dhcpv4_remote_none:
   case classic_dhcpv4_remote_mac:
   case classic_dhcpv4_remote_ascii:
   case classic_dhcpv4_remote_no:
@@ -14804,7 +14802,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       relay.circuit_id_source = dhcpv4::CircuitIdSource::port_id;
     } else if (id == md_dhcpv4_remote_none ||
                id == md_delete_dhcpv4_remote ||
-               id == classic_dhcpv4_remote_none ||
                id == classic_dhcpv4_remote_no) {
       relay.remote_id_source = dhcpv4::RemoteIdSource::none;
       relay.remote_id_ascii.clear();
