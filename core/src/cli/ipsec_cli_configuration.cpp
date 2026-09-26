@@ -375,8 +375,7 @@ bool referenced(const Configuration &state, std::uint16_t transform) {
                      });
 }
 
-bool ipsec_referenced(const Configuration &state, std::uint16_t transform) {
-  const auto contains = [transform](const auto &references) {
+bool ipsec_referenced(const Configuration &state, std::uint16_t transform) {  const auto contains = [transform](const auto &references) {
     return std::find(references.begin(), references.end(), transform) !=
            references.end();
   };
@@ -388,6 +387,16 @@ bool ipsec_referenced(const Configuration &state, std::uint16_t transform) {
          std::any_of(state.tunnel_templates.begin(),
                      state.tunnel_templates.end(), [&](const auto &item) {
                        return contains(item.ipsec_transforms);
+                     });
+}
+
+bool ike_policy_referenced(const Configuration &state, std::uint16_t policy) {
+  // The YANG ike-policy leafref lives under the transport profile dynamic
+  // keying context; tunnel templates reference transforms directly.
+  return std::any_of(state.transport_mode_profiles.begin(),
+                     state.transport_mode_profiles.end(),
+                     [policy](const auto &profile) {
+                       return profile.dynamic.ike_policy == policy;
                      });
 }
 
@@ -403,6 +412,51 @@ bool classic_tunnel_transform_command(CommandId id) noexcept {
   using enum CommandId;
   return id == classic_tunnel_transform || id == classic_tunnel_transform_2 ||
          id == classic_tunnel_transform_3 || id == classic_tunnel_transform_4;
+}
+
+// Both engines carry the Diffie-Hellman group number in the token following
+// the dh-group or pfs-dh-group literal: MD-CLI spells group-19 and the classic
+// CLI spells 19. The YANG value domain is 1, 2, 5, 14, 15, 19, 20 and 21.
+std::optional<ipsec::configuration::DiffieHellmanGroup>
+diffie_hellman_group_value(const cli_detail::ParsedCommand &command,
+                           std::string_view keyword) noexcept {
+  using ipsec::configuration::DiffieHellmanGroup;
+  const auto &tokens = command.spec->tokens;
+  for (std::uint8_t i = 0; i + 1 < command.spec->token_count; ++i) {
+    if (tokens[i].kind != TokenKind::literal || tokens[i].display != keyword)
+      continue;
+    const auto value = tokens[i + 1].display;
+    const auto digits = value.starts_with("group-") ? value.substr(6) : value;
+    unsigned group{};
+    for (const auto byte : digits) {
+      if (byte < '0' || byte > '9')
+        return std::nullopt;
+      group = group * 10U + static_cast<unsigned>(byte - '0');
+      if (group > 21U)
+        return std::nullopt;
+    }
+    switch (group) {
+    case 1U:
+      return DiffieHellmanGroup::modp768;
+    case 2U:
+      return DiffieHellmanGroup::modp1024;
+    case 5U:
+      return DiffieHellmanGroup::modp1536;
+    case 14U:
+      return DiffieHellmanGroup::modp2048;
+    case 15U:
+      return DiffieHellmanGroup::modp3072;
+    case 19U:
+      return DiffieHellmanGroup::ecp256;
+    case 20U:
+      return DiffieHellmanGroup::ecp384;
+    case 21U:
+      return DiffieHellmanGroup::ecp512;
+    default:
+      return std::nullopt;
+    }
+  }
+  return std::nullopt;
 }
 
 bool valid_ipsec_transform_list(const Configuration &state,
@@ -1187,9 +1241,9 @@ EditResult edit(Configuration &state,
                       : ipsec::configuration::find_ike(
                             state, static_cast<std::uint16_t>(*ike_id));
       if (item) {
-        if (id == md_ike_transform_dh19 || id == classic_ike_transform_dh19)
-          changed = configure(item->dh_group, item->dh_group_configured,
-                              ipsec::configuration::DiffieHellmanGroup::ecp256);
+        if (const auto group = diffie_hellman_group_value(command, "dh-group")) {
+          changed = configure(item->dh_group, item->dh_group_configured, *group);
+        }
         else if (id == md_ike_transform_auth_encryption ||
                  id == classic_ike_transform_auth_encryption)
           changed = configure_flag(item->authentication_encryption_configured);
@@ -1210,22 +1264,19 @@ EditResult edit(Configuration &state,
           changed = value && *value >= 1'200U && *value <= 31'536'000U &&
                     configure(item->lifetime_seconds, item->lifetime_configured,
                               static_cast<std::uint32_t>(*value));
-        } else if (id == md_delete_ike_transform_dh ||
-                   id == classic_ike_transform_no_dh)
+        } else if (id == md_delete_ike_transform_dh) {
+          // The 26.7 default is group-14 for both engines. The classic CLI
+          // documents no no form, so only the MD delete restores it.
           changed = remove(item->dh_group, item->dh_group_configured,
-                           ipsec::configuration::DiffieHellmanGroup::ecp256);
-        else if (id == md_delete_ike_transform_auth ||
-                 id == classic_ike_transform_no_auth)
+                           ipsec::configuration::DiffieHellmanGroup::modp2048);
+        } else if (id == md_delete_ike_transform_auth)
           changed = remove_flag(item->authentication_encryption_configured);
-        else if (id == md_delete_ike_transform_encryption ||
-                 id == classic_ike_transform_no_encryption)
+        else if (id == md_delete_ike_transform_encryption)
           changed = remove(item->encryption, item->encryption_configured,
                            AesGcmKeySize::aes128);
-        else if (id == md_delete_ike_transform_prf ||
-                 id == classic_ike_transform_no_prf)
+        else if (id == md_delete_ike_transform_prf)
           changed = remove_flag(item->prf_sha256_configured);
-        else if (id == md_delete_ike_transform_lifetime ||
-                 id == classic_ike_transform_no_lifetime)
+        else if (id == md_delete_ike_transform_lifetime)
           changed = remove(item->lifetime_seconds, item->lifetime_configured,
                            86'400U);
       }
@@ -1267,26 +1318,28 @@ EditResult edit(Configuration &state,
         }
         else if (id == md_ipsec_transform_esn_true ||
                  id == md_ipsec_transform_esn_false ||
-                 id == classic_ipsec_transform_esn_true ||
-                 id == classic_ipsec_transform_esn_false)
+                 id == classic_ipsec_transform_esn)
           changed = configure(item->extended_sequence_number,
                               item->extended_sequence_number_configured,
                               id == md_ipsec_transform_esn_true ||
-                                  id == classic_ipsec_transform_esn_true);
+                                  id == classic_ipsec_transform_esn);
         else if (id == md_ipsec_transform_lifetime ||
                  id == classic_ipsec_transform_lifetime) {
           const auto value = number(command, TokenKind::ipsec_lifetime);
           changed = value && *value >= 1'200U && *value <= 31'536'000U &&
                     configure(item->lifetime_seconds, item->lifetime_configured,
                               static_cast<std::uint32_t>(*value));
-        } else if (id == md_ipsec_transform_pfs19 ||
-                   id == classic_ipsec_transform_pfs19) {
-          changed = !item->pfs_group_configured || !item->pfs_enabled;
-          item->pfs_group = ipsec::configuration::DiffieHellmanGroup::ecp256;
+        } else if (const auto group =
+                       diffie_hellman_group_value(command, "pfs-dh-group")) {
+          changed = !item->pfs_group_configured || !item->pfs_enabled ||
+                    item->pfs_group != *group;
+          item->pfs_group = *group;
           item->pfs_enabled = true;
           item->pfs_group_configured = true;
         } else if (id == md_ipsec_transform_pfs_none ||
-                   id == classic_ipsec_transform_pfs_none) {
+                   id == classic_ipsec_transform_pfs_inherit) {
+          // The classic CLI spells the YANG none value inherit: the transform
+          // defers PFS to the referencing gateway or tunnel.
           changed = !item->pfs_group_configured || item->pfs_enabled;
           item->pfs_enabled = false;
           item->pfs_group_configured = true;
@@ -1297,12 +1350,17 @@ EditResult edit(Configuration &state,
                  id == classic_ipsec_transform_no_encryption)
           changed = remove(item->encryption, item->encryption_configured,
                            AesGcmKeySize::aes128);
-        else if (id == md_delete_ipsec_transform_esn ||
-                 id == classic_ipsec_transform_no_esn)
+        else if (id == classic_ipsec_transform_no_esn) {
+          // The documented classic no form disables ESN and reverts to
+          // 32-bit sequence numbering; it does not restore the YANG default.
+          changed = configure(item->extended_sequence_number,
+                              item->extended_sequence_number_configured, false);
+        } else if (id == md_delete_ipsec_transform_esn) {
+          // YANG defaults the leaf to true; the classic no form instead
+          // explicitly disables ESN and reverts to 32-bit numbering.
           changed = remove(item->extended_sequence_number,
                            item->extended_sequence_number_configured, true);
-        else if (id == md_delete_ipsec_transform_lifetime ||
-                 id == classic_ipsec_transform_no_lifetime)
+        } else if (id == md_delete_ipsec_transform_lifetime)
           changed = remove(item->lifetime_seconds, item->lifetime_configured,
                            0U);
         else if (id == md_delete_ipsec_transform_pfs ||
@@ -1317,7 +1375,11 @@ EditResult edit(Configuration &state,
   } else if (policy_id && !transport_name) {
     instance += "/ike-policy/" + std::to_string(*policy_id);
     if (id == md_delete_ike_policy || id == classic_ike_policy_remove) {
-      changed = erase(state.ike_policies,
+      // The YANG transport-profile and tunnel references to an IKE policy are
+      // leafrefs. Erasing a referenced policy would leave a dangling reference
+      // behind, so the removal is rejected exactly like a referenced transform.
+      changed = !ike_policy_referenced(state, *policy_id) &&
+                erase(state.ike_policies,
                       static_cast<std::uint16_t>(*policy_id));
     } else if (id == classic_ike_policy_create) {
       changed = !ipsec::configuration::find_policy(

@@ -3999,7 +3999,9 @@ void md_ipsec_configuration_body(
         out << name << ' ' << value << '\n';
       }
     };
-    leaf("dh-group", "group-19", transform.dh_group_configured);
+    leaf("dh-group",
+         ipsec::configuration::dh_group_name(transform.dh_group),
+         transform.dh_group_configured);
     leaf("ike-auth-algorithm", "auth-encryption",
          transform.authentication_encryption_configured);
     leaf("ike-encryption-algorithm",

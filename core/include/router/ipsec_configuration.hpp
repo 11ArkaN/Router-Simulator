@@ -28,11 +28,20 @@ enum class AesGcmKeySize : std::uint16_t {
   aes256 = 256U
 };
 
-enum class DiffieHellmanGroup : std::uint16_t { ecp256 = 19U };
+enum class DiffieHellmanGroup : std::uint16_t {
+  modp768 = 1U,
+  modp1024 = 2U,
+  modp1536 = 5U,
+  modp2048 = 14U,
+  modp3072 = 15U,
+  ecp256 = 19U,
+  ecp384 = 20U,
+  ecp512 = 21U
+};
 
 struct IkeTransform {
   std::uint16_t id{};
-  DiffieHellmanGroup dh_group{DiffieHellmanGroup::ecp256};
+  DiffieHellmanGroup dh_group{DiffieHellmanGroup::modp2048};
   AesGcmKeySize encryption{AesGcmKeySize::aes128};
   std::uint32_t lifetime_seconds{86'400U};
 
@@ -224,6 +233,31 @@ configured_encryption_name(AesGcmKeySize value, bool configured) noexcept {
   return configured ? encryption_name(value) : "aes-128";
 }
 
+// The YANG dh-group enum names each value with the group- prefix in both
+// engines; the classic CLI accepts the numeric spellings on input.
+[[nodiscard]] constexpr std::string_view
+dh_group_name(DiffieHellmanGroup value) noexcept {
+  switch (value) {
+  case DiffieHellmanGroup::modp768:
+    return "group-1";
+  case DiffieHellmanGroup::modp1024:
+    return "group-2";
+  case DiffieHellmanGroup::modp1536:
+    return "group-5";
+  case DiffieHellmanGroup::modp2048:
+    return "group-14";
+  case DiffieHellmanGroup::modp3072:
+    return "group-15";
+  case DiffieHellmanGroup::ecp256:
+    return "group-19";
+  case DiffieHellmanGroup::ecp384:
+    return "group-20";
+  case DiffieHellmanGroup::ecp512:
+    return "group-21";
+  }
+  return {};
+}
+
 // Returns true only for a canonical, reference-complete configuration. This
 // validates persisted or externally reconstructed state; interactive candidate
 // editing may temporarily contain an unreferenced or partially specified list
@@ -292,12 +326,11 @@ configured_encryption_name(AesGcmKeySize value, bool configured) noexcept {
       !unique_ids(state.ike_policies, profile::maximum_ike_policies))
     return false;
   for (const auto &transform : state.ike_transforms) {
-    // The implemented release profile intentionally exposes only the ECP-256
-    // group and authenticated AES-GCM suites that have a real packet path.
-    // YANG requires esp/ike-auth-algorithm auth-encryption whenever a GCM
-    // encryption-algorithm leaf is present.
-    if (transform.dh_group != DiffieHellmanGroup::ecp256 ||
-        (transform.encryption != AesGcmKeySize::aes128 &&
+    // The dh-group leaf accepts the full documented YANG value domain as
+    // configuration intent; the negotiated group is chosen by the IKE
+    // exchange owner. YANG requires ike-auth-algorithm auth-encryption
+    // whenever a GCM encryption-algorithm leaf is present.
+    if ((transform.encryption != AesGcmKeySize::aes128 &&
          transform.encryption != AesGcmKeySize::aes256) ||
         (transform.encryption_configured &&
          !transform.authentication_encryption_configured) ||
@@ -306,8 +339,7 @@ configured_encryption_name(AesGcmKeySize value, bool configured) noexcept {
       return false;
   }
   for (const auto &transform : state.ipsec_transforms) {
-    if (transform.pfs_group != DiffieHellmanGroup::ecp256 ||
-        (transform.encryption != AesGcmKeySize::aes128 &&
+    if ((transform.encryption != AesGcmKeySize::aes128 &&
          transform.encryption != AesGcmKeySize::aes192 &&
          transform.encryption != AesGcmKeySize::aes256) ||
         (transform.encryption_configured &&

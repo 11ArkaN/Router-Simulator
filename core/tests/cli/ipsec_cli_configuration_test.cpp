@@ -53,7 +53,9 @@ ParsedCommand parse(CliEngine engine, std::string_view text) {
       engine, engine == CliEngine::md ? MdCliWorkflow::explicit_private
                                       : MdCliWorkflow::operational,
       text);
-  require(command.has_value(), "generated IPsec command did not parse");
+  if (!command.has_value())
+    throw std::runtime_error("generated IPsec command did not parse: " +
+                             std::string{text});
   return *command;
 }
 
@@ -65,9 +67,10 @@ void edit(Configuration &state, CliEngine engine, std::string_view text,
   if (!result.recognized || !result.changed)
     throw std::runtime_error("parsed IPsec command did not change: " +
                              std::string{text});
-  require(router::ipsec::configuration::validate(
-              state, engine == CliEngine::md),
-          "IPsec command produced invalid canonical configuration");
+  if (!router::ipsec::configuration::validate(state, engine == CliEngine::md))
+    throw std::runtime_error("IPsec command produced invalid canonical "
+                             "configuration: " +
+                             std::string{text});
 }
 
 } // namespace
@@ -368,13 +371,13 @@ void ipsec_cli_configuration_tests() {
   edit(classic, CliEngine::classic,
        "configure ipsec ike-transform 1 create");
   edit(classic, CliEngine::classic,
-       "configure ipsec ike-transform 1 dh-group group-19");
+       "configure ipsec ike-transform 1 dh-group 19");
   edit(classic, CliEngine::classic,
        "configure ipsec ike-transform 1 ike-prf-algorithm sha256");
   edit(classic, CliEngine::classic,
        "configure ipsec ike-transform 2 create");
   edit(classic, CliEngine::classic,
-       "configure ipsec ike-transform 2 dh-group group-19");
+       "configure ipsec ike-transform 2 dh-group 19");
   edit(classic, CliEngine::classic,
        "configure ipsec ike-transform 2 ike-prf-algorithm sha256");
   edit(classic, CliEngine::classic,
@@ -670,4 +673,70 @@ void ipsec_cli_configuration_tests() {
                   find_ipsec(classic, 1U)->encryption,
                   find_ipsec(classic, 1U)->encryption_configured) == "aes-128",
           "delete encryption did not restore the YANG aes-128 default");
+
+  // The classic CLI spells PFS none as inherit and ESN as a flag command.
+  edit(classic, CliEngine::classic,
+       "configure ipsec ipsec-transform 1 pfs-dh-group inherit");
+  require(!find_ipsec(classic, 1U)->pfs_enabled &&
+              find_ipsec(classic, 1U)->pfs_group_configured,
+          "classic pfs-dh-group inherit did not disable PFS");
+  edit(classic, CliEngine::classic,
+       "configure ipsec ipsec-transform 1 extended-sequence-number");
+  require(find_ipsec(classic, 1U)->extended_sequence_number &&
+              find_ipsec(classic, 1U)->extended_sequence_number_configured,
+          "classic ESN flag did not enable extended sequencing");
+  edit(classic, CliEngine::classic,
+       "configure ipsec ipsec-transform 1 no extended-sequence-number");
+  require(!find_ipsec(classic, 1U)->extended_sequence_number &&
+              find_ipsec(classic, 1U)->extended_sequence_number_configured,
+          "classic ESN no form did not revert to 32-bit numbering");
+
+  // The MD delete restores the YANG dh-group default of group-14 while the
+  // classic CLI reverts by setting the documented default value.
+  edit(classic, CliEngine::classic,
+       "configure ipsec ipsec-transform 1 pfs-dh-group 14");
+  require(find_ipsec(classic, 1U)->pfs_group ==
+                  DiffieHellmanGroup::modp2048 &&
+              find_ipsec(classic, 1U)->pfs_enabled,
+          "classic numeric PFS group 14 was rejected");
+  Configuration md_default;
+  edit(md_default, CliEngine::md,
+       "configure ipsec ike-transform 2 dh-group group-19");
+  edit(md_default, CliEngine::md,
+       "delete ipsec ike-transform 2 dh-group");
+  require(find_ike(md_default, 2U)->dh_group ==
+                  DiffieHellmanGroup::modp2048 &&
+              !find_ike(md_default, 2U)->dh_group_configured,
+          "MD delete dh-group did not restore the YANG group-14 default");
+
+  // The five undocumented classic ike-transform no forms are gone from the
+  // grammar: parsing must reject them in both engines.
+  for (const auto *removed :
+       {"configure ipsec ike-transform 1 no dh-group",
+        "configure ipsec ike-transform 1 no ike-auth-algorithm",
+        "configure ipsec ike-transform 1 no ike-encryption-algorithm",
+        "configure ipsec ike-transform 1 no ike-prf-algorithm",
+        "configure ipsec ike-transform 1 no isakmp-lifetime",
+        "configure ipsec ipsec-transform 1 no ipsec-lifetime"}) {
+    require(!router::cli_detail::parse_command(CliEngine::classic,
+                                               MdCliWorkflow::operational,
+                                               removed)
+                 .has_value(),
+            "undocumented classic no form still parses");
+  }
+
+  // An IKE policy referenced by a transport profile is protected by the YANG
+  // leafref: the removal must be rejected in both engines.
+  Configuration guarded;
+  edit(guarded, CliEngine::md, "configure ipsec ike-policy 3 description g");
+  edit(guarded, CliEngine::md,
+       "configure ipsec ipsec-transport-mode-profile protected key-exchange "
+       "dynamic ike-policy 3");
+  const auto guarded_delete = parse(CliEngine::md, "delete ipsec ike-policy 3");
+  const auto guarded_result = router::lab::ipsec_cli::edit(
+      guarded, guarded_delete, CliEngine::md);
+  require(guarded_result.recognized && !guarded_result.changed,
+          "referenced IKE policy was deleted");
+  require(find_policy(guarded, 3U) != nullptr,
+          "referenced IKE policy removal did not preserve the policy");
 }

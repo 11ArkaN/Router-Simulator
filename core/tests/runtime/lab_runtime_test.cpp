@@ -2957,7 +2957,7 @@ void lab_runtime_tests() {
   // make it impossible for this path to pass by reusing the MD objects above.
   const std::array<std::string_view, 17> ipsec_classic_commands{
       "configure ipsec ike-transform 20 create",
-      "configure ipsec ike-transform 20 dh-group group-19",
+      "configure ipsec ike-transform 20 dh-group 19",
       "configure ipsec ike-transform 20 ike-auth-algorithm auth-encryption",
       "configure ipsec ike-transform 20 ike-encryption-algorithm aes128-gcm16",
       "configure ipsec ike-transform 20 ike-prf-algorithm sha256",
