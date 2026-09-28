@@ -31,6 +31,10 @@ inline constexpr std::size_t maximum_description_octets = 255U;
 inline constexpr std::size_t maximum_relay_interface_id_octets = 80U;
 inline constexpr std::uint16_t maximum_vlan_identifier = 4094U;
 inline constexpr std::uint16_t maximum_relay_leases = 32767U;
+// Classic nbr-of-leases spans 1 through 8000 while MD-CLI max-nbr-of-leases
+// spans 0 through 32767. The classic bound is intentionally narrower than the
+// forwarding resource above.
+inline constexpr std::uint16_t classic_maximum_relay_leases = 8000U;
 
 enum class EthernetPortMode : std::uint8_t { network, access, hybrid };
 enum class EthernetEncapsulation : std::uint8_t { null, dot1q, qinq };

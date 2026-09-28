@@ -93,6 +93,42 @@ void ies_cli_configuration_tests() {
   edit(classic, CliEngine::classic, hardware,
        "configure service ies 100 interface subscriber ipv6 dhcp6-relay "
        "lease-populate route-populate na");
+  // Classic nbr-of-leases spans 1 through 8000. Zero and values above the
+  // classic bound are rejected without touching running state.
+  edit(classic, CliEngine::classic, hardware,
+       "configure service ies 100 interface subscriber ipv6 dhcp6-relay "
+       "lease-populate 8000");
+  require(classic.ies_services[0]
+                  .interfaces[0]
+                  .dhcpv6_relay.lease_population_limit == 8000U,
+          "classic relay lease limit did not accept 8000");
+  for (const auto text :
+       {"configure service ies 100 interface subscriber ipv6 dhcp6-relay "
+        "lease-populate 8001",
+        "configure service ies 100 interface subscriber ipv6 dhcp6-relay "
+        "lease-populate 0"}) {
+    const auto before_limit = classic;
+    const auto rejected = router::lab::ies_cli::edit(
+        classic, parse(CliEngine::classic, text), CliEngine::classic,
+        hardware, "edge-a");
+    require(rejected.recognized && !rejected.changed &&
+                classic == before_limit,
+            "out-of-range classic relay lease limit changed running state");
+  }
+  // The classic reference documents only `no lease-populate`: per-address
+  // family `no` forms do not exist.
+  for (const auto text :
+       {"configure service ies 100 interface subscriber ipv6 dhcp6-relay "
+        "lease-populate route-populate no na",
+        "configure service ies 100 interface subscriber ipv6 dhcp6-relay "
+        "lease-populate route-populate no pd",
+        "configure service ies 100 interface subscriber ipv6 dhcp6-relay "
+        "lease-populate route-populate no ta"})
+    require(!router::cli_detail::parse_command(CliEngine::classic,
+                                               MdCliWorkflow::operational,
+                                               text)
+                 .has_value(),
+            "classic relay accepted an undocumented route-populate no form");
   edit(classic, CliEngine::classic, hardware,
        "configure service ies 100 interface subscriber ipv6 dhcp6-relay "
        "no shutdown");
@@ -147,6 +183,31 @@ void ies_cli_configuration_tests() {
               md.ies_services[0].interfaces[0].logical_id <
                   router::lab::physical_interface_namespace,
           "MD service interface did not receive a stable logical identity");
+
+  // MD-CLI max-nbr-of-leases spans 0 through 32767 with 0 as the default
+  // leaf value, so an explicit zero is configuration rather than a rejection.
+  edit(md, CliEngine::md, hardware,
+       "configure service ies internet interface uplink ipv6 dhcp6 relay "
+       "lease-populate max-nbr-of-leases 100");
+  edit(md, CliEngine::md, hardware,
+       "configure service ies internet interface uplink ipv6 dhcp6 relay "
+       "lease-populate max-nbr-of-leases 0");
+  require(md.ies_services[0]
+                  .interfaces[0]
+                  .dhcpv6_relay.lease_population_limit == 0U,
+          "MD relay lease limit did not accept the default zero");
+  edit(md, CliEngine::md, hardware,
+       "configure service ies internet interface uplink ipv6 dhcp6 relay "
+       "lease-populate max-nbr-of-leases 32767");
+  const auto before_limit = md;
+  const auto rejected = router::lab::ies_cli::edit(
+      md,
+      parse(CliEngine::md,
+            "configure service ies internet interface uplink ipv6 dhcp6 relay "
+            "lease-populate max-nbr-of-leases 32768"),
+      CliEngine::md, hardware, "edge-a");
+  require(rejected.recognized && !rejected.changed && md == before_limit,
+          "out-of-range MD relay lease limit changed the candidate");
 
   const auto repeated = parse(
       CliEngine::md,

@@ -495,8 +495,14 @@ bool edit_relay(const Configuration &configuration,
   if (id == md_ies_relay_lease_limit || id == classic_ies_relay_lease_limit) {
     const auto limit = decimal<std::uint16_t>(
         value(command, TokenKind::relay_lease_limit));
-    return limit && *limit != 0U && *limit <= service::maximum_relay_leases &&
-           set_distinct(relay.lease_population_limit, *limit);
+    // MD-CLI max-nbr-of-leases spans 0 through 32767 with 0 as the default
+    // leaf value, while classic nbr-of-leases spans 1 through 8000.
+    const bool in_range =
+        limit && (id == md_ies_relay_lease_limit
+                      ? *limit <= service::maximum_relay_leases
+                      : *limit != 0U &&
+                            *limit <= service::classic_maximum_relay_leases);
+    return in_range && set_distinct(relay.lease_population_limit, *limit);
   }
 
   const auto set_route = [&](bool &leaf, bool next) {
@@ -508,15 +514,13 @@ bool edit_relay(const Configuration &configuration,
     const auto enabled = boolean_value(command);
     return enabled && set_route(relay.route_populate_na, *enabled);
   }
-  if (id == md_delete_ies_relay_route_na ||
-      id == classic_ies_relay_no_route_na)
+  if (id == md_delete_ies_relay_route_na)
     return set_route(relay.route_populate_na, false);
   if (id == classic_ies_relay_route_na)
     return set_route(relay.route_populate_na, true);
   if (id == md_ies_relay_route_pd_context || id == classic_ies_relay_route_pd)
     return set_route(relay.route_populate_pd, true);
-  if (id == md_delete_ies_relay_route_pd ||
-      id == classic_ies_relay_no_route_pd) {
+  if (id == md_delete_ies_relay_route_pd) {
     if (!relay.route_populate_pd && !relay.route_populate_pd_exclude)
       return false;
     relay.route_populate_pd = false;
@@ -540,8 +544,7 @@ bool edit_relay(const Configuration &configuration,
     const auto enabled = boolean_value(command);
     return enabled && set_route(relay.route_populate_ta, *enabled);
   }
-  if (id == md_delete_ies_relay_route_ta ||
-      id == classic_ies_relay_no_route_ta)
+  if (id == md_delete_ies_relay_route_ta)
     return set_route(relay.route_populate_ta, false);
   if (id == classic_ies_relay_route_ta)
     return set_route(relay.route_populate_ta, true);
@@ -552,7 +555,7 @@ bool relay_command(CommandId id) noexcept {
   using enum CommandId;
   return (id >= md_ies_relay_admin_enable && id <= md_delete_ies_relay) ||
          (id >= classic_ies_relay_shutdown &&
-          id <= classic_ies_relay_no_route_ta);
+          id <= classic_ies_relay_route_ta);
 }
 
 bool edit_impl(Configuration &configuration,
@@ -881,7 +884,7 @@ bool is_md_command(CommandId id) noexcept {
 bool is_classic_command(CommandId id) noexcept {
   using enum CommandId;
   return id >= classic_service_customer_create &&
-         id <= classic_ies_relay_no_route_ta;
+         id <= classic_ies_relay_route_ta;
 }
 
 EditResult edit(Configuration &configuration,
