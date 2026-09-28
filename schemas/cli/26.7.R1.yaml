@@ -2002,7 +2002,7 @@ commands:
   - id: md_reset_mld_database
     engines: [md]
     source_id: nokia.sros.26_7.mld.configuration
-    tokens: [reset, router, '"Base"', mld, database]
+    tokens: [reset, router, '"Base"', mld, database, all]
   - id: md_reset_mld_database_interface
     engines: [md]
     source_id: nokia.sros.26_7.mld.configuration
@@ -2014,15 +2014,15 @@ commands:
   - id: md_reset_mld_version
     engines: [md]
     source_id: nokia.sros.26_7.mld.configuration
-    tokens: [reset, router, '"Base"', mld, version, interface-name, { parameter: interface_name }]
+    tokens: [reset, router, '"Base"', mld, version, interface, interface-name, { parameter: interface_name }]
   - id: md_reset_mld_statistics
     engines: [md]
     source_id: nokia.sros.26_7.mld.statistics
-    tokens: [reset, router, '"Base"', mld, statistics]
+    tokens: [reset, router, '"Base"', mld, statistics, all]
   - id: md_reset_mld_statistics_interface
     engines: [md]
     source_id: nokia.sros.26_7.mld.statistics
-    tokens: [reset, router, '"Base"', mld, statistics, interface-name, { parameter: interface_name }]
+    tokens: [reset, router, '"Base"', mld, statistics, interface, interface-name, { parameter: interface_name }]
   - id: show_mld_static
     engines: [md, classic]
     source_id: nokia.sros.26_7.mld.configuration
@@ -3813,27 +3813,27 @@ commands:
   - id: classic_mld_ssm_source
     engines: [classic]
     source_id: nokia.sros.26_7.mld.configuration
-    tokens: [configure, router, mld, ssm-translate, grp-range, { parameter: ipv6_range_start }, { parameter: ipv6_range_end }, source, { parameter: ipv6_source }]
+    tokens: [configure, router, mld, ssm-translate, grp-range, start, { parameter: ipv6_range_start }, end, { parameter: ipv6_range_end }, source, { parameter: ipv6_source }]
   - id: classic_mld_ssm_no_source
     engines: [classic]
     source_id: nokia.sros.26_7.mld.configuration
-    tokens: [configure, router, mld, ssm-translate, grp-range, { parameter: ipv6_range_start }, { parameter: ipv6_range_end }, no, source, { parameter: ipv6_source }]
+    tokens: [configure, router, mld, ssm-translate, grp-range, start, { parameter: ipv6_range_start }, end, { parameter: ipv6_range_end }, no, source, { parameter: ipv6_source }]
   - id: classic_mld_ssm_no_range
     engines: [classic]
     source_id: nokia.sros.26_7.mld.configuration
-    tokens: [configure, router, mld, ssm-translate, no, grp-range, { parameter: ipv6_range_start }, { parameter: ipv6_range_end }]
+    tokens: [configure, router, mld, ssm-translate, no, grp-range, start, { parameter: ipv6_range_start }, end, { parameter: ipv6_range_end }]
   - id: classic_mld_interface_ssm_source
     engines: [classic]
     source_id: nokia.sros.26_7.mld.configuration
-    tokens: [configure, router, mld, interface, { parameter: interface_name }, ssm-translate, grp-range, { parameter: ipv6_range_start }, { parameter: ipv6_range_end }, source, { parameter: ipv6_source }]
+    tokens: [configure, router, mld, interface, { parameter: interface_name }, ssm-translate, grp-range, start, { parameter: ipv6_range_start }, end, { parameter: ipv6_range_end }, source, { parameter: ipv6_source }]
   - id: classic_mld_interface_ssm_no_source
     engines: [classic]
     source_id: nokia.sros.26_7.mld.configuration
-    tokens: [configure, router, mld, interface, { parameter: interface_name }, ssm-translate, grp-range, { parameter: ipv6_range_start }, { parameter: ipv6_range_end }, no, source, { parameter: ipv6_source }]
+    tokens: [configure, router, mld, interface, { parameter: interface_name }, ssm-translate, grp-range, start, { parameter: ipv6_range_start }, end, { parameter: ipv6_range_end }, no, source, { parameter: ipv6_source }]
   - id: classic_mld_interface_ssm_no_range
     engines: [classic]
     source_id: nokia.sros.26_7.mld.configuration
-    tokens: [configure, router, mld, interface, { parameter: interface_name }, ssm-translate, no, grp-range, { parameter: ipv6_range_start }, { parameter: ipv6_range_end }]
+    tokens: [configure, router, mld, interface, { parameter: interface_name }, ssm-translate, no, grp-range, start, { parameter: ipv6_range_start }, end, { parameter: ipv6_range_end }]
 
   # MLD import policy configuration uses the shared route-policy datastore.
   # MD edits its normal candidate while classic policy-options has its own

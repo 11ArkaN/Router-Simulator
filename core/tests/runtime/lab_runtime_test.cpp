@@ -3985,10 +3985,10 @@ void lab_runtime_tests() {
   // Exercise both through classic CLI and inspect the exact configuration
   // projection before any packet-level test relies on the resolved program.
   for (const auto command :
-       {"configure router mld ssm-translate grp-range ff3e::300 "
+       {"configure router mld ssm-translate grp-range start ff3e::300 end "
         "ff3e::30f source 2001:db8:1::300",
-        "configure router mld interface edge ssm-translate grp-range "
-        "ff3e::300 ff3e::30f source 2001:db8:1::301"}) {
+        "configure router mld interface edge ssm-translate grp-range start "
+        "ff3e::300 end ff3e::30f source 2001:db8:1::301"}) {
     const std::string result{runtime.command(message(
         lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
     if (result.find("Error:") != std::string::npos)
@@ -4141,9 +4141,9 @@ void lab_runtime_tests() {
                     .find("Error:") == std::string_view::npos,
             "classic static MLD removal did not update live configuration");
   for (const auto command :
-       {"configure router mld interface edge ssm-translate grp-range "
-        "ff3e::300 ff3e::30f no source 2001:db8:1::301",
-        "configure router mld ssm-translate no grp-range ff3e::300 "
+       {"configure router mld interface edge ssm-translate grp-range start "
+        "ff3e::300 end ff3e::30f no source 2001:db8:1::301",
+        "configure router mld ssm-translate no grp-range start ff3e::300 end "
         "ff3e::30f"})
     require(runtime.command(message(lab_runtime_protocol::session_execute,
                                     {"r1-console-1", command}))
@@ -4153,6 +4153,28 @@ void lab_runtime_tests() {
                                   {"r1-console-1", "//"}))
                   .find("A:admin@private-first#") != std::string_view::npos,
           "classic IPv6 fixture could not return to MD-CLI");
+  // MD-CLI reset actions carry the YANG action keywords. The bare database
+  // and statistics forms and the keyword-less version selector do not exist.
+  for (const auto command :
+       {"reset router \"Base\" mld database all",
+        "reset router \"Base\" mld version interface interface-name edge",
+        "reset router \"Base\" mld statistics all",
+        "reset router \"Base\" mld statistics interface interface-name edge"})
+    require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                    {"r1-console-1", command}))
+                    .find("MINOR:") == std::string_view::npos,
+            "MD-CLI MLD reset did not reach forwarding-owned state");
+  for (const auto command :
+       {"reset router \"Base\" mld database",
+        "reset router \"Base\" mld version interface-name edge",
+        "reset router \"Base\" mld statistics",
+        "reset router \"Base\" mld statistics interface-name edge"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    require(result.find("MINOR:") != std::string_view::npos ||
+                result.find("Error:") != std::string_view::npos,
+            "MD-CLI accepted a keyword-less MLD reset form");
+  }
 
   std::string ping_output{runtime.command(message(
       lab_runtime_protocol::session_execute,
