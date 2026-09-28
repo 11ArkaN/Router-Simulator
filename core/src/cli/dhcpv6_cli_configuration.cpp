@@ -221,7 +221,7 @@ bool is_md_command(CommandId id) noexcept {
 bool is_classic_command(CommandId id) noexcept {
   using enum CommandId;
   return id >= classic_dhcpv6_server_shutdown &&
-         id <= classic_dhcpv6_prefix_no_rebind_time;
+         id <= classic_dhcpv6_prefix_no_rebind_timer;
 }
 
 EditResult edit(RouterConfiguration &configuration,
@@ -274,6 +274,34 @@ EditResult edit(RouterConfiguration &configuration,
     if (!value || *value < minimum || *value > maximum)
       return false;
     target = *value;
+    return true;
+  };
+  // Classic CLI expresses lifetimes as [days d] [hrs h] [min m] [sec s]
+  // keyword groups. Every non-empty subset is a generated row, so the editor
+  // only sums whichever components are present before enforcing the same
+  // per-command total as the bare MD-CLI form.
+  const auto keyword_lifetime = [&](std::uint32_t minimum,
+                                    std::uint32_t maximum,
+                                    std::uint32_t &target) {
+    const auto add_component = [&](TokenKind kind, std::uint64_t factor,
+                                   std::uint64_t &total) {
+      const auto text = argument_at(command, kind);
+      if (!text)
+        return true;
+      const auto value = decimal<std::uint64_t>(*text);
+      if (!value)
+        return false;
+      total += *value * factor;
+      return total <= 0xFFFFFFFFULL;
+    };
+    std::uint64_t total{};
+    if (!add_component(TokenKind::dhcp_time_days, 86400ULL, total) ||
+        !add_component(TokenKind::dhcp_time_hours, 3600ULL, total) ||
+        !add_component(TokenKind::dhcp_time_minutes, 60ULL, total) ||
+        !add_component(TokenKind::dhcp_time_seconds, 1ULL, total) ||
+        total < minimum || total > maximum)
+      return false;
+    target = static_cast<std::uint32_t>(total);
     return true;
   };
 
@@ -344,32 +372,108 @@ EditResult edit(RouterConfiguration &configuration,
           std::ranges::find(next.servers, *server_name, &Server::name));
     break;
   case md_dhcpv6_default_preferred_lifetime:
-  case classic_dhcpv6_default_preferred_lifetime:
     accepted = set_lifetime(TokenKind::dhcpv6_lifetime_seconds, 300U,
                             315446399U,
                             server->default_preferred_lifetime_seconds);
     if (accepted)
       server->default_preferred_lifetime_configured = true;
     break;
+  case classic_dhcpv6_default_preferred_lifetime_days:
+  case classic_dhcpv6_default_preferred_lifetime_hours:
+  case classic_dhcpv6_default_preferred_lifetime_days_hours:
+  case classic_dhcpv6_default_preferred_lifetime_minutes:
+  case classic_dhcpv6_default_preferred_lifetime_days_minutes:
+  case classic_dhcpv6_default_preferred_lifetime_hours_minutes:
+  case classic_dhcpv6_default_preferred_lifetime_days_hours_minutes:
+  case classic_dhcpv6_default_preferred_lifetime_seconds:
+  case classic_dhcpv6_default_preferred_lifetime_days_seconds:
+  case classic_dhcpv6_default_preferred_lifetime_hours_seconds:
+  case classic_dhcpv6_default_preferred_lifetime_days_hours_seconds:
+  case classic_dhcpv6_default_preferred_lifetime_minutes_seconds:
+  case classic_dhcpv6_default_preferred_lifetime_days_minutes_seconds:
+  case classic_dhcpv6_default_preferred_lifetime_hours_minutes_seconds:
+  case classic_dhcpv6_default_preferred_lifetime_days_hours_minutes_seconds:
+    accepted = keyword_lifetime(300U, 315446399U,
+                                server->default_preferred_lifetime_seconds);
+    if (accepted)
+      server->default_preferred_lifetime_configured = true;
+    break;
   case md_dhcpv6_default_valid_lifetime:
-  case classic_dhcpv6_default_valid_lifetime:
     accepted = set_lifetime(TokenKind::dhcpv6_lifetime_seconds, 300U,
                             315446399U,
                             server->default_valid_lifetime_seconds);
     if (accepted)
       server->default_valid_lifetime_configured = true;
     break;
+  case classic_dhcpv6_default_valid_lifetime_days:
+  case classic_dhcpv6_default_valid_lifetime_hours:
+  case classic_dhcpv6_default_valid_lifetime_days_hours:
+  case classic_dhcpv6_default_valid_lifetime_minutes:
+  case classic_dhcpv6_default_valid_lifetime_days_minutes:
+  case classic_dhcpv6_default_valid_lifetime_hours_minutes:
+  case classic_dhcpv6_default_valid_lifetime_days_hours_minutes:
+  case classic_dhcpv6_default_valid_lifetime_seconds:
+  case classic_dhcpv6_default_valid_lifetime_days_seconds:
+  case classic_dhcpv6_default_valid_lifetime_hours_seconds:
+  case classic_dhcpv6_default_valid_lifetime_days_hours_seconds:
+  case classic_dhcpv6_default_valid_lifetime_minutes_seconds:
+  case classic_dhcpv6_default_valid_lifetime_days_minutes_seconds:
+  case classic_dhcpv6_default_valid_lifetime_hours_minutes_seconds:
+  case classic_dhcpv6_default_valid_lifetime_days_hours_minutes_seconds:
+    accepted = keyword_lifetime(300U, 315446399U,
+                                server->default_valid_lifetime_seconds);
+    if (accepted)
+      server->default_valid_lifetime_configured = true;
+    break;
   case md_dhcpv6_default_renew_time:
-  case classic_dhcpv6_default_renew_time:
     accepted = set_lifetime(TokenKind::dhcpv6_timer_seconds, 0U, 604800U,
                             server->default_renewal_time_seconds);
     if (accepted)
       server->default_renewal_time_configured = true;
     break;
+  case classic_dhcpv6_default_renew_timer_days:
+  case classic_dhcpv6_default_renew_timer_hours:
+  case classic_dhcpv6_default_renew_timer_days_hours:
+  case classic_dhcpv6_default_renew_timer_minutes:
+  case classic_dhcpv6_default_renew_timer_days_minutes:
+  case classic_dhcpv6_default_renew_timer_hours_minutes:
+  case classic_dhcpv6_default_renew_timer_days_hours_minutes:
+  case classic_dhcpv6_default_renew_timer_seconds:
+  case classic_dhcpv6_default_renew_timer_days_seconds:
+  case classic_dhcpv6_default_renew_timer_hours_seconds:
+  case classic_dhcpv6_default_renew_timer_days_hours_seconds:
+  case classic_dhcpv6_default_renew_timer_minutes_seconds:
+  case classic_dhcpv6_default_renew_timer_days_minutes_seconds:
+  case classic_dhcpv6_default_renew_timer_hours_minutes_seconds:
+  case classic_dhcpv6_default_renew_timer_days_hours_minutes_seconds:
+    accepted = keyword_lifetime(0U, 604800U,
+                                server->default_renewal_time_seconds);
+    if (accepted)
+      server->default_renewal_time_configured = true;
+    break;
   case md_dhcpv6_default_rebind_time:
-  case classic_dhcpv6_default_rebind_time:
     accepted = set_lifetime(TokenKind::dhcpv6_timer_seconds, 0U, 1209600U,
                             server->default_rebinding_time_seconds);
+    if (accepted)
+      server->default_rebinding_time_configured = true;
+    break;
+  case classic_dhcpv6_default_rebind_timer_days:
+  case classic_dhcpv6_default_rebind_timer_hours:
+  case classic_dhcpv6_default_rebind_timer_days_hours:
+  case classic_dhcpv6_default_rebind_timer_minutes:
+  case classic_dhcpv6_default_rebind_timer_days_minutes:
+  case classic_dhcpv6_default_rebind_timer_hours_minutes:
+  case classic_dhcpv6_default_rebind_timer_days_hours_minutes:
+  case classic_dhcpv6_default_rebind_timer_seconds:
+  case classic_dhcpv6_default_rebind_timer_days_seconds:
+  case classic_dhcpv6_default_rebind_timer_hours_seconds:
+  case classic_dhcpv6_default_rebind_timer_days_hours_seconds:
+  case classic_dhcpv6_default_rebind_timer_minutes_seconds:
+  case classic_dhcpv6_default_rebind_timer_days_minutes_seconds:
+  case classic_dhcpv6_default_rebind_timer_hours_minutes_seconds:
+  case classic_dhcpv6_default_rebind_timer_days_hours_minutes_seconds:
+    accepted = keyword_lifetime(0U, 1209600U,
+                                server->default_rebinding_time_seconds);
     if (accepted)
       server->default_rebinding_time_configured = true;
     break;
@@ -384,12 +488,12 @@ EditResult edit(RouterConfiguration &configuration,
     server->default_valid_lifetime_configured = false;
     break;
   case md_delete_dhcpv6_default_renew_time:
-  case classic_dhcpv6_default_no_renew_time:
+  case classic_dhcpv6_default_no_renew_timer:
     server->default_renewal_time_seconds = 1800U;
     server->default_renewal_time_configured = false;
     break;
   case md_delete_dhcpv6_default_rebind_time:
-  case classic_dhcpv6_default_no_rebind_time:
+  case classic_dhcpv6_default_no_rebind_timer:
     server->default_rebinding_time_seconds = 2880U;
     server->default_rebinding_time_configured = false;
     break;
@@ -561,7 +665,6 @@ EditResult edit(RouterConfiguration &configuration,
     break;
   }
   case md_dhcpv6_prefix_preferred_lifetime:
-  case classic_dhcpv6_prefix_preferred_lifetime:
     accepted = prefix &&
                set_lifetime(TokenKind::dhcpv6_lifetime_seconds, 300U,
                             315446399U,
@@ -569,27 +672,106 @@ EditResult edit(RouterConfiguration &configuration,
     if (accepted)
       prefix->preferred_lifetime_configured = true;
     break;
+  case classic_dhcpv6_prefix_preferred_lifetime_days:
+  case classic_dhcpv6_prefix_preferred_lifetime_hours:
+  case classic_dhcpv6_prefix_preferred_lifetime_days_hours:
+  case classic_dhcpv6_prefix_preferred_lifetime_minutes:
+  case classic_dhcpv6_prefix_preferred_lifetime_days_minutes:
+  case classic_dhcpv6_prefix_preferred_lifetime_hours_minutes:
+  case classic_dhcpv6_prefix_preferred_lifetime_days_hours_minutes:
+  case classic_dhcpv6_prefix_preferred_lifetime_seconds:
+  case classic_dhcpv6_prefix_preferred_lifetime_days_seconds:
+  case classic_dhcpv6_prefix_preferred_lifetime_hours_seconds:
+  case classic_dhcpv6_prefix_preferred_lifetime_days_hours_seconds:
+  case classic_dhcpv6_prefix_preferred_lifetime_minutes_seconds:
+  case classic_dhcpv6_prefix_preferred_lifetime_days_minutes_seconds:
+  case classic_dhcpv6_prefix_preferred_lifetime_hours_minutes_seconds:
+  case classic_dhcpv6_prefix_preferred_lifetime_days_hours_minutes_seconds:
+    accepted = prefix &&
+               keyword_lifetime(300U, 315446399U,
+                                prefix->preferred_lifetime_seconds);
+    if (accepted)
+      prefix->preferred_lifetime_configured = true;
+    break;
   case md_dhcpv6_prefix_valid_lifetime:
-  case classic_dhcpv6_prefix_valid_lifetime:
     accepted = prefix &&
                set_lifetime(TokenKind::dhcpv6_lifetime_seconds, 300U,
                             315446399U, prefix->valid_lifetime_seconds);
     if (accepted)
       prefix->valid_lifetime_configured = true;
     break;
+  case classic_dhcpv6_prefix_valid_lifetime_days:
+  case classic_dhcpv6_prefix_valid_lifetime_hours:
+  case classic_dhcpv6_prefix_valid_lifetime_days_hours:
+  case classic_dhcpv6_prefix_valid_lifetime_minutes:
+  case classic_dhcpv6_prefix_valid_lifetime_days_minutes:
+  case classic_dhcpv6_prefix_valid_lifetime_hours_minutes:
+  case classic_dhcpv6_prefix_valid_lifetime_days_hours_minutes:
+  case classic_dhcpv6_prefix_valid_lifetime_seconds:
+  case classic_dhcpv6_prefix_valid_lifetime_days_seconds:
+  case classic_dhcpv6_prefix_valid_lifetime_hours_seconds:
+  case classic_dhcpv6_prefix_valid_lifetime_days_hours_seconds:
+  case classic_dhcpv6_prefix_valid_lifetime_minutes_seconds:
+  case classic_dhcpv6_prefix_valid_lifetime_days_minutes_seconds:
+  case classic_dhcpv6_prefix_valid_lifetime_hours_minutes_seconds:
+  case classic_dhcpv6_prefix_valid_lifetime_days_hours_minutes_seconds:
+    accepted = prefix &&
+               keyword_lifetime(300U, 315446399U,
+                                prefix->valid_lifetime_seconds);
+    if (accepted)
+      prefix->valid_lifetime_configured = true;
+    break;
   case md_dhcpv6_prefix_renew_time:
-  case classic_dhcpv6_prefix_renew_time:
     accepted = prefix &&
                set_lifetime(TokenKind::dhcpv6_timer_seconds, 0U, 604800U,
                             prefix->renewal_time_seconds);
     if (accepted)
       prefix->renewal_time_configured = true;
     break;
+  case classic_dhcpv6_prefix_renew_timer_days:
+  case classic_dhcpv6_prefix_renew_timer_hours:
+  case classic_dhcpv6_prefix_renew_timer_days_hours:
+  case classic_dhcpv6_prefix_renew_timer_minutes:
+  case classic_dhcpv6_prefix_renew_timer_days_minutes:
+  case classic_dhcpv6_prefix_renew_timer_hours_minutes:
+  case classic_dhcpv6_prefix_renew_timer_days_hours_minutes:
+  case classic_dhcpv6_prefix_renew_timer_seconds:
+  case classic_dhcpv6_prefix_renew_timer_days_seconds:
+  case classic_dhcpv6_prefix_renew_timer_hours_seconds:
+  case classic_dhcpv6_prefix_renew_timer_days_hours_seconds:
+  case classic_dhcpv6_prefix_renew_timer_minutes_seconds:
+  case classic_dhcpv6_prefix_renew_timer_days_minutes_seconds:
+  case classic_dhcpv6_prefix_renew_timer_hours_minutes_seconds:
+  case classic_dhcpv6_prefix_renew_timer_days_hours_minutes_seconds:
+    accepted = prefix &&
+               keyword_lifetime(0U, 604800U, prefix->renewal_time_seconds);
+    if (accepted)
+      prefix->renewal_time_configured = true;
+    break;
   case md_dhcpv6_prefix_rebind_time:
-  case classic_dhcpv6_prefix_rebind_time:
     accepted = prefix &&
                set_lifetime(TokenKind::dhcpv6_timer_seconds, 0U, 1209600U,
                             prefix->rebinding_time_seconds);
+    if (accepted)
+      prefix->rebinding_time_configured = true;
+    break;
+  case classic_dhcpv6_prefix_rebind_timer_days:
+  case classic_dhcpv6_prefix_rebind_timer_hours:
+  case classic_dhcpv6_prefix_rebind_timer_days_hours:
+  case classic_dhcpv6_prefix_rebind_timer_minutes:
+  case classic_dhcpv6_prefix_rebind_timer_days_minutes:
+  case classic_dhcpv6_prefix_rebind_timer_hours_minutes:
+  case classic_dhcpv6_prefix_rebind_timer_days_hours_minutes:
+  case classic_dhcpv6_prefix_rebind_timer_seconds:
+  case classic_dhcpv6_prefix_rebind_timer_days_seconds:
+  case classic_dhcpv6_prefix_rebind_timer_hours_seconds:
+  case classic_dhcpv6_prefix_rebind_timer_days_hours_seconds:
+  case classic_dhcpv6_prefix_rebind_timer_minutes_seconds:
+  case classic_dhcpv6_prefix_rebind_timer_days_minutes_seconds:
+  case classic_dhcpv6_prefix_rebind_timer_hours_minutes_seconds:
+  case classic_dhcpv6_prefix_rebind_timer_days_hours_minutes_seconds:
+    accepted = prefix &&
+               keyword_lifetime(0U, 1209600U, prefix->rebinding_time_seconds);
     if (accepted)
       prefix->rebinding_time_configured = true;
     break;
@@ -607,12 +789,12 @@ EditResult edit(RouterConfiguration &configuration,
     prefix->valid_lifetime_seconds = 86400U;
     break;
   case md_delete_dhcpv6_prefix_renew_time:
-  case classic_dhcpv6_prefix_no_renew_time:
+  case classic_dhcpv6_prefix_no_renew_timer:
     prefix->renewal_time_configured = false;
     prefix->renewal_time_seconds = 1800U;
     break;
   case md_delete_dhcpv6_prefix_rebind_time:
-  case classic_dhcpv6_prefix_no_rebind_time:
+  case classic_dhcpv6_prefix_no_rebind_timer:
     prefix->rebinding_time_configured = false;
     prefix->rebinding_time_seconds = 2880U;
     break;

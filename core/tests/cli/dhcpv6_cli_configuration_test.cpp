@@ -71,6 +71,12 @@ void dhcpv6_cli_configuration_tests() {
        "configure router \"Base\" dhcp-server dhcpv6 access defaults "
        "valid-lifetime 172800");
   edit(md, md_entropy, CliEngine::md,
+       "configure router \"Base\" dhcp-server dhcpv6 access defaults "
+       "renew-time 1500");
+  edit(md, md_entropy, CliEngine::md,
+       "configure router \"Base\" dhcp-server dhcpv6 access defaults "
+       "rebind-time 3000");
+  edit(md, md_entropy, CliEngine::md,
        "configure router \"Base\" dhcp-server dhcpv6 access pool users "
        "prefix 2001:db8:100::/56 drain false");
   // MD-CLI records an explicitly configured false leaf while classic CLI
@@ -111,10 +117,16 @@ void dhcpv6_cli_configuration_tests() {
        "\"IPv6 access server\"");
   edit(classic, classic_entropy, CliEngine::classic,
        "configure router dhcp6 local-dhcp-server access defaults "
-       "preferred-lifetime 7200");
+       "preferred-lifetime hrs 2");
   edit(classic, classic_entropy, CliEngine::classic,
        "configure router dhcp6 local-dhcp-server access defaults "
-       "valid-lifetime 172800");
+       "valid-lifetime days 2");
+  edit(classic, classic_entropy, CliEngine::classic,
+       "configure router dhcp6 local-dhcp-server access defaults "
+       "renew-timer min 25");
+  edit(classic, classic_entropy, CliEngine::classic,
+       "configure router dhcp6 local-dhcp-server access defaults "
+       "rebind-timer min 50");
   edit(classic, classic_entropy, CliEngine::classic,
        "configure router dhcp6 local-dhcp-server access pool users prefix "
        "2001:db8:100::/56");
@@ -123,4 +135,34 @@ void dhcpv6_cli_configuration_tests() {
 
   require(classic == md,
           "MD-CLI and classic DHCPv6 edits diverged in canonical state");
+
+  // Classic CLI timers are keyword based and use the renew-timer and
+  // rebind-timer spellings. A bare seconds operand is not a documented
+  // classic form. The MD-CLI renew-time spelling still parses as an
+  // unambiguous abbreviation of renew-timer, which both engines accept.
+  require(!router::cli_detail::parse_command(CliEngine::classic,
+                                             MdCliWorkflow::operational,
+                                             "configure router dhcp6 "
+                                             "local-dhcp-server access "
+                                             "defaults preferred-lifetime "
+                                             "7200"),
+          "classic DHCPv6 accepted a bare-seconds lifetime");
+  const auto abbreviated_no_renew = parse(
+      CliEngine::classic,
+      "configure router dhcp6 local-dhcp-server access defaults "
+      "no renew-time");
+  require(abbreviated_no_renew.spec &&
+              abbreviated_no_renew.spec->id ==
+                  router::cli_schema::CommandId::
+                      classic_dhcpv6_default_no_renew_timer,
+          "classic renew-time abbreviation did not resolve to renew-timer");
+  const auto no_renew = parse(
+      CliEngine::classic,
+      "configure router dhcp6 local-dhcp-server access defaults "
+      "no renew-timer");
+  const auto no_renew_result = router::lab::dhcpv6_cli::edit(
+      classic, no_renew, CliEngine::classic, &classic_entropy);
+  require(no_renew_result.recognized && no_renew_result.valid &&
+              classic.servers.front().default_renewal_time_seconds == 1800U,
+          "classic no renew-timer did not restore the documented default");
 }

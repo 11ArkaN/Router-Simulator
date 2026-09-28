@@ -499,6 +499,14 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
     case dhcpv6_lease_type:
       return value == "pd" || value == "slaac" || value == "wan" ||
              value == "wan-host";
+    case dhcp_time_days:
+    case dhcp_time_hours:
+    case dhcp_time_minutes:
+    case dhcp_time_seconds:
+      // Classic CLI time components are plain non-negative integers. The
+      // owning editor sums the present components with an overflow guard and
+      // enforces the per-command total, so the grammar accepts any decimal.
+      return decimal_text(value);
     case ppk_ascii_value:
     case ipsec_pre_shared_key: {
       // SR OS encrypted-leaf text may be clear input or an opaque protected
@@ -699,6 +707,10 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case dhcpv6_lease_type:
   case dhcpv6_lifetime_seconds:
   case dhcpv6_timer_seconds:
+  case dhcp_time_days:
+  case dhcp_time_hours:
+  case dhcp_time_minutes:
+  case dhcp_time_seconds:
   case dhcpv6_delegated_length:
   case dhcp_remote_id_ascii:
   case bof_client_id:

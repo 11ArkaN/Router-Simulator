@@ -257,6 +257,31 @@ EditResult edit(RouterConfiguration &configuration,
     return {.recognized = true};
 
   bool accepted = true;
+  // Classic CLI expresses pool timers as [days d] [hrs h] [min m] [sec s]
+  // keyword groups. Every non-empty subset is a generated row, so the editor
+  // only sums whichever components are present. The total keeps the bare
+  // MD-CLI contract of any uint32 value; overflow rejects the edit.
+  const auto keyword_seconds = [&](std::uint32_t &target) {
+    const auto add_component = [&](TokenKind kind, std::uint64_t factor,
+                                   std::uint64_t &total) {
+      const auto text = argument_at(command, kind);
+      if (!text)
+        return true;
+      const auto value = decimal<std::uint64_t>(*text);
+      if (!value)
+        return false;
+      total += *value * factor;
+      return total <= 0xFFFFFFFFULL;
+    };
+    std::uint64_t total{};
+    if (!add_component(TokenKind::dhcp_time_days, 86400ULL, total) ||
+        !add_component(TokenKind::dhcp_time_hours, 3600ULL, total) ||
+        !add_component(TokenKind::dhcp_time_minutes, 60ULL, total) ||
+        !add_component(TokenKind::dhcp_time_seconds, 1ULL, total))
+      return false;
+    target = static_cast<std::uint32_t>(total);
+    return true;
+  };
   using enum CommandId;
   switch (id) {
   case md_dhcpv4_server_enable:
@@ -317,8 +342,7 @@ EditResult edit(RouterConfiguration &configuration,
     if (accepted)
       pool->description.clear();
     break;
-  case md_dhcpv4_pool_min_lease:
-  case classic_dhcpv4_pool_min_lease: {
+  case md_dhcpv4_pool_min_lease: {
     const auto value = argument_at(command, TokenKind::dhcp_lease_seconds);
     const auto seconds =
         value ? decimal<std::uint32_t>(*value) : std::nullopt;
@@ -327,8 +351,24 @@ EditResult edit(RouterConfiguration &configuration,
       pool->minimum_lease_seconds = *seconds;
     break;
   }
-  case md_dhcpv4_pool_max_lease:
-  case classic_dhcpv4_pool_max_lease: {
+  case classic_dhcpv4_pool_min_lease_days:
+  case classic_dhcpv4_pool_min_lease_hours:
+  case classic_dhcpv4_pool_min_lease_days_hours:
+  case classic_dhcpv4_pool_min_lease_minutes:
+  case classic_dhcpv4_pool_min_lease_days_minutes:
+  case classic_dhcpv4_pool_min_lease_hours_minutes:
+  case classic_dhcpv4_pool_min_lease_days_hours_minutes:
+  case classic_dhcpv4_pool_min_lease_seconds:
+  case classic_dhcpv4_pool_min_lease_days_seconds:
+  case classic_dhcpv4_pool_min_lease_hours_seconds:
+  case classic_dhcpv4_pool_min_lease_days_hours_seconds:
+  case classic_dhcpv4_pool_min_lease_minutes_seconds:
+  case classic_dhcpv4_pool_min_lease_days_minutes_seconds:
+  case classic_dhcpv4_pool_min_lease_hours_minutes_seconds:
+  case classic_dhcpv4_pool_min_lease_days_hours_minutes_seconds:
+    accepted = pool && keyword_seconds(pool->minimum_lease_seconds);
+    break;
+  case md_dhcpv4_pool_max_lease: {
     const auto value = argument_at(command, TokenKind::dhcp_lease_seconds);
     const auto seconds =
         value ? decimal<std::uint32_t>(*value) : std::nullopt;
@@ -337,8 +377,24 @@ EditResult edit(RouterConfiguration &configuration,
       pool->maximum_lease_seconds = *seconds;
     break;
   }
-  case md_dhcpv4_pool_offer_time:
-  case classic_dhcpv4_pool_offer_time: {
+  case classic_dhcpv4_pool_max_lease_days:
+  case classic_dhcpv4_pool_max_lease_hours:
+  case classic_dhcpv4_pool_max_lease_days_hours:
+  case classic_dhcpv4_pool_max_lease_minutes:
+  case classic_dhcpv4_pool_max_lease_days_minutes:
+  case classic_dhcpv4_pool_max_lease_hours_minutes:
+  case classic_dhcpv4_pool_max_lease_days_hours_minutes:
+  case classic_dhcpv4_pool_max_lease_seconds:
+  case classic_dhcpv4_pool_max_lease_days_seconds:
+  case classic_dhcpv4_pool_max_lease_hours_seconds:
+  case classic_dhcpv4_pool_max_lease_days_hours_seconds:
+  case classic_dhcpv4_pool_max_lease_minutes_seconds:
+  case classic_dhcpv4_pool_max_lease_days_minutes_seconds:
+  case classic_dhcpv4_pool_max_lease_hours_minutes_seconds:
+  case classic_dhcpv4_pool_max_lease_days_hours_minutes_seconds:
+    accepted = pool && keyword_seconds(pool->maximum_lease_seconds);
+    break;
+  case md_dhcpv4_pool_offer_time: {
     const auto value = argument_at(command, TokenKind::dhcp_offer_seconds);
     const auto seconds =
         value ? decimal<std::uint32_t>(*value) : std::nullopt;
@@ -347,6 +403,23 @@ EditResult edit(RouterConfiguration &configuration,
       pool->offer_seconds = *seconds;
     break;
   }
+  case classic_dhcpv4_pool_offer_time_days:
+  case classic_dhcpv4_pool_offer_time_hours:
+  case classic_dhcpv4_pool_offer_time_days_hours:
+  case classic_dhcpv4_pool_offer_time_minutes:
+  case classic_dhcpv4_pool_offer_time_days_minutes:
+  case classic_dhcpv4_pool_offer_time_hours_minutes:
+  case classic_dhcpv4_pool_offer_time_days_hours_minutes:
+  case classic_dhcpv4_pool_offer_time_seconds:
+  case classic_dhcpv4_pool_offer_time_days_seconds:
+  case classic_dhcpv4_pool_offer_time_hours_seconds:
+  case classic_dhcpv4_pool_offer_time_days_hours_seconds:
+  case classic_dhcpv4_pool_offer_time_minutes_seconds:
+  case classic_dhcpv4_pool_offer_time_days_minutes_seconds:
+  case classic_dhcpv4_pool_offer_time_hours_minutes_seconds:
+  case classic_dhcpv4_pool_offer_time_days_hours_minutes_seconds:
+    accepted = pool && keyword_seconds(pool->offer_seconds);
+    break;
   case md_delete_dhcpv4_pool_min_lease:
   case classic_dhcpv4_pool_no_min_lease:
     accepted = pool != nullptr;

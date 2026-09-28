@@ -56,6 +56,9 @@ void dhcpv4_cli_configuration_tests() {
        "max-lease-time 800000");
   edit(md, CliEngine::md,
        "configure router \"Base\" dhcp-server dhcpv4 access pool users "
+       "offer-time 500");
+  edit(md, CliEngine::md,
+       "configure router \"Base\" dhcp-server dhcpv4 access pool users "
        "subnet 192.0.2.0/24 address-range 192.0.2.10 end 192.0.2.200 "
        "failover-control-type local");
   edit(md, CliEngine::md,
@@ -89,10 +92,13 @@ void dhcpv4_cli_configuration_tests() {
        "\"Base access server\"");
   edit(classic, CliEngine::classic,
        "configure router dhcp local-dhcp-server access pool users "
-       "min-lease-time 600");
+       "min-lease-time min 10");
   edit(classic, CliEngine::classic,
        "configure router dhcp local-dhcp-server access pool users "
-       "max-lease-time 800000");
+       "max-lease-time days 9 hrs 6 min 13 sec 20");
+  edit(classic, CliEngine::classic,
+       "configure router dhcp local-dhcp-server access pool users "
+       "offer-time min 8 sec 20");
   edit(classic, CliEngine::classic,
        "configure router dhcp local-dhcp-server access pool users subnet "
        "192.0.2.0/24 address-range 192.0.2.10 192.0.2.200 failover local");
@@ -104,4 +110,17 @@ void dhcpv4_cli_configuration_tests() {
 
   require(classic == md,
           "MD-CLI and classic DHCPv4 edits diverged in canonical state");
+
+  // Classic CLI timers are keyword based. A bare seconds operand and a
+  // seconds operand after a keyword group are not documented forms.
+  require(!router::cli_detail::parse_command(
+              CliEngine::classic, MdCliWorkflow::operational,
+              "configure router dhcp local-dhcp-server access pool users "
+              "min-lease-time 600"),
+          "classic bare-seconds min-lease-time still parses");
+  require(!router::cli_detail::parse_command(
+              CliEngine::classic, MdCliWorkflow::operational,
+              "configure router dhcp local-dhcp-server access pool users "
+              "min-lease-time min 10 20"),
+          "classic min-lease-time accepted a second bare operand");
 }
