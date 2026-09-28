@@ -18623,12 +18623,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           prefix_text ? ip::parse_ipv6_prefix(*prefix_text)
                       : std::optional<ip::Ipv6Prefix>{};
       const auto state_text = cli_detail::argument(
-          *parsed, cli_schema::TokenKind::dhcpv6_lease_state);
+          *parsed, cli_schema::TokenKind::dhcpv6_show_lease_state);
       const auto selected_state =
           state_text ? dhcpv6_operational_lease_state(*state_text)
                      : std::optional<dhcpv6::OperationalLeaseState>{};
       const auto type_text = cli_detail::argument(
-          *parsed, cli_schema::TokenKind::dhcpv6_lease_type);
+          *parsed, cli_schema::TokenKind::dhcpv6_show_lease_type);
       const auto selected_type =
           type_text ? dhcpv6_operational_lease_type(*type_text)
                     : std::optional<dhcpv6::LeaseClearFilter::Type>{};
@@ -18774,16 +18774,25 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           filter.value_specific = true;
         }
       }
-      const auto state_text = cli_detail::argument(
-          *parsed, cli_schema::TokenKind::dhcpv6_lease_state);
+      // Clear, reset and show rows carry engine-specific filter parameters
+      // with documented value subsets. Fall back to the shared reset-state
+      // kind, which keeps the wider historical contract.
+      auto state_text = cli_detail::argument(
+          *parsed, cli_schema::TokenKind::dhcpv6_clear_lease_state);
+      if (!state_text)
+        state_text = cli_detail::argument(*parsed,
+                                          cli_schema::TokenKind::dhcpv6_lease_state);
       if (state_text && output.empty()) {
         filter.state = dhcpv6_operational_lease_state(*state_text);
         if (!filter.state)
           output =
               "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
       }
-      const auto type_text = cli_detail::argument(
-          *parsed, cli_schema::TokenKind::dhcpv6_lease_type);
+      auto type_text = cli_detail::argument(
+          *parsed, cli_schema::TokenKind::dhcpv6_clear_lease_type);
+      if (!type_text)
+        type_text = cli_detail::argument(
+            *parsed, cli_schema::TokenKind::dhcpv6_reset_lease_type);
       if (type_text && output.empty()) {
         filter.type = dhcpv6_operational_lease_type(*type_text);
         if (!filter.type)

@@ -975,6 +975,78 @@ void lab_runtime_tests() {
     throw std::runtime_error(
         "committed DHCPv6 server was absent from operational state: " +
         std::string{dhcpv6_server_statistics});
+  // A rejected filter fails parsing before reaching the operational owner.
+  // MD reports MINOR diagnostics while classic reports a bad command.
+  const auto lease_parse_rejected = [&](std::string_view command,
+                                        const char *message) {
+    const std::string result{contextual_command(command)};
+    require(result.find("leases found") == std::string_view::npos &&
+                (result.find("Unknown element") != std::string_view::npos ||
+                 result.find("Invalid element value") !=
+                     std::string_view::npos ||
+                 result.find("Error:") != std::string_view::npos),
+            message);
+  };
+  for (const auto command :
+       {"show router dhcp6 local-dhcp-server browser-v6 leases type pd",
+        "show router dhcp6 local-dhcp-server browser-v6 leases type wan-host",
+        "show router dhcp6 local-dhcp-server browser-v6 leases state held"})
+    require(contextual_command(command).find("leases found") !=
+                std::string_view::npos,
+            "documented DHCPv6 show lease filter did not render");
+  lease_parse_rejected(
+      "show router dhcp6 local-dhcp-server browser-v6 leases type slaac",
+      "show accepted undocumented lease type slaac");
+  lease_parse_rejected(
+      "show router dhcp6 local-dhcp-server browser-v6 leases type wan",
+      "show accepted undocumented lease type wan");
+  lease_parse_rejected(
+      "show router dhcp6 local-dhcp-server browser-v6 leases state stable",
+      "show accepted undocumented lease state stable");
+  lease_parse_rejected(
+      "show router dhcp6 local-dhcp-server browser-v6 leases state internal",
+      "show accepted undocumented lease state internal");
+  // MD reset accepts pd, slaac and wan but not wan-host. Reaching the owner
+  // proves the grammar; the empty lease set exercises the no-op path.
+  require(contextual_command(
+              "reset router \"Base\" dhcp-server dhcpv6 browser-v6 leases all "
+              "type pd")
+                  .find("Unknown element") == std::string_view::npos,
+          "documented DHCPv6 reset lease filter did not reach the owner");
+  lease_parse_rejected(
+      "reset router \"Base\" dhcp-server dhcpv6 browser-v6 leases all type "
+      "wan-host",
+      "reset accepted undocumented lease type wan-host");
+  require(contextual_command("//").find("classic CLI engine") !=
+              std::string_view::npos,
+          "DHCPv6 lease fixture could not enter classic CLI");
+  // Classic clear accepts pd, slaac and wan-host for type and the six
+  // documented states. The empty lease set exercises the no-op path.
+  for (const auto command :
+       {"show router dhcp6 local-dhcp-server browser-v6 leases type pd state "
+        "held",
+        "clear router dhcp6 local-dhcp-server browser-v6 leases all type pd",
+        "clear router dhcp6 local-dhcp-server browser-v6 leases all state "
+        "internal"})
+    require(contextual_command(command).find("MINOR:") ==
+                    std::string_view::npos &&
+                contextual_command(command).find("Error:") ==
+                    std::string_view::npos,
+            "documented DHCPv6 clear lease filter did not clear");
+  lease_parse_rejected(
+      "clear router dhcp6 local-dhcp-server browser-v6 leases all type wan",
+      "clear accepted undocumented lease type wan");
+  lease_parse_rejected(
+      "clear router dhcp6 local-dhcp-server browser-v6 leases all state "
+      "stable",
+      "clear accepted undocumented lease state stable");
+  lease_parse_rejected(
+      "clear router dhcp6 local-dhcp-server browser-v6 leases all state "
+      "internal-held",
+      "clear accepted undocumented lease state internal-held");
+  require(contextual_command("//").find("MD-CLI engine") !=
+              std::string_view::npos,
+          "DHCPv6 lease fixture could not return to MD-CLI");
 
   // Each source-backed configuration family must own contextual rendering,
   // not merely accept root-relative edits. This transcript creates one real

@@ -496,9 +496,22 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
              value == "remove-pending" || value == "held" ||
              value == "internal" || value == "internal-orphan" ||
              value == "internal-offered" || value == "internal-held";
+    case dhcpv6_show_lease_state:
+      return value == "advertised" || value == "remove-pending" ||
+             value == "held";
+    case dhcpv6_clear_lease_state:
+      return value == "advertised" || value == "remove-pending" ||
+             value == "held" || value == "internal" ||
+             value == "internal-orphan" || value == "internal-offered";
     case dhcpv6_lease_type:
       return value == "pd" || value == "slaac" || value == "wan" ||
              value == "wan-host";
+    case dhcpv6_show_lease_type:
+      return value == "pd" || value == "wan-host";
+    case dhcpv6_clear_lease_type:
+      return value == "pd" || value == "slaac" || value == "wan-host";
+    case dhcpv6_reset_lease_type:
+      return value == "pd" || value == "slaac" || value == "wan";
     case dhcp_time_days:
     case dhcp_time_hours:
     case dhcp_time_minutes:
@@ -704,7 +717,12 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case dhcp_maximum_declined:
   case dhcp_lease_state:
   case dhcpv6_lease_state:
+  case dhcpv6_show_lease_state:
+  case dhcpv6_clear_lease_state:
   case dhcpv6_lease_type:
+  case dhcpv6_show_lease_type:
+  case dhcpv6_clear_lease_type:
+  case dhcpv6_reset_lease_type:
   case dhcpv6_lifetime_seconds:
   case dhcpv6_timer_seconds:
   case dhcp_time_days:

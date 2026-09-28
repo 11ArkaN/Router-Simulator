@@ -220,7 +220,7 @@ bool is_md_command(CommandId id) noexcept {
 
 bool is_classic_command(CommandId id) noexcept {
   using enum CommandId;
-  return id >= classic_dhcpv6_server_shutdown &&
+  return id >= classic_dhcpv6_server_remove &&
          id <= classic_dhcpv6_prefix_no_rebind_timer;
 }
 
@@ -308,12 +308,10 @@ EditResult edit(RouterConfiguration &configuration,
   using enum CommandId;
   switch (id) {
   case md_dhcpv6_server_enable:
-  case classic_dhcpv6_server_no_shutdown:
     server->admin_enabled = true;
     server->admin_state_configured = true;
     break;
   case md_dhcpv6_server_disable:
-  case classic_dhcpv6_server_shutdown:
     server->admin_enabled = false;
     server->admin_state_configured = true;
     break;
@@ -520,8 +518,7 @@ EditResult edit(RouterConfiguration &configuration,
       server->pools.erase(found);
     break;
   }
-  case md_dhcpv6_pool_delegated_length:
-  case classic_dhcpv6_pool_delegated_length: {
+  case md_dhcpv6_pool_delegated_length: {
     const auto text =
         argument_at(command, TokenKind::dhcpv6_delegated_length);
     const auto value =
@@ -557,27 +554,46 @@ EditResult edit(RouterConfiguration &configuration,
       pool->maximum_delegated_length_configured = true;
     break;
   }
-  case classic_dhcpv6_pool_delegated_range: {
-    const auto length_text =
-        argument_at(command, TokenKind::dhcpv6_delegated_length, 0U);
+  case classic_dhcpv6_pool_delegated_minimum: {
+    // Classic delegated-prefix-length carries no primary value: minimum and
+    // maximum are optional keywords with the same 48..127 contract as MD.
+    const auto text =
+        argument_at(command, TokenKind::dhcpv6_delegated_length);
+    const auto value =
+        text ? decimal<std::uint8_t>(*text) : std::nullopt;
+    accepted = pool && value && *value >= 48U && *value <= 127U;
+    if (accepted)
+      pool->minimum_delegated_length = *value;
+    if (accepted)
+      pool->minimum_delegated_length_configured = true;
+    break;
+  }
+  case classic_dhcpv6_pool_delegated_maximum: {
+    const auto text =
+        argument_at(command, TokenKind::dhcpv6_delegated_length);
+    const auto value =
+        text ? decimal<std::uint8_t>(*text) : std::nullopt;
+    accepted = pool && value && *value >= 48U && *value <= 127U;
+    if (accepted)
+      pool->maximum_delegated_length = *value;
+    if (accepted)
+      pool->maximum_delegated_length_configured = true;
+    break;
+  }
+  case classic_dhcpv6_pool_delegated_minimum_maximum: {
     const auto minimum_text =
-        argument_at(command, TokenKind::dhcpv6_delegated_length, 1U);
+        argument_at(command, TokenKind::dhcpv6_delegated_length, 0U);
     const auto maximum_text =
-        argument_at(command, TokenKind::dhcpv6_delegated_length, 2U);
-    const auto length =
-        length_text ? decimal<std::uint8_t>(*length_text) : std::nullopt;
+        argument_at(command, TokenKind::dhcpv6_delegated_length, 1U);
     const auto minimum =
         minimum_text ? decimal<std::uint8_t>(*minimum_text) : std::nullopt;
     const auto maximum =
         maximum_text ? decimal<std::uint8_t>(*maximum_text) : std::nullopt;
-    accepted = pool && length && minimum && maximum &&
-               *minimum >= 48U && *maximum <= 127U &&
-               *minimum <= *length && *length <= *maximum;
+    accepted = pool && minimum && maximum && *minimum >= 48U &&
+               *maximum <= 127U && *minimum <= *maximum;
     if (accepted) {
-      pool->delegated_length = *length;
       pool->minimum_delegated_length = *minimum;
       pool->maximum_delegated_length = *maximum;
-      pool->delegated_length_configured = true;
       pool->minimum_delegated_length_configured = true;
       pool->maximum_delegated_length_configured = true;
     }
@@ -638,12 +654,7 @@ EditResult edit(RouterConfiguration &configuration,
     if (accepted)
       prefix->drain_configured = true;
     break;
-  case classic_dhcpv6_prefix_drain:
-    prefix->drain = true;
-    prefix->drain_configured = true;
-    break;
   case md_delete_dhcpv6_prefix_drain:
-  case classic_dhcpv6_prefix_no_drain:
     prefix->drain = false;
     prefix->drain_configured = false;
     break;

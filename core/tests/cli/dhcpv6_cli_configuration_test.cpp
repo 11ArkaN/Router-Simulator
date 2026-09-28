@@ -86,9 +86,6 @@ void dhcpv6_cli_configuration_tests() {
   edit(md, md_entropy, CliEngine::md,
        "delete router \"Base\" dhcp-server dhcpv6 access pool users "
        "prefix 2001:db8:100::/56 drain");
-  edit(md, md_entropy, CliEngine::md,
-       "configure router \"Base\" dhcp-server dhcpv6 access admin-state "
-       "enable");
 
   require(md.servers.size() == 1U &&
               md.servers.front().duid_octets == 18U &&
@@ -130,11 +127,35 @@ void dhcpv6_cli_configuration_tests() {
   edit(classic, classic_entropy, CliEngine::classic,
        "configure router dhcp6 local-dhcp-server access pool users prefix "
        "2001:db8:100::/56");
-  edit(classic, classic_entropy, CliEngine::classic,
-       "configure router dhcp6 local-dhcp-server access no shutdown");
 
   require(classic == md,
           "MD-CLI and classic DHCPv6 edits diverged in canonical state");
+
+  // Classic documents no shutdown command for the local DHCPv6 server and
+  // no drain command for the pool prefix: drain is an MD-CLI boolean leaf.
+  // MD-CLI keeps admin-state, exercised here without a classic mirror.
+  for (const auto rejected :
+       {"configure router dhcp6 local-dhcp-server access shutdown",
+        "configure router dhcp6 local-dhcp-server access no shutdown",
+        "configure router dhcp6 local-dhcp-server access pool users prefix "
+        "2001:db8:100::/56 drain",
+        "configure router dhcp6 local-dhcp-server access pool users prefix "
+        "2001:db8:100::/56 no drain"})
+    require(!router::cli_detail::parse_command(CliEngine::classic,
+                                               MdCliWorkflow::operational,
+                                               rejected),
+            "classic DHCPv6 accepted an undocumented shutdown or drain form");
+  edit(md, md_entropy, CliEngine::md,
+       "configure router \"Base\" dhcp-server dhcpv6 access admin-state "
+       "enable");
+  require(md.servers.front().admin_enabled &&
+              md.servers.front().admin_state_configured,
+          "MD DHCPv6 admin-state enable did not stick");
+  edit(md, md_entropy, CliEngine::md,
+       "configure router \"Base\" dhcp-server dhcpv6 access admin-state "
+       "disable");
+  require(!md.servers.front().admin_enabled,
+          "MD DHCPv6 admin-state disable did not stick");
 
   // Classic CLI timers are keyword based and use the renew-timer and
   // rebind-timer spellings. A bare seconds operand is not a documented
