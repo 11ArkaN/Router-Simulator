@@ -72,18 +72,33 @@ void ospf_cli_configuration_tests() {
        "configure router ospf 0 graceful-restart");
   edit(classic, CliEngine::classic,
        "configure router ospf 0 loopfree-alternate");
+  // Classic spf-wait and lsa-generate carry the maximum as a mandatory
+  // positional value with optional initial and second keywords after it.
+  // The keyword-only and spf-max-wait spellings are MD-CLI/YANG forms.
   edit(classic, CliEngine::classic,
-       "configure router ospf 0 timers spf-wait spf-max-wait 12000");
+       "configure router ospf 0 timers spf-wait 12000");
   edit(classic, CliEngine::classic,
-       "configure router ospf 0 timers spf-wait spf-second-wait 2000");
+       "configure router ospf 0 timers spf-wait 12000 spf-second-wait 2000");
   edit(classic, CliEngine::classic,
-       "configure router ospf 0 timers spf-wait spf-initial-wait 500");
+       "configure router ospf 0 timers spf-wait 12000 spf-initial-wait 500 "
+       "spf-second-wait 2000");
   edit(classic, CliEngine::classic,
-       "configure router ospf 0 timers lsa-generate max-lsa-wait 7000");
+       "configure router ospf 0 timers lsa-generate 7000");
   edit(classic, CliEngine::classic,
-       "configure router ospf 0 timers lsa-generate lsa-second-wait 6000");
+       "configure router ospf 0 timers lsa-generate 7000 lsa-second-wait "
+       "6000");
   edit(classic, CliEngine::classic,
-       "configure router ospf 0 timers lsa-generate lsa-initial-wait 4000");
+       "configure router ospf 0 timers lsa-generate 7000 lsa-initial-wait "
+       "4000");
+  for (const auto rejected :
+       {"configure router ospf 0 timers spf-wait spf-initial-wait 500",
+        "configure router ospf 0 timers spf-wait spf-max-wait 12000",
+        "configure router ospf 0 timers lsa-generate lsa-initial-wait 4000",
+        "configure router ospf 0 timers lsa-generate max-lsa-wait 7000"})
+    require(!router::cli_detail::parse_command(CliEngine::classic,
+                                               MdCliWorkflow::operational,
+                                               rejected),
+            "classic OSPF accepted a keyword-only timer form");
   edit(classic, CliEngine::classic,
        "configure router ospf 0 area 0.0.0.1 stub");
   edit(classic, CliEngine::classic,

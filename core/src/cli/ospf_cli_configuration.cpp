@@ -37,6 +37,24 @@ std::string_view argument_text(const cli_detail::ParsedCommand &command,
   return value ? cli_detail::unquote(*value) : std::string_view{};
 }
 
+std::string_view indexed_argument(const cli_detail::ParsedCommand &command,
+                                  TokenKind kind,
+                                  std::size_t occurrence) noexcept {
+  // Classic spf-wait and lsa-generate repeat the timer parameter for the
+  // mandatory maximum and the optional keywords. Walking the generated row
+  // keeps occurrence order authoritative instead of re-parsing command text.
+  if (!command.spec)
+    return {};
+  std::size_t seen{};
+  for (std::size_t index{}; index < command.spec->token_count; ++index) {
+    if (command.spec->tokens[index].kind != kind)
+      continue;
+    if (seen++ == occurrence)
+      return cli_detail::unquote(command.tokens[index]);
+  }
+  return {};
+}
+
 std::optional<std::uint32_t> ipv4(std::string_view text) noexcept {
   std::uint32_t value{};
   std::size_t offset{};
@@ -209,12 +227,14 @@ bool version_three(CommandId id) noexcept {
   case classic_ospf3_no_graceful_restart:
   case classic_ospf3_loopfree_alternates:
   case classic_ospf3_no_loopfree_alternates:
-  case classic_ospf3_spf_initial_wait:
-  case classic_ospf3_spf_second_wait:
-  case classic_ospf3_spf_max_wait:
-  case classic_ospf3_lsa_initial_wait:
-  case classic_ospf3_lsa_second_wait:
-  case classic_ospf3_lsa_max_wait:
+  case classic_ospf3_spf_wait:
+  case classic_ospf3_spf_wait_initial:
+  case classic_ospf3_spf_wait_second:
+  case classic_ospf3_spf_wait_initial_second:
+  case classic_ospf3_lsa_generate:
+  case classic_ospf3_lsa_generate_initial:
+  case classic_ospf3_lsa_generate_second:
+  case classic_ospf3_lsa_generate_initial_second:
   case classic_ospf3_area_stub:
   case classic_ospf3_area_no_stub:
   case classic_ospf3_area_nssa:
@@ -786,19 +806,7 @@ EditResult edit(ospf::RouterConfiguration &configuration,
                id == CommandId::md_ospf3_spf_max_wait ||
                id == CommandId::md_ospf3_lsa_initial_wait ||
                id == CommandId::md_ospf3_lsa_second_wait ||
-               id == CommandId::md_ospf3_lsa_max_wait ||
-               id == CommandId::classic_ospf_spf_initial_wait ||
-               id == CommandId::classic_ospf_spf_second_wait ||
-               id == CommandId::classic_ospf_spf_max_wait ||
-               id == CommandId::classic_ospf_lsa_initial_wait ||
-               id == CommandId::classic_ospf_lsa_second_wait ||
-               id == CommandId::classic_ospf_lsa_max_wait ||
-               id == CommandId::classic_ospf3_spf_initial_wait ||
-               id == CommandId::classic_ospf3_spf_second_wait ||
-               id == CommandId::classic_ospf3_spf_max_wait ||
-               id == CommandId::classic_ospf3_lsa_initial_wait ||
-               id == CommandId::classic_ospf3_lsa_second_wait ||
-               id == CommandId::classic_ospf3_lsa_max_wait) {
+               id == CommandId::md_ospf3_lsa_max_wait) {
       const auto value = decimal<std::uint32_t>(
           argument_text(command, TokenKind::ospf_timer_milliseconds));
       if (!value)
@@ -808,32 +816,96 @@ EditResult edit(ospf::RouterConfiguration &configuration,
       // the YANG ranges and initial <= second <= maximum relationships.
       auto *target =
           id == CommandId::md_ospf_spf_initial_wait ||
-                  id == CommandId::md_ospf3_spf_initial_wait ||
-                  id == CommandId::classic_ospf_spf_initial_wait ||
-                  id == CommandId::classic_ospf3_spf_initial_wait
+                  id == CommandId::md_ospf3_spf_initial_wait
               ? &instance->spf_initial_wait_milliseconds
           : id == CommandId::md_ospf_spf_second_wait ||
-                    id == CommandId::md_ospf3_spf_second_wait ||
-                    id == CommandId::classic_ospf_spf_second_wait ||
-                    id == CommandId::classic_ospf3_spf_second_wait
+                    id == CommandId::md_ospf3_spf_second_wait
               ? &instance->spf_second_wait_milliseconds
           : id == CommandId::md_ospf_spf_max_wait ||
-                    id == CommandId::md_ospf3_spf_max_wait ||
-                    id == CommandId::classic_ospf_spf_max_wait ||
-                    id == CommandId::classic_ospf3_spf_max_wait
+                    id == CommandId::md_ospf3_spf_max_wait
               ? &instance->spf_maximum_wait_milliseconds
           : id == CommandId::md_ospf_lsa_initial_wait ||
-                    id == CommandId::md_ospf3_lsa_initial_wait ||
-                    id == CommandId::classic_ospf_lsa_initial_wait ||
-                    id == CommandId::classic_ospf3_lsa_initial_wait
+                    id == CommandId::md_ospf3_lsa_initial_wait
               ? &instance->lsa_initial_wait_milliseconds
           : id == CommandId::md_ospf_lsa_second_wait ||
-                    id == CommandId::md_ospf3_lsa_second_wait ||
-                    id == CommandId::classic_ospf_lsa_second_wait ||
-                    id == CommandId::classic_ospf3_lsa_second_wait
+                    id == CommandId::md_ospf3_lsa_second_wait
               ? &instance->lsa_second_wait_milliseconds
               : &instance->lsa_maximum_wait_milliseconds;
       *target = *value;
+    } else if (id == CommandId::classic_ospf_spf_wait ||
+               id == CommandId::classic_ospf_spf_wait_initial ||
+               id == CommandId::classic_ospf_spf_wait_second ||
+               id == CommandId::classic_ospf_spf_wait_initial_second ||
+               id == CommandId::classic_ospf_lsa_generate ||
+               id == CommandId::classic_ospf_lsa_generate_initial ||
+               id == CommandId::classic_ospf_lsa_generate_second ||
+               id == CommandId::classic_ospf_lsa_generate_initial_second ||
+               id == CommandId::classic_ospf3_spf_wait ||
+               id == CommandId::classic_ospf3_spf_wait_initial ||
+               id == CommandId::classic_ospf3_spf_wait_second ||
+               id == CommandId::classic_ospf3_spf_wait_initial_second ||
+               id == CommandId::classic_ospf3_lsa_generate ||
+               id == CommandId::classic_ospf3_lsa_generate_initial ||
+               id == CommandId::classic_ospf3_lsa_generate_second ||
+               id == CommandId::classic_ospf3_lsa_generate_initial_second) {
+      // Classic spf-wait and lsa-generate carry the maximum as a mandatory
+      // positional value with optional initial and second keywords after it.
+      // The whole-model validation below enforces the same initial <= second
+      // <= maximum relationship as for the MD-CLI leaves.
+      const auto maximum = decimal<std::uint32_t>(indexed_argument(
+          command, TokenKind::ospf_timer_milliseconds, 0U));
+      if (!maximum)
+        return {.recognized = true, .changed = false, .instance = {}};
+      const bool is_spf = id == CommandId::classic_ospf_spf_wait ||
+                          id == CommandId::classic_ospf_spf_wait_initial ||
+                          id == CommandId::classic_ospf_spf_wait_second ||
+                          id == CommandId::
+                                 classic_ospf_spf_wait_initial_second ||
+                          id == CommandId::classic_ospf3_spf_wait ||
+                          id == CommandId::classic_ospf3_spf_wait_initial ||
+                          id == CommandId::classic_ospf3_spf_wait_second ||
+                          id == CommandId::
+                                 classic_ospf3_spf_wait_initial_second;
+      const bool has_initial =
+          id == CommandId::classic_ospf_spf_wait_initial ||
+          id == CommandId::classic_ospf_spf_wait_initial_second ||
+          id == CommandId::classic_ospf_lsa_generate_initial ||
+          id == CommandId::classic_ospf_lsa_generate_initial_second ||
+          id == CommandId::classic_ospf3_spf_wait_initial ||
+          id == CommandId::classic_ospf3_spf_wait_initial_second ||
+          id == CommandId::classic_ospf3_lsa_generate_initial ||
+          id == CommandId::classic_ospf3_lsa_generate_initial_second;
+      const bool has_second =
+          id == CommandId::classic_ospf_spf_wait_second ||
+          id == CommandId::classic_ospf_spf_wait_initial_second ||
+          id == CommandId::classic_ospf_lsa_generate_second ||
+          id == CommandId::classic_ospf_lsa_generate_initial_second ||
+          id == CommandId::classic_ospf3_spf_wait_second ||
+          id == CommandId::classic_ospf3_spf_wait_initial_second ||
+          id == CommandId::classic_ospf3_lsa_generate_second ||
+          id == CommandId::classic_ospf3_lsa_generate_initial_second;
+      auto *max_target = is_spf ? &instance->spf_maximum_wait_milliseconds
+                                : &instance->lsa_maximum_wait_milliseconds;
+      auto *initial_target = is_spf ? &instance->spf_initial_wait_milliseconds
+                                    : &instance->lsa_initial_wait_milliseconds;
+      auto *second_target = is_spf ? &instance->spf_second_wait_milliseconds
+                                   : &instance->lsa_second_wait_milliseconds;
+      *max_target = *maximum;
+      if (has_initial) {
+        const auto initial = decimal<std::uint32_t>(indexed_argument(
+            command, TokenKind::ospf_timer_milliseconds, 1U));
+        if (!initial)
+          return {.recognized = true, .changed = false, .instance = {}};
+        *initial_target = *initial;
+      }
+      if (has_second) {
+        const auto second = decimal<std::uint32_t>(indexed_argument(
+            command, TokenKind::ospf_timer_milliseconds,
+            has_initial ? 2U : 1U));
+        if (!second)
+          return {.recognized = true, .changed = false, .instance = {}};
+        *second_target = *second;
+      }
     } else if (!create_only) {
       const auto parsed_area =
           area_id(argument_text(command, TokenKind::ospf_area_id));
