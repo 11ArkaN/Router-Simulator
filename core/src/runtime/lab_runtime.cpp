@@ -1144,7 +1144,10 @@ bool edit_mld_import_policy(Configuration &configuration,
       policy->default_action_configured = false;
       return true;
     }
-    const auto text = argument(cli_schema::TokenKind::policy_action);
+    const auto default_action_kind =
+        id == md_policy_default_action ? cli_schema::TokenKind::md_policy_action
+                                       : cli_schema::TokenKind::policy_action;
+    const auto text = argument(default_action_kind);
     const auto action = text ? policy_action(*text) : std::nullopt;
     if (!action)
       return false;
@@ -1350,7 +1353,10 @@ bool edit_mld_import_policy(Configuration &configuration,
     return true;
   }
   if (id == md_policy_entry_action || id == classic_policy_entry_action) {
-    const auto text = argument(cli_schema::TokenKind::policy_action);
+    const auto entry_action_kind =
+        id == md_policy_entry_action ? cli_schema::TokenKind::md_policy_action
+                                     : cli_schema::TokenKind::policy_action;
+    const auto text = argument(entry_action_kind);
     const auto action = text ? policy_action(*text) : std::nullopt;
     if (!action)
       return false;
@@ -19584,19 +19590,14 @@ std::string LabRuntime::execute_session(std::string_view session_id,
              parsed->spec->id ==
                  cli_schema::CommandId::show_router_rtr_advertisement_prefix ||
               parsed->spec->id ==
-                  cli_schema::CommandId::clear_router_advertisement_all ||
+                   cli_schema::CommandId::clear_router_advertisement_all ||
               parsed->spec->id ==
-                  cli_schema::CommandId::clear_router_advertisement_interface ||
-              parsed->spec->id ==
-                  cli_schema::CommandId::md_reset_router_advertisement_all ||
-              parsed->spec->id == cli_schema::CommandId::
-                  md_reset_router_advertisement_interface) {
+                  cli_schema::CommandId::clear_router_advertisement_interface) {
     using enum cli_schema::CommandId;
     const auto id = parsed->spec->id;
     const bool interface_command =
         id == show_router_rtr_advertisement_interface ||
-        id == clear_router_advertisement_interface ||
-        id == md_reset_router_advertisement_interface;
+        id == clear_router_advertisement_interface;
     const bool prefix_command = id == show_router_rtr_advertisement_prefix;
     const auto raw_name =
         cli_detail::argument(*parsed, cli_schema::TokenKind::interface_name);
@@ -19634,14 +19635,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     } else if (interface_command && !selected) {
       output = "MINOR: MGMT_CORE #2201: Unknown element - '" +
                std::string{requested_name} + "'";
-    } else if (id == clear_router_advertisement_all ||
-               id == md_reset_router_advertisement_all) {
+    } else if (id == clear_router_advertisement_all) {
       if (!supervisor_.clear_router_advertisement_statistics_all(
               intent->handle))
         output =
             "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
-    } else if (id == clear_router_advertisement_interface ||
-               id == md_reset_router_advertisement_interface) {
+    } else if (id == clear_router_advertisement_interface) {
       if (!supervisor_.clear_router_advertisement_interface_statistics(
               intent->handle, selected->first->port_id))
         output =

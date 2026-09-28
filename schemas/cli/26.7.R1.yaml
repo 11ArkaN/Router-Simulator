@@ -83,6 +83,7 @@ parameters:
   prefix_list_name: { display: "<prefix-list-name>", description: "Policy prefix list name" }
   policy_entry_number: { display: "<entry-number>", description: "Ordered route policy entry number" }
   policy_action: { display: "<accept|drop|reject|next-entry|next-policy>", description: "Route policy action" }
+  md_policy_action: { display: "<accept|reject|next-entry|next-policy>", description: "MD-CLI route policy action" }
   redirect_number: { display: "<number>", description: "Maximum ICMPv6 Redirect messages per interval" }
   redirect_seconds: { display: "<seconds>", description: "ICMPv6 Redirect rate interval in seconds" }
   tls_cert_profile_name: { display: "<cert-profile-name>", description: "TLS certificate profile name" }
@@ -1903,14 +1904,6 @@ commands:
     engines: [classic]
     source_id: nokia.sros.26_7.ipv6.router_advertisement_operational
     tokens: [clear, router, router-advertisement, interface, { parameter: interface_name }]
-  - id: md_reset_router_advertisement_all
-    engines: [md]
-    source_id: nokia.sros.26_7.ipv6.router_advertisement_operational
-    tokens: [reset, router, '"Base"', router-advertisement, all]
-  - id: md_reset_router_advertisement_interface
-    engines: [md]
-    source_id: nokia.sros.26_7.ipv6.router_advertisement_operational
-    tokens: [reset, router, '"Base"', router-advertisement, interface, interface-name, { parameter: interface_name }]
   - id: show_router_icmp6_interface
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.icmp6_statistics
@@ -3701,9 +3694,9 @@ commands:
   - { id: md_delete_policy_action_type, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, type] }
   - { id: md_delete_policy_action_tag, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, tag] }
   - { id: md_delete_policy_protocol, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol] }
-  - { id: md_policy_entry_action, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, action-type, { parameter: policy_action }] }
+  - { id: md_policy_entry_action, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, action-type, { parameter: md_policy_action }] }
   - { id: md_delete_policy_entry_action, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action] }
-  - { id: md_policy_default_action, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, default-action, action-type, { parameter: policy_action }] }
+  - { id: md_policy_default_action, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, default-action, action-type, { parameter: md_policy_action }] }
   - { id: md_delete_policy_default_action, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, default-action] }
   - { id: md_delete_policy_entry, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }] }
   - { id: md_delete_policy_statement, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }] }

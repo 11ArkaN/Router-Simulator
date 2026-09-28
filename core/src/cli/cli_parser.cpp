@@ -315,6 +315,11 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
     case policy_action:
       return value == "accept" || value == "drop" || value == "reject" ||
              value == "next-entry" || value == "next-policy";
+    case md_policy_action:
+      // The MD-CLI/YANG action-type enumeration has no drop value. Classic
+      // keeps drop, so the shared runtime mapping stays untouched.
+      return value == "accept" || value == "reject" ||
+             value == "next-entry" || value == "next-policy";
     case prefix_list_type:
       return value == "exact" || value == "longer" || value == "through" ||
              value == "range" || value == "to" || value == "address-mask";
@@ -712,6 +717,7 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case tls_timer_minutes:
   case policy_entry_number:
   case policy_action:
+  case md_policy_action:
   case redirect_number:
   case redirect_seconds:
   case ike_policy_id:

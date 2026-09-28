@@ -3791,11 +3791,24 @@ void lab_runtime_tests() {
                   .find("2001:db8:1::54") != std::string_view::npos,
       "include-dns restore did not republish inherited RDNSS state");
   for (const auto command : {"clear router router-advertisement interface edge",
-                             "clear router router-advertisement all"})
+                              "clear router router-advertisement all"})
     require(runtime.command(message(lab_runtime_protocol::session_execute,
                                     {"r1-console-1", command}))
                     .find("Error:") == std::string_view::npos,
             "classic RA counter clear did not reach forwarding ownership");
+  // SR OS 26.7.R1 documents no reset router router-advertisement action in
+  // the MD-CLI or the reset YANG model. Both MD rows were removed, so only
+  // the classic clear forms above may reach the operational owner.
+  for (const auto command :
+       {"reset router \"Base\" router-advertisement all",
+        "reset router \"Base\" router-advertisement interface "
+        "interface-name edge"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    require(result.find("MINOR:") != std::string_view::npos ||
+                result.find("Error:") != std::string_view::npos,
+            "MD-CLI accepted the undocumented router-advertisement reset");
+  }
 
   // IPv4 ICMP uses the same operational owner as the packet path. Exercise
   // both terminal engines here so schema exposure, named-interface resolution,
@@ -4440,7 +4453,7 @@ void lab_runtime_tests() {
         "policy-options policy-statement CHECKPOINT-MLD-IN entry 10 from "
         "protocol name mld",
         "policy-options policy-statement CHECKPOINT-MLD-IN entry 10 action "
-        "action-type drop",
+        "action-type reject",
         "policy-options policy-statement CHECKPOINT-MLD-IN default-action "
         "action-type accept",
         "router \"Base\" mld interface checkpoint-edge import-policy "
@@ -4515,7 +4528,7 @@ void lab_runtime_tests() {
           checkpoint_policy != precommit_candidate.mld_import_policies.end() &&
           checkpoint_policy->entries.size() == 1U &&
           checkpoint_policy->entries.front().action ==
-              mld::ImportPolicyAction::drop &&
+              mld::ImportPolicyAction::reject &&
           checkpoint_interface != precommit_candidate.interfaces.end() &&
           checkpoint_interface->mld_import_policy == "CHECKPOINT-MLD-IN",
       "MD candidate checkpoint lost policy leaves before commit");
@@ -4525,6 +4538,37 @@ void lab_runtime_tests() {
     throw std::runtime_error(
         "MD MLD policy checkpoint fixture could not be committed: " +
         checkpoint_commit);
+  // MD-CLI action-type follows the YANG enumeration, which defines no drop
+  // value. Both MD rows must reject drop while classic keeps accepting it
+  // (covered by the classic MLD policy fixture above).
+  for (const auto command :
+       {"policy-options policy-statement DROP-PROBE entry 10 action "
+        "action-type drop",
+        "policy-options policy-statement DROP-PROBE default-action "
+        "action-type drop"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    require(result.find("MINOR:") != std::string_view::npos ||
+                result.find("Error:") != std::string_view::npos,
+            "MD-CLI policy accepted the undocumented drop action");
+  }
+  for (const auto command :
+       {"policy-options policy-statement DROP-PROBE entry 10 action "
+        "action-type reject",
+        "policy-options policy-statement DROP-PROBE default-action "
+        "action-type accept"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    if (result.find("MINOR:") != std::string_view::npos ||
+        result.find("Error:") != std::string_view::npos)
+      throw std::runtime_error(
+          "MD-CLI policy rejected a documented action-type value: " +
+          std::string{command} + " output=" + result);
+  }
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "discard"}))
+                  .find("MINOR:") == std::string_view::npos,
+          "MD-CLI policy probe left an undiscarded candidate");
   require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1",
                                    "system name checkpoint-candidate"}))
