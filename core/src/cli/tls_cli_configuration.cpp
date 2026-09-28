@@ -245,15 +245,9 @@ RevocationMethod revocation(CommandId id) {
   case md_tls_client_secondary_ocsp:
   case md_tls_server_primary_ocsp:
   case md_tls_server_secondary_ocsp:
-  case classic_tls_client_primary_ocsp:
-  case classic_tls_client_secondary_ocsp:
-  case classic_tls_server_primary_ocsp:
-  case classic_tls_server_secondary_ocsp:
     return RevocationMethod::ocsp;
   case md_tls_client_secondary_none:
   case md_tls_server_secondary_none:
-  case classic_tls_client_secondary_none:
-  case classic_tls_server_secondary_none:
     return RevocationMethod::none;
   default:
     return RevocationMethod::crl;
@@ -330,27 +324,83 @@ bool edit_common_profile(Profile &profile, CommandId id,
         StatusResult::revoked);
   case md_delete_tls_client_status:
   case md_delete_tls_server_status:
-  case classic_tls_client_no_status:
-  case classic_tls_server_no_status:
     return delete_leaf(
         profile.status_verification.default_result,
         profile.status_verification.default_result_configured,
         StatusResult::revoked);
+  case classic_tls_client_no_status:
+  case classic_tls_server_no_status: {
+    // Classic `no status-verify` removes the whole verification context, so
+    // every child returns to its default instead of only the default-result.
+    // Each leaf is evaluated separately: short-circuiting would skip the
+    // remaining resets once one leaf reports a change.
+    const bool default_result = delete_leaf(
+        profile.status_verification.default_result,
+        profile.status_verification.default_result_configured,
+        StatusResult::revoked);
+    const bool primary = delete_leaf(
+        profile.status_verification.primary,
+        profile.status_verification.primary_configured,
+        RevocationMethod::crl);
+    const bool secondary = delete_leaf(
+        profile.status_verification.secondary,
+        profile.status_verification.secondary_configured,
+        RevocationMethod::none);
+    return default_result || primary || secondary;
+  }
   case md_tls_client_primary_crl:
   case md_tls_client_primary_ocsp:
   case md_tls_server_primary_crl:
   case md_tls_server_primary_ocsp:
-  case classic_tls_client_primary_crl:
-  case classic_tls_client_primary_ocsp:
-  case classic_tls_server_primary_crl:
-  case classic_tls_server_primary_ocsp:
     return configure_leaf(profile.status_verification.primary,
-                          profile.status_verification.primary_configured,
-                          revocation(id));
+                           profile.status_verification.primary_configured,
+                           revocation(id));
+  case classic_tls_client_ee_revocation_primary_crl_secondary_none:
+  case classic_tls_client_ee_revocation_primary_crl_secondary_crl:
+  case classic_tls_client_ee_revocation_primary_crl_secondary_ocsp:
+  case classic_tls_client_ee_revocation_primary_ocsp_secondary_none:
+  case classic_tls_client_ee_revocation_primary_ocsp_secondary_crl:
+  case classic_tls_client_ee_revocation_primary_ocsp_secondary_ocsp:
+  case classic_tls_server_ee_revocation_primary_crl_secondary_none:
+  case classic_tls_server_ee_revocation_primary_crl_secondary_crl:
+  case classic_tls_server_ee_revocation_primary_crl_secondary_ocsp:
+  case classic_tls_server_ee_revocation_primary_ocsp_secondary_none:
+  case classic_tls_server_ee_revocation_primary_ocsp_secondary_crl:
+  case classic_tls_server_ee_revocation_primary_ocsp_secondary_ocsp: {
+    // The documented classic form configures both methods in one command,
+    // mirroring the IPsec transport-cert pair rows.
+    const bool ocsp_primary =
+        id == classic_tls_client_ee_revocation_primary_ocsp_secondary_none ||
+        id == classic_tls_client_ee_revocation_primary_ocsp_secondary_crl ||
+        id == classic_tls_client_ee_revocation_primary_ocsp_secondary_ocsp ||
+        id == classic_tls_server_ee_revocation_primary_ocsp_secondary_none ||
+        id == classic_tls_server_ee_revocation_primary_ocsp_secondary_crl ||
+        id == classic_tls_server_ee_revocation_primary_ocsp_secondary_ocsp;
+    const auto secondary =
+        id == classic_tls_client_ee_revocation_primary_crl_secondary_none ||
+                id == classic_tls_client_ee_revocation_primary_ocsp_secondary_none ||
+                id == classic_tls_server_ee_revocation_primary_crl_secondary_none ||
+                id == classic_tls_server_ee_revocation_primary_ocsp_secondary_none
+            ? RevocationMethod::none
+        : id == classic_tls_client_ee_revocation_primary_crl_secondary_crl ||
+                id == classic_tls_client_ee_revocation_primary_ocsp_secondary_crl ||
+                id == classic_tls_server_ee_revocation_primary_crl_secondary_crl ||
+                id == classic_tls_server_ee_revocation_primary_ocsp_secondary_crl
+            ? RevocationMethod::crl
+            : RevocationMethod::ocsp;
+    // Each leaf is configured separately: short-circuiting the pair with
+    // || would skip the secondary method once the primary reports a change.
+    const bool primary_changed = configure_leaf(
+        profile.status_verification.primary,
+        profile.status_verification.primary_configured,
+        ocsp_primary ? RevocationMethod::ocsp : RevocationMethod::crl);
+    const bool secondary_changed = configure_leaf(
+        profile.status_verification.secondary,
+        profile.status_verification.secondary_configured, secondary);
+    return primary_changed || secondary_changed;
+  }
   case md_delete_tls_client_primary:
   case md_delete_tls_server_primary:
-  case classic_tls_client_no_primary:
-  case classic_tls_server_no_primary:
     return delete_leaf(profile.status_verification.primary,
                        profile.status_verification.primary_configured,
                        RevocationMethod::crl);
@@ -360,19 +410,11 @@ bool edit_common_profile(Profile &profile, CommandId id,
   case md_tls_server_secondary_none:
   case md_tls_server_secondary_crl:
   case md_tls_server_secondary_ocsp:
-  case classic_tls_client_secondary_none:
-  case classic_tls_client_secondary_crl:
-  case classic_tls_client_secondary_ocsp:
-  case classic_tls_server_secondary_none:
-  case classic_tls_server_secondary_crl:
-  case classic_tls_server_secondary_ocsp:
     return configure_leaf(profile.status_verification.secondary,
-                          profile.status_verification.secondary_configured,
-                          revocation(id));
+                           profile.status_verification.secondary_configured,
+                           revocation(id));
   case md_delete_tls_client_secondary:
   case md_delete_tls_server_secondary:
-  case classic_tls_client_no_secondary:
-  case classic_tls_server_no_secondary:
     return delete_leaf(profile.status_verification.secondary,
                        profile.status_verification.secondary_configured,
                        RevocationMethod::none);

@@ -104,4 +104,66 @@ void tls_cli_configuration_tests() {
       configuration, remove, router::CliEngine::md);
   require(third.valid && !third.changed,
           "MD delete of an already-default leaf was not silent");
+
+  // Classic ee-revocation is one paired command. Split primary-only,
+  // standalone secondary and no primary or no secondary rows do not exist.
+  for (const auto rejected :
+       {"configure system security tls client-tls-profile WEB status-verify "
+        "ee-revocation primary ocsp",
+        "configure system security tls client-tls-profile WEB status-verify "
+        "ee-revocation secondary crl",
+        "configure system security tls client-tls-profile WEB status-verify "
+        "ee-revocation no primary",
+        "configure system security tls client-tls-profile WEB status-verify "
+        "ee-revocation no secondary",
+        "configure system security tls client-tls-profile WEB status-verify "
+        "no default-result"})
+    parse_rejected(router::CliEngine::classic, rejected);
+
+  const auto apply = [&](router::CliEngine engine, std::string_view text) {
+    const auto result = router::lab::tls_cli::edit(
+        configuration, parse(engine, text), engine);
+    require(result.recognized && result.valid && result.changed,
+            "TLS command did not change configuration");
+  };
+  // Every documented primary and secondary combination parses in both
+  // profile kinds.
+  for (const auto profile : {"client-tls-profile WEB",
+                             "server-tls-profile SRV"})
+    for (const auto primary : {"crl", "ocsp"})
+      for (const auto secondary : {"none", "crl", "ocsp"})
+        parse(router::CliEngine::classic,
+              std::string{"configure system security tls "} + profile +
+                  " status-verify ee-revocation primary " + primary +
+                  " secondary " + secondary);
+  apply(router::CliEngine::classic,
+        "configure system security tls client-tls-profile WEB create");
+  apply(router::CliEngine::classic,
+        "configure system security tls client-tls-profile WEB status-verify "
+        "ee-revocation primary ocsp secondary crl");
+  require(configuration.client_profiles.size() == 1U &&
+              configuration.client_profiles.front()
+                      .status_verification.primary ==
+                  router::tls_profile::RevocationMethod::ocsp &&
+              configuration.client_profiles.front()
+                      .status_verification.secondary ==
+                  router::tls_profile::RevocationMethod::crl,
+          "classic ee-revocation pair did not configure both methods");
+
+  // Classic `no status-verify` removes the whole verification context, so
+  // both revocation methods return to their defaults as well.
+  apply(router::CliEngine::classic,
+        "configure system security tls client-tls-profile WEB no "
+        "status-verify");
+  require(configuration.client_profiles.front()
+                  .status_verification.primary ==
+              router::tls_profile::RevocationMethod::crl &&
+          configuration.client_profiles.front()
+                  .status_verification.secondary ==
+              router::tls_profile::RevocationMethod::none &&
+          !configuration.client_profiles.front()
+               .status_verification.primary_configured &&
+          !configuration.client_profiles.front()
+               .status_verification.secondary_configured,
+          "classic no status-verify kept revocation methods");
 }
