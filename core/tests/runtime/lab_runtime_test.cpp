@@ -761,6 +761,30 @@ void lab_runtime_tests() {
               classic_dhcp_detail.find("--------------------------------") !=
                   std::string_view::npos,
           "classic DHCP info detail did not map through the IPv4 model node");
+  // Classic selects the gateway as the source address with the gi-address
+  // src-ip-addr flag form. Standalone src-ip-addr rows do not exist, and the
+  // documented `no server` form carries no address.
+  for (const auto command : {"server 192.0.2.10",
+                             "gi-address 192.0.2.1 src-ip-addr", "no server",
+                             "no gi-address"}) {
+    const std::string result{contextual_command(command)};
+    require(result.find("Error:") == std::string_view::npos &&
+                result.find("MINOR:") == std::string_view::npos,
+            "classic DHCP relay edit failed");
+  }
+  // Removing the gateway reverts the source selection to automatic, and a
+  // second bare removal is rejected on the now empty element.
+  require(contextual_command("info detail").find("src-ip-addr auto") !=
+              std::string_view::npos,
+          "classic no gi-address kept the src-ip-addr selection");
+  for (const auto command : {"no server", "no server 192.0.2.10",
+                             "src-ip-addr auto", "src-ip-addr gi-address",
+                             "no src-ip-addr"}) {
+    const std::string result{contextual_command(command)};
+    require(result.find("Error:") != std::string_view::npos ||
+                result.find("MINOR:") != std::string_view::npos,
+            "classic DHCP relay accepted an undocumented form");
+  }
   // Classic `info` is global within configuration mode just as MD `info` is
   // global within an editor. Exercise a different deep branch in the same
   // session so dispatch cannot accidentally depend on the DHCP-specific path.
@@ -1217,8 +1241,104 @@ void lab_runtime_tests() {
               std::string_view::npos,
           "context-info fixture could not commit before static-route test");
   require(contextual_command("exit all").find("(ex)[/]") !=
-              std::string_view::npos,
+                  std::string_view::npos,
           "static-route context fixture did not return to MD root");
+  // A dedicated enabled DHCPv4 server exercises the declined and sticky
+  // show selectors, the clear state contract and the classic-only tools
+  // action against operational state.
+  for (const auto command :
+       {"configure router \"Base\" dhcp-server dhcpv4 decl-test pool users "
+        "subnet 192.0.2.0/24 address-range 192.0.2.10 end 192.0.2.200 "
+        "failover-control-type local",
+        "configure router \"Base\" dhcp-server dhcpv4 decl-test admin-state "
+        "enable",
+        "commit",
+        "exit all"}) {
+    const std::string result{contextual_command(command)};
+    require(result.find("MINOR:") == std::string_view::npos,
+            "DHCPv4 show fixture could not commit its server");
+  }
+  // Operational show commands run outside the exclusive candidate: quit the
+  // editor first and re-enter it afterwards for the static-route fixture.
+  require(contextual_command("quit-config").find("CLI #2064: Exiting exclusive") !=
+              std::string_view::npos,
+          "DHCPv4 show fixture could not leave its MD workflow");
+  for (const auto command :
+       {"show router dhcp local-dhcp-server decl-test declined-addresses "
+        "192.0.2.0/24",
+        "show router dhcp local-dhcp-server decl-test declined-addresses "
+        "192.0.2.0/24 detail",
+        "show router dhcp local-dhcp-server decl-test sticky-leases"})
+    require(contextual_command(command).find("leases found") !=
+                std::string_view::npos,
+            "documented DHCPv4 show form did not render");
+  // The pool selector parses and an unknown pool is an explicit error.
+  require(contextual_command(
+              "show router dhcp local-dhcp-server decl-test declined-addresses "
+              "pool missing-pool")
+                  .find("Unknown element") != std::string_view::npos,
+          "DHCPv4 declined pool selector did not resolve pool names");
+  const auto show_rejected = [&](std::string_view command,
+                                   const char *message) {
+    // Undocumented selectors never reach the operational owner. Depending on
+    // the failure layer the session reports Unknown element, Invalid element
+    // value or that configuration input is not allowed in operational mode.
+    const std::string result{contextual_command(command)};
+    require(result.find("Unknown element") != std::string_view::npos ||
+                result.find("Invalid element value") !=
+                    std::string_view::npos ||
+                result.find("Operation not allowed") != std::string_view::npos,
+            message);
+  };
+  show_rejected(
+      "show router dhcp local-dhcp-server decl-test declined-addresses",
+      "bare declined-addresses parsed");
+  show_rejected(
+      "show router dhcp local-dhcp-server decl-test declined-addresses detail",
+      "detail-only declined-addresses parsed");
+  show_rejected(
+      "show router dhcp local-dhcp-server decl-test sticky-leases detail",
+      "sticky-leases detail parsed");
+  // Classic clear accepts every documented state except internal-offered.
+  // Reaching the owner proves the grammar; the empty lease set is a no-op.
+  require(contextual_command("//").find("classic CLI engine") !=
+              std::string_view::npos,
+          "DHCPv4 clear fixture could not enter classic CLI");
+  for (const auto command :
+       {"clear router dhcp local-dhcp-server decl-test leases all state sticky",
+        "clear router dhcp local-dhcp-server decl-test leases 192.0.2.0/24 "
+        "state held"}) {
+    const std::string result{contextual_command(command)};
+    require(result.find("Unknown element") == std::string_view::npos &&
+                result.find("Invalid element value") ==
+                    std::string_view::npos,
+            "documented DHCPv4 clear state did not reach the owner");
+  }
+  for (const auto command :
+       {"clear router dhcp local-dhcp-server decl-test leases all state "
+        "internal-offered",
+        "clear router dhcp local-dhcp-server decl-test leases 192.0.2.0/24 "
+        "state internal-offered"}) {
+    const std::string result{contextual_command(command)};
+    require(result.find("Unknown element") != std::string_view::npos ||
+                result.find("Invalid element value") !=
+                    std::string_view::npos ||
+                result.find("Error:") != std::string_view::npos,
+            "classic DHCPv4 clear accepted internal-offered");
+  }
+  require(contextual_command("//").find("MD-CLI engine") !=
+              std::string_view::npos,
+          "DHCPv4 clear fixture could not return to MD-CLI");
+  // tools perform router dhcp send-force-renew is classic-only: the MD
+  // perform tree carries no dhcp node.
+  require(contextual_command(
+              "tools perform router dhcp local-dhcp-server decl-test "
+              "send-force-renew 192.0.2.10")
+                  .find("Unknown element") != std::string_view::npos,
+          "MD perform accepted the classic-only send-force-renew");
+  require(contextual_command("edit-config exclusive").find("(ex)[/]") !=
+              std::string_view::npos,
+          "DHCPv4 show fixture could not re-enter its MD workflow");
   for (const auto command :
        {"configure", "router", "static-routes",
         "route 203.0.114.0/24", "route-type unicast"}) {

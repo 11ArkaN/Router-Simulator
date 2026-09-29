@@ -1792,10 +1792,10 @@ bool dhcpv4_server_show_command(cli_schema::CommandId id) noexcept {
   case show_dhcpv4_server_leases_prefix:
   case show_dhcpv4_server_leases_prefix_detail:
   case show_dhcpv4_server_statistics:
-  case show_dhcpv4_server_declined:
-  case show_dhcpv4_server_declined_detail:
+  case show_dhcpv4_server_declined_address:
+  case show_dhcpv4_server_declined_address_detail:
+  case show_dhcpv4_server_declined_pool:
   case show_dhcpv4_server_sticky:
-  case show_dhcpv4_server_sticky_detail:
     return true;
   default:
     return false;
@@ -2393,12 +2393,10 @@ bool classic_configuration_command(cli_schema::CommandId id) noexcept {
   case classic_dhcpv4_relay_description:
   case classic_dhcpv4_relay_no_description:
   case classic_dhcpv4_relay_gi_address:
+  case classic_dhcpv4_relay_gi_address_src:
   case classic_dhcpv4_relay_no_gi_address:
   case classic_dhcpv4_relay_server:
   case classic_dhcpv4_relay_no_server:
-  case classic_dhcpv4_relay_source_auto:
-  case classic_dhcpv4_relay_source_gi:
-  case classic_dhcpv4_relay_no_source:
   case classic_dhcpv4_relay_trusted:
   case classic_dhcpv4_relay_no_trusted:
   case classic_dhcpv4_relay_plain_bootp:
@@ -2593,12 +2591,10 @@ bool dhcpv4_relay_configuration_command(
   case classic_dhcpv4_relay_description:
   case classic_dhcpv4_relay_no_description:
   case classic_dhcpv4_relay_gi_address:
+  case classic_dhcpv4_relay_gi_address_src:
   case classic_dhcpv4_relay_no_gi_address:
   case classic_dhcpv4_relay_server:
   case classic_dhcpv4_relay_no_server:
-  case classic_dhcpv4_relay_source_auto:
-  case classic_dhcpv4_relay_source_gi:
-  case classic_dhcpv4_relay_no_source:
   case classic_dhcpv4_relay_trusted:
   case classic_dhcpv4_relay_no_trusted:
   case classic_dhcpv4_relay_plain_bootp:
@@ -14694,7 +14690,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         return false;
       relay.description.clear();
     } else if (id == md_dhcpv4_relay_gi_address ||
-               id == classic_dhcpv4_relay_gi_address) {
+               id == classic_dhcpv4_relay_gi_address ||
+               id == classic_dhcpv4_relay_gi_address_src) {
       const auto text =
           cli_detail::argument(*parsed, cli_schema::TokenKind::ipv4);
       const auto address = text ? ipv4(*text) : std::optional<std::uint32_t>{};
@@ -14702,16 +14699,26 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         return false;
       relay.gateway_address = ipv4_bytes(*address);
       relay.gateway_address_configured = true;
-    } else if (id == md_delete_dhcpv4_relay_gi_address ||
-               id == classic_dhcpv4_relay_no_gi_address) {
+      // Classic selects the gateway as the source address with the
+      // gi-address src-ip-addr flag form.
+      if (id == classic_dhcpv4_relay_gi_address_src)
+        relay.source_address = dhcpv4::RelaySourceAddress::gi_address;
+    } else if (id == md_delete_dhcpv4_relay_gi_address) {
       if (!relay.gateway_address_configured)
         return false;
       relay.gateway_address = {};
       relay.gateway_address_configured = false;
+    } else if (id == classic_dhcpv4_relay_no_gi_address) {
+      if (!relay.gateway_address_configured)
+        return false;
+      relay.gateway_address = {};
+      relay.gateway_address_configured = false;
+      // The src-ip-addr flag lives under gi-address; removing the gateway
+      // reverts the source selection to automatic.
+      relay.source_address = dhcpv4::RelaySourceAddress::automatic;
     } else if (id == md_dhcpv4_relay_server ||
                id == classic_dhcpv4_relay_server ||
-               id == md_delete_dhcpv4_relay_server ||
-               id == classic_dhcpv4_relay_no_server) {
+               id == md_delete_dhcpv4_relay_server) {
       const auto text =
           cli_detail::argument(*parsed, cli_schema::TokenKind::ipv4);
       const auto parsed_address =
@@ -14724,8 +14731,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                        [&](const auto &entry) {
                          return entry.address == address;
                        });
-      const bool remove = id == md_delete_dhcpv4_relay_server ||
-                          id == classic_dhcpv4_relay_no_server;
+      const bool remove = id == md_delete_dhcpv4_relay_server;
       if (remove) {
         if (existing == relay.servers.end())
           return false;
@@ -14736,13 +14742,16 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           return false;
         relay.servers.push_back({.address = address});
       }
-    } else if (id == md_dhcpv4_relay_source_gi ||
-               id == classic_dhcpv4_relay_source_gi) {
+    } else if (id == classic_dhcpv4_relay_no_server) {
+      // The documented classic removal form carries no address: it clears
+      // every configured server back to the default empty set.
+      if (relay.servers.empty())
+        return false;
+      relay.servers.clear();
+    } else if (id == md_dhcpv4_relay_source_gi) {
       relay.source_address = dhcpv4::RelaySourceAddress::gi_address;
     } else if (id == md_dhcpv4_relay_source_auto ||
-               id == md_delete_dhcpv4_relay_source ||
-               id == classic_dhcpv4_relay_source_auto ||
-               id == classic_dhcpv4_relay_no_source) {
+               id == md_delete_dhcpv4_relay_source) {
       relay.source_address = dhcpv4::RelaySourceAddress::automatic;
     } else if (id == md_dhcpv4_relay_trusted) {
       const auto text =
@@ -18866,15 +18875,39 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           cli_detail::argument(*parsed, cli_schema::TokenKind::ipv4_prefix);
       const auto selected_prefix =
           prefix_text ? prefix(*prefix_text) : std::optional<Prefix>{};
+      // A pool selector matches leases by configuration range containment:
+      // declined bindings originate from pool offers, so an address inside
+      // one of the named pool's allocation ranges belongs to that pool.
+      const bool pool_command = id == show_dhcpv4_server_declined_pool;
+      const auto pool_text = pool_command
+          ? cli_detail::argument(*parsed, cli_schema::TokenKind::dhcp_pool_name)
+          : std::optional<std::string_view>{};
+      const auto pool_name =
+          pool_text ? cli_detail::unquote(*pool_text) : std::string_view{};
+      const dhcpv4::configuration::Pool *named_pool{};
+      if (pool_command && !pool_name.empty()) {
+        for (const auto &candidate_server : intent->dhcpv4_servers.servers) {
+          if (candidate_server.name != server->name)
+            continue;
+          const auto found = std::find_if(
+              candidate_server.pools.begin(), candidate_server.pools.end(),
+              [&](const auto &pool) { return pool.name == pool_name; });
+          if (found != candidate_server.pools.end())
+            named_pool = &*found;
+        }
+      }
       if (prefix_text && !selected_prefix) {
         output =
             "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+      } else if (pool_command && !named_pool) {
+        output = "MINOR: MGMT_CORE #2201: Unknown element - '" +
+                 std::string{pool_name} + "'";
       } else {
         const bool declined =
-            id == show_dhcpv4_server_declined ||
-            id == show_dhcpv4_server_declined_detail;
-        const bool sticky = id == show_dhcpv4_server_sticky ||
-                            id == show_dhcpv4_server_sticky_detail;
+            id == show_dhcpv4_server_declined_address ||
+            id == show_dhcpv4_server_declined_address_detail ||
+            id == show_dhcpv4_server_declined_pool;
+        const bool sticky = id == show_dhcpv4_server_sticky;
         const bool detail =
             parsed->has_modifier(cli_schema::OutputModifier::detail);
         std::vector<const dhcpv4::LeaseCheckpoint *> leases;
@@ -18891,6 +18924,22 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             const auto mask = routing::prefix_mask(selected_prefix->length);
             if ((ipv4_value(lease.address) & mask) !=
                 (selected_prefix->address & mask))
+              continue;
+          }
+          if (named_pool) {
+            const auto address = ipv4_value(lease.address);
+            const bool in_pool = std::any_of(
+                named_pool->subnets.begin(), named_pool->subnets.end(),
+                [&](const auto &subnet) {
+                  return std::any_of(
+                      subnet.address_ranges.begin(),
+                      subnet.address_ranges.end(),
+                      [&](const auto &range) {
+                        return ipv4_value(range.first) <= address &&
+                               address <= ipv4_value(range.last);
+                      });
+                });
+            if (!in_pool)
               continue;
           }
           leases.push_back(&lease);
@@ -19015,9 +19064,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         }
       }
       const auto state_text = cli_detail::argument(
-          *parsed, cli_schema::TokenKind::dhcp_lease_state);
-      if (state_text && output.empty()) {
-        const auto selected = dhcpv4_operational_lease_state(*state_text);
+          *parsed, cli_schema::TokenKind::dhcpv4_clear_lease_state);
+      // MD reset rows keep the wider shared state contract.
+      const auto reset_state_text =
+          state_text ? state_text
+                     : cli_detail::argument(*parsed,
+                                            cli_schema::TokenKind::dhcp_lease_state);
+      if (reset_state_text && output.empty()) {
+        const auto selected =
+            dhcpv4_operational_lease_state(*reset_state_text);
         if (!selected)
           output =
               "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";

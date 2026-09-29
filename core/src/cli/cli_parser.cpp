@@ -491,6 +491,13 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
              value == "held" || value == "internal" ||
              value == "internal-orphan" || value == "internal-offered" ||
              value == "internal-held" || value == "sticky";
+    case dhcpv4_clear_lease_state:
+      // The documented classic clear state set omits internal-offered.
+      return value == "offered" || value == "stable" ||
+             value == "force-renew-pending" || value == "remove-pending" ||
+             value == "held" || value == "internal" ||
+             value == "internal-orphan" || value == "internal-held" ||
+             value == "sticky";
     case dhcpv6_lease_state:
       return value == "advertised" || value == "stable" ||
              value == "remove-pending" || value == "held" ||
@@ -716,6 +723,7 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case dhcp_offer_seconds:
   case dhcp_maximum_declined:
   case dhcp_lease_state:
+  case dhcpv4_clear_lease_state:
   case dhcpv6_lease_state:
   case dhcpv6_show_lease_state:
   case dhcpv6_clear_lease_state:
