@@ -244,25 +244,37 @@ EditResult edit(RouterConfiguration &configuration,
     return {.recognized = true};
 
   auto next = configuration;
+  // Documented MD-CLI delete never creates configuration: absent elements
+  // resolve without materializing their ancestors and stay a silent no-op.
+  const bool md_removal = engine == CliEngine::md && command.spec &&
+                          cli_detail::removal_command(*command.spec);
   auto *server = server_by_name(next, *server_name);
-  if (!server && !deletes_server(id))
+  if (!server && !deletes_server(id) && !md_removal)
     server = ensure_server(next, *server_name, entropy);
-  if (!server)
+  if (!server && !md_removal)
     return {.recognized = true};
 
-  auto *pool =
-      pool_name ? pool_by_name(*server, *pool_name) : nullptr;
-  if (pool_name && !pool && !deletes_pool(id))
+  auto *pool = pool_name && server ? pool_by_name(*server, *pool_name)
+                                   : nullptr;
+  if (pool_name && !pool && !deletes_pool(id) && !md_removal)
     pool = ensure_pool(*server, *pool_name);
-  if (pool_name && !pool)
+  if (pool_name && !pool && !md_removal)
     return {.recognized = true};
 
-  auto *prefix =
-      pool && prefix_key ? prefix_by_key(*pool, *prefix_key) : nullptr;
-  if (pool && prefix_key && !prefix && !deletes_prefix(id))
+  auto *prefix = pool && prefix_key ? prefix_by_key(*pool, *prefix_key)
+                                    : nullptr;
+  if (pool && prefix_key && !prefix && !deletes_prefix(id) && !md_removal)
     prefix = ensure_prefix(*server, *pool, *prefix_key, entropy);
-  if (prefix_key && !prefix)
+  if (prefix_key && !prefix && !md_removal)
     return {.recognized = true};
+  if (md_removal && (!server || (pool_name && !pool) ||
+                     (prefix_key && !prefix)))
+    return {.recognized = true,
+            .valid = true,
+            .changed = false,
+            .instance = instance_path(
+                *server_name, pool_name ? *pool_name : std::string_view{},
+                prefix_text ? *prefix_text : std::string_view{})};
 
   bool accepted = true;
   const auto set_lifetime = [&](TokenKind kind, std::uint32_t minimum,
@@ -361,11 +373,12 @@ EditResult edit(RouterConfiguration &configuration,
     break;
   case md_delete_dhcpv6_server:
   case classic_dhcpv6_server_remove:
-    // The documented classic no form carries no shutdown precondition. MD
-    // delete removes the list entry directly. Absent servers already fail
-    // above without materializing state.
-    accepted = server != nullptr;
-    if (accepted)
+    // The documented classic no form carries no shutdown precondition. An
+    // absent server is an explicit error in classic while documented MD
+    // delete stays silent. Absent servers already return above without
+    // materializing state.
+    accepted = server != nullptr || id == md_delete_dhcpv6_server;
+    if (accepted && server != nullptr)
       next.servers.erase(
           std::ranges::find(next.servers, *server_name, &Server::name));
     break;
@@ -513,8 +526,9 @@ EditResult edit(RouterConfiguration &configuration,
   case classic_dhcpv6_pool_remove: {
     const auto found =
         std::ranges::find(server->pools, *pool_name, &Pool::name);
-    accepted = found != server->pools.end();
-    if (accepted)
+    accepted =
+        found != server->pools.end() || id == md_delete_dhcpv6_pool;
+    if (accepted && found != server->pools.end())
       server->pools.erase(found);
     break;
   }
@@ -670,8 +684,9 @@ EditResult edit(RouterConfiguration &configuration,
   case classic_dhcpv6_prefix_remove: {
     const auto found =
         std::ranges::find(pool->prefixes, *prefix_key, &Prefix::aggregate);
-    accepted = found != pool->prefixes.end();
-    if (accepted)
+    accepted =
+        found != pool->prefixes.end() || id == md_delete_dhcpv6_prefix;
+    if (accepted && found != pool->prefixes.end())
       pool->prefixes.erase(found);
     break;
   }

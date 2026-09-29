@@ -107,6 +107,27 @@ void dhcpv6_cli_configuration_tests() {
   require(rejected.recognized && !rejected.valid && md == before,
           "invalid DHCPv6 timer relationship partially changed candidate");
 
+  // Documented MD-CLI delete never creates configuration: absent elements
+  // resolve without materializing their ancestors and stay a silent no-op.
+  RouterConfiguration empty;
+  for (const auto text :
+       {"delete router \"Base\" dhcp-server dhcpv6 missing",
+        "delete router \"Base\" dhcp-server dhcpv6 missing description",
+        "delete router \"Base\" dhcp-server dhcpv6 missing defaults "
+        "preferred-lifetime",
+        "delete router \"Base\" dhcp-server dhcpv6 missing pool users",
+        "delete router \"Base\" dhcp-server dhcpv6 missing pool users prefix "
+        "2001:db8:100::/56 drain",
+        "delete router \"Base\" dhcp-server dhcpv6 missing pool users prefix "
+        "2001:db8:100::/56 preferred-lifetime"}) {
+    const auto before_delete = empty;
+    const auto result = router::lab::dhcpv6_cli::edit(
+        empty, parse(CliEngine::md, text), CliEngine::md, &md_entropy);
+    require(result.recognized && result.valid && !result.changed &&
+                empty == before_delete,
+            "MD delete of an absent element was not silent");
+  }
+
   RouterConfiguration classic;
   CountingEntropy classic_entropy;
   edit(classic, classic_entropy, CliEngine::classic,
