@@ -17,6 +17,7 @@ parameters:
   service_interface_name: { display: '"<interface-name>"', description: "IES interface name" }
   sap_id: { display: "<sap-id>", description: "Service access point identifier" }
   ethernet_mode: { display: "<access|network|hybrid>", description: "Ethernet port mode" }
+  classic_ethernet_mode: { display: "<network|hybrid>", description: "Classic CLI Ethernet port mode" }
   ethernet_encapsulation: { display: "<null|dot1q|qinq>", description: "Ethernet encapsulation type" }
   ipv6_prefix_length: { display: "<prefix-length>", description: "IPv6 prefix length" }
   relay_interface_id_string: { display: "<string>", description: "DHCPv6 Interface-Id string" }
@@ -1149,7 +1150,7 @@ commands:
   - { id: md_ies_interface_description, engines: [md], source_id: nokia.sros.26_7.ies.service_model, tokens: [configure, service, ies, { parameter: service_name }, interface, { parameter: service_interface_name }, description, { parameter: description }] }
   - { id: md_ies_interface_mtu, engines: [md], source_id: nokia.sros.26_7.ies.service_model, tokens: [configure, service, ies, { parameter: service_name }, interface, { parameter: service_interface_name }, ip-mtu, { parameter: mtu }] }
   - { id: md_ies_interface_ipv6_address, engines: [md], source_id: nokia.sros.26_7.ies.service_model, tokens: [configure, service, ies, { parameter: service_name }, interface, { parameter: service_interface_name }, ipv6, address, { parameter: ipv6 }, prefix-length, { parameter: ipv6_prefix_length }] }
-  - { id: md_delete_ies_interface_ipv6_address, engines: [md], source_id: nokia.sros.26_7.ies.service_model, tokens: [delete, service, ies, { parameter: service_name }, interface, { parameter: service_interface_name }, ipv6, address] }
+  - { id: md_delete_ies_interface_ipv6_address, engines: [md], source_id: nokia.sros.26_7.ies.service_model, tokens: [delete, service, ies, { parameter: service_name }, interface, { parameter: service_interface_name }, ipv6, address, { parameter: ipv6 }] }
   - { id: md_ies_interface_sap, engines: [md], source_id: nokia.sros.26_7.ies.service_model, tokens: [configure, service, ies, { parameter: service_name }, interface, { parameter: service_interface_name }, sap, { parameter: sap_id }] }
   - { id: md_delete_ies_interface_sap, engines: [md], source_id: nokia.sros.26_7.ies.service_model, tokens: [delete, service, ies, { parameter: service_name }, interface, { parameter: service_interface_name }, sap, { parameter: sap_id }] }
   - { id: md_delete_ies_interface, engines: [md], source_id: nokia.sros.26_7.ies.service_model, tokens: [delete, service, ies, { parameter: service_name }, interface, { parameter: service_interface_name }] }
@@ -1181,7 +1182,7 @@ commands:
   - { id: classic_service_customer_create, engines: [classic], enters_context: true, source_id: nokia.sros.26_7.ies.service_model, tokens: [configure, service, customer, { parameter: customer_id }, create] }
   - { id: classic_service_customer_description, engines: [classic], source_id: nokia.sros.26_7.ies.service_model, tokens: [configure, service, customer, { parameter: customer_id }, description, { parameter: description }] }
   - { id: classic_service_no_customer, engines: [classic], source_id: nokia.sros.26_7.ies.service_model, tokens: [configure, service, no, customer, { parameter: customer_id }] }
-  - { id: classic_service_port_mode, engines: [classic], source_id: nokia.sros.26_7.ies.service_model, tokens: [configure, port, { parameter: port_id }, ethernet, mode, { parameter: ethernet_mode }] }
+  - { id: classic_service_port_mode, engines: [classic], source_id: nokia.sros.26_7.ies.service_model, tokens: [configure, port, { parameter: port_id }, ethernet, mode, { parameter: classic_ethernet_mode }] }
   - { id: classic_service_port_encapsulation, engines: [classic], source_id: nokia.sros.26_7.ies.service_model, tokens: [configure, port, { parameter: port_id }, ethernet, encap-type, { parameter: ethernet_encapsulation }] }
   - { id: classic_ies_create, engines: [classic], enters_context: true, context_token_count: 4, source_id: nokia.sros.26_7.ies.service_model, tokens: [configure, service, ies, { parameter: service_id }, customer, { parameter: customer_id }, create] }
   - { id: classic_ies_no_service, engines: [classic], source_id: nokia.sros.26_7.ies.service_model, tokens: [configure, service, no, ies, { parameter: service_id }] }
@@ -1272,13 +1273,9 @@ commands:
     source_id: nokia.sros.26_7.md_cli.navigation
     tokens: [top]
   - id: navigate_root
-    engines: [md, classic]
+    engines: [md]
     source_id: nokia.sros.26_7.md_cli.navigation
     tokens: ["/"]
-  - id: navigate_classic_root
-    engines: [classic]
-    source_id: nokia.sros.26_7.classic_cli.navigation
-    tokens: ["\\"]
   - id: md_quit_config
     engines: [md]
     source_id: nokia.sros.26_7.md_cli.configuration_workflow
@@ -1460,7 +1457,7 @@ commands:
   - { id: show_router_interface_mac, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, { parameter: interface_name }, mac] }
   - { id: show_router_interface_mac_address, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, { parameter: interface_name }, mac, { parameter: mac_address }] }
   - { id: show_router_interface_eth_cfm, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, { parameter: interface_name }, eth-cfm] }
-  - { id: show_router_interface_policy_accounting, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, policy-accounting] }
+  - { id: show_router_interface_policy_accounting, engines: [md, classic], source_id: nokia.sros.26_7.show.router_interface, tokens: [show, router, interface, { parameter: interface_name }, policy-accounting] }
   - id: show_router_route_table
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.route_table
@@ -1554,7 +1551,19 @@ commands:
   - id: show_router_fib_summary
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.fib
-    tokens: [show, router, fib, { parameter: card_slot }, summary]
+    tokens: [show, router, fib, summary]
+  - id: show_router_fib_summary_all
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.show.fib
+    tokens: [show, router, fib, summary, all]
+  - id: show_router_fib_summary_ipv6
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.show.fib
+    tokens: [show, router, fib, ipv6, summary]
+  - id: show_router_fib_summary_ipv6_all
+    engines: [md, classic]
+    source_id: nokia.sros.26_7.show.fib
+    tokens: [show, router, fib, ipv6, summary, all]
   - id: show_router_arp
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.arp

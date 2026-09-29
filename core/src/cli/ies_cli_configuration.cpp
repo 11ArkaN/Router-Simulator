@@ -646,15 +646,25 @@ bool edit_impl(Configuration &configuration,
     auto *port = service_port(configuration, inventory, port_text, true);
     if (!port)
       return false;
-    if (id == md_service_port_mode || id == classic_service_port_mode) {
+    if (id == md_service_port_mode) {
       const auto text = value(command, TokenKind::ethernet_mode);
       const auto mode = text == "access" ? EthernetPortMode::access
                         : text == "network" ? EthernetPortMode::network
                         : text == "hybrid" ? EthernetPortMode::hybrid
-                                            : EthernetPortMode::network;
+                                              : EthernetPortMode::network;
       if (text != "access" && text != "network" && text != "hybrid")
         return false;
       return set_distinct(port->mode, mode);
+    }
+    if (id == classic_service_port_mode) {
+      // Classic accepts only network and hybrid; access is not a classic
+      // keyword. The grammar owns that value set.
+      const auto text = value(command, TokenKind::classic_ethernet_mode);
+      if (text != "network" && text != "hybrid")
+        return false;
+      return set_distinct(port->mode, text == "network"
+                                          ? EthernetPortMode::network
+                                          : EthernetPortMode::hybrid);
     }
     if (id == md_delete_service_port_mode)
       return set_distinct(port->mode, EthernetPortMode::network);
@@ -817,16 +827,23 @@ bool edit_impl(Configuration &configuration,
     return prefix && set_address(*interface, prefix->address,
                                  prefix->prefix_length);
   }
-  if (id == md_delete_ies_interface_ipv6_address ||
-      id == classic_ies_interface_no_ipv6_address) {
-    if (id == classic_ies_interface_no_ipv6_address) {
-      const auto expected = parse_interface_address(
-          value(command, TokenKind::ipv6_address_prefix));
-      if (!expected || !interface->address_configured ||
-          interface->address != expected->address ||
-          interface->prefix_length != expected->prefix_length)
-        return false;
-    }
+  if (id == md_delete_ies_interface_ipv6_address) {
+    // The address list is keyed by ipv6-address: only the addressed entry is
+    // removed, and an absent key is the documented silent no-op.
+    const auto address = ip::parse_ipv6(value(command, TokenKind::ipv6));
+    if (!address)
+      return false;
+    if (!interface->address_configured || interface->address != *address)
+      return true;
+    return clear_address(*interface);
+  }
+  if (id == classic_ies_interface_no_ipv6_address) {
+    const auto expected = parse_interface_address(
+        value(command, TokenKind::ipv6_address_prefix));
+    if (!expected || !interface->address_configured ||
+        interface->address != expected->address ||
+        interface->prefix_length != expected->prefix_length)
+      return false;
     return clear_address(*interface);
   }
 

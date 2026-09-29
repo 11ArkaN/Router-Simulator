@@ -9176,7 +9176,7 @@ bool portable_router(Reader &in, PortableRouterIntentCheckpoint &state) {
         port.mtu < device_catalog::minimum_network_mtu ||
         port.mtu > device_catalog::maximum_network_mtu ||
         !in.integer(port.speed_mbps) || !port.speed_mbps ||
-        !in.string(port.description, 80))
+        !in.string(port.description, profile::port_description_bytes))
       return false;
   }
   // The physical port vector above is bounded by inventory. Interface intent
@@ -9350,7 +9350,7 @@ bool portable_configuration(Reader &in,
         port.mtu < device_catalog::minimum_network_mtu ||
         port.mtu > device_catalog::maximum_network_mtu ||
         !in.integer(port.speed_mbps) || !port.speed_mbps ||
-        !in.string(port.description, 80))
+        !in.string(port.description, profile::port_description_bytes))
       return false;
   // Candidate configuration uses the same logical capacity as running state:
   // every physical routed port plus the portless system interface.

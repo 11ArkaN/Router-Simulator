@@ -738,6 +738,22 @@ void lab_runtime_tests() {
                   std::string_view::npos &&
               md_interface_show.find("Down/Down") != std::string_view::npos,
           "show router interface hid an unbound MD interface");
+  // Policy accounting requires an interface selector in 26.7; the bare form
+  // does not exist. An unknown selector is an explicit error.
+  const auto policy_accounting_show = contextual_command(
+      "show router interface md-loop policy-accounting");
+  require(policy_accounting_show.find("Interface Policy Accounting") !=
+                  std::string_view::npos &&
+              policy_accounting_show.find("No. of Entries: 0") !=
+                  std::string_view::npos,
+          "interface policy-accounting did not render its empty report");
+  require(contextual_command("show router interface policy-accounting")
+                  .find("Interface Policy Accounting") ==
+              std::string_view::npos,
+          "bare interface policy-accounting parsed");
+  require(contextual_command("show router interface missing policy-accounting")
+                  .find("Invalid element value") != std::string_view::npos,
+          "interface policy-accounting accepted an unknown interface");
 
   // Classic places DHCP directly below an interface, while the shared model
   // stores that subtree below ipv4. Drive the real classic PWC one component
@@ -3716,8 +3732,8 @@ void lab_runtime_tests() {
   // No client Reply has crossed the wire yet, therefore every selector must
   // report an empty forwarding-owned table rather than a canned example row.
   for (const auto command :
-       {"configure port 1/1/2 ethernet mode access",
-        "configure port 1/1/2 ethernet encap-type dot1q",
+       {"configure port 1/1/2 ethernet encap-type dot1q",
+        "configure port 1/1/2 ethernet mode hybrid",
         "configure service customer 10 create",
         "configure service ies 100 customer 10 create",
         "configure service ies 100 interface subscriber create",
@@ -3786,9 +3802,38 @@ void lab_runtime_tests() {
         "log-only threshold 75"}) {
     const std::string result{runtime.command(message(
         lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
-    require(result.find("Error:") == std::string::npos,
+    require(result.find("Error:") == std::string_view::npos,
             "idempotent classic IPv6 configuration was rejected");
   }
+  // The 26.7 FIB summary form carries no slot number: it aggregates every
+  // slot with an optional family selector and all keyword. The old
+  // slot-number summary form no longer parses.
+  for (const auto command :
+       {"show router fib summary", "show router fib summary all",
+        "show router fib ipv6 summary", "show router fib ipv6 summary all"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    require(result.find("FIB Display") != std::string_view::npos &&
+                result.find("Total Entries") != std::string_view::npos,
+            "slot-less FIB summary did not render");
+  }
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1",
+                                   "show router fib 1 summary"}))
+                  .find("Error: Bad command.") != std::string_view::npos,
+          "slot-number FIB summary still parses");
+  // Port descriptions allow 1 through 255 characters in both engines.
+  const std::string long_description(200, 'x');
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1",
+                                   "configure port 1/1/2 description \"" +
+                                       long_description + "\""}))
+                  .find("Error:") == std::string_view::npos &&
+              runtime.command(message(lab_runtime_protocol::session_execute,
+                                      {"r1-console-1",
+                                       "configure port 1/1/2 no description"}))
+                      .find("Error:") == std::string_view::npos,
+          "classic port description rejected the documented 255 limit");
   require(
       runtime.command(message(lab_runtime_protocol::session_execute,
                               {"r1-console-1",

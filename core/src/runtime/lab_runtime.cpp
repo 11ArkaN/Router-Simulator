@@ -2653,7 +2653,6 @@ bool terminal_global_command(cli_schema::CommandId id) noexcept {
   case navigate_exit_all:
   case navigate_top:
   case navigate_root:
-  case navigate_classic_root:
   case md_quit_config:
   case md_configure_exclusive:
   case md_configure_global:
@@ -14898,7 +14897,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     case navigate_exit_all:
     case navigate_top:
     case navigate_root:
-    case navigate_classic_root:
     case md_quit_config:
     case md_configure_exclusive:
     case md_configure_global:
@@ -15414,7 +15412,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           const auto raw = argument(cli_schema::TokenKind::description);
           const auto text =
               raw ? cli_detail::unquote(*raw) : std::string_view{};
-          valid = raw && !text.empty() && text.size() <= 80U &&
+          valid = raw && !text.empty() &&
+                  text.size() <= profile::port_description_bytes &&
                   cli_detail::valid_cli_string(*raw);
           if (valid)
             current->description.assign(text);
@@ -17199,7 +17198,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           const auto value =
               raw ? cli_detail::unquote(*raw) : std::string_view{};
           applied = raw && !value.empty() &&
-                    cli_detail::valid_cli_string(*raw) && value.size() <= 80U;
+                    cli_detail::valid_cli_string(*raw) &&
+                    value.size() <= profile::port_description_bytes;
           if (applied)
             description.assign(value);
         } else {
@@ -21740,6 +21740,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                   show_router_fib_prefix_ipv6_longer ||
               parsed->spec->id ==
                   cli_schema::CommandId::show_router_fib_summary ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_fib_summary_all ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_fib_summary_ipv6 ||
+              parsed->spec->id == cli_schema::CommandId::
+                  show_router_fib_summary_ipv6_all ||
               parsed->spec->id == cli_schema::CommandId::show_router_arp ||
              parsed->spec->id ==
                  cli_schema::CommandId::show_router_arp_address ||
@@ -22522,6 +22528,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             interface_command == show_router_interface_detail ||
             interface_command == show_router_interface_named_ipv4 ||
             interface_command == show_router_interface_named_ipv6 ||
+            interface_command == show_router_interface_policy_accounting ||
             statistics || mac_report || eth_cfm;
         const auto requested_text =
             named ? cli_detail::argument(*parsed,
@@ -22719,7 +22726,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           // These reports are valid even when the selected interface has no
           // configured association. The zero-row result is derived from the
           // empty running subsystem, not a successful configuration no-op.
-          // policy-accounting is a global report without an interface key.
+          // The documented policy-accounting form selects one interface; an
+          // unknown selector is rejected above like every other named show.
           out << table_rule << '\n'
               << (eth_cfm ? "Ethernet CFM Interface Information"
                           : "Interface Policy Accounting")
@@ -23364,7 +23372,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                  parsed->spec->id == cli_schema::CommandId::
                      show_router_fib_prefix_ipv6_longer ||
                  parsed->spec->id ==
-                     cli_schema::CommandId::show_router_fib_summary) {
+                     cli_schema::CommandId::show_router_fib_summary ||
+                 parsed->spec->id ==
+                     cli_schema::CommandId::show_router_fib_summary_all ||
+                 parsed->spec->id ==
+                     cli_schema::CommandId::show_router_fib_summary_ipv6 ||
+                 parsed->spec->id == cli_schema::CommandId::
+                     show_router_fib_summary_ipv6_all) {
         using enum cli_schema::CommandId;
         const auto fib_id = parsed->spec->id;
         const auto slot =
@@ -23375,7 +23389,16 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         const bool ipv6_family = fib_id == show_router_fib_ipv6 ||
                                  fib_id == show_router_fib_prefix_ipv6 ||
                                  fib_id == show_router_fib_prefix_ipv6_longer;
-        const bool fib_summary = fib_id == show_router_fib_summary;
+        const bool fib_summary = fib_id == show_router_fib_summary ||
+                                 fib_id == show_router_fib_summary_all ||
+                                 fib_id == show_router_fib_summary_ipv6 ||
+                                 fib_id == show_router_fib_summary_ipv6_all;
+        // The documented summary form carries no slot number: it aggregates
+        // every slot, and `all` selects the same single-card aggregate.
+        // The ipv6 family rows count only IPv6 entries.
+        const bool fib_summary_ipv6 =
+            fib_id == show_router_fib_summary_ipv6 ||
+            fib_id == show_router_fib_summary_ipv6_all;
         const bool fib_longer =
             fib_id == show_router_fib_prefix_ipv4_longer ||
             fib_id == show_router_fib_prefix_ipv6_longer;
@@ -23406,7 +23429,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             ((fib_id != show_router_fib_prefix_ipv6 &&
               fib_id != show_router_fib_prefix_ipv6_longer) ||
              fib_v6_prefix.has_value());
-        if (!slot || !decimal(*slot, card) || !card || card > maximum ||
+        if ((!fib_summary && (!slot || !decimal(*slot, card) || !card ||
+                              card > maximum)) ||
             !valid_fib_prefix) {
           output = "MINOR: MGMT_CORE #2301: Invalid element value";
         } else {
@@ -23472,21 +23496,22 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               << table_rule;
           if (fib_summary) {
             std::size_t v4_count{};
-            for (std::size_t index = 0; index < operational->fib.count;
-                 ++index) {
-              const auto &route = operational->fib.routes[index];
-              if (!route.local_system &&
-                  !fib_slot_matches(route.port_ordinal, false))
-                continue;
-              ++v4_count;
+            if (!fib_summary_ipv6) {
+              for (std::size_t index = 0; index < operational->fib.count;
+                   ++index) {
+                const auto &route = operational->fib.routes[index];
+                if (!fib_summary && !route.local_system &&
+                    !fib_slot_matches(route.port_ordinal, false))
+                  continue;
+                ++v4_count;
+              }
             }
             std::size_t v6_count{};
             for (std::size_t index = 0; index < operational->ipv6_fib.count;
                  ++index) {
               const auto &route = operational->ipv6_fib.routes[index];
               if (route.physical_port_ordinal !=
-                      system_interface_port_ordinal &&
-                  !fib_slot_matches(route.physical_port_ordinal, false))
+                      system_interface_port_ordinal)
                 continue;
               ++v6_count;
             }

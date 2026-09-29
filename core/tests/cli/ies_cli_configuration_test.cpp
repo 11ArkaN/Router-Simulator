@@ -64,9 +64,9 @@ void ies_cli_configuration_tests() {
   edit(classic, CliEngine::classic, hardware,
        "configure service customer 10 create");
   edit(classic, CliEngine::classic, hardware,
-       "configure port 1/1/1 ethernet mode access");
-  edit(classic, CliEngine::classic, hardware,
        "configure port 1/1/1 ethernet encap-type dot1q");
+  edit(classic, CliEngine::classic, hardware,
+       "configure port 1/1/1 ethernet mode hybrid");
   edit(classic, CliEngine::classic, hardware,
        "configure service ies 100 customer 10 create");
   edit(classic, CliEngine::classic, hardware,
@@ -156,6 +156,27 @@ void ies_cli_configuration_tests() {
               classic == before_invalid,
           "invalid relay edit partially changed classic running state");
 
+  // Classic port ethernet mode accepts only network and hybrid: access is an
+  // MD-CLI value. The fresh port starts in network mode.
+  const auto parse_rejected = [&](CliEngine engine, std::string_view text) {
+    require(!router::cli_detail::parse_command(
+                 engine,
+                 engine == CliEngine::md ? MdCliWorkflow::explicit_private
+                                         : MdCliWorkflow::operational,
+                 text)
+                 .has_value(),
+            "undocumented port mode parsed");
+  };
+  parse_rejected(CliEngine::classic,
+                 "configure port 1/1/2 ethernet mode access");
+  // Hybrid requires a tagging encapsulation first.
+  edit(classic, CliEngine::classic, hardware,
+       "configure port 1/1/2 ethernet encap-type dot1q");
+  edit(classic, CliEngine::classic, hardware,
+       "configure port 1/1/2 ethernet mode hybrid");
+  edit(classic, CliEngine::classic, hardware,
+       "configure port 1/1/2 ethernet mode network");
+
   // MD list entries can be assembled in any candidate order. Mandatory IDs
   // are absent only transiently; the completed value must pass the same strict
   // running validator before LabRuntime can commit it.
@@ -218,6 +239,38 @@ void ies_cli_configuration_tests() {
   require(repeated_result.recognized && !repeated_result.changed &&
               md == before_repeat,
           "repeated MD leaf was accepted as a successful no-op");
+
+  // The ipv6 address list is keyed by address: only the addressed entry is
+  // removed, an absent key is the silent no-op, and the bare form does not
+  // exist. The uplink address comes from the fixture above.
+  const auto remove_address = parse(
+      CliEngine::md,
+      "delete service ies internet interface uplink ipv6 address "
+      "2001:db8:200::1");
+  require(router::lab::ies_cli::edit(md, remove_address, CliEngine::md,
+                                     hardware, "edge-a")
+                  .changed &&
+              !md.ies_services[0]
+                   .interfaces[0]
+                   .address_configured,
+          "keyed MD address delete did not remove the entry");
+  const auto repeat_remove = router::lab::ies_cli::edit(
+      md, remove_address, CliEngine::md, hardware, "edge-a");
+  require(repeat_remove.recognized && repeat_remove.valid &&
+              !repeat_remove.changed,
+          "MD delete of an absent address key was not silent");
+  const auto before_wrong_key = md;
+  const auto wrong_key = parse(
+      CliEngine::md,
+      "delete service ies internet interface uplink ipv6 address "
+      "2001:db8:200::2");
+  const auto wrong_result = router::lab::ies_cli::edit(
+      md, wrong_key, CliEngine::md, hardware, "edge-a");
+  require(wrong_result.recognized && wrong_result.valid &&
+              !wrong_result.changed && md == before_wrong_key,
+          "MD delete of a foreign address key changed state");
+  parse_rejected(CliEngine::md,
+                 "delete service ies internet interface uplink ipv6 address");
 
   const auto existing_ies = parse(
       CliEngine::classic, "configure service ies 100 customer 10 create");

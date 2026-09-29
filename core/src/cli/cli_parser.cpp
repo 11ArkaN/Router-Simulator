@@ -305,6 +305,8 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
       return bounded_name(value, service::maximum_relay_interface_id_octets);
     case ethernet_mode:
       return value == "access" || value == "network" || value == "hybrid";
+    case classic_ethernet_mode:
+      return value == "network" || value == "hybrid";
     case ethernet_encapsulation:
       return value == "null" || value == "dot1q" || value == "qinq";
     case policy_name:
@@ -699,6 +701,7 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case service_interface_name:
   case sap_id:
   case ethernet_mode:
+  case classic_ethernet_mode:
   case ethernet_encapsulation:
   case ipv6_prefix_length:
   case relay_interface_id_string:

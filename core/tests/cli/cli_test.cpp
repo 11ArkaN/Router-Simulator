@@ -567,9 +567,25 @@ void cli_tests() {
   require(contains(backslash_show, "Card Summary") &&
               contains(router::cli_prompt(state, session), ">config>card#"),
           "Classic backslash absolute path changed the working context");
-  router::execute_cli(state, session, "\\", no_ping);
-  require(router::cli_prompt(state, session) == "\n*A:R1# ",
-          "Classic standalone backslash did not return to root");
+  // A bare backslash is not a documented navigation command: 26.7 documents
+  // backslash only as an absolute-path prefix. The working context stays put.
+  const auto bare_backslash = router::execute_cli(state, session, "\\", no_ping);
+  require(contains(bare_backslash, "Error: Bad command.") &&
+              contains(router::cli_prompt(state, session), ">config>card#"),
+          "Classic standalone backslash left its documented prefix role");
+  // A bare slash returns to the operational root in MD-CLI, while classic
+  // documents slash only as an absolute-path prefix.
+  router::CliSession md_root_session;
+  router::execute_cli(state, md_root_session, "configure global", no_ping);
+  require(contains(router::cli_prompt(state, md_root_session), "/configure]"),
+          "MD-CLI fixture could not enter configuration for slash test");
+  router::execute_cli(state, md_root_session, "/", no_ping);
+  require(router::cli_prompt(state, md_root_session) == "\n[/]\nA:admin@R1# ",
+          "MD-CLI bare slash did not return to the operational root");
+  const auto classic_slash = router::execute_cli(state, session, "/", no_ping);
+  require(contains(classic_slash, "Error: Bad command.") &&
+              contains(router::cli_prompt(state, session), ">config>card#"),
+          "Classic bare slash left its documented prefix role");
 
   // A command prefixed with // runs as an absolute command in the other engine
   // and immediately restores the originating engine and context.

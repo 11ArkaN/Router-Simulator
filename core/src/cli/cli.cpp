@@ -559,18 +559,28 @@ std::optional<std::string> operational_command(const DeviceState &state,
       command.spec->id == show_router_fib_prefix_ipv4_longer ||
       command.spec->id == show_router_fib_prefix_ipv6 ||
       command.spec->id == show_router_fib_prefix_ipv6_longer ||
-      command.spec->id == show_router_fib_summary) {
-    const auto slot = argument(command, cli_schema::TokenKind::card_slot);
-    if (!slot || *slot != std::to_string(profile::line_card_slot))
-      return "MINOR: MGMT_CORE #2301: Invalid element value";
+      command.spec->id == show_router_fib_summary ||
+      command.spec->id == show_router_fib_summary_all ||
+      command.spec->id == show_router_fib_summary_ipv6 ||
+      command.spec->id == show_router_fib_summary_ipv6_all) {
+    const bool summary =
+        command.spec->id == show_router_fib_summary ||
+        command.spec->id == show_router_fib_summary_all;
+    const bool summary_ipv6 =
+        command.spec->id == show_router_fib_summary_ipv6 ||
+        command.spec->id == show_router_fib_summary_ipv6_all;
     // This legacy device render path carries no IPv6 FIB. IPv6 selectors are
     // served by the runtime supervisor path; here they report explicitly
     // instead of fabricating an empty forwarding table.
     if (command.spec->id == show_router_fib_ipv6 ||
         command.spec->id == show_router_fib_prefix_ipv6 ||
-        command.spec->id == show_router_fib_prefix_ipv6_longer)
+        command.spec->id == show_router_fib_prefix_ipv6_longer ||
+        summary_ipv6)
       return "MINOR: CLI #2001: Command is not supported";
-    const bool summary = command.spec->id == show_router_fib_summary;
+    const auto slot = argument(command, cli_schema::TokenKind::card_slot);
+    if (!summary &&
+        (!slot || *slot != std::to_string(profile::line_card_slot)))
+      return "MINOR: MGMT_CORE #2301: Invalid element value";
     const bool longer = command.spec->id == show_router_fib_prefix_ipv4_longer;
     std::uint32_t selected_network{};
     unsigned selected_length{};
@@ -1195,7 +1205,6 @@ bool global_action(cli_schema::CommandId id, CliEngine engine) noexcept {
   case navigate_exit:
   case navigate_exit_all:
   case navigate_root:
-  case navigate_classic_root:
   case ping:
   case ping_count:
     return true;
@@ -1847,9 +1856,7 @@ std::string execute_cli(DeviceState &state, CliSession &session,
       output = cli_detail::exit_message(leaving, dirty);
     }
   } else if (command->spec->id == cli_schema::CommandId::navigate_exit_all ||
-             command->spec->id == cli_schema::CommandId::navigate_root ||
-             command->spec->id ==
-                 cli_schema::CommandId::navigate_classic_root) {
+             command->spec->id == cli_schema::CommandId::navigate_root) {
     const bool leave_implicit =
         session.engine == CliEngine::md &&
         cli_detail::implicit_workflow(session.md_workflow);
