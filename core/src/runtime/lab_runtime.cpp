@@ -14797,10 +14797,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       relay.existing_information =
           dhcpv4::ExistingRelayInformationAction::drop;
     } else if (id == md_dhcpv4_circuit_none ||
-               id == md_delete_dhcpv4_circuit ||
-               id == classic_dhcpv4_circuit_none ||
-               id == classic_dhcpv4_circuit_no) {
+               id == classic_dhcpv4_circuit_none) {
       relay.circuit_id_source = dhcpv4::CircuitIdSource::none;
+    } else if (id == md_delete_dhcpv4_circuit ||
+               id == classic_dhcpv4_circuit_no) {
+      // The documented circuit-id default is ascii-tuple, not none.
+      relay.circuit_id_source = dhcpv4::CircuitIdSource::ascii_tuple;
     } else if (id == md_dhcpv4_circuit_ascii_tuple ||
                id == classic_dhcpv4_circuit_ascii_tuple) {
       relay.circuit_id_source = dhcpv4::CircuitIdSource::ascii_tuple;

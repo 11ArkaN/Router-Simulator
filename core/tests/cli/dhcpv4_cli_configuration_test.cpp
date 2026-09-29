@@ -86,6 +86,48 @@ void dhcpv4_cli_configuration_tests() {
   require(rejected.recognized && !rejected.valid && md == before,
           "invalid DHCPv4 exclusion partially changed the candidate");
 
+  // Documented MD-CLI delete never creates configuration: absent elements
+  // resolve without materializing their ancestors and stay a silent no-op.
+  RouterConfiguration empty;
+  for (const auto text :
+       {"delete router \"Base\" dhcp-server dhcpv4 missing",
+        "delete router \"Base\" dhcp-server dhcpv4 missing description",
+        "delete router \"Base\" dhcp-server dhcpv4 missing pool users",
+        "delete router \"Base\" dhcp-server dhcpv4 missing pool users "
+        "min-lease-time",
+        "delete router \"Base\" dhcp-server dhcpv4 missing pool users subnet "
+        "192.0.2.0/24",
+        "delete router \"Base\" dhcp-server dhcpv4 missing pool users subnet "
+        "192.0.2.0/24 drain"}) {
+    const auto before_delete = empty;
+    const auto result = router::lab::dhcpv4_cli::edit(
+        empty, parse(CliEngine::md, text), CliEngine::md);
+    require(result.recognized && result.valid && !result.changed &&
+                empty == before_delete,
+            "MD delete of an absent element was not silent");
+  }
+  // An absent range on a present subnet is the same silent no-op, while a
+  // classic no on an absent element stays rejected.
+  auto md_probe = md;
+  const auto absent_range = parse(
+      CliEngine::md,
+      "delete router \"Base\" dhcp-server dhcpv4 access pool users subnet "
+      "192.0.2.0/24 address-range 192.0.2.50 end 192.0.2.60");
+  const auto absent_result =
+      router::lab::dhcpv4_cli::edit(md_probe, absent_range, CliEngine::md);
+  require(absent_result.recognized && absent_result.valid &&
+              !absent_result.changed && md_probe == md,
+          "MD delete of an absent range was not silent");
+  const auto classic_absent = parse(
+      CliEngine::classic,
+      "configure router dhcp local-dhcp-server access pool users subnet "
+      "192.0.2.0/24 no address-range 192.0.2.50 192.0.2.60");
+  RouterConfiguration classic_probe;
+  require(!router::lab::dhcpv4_cli::edit(classic_probe, classic_absent,
+                                         CliEngine::classic)
+               .valid,
+          "classic no of an absent range was not rejected");
+
   RouterConfiguration classic;
   edit(classic, CliEngine::classic,
        "configure router dhcp local-dhcp-server access description "

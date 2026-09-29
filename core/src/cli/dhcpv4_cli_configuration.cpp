@@ -243,18 +243,32 @@ EditResult edit(RouterConfiguration &configuration,
     return {.recognized = true};
 
   auto next = configuration;
-  auto *server = ensure_server(next, *server_name);
-  if (!server)
+  // Documented MD-CLI delete never creates configuration: absent elements
+  // resolve without materializing their ancestors and stay a silent no-op.
+  const bool md_removal = engine == CliEngine::md && command.spec &&
+                          cli_detail::removal_command(*command.spec);
+  auto *server = md_removal ? server_by_name(next, *server_name)
+                            : ensure_server(next, *server_name);
+  if (!server && !md_removal)
     return {.recognized = true};
-  auto *pool = pool_name ? ensure_pool(*server, *pool_name) : nullptr;
-  if (pool_name && !pool)
+  auto *pool = pool_name && server ? (md_removal ? pool_by_name(*server, *pool_name)
+                                                : ensure_pool(*server, *pool_name))
+                                   : nullptr;
+  if (pool_name && !pool && !md_removal)
     return {.recognized = true};
-  auto *subnet =
-      pool && subnet_key
-          ? ensure_subnet(*server, *pool, *subnet_key)
-          : nullptr;
-  if (subnet_key && !subnet)
+  auto *subnet = pool && subnet_key ? (md_removal ? subnet_by_key(*pool, *subnet_key)
+                                                  : ensure_subnet(*server, *pool, *subnet_key))
+                                    : nullptr;
+  if (subnet_key && !subnet && !md_removal)
     return {.recognized = true};
+  if (md_removal &&
+      (!server || (pool_name && !pool) || (subnet_key && !subnet)))
+    return {.recognized = true,
+            .valid = true,
+            .changed = false,
+            .instance = instance_path(
+                *server_name, pool_name ? *pool_name : std::string_view{},
+                subnet_text ? *subnet_text : std::string_view{})};
 
   bool accepted = true;
   // Classic CLI expresses pool timers as [days d] [hrs h] [min m] [sec s]
@@ -317,12 +331,13 @@ EditResult edit(RouterConfiguration &configuration,
     break;
   case md_delete_dhcpv4_server:
   case classic_dhcpv4_server_remove: {
-    // Removing an absent server is an explicit error, not a silent no-op.
-    // The documented classic no form carries no shutdown precondition.
+    // Removing an absent server is an explicit error in classic, while
+    // documented MD delete stays silent. The documented classic no form
+    // carries no shutdown precondition.
     const bool existed =
         server_by_name(configuration, *server_name) != nullptr;
-    accepted = existed;
-    if (accepted)
+    accepted = existed || id == md_delete_dhcpv4_server;
+    if (accepted && existed)
       next.servers.erase(std::ranges::find(next.servers, *server_name,
                                            &Server::name));
     break;
@@ -460,8 +475,8 @@ EditResult edit(RouterConfiguration &configuration,
                            ? std::ranges::find(server->pools, *pool_name,
                                                &Pool::name)
                            : server->pools.end();
-    accepted = found != server->pools.end();
-    if (accepted)
+    accepted = found != server->pools.end() || id == md_delete_dhcpv4_pool;
+    if (accepted && found != server->pools.end())
       server->pools.erase(found);
     break;
   }
@@ -507,8 +522,8 @@ EditResult edit(RouterConfiguration &configuration,
             return value.network == subnet_key->network &&
                    value.prefix_length == subnet_key->length;
           });
-      accepted = found != pool->subnets.end();
-      if (accepted)
+      accepted = found != pool->subnets.end() || id == md_delete_dhcpv4_subnet;
+      if (accepted && found != pool->subnets.end())
         pool->subnets.erase(found);
     }
     break;
@@ -547,8 +562,12 @@ EditResult edit(RouterConfiguration &configuration,
     const auto last_text = argument_at(command, TokenKind::ipv4, 1U);
     const auto first = first_text ? ipv4(*first_text) : std::nullopt;
     const auto last = last_text ? ipv4(*last_text) : std::nullopt;
-    accepted = subnet && first && last &&
-               erase_range(*subnet, *first, *last);
+    if (!subnet || !first || !last) {
+      accepted = id == md_delete_dhcpv4_range;
+      break;
+    }
+    accepted = erase_range(*subnet, *first, *last) ||
+               id == md_delete_dhcpv4_range;
     break;
   }
   case md_dhcpv4_exclude_range:
@@ -575,8 +594,12 @@ EditResult edit(RouterConfiguration &configuration,
     const auto last_text = argument_at(command, TokenKind::ipv4, 1U);
     const auto first = first_text ? ipv4(*first_text) : std::nullopt;
     const auto last = last_text ? ipv4(*last_text) : std::nullopt;
-    accepted = subnet && first && last &&
-               erase_exclusion(*subnet, *first, *last);
+    if (!subnet || !first || !last) {
+      accepted = id == md_delete_dhcpv4_exclude_range;
+      break;
+    }
+    accepted = erase_exclusion(*subnet, *first, *last) ||
+               id == md_delete_dhcpv4_exclude_range;
     break;
   }
   default:

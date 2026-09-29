@@ -1202,9 +1202,35 @@ void lab_runtime_tests() {
       "timeout 120");
   require_context_info("configure router interface md-loop ipv4 dhcp",
                        "admin-state enable");
+  // The documented circuit-id default is ascii-tuple: both removal forms
+  // restore it instead of none.
+  for (const auto command :
+       {"configure router \"Base\" interface md-loop ipv4 dhcp option-82 "
+        "circuit-id if-name",
+        "delete router \"Base\" interface md-loop ipv4 dhcp option-82 "
+        "circuit-id"}) {
+    const std::string result{contextual_command(command)};
+    require(result.find("MINOR:") == std::string_view::npos,
+            "MD circuit-id set or delete failed");
+  }
   require_context_info(
       "configure router interface md-loop ipv4 dhcp option-82",
       "action replace");
+  // Plain info suppresses default-valued leaves, so the restored ascii-tuple
+  // default is verified through info detail.
+  require(contextual_command("exit all").find("MINOR:") ==
+              std::string_view::npos,
+          "circuit-id fixture could not reset its PWC");
+  require(contextual_command(
+              "configure router \"Base\" interface md-loop ipv4 dhcp option-82")
+                  .find("MINOR:") == std::string_view::npos,
+          "circuit-id fixture could not navigate to option-82");
+  require(contextual_command("info detail").find("ascii-tuple") !=
+              std::string_view::npos,
+          "circuit-id delete did not restore ascii-tuple");
+  require(contextual_command("exit all").find("MINOR:") ==
+              std::string_view::npos,
+          "circuit-id fixture could not leave its PWC");
   require_context_info("configure router interface md-loop ipv4 icmp",
                        "redirects {");
   require_context_info("configure router interface md-loop ipv4 icmp redirects",
