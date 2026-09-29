@@ -320,6 +320,14 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
       // keeps drop, so the shared runtime mapping stays untouched.
       return value == "accept" || value == "reject" ||
              value == "next-entry" || value == "next-policy";
+    case policy_action_metric:
+      // A route-policy action metric spans the full unsigned 32-bit range in
+      // both engines, unlike the 1 through 65535 OSPF interface metric.
+      return decimal_text(value);
+    case ipv6_primary_preference:
+    case ipv6_address_tag:
+      // SR OS rejects the value 0 for both leaves in either engine.
+      return decimal_text(value) && value != "0";
     case prefix_list_type:
       return value == "exact" || value == "longer" || value == "through" ||
              value == "range" || value == "to" || value == "address-mask";
@@ -328,8 +336,6 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
       // editor because the release grammar alone cannot resolve a port.
       return !value.empty() && value.size() <= 45U;
     case prefix_length:
-    case ipv6_primary_preference:
-    case ipv6_address_tag:
     case customer_id:
     case service_id:
     case relay_lease_limit:
@@ -756,6 +762,7 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case policy_entry_number:
   case policy_action:
   case md_policy_action:
+  case policy_action_metric:
   case redirect_number:
   case redirect_seconds:
   case ike_policy_id:

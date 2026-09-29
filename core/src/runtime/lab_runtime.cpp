@@ -1300,8 +1300,10 @@ bool edit_mld_import_policy(Configuration &configuration,
   }
   if (id == md_policy_action_metric ||
       id == classic_policy_action_metric) {
-    const auto value = route_number(cli_schema::TokenKind::ospf_metric);
-    if (!value || *value > 0x00ffffffU)
+    // The action metric spans the full unsigned 32-bit range including zero,
+    // unlike the 1 through 65535 OSPF interface metric.
+    const auto value = route_number(cli_schema::TokenKind::policy_action_metric);
+    if (!value)
       return false;
     entry->set_metric = *value;
     return true;
@@ -1729,10 +1731,7 @@ bool ipv6_neighbor_show_command(cli_schema::CommandId id) noexcept {
   using enum cli_schema::CommandId;
   switch (id) {
   case show_router_neighbor:
-  case show_router_neighbor_all:
-  case show_router_neighbor_interface:
   case show_router_neighbor_address:
-  case show_router_neighbor_address_interface:
   case show_router_neighbor_selector:
   case show_router_neighbor_mac:
   case show_router_neighbor_summary:
@@ -15660,7 +15659,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 parsed_address &&
                 configured_address != current->ipv6_addresses.end() &&
                 (id == md_delete_interface_ipv6_address_primary_preference ||
-                 (text && decimal(*text, preference)));
+                 (text && decimal(*text, preference) && preference != 0U));
             if (valid &&
                 id == md_delete_interface_ipv6_address_primary_preference) {
               // An absent primary-preference receives the lowest free index,
@@ -15697,7 +15696,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             valid = parsed_address &&
                     configured_address != current->ipv6_addresses.end() &&
                     (id == md_delete_interface_ipv6_address_tag ||
-                     (text && decimal(*text, tag)));
+                     (text && decimal(*text, tag) && tag != 0U));
             if (valid) {
               // Deleting the optional leaf differs from setting numeric zero.
               // Preserve that distinction for `info` and checkpoint output.
@@ -17424,9 +17423,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                     address->address == ip::mask(address->address, 64U))) &&
                   (!(sets_preference || eui64_sets_preference) ||
                    (preference_text &&
-                    decimal(*preference_text, requested_preference))) &&
+                    decimal(*preference_text, requested_preference) &&
+                    requested_preference != 0U)) &&
                   (!(sets_tag || eui64_sets_tag) ||
-                   (tag_text && decimal(*tag_text, requested_tag))) &&
+                   (tag_text && decimal(*tag_text, requested_tag) &&
+                    requested_tag != 0U)) &&
                   (!uses_eui64 || eui64_source.has_value());
         if (applied && id == classic_remove_interface_ipv6_address) {
           auto configured = std::find_if(

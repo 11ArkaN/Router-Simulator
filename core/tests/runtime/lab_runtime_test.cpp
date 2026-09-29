@@ -3845,14 +3845,41 @@ void lab_runtime_tests() {
   // mapping. The second show reaches the cache again after the clear command,
   // proving persistence rather than inspecting the prior response string.
   require(runtime.command(message(lab_runtime_protocol::session_execute,
-                                  {"r1-console-1",
-                                   "clear router neighbor 2001:db8:1::2"}))
+                                   {"r1-console-1",
+                                    "clear router neighbor 2001:db8:1::2"}))
                       .find("Error:") == std::string_view::npos &&
               runtime.command(message(lab_runtime_protocol::session_execute,
-                                      {"r1-console-1",
-                                       "show router neighbor static"}))
+                                       {"r1-console-1",
+                                        "show router neighbor static"}))
                       .find("2001:db8:1::2") != std::string_view::npos,
           "classic neighbor clear deleted static configuration");
+  // The 26.7 show syntax has no `all` option and no `interface` keyword: the
+  // interface name is a positional selector, and the address plus interface
+  // combination exists only for clear.
+  for (const auto command :
+       {"show router neighbor all",
+        "show router neighbor interface edge",
+        "show router neighbor 2001:db8:1::2 interface edge"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    require(result.find("Error:") != std::string_view::npos ||
+                result.find("MINOR:") != std::string_view::npos,
+            "undocumented neighbor show selector parsed");
+  }
+  // SR OS rejects the value 0 for primary-preference and tag in both
+  // engines. Rejected edits must not touch running state.
+  for (const auto command :
+       {"configure router interface edge ipv6 address 2001:db8:1::10/64 "
+        "primary-preference 0",
+        "configure router interface edge ipv6 address 2001:db8:1::10/64 tag 0",
+        "configure router interface edge ipv6 address 2001:db8:1::10/64 "
+        "primary-preference 0 tag 0"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    require(result.find("Error:") != std::string_view::npos ||
+                result.find("MINOR:") != std::string_view::npos,
+            "zero IPv6 primary-preference or tag was accepted");
+  }
   for (const auto command :
        {"configure router interface edge ipv6 icmp6 redirects 9 1",
         "configure router interface edge ipv6 icmp6 redirects 1001 1",
@@ -4119,6 +4146,10 @@ void lab_runtime_tests() {
         "from protocol mld",
         "configure router policy-options policy-statement MLD-IN entry 10 "
         "action drop",
+        "configure router policy-options policy-statement MLD-IN entry 10 "
+        "action metric set 0",
+        "configure router policy-options policy-statement MLD-IN entry 10 "
+        "action metric set 4294967295",
         "configure router policy-options policy-statement MLD-IN "
         "default-action accept",
         "configure router policy-options commit",
@@ -4778,6 +4809,34 @@ void lab_runtime_tests() {
       throw std::runtime_error(
           "MD-CLI policy rejected a documented action-type value: " +
           std::string{command} + " output=" + result);
+  }
+  // A route-policy action metric spans the full unsigned 32-bit range in
+  // both engines, unlike the 1 through 65535 OSPF interface metric.
+  for (const auto command :
+       {"policy-options policy-statement METRIC-PROBE entry 10 action metric "
+        "set 0",
+        "policy-options policy-statement METRIC-PROBE entry 10 action metric "
+        "set 65536",
+        "policy-options policy-statement METRIC-PROBE entry 10 action metric "
+        "set 4294967295"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    if (result.find("MINOR:") != std::string_view::npos ||
+        result.find("Error:") != std::string_view::npos)
+      throw std::runtime_error(
+          "MD-CLI policy rejected a documented action metric: " +
+          std::string{command} + " output=" + result);
+  }
+  for (const auto command :
+       {"policy-options policy-statement METRIC-PROBE entry 10 action metric "
+        "set 4294967296",
+        "policy-options policy-statement METRIC-PROBE entry 10 action metric "
+        "set xyz"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    require(result.find("MINOR:") != std::string_view::npos ||
+                result.find("Error:") != std::string_view::npos,
+            "MD-CLI policy accepted an out-of-range action metric");
   }
   require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1", "discard"}))

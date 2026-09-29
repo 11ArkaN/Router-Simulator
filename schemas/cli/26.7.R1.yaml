@@ -94,6 +94,7 @@ parameters:
   policy_entry_number: { display: "<entry-number>", description: "Ordered route policy entry number" }
   policy_action: { display: "<accept|drop|reject|next-entry|next-policy>", description: "Route policy action" }
   md_policy_action: { display: "<accept|reject|next-entry|next-policy>", description: "MD-CLI route policy action" }
+  policy_action_metric: { display: "<metric>", description: "Route policy action metric from 0 through 4294967295" }
   redirect_number: { display: "<number>", description: "Maximum ICMPv6 Redirect messages per interval" }
   redirect_seconds: { display: "<seconds>", description: "ICMPv6 Redirect rate interval in seconds" }
   tls_cert_profile_name: { display: "<cert-profile-name>", description: "TLS certificate profile name" }
@@ -1708,22 +1709,10 @@ commands:
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_operational
     tokens: [show, router, neighbor]
-  - id: show_router_neighbor_all
-    engines: [md, classic]
-    source_id: nokia.sros.26_7.ipv6.neighbor_operational
-    tokens: [show, router, neighbor, all]
-  - id: show_router_neighbor_interface
-    engines: [md, classic]
-    source_id: nokia.sros.26_7.ipv6.neighbor_operational
-    tokens: [show, router, neighbor, interface, { parameter: interface_name }]
   - id: show_router_neighbor_address
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_operational
     tokens: [show, router, neighbor, { parameter: ipv6 }]
-  - id: show_router_neighbor_address_interface
-    engines: [md, classic]
-    source_id: nokia.sros.26_7.ipv6.neighbor_operational
-    tokens: [show, router, neighbor, { parameter: ipv6 }, interface, { parameter: interface_name }]
   - id: show_service_dhcp6_lease_state
     engines: [md, classic]
     source_id: nokia.sros.26_7.ies.dhcpv6_lease_operational
@@ -3851,7 +3840,7 @@ commands:
   - { id: md_policy_protocol_ospf, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, name, ospf] }
   - { id: md_policy_protocol_ospf3, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, name, ospf3] }
   - { id: md_policy_route_tag, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, tag, { parameter: policy_route_tag }] }
-  - { id: md_policy_action_metric, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, metric, set, { parameter: ospf_metric }] }
+  - { id: md_policy_action_metric, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, metric, set, { parameter: policy_action_metric }] }
   - { id: md_policy_action_type, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, type, { parameter: ospf_metric_type }] }
   - { id: md_policy_action_tag, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, tag, { parameter: policy_route_tag }] }
   - { id: md_delete_policy_route_prefix_list, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, prefix-list] }
@@ -3887,7 +3876,7 @@ commands:
   - { id: classic_policy_protocol_ospf, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, ospf] }
   - { id: classic_policy_protocol_ospf3, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, ospf3] }
   - { id: classic_policy_route_tag, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, tag, { parameter: policy_route_tag }] }
-  - { id: classic_policy_action_metric, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, metric, set, { parameter: ospf_metric }] }
+  - { id: classic_policy_action_metric, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, metric, set, { parameter: policy_action_metric }] }
   - { id: classic_policy_action_type, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, type, { parameter: ospf_metric_type }] }
   - { id: classic_policy_action_tag, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, tag, { parameter: policy_route_tag }] }
   - { id: classic_policy_no_route_prefix_list, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, no, prefix-list] }
