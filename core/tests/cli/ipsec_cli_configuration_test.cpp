@@ -362,8 +362,8 @@ void ipsec_cli_configuration_tests() {
       parse(CliEngine::md, "delete ipsec ike-transform 19");
   const auto protected_result = router::lab::ipsec_cli::edit(
       state, delete_referenced, CliEngine::md);
-  require(protected_result.recognized && !protected_result.changed &&
-              find_ike(state, 19U),
+  require(protected_result.recognized && !protected_result.valid &&
+              !protected_result.changed && find_ike(state, 19U),
           "referenced IKE transform was deleted");
 
   Configuration classic;
@@ -735,8 +735,44 @@ void ipsec_cli_configuration_tests() {
   const auto guarded_delete = parse(CliEngine::md, "delete ipsec ike-policy 3");
   const auto guarded_result = router::lab::ipsec_cli::edit(
       guarded, guarded_delete, CliEngine::md);
-  require(guarded_result.recognized && !guarded_result.changed,
+  require(guarded_result.recognized && !guarded_result.valid &&
+              !guarded_result.changed,
           "referenced IKE policy was deleted");
   require(find_policy(guarded, 3U) != nullptr,
           "referenced IKE policy removal did not preserve the policy");
+
+  // Documented MD-CLI delete stays silent on absent elements without
+  // materializing their ancestors, while classic no forms keep the rejected
+  // result for the same input.
+  Configuration absent;
+  for (const auto *text :
+       {"delete ipsec ike-transform 99",
+        "delete ipsec ipsec-transform 99",
+        "delete ipsec ike-policy 99",
+        "delete ipsec static-sa ghost",
+        "delete ipsec cert-profile ghost",
+        "delete ipsec trust-anchor-profile ghost",
+        "delete ipsec ppk-list ghost",
+        "delete ipsec ts-list ghost",
+        "delete ipsec ipsec-transport-mode-profile ghost",
+        "delete ipsec tunnel-template 99",
+        "delete ipsec ike-transform 2 dh-group",
+        "delete ipsec tunnel-template 1 ip-mtu"}) {
+    const auto before_absent = absent;
+    const auto silent = router::lab::ipsec_cli::edit(
+        absent, parse(CliEngine::md, text), CliEngine::md);
+    require(silent.recognized && silent.valid && !silent.changed &&
+                absent == before_absent,
+            "MD delete of an absent IPsec element was not silent");
+  }
+  for (const auto *text :
+       {"configure ipsec no ike-transform 99",
+        "configure ipsec no static-sa ghost",
+        "configure ipsec static-sa classic-manual no description"}) {
+    const auto rejected = router::lab::ipsec_cli::edit(
+        classic, parse(CliEngine::classic, text), CliEngine::classic,
+        &classic_vault);
+    require(rejected.recognized && !rejected.valid,
+            "classic no form accepted an absent IPsec element");
+  }
 }

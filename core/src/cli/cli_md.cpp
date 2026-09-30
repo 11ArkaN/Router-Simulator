@@ -288,14 +288,15 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
     const auto current =
         route ? std::find_if(candidate.static_routes.begin(),
                              candidate.static_routes.end(),
-                             [&](const auto &entry) {
-                               return entry.valid &&
-                                      entry.network == route->network &&
-                                      entry.prefix_length == route->prefix;
-                             })
-              : candidate.static_routes.end();
+                              [&](const auto &entry) {
+                                return entry.valid &&
+                                       entry.network == route->network &&
+                                       entry.prefix_length == route->prefix;
+                              })
+               : candidate.static_routes.end();
     if (current == candidate.static_routes.end())
-      return "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+      // Deleting an absent keyed entry is the documented silent no-op.
+      return changed(false);
     // MD delete removes the entry regardless of its admin-state leaf. The
     // classic shutdown precondition never applies to candidate edits.
     const auto before = candidate.static_routes;

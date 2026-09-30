@@ -389,6 +389,16 @@ void cli_tests() {
   require(!contains(enabled_compare, "+           route") &&
               !contains(enabled_compare, "-           route"),
           "MD delete left a removed static route in the candidate");
+  // Deleting an already-absent keyed entry is the documented silent no-op.
+  const auto absent_delete = router::execute_cli(
+      enabled_state, enabled_session,
+      "/delete router static-routes route 203.0.113.0/24 "
+      "route-type unicast",
+      no_ping);
+  require(!contains(absent_delete, "Invalid element") &&
+              !contains(absent_delete, "MINOR:") &&
+              !contains(absent_delete, "Unknown element"),
+          "MD delete of an absent static route was not silent");
 
   // System reports consume modeled state rather than fixed demo text. Uptime,
   // pinned image identity and the unsaved configuration indicator must exist.
