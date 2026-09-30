@@ -349,10 +349,24 @@ bool edit_relay(const Configuration &configuration,
   using enum CommandId;
   if (id == md_delete_ies_relay || id == classic_ies_relay_remove) {
     if (!relay.configured)
-      return false;
+      return id == md_delete_ies_relay;
     relay = {};
     return true;
   }
+  // Documented MD-CLI delete stays silent on absent elements. An unconfigured
+  // relay holds every leaf at its default, so MD removals below return
+  // without touching it while classic no forms keep the rejected result.
+  const bool unconfigured_relay =
+      id == md_delete_ies_relay_server ||
+      id == md_delete_ies_relay_link_address ||
+      id == md_delete_ies_relay_source_address ||
+      id == md_delete_ies_relay_neighbor_resolution ||
+      id == md_delete_ies_relay_interface_id ||
+      id == md_delete_ies_relay_lease_population ||
+      id == md_delete_ies_relay_route_na || id == md_delete_ies_relay_route_pd ||
+      id == md_delete_ies_relay_route_ta;
+  if (unconfigured_relay && !relay.configured)
+    return true;
   configure_relay_leaf(relay);
   if (id == md_ies_relay_admin_enable || id == classic_ies_relay_no_shutdown)
     return set_distinct(relay.admin_enabled, true);
@@ -369,7 +383,7 @@ bool edit_relay(const Configuration &configuration,
                                  *destination);
     if (id == md_delete_ies_relay_server) {
       if (found == relay.servers.end())
-        return false;
+        return true;
       relay.servers.erase(found);
       return true;
     }
@@ -400,10 +414,10 @@ bool edit_relay(const Configuration &configuration,
   }
 
   const auto address_leaf = [&](std::optional<packet::Ipv6> &leaf,
-                                bool deleting) {
+                                bool deleting, bool silent_absent) {
     if (deleting) {
       if (!leaf)
-        return false;
+        return silent_absent;
       leaf.reset();
       return true;
     }
@@ -418,14 +432,16 @@ bool edit_relay(const Configuration &configuration,
       id == classic_ies_relay_no_link_address)
     return address_leaf(relay.link_address,
                         id == md_delete_ies_relay_link_address ||
-                            id == classic_ies_relay_no_link_address);
+                            id == classic_ies_relay_no_link_address,
+                        id == md_delete_ies_relay_link_address);
   if (id == md_ies_relay_source_address ||
       id == md_delete_ies_relay_source_address ||
       id == classic_ies_relay_source_address ||
       id == classic_ies_relay_no_source_address)
     return address_leaf(relay.source_address,
                         id == md_delete_ies_relay_source_address ||
-                            id == classic_ies_relay_no_source_address);
+                            id == classic_ies_relay_no_source_address,
+                        id == md_delete_ies_relay_source_address);
 
   if (id == md_ies_relay_neighbor_resolution) {
     const auto enabled = boolean_value(command);
@@ -433,14 +449,17 @@ bool edit_relay(const Configuration &configuration,
   }
   if (id == md_delete_ies_relay_neighbor_resolution ||
       id == classic_ies_relay_no_neighbor_resolution)
-    return set_distinct(relay.neighbor_resolution, false);
+    // An already-default leaf is the silent no-op in MD-CLI. The disjunction
+    // preserves the classic change report while silencing the MD default.
+    return set_distinct(relay.neighbor_resolution, false) ||
+           id == md_delete_ies_relay_neighbor_resolution;
   if (id == classic_ies_relay_neighbor_resolution)
     return set_distinct(relay.neighbor_resolution, true);
 
   if (id == md_delete_ies_relay_interface_id ||
       id == classic_ies_relay_no_interface_id) {
     if (relay.interface_id_kind == RelayInterfaceIdKind::absent)
-      return false;
+      return id == md_delete_ies_relay_interface_id;
     relay.interface_id_kind = RelayInterfaceIdKind::absent;
     relay.interface_id_string.clear();
     return true;
@@ -477,7 +496,7 @@ bool edit_relay(const Configuration &configuration,
   if (id == md_delete_ies_relay_lease_population ||
       id == classic_ies_relay_no_lease_population) {
     if (relay.lease_population_limit == 0U)
-      return false;
+      return id == md_delete_ies_relay_lease_population;
     relay.lease_population_limit = 0U;
     relay.route_populate_na = false;
     relay.route_populate_pd = false;
@@ -515,14 +534,16 @@ bool edit_relay(const Configuration &configuration,
     return enabled && set_route(relay.route_populate_na, *enabled);
   }
   if (id == md_delete_ies_relay_route_na)
-    return set_route(relay.route_populate_na, false);
+    // An already-default leaf is the silent no-op; see neighbor_resolution.
+    return set_route(relay.route_populate_na, false) ||
+           id == md_delete_ies_relay_route_na;
   if (id == classic_ies_relay_route_na)
     return set_route(relay.route_populate_na, true);
   if (id == md_ies_relay_route_pd_context || id == classic_ies_relay_route_pd)
     return set_route(relay.route_populate_pd, true);
   if (id == md_delete_ies_relay_route_pd) {
     if (!relay.route_populate_pd && !relay.route_populate_pd_exclude)
-      return false;
+      return true;
     relay.route_populate_pd = false;
     relay.route_populate_pd_exclude = false;
     return true;
@@ -545,7 +566,9 @@ bool edit_relay(const Configuration &configuration,
     return enabled && set_route(relay.route_populate_ta, *enabled);
   }
   if (id == md_delete_ies_relay_route_ta)
-    return set_route(relay.route_populate_ta, false);
+    // An already-default leaf is the silent no-op; see neighbor_resolution.
+    return set_route(relay.route_populate_ta, false) ||
+           id == md_delete_ies_relay_route_ta;
   if (id == classic_ies_relay_route_ta)
     return set_route(relay.route_populate_ta, true);
   return false;
@@ -762,9 +785,17 @@ bool edit_impl(Configuration &configuration,
 
   IesInterfaceConfiguration *interface{};
   if (engine == CliEngine::md) {
-    interface = id == md_delete_ies_interface
-                    ? interface_by_name(*ies, interface_name)
-                    : md_interface(configuration, *ies, interface_name);
+    // Documented MD-CLI delete stays silent on absent elements while classic
+    // no forms keep the rejected result. MD removals therefore resolve
+    // without materializing their ancestors.
+    const bool md_removal =
+        command.spec && cli_detail::removal_command(*command.spec);
+    if (id == md_delete_ies_interface || md_removal)
+      interface = interface_by_name(*ies, interface_name);
+    else
+      interface = md_interface(configuration, *ies, interface_name);
+    if (!interface)
+      return md_removal;
   } else {
     interface = interface_by_name(*ies, interface_name);
     if (id == classic_ies_interface_create) {

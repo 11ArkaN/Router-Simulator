@@ -4714,13 +4714,15 @@ void lab_runtime_tests() {
   const auto delete_md_limit =
       "delete router \"Base\" mld interface checkpoint-edge "
       "maximum-number-sources";
+  // Deleting an already-default leaf is the silent no-op, while the value
+  // stays restorable afterwards.
   require(
       runtime.command(message(lab_runtime_protocol::session_execute,
                               {"r1-console-1", delete_md_limit}))
                   .find("MINOR:") == std::string_view::npos &&
           runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1", delete_md_limit}))
-                  .find("MINOR:") != std::string_view::npos &&
+                  .find("MINOR:") == std::string_view::npos &&
           runtime.command(
                      message(lab_runtime_protocol::session_execute,
                              {"r1-console-1",
@@ -4731,13 +4733,15 @@ void lab_runtime_tests() {
   const auto delete_md_router_alert =
       "delete router \"Base\" mld interface checkpoint-edge "
       "router-alert-check";
+  // Deleting an already-default leaf is the silent no-op, while an explicit
+  // boolean value stays configurable afterwards.
   require(
       runtime.command(message(lab_runtime_protocol::session_execute,
                               {"r1-console-1", delete_md_router_alert}))
                   .find("MINOR:") == std::string_view::npos &&
           runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1", delete_md_router_alert}))
-                  .find("MINOR:") != std::string_view::npos &&
+                  .find("MINOR:") == std::string_view::npos &&
           runtime.command(
                      message(lab_runtime_protocol::session_execute,
                              {"r1-console-1",
@@ -4908,6 +4912,25 @@ void lab_runtime_tests() {
     require(result.find("MINOR:") != std::string_view::npos ||
                 result.find("Error:") != std::string_view::npos,
             "MD-CLI policy accepted an out-of-range action metric");
+  }
+  // Documented MD-CLI delete stays silent on absent MLD and policy elements
+  // without materializing their ancestors.
+  for (const auto command :
+       {"delete router \"Base\" mld interface missing-edge version",
+        "delete router \"Base\" mld interface missing-edge query-interval",
+        "delete router \"Base\" mld interface missing-edge router-alert-check",
+        "delete router \"Base\" mld interface missing-edge import-policy",
+        "delete router \"Base\" mld query-interval",
+        "delete router \"Base\" mld robust-count",
+        "delete policy-options policy-statement MISSING entry 10 action metric",
+        "delete policy-options policy-statement MISSING entry 10",
+        "delete policy-options policy-statement MISSING",
+        "delete policy-options prefix-list MISSING"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    require(result.find("MINOR:") == std::string_view::npos &&
+                result.find("Error:") == std::string_view::npos,
+            "MD delete of an absent element was not silent");
   }
   require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1", "discard"}))

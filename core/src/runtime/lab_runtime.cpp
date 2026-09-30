@@ -1065,8 +1065,10 @@ bool edit_mld_import_policy(Configuration &configuration,
     const bool remove_list = id == md_delete_policy_prefix_list ||
                              id == classic_policy_no_prefix_list;
     if (remove_list) {
+      // Documented MD-CLI delete stays silent on absent elements while the
+      // classic no form keeps the rejected result.
       if (list == configuration.mld_prefix_lists.end())
-        return false;
+        return id == md_delete_policy_prefix_list;
       configuration.mld_prefix_lists.erase(list);
       return true;
     }
@@ -1084,11 +1086,11 @@ bool edit_mld_import_policy(Configuration &configuration,
         id == md_delete_policy_prefix || id == classic_policy_no_prefix;
     if (removing) {
       if (list == configuration.mld_prefix_lists.end())
-        return false;
+        return id == md_delete_policy_prefix;
       const auto found =
           std::find(list->prefixes.begin(), list->prefixes.end(), entry);
       if (found == list->prefixes.end())
-        return false;
+        return id == md_delete_policy_prefix;
       list->prefixes.erase(found);
       return true;
     }
@@ -1120,11 +1122,23 @@ bool edit_mld_import_policy(Configuration &configuration,
       [&](const auto &value) { return value.name == *policy_name_value; });
   if (id == md_delete_policy_statement || id == classic_policy_no_statement) {
     if (policy == configuration.mld_import_policies.end())
-      return false;
+      return id == md_delete_policy_statement;
     configuration.mld_import_policies.erase(policy);
     return true;
   }
+  // Documented MD-CLI delete never creates configuration: absent statements
+  // stay a silent no-op instead of materializing an empty policy.
+  const bool md_policy_removal =
+      id == md_delete_policy_default_action || id == md_delete_policy_entry ||
+      id == md_delete_policy_group_address ||
+      id == md_delete_policy_source_address || id == md_delete_policy_protocol ||
+      id == md_delete_policy_route_prefix_list ||
+      id == md_delete_policy_route_tag || id == md_delete_policy_action_metric ||
+      id == md_delete_policy_action_type || id == md_delete_policy_action_tag ||
+      id == md_delete_policy_entry_action;
   if (policy == configuration.mld_import_policies.end()) {
+    if (md_policy_removal)
+      return true;
     configuration.mld_import_policies.push_back(
         {.name = std::string{*policy_name_value}, .entries = {}});
     policy = std::prev(configuration.mld_import_policies.end());
@@ -1139,7 +1153,7 @@ bool edit_mld_import_policy(Configuration &configuration,
                           id == classic_policy_no_default_action;
     if (removing) {
       if (!policy->default_action_configured)
-        return false;
+        return id == md_delete_policy_default_action;
       policy->default_action = mld::ImportPolicyAction::accept;
       policy->default_action_configured = false;
       return true;
@@ -1165,11 +1179,13 @@ bool edit_mld_import_policy(Configuration &configuration,
                    [&](const auto &value) { return value.number == number; });
   if (id == md_delete_policy_entry || id == classic_policy_no_entry) {
     if (entry == policy->entries.end())
-      return false;
+      return id == md_delete_policy_entry;
     policy->entries.erase(entry);
     return true;
   }
   if (entry == policy->entries.end()) {
+    if (md_policy_removal)
+      return true;
     policy->entries.push_back({.number = number,
                                .group_prefix_list = {},
                                .source_address = std::nullopt,
@@ -1204,7 +1220,7 @@ bool edit_mld_import_policy(Configuration &configuration,
   if (id == md_delete_policy_group_address ||
       id == classic_policy_no_group_address) {
     if (entry->group_prefix_list.empty())
-      return false;
+      return id == md_delete_policy_group_address;
     entry->group_prefix_list.clear();
     return true;
   }
@@ -1230,7 +1246,7 @@ bool edit_mld_import_policy(Configuration &configuration,
   if (id == md_delete_policy_source_address ||
       id == classic_policy_no_source_address) {
     if (!entry->source_address && entry->source_prefix_list.empty())
-      return false;
+      return id == md_delete_policy_source_address;
     entry->source_address.reset();
     entry->source_prefix_list.clear();
     return true;
@@ -1251,7 +1267,7 @@ bool edit_mld_import_policy(Configuration &configuration,
   if (id == md_delete_policy_route_prefix_list ||
       id == classic_policy_no_route_prefix_list) {
     if (entry->route_prefix_list.empty())
-      return false;
+      return id == md_delete_policy_route_prefix_list;
     entry->route_prefix_list.clear();
     return true;
   }
@@ -1294,7 +1310,7 @@ bool edit_mld_import_policy(Configuration &configuration,
   if (id == md_delete_policy_route_tag ||
       id == classic_policy_no_route_tag) {
     if (!entry->route_tag)
-      return false;
+      return id == md_delete_policy_route_tag;
     entry->route_tag.reset();
     return true;
   }
@@ -1311,7 +1327,7 @@ bool edit_mld_import_policy(Configuration &configuration,
   if (id == md_delete_policy_action_metric ||
       id == classic_policy_no_action_metric) {
     if (!entry->set_metric)
-      return false;
+      return id == md_delete_policy_action_metric;
     entry->set_metric.reset();
     return true;
   }
@@ -1328,7 +1344,7 @@ bool edit_mld_import_policy(Configuration &configuration,
   if (id == md_delete_policy_action_type ||
       id == classic_policy_no_action_type) {
     if (!entry->set_metric_type)
-      return false;
+      return id == md_delete_policy_action_type;
     entry->set_metric_type.reset();
     return true;
   }
@@ -1342,13 +1358,13 @@ bool edit_mld_import_policy(Configuration &configuration,
   if (id == md_delete_policy_action_tag ||
       id == classic_policy_no_action_tag) {
     if (!entry->set_route_tag)
-      return false;
+      return id == md_delete_policy_action_tag;
     entry->set_route_tag.reset();
     return true;
   }
   if (id == md_delete_policy_protocol || id == classic_policy_no_protocol) {
     if (!entry->protocol_mld && !entry->route_source)
-      return false;
+      return id == md_delete_policy_protocol;
     entry->protocol_mld = false;
     entry->route_source.reset();
     entry->protocol_instance.reset();
@@ -1369,7 +1385,7 @@ bool edit_mld_import_policy(Configuration &configuration,
   if (id == md_delete_policy_entry_action ||
       id == classic_policy_no_entry_action) {
     if (!entry->action_configured)
-      return false;
+      return id == md_delete_policy_entry_action;
     entry->action = mld::ImportPolicyAction::next_entry;
     entry->action_configured = false;
     return true;
@@ -14289,6 +14305,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     std::vector<MldSsmTranslation> *translations{
         &configuration.mld.ssm_translations};
     InterfaceIntent *interface{};
+    // Documented MD-CLI delete stays silent on absent elements while classic
+    // no forms keep the rejected result.
+    const bool md_ssm_removal = id == md_delete_mld_ssm_source ||
+                                id == md_delete_mld_ssm_range ||
+                                id == md_delete_mld_interface_ssm_source ||
+                                id == md_delete_mld_interface_ssm_range;
     if (interface_command) {
       const auto raw_name =
           cli_detail::argument(*parsed, cli_schema::TokenKind::interface_name);
@@ -14299,7 +14321,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           [&](const auto &entry) { return entry.name == name; });
       if (name.empty() || found == configuration.interfaces.end() ||
           !found->ipv6_address_configured)
-        return false;
+        return md_ssm_removal;
       interface = &*found;
       translations = &interface->mld_ssm_translations;
     }
@@ -14313,7 +14335,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       std::erase_if(*translations, [&](const auto &entry) {
         return entry.start == *start && entry.end == *end;
       });
-      return translations->size() != before &&
+      return (translations->size() != before || md_ssm_removal) &&
              valid_mld_candidate(configuration);
     }
     if (!source || ip::is_unspecified(*source) || ip::is_multicast(*source))
@@ -14328,7 +14350,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                                id == classic_mld_interface_ssm_no_source;
     if (remove_source) {
       if (found == translations->end())
-        return false;
+        return md_ssm_removal;
       translations->erase(found);
       return valid_mld_candidate(configuration);
     }
@@ -14387,11 +14409,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           return false;
         }
         if (removing) {
-          // Deleting an absent leaf is not reported as a successful no-op. This
-          // also keeps candidate dirty markers aligned with a real value
-          // change.
+          // Documented MD-CLI delete stays silent on absent elements while
+          // classic no forms keep the rejected result. This also keeps
+          // candidate dirty markers aligned with a real value change.
           if (!*configured)
-            return false;
+            return id == md_delete_mld_interface_maximum_number_groups ||
+                   id == md_delete_mld_interface_maximum_number_group_sources ||
+                   id == md_delete_mld_interface_maximum_number_sources;
           *value = 0U;
           *configured = false;
           return true;
@@ -14422,9 +14446,16 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     auto interface = std::find_if(
         configuration.interfaces.begin(), configuration.interfaces.end(),
         [&](const auto &entry) { return entry.name == name; });
+    // Documented MD-CLI delete stays silent on absent elements while classic
+    // no forms keep the rejected result.
+    const bool md_static_removal =
+        id == md_delete_mld_static_group || id == md_delete_mld_static_starg ||
+        id == md_delete_mld_static_source || id == md_delete_mld_static_range ||
+        id == md_delete_mld_static_range_starg ||
+        id == md_delete_mld_static_range_source;
     if (name.empty() || interface == configuration.interfaces.end() ||
         !interface->ipv6_address_configured)
-      return false;
+      return md_static_removal;
 
     const bool range_command = id == md_mld_static_range_starg ||
                                id == md_mld_static_range_source ||
@@ -14504,7 +14535,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                                 id == classic_mld_static_no_range_step;
       if (remove_range) {
         if (configured == staged_groups.end())
-          return false;
+          return md_static_removal;
         staged_groups.erase(configured);
         return commit_range_edit();
       }
@@ -14526,14 +14557,16 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           id == classic_mld_static_range_no_source ||
           id == classic_mld_static_range_step_no_source;
       if (remove_range_starg) {
-        if (!configured->starg)
-          return false;
+        if (configured == staged_groups.end() || !configured->starg)
+          return md_static_removal;
         configured->starg = false;
       } else if (remove_range_source) {
+        if (configured == staged_groups.end())
+          return md_static_removal;
         const auto before = configured->sources.size();
         std::erase(configured->sources, *source);
         if (configured->sources.size() == before)
-          return false;
+          return md_static_removal;
       } else if (source_range) {
         if (configured->starg)
           return false;
@@ -14571,23 +14604,24 @@ std::string LabRuntime::execute_session(std::string_view session_id,
 
     if (remove_group) {
       if (configured == interface->mld_static_groups.end())
-        return false;
+        return md_static_removal;
       interface->mld_static_groups.erase(configured);
       return valid_mld_candidate(configuration);
     }
     if (remove_starg) {
       if (configured == interface->mld_static_groups.end() ||
           !configured->starg)
-        return false;
+        return md_static_removal;
       configured->starg = false;
       return valid_mld_candidate(configuration);
     }
     if (remove_source) {
       if (configured == interface->mld_static_groups.end())
-        return false;
+        return md_static_removal;
       const auto before = configured->sources.size();
       std::erase(configured->sources, *source);
-      return configured->sources.size() != before &&
+      return (configured->sources.size() != before ||
+              md_static_removal) &&
              valid_mld_candidate(configuration);
     }
 
@@ -14644,14 +14678,29 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         std::find_if(configuration.interfaces.begin(),
                      configuration.interfaces.end(),
                      [&](const auto &entry) { return entry.name == name; });
+    // Documented MD-CLI delete stays silent on absent elements while classic
+    // no forms keep the rejected result. MD deletes therefore never create
+    // missing ancestors.
+    const bool md_relay_removal =
+        id == md_delete_dhcpv4_relay || id == md_delete_dhcpv4_relay_description ||
+        id == md_delete_dhcpv4_relay_gi_address ||
+        id == md_delete_dhcpv4_relay_server ||
+        id == md_delete_dhcpv4_relay_source ||
+        id == md_delete_dhcpv4_relay_trusted ||
+        id == md_delete_dhcpv4_relay_plain_bootp ||
+        id == md_delete_dhcpv4_relay_release_gi ||
+        id == md_delete_dhcpv4_option82_action ||
+        id == md_delete_dhcpv4_circuit || id == md_delete_dhcpv4_remote;
     if (id == md_delete_dhcpv4_relay) {
       if (interface == configuration.interfaces.end() ||
           !interface->dhcpv4_relay)
-        return false;
+        return true;
       interface->dhcpv4_relay.reset();
       return true;
     }
     if (interface == configuration.interfaces.end()) {
+      if (md_relay_removal)
+        return true;
       // A full MD list path creates missing presence containers. Classic
       // context traversal reaches the same canonical configuration object.
       // Enabling an incomplete relay is still rejected by the transaction
@@ -14661,8 +14710,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       configuration.interfaces.push_back(std::move(created));
       interface = std::prev(configuration.interfaces.end());
     }
-    if (!interface->dhcpv4_relay)
+    if (!interface->dhcpv4_relay) {
+      if (md_relay_removal)
+        return true;
       interface->dhcpv4_relay.emplace();
+    }
     auto &relay = *interface->dhcpv4_relay;
 
     if (id == md_dhcpv4_relay_enable ||
@@ -14685,7 +14737,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     } else if (id == md_delete_dhcpv4_relay_description ||
                id == classic_dhcpv4_relay_no_description) {
       if (relay.description.empty())
-        return false;
+        return id == md_delete_dhcpv4_relay_description;
       relay.description.clear();
     } else if (id == md_dhcpv4_relay_gi_address ||
                id == classic_dhcpv4_relay_gi_address ||
@@ -14703,7 +14755,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         relay.source_address = dhcpv4::RelaySourceAddress::gi_address;
     } else if (id == md_delete_dhcpv4_relay_gi_address) {
       if (!relay.gateway_address_configured)
-        return false;
+        return true;
       relay.gateway_address = {};
       relay.gateway_address_configured = false;
     } else if (id == classic_dhcpv4_relay_no_gi_address) {
@@ -14732,7 +14784,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       const bool remove = id == md_delete_dhcpv4_relay_server;
       if (remove) {
         if (existing == relay.servers.end())
-          return false;
+          return true;
         relay.servers.erase(existing);
       } else if (existing == relay.servers.end()) {
         if (relay.servers.size() ==
@@ -14855,14 +14907,16 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     const auto interface = std::ranges::find(
         configuration.interfaces, name, &InterfaceIntent::name);
     if (interface == configuration.interfaces.end())
-      return false;
+      return id == md_delete_interface_dhcpv6_local_server;
 
     const bool remove =
         id == md_delete_interface_dhcpv6_local_server ||
         id == classic_interface_no_dhcpv6_local_server;
     if (remove) {
+      // Documented MD-CLI delete stays silent on absent elements while the
+      // classic no form keeps the rejected result.
       if (interface->dhcpv6_local_server.empty())
-        return false;
+        return id == md_delete_interface_dhcpv6_local_server;
       interface->dhcpv6_local_server.clear();
       return true;
     }
@@ -16511,10 +16565,26 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           auto interface = std::find_if(
               candidate->interfaces.begin(), candidate->interfaces.end(),
               [&](const auto &entry) { return entry.name == name; });
-          valid = !name.empty() && interface != candidate->interfaces.end();
-          if (valid && id == md_delete_mld_interface) {
-            valid = interface->mld_configured;
-            if (valid)
+          // Documented MD-CLI delete stays silent on absent elements: a
+          // missing interface holds no MLD state to remove.
+          const bool interface_removal =
+              id == md_delete_mld_interface ||
+              id == md_delete_mld_interface_version ||
+              id == md_delete_mld_interface_query_interval ||
+              id == md_delete_mld_interface_query_response_interval ||
+              id == md_delete_mld_interface_last_member_interval ||
+              id == md_delete_mld_interface_maximum_number_groups ||
+              id == md_delete_mld_interface_maximum_number_group_sources ||
+              id == md_delete_mld_interface_maximum_number_sources ||
+              id == md_delete_mld_interface_router_alert_check ||
+              id == md_delete_mld_interface_import_policy;
+          valid = !name.empty() &&
+                  (interface != candidate->interfaces.end() ||
+                   interface_removal);
+          if (valid && interface == candidate->interfaces.end()) {
+            // Silent no-op: valid stays true and nothing is mutated.
+          } else if (valid && id == md_delete_mld_interface) {
+            if (interface->mld_configured)
               reset_mld_interface(*interface);
           } else if (valid) {
             // SR OS rejects an MLD interface whose referenced routed interface
@@ -16547,13 +16617,14 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                       (text && decimal(*text, version) &&
                        version >= device_catalog::mld_minimum_version &&
                        version <= device_catalog::mld_maximum_version);
-              if (valid)
-                interface->mld_version = static_cast<std::uint8_t>(version);
-              if (valid && id == md_delete_mld_interface_version) {
-                valid = interface->mld_version_configured;
-                interface->mld_version_configured = false;
-              } else if (valid) {
-                interface->mld_version_configured = true;
+              if (valid) {
+                // Deleting an already-default leaf is the silent no-op.
+                if (id != md_delete_mld_interface_version ||
+                    interface->mld_version_configured) {
+                  interface->mld_version = static_cast<std::uint8_t>(version);
+                  interface->mld_version_configured =
+                      id != md_delete_mld_interface_version;
+                }
               }
             } else if (
                 valid &&
@@ -16573,11 +16644,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               // The MD model stores the boolean leaf presence independently
               // from its value. That distinction is required because an
               // explicitly configured `true` must survive compare, commit and
-              // checkpoint, while delete must reject an absent leaf instead
-              // of reporting a successful no-op.
+              // checkpoint, while deleting an already-default leaf is the
+              // silent no-op.
               if (id == md_delete_mld_interface_router_alert_check) {
-                valid = interface->mld_router_alert_check_configured;
-                if (valid) {
+                if (interface->mld_router_alert_check_configured) {
                   interface->mld_router_alert_check = true;
                   interface->mld_router_alert_check_configured = false;
                 }
@@ -16596,8 +16666,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             } else if (valid && (id == md_mld_interface_import_policy ||
                                  id == md_delete_mld_interface_import_policy)) {
               if (id == md_delete_mld_interface_import_policy) {
-                valid = !interface->mld_import_policy.empty();
-                if (valid)
+                // Deleting an already-default leaf is the silent no-op.
+                if (!interface->mld_import_policy.empty())
                   interface->mld_import_policy.clear();
               } else {
                 const auto raw = argument(cli_schema::TokenKind::policy_name);
@@ -16625,14 +16695,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                          device_catalog::mld_minimum_query_interval_seconds &&
                      value <=
                          device_catalog::mld_maximum_query_interval_seconds);
-                if (valid) {
-                  if (deleting)
-                    valid = interface->mld_query_interval_configured;
+              if (valid) {
+                // Deleting an already-default leaf is the silent no-op.
+                if (!deleting || interface->mld_query_interval_configured) {
                   interface->mld_query_interval =
                       deleting ? std::chrono::seconds::zero()
                                : std::chrono::seconds{value};
                   interface->mld_query_interval_configured = !deleting;
                 }
+              }
               } else if (
                   valid &&
                   (id == md_mld_interface_query_response_interval ||
@@ -16644,12 +16715,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                      value <= device_catalog::
                                   mld_maximum_query_response_interval_seconds);
                 if (valid) {
-                  if (deleting)
-                    valid = interface->mld_query_response_interval_configured;
-                  interface->mld_query_response_interval =
-                      deleting ? std::chrono::milliseconds::zero()
-                               : std::chrono::seconds{value};
-                  interface->mld_query_response_interval_configured = !deleting;
+                  // Deleting an already-default leaf is the silent no-op.
+                  if (!deleting ||
+                      interface->mld_query_response_interval_configured) {
+                    interface->mld_query_response_interval =
+                        deleting ? std::chrono::milliseconds::zero()
+                                 : std::chrono::seconds{value};
+                    interface->mld_query_response_interval_configured =
+                        !deleting;
+                  }
                 }
               } else if (valid) {
                 valid =
@@ -16661,27 +16735,40 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                          device_catalog::
                              mld_maximum_last_listener_query_interval_seconds);
                 if (valid) {
-                  if (deleting)
-                    valid =
-                        interface->mld_last_listener_query_interval_configured;
-                  interface->mld_last_listener_query_interval =
-                      deleting ? std::chrono::milliseconds::zero()
-                               : std::chrono::seconds{value};
-                  interface->mld_last_listener_query_interval_configured =
-                      !deleting;
+                  // Deleting an already-default leaf is the silent no-op.
+                  if (!deleting ||
+                      interface->mld_last_listener_query_interval_configured) {
+                    interface->mld_last_listener_query_interval =
+                        deleting ? std::chrono::milliseconds::zero()
+                                 : std::chrono::seconds{value};
+                    interface->mld_last_listener_query_interval_configured =
+                        !deleting;
+                  }
                 }
               }
             }
           }
         } else {
-          candidate->mld.configured = true;
-          if (id == md_mld_enable || id == md_mld_disable) {
+          // Documented MD-CLI delete stays silent on absent elements: an
+          // unconfigured protocol node holds every leaf at its default, so
+          // removals resolve without materializing it.
+          const bool protocol_leaf_removal =
+              id == md_delete_mld_robust_count ||
+              id == md_delete_mld_query_interval ||
+              id == md_delete_mld_query_response_interval ||
+              id == md_delete_mld_last_member_interval;
+          const bool materialize =
+              candidate->mld.configured || !protocol_leaf_removal;
+          if (materialize)
+            candidate->mld.configured = true;
+          if (!materialize) {
+            // Silent no-op: valid stays true and nothing is mutated.
+          } else if (id == md_mld_enable || id == md_mld_disable) {
             candidate->mld.enabled = id == md_mld_enable;
-          } else if (id == md_mld_robust_count ||
-                     id == md_delete_mld_robust_count) {
+          } else if (materialize && (id == md_mld_robust_count ||
+                                     id == md_delete_mld_robust_count)) {
             if (id == md_delete_mld_robust_count) {
-              valid = candidate->mld.robustness_variable_configured;
-              if (valid) {
+              if (candidate->mld.robustness_variable_configured) {
                 candidate->mld.robustness_variable =
                     device_catalog::mld_robustness_variable;
                 candidate->mld.robustness_variable_configured = false;
@@ -16699,7 +16786,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               if (valid)
                 candidate->mld.robustness_variable_configured = true;
             }
-          } else {
+          } else if (materialize) {
             const bool deleting = id == md_delete_mld_query_interval ||
                                   id == md_delete_mld_query_response_interval ||
                                   id == md_delete_mld_last_member_interval;
@@ -16713,14 +16800,14 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                   (value >=
                        device_catalog::mld_minimum_query_interval_seconds &&
                    value <= device_catalog::mld_maximum_query_interval_seconds);
-              if (valid)
-                if (deleting)
-                  valid = candidate->mld.query_interval_configured;
               if (valid) {
-                candidate->mld.query_interval =
-                    deleting ? device_catalog::mld_query_interval
-                             : std::chrono::seconds{value};
-                candidate->mld.query_interval_configured = !deleting;
+                // Deleting an already-default leaf is the silent no-op.
+                if (!deleting || candidate->mld.query_interval_configured) {
+                  candidate->mld.query_interval =
+                      deleting ? device_catalog::mld_query_interval
+                               : std::chrono::seconds{value};
+                  candidate->mld.query_interval_configured = !deleting;
+                }
               }
             } else if (valid && (id == md_mld_query_response_interval ||
                                  id == md_delete_mld_query_response_interval)) {
@@ -16730,14 +16817,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                                 mld_minimum_query_response_interval_seconds &&
                    value <= device_catalog::
                                 mld_maximum_query_response_interval_seconds);
-              if (valid)
-                if (deleting)
-                  valid = candidate->mld.query_response_interval_configured;
               if (valid) {
-                candidate->mld.query_response_interval =
-                    deleting ? device_catalog::mld_query_response_interval
-                             : std::chrono::seconds{value};
-                candidate->mld.query_response_interval_configured = !deleting;
+                // Deleting an already-default leaf is the silent no-op.
+                if (!deleting ||
+                    candidate->mld.query_response_interval_configured) {
+                  candidate->mld.query_response_interval =
+                      deleting ? device_catalog::mld_query_response_interval
+                               : std::chrono::seconds{value};
+                  candidate->mld.query_response_interval_configured = !deleting;
+                }
               }
             } else if (valid) {
               valid =
@@ -16748,16 +16836,16 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                    value <=
                        device_catalog::
                            mld_maximum_last_listener_query_interval_seconds);
-              if (valid)
-                if (deleting)
-                  valid =
-                      candidate->mld.last_listener_query_interval_configured;
               if (valid) {
-                candidate->mld.last_listener_query_interval =
-                    deleting ? device_catalog::mld_last_listener_query_interval
-                             : std::chrono::seconds{value};
-                candidate->mld.last_listener_query_interval_configured =
-                    !deleting;
+                // Deleting an already-default leaf is the silent no-op.
+                if (!deleting ||
+                    candidate->mld.last_listener_query_interval_configured) {
+                  candidate->mld.last_listener_query_interval =
+                      deleting ? device_catalog::mld_last_listener_query_interval
+                               : std::chrono::seconds{value};
+                  candidate->mld.last_listener_query_interval_configured =
+                      !deleting;
+                }
               }
             }
           }

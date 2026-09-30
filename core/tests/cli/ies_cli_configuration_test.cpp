@@ -129,6 +129,15 @@ void ies_cli_configuration_tests() {
                                                text)
                  .has_value(),
             "classic relay accepted an undocumented route-populate no form");
+  // Classic no forms keep the rejected result for absent elements.
+  const auto classic_no_absent = parse(
+      CliEngine::classic,
+      "configure service ies 100 interface subscriber ipv6 dhcp6-relay no "
+      "server 2001:db8:ffff::9");
+  require(!router::lab::ies_cli::edit(classic, classic_no_absent,
+                                      CliEngine::classic, hardware, "edge-a")
+               .valid,
+          "classic no of an absent relay server was not rejected");
   edit(classic, CliEngine::classic, hardware,
        "configure service ies 100 interface subscriber ipv6 dhcp6-relay "
        "no shutdown");
@@ -229,6 +238,31 @@ void ies_cli_configuration_tests() {
       CliEngine::md, hardware, "edge-a");
   require(rejected.recognized && !rejected.changed && md == before_limit,
           "out-of-range MD relay lease limit changed the candidate");
+  // Documented MD-CLI delete stays silent on absent elements without
+  // materializing interfaces or relay state.
+  const auto delete_populate = parse(
+      CliEngine::md,
+      "delete service ies internet interface uplink ipv6 dhcp6 relay "
+      "lease-populate");
+  require(router::lab::ies_cli::edit(md, delete_populate, CliEngine::md,
+                                     hardware, "edge-a")
+              .changed,
+          "MD relay lease-populate delete did not remove the limit");
+  for (const auto text :
+       {"delete service ies internet interface uplink ipv6 dhcp6 relay server "
+        "2001:db8:ffff::9",
+        "delete service ies internet interface uplink ipv6 dhcp6 relay "
+        "lease-populate",
+        "delete service ies internet interface uplink ipv6 dhcp6 relay "
+        "lease-populate route-populate na",
+        "delete service ies internet interface missing ipv6 dhcp6 relay"}) {
+    const auto before_relay = md;
+    const auto result = router::lab::ies_cli::edit(
+        md, parse(CliEngine::md, text), CliEngine::md, hardware, "edge-a");
+    require(result.recognized && result.valid && !result.changed &&
+                md == before_relay,
+            "MD relay delete of an absent element was not silent");
+  }
 
   const auto repeated = parse(
       CliEngine::md,
