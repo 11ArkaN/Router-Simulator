@@ -322,4 +322,49 @@ void ies_cli_configuration_tests() {
   require(deleted.recognized && deleted.valid && deleted.changed &&
               md_delete.ies_services.empty(),
           "MD delete ies retained an enabled service with interfaces");
+
+  // MD delete of an absent customer is the silent no-op, deleting a present
+  // one removes it, and a customer referenced by an IES service stays
+  // rejected. Classic no on an absent customer keeps the rejected result.
+  router::service::Configuration customers{};
+  edit(customers, CliEngine::md, hardware,
+       "configure service customer tenant-a customer-id 20");
+  const auto before_ghost = customers;
+  const auto ghost = router::lab::ies_cli::edit(
+      customers, parse(CliEngine::md, "delete service customer ghost"),
+      CliEngine::md, hardware, "edge-a");
+  require(ghost.recognized && ghost.valid && !ghost.changed &&
+              customers == before_ghost,
+          "MD delete of an absent customer was not silent");
+  const auto remove_present = router::lab::ies_cli::edit(
+      customers, parse(CliEngine::md, "delete service customer tenant-a"),
+      CliEngine::md, hardware, "edge-a");
+  require(remove_present.recognized && remove_present.valid &&
+              remove_present.changed && customers.customers.empty(),
+          "MD delete did not remove a present customer");
+  const auto repeat_remove_customer = router::lab::ies_cli::edit(
+      customers, parse(CliEngine::md, "delete service customer tenant-a"),
+      CliEngine::md, hardware, "edge-a");
+  require(repeat_remove_customer.recognized &&
+              repeat_remove_customer.valid &&
+              !repeat_remove_customer.changed,
+          "repeated MD customer delete was not silent");
+  edit(customers, CliEngine::md, hardware,
+       "configure service customer tenant-a customer-id 20");
+  edit(customers, CliEngine::md, hardware,
+       "configure port 1/1/2 ethernet mode access");
+  edit(customers, CliEngine::md, hardware,
+       "configure service ies internet service-id 200");
+  edit(customers, CliEngine::md, hardware,
+       "configure service ies internet customer tenant-a");
+  const auto referenced = router::lab::ies_cli::edit(
+      customers, parse(CliEngine::md, "delete service customer tenant-a"),
+      CliEngine::md, hardware, "edge-a");
+  require(referenced.recognized && !referenced.valid,
+          "MD delete removed a customer referenced by an IES service");
+  const auto absent_no = router::lab::ies_cli::edit(
+      customers, parse(CliEngine::classic, "configure service no customer 999"),
+      CliEngine::classic, hardware, "edge-a");
+  require(absent_no.recognized && !absent_no.valid,
+          "classic no customer accepted an absent customer");
 }

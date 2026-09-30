@@ -597,13 +597,16 @@ bool edit_impl(Configuration &configuration,
     instance = "/service/customer/" + std::string{customer_name};
     auto *customer = customer_by_name(configuration, customer_name);
     if (id == md_delete_service_customer) {
-      if (!customer || std::any_of(configuration.ies_services.begin(),
-                                   configuration.ies_services.end(),
-                                   [&](const auto &service) {
-                                     return service.customer_id != 0U &&
-                                            service.customer_id ==
-                                                customer->customer_id;
-                                   }))
+      // Documented MD-CLI delete stays silent on absent elements while a
+      // customer referenced by an IES service keeps the rejected result.
+      if (!customer)
+        return true;
+      if (std::any_of(configuration.ies_services.begin(),
+                       configuration.ies_services.end(),
+                       [&](const auto &service) {
+                         return service.customer_id != 0U &&
+                                service.customer_id == customer->customer_id;
+                       }))
         return false;
       configuration.customers.erase(
           configuration.customers.begin() + (customer - configuration.customers.data()));

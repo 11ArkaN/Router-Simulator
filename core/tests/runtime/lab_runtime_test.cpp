@@ -4913,8 +4913,8 @@ void lab_runtime_tests() {
                 result.find("Error:") != std::string_view::npos,
             "MD-CLI policy accepted an out-of-range action metric");
   }
-  // Documented MD-CLI delete stays silent on absent MLD and policy elements
-  // without materializing their ancestors.
+  // Documented MD-CLI delete stays silent on absent MLD, service-customer
+  // and policy elements without materializing their ancestors.
   for (const auto command :
        {"delete router \"Base\" mld interface missing-edge version",
         "delete router \"Base\" mld interface missing-edge query-interval",
@@ -4922,6 +4922,7 @@ void lab_runtime_tests() {
         "delete router \"Base\" mld interface missing-edge import-policy",
         "delete router \"Base\" mld query-interval",
         "delete router \"Base\" mld robust-count",
+        "delete service customer customer-1",
         "delete policy-options policy-statement MISSING entry 10 action metric",
         "delete policy-options policy-statement MISSING entry 10",
         "delete policy-options policy-statement MISSING",
