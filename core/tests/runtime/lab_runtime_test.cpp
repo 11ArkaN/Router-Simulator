@@ -4923,6 +4923,7 @@ void lab_runtime_tests() {
         "delete router \"Base\" mld query-interval",
         "delete router \"Base\" mld robust-count",
         "delete service customer customer-1",
+        "delete service ies ghost",
         "delete policy-options policy-statement MISSING entry 10 action metric",
         "delete policy-options policy-statement MISSING entry 10",
         "delete policy-options policy-statement MISSING",

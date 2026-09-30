@@ -669,9 +669,14 @@ bool edit_impl(Configuration &configuration,
       id == classic_service_port_encapsulation) {
     const auto port_text = value(command, TokenKind::port_id);
     instance = "/port/" + std::string{port_text} + "/ethernet";
-    auto *port = service_port(configuration, inventory, port_text, true);
+    // Documented MD-CLI delete stays silent on absent elements without
+    // materializing the port; setters keep creating it explicitly.
+    const bool port_removal = id == md_delete_service_port_mode ||
+                              id == md_delete_service_port_encapsulation;
+    auto *port =
+        service_port(configuration, inventory, port_text, !port_removal);
     if (!port)
-      return false;
+      return port_removal;
     if (id == md_service_port_mode) {
       const auto text = value(command, TokenKind::ethernet_mode);
       const auto mode = text == "access" ? EthernetPortMode::access
@@ -693,13 +698,16 @@ bool edit_impl(Configuration &configuration,
                                           : EthernetPortMode::hybrid);
     }
     if (id == md_delete_service_port_mode)
-      return set_distinct(port->mode, EthernetPortMode::network);
+      // Deleting an already-default leaf is the silent no-op.
+      return set_distinct(port->mode, EthernetPortMode::network) ||
+             port_removal;
     if (id == md_delete_service_port_encapsulation) {
       const bool changed = port->encapsulation != EthernetEncapsulation::null ||
                            port->outer_tpid != 0U;
       port->encapsulation = EthernetEncapsulation::null;
       port->outer_tpid = 0U;
-      return changed;
+      // Deleting an already-default leaf is the silent no-op.
+      return changed || port_removal;
     }
     const auto text = value(command, TokenKind::ethernet_encapsulation);
     const auto encapsulation = text == "null" ? EthernetEncapsulation::null
@@ -720,8 +728,12 @@ bool edit_impl(Configuration &configuration,
 
   IesConfiguration *ies{};
   if (engine == CliEngine::md) {
-    ies = id == md_delete_ies ? service_by_name(configuration, service_name)
-                              : md_service(configuration, service_name);
+    // Documented MD-CLI delete never creates configuration: removals resolve
+    // without materializing the service.
+    const bool service_removal =
+        command.spec && cli_detail::removal_command(*command.spec);
+    ies = service_removal ? service_by_name(configuration, service_name)
+                          : md_service(configuration, service_name);
   } else {
     const auto service_id = decimal<std::uint32_t>(value(command, TokenKind::service_id));
     if (!service_id || *service_id < service::minimum_identifier ||
@@ -746,8 +758,14 @@ bool edit_impl(Configuration &configuration,
       return true;
     }
   }
-  if (!ies)
-    return false;
+  if (!ies) {
+    // Documented MD-CLI delete stays silent on absent elements without
+    // materializing the service. Classic commands keep the rejected result
+    // because removal_command also matches the classic no literal.
+    const bool md_removal = engine == CliEngine::md && command.spec &&
+                            cli_detail::removal_command(*command.spec);
+    return md_removal;
+  }
   instance = instance_path(ies->name, interface_name);
 
   if (id == md_delete_ies) {
@@ -903,8 +921,12 @@ bool edit_impl(Configuration &configuration,
       id == classic_ies_interface_no_sap) {
     const auto expected = parse_sap(configuration, inventory,
                                     value(command, TokenKind::sap_id));
-    if (interface->admin_enabled || !expected || interface->sap != *expected)
+    if (interface->admin_enabled)
       return false;
+    // Deleting an absent SAP key is the documented MD silent no-op while the
+    // classic no form keeps the rejected result.
+    if (!expected || interface->sap != *expected)
+      return id == md_delete_ies_interface_sap;
     interface->sap = {};
     interface->mac = {};
     interface->link_local = {};

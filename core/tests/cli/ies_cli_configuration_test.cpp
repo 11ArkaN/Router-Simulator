@@ -367,4 +367,48 @@ void ies_cli_configuration_tests() {
       CliEngine::classic, hardware, "edge-a");
   require(absent_no.recognized && !absent_no.valid,
           "classic no customer accepted an absent customer");
+
+  // MD delete stays silent on an absent service, its interfaces and already
+  // default port leaves without materializing configuration.
+  router::service::Configuration absent{};
+  for (const auto text :
+       {"delete service ies ghost",
+        "delete service ies ghost interface uplink",
+        "delete port 1/1/2 ethernet mode",
+        "delete port 1/1/2 ethernet encap-type"}) {
+    const auto before_absent = absent;
+    const auto silent = router::lab::ies_cli::edit(
+        absent, parse(CliEngine::md, text), CliEngine::md, hardware, "edge-a");
+    require(silent.recognized && silent.valid && !silent.changed &&
+                absent == before_absent,
+            "MD delete of an absent IES element was not silent");
+  }
+  edit(absent, CliEngine::md, hardware,
+       "configure port 1/1/2 ethernet mode access");
+  const auto remove_mode = router::lab::ies_cli::edit(
+      absent, parse(CliEngine::md, "delete port 1/1/2 ethernet mode"),
+      CliEngine::md, hardware, "edge-a");
+  require(remove_mode.recognized && remove_mode.valid &&
+              remove_mode.changed,
+          "MD port mode delete did not restore the default");
+  const auto repeat_mode = router::lab::ies_cli::edit(
+      absent, parse(CliEngine::md, "delete port 1/1/2 ethernet mode"),
+      CliEngine::md, hardware, "edge-a");
+  require(repeat_mode.recognized && repeat_mode.valid &&
+              !repeat_mode.changed,
+          "repeated MD port mode delete was not silent");
+
+  // Deleting an absent SAP key is the MD silent no-op while an enabled
+  // interface keeps the rejected result.
+  edit(customers, CliEngine::md, hardware,
+       "configure service ies internet interface uplink description tag");
+  const auto before_sap = customers;
+  const auto absent_sap = router::lab::ies_cli::edit(
+      customers,
+      parse(CliEngine::md,
+            "delete service ies internet interface uplink sap 1/1/2"),
+      CliEngine::md, hardware, "edge-a");
+  require(absent_sap.recognized && absent_sap.valid &&
+              !absent_sap.changed && customers == before_sap,
+          "MD delete of an absent SAP key was not silent");
 }
