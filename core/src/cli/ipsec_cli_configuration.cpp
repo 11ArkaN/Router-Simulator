@@ -1671,15 +1671,18 @@ EditResult edit(Configuration &state,
                             id == classic_ike_policy_nat_force_interval ||
                             id == classic_ike_policy_nat_force_force_keepalive ||
                             id == classic_ike_policy_nat_all;
-          item->nat_force_keepalive =
+          // YANG defaults force-keep-alive to true and classic has no form
+          // that disables it; only explicit naming records presence.
+          const bool keepalive_named =
               id == classic_ike_policy_nat_force_keepalive ||
               id == classic_ike_policy_nat_force_force_keepalive ||
               id == classic_ike_policy_nat_interval_force_keepalive ||
               id == classic_ike_policy_nat_all;
+          item->nat_force_keepalive = true;
+          item->nat_force_keepalive_configured = keepalive_named;
           item->nat_keepalive_interval_seconds =
               static_cast<std::uint16_t>(interval.value_or(0U));
           item->nat_force_configured = item->nat_force;
-          item->nat_force_keepalive_configured = item->nat_force_keepalive;
           item->nat_keepalive_interval_configured = interval.has_value();
           changed = *item != previous_item;
         }
@@ -1883,7 +1886,14 @@ EditResult edit(Configuration &state,
                   entry->ports.first = 0U;
                   entry->selector_begin_configured = false;
                 } else if (has_literal(command, "end")) {
-                  entry->ports.last = 65'535U;
+                  // The mipv6 port-range bounds span 0 through 255 with no
+                  // YANG default, so only that protocol restores 0 instead of
+                  // the 65535 end sentinel used by the TCP/UDP range leaves.
+                  entry->ports.last =
+                      protocol == ipsec::configuration::SelectorProtocol::
+                                      ipv6_mobility
+                          ? 0U
+                          : 65'535U;
                   entry->selector_end_configured = false;
                 } else if (has_literal(command, "begin-icmp-type")) {
                   entry->ports.first &= 0x00ffU;
@@ -1977,26 +1987,31 @@ EditResult edit(Configuration &state,
                   // Each MD leaf updates one byte of the packed IKE selector.
                   // The untouched byte and its presence flag remain candidate
                   // state so editing order does not change the final result.
+                  // YANG bounds every ICMP type and code leaf at 0 through 255.
                   if (const auto value =
-                          number(command, TokenKind::icmp_type_begin)) {
+                          number(command, TokenKind::icmp_type_begin);
+                      value && *value <= 255U) {
                     entry->ports.first = static_cast<std::uint16_t>(
                         (*value << 8U) | (entry->ports.first & 0x00ffU));
                     entry->begin_icmp_type_configured = true;
                   }
                   if (const auto value =
-                          number(command, TokenKind::icmp_code_begin)) {
+                          number(command, TokenKind::icmp_code_begin);
+                      value && *value <= 255U) {
                     entry->ports.first = static_cast<std::uint16_t>(
                         (entry->ports.first & 0xff00U) | *value);
                     entry->begin_icmp_code_configured = true;
                   }
                   if (const auto value =
-                          number(command, TokenKind::icmp_type_end)) {
+                          number(command, TokenKind::icmp_type_end);
+                      value && *value <= 255U) {
                     entry->ports.last = static_cast<std::uint16_t>(
                         (*value << 8U) | (entry->ports.last & 0x00ffU));
                     entry->end_icmp_type_configured = true;
                   }
                   if (const auto value =
-                          number(command, TokenKind::icmp_code_end)) {
+                          number(command, TokenKind::icmp_code_end);
+                      value && *value <= 255U) {
                     entry->ports.last = static_cast<std::uint16_t>(
                         (entry->ports.last & 0xff00U) | *value);
                     entry->end_icmp_code_configured = true;

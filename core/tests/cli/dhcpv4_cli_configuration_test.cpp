@@ -165,4 +165,35 @@ void dhcpv4_cli_configuration_tests() {
               "configure router dhcp local-dhcp-server access pool users "
               "min-lease-time min 10 20"),
           "classic min-lease-time accepted a second bare operand");
+
+  // YANG marks failover-control-type immutable: reconfiguring an existing
+  // range with a different control is rejected, while access-driven is a
+  // documented third value in both engines.
+  auto md_immutable = md;
+  const auto mutate_control = parse(
+      CliEngine::md,
+      "configure router \"Base\" dhcp-server dhcpv4 access pool users "
+      "subnet 192.0.2.0/24 address-range 192.0.2.10 end 192.0.2.200 "
+      "failover-control-type remote");
+  require(!router::lab::dhcpv4_cli::edit(md_immutable, mutate_control,
+                                         CliEngine::md)
+               .valid &&
+              md_immutable == md,
+          "immutable failover-control-type was mutated after create");
+  edit(md_immutable, CliEngine::md,
+       "configure router \"Base\" dhcp-server dhcpv4 access pool users "
+       "subnet 192.0.2.0/24 address-range 192.0.2.210 end 192.0.2.220 "
+       "failover-control-type access-driven");
+  require(md_immutable.servers.front()
+                  .pools.front()
+                  .subnets.front()
+                  .address_ranges.back()
+                  .failover_control ==
+              router::dhcpv4::configuration::FailoverControlType::
+                  access_driven,
+          "access-driven range was not stored");
+  edit(classic, CliEngine::classic,
+       "configure router dhcp local-dhcp-server access pool users subnet "
+       "192.0.2.0/24 address-range 192.0.2.210 192.0.2.220 failover "
+       "access-driven");
 }

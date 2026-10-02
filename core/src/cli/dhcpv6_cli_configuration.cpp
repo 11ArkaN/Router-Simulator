@@ -263,8 +263,11 @@ EditResult edit(RouterConfiguration &configuration,
 
   auto *prefix = pool && prefix_key ? prefix_by_key(*pool, *prefix_key)
                                     : nullptr;
-  if (pool && prefix_key && !prefix && !deletes_prefix(id) && !md_removal)
+  bool prefix_created = false;
+  if (pool && prefix_key && !prefix && !deletes_prefix(id) && !md_removal) {
     prefix = ensure_prefix(*server, *pool, *prefix_key, entropy);
+    prefix_created = prefix != nullptr;
+  }
   if (prefix_key && !prefix && !md_removal)
     return {.recognized = true};
   if (md_removal && (!server || (pool_name && !pool) ||
@@ -370,6 +373,39 @@ EditResult edit(RouterConfiguration &configuration,
   case classic_dhcpv6_server_no_lease_query:
     server->lease_query = false;
     server->lease_query_configured = false;
+    break;
+  case md_dhcpv6_server_auto_provisioned: {
+    bool value{};
+    accepted = server && boolean(command, value);
+    if (accepted) {
+      // YANG marks auto-provisioned immutable: an existing server keeps its
+      // mode and a conflicting reconfiguration is rejected.
+      if (server->auto_provisioned_configured &&
+          server->auto_provisioned != value)
+        accepted = false;
+      else {
+        server->auto_provisioned = value;
+        server->auto_provisioned_configured = true;
+      }
+    }
+    break;
+  }
+  case md_delete_dhcpv6_server_auto_provisioned:
+    // YANG marks auto-provisioned immutable: only an untouched default is
+    // the silent no-op, while deleting a configured value is rejected.
+    accepted = server && !server->auto_provisioned_configured;
+    break;
+  case classic_dhcpv6_server_auto_provisioned:
+    accepted = server != nullptr &&
+               (!server->auto_provisioned_configured ||
+                server->auto_provisioned);
+    if (accepted) {
+      server->auto_provisioned = true;
+      server->auto_provisioned_configured = true;
+    }
+    break;
+  case classic_dhcpv6_server_no_auto_provisioned:
+    accepted = server != nullptr && !server->auto_provisioned_configured;
     break;
   case md_delete_dhcpv6_server:
   case classic_dhcpv6_server_remove:
@@ -634,35 +670,82 @@ EditResult edit(RouterConfiguration &configuration,
     pool->maximum_delegated_length_configured = false;
     break;
   case classic_dhcpv6_prefix_default:
+  case classic_dhcpv6_prefix_default_create:
+    // Bare prefix ensures existence; creation defaults already apply.
+    accepted = prefix != nullptr;
+    break;
   case classic_dhcpv6_prefix_both:
-    prefix->delegated_prefix = true;
-    prefix->wan_host = true;
-    prefix->delegated_prefix_configured =
-        id == classic_dhcpv6_prefix_both;
-    prefix->wan_host_configured = id == classic_dhcpv6_prefix_both;
+  case classic_dhcpv6_prefix_both_create:
+    // YANG marks prefix-type immutable: an existing prefix keeps its type
+    // and a conflicting reconfiguration is rejected.
+    accepted = prefix != nullptr &&
+               (prefix_created || (prefix->delegated_prefix &&
+                                   prefix->wan_host));
+    if (accepted) {
+      prefix->delegated_prefix = true;
+      prefix->wan_host = true;
+      prefix->delegated_prefix_configured = true;
+      prefix->wan_host_configured = true;
+    }
     break;
   case classic_dhcpv6_prefix_pd:
-    prefix->delegated_prefix = true;
-    prefix->wan_host = false;
-    prefix->delegated_prefix_configured = true;
-    prefix->wan_host_configured = true;
+  case classic_dhcpv6_prefix_pd_create:
+    // YANG marks prefix-type immutable: an existing prefix keeps its type
+    // and a conflicting reconfiguration is rejected.
+    accepted = prefix != nullptr &&
+               (prefix_created || (prefix->delegated_prefix &&
+                                   !prefix->wan_host));
+    if (accepted) {
+      prefix->delegated_prefix = true;
+      prefix->wan_host = false;
+      prefix->delegated_prefix_configured = true;
+      prefix->wan_host_configured = true;
+    }
     break;
   case classic_dhcpv6_prefix_wan_host:
-    prefix->delegated_prefix = false;
-    prefix->wan_host = true;
-    prefix->delegated_prefix_configured = true;
-    prefix->wan_host_configured = true;
-    break;
-  case md_dhcpv6_prefix_pd:
-    accepted = prefix && boolean(command, prefix->delegated_prefix);
-    if (accepted)
+  case classic_dhcpv6_prefix_wan_host_create:
+    // YANG marks prefix-type immutable: an existing prefix keeps its type
+    // and a conflicting reconfiguration is rejected.
+    accepted = prefix != nullptr &&
+               (prefix_created || (!prefix->delegated_prefix &&
+                                   prefix->wan_host));
+    if (accepted) {
+      prefix->delegated_prefix = false;
+      prefix->wan_host = true;
       prefix->delegated_prefix_configured = true;
-    break;
-  case md_dhcpv6_prefix_wan_host:
-    accepted = prefix && boolean(command, prefix->wan_host);
-    if (accepted)
       prefix->wan_host_configured = true;
+    }
     break;
+  case md_dhcpv6_prefix_pd: {
+    bool value{};
+    accepted = prefix && boolean(command, value);
+    if (accepted) {
+      // YANG marks prefix-type immutable: an existing prefix keeps its type
+      // and a conflicting reconfiguration is rejected.
+      if (!prefix_created && prefix->delegated_prefix != value)
+        accepted = false;
+      else {
+        prefix->delegated_prefix = value;
+        prefix->delegated_prefix_configured = true;
+      }
+    }
+    break;
+  }
+  case md_dhcpv6_prefix_wan_host: {
+    bool value{};
+    accepted = prefix && boolean(command, value);
+    if (accepted) {
+      // YANG marks prefix-type immutable: an existing prefix keeps its type
+      // and a conflicting reconfiguration is rejected.
+      if (!prefix_created && prefix->wan_host != value)
+        accepted = false;
+      else {
+        prefix->wan_host = value;
+        prefix->wan_host_configured = true;
+      }
+    }
+    break;
+  }
   case md_dhcpv6_prefix_drain:
     accepted = prefix && boolean(command, prefix->drain);
     if (accepted)
@@ -673,12 +756,24 @@ EditResult edit(RouterConfiguration &configuration,
     prefix->drain_configured = false;
     break;
   case md_delete_dhcpv6_prefix_pd:
-    prefix->delegated_prefix = true;
-    prefix->delegated_prefix_configured = false;
+    // YANG marks prefix-type immutable: only an untouched default is the
+    // silent no-op, while deleting an explicitly configured value is
+    // rejected instead of mutating it back.
+    accepted = prefix && !prefix->delegated_prefix_configured;
+    if (accepted) {
+      prefix->delegated_prefix = true;
+      prefix->delegated_prefix_configured = false;
+    }
     break;
   case md_delete_dhcpv6_prefix_wan_host:
-    prefix->wan_host = true;
-    prefix->wan_host_configured = false;
+    // YANG marks prefix-type immutable: only an untouched default is the
+    // silent no-op, while deleting an explicitly configured value is
+    // rejected instead of mutating it back.
+    accepted = prefix && !prefix->wan_host_configured;
+    if (accepted) {
+      prefix->wan_host = true;
+      prefix->wan_host_configured = false;
+    }
     break;
   case md_delete_dhcpv6_prefix:
   case classic_dhcpv6_prefix_remove: {

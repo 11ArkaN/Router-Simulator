@@ -929,6 +929,10 @@ inline constexpr std::uint32_t ospf_interface_metric_minimum =
     ${catalog.protocol_defaults.ospf_interface_metric_minimum}U;
 inline constexpr std::uint32_t ospf_interface_metric_maximum =
     ${catalog.protocol_defaults.ospf_interface_metric_maximum}U;
+inline constexpr std::uint32_t ospf_stub_default_metric_minimum =
+    ${catalog.protocol_defaults.ospf_stub_default_metric_minimum}U;
+inline constexpr std::uint32_t ospf_stub_default_metric_maximum =
+    ${catalog.protocol_defaults.ospf_stub_default_metric_maximum}U;
 inline constexpr std::uint32_t ospf_reference_bandwidth_kbps =
     ${catalog.protocol_defaults.ospf_reference_bandwidth_kbps}U;
 inline constexpr std::uint32_t ospf_router_preference =

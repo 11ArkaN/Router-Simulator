@@ -104,9 +104,11 @@ struct TunnelTemplate {
   bool replay_window_configured{};
   bool pmtu_discovery_aging_configured{};
   bool private_tcp_mss_adjust_configured{};
-  bool propagate_pmtu_v4{};
+  // YANG defaults both propagate leaves to true, so a fresh template
+  // propagates path MTU until explicitly disabled.
+  bool propagate_pmtu_v4{true};
   bool propagate_pmtu_v4_configured{};
-  bool propagate_pmtu_v6{};
+  bool propagate_pmtu_v6{true};
   bool propagate_pmtu_v6_configured{};
   bool public_tcp_mss_adjust_configured{};
   bool public_tcp_mss_auto{};

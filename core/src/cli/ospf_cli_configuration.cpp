@@ -1280,11 +1280,13 @@ EditResult edit(ospf::RouterConfiguration &configuration,
                      id == CommandId::md_ospf3_stub_default_metric ||
                      id == CommandId::classic_ospf_stub_default_metric ||
                      id == CommandId::classic_ospf3_stub_default_metric) {
-            // default-metric lives only under area/stub in YANG.
+            // default-metric lives only under area/stub in YANG with the
+            // 1 through 16777214 range, separately from interface metric.
             const auto value = decimal<std::uint32_t>(
                 argument_text(command, TokenKind::ospf_metric));
-            if (!value || *value < 1U ||
-                *value > device_catalog::ospf_interface_metric_maximum)
+            if (!value ||
+                *value < device_catalog::ospf_stub_default_metric_minimum ||
+                *value > device_catalog::ospf_stub_default_metric_maximum)
               return {.recognized = true, .changed = false, .instance = {}};
             area->default_metric = *value;
           } else if (id == CommandId::classic_ospf_stub_no_default_metric ||

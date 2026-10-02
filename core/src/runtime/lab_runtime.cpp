@@ -516,7 +516,9 @@ bool valid_router_advertisement(
   }
 
   const auto rdnss_lifetime = config.rdnss_lifetime_seconds;
-  if (rdnss_lifetime != device_catalog::ra_infinite_lifetime &&
+  // YANG allows 0 alongside 4 through 3600 seconds plus the infinite sentinel.
+  if (rdnss_lifetime != 0U &&
+      rdnss_lifetime != device_catalog::ra_infinite_lifetime &&
       (rdnss_lifetime < device_catalog::ra_minimum_rdnss_lifetime ||
        rdnss_lifetime > device_catalog::ra_maximum_rdnss_lifetime))
     return false;
@@ -1846,13 +1848,10 @@ bool dhcpv6_server_show_command(cli_schema::CommandId id) noexcept {
   case show_dhcpv6_server_leases_type:
   case show_dhcpv6_server_leases_state:
   case show_dhcpv6_server_leases_type_state:
-  case show_dhcpv6_server_leases_md:
-  case show_dhcpv6_server_leases_md_detail:
-  case show_dhcpv6_server_leases_md_prefix:
-  case show_dhcpv6_server_leases_md_type:
-  case show_dhcpv6_server_leases_md_state:
+  case show_dhcpv6_server_leases_prefix_type:
+  case show_dhcpv6_server_leases_prefix_state:
+  case show_dhcpv6_server_leases_prefix_type_state:
   case show_dhcpv6_server_statistics:
-  case show_dhcpv6_server_statistics_md:
     return true;
   default:
     return false;
@@ -2659,7 +2658,6 @@ bool terminal_global_command(cli_schema::CommandId id) noexcept {
   case switch_engine:
   case help:
   case help_edit:
-  case help_global:
   case help_globals:
   case help_special_characters:
   case navigate_back:
@@ -3394,7 +3392,10 @@ void md_dhcpv4_subnet_info(
         << (range.failover_control ==
                     dhcpv4::configuration::FailoverControlType::local
                 ? "local"
-                : "remote")
+            : range.failover_control ==
+                    dhcpv4::configuration::FailoverControlType::remote
+                ? "remote"
+                : "access-driven")
         << '\n';
   }
   for (const auto &range : subnet.excluded_ranges) {
@@ -7285,6 +7286,19 @@ std::string classic_info_text(std::string_view md_text,
       content.replace(0U, std::string{"certificate-file"}.size(), "cert");
     else if (content.starts_with("key-file "))
       content.replace(0U, std::string{"key-file"}.size(), "key");
+    else if (content.starts_with("pfs-dh-group group-"))
+      // Classic spells Diffie-Hellman groups numerically while MD-CLI
+      // follows the YANG group- enumerations.
+      content.replace(0U, std::string{"pfs-dh-group group-"}.size(),
+                      "pfs-dh-group ");
+    else if (content.starts_with("dh-group group-"))
+      content.replace(0U, std::string{"dh-group group-"}.size(), "dh-group ");
+    else if (content.starts_with("protocol-version tls-version-12"))
+      content.replace(0U, std::string{"protocol-version tls-version-12"}.size(),
+                      "protocol-version tls-version12");
+    else if (content.starts_with("protocol-version tls-version-13"))
+      content.replace(0U, std::string{"protocol-version tls-version-13"}.size(),
+                      "protocol-version tls-version13");
     else if (content.starts_with("common-name-list "))
       content.replace(0U, std::string{"common-name-list"}.size(),
                       "cn-authentication");
@@ -13672,8 +13686,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             reachable ? device_catalog::nd_default_reachable_time_seconds
                       : device_catalog::nd_default_stale_time_seconds;
         if (removing) {
+          // Deleting an absent leaf is the documented MD silent no-op
+          // while the classic no form keeps the rejected result.
           if (!configured)
-            return false;
+            return id == md_delete_ipv6_nd_reachable_time ||
+                   id == md_delete_ipv6_nd_stale_time;
           value = default_value;
           configured = false;
           return true;
@@ -13709,10 +13726,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         [&](const auto &entry) { return entry.name == name; });
     // The system interface has no Ethernet adjacency and therefore no ARP
     // process. Ordinary interfaces retain these leaves even while address or
-    // port configuration keeps their operational state down.
-    if (name.empty() || name == system_interface_name ||
-        interface == configuration.interfaces.end())
+    // port configuration keeps their operational state down. A missing
+    // interface holds nothing to remove: MD delete stays silent.
+    if (name.empty() || name == system_interface_name)
       return false;
+    if (interface == configuration.interfaces.end())
+      return id == md_delete_interface_ipv4_arp_timeout ||
+             id == md_delete_interface_ipv4_arp_retry_timer;
 
     const bool timeout = id == md_interface_ipv4_arp_timeout ||
                          id == md_delete_interface_ipv4_arp_timeout ||
@@ -13723,10 +13743,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                           id == classic_interface_no_arp_timeout ||
                           id == classic_interface_no_arp_retry_timer;
     auto &configured = timeout ? interface->arp_timeout_configured
-                               : interface->arp_retry_configured;
+                                : interface->arp_retry_configured;
     if (removing) {
+      // Deleting an absent leaf is the documented MD silent no-op
+      // while the classic no form keeps the rejected result.
       if (!configured)
-        return false;
+        return id == md_delete_interface_ipv4_arp_timeout ||
+               id == md_delete_interface_ipv4_arp_retry_timer;
       if (timeout)
         interface->arp_timeout_seconds = static_cast<std::uint32_t>(
             device_catalog::dynamic_arp_timeout.count());
@@ -13766,9 +13789,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     auto interface = std::find_if(
         configuration.interfaces.begin(), configuration.interfaces.end(),
         [&](const auto &entry) { return entry.name == name; });
-    if (name.empty() || name == system_interface_name ||
-        interface == configuration.interfaces.end() ||
-        !interface->port_configured || !interface->address_configured)
+    if (name.empty() || name == system_interface_name)
+      return false;
+    // A missing interface holds no ARP entries to remove: MD delete stays
+    // silent without materializing it, while classic keeps the reject.
+    if (interface == configuration.interfaces.end())
+      return id == md_delete_static_ipv4_neighbor;
+    if (!interface->port_configured || !interface->address_configured)
       return false;
 
     const auto address_text =
@@ -13832,8 +13859,22 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     auto interface = std::find_if(
         configuration.interfaces.begin(), configuration.interfaces.end(),
         [&](const auto &entry) { return entry.name == name; });
-    if (name.empty() || interface == configuration.interfaces.end() ||
-        !interface->ipv6_address_configured)
+    // A missing interface holds no ND state to remove: MD delete stays
+    // silent without materializing it, while classic keeps the reject.
+    // Other rejections (empty name, unaddressed interface) are unchanged.
+    if (name.empty())
+      return false;
+    if (interface == configuration.interfaces.end())
+      return id == md_delete_ipv6_neighbor_limit ||
+             id == md_delete_ipv6_neighbor_limit_max_entries ||
+             id == md_delete_ipv6_neighbor_limit_log_only ||
+             id == md_delete_ipv6_neighbor_limit_threshold ||
+             id == md_delete_static_ipv6_neighbor ||
+             id == md_delete_ipv6_learn_unsolicited ||
+             id == md_delete_ipv6_proactive_refresh ||
+             id == md_delete_interface_ipv6_nd_reachable_time ||
+             id == md_delete_interface_ipv6_nd_stale_time;
+    if (!interface->ipv6_address_configured)
       return false;
 
     const bool policy_command = id == md_ipv6_learn_unsolicited ||
@@ -13844,8 +13885,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       const bool removing = id == md_delete_ipv6_learn_unsolicited ||
                             id == classic_no_ipv6_learn_unsolicited;
       if (removing) {
+        // Deleting an absent leaf is the documented MD silent no-op
+        // while the classic no form keeps the rejected result.
         if (!interface->ipv6_unsolicited_learning_configured)
-          return false;
+          return id == md_delete_ipv6_learn_unsolicited;
         interface->ipv6_unsolicited_learning = Ipv6UnsolicitedLearning::none;
         interface->ipv6_unsolicited_learning_configured = false;
         return true;
@@ -13879,8 +13922,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       const bool removing = id == md_delete_ipv6_proactive_refresh ||
                             id == classic_no_ipv6_proactive_refresh;
       if (removing) {
+        // Deleting an absent leaf is the documented MD silent no-op
+        // while the classic no form keeps the rejected result.
         if (!interface->ipv6_proactive_refresh_configured)
-          return false;
+          return id == md_delete_ipv6_proactive_refresh;
         interface->ipv6_proactive_refresh = Ipv6UnsolicitedLearning::none;
         interface->ipv6_proactive_refresh_configured = false;
         return true;
@@ -13924,8 +13969,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                              ? interface->ipv6_nd_reachable_time_configured
                              : interface->ipv6_nd_stale_time_configured;
       if (removing) {
+        // Deleting an absent leaf is the documented MD silent no-op
+        // while the classic no form keeps the rejected result.
         if (!configured)
-          return false;
+          return id == md_delete_interface_ipv6_nd_reachable_time ||
+                 id == md_delete_interface_ipv6_nd_stale_time;
         value = 0U;
         configured = false;
         return true;
@@ -13978,28 +14026,32 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           interface->ipv6_neighbor_limit_threshold_configured;
       if (id == md_delete_ipv6_neighbor_limit ||
           id == classic_no_ipv6_neighbor_limit) {
+        // Deleting absent leaves is the documented MD silent no-op
+        // while the classic no form keeps the rejected result.
         if (!any_limit_leaf)
-          return false;
+          return id == md_delete_ipv6_neighbor_limit;
         reset_limit();
         return true;
       }
       if (id == md_delete_ipv6_neighbor_limit_max_entries) {
         if (!interface->ipv6_neighbor_limit_configured)
-          return false;
+          return true;
         interface->ipv6_neighbor_limit = 0U;
         interface->ipv6_neighbor_limit_configured = false;
         return true;
       }
       if (id == md_delete_ipv6_neighbor_limit_log_only) {
+        // Deleting an absent leaf is the documented MD silent no-op.
         if (!interface->ipv6_neighbor_limit_log_only_configured)
-          return false;
+          return true;
         interface->ipv6_neighbor_limit_log_only = false;
         interface->ipv6_neighbor_limit_log_only_configured = false;
         return true;
       }
       if (id == md_delete_ipv6_neighbor_limit_threshold) {
+        // Deleting an absent leaf is the documented MD silent no-op.
         if (!interface->ipv6_neighbor_limit_threshold_configured)
-          return false;
+          return true;
         interface->ipv6_neighbor_limit_threshold_percent =
             device_catalog::nd_default_neighbor_limit_threshold_percent;
         interface->ipv6_neighbor_limit_threshold_configured = false;
@@ -14054,7 +14106,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           cli_detail::argument(*parsed, cli_schema::TokenKind::nd_threshold);
       if (has_threshold &&
           (!threshold_text || !decimal(*threshold_text, threshold) ||
-           threshold > 100U))
+           threshold < 1U || threshold > 100U))
         return false;
       interface->ipv6_neighbor_limit = limit;
       interface->ipv6_neighbor_limit_configured = true;
@@ -14070,6 +14122,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         cli_detail::argument(*parsed, cli_schema::TokenKind::ipv6);
     const auto address = address_text ? ip::parse_ipv6(*address_text)
                                       : std::optional<packet::Ipv6>{};
+    // YANG forbids static neighbors on the system interface, matching the
+    // IPv4 ARP path.
+    if (name == system_interface_name)
+      return false;
     if (!address || ip::is_unspecified(*address) ||
         ip::is_multicast(*address) ||
         (!ip::is_link_local(*address) &&
@@ -14083,8 +14139,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     const bool removing = id == md_delete_static_ipv6_neighbor ||
                           id == classic_remove_static_ipv6_neighbor;
     if (removing) {
+      // Deleting an absent entry is the documented MD silent no-op
+      // while the classic no form keeps the rejected result.
       if (configured == interface->static_ipv6_neighbors.end())
-        return false;
+        return id == md_delete_static_ipv6_neighbor;
       interface->static_ipv6_neighbors.erase(configured);
       return true;
     }
@@ -14943,7 +15001,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     case switch_engine:
     case help:
     case help_edit:
-    case help_global:
     case help_globals:
     case help_special_characters:
     case navigate_back:
@@ -15494,9 +15551,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         const auto current = std::find_if(
             candidate->interfaces.begin(), candidate->interfaces.end(),
             [&](const auto &entry) { return entry.name == name; });
-        valid = !name.empty() && name != system_interface_name &&
-                current != candidate->interfaces.end();
-        if (valid) {
+        // The system interface is permanent. Deleting an absent interface
+        // is the documented silent no-op.
+        valid = !name.empty() && name != system_interface_name;
+        if (valid && current != candidate->interfaces.end()) {
           // Deleting the list instance removes all of its children in the
           // candidate. apply_configuration performs the dependency-ordered
           // forwarding teardown only when the transaction is committed.
@@ -15568,12 +15626,17 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         const bool deletes_existing_ipv4_leaf =
             id == md_delete_interface_port ||
             id == md_delete_interface_ipv4_primary;
+        // MD delete never materializes the list entry it is trying to
+        // remove. An absent interface is the documented silent no-op.
+        const bool interface_leaf_removal =
+            deletes_existing_ipv4_leaf ||
+            id == md_delete_interface_ipv6_address ||
+            id == md_delete_interface_ipv6_address_dad ||
+            id == md_delete_interface_ipv6_address_eui64 ||
+            id == md_delete_interface_ipv6_address_primary_preference ||
+            id == md_delete_interface_ipv6_address_tag;
         if (valid && current == candidate->interfaces.end() &&
-            deletes_existing_ipv4_leaf) {
-          // MD delete never materializes the list entry it is trying to
-          // remove. The unchanged candidate is restored below and the command
-          // reports the ordinary invalid-element result.
-          valid = false;
+            interface_leaf_removal) {
         } else if (valid && current == candidate->interfaces.end()) {
           candidate->interfaces.push_back({.name = std::string{name},
                                            .port_id = {},
@@ -15595,16 +15658,18 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         }
         if (valid && (id == md_interface_enable || id == md_interface_disable))
           current->admin_enabled = id == md_interface_enable;
-        else if (valid && id == md_delete_interface_port) {
-          valid = current->port_configured;
-          if (valid) {
+        else if (valid && id == md_delete_interface_port &&
+                 current != candidate->interfaces.end()) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (current->port_configured) {
             current->port_id.clear();
             current->mac = {};
             current->port_configured = false;
           }
-        } else if (valid && id == md_delete_interface_ipv4_primary) {
-          valid = current->address_configured;
-          if (valid) {
+        } else if (valid && id == md_delete_interface_ipv4_primary &&
+                   current != candidate->interfaces.end()) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (current->address_configured) {
             current->address = 0U;
             current->prefix_length = 0U;
             current->address_configured = false;
@@ -15632,7 +15697,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             current->prefix_length = static_cast<std::uint8_t>(bits);
             current->address_configured = true;
           }
-        } else if (valid) {
+        } else if (valid && current != candidate->interfaces.end()) {
           const auto address = argument(cli_schema::TokenKind::ipv6);
           const auto parsed_address = address ? ip::parse_ipv6(*address)
                                               : std::optional<packet::Ipv6>{};
@@ -15924,10 +15989,9 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             return route.network == parsed_destination->network &&
                    route.prefix_length == parsed_destination->length;
           };
-          valid = std::any_of(candidate->ipv6_routes.begin(),
-                              candidate->ipv6_routes.end(), matches);
-          if (valid)
-            std::erase_if(candidate->ipv6_routes, matches);
+          // Deleting an absent prefix is the documented silent no-op,
+          // matching the IPv4 prefix lifecycle above.
+          std::erase_if(candidate->ipv6_routes, matches);
         } else if (valid && deleting_path) {
           // MD delete removes the path regardless of its admin-state leaf,
           // matching the IPv4 prefix lifecycle above.
@@ -15973,21 +16037,21 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               id == md_icmp6_redirect_admin_enable;
           interface->icmp6_redirect_admin_configured = true;
         } else if (valid && id == md_delete_icmp6_redirect_admin) {
-          valid = interface->icmp6_redirect_admin_configured;
-          if (valid) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (interface->icmp6_redirect_admin_configured) {
             interface->icmp6_redirects_enabled = true;
             interface->icmp6_redirect_admin_configured = false;
           }
         } else if (valid && id == md_delete_icmp6_redirect_number) {
-          valid = interface->icmp6_redirect_maximum_configured;
-          if (valid) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (interface->icmp6_redirect_maximum_configured) {
             interface->icmp6_redirect_maximum =
                 device_catalog::icmp6_redirect_default_maximum;
             interface->icmp6_redirect_maximum_configured = false;
           }
         } else if (valid && id == md_delete_icmp6_redirect_seconds) {
-          valid = interface->icmp6_redirect_interval_configured;
-          if (valid) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (interface->icmp6_redirect_interval_configured) {
             interface->icmp6_redirect_interval_seconds =
                 static_cast<std::uint16_t>(
                     device_catalog::icmp6_redirect_default_interval.count());
@@ -16044,21 +16108,21 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               id == md_icmp_redirect_admin_enable;
           interface->icmp_redirect_admin_configured = true;
         } else if (valid && id == md_delete_icmp_redirect_admin) {
-          valid = interface->icmp_redirect_admin_configured;
-          if (valid) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (interface->icmp_redirect_admin_configured) {
             interface->icmp_redirects_enabled = true;
             interface->icmp_redirect_admin_configured = false;
           }
         } else if (valid && id == md_delete_icmp_redirect_number) {
-          valid = interface->icmp_redirect_maximum_configured;
-          if (valid) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (interface->icmp_redirect_maximum_configured) {
             interface->icmp_redirect_maximum =
                 device_catalog::icmp_redirect_default_maximum;
             interface->icmp_redirect_maximum_configured = false;
           }
         } else if (valid && id == md_delete_icmp_redirect_seconds) {
-          valid = interface->icmp_redirect_interval_configured;
-          if (valid) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (interface->icmp_redirect_interval_configured) {
             interface->icmp_redirect_interval_seconds =
                 static_cast<std::uint16_t>(
                     device_catalog::icmp_redirect_default_interval.count());
@@ -16110,8 +16174,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           else if (valid)
             valid = erase_router_advertisement_rdnss(dns.rdnss, *address);
         } else if (id == md_delete_ra_global_rdnss_lifetime) {
-          valid = dns.rdnss_lifetime_configured;
-          if (valid) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (dns.rdnss_lifetime_configured) {
             dns.rdnss_lifetime_seconds = device_catalog::ra_infinite_lifetime;
             dns.rdnss_lifetime_configured = false;
             for (std::size_t index = 0; index < dns.rdnss.count; ++index)
@@ -16283,9 +16347,9 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 : id == md_delete_ra_retransmit_time
                     ? RouterAdvertisementLeaf::retransmit_time
                     : RouterAdvertisementLeaf::router_lifetime;
-            valid =
-                presence_has(updated.router_advertisement_leaf_presence, leaf);
-            if (valid) {
+            // Deleting an absent leaf is the documented silent no-op.
+            if (presence_has(updated.router_advertisement_leaf_presence,
+                             leaf)) {
               if (leaf == RouterAdvertisementLeaf::admin_state)
                 updated.router_advertisement_enabled = false;
               else if (leaf == RouterAdvertisementLeaf::current_hop_limit)
@@ -16488,11 +16552,14 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               config.min_advertisement_interval_seconds = value;
               presence_set(updated.router_advertisement_leaf_presence,
                            RouterAdvertisementLeaf::minimum_interval, true);
-            } else if (valid && id == md_ra_mtu &&
-                       value <= std::numeric_limits<std::uint16_t>::max()) {
-              config.advertised_mtu = static_cast<std::uint16_t>(value);
-              presence_set(updated.router_advertisement_leaf_presence,
-                           RouterAdvertisementLeaf::mtu, true);
+            } else if (valid && id == md_ra_mtu) {
+              valid = value >= device_catalog::ra_minimum_advertised_mtu &&
+                      value <= device_catalog::ra_maximum_advertised_mtu;
+              if (valid) {
+                config.advertised_mtu = static_cast<std::uint16_t>(value);
+                presence_set(updated.router_advertisement_leaf_presence,
+                             RouterAdvertisementLeaf::mtu, true);
+              }
             } else if (valid && id == md_ra_reachable_time) {
               config.reachable_time_milliseconds = value;
               presence_set(updated.router_advertisement_leaf_presence,
@@ -16853,7 +16920,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         valid = valid && valid_mld_candidate(*candidate);
       } else if (id == md_ecmp || id == md_delete_ecmp) {
         if (id == md_delete_ecmp) {
-          valid = candidate->maximum_ecmp_paths != 1U;
+          // Deleting an already-default leaf is the documented silent no-op.
           candidate->maximum_ecmp_paths = 1U;
         } else {
           unsigned paths{};
@@ -16876,7 +16943,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         const auto destination = argument(cli_schema::TokenKind::ipv4_prefix);
         const auto parsed_destination =
             destination ? prefix(*destination) : std::optional<Prefix>{};
-        valid = parsed_destination.has_value();
+        // Static-route destinations must not carry host bits, matching the
+        // single-device parser and the classic reference.
+        valid = parsed_destination.has_value() &&
+                ((parsed_destination->address &
+                  routing::prefix_mask(parsed_destination->length)) ==
+                 parsed_destination->address);
         const bool deleting_prefix = id == md_delete_static_route;
         const bool indirect = id == md_indirect_static_route ||
                               id == md_indirect_static_route_enable ||
@@ -16908,11 +16980,9 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           };
           // MD delete removes the whole prefix subtree regardless of the
           // descendant admin-state leaves. Classic shutdown cascades never
-          // apply to the candidate workflow.
-          valid = std::any_of(candidate->routes.begin(),
-                              candidate->routes.end(), matches);
-          if (valid)
-            std::erase_if(candidate->routes, matches);
+          // apply to the candidate workflow. Deleting an absent prefix is
+          // the documented silent no-op.
+          std::erase_if(candidate->routes, matches);
         } else if (valid && deleting_path) {
           valid = current != candidate->routes.end();
           if (valid)
@@ -17728,10 +17798,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                              : next.ipv6_routes.end();
           // Prefix-only removal is valid only when it identifies one disabled
           // route. ECMP siblings require the qualified child form, preventing
-          // vector order from deciding which path the operator removes.
-          applied = matching == 0U ||
-                    (route_to_remove != next.ipv6_routes.end() &&
-                     !route_to_remove->admin_enabled);
+          // vector order from deciding which path the operator removes. A
+          // classic no form of an absent destination stays rejected.
+          applied = matching != 0U &&
+                    route_to_remove != next.ipv6_routes.end() &&
+                    !route_to_remove->admin_enabled;
           if (applied && route_to_remove != next.ipv6_routes.end())
             next.ipv6_routes.erase(route_to_remove);
         } else if (applied && deleting_path) {
@@ -18192,11 +18263,14 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               config.min_advertisement_interval_seconds = value;
               presence_set(interface->router_advertisement_leaf_presence,
                            RouterAdvertisementLeaf::minimum_interval, true);
-            } else if (applied && id == classic_ra_mtu &&
-                       value <= std::numeric_limits<std::uint16_t>::max()) {
-              config.advertised_mtu = static_cast<std::uint16_t>(value);
-              presence_set(interface->router_advertisement_leaf_presence,
-                           RouterAdvertisementLeaf::mtu, true);
+            } else if (applied && id == classic_ra_mtu) {
+              applied = value >= device_catalog::ra_minimum_advertised_mtu &&
+                        value <= device_catalog::ra_maximum_advertised_mtu;
+              if (applied) {
+                config.advertised_mtu = static_cast<std::uint16_t>(value);
+                presence_set(interface->router_advertisement_leaf_presence,
+                             RouterAdvertisementLeaf::mtu, true);
+              }
             } else if (applied && id == classic_ra_reachable_time) {
               config.reachable_time_milliseconds = value;
               presence_set(interface->router_advertisement_leaf_presence,
@@ -18540,7 +18614,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         const auto destination = argument(cli_schema::TokenKind::ipv4_prefix);
         const auto parsed_destination =
             destination ? prefix(*destination) : std::optional<Prefix>{};
-        applied = parsed_destination.has_value();
+        // Static-route destinations must not carry host bits, matching the
+        // MD-CLI path and the classic reference.
+        applied = parsed_destination.has_value() &&
+                  ((parsed_destination->address &
+                    routing::prefix_mask(parsed_destination->length)) ==
+                   parsed_destination->address);
         const bool deleting_prefix = id == classic_remove_static_route;
         const bool indirect = id == classic_indirect_static_route ||
                               id == classic_indirect_static_route_shutdown ||
@@ -18581,9 +18660,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           // identifies one route. Multiple next hops require enough
           // parameters to select one exact child. Shutdown remains a required
           // dependency and a rejected operation leaves all siblings intact.
-          applied = matching == 0U ||
-                    (route_to_remove != next.routes.end() &&
-                     !route_to_remove->admin_enabled);
+          // A classic no form of an absent destination stays rejected.
+          applied = matching != 0U &&
+                    route_to_remove != next.routes.end() &&
+                    !route_to_remove->admin_enabled;
           if (applied && route_to_remove != next.routes.end())
             next.routes.erase(route_to_remove);
         } else if (applied && deleting_path) {
@@ -18686,8 +18766,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                                ? cli_detail::unquote(*server_text)
                                : std::string_view{}} +
                "'";
-    } else if (id == show_dhcpv6_server_statistics ||
-               id == show_dhcpv6_server_statistics_md) {
+    } else if (id == show_dhcpv6_server_statistics) {
       const auto &stats = server->protocol.statistics;
       // Field names and ordering follow the SR OS 26.7 server-stats example.
       // Unsupported subscriber-management failure classes are not invented;
@@ -20806,7 +20885,9 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         }
         out << '\n'
             << std::left << std::setw(8) << policy.id << std::setw(9)
-            << (policy.ike_version2_configured ? "2" : "-") << std::setw(16)
+            // IKEv2 is the only version this platform represents, so the
+            // effective version is always 2 regardless of explicit selection.
+            << "2" << std::setw(16)
             << authentication_method(policy.peer_authentication)
             << std::setw(18) << (transforms.empty() ? "None" : transforms)
             << policy.ipsec_lifetime_seconds;

@@ -132,7 +132,28 @@ void cli_tests() {
               contains(card_edit, "*[ex:/configure]"),
           "MD card edit was not silent or did not mark the candidate");
   router::execute_cli(state, session, "card 1 mda 1 mda-type me10-10gb-sfp+",
-                      no_ping);
+                       no_ping);
+  // The profile supports me1-100gb-cfp2 alongside the modeled MDA type.
+  // Deleting a card or MDA restores the YANG default enabled admin-state so
+  // a recreated element does not inherit a stale shutdown.
+  router::execute_cli(state, session, "card 1 mda 1 mda-type me1-100gb-cfp2",
+                       no_ping);
+  require(std::string_view{
+              router::profile_mda(state.configuration.candidate).type} ==
+              "me1-100gb-cfp2",
+          "MD MDA provisioning rejected the profile-supported cfp2 type");
+  router::execute_cli(state, session, "card 1 mda 1 admin-state disable",
+                       no_ping);
+  require(!router::profile_mda(state.configuration.candidate).admin_enabled,
+          "MD MDA disable did not stick");
+  router::execute_cli(state, session, "/delete card 1 mda 1", no_ping);
+  require(router::profile_mda(state.configuration.candidate).admin_enabled,
+          "MD MDA delete left a stale disabled admin-state behind");
+  // Restore the fixture MDA; later tests commit this provisioning.
+  router::execute_cli(state, session, "card 1 mda 1 mda-type me10-10gb-sfp+",
+                       no_ping);
+  require(router::profile_mda(state.configuration.candidate).type != nullptr,
+          "MD MDA re-provisioning did not restore the fixture");
   // The 26.7 very-long-description range allows 1 through 255 characters.
   const auto maximum_description = std::string(255, 'x');
   router::execute_cli(state, session,
@@ -596,6 +617,19 @@ void cli_tests() {
   require(contains(classic_slash, "Error: Bad command.") &&
               contains(router::cli_prompt(state, session), ">config>card#"),
           "Classic bare slash left its documented prefix role");
+  // Nokia documents only help globals: a bare help global has no SR OS form
+  // and resolves through the documented unambiguous-prefix abbreviation.
+  const auto help_globals =
+      router::execute_cli(state, session, "help globals", no_ping);
+  require(contains(help_globals, "ping            - Verify the reachability"),
+          "Classic help globals did not expose the documented global commands");
+  const auto help_global_parsed = router::cli_detail::parse_command(
+      router::CliEngine::classic, router::MdCliWorkflow::operational,
+      "help global");
+  require(help_global_parsed &&
+              help_global_parsed->spec->id ==
+                  router::cli_schema::CommandId::help_globals,
+          "help global did not abbreviate to the documented help globals");
 
   // A command prefixed with // runs as an absolute command in the other engine
   // and immediately restores the originating engine and context.

@@ -451,6 +451,20 @@ void ipsec_cli_configuration_tests() {
   edit(classic, CliEngine::classic,
        "configure ipsec trust-anchor-profile classic-roots trust-anchor "
        "root-ca");
+  // Classic create of an existing keyed object is a select, not a rejection.
+  for (const auto [text, message] :
+       {std::pair<std::string_view, const char *>{
+            "configure ipsec cert-profile classic-certificate create",
+            "cert-profile re-create was not a select"},
+        {"configure ipsec cert-profile classic-certificate entry 1 create",
+         "cert entry re-create was not a select"},
+        {"configure ipsec trust-anchor-profile classic-roots create",
+         "trust-profile re-create was not a select"}}) {
+    const auto reselect = router::lab::ipsec_cli::edit(
+        classic, parse(CliEngine::classic, text), CliEngine::classic);
+    require(reselect.recognized && reselect.valid && !reselect.changed,
+            message);
+  }
   edit(classic, CliEngine::classic,
        "configure ipsec ppk-list classic-post-quantum create");
   edit(classic, CliEngine::classic,

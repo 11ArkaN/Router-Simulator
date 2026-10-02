@@ -26,6 +26,15 @@ Status validate(const RouterConfiguration &configuration,
       return Status::invalid_name;
     if (server.description.size() > 80U)
       return Status::invalid_description;
+    // YANG gates the defaults container on auto-provisioned true and pools
+    // on auto-provisioned false.
+    const bool has_defaults = server.default_preferred_lifetime_configured ||
+                              server.default_valid_lifetime_configured ||
+                              server.default_renewal_time_configured ||
+                              server.default_rebinding_time_configured;
+    if ((has_defaults && !server.auto_provisioned) ||
+        (!server.pools.empty() && server.auto_provisioned))
+      return Status::invalid_auto_provisioned;
     if (server.default_preferred_lifetime_seconds >
             server.default_valid_lifetime_seconds ||
         server.default_renewal_time_seconds >

@@ -150,7 +150,7 @@ IesInterfaceConfiguration *md_interface(Configuration &configuration,
   service.interfaces.push_back({.logical_id = *id,
                                 .name = std::string{name},
                                 .ip_mtu = 1500U,
-                                .admin_enabled = false});
+                                .admin_enabled = true});
   return &service.interfaces.back();
 }
 
@@ -337,7 +337,8 @@ parse_interface_address(std::string_view text) noexcept {
     return std::nullopt;
   const auto address = ip::parse_ipv6(text.substr(0U, slash));
   const auto prefix = decimal<std::uint8_t>(text.substr(slash + 1U));
-  if (!address || !prefix || *prefix > 128U)
+  // YANG bounds the service interface prefix length at 4 through 128.
+  if (!address || !prefix || *prefix < 4U || *prefix > 128U)
     return std::nullopt;
   return InterfaceAddress{.address = *address, .prefix_length = *prefix};
 }
@@ -828,7 +829,7 @@ bool edit_impl(Configuration &configuration,
       ies->interfaces.push_back({.logical_id = *logical_id,
                                  .name = std::string{interface_name},
                                  .ip_mtu = 1500U,
-                                 .admin_enabled = false});
+                                 .admin_enabled = true});
       return true;
     }
   }

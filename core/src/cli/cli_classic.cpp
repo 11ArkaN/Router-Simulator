@@ -242,9 +242,11 @@ std::string execute_classic(ConfigurationState &configuration,
         port_index(*argument(command, cli_schema::TokenKind::port_id));
     if (!index)
       return "Error: Bad command.";
-    const bool changed = running.ports[*index].description[0] != '\0';
+    // Classic no of an absent leaf keeps the rejected result.
+    if (running.ports[*index].description[0] == '\0')
+      return "Error: Bad command.";
     running.ports[*index].description = {};
-    return finish(changed, "");
+    return finish(true, "");
   }
   case classic_static_route: {
     const auto route = parse_static_route(

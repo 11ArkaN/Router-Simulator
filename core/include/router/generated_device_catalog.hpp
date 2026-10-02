@@ -38,10 +38,10 @@ struct EthernetSwitchProfile {
 // One release owns this entire generated catalog. Runtime capability output
 // consumes this value instead of repeating the release pin in hand-written C++.
 inline constexpr std::string_view release{"26.7.R1"};
-inline constexpr std::uint64_t catalog_hash = 0x2a8eca5862a45388ULL;
+inline constexpr std::uint64_t catalog_hash = 0xbffa3ca9012399f2ULL;
 inline constexpr std::uint64_t checkpoint_schema_hash = 0x23b42724ffac6c04ULL;
 inline constexpr std::uint64_t runtime_protocol_hash = 0x0bc477cf9500a83bULL;
-inline constexpr std::uint64_t build_hash = 0xc02ea5b5b3ad65fbULL;
+inline constexpr std::uint64_t build_hash = 0x17ac32bdc9f34ae6ULL;
 
 inline constexpr std::size_t maximum_routers = 16;
 inline constexpr std::size_t maximum_sr_routers = 16;
@@ -323,6 +323,10 @@ inline constexpr std::uint32_t ospf_interface_metric_minimum =
     1U;
 inline constexpr std::uint32_t ospf_interface_metric_maximum =
     65535U;
+inline constexpr std::uint32_t ospf_stub_default_metric_minimum =
+    1U;
+inline constexpr std::uint32_t ospf_stub_default_metric_maximum =
+    16777214U;
 inline constexpr std::uint32_t ospf_reference_bandwidth_kbps =
     100000000U;
 inline constexpr std::uint32_t ospf_router_preference =

@@ -530,8 +530,10 @@ EditResult edit(RouterConfiguration &configuration,
   }
   case md_dhcpv4_range_local:
   case md_dhcpv4_range_remote:
+  case md_dhcpv4_range_access_driven:
   case classic_dhcpv4_range_local:
-  case classic_dhcpv4_range_remote: {
+  case classic_dhcpv4_range_remote:
+  case classic_dhcpv4_range_access_driven: {
     const auto first_text = argument_at(command, TokenKind::ipv4, 0U);
     const auto last_text = argument_at(command, TokenKind::ipv4, 1U);
     const auto first = first_text ? ipv4(*first_text) : std::nullopt;
@@ -547,12 +549,17 @@ EditResult edit(RouterConfiguration &configuration,
           id == md_dhcpv4_range_remote ||
                   id == classic_dhcpv4_range_remote
               ? FailoverControlType::remote
-              : FailoverControlType::local;
+              : id == md_dhcpv4_range_access_driven ||
+                      id == classic_dhcpv4_range_access_driven
+                ? FailoverControlType::access_driven
+                : FailoverControlType::local;
       if (existing == subnet->address_ranges.end())
         subnet->address_ranges.push_back(
             {.first = *first, .last = *last, .failover_control = control});
-      else
-        existing->failover_control = control;
+      else if (existing->failover_control != control)
+        // YANG marks failover-control-type immutable: an existing range keeps
+        // its control type and a conflicting reconfiguration is rejected.
+        accepted = false;
     }
     break;
   }

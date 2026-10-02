@@ -506,6 +506,35 @@ void ospf_cli_configuration_tests() {
                CliEngine::md, MdCliWorkflow::explicit_private,
                "configure router \"Base\" ospf 0 area 0 summaries true"),
           "flat area summaries still parses after the stub/nssa move");
+  // YANG bounds stub default-metric at 1 through 16777214, separately from
+  // the interface metric range.
+  edit(areas, CliEngine::md,
+       "configure router \"Base\" ospf 0 area 0 stub default-metric 16777214");
+  require(areas.instances[0].areas[0].default_metric == 16777214U,
+          "stub default-metric rejected the YANG maximum");
+  for (const auto text :
+       {"configure router \"Base\" ospf 0 area 0 stub default-metric 0",
+        "configure router \"Base\" ospf 0 area 0 stub default-metric "
+        "16777215"}) {
+    const auto parsed = router::cli_detail::parse_command(
+        CliEngine::md, MdCliWorkflow::explicit_private, text);
+    require(parsed.has_value(),
+            "stub default-metric out-of-range form did not parse");
+    require(!router::lab::ospf_cli::edit(areas, *parsed, CliEngine::md).valid,
+            "stub default-metric accepted a value outside 1..16777214");
+  }
+  // MD-CLI follows the YANG singular loopfree-alternate container while the
+  // documented classic spelling keeps the plural.
+  require(router::cli_detail::parse_command(
+                 CliEngine::md, MdCliWorkflow::explicit_private,
+                 "configure router \"Base\" ospf 0 loopfree-alternate")
+                 .has_value(),
+          "MD singular loopfree-alternate did not parse");
+  require(!router::cli_detail::parse_command(
+                 CliEngine::md, MdCliWorkflow::explicit_private,
+                 "configure router \"Base\" ospf 0 loopfree-alternates")
+                 .has_value(),
+          "MD plural loopfree-alternates still parses");
 
   // MD interface timer deletes restore release defaults without shutdown.
   router::ospf::RouterConfiguration timers;

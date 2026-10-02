@@ -1610,7 +1610,7 @@ void lab_runtime_tests() {
   require_classic_context_info("configure system security tls",
                                "use-pqc-only false");
   require_classic_context_info("configure ipsec ike-transform 1",
-                               "dh-group group-19");
+                               "dh-group 19");
   require_classic_context_info("configure service ies 900", "service-id 900");
   require_classic_context_info(
       "configure router",
@@ -2654,6 +2654,8 @@ void lab_runtime_tests() {
           "MD could not delete RA leaf: " + std::string{command} +
           " output=" + std::string{result});
   }
+  // Nokia MD-CLI deletes a nonexistent element silently: no warning
+  // messages are displayed, so a repeated delete succeeds without output.
   require(
       runtime
               .command(message(
@@ -2661,8 +2663,8 @@ void lab_runtime_tests() {
                   {"r1-console-1",
                    "delete router \"Base\" ipv6 router-advertisement interface "
                    "edge current-hop-limit"}))
-              .find("MGMT_CORE #2301") != std::string_view::npos,
-      "MD accepted deletion of an absent RA leaf");
+              .find("MGMT_CORE #2301") == std::string_view::npos,
+      "MD delete of an absent RA leaf was not silent");
   require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1",
                                    "router \"Base\" ipv6 router-advertisement "
@@ -4279,10 +4281,10 @@ void lab_runtime_tests() {
   // Exercise both through classic CLI and inspect the exact configuration
   // projection before any packet-level test relies on the resolved program.
   for (const auto command :
-       {"configure router mld ssm-translate grp-range start ff3e::300 end "
+       {"configure router mld ssm-translate grp-range ff3e::300 "
         "ff3e::30f source 2001:db8:1::300",
-        "configure router mld interface edge ssm-translate grp-range start "
-        "ff3e::300 end ff3e::30f source 2001:db8:1::301"}) {
+        "configure router mld interface edge ssm-translate grp-range "
+        "ff3e::300 ff3e::30f source 2001:db8:1::301"}) {
     const std::string result{runtime.command(message(
         lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
     if (result.find("Error:") != std::string::npos)
@@ -4435,9 +4437,9 @@ void lab_runtime_tests() {
                     .find("Error:") == std::string_view::npos,
             "classic static MLD removal did not update live configuration");
   for (const auto command :
-       {"configure router mld interface edge ssm-translate grp-range start "
-        "ff3e::300 end ff3e::30f no source 2001:db8:1::301",
-        "configure router mld ssm-translate no grp-range start ff3e::300 end "
+       {"configure router mld interface edge ssm-translate grp-range "
+        "ff3e::300 ff3e::30f no source 2001:db8:1::301",
+        "configure router mld ssm-translate no grp-range ff3e::300 "
         "ff3e::30f"})
     require(runtime.command(message(lab_runtime_protocol::session_execute,
                                     {"r1-console-1", command}))
@@ -4925,6 +4927,8 @@ void lab_runtime_tests() {
         "delete service customer customer-1",
         "delete service ies ghost",
         "delete ipsec ike-transform 99",
+        "delete router \"Base\" ecmp",
+        "delete router \"Base\" interface missing-edge port",
         "delete policy-options policy-statement MISSING entry 10 action metric",
         "delete policy-options policy-statement MISSING entry 10",
         "delete policy-options policy-statement MISSING",
@@ -5100,25 +5104,31 @@ void lab_runtime_tests() {
         "; ssm=" + std::string{restored_ssm} +
         "; snapshot=" + std::string{restored_snapshot});
   // The restored exclusive candidate and the restored running intent are two
-  // separate portable graphs. Delete the explicit defaulted leaves once from
-  // each graph. A successful second delete would prove that checkpoint import
-  // collapsed presence into an effective scalar or accepted a no-op.
+  // separate portable graphs. Presence must survive the checkpoint round
+  // trip: info renders the configured 777, the first delete removes it, and
+  // a repeated delete is the documented MD silent no-op.
   const auto delete_redirect_number =
       "delete router \"Base\" interface checkpoint-edge ipv6 icmp6 "
       "redirects number";
+  const auto info_before = restored.command(message(
+      lab_runtime_protocol::session_execute, {"r1-console-1", "info"}));
   require(
-      restored.command(message(lab_runtime_protocol::session_execute,
-                               {"r1-console-1", delete_redirect_number}))
-                  .find("MINOR:") == std::string_view::npos &&
-          restored.command(message(lab_runtime_protocol::session_execute,
-                                   {"r1-console-1", delete_redirect_number}))
-                  .find("MINOR:") != std::string_view::npos &&
-          restored.command(message(lab_runtime_protocol::session_execute,
-                                   {"r1-console-1", "discard"}))
-                  .find("MINOR:") == std::string_view::npos &&
-          restored.command(message(lab_runtime_protocol::session_execute,
-                                   {"r1-console-1", delete_redirect_number}))
-                  .find("MINOR:") == std::string_view::npos,
+      info_before.find("number 777") != std::string_view::npos &&
+              restored.command(message(lab_runtime_protocol::session_execute,
+                                       {"r1-console-1", delete_redirect_number}))
+                      .find("MINOR:") == std::string_view::npos &&
+              restored.command(message(lab_runtime_protocol::session_execute,
+                                       {"r1-console-1", "info"}))
+                      .find("number 777") == std::string_view::npos &&
+              restored.command(message(lab_runtime_protocol::session_execute,
+                                       {"r1-console-1", delete_redirect_number}))
+                      .find("MINOR:") == std::string_view::npos &&
+              restored.command(message(lab_runtime_protocol::session_execute,
+                                       {"r1-console-1", "discard"}))
+                      .find("MINOR:") == std::string_view::npos &&
+              restored.command(message(lab_runtime_protocol::session_execute,
+                                       {"r1-console-1", delete_redirect_number}))
+                      .find("MINOR:") == std::string_view::npos,
       "checkpoint lost ICMPv6 Redirect leaf presence in candidate or running "
       "intent");
   require(!restored

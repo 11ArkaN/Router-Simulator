@@ -8538,7 +8538,7 @@ bool dhcpv4_router_configuration(
           if (!ipv4(in, range.first) || !ipv4(in, range.last) ||
               !in.integer(range.failover_control) ||
               range.failover_control >
-                  dhcpv4::configuration::FailoverControlType::remote)
+                  dhcpv4::configuration::FailoverControlType::access_driven)
             return false;
         if (!count(in, excluded_count,
                    device_catalog::dhcpv4_leases_per_server))
@@ -8629,6 +8629,8 @@ void dhcpv6_router_configuration(
     out.boolean(server.rapid_commit_configured);
     out.boolean(server.lease_query_configured);
     out.boolean(server.admin_state_configured);
+    out.boolean(server.auto_provisioned);
+    out.boolean(server.auto_provisioned_configured);
     count(out, server.pools);
     for (const auto &pool : server.pools) {
       out.string(pool.name);
@@ -8702,6 +8704,8 @@ bool dhcpv6_router_configuration(
         !in.boolean(server.rapid_commit_configured) ||
         !in.boolean(server.lease_query_configured) ||
         !in.boolean(server.admin_state_configured) ||
+        !in.boolean(server.auto_provisioned) ||
+        !in.boolean(server.auto_provisioned_configured) ||
         !count(in, pool_count,
                device_catalog::dhcpv6_address_pools_per_server +
                    device_catalog::dhcpv6_prefix_pools_per_server))

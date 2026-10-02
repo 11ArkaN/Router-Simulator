@@ -828,20 +828,25 @@ parse_static_route(std::string_view prefix_text, std::string_view next_text) {
 
 bool install_static(DeviceConfiguration &configuration,
                     ParsedStaticRoute route) {
-  // Replace an existing prefix in place or consume the first free bounded slot.
+  // A destination with several next hops is an ECMP set: an identical path
+  // is an idempotent no-op that preserves its administrative state, while a
+  // new next hop consumes a free bounded slot instead of replacing a sibling.
   // False reports real capacity exhaustion and never drops another route.
   auto slot = std::find_if(configuration.static_routes.begin(),
                            configuration.static_routes.end(),
                            [route](const auto &item) {
                              return item.valid &&
                                     item.network == route.network &&
-                                    item.prefix_length == route.prefix;
+                                    item.prefix_length == route.prefix &&
+                                    item.next_hop == route.next_hop;
                            });
-  if (slot == configuration.static_routes.end()) {
-    slot = std::find_if(configuration.static_routes.begin(),
-                        configuration.static_routes.end(),
-                        [](const auto &item) { return !item.valid; });
-  }
+  // Re-entering an identical path is an idempotent no-op that preserves its
+  // administrative state, matching the multi-router candidate behavior.
+  if (slot != configuration.static_routes.end())
+    return true;
+  slot = std::find_if(configuration.static_routes.begin(),
+                      configuration.static_routes.end(),
+                      [](const auto &item) { return !item.valid; });
   if (slot == configuration.static_routes.end())
     return false;
   *slot = {.valid = true,
@@ -1196,7 +1201,6 @@ bool global_action(cli_schema::CommandId id, CliEngine engine) noexcept {
   case switch_engine:
   case help:
   case help_edit:
-  case help_global:
   case help_globals:
   case help_special_characters:
   case navigate_back:
@@ -1279,7 +1283,7 @@ std::string classic_help(cli_schema::CommandId id) {
            "Enter command and return to root prompt.......Ctrl-z\n"
            "Refresh input line...........................Ctrl-l";
   }
-  if (id == help_global || id == help_globals) {
+  if (id == help_globals) {
     return "back            - Go back a level in the command tree\n"
            "exit            - Exit to intermediate mode - use option all to "
            "exit to root prompt\n"
@@ -1966,7 +1970,6 @@ std::string execute_cli(DeviceState &state, CliSession &session,
     output = cli_detail::entry_message(session.md_workflow);
   } else if (command->spec->id == cli_schema::CommandId::help ||
              command->spec->id == cli_schema::CommandId::help_edit ||
-             command->spec->id == cli_schema::CommandId::help_global ||
              command->spec->id == cli_schema::CommandId::help_globals ||
              command->spec->id ==
                  cli_schema::CommandId::help_special_characters) {

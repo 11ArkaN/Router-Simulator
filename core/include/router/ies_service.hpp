@@ -131,7 +131,9 @@ struct IesInterfaceConfiguration {
   std::uint8_t prefix_length{};
   std::uint16_t ip_mtu{1500U};
   bool address_configured{};
-  bool admin_enabled{};
+  // YANG defaults the interface admin-state leaf to enable, so a freshly
+  // created interface is administratively up until explicitly disabled.
+  bool admin_enabled{true};
   Dhcpv6RelayConfiguration dhcpv6_relay{};
 
   [[nodiscard]] friend bool

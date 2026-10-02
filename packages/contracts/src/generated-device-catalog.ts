@@ -449,6 +449,8 @@ export const PROFILE_CATALOG = {
     "ospf_interface_priority": 1,
     "ospf_interface_metric_minimum": 1,
     "ospf_interface_metric_maximum": 65535,
+    "ospf_stub_default_metric_minimum": 1,
+    "ospf_stub_default_metric_maximum": 16777214,
     "ospf_reference_bandwidth_kbps": 100000000,
     "ospf_router_preference": 10,
     "ospf_external_preference": 150,
@@ -1167,5 +1169,5 @@ export const PROFILE_CATALOG_COMPILED = {
   "maximumMdaSlotsPerCard": 2,
   "maximumPortsPerMda": 40
 } as const;
-export const PROFILE_CATALOG_HASH = "2a8eca5862a45388" as const;
-export const LAB_BUILD_HASH = "c02ea5b5b3ad65fb" as const;
+export const PROFILE_CATALOG_HASH = "bffa3ca9012399f2" as const;
+export const LAB_BUILD_HASH = "17ac32bdc9f34ae6" as const;

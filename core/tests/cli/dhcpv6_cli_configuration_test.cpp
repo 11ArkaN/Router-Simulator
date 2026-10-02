@@ -64,6 +64,11 @@ void dhcpv6_cli_configuration_tests() {
   edit(md, md_entropy, CliEngine::md,
        "configure router \"Base\" dhcp-server dhcpv6 access description "
        "\"IPv6 access server\"");
+  // YANG gates the defaults container on auto-provisioned true while pools
+  // require false, so defaults and pools live on separate servers.
+  edit(md, md_entropy, CliEngine::md,
+       "configure router \"Base\" dhcp-server dhcpv6 access auto-provisioned "
+       "true");
   edit(md, md_entropy, CliEngine::md,
        "configure router \"Base\" dhcp-server dhcpv6 access defaults "
        "preferred-lifetime 7200");
@@ -77,21 +82,26 @@ void dhcpv6_cli_configuration_tests() {
        "configure router \"Base\" dhcp-server dhcpv6 access defaults "
        "rebind-time 3000");
   edit(md, md_entropy, CliEngine::md,
-       "configure router \"Base\" dhcp-server dhcpv6 access pool users "
+       "configure router \"Base\" dhcp-server dhcpv6 pooled description "
+       "\"IPv6 pooled server\"");
+  edit(md, md_entropy, CliEngine::md,
+       "configure router \"Base\" dhcp-server dhcpv6 pooled pool users "
        "prefix 2001:db8:100::/56 drain false");
   // MD-CLI records an explicitly configured false leaf while classic CLI
   // suppresses default-valued leaves in `info`. Deleting the MD leaf proves
   // that both command sequences converge on the same canonical presence
   // semantics, not merely the same effective boolean value.
   edit(md, md_entropy, CliEngine::md,
-       "delete router \"Base\" dhcp-server dhcpv6 access pool users "
+       "delete router \"Base\" dhcp-server dhcpv6 pooled pool users "
        "prefix 2001:db8:100::/56 drain");
 
-  require(md.servers.size() == 1U &&
+  require(md.servers.size() == 2U &&
               md.servers.front().duid_octets == 18U &&
-              md.servers.front().pools.front().prefixes.front()
+              md.servers.front().auto_provisioned &&
+              md.servers.front().auto_provisioned_configured &&
+              md.servers.back().pools.front().prefixes.front()
                       .allocation_scope_id != 0U &&
-              md_entropy.calls == 2U,
+              md_entropy.calls == 3U,
           "DHCPv6 list creation did not generate stable identities exactly once");
   require(router::dhcpv6::configuration::validate(md, false) ==
               router::dhcpv6::configuration::Status::valid,
@@ -134,6 +144,8 @@ void dhcpv6_cli_configuration_tests() {
        "configure router dhcp6 local-dhcp-server access description "
        "\"IPv6 access server\"");
   edit(classic, classic_entropy, CliEngine::classic,
+       "configure router dhcp6 local-dhcp-server access auto-provisioned");
+  edit(classic, classic_entropy, CliEngine::classic,
        "configure router dhcp6 local-dhcp-server access defaults "
        "preferred-lifetime hrs 2");
   edit(classic, classic_entropy, CliEngine::classic,
@@ -146,7 +158,10 @@ void dhcpv6_cli_configuration_tests() {
        "configure router dhcp6 local-dhcp-server access defaults "
        "rebind-timer min 50");
   edit(classic, classic_entropy, CliEngine::classic,
-       "configure router dhcp6 local-dhcp-server access pool users prefix "
+       "configure router dhcp6 local-dhcp-server pooled description "
+       "\"IPv6 pooled server\"");
+  edit(classic, classic_entropy, CliEngine::classic,
+       "configure router dhcp6 local-dhcp-server pooled pool users prefix "
        "2001:db8:100::/56");
 
   require(classic == md,
@@ -207,4 +222,67 @@ void dhcpv6_cli_configuration_tests() {
   require(no_renew_result.recognized && no_renew_result.valid &&
               classic.servers.front().default_renewal_time_seconds == 1800U,
           "classic no renew-timer did not restore the documented default");
+
+  // YANG gates defaults on auto-provisioned true and pools on false, and
+  // marks both auto-provisioned and prefix-type immutable after create.
+  auto fenced = md;
+  const auto default_on_manual = parse(
+      CliEngine::md,
+      "configure router \"Base\" dhcp-server dhcpv6 pooled defaults "
+      "preferred-lifetime 7200");
+  require(!router::lab::dhcpv6_cli::edit(fenced, default_on_manual,
+                                         CliEngine::md, &md_entropy)
+               .valid &&
+              fenced == md,
+          "defaults were accepted on a non-auto-provisioned server");
+  const auto pool_on_auto = parse(
+      CliEngine::md,
+      "configure router \"Base\" dhcp-server dhcpv6 access pool others "
+      "description \"forbidden pool\"");
+  require(!router::lab::dhcpv6_cli::edit(fenced, pool_on_auto, CliEngine::md,
+                                         &md_entropy)
+               .valid &&
+              fenced == md,
+          "pool was accepted on an auto-provisioned server");
+  const auto flip_mode = parse(
+      CliEngine::md,
+      "configure router \"Base\" dhcp-server dhcpv6 access auto-provisioned "
+      "false");
+  require(!router::lab::dhcpv6_cli::edit(fenced, flip_mode, CliEngine::md,
+                                         &md_entropy)
+               .valid &&
+              fenced == md,
+          "immutable auto-provisioned was flipped after create");
+  const auto drop_mode = parse(
+      CliEngine::md,
+      "delete router \"Base\" dhcp-server dhcpv6 access auto-provisioned");
+  require(!router::lab::dhcpv6_cli::edit(fenced, drop_mode, CliEngine::md,
+                                         &md_entropy)
+               .valid &&
+              fenced == md,
+          "immutable auto-provisioned was deleted after create");
+  edit(fenced, md_entropy, CliEngine::md,
+       "configure router \"Base\" dhcp-server dhcpv6 pooled pool others "
+       "prefix 2001:db8:200::/56 prefix-type pd true");
+  const auto mutate_type = parse(
+      CliEngine::md,
+      "configure router \"Base\" dhcp-server dhcpv6 pooled pool others "
+      "prefix 2001:db8:200::/56 prefix-type pd false");
+  require(!router::lab::dhcpv6_cli::edit(fenced, mutate_type, CliEngine::md,
+                                         &md_entropy)
+               .valid &&
+              fenced.servers.back().pools.back().prefixes.back()
+                      .delegated_prefix,
+          "immutable prefix-type was mutated after create");
+  const auto drop_type = parse(
+      CliEngine::md,
+      "delete router \"Base\" dhcp-server dhcpv6 pooled pool others "
+      "prefix 2001:db8:200::/56 prefix-type pd");
+  require(!router::lab::dhcpv6_cli::edit(fenced, drop_type, CliEngine::md,
+                                         &md_entropy)
+               .valid,
+          "immutable prefix-type was deleted after create");
+  edit(fenced, md_entropy, CliEngine::classic,
+       "configure router dhcp6 local-dhcp-server pooled pool others prefix "
+       "2001:db8:201::/56 create");
 }

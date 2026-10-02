@@ -141,8 +141,15 @@ void ies_cli_configuration_tests() {
   edit(classic, CliEngine::classic, hardware,
        "configure service ies 100 interface subscriber ipv6 dhcp6-relay "
        "no shutdown");
-  edit(classic, CliEngine::classic, hardware,
-       "configure service ies 100 interface subscriber no shutdown");
+  // YANG defaults the interface admin-state leaf to enable, so no shutdown
+  // on a fresh interface is a valid idempotent no-op.
+  const auto already_up = router::lab::ies_cli::edit(
+      classic,
+      parse(CliEngine::classic,
+            "configure service ies 100 interface subscriber no shutdown"),
+      CliEngine::classic, hardware, "edge-a");
+  require(already_up.recognized && already_up.valid && !already_up.changed,
+          "classic no shutdown of an enabled interface was not a no-op");
   edit(classic, CliEngine::classic, hardware,
        "configure service ies 100 no shutdown");
   require(router::service::validate(classic) == ValidationError::none,
@@ -203,8 +210,17 @@ void ies_cli_configuration_tests() {
        "2001:db8:200::1 prefix-length 64");
   edit(md, CliEngine::md, hardware,
        "configure service ies internet interface uplink sap 1/1/2");
-  edit(md, CliEngine::md, hardware,
-       "configure service ies internet interface uplink admin-state enable");
+  // YANG defaults the interface admin-state leaf to enable, so enabling a
+  // fresh interface is a valid idempotent no-op.
+  const auto md_already_up = router::lab::ies_cli::edit(
+      md,
+      parse(CliEngine::md,
+            "configure service ies internet interface uplink admin-state "
+            "enable"),
+      CliEngine::md, hardware, "edge-a");
+  require(md_already_up.recognized && md_already_up.valid &&
+              !md_already_up.changed,
+          "MD admin-state enable of an enabled interface was not a no-op");
   edit(md, CliEngine::md, hardware,
        "configure service ies internet admin-state enable");
   require(router::service::validate(md) == ValidationError::none,
@@ -402,6 +418,8 @@ void ies_cli_configuration_tests() {
   // interface keeps the rejected result.
   edit(customers, CliEngine::md, hardware,
        "configure service ies internet interface uplink description tag");
+  edit(customers, CliEngine::md, hardware,
+       "configure service ies internet interface uplink admin-state disable");
   const auto before_sap = customers;
   const auto absent_sap = router::lab::ies_cli::edit(
       customers,
