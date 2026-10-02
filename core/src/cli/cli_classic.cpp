@@ -242,9 +242,11 @@ std::string execute_classic(ConfigurationState &configuration,
         port_index(*argument(command, cli_schema::TokenKind::port_id));
     if (!index)
       return "Error: Bad command.";
-    const bool changed = running.ports[*index].description[0] != '\0';
+    // Classic no of an absent leaf keeps the rejected result.
+    if (running.ports[*index].description[0] == '\0')
+      return "Error: Bad command.";
     running.ports[*index].description = {};
-    return finish(changed, "");
+    return finish(true, "");
   }
   case classic_static_route: {
     const auto route = parse_static_route(
@@ -316,10 +318,10 @@ std::string execute_classic(ConfigurationState &configuration,
     // the prefix identifies it unambiguously and the no form removes the
     // disabled route directly. The multi-router owner additionally rejects an
     // unqualified prefix when several next-hop children exist.
-    if (current != running.static_routes.end() && current->admin_enabled)
+    // A classic no form on an absent element is a rejected command, never
+    // a successful no-op, and an enabled route must be shut down first.
+    if (current == running.static_routes.end() || current->admin_enabled)
       return "Error: Bad command.";
-    if (current == running.static_routes.end())
-      return finish(false, "");
     *current = {};
     return finish(true, "");
   }

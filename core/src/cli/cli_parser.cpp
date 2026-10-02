@@ -305,6 +305,8 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
       return bounded_name(value, service::maximum_relay_interface_id_octets);
     case ethernet_mode:
       return value == "access" || value == "network" || value == "hybrid";
+    case classic_ethernet_mode:
+      return value == "network" || value == "hybrid";
     case ethernet_encapsulation:
       return value == "null" || value == "dot1q" || value == "qinq";
     case policy_name:
@@ -315,14 +317,27 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
     case policy_action:
       return value == "accept" || value == "drop" || value == "reject" ||
              value == "next-entry" || value == "next-policy";
+    case md_policy_action:
+      // The MD-CLI/YANG action-type enumeration has no drop value. Classic
+      // keeps drop, so the shared runtime mapping stays untouched.
+      return value == "accept" || value == "reject" ||
+             value == "next-entry" || value == "next-policy";
+    case policy_action_metric:
+      // A route-policy action metric spans the full unsigned 32-bit range in
+      // both engines, unlike the 1 through 65535 OSPF interface metric.
+      return decimal_text(value);
+    case ipv6_primary_preference:
+    case ipv6_address_tag:
+      // SR OS rejects the value 0 for both leaves in either engine.
+      return decimal_text(value) && value != "0";
+    case prefix_list_type:
+      return value == "exact" || value == "longer" || value == "through" ||
+             value == "range" || value == "to" || value == "address-mask";
     case sap_id:
       // Exact coordinate, VLAN and live inventory checks belong to the IES
       // editor because the release grammar alone cannot resolve a port.
       return !value.empty() && value.size() <= 45U;
     case prefix_length:
-    case ipv6_prefix_length:
-    case ipv6_primary_preference:
-    case ipv6_address_tag:
     case customer_id:
     case service_id:
     case relay_lease_limit:
@@ -368,6 +383,20 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
     case history_ike_records:
     case bof_timeout_seconds:
       return decimal_text(value);
+    case ipv6_prefix_length: {
+      if (!decimal_text(value))
+        return false;
+      unsigned length{};
+      for (const auto byte : value)
+        length = length * 10U + static_cast<unsigned>(byte - '0');
+      return length >= 4U && length <= ip::ipv6_address_bits;
+    }
+    case classic_ospf_interface_type:
+      return value == "point-to-point" || value == "broadcast" ||
+             value == "non-broadcast" || value == "p2mp-nbma";
+    case md_ospf_interface_type:
+      return value == "point-to-point" || value == "broadcast" ||
+             value == "non-broadcast" || value == "p2mp-nbma";
     case bof_client_id: {
       // The BOF model accepts either a quoted character string or an opaque
       // hexadecimal spelling. Family-specific limits differ, so the grammar
@@ -412,12 +441,12 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
       const auto file = scalar_text(value);
       return !file.empty() &&
              file.size() <= device_catalog::tls_certificate_file_name_bytes &&
-             file.find_first_of(":/") == std::string_view::npos;
+             file.find_first_of(":/\\") == std::string_view::npos;
     }
     case pki_file_name: {
       const auto file = scalar_text(value);
       return !file.empty() && file.size() <= 95U &&
-             file.find_first_of(":/") == std::string_view::npos;
+             file.find_first_of(":/\\") == std::string_view::npos;
     }
     case tls_cert_profile_name:
     case tls_trust_anchor_profile_name:
@@ -470,14 +499,42 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
              value == "held" || value == "internal" ||
              value == "internal-orphan" || value == "internal-offered" ||
              value == "internal-held" || value == "sticky";
+    case dhcpv4_clear_lease_state:
+      // The documented classic clear state set omits internal-offered.
+      return value == "offered" || value == "stable" ||
+             value == "force-renew-pending" || value == "remove-pending" ||
+             value == "held" || value == "internal" ||
+             value == "internal-orphan" || value == "internal-held" ||
+             value == "sticky";
     case dhcpv6_lease_state:
       return value == "advertised" || value == "stable" ||
              value == "remove-pending" || value == "held" ||
              value == "internal" || value == "internal-orphan" ||
              value == "internal-offered" || value == "internal-held";
+    case dhcpv6_show_lease_state:
+      return value == "advertised" || value == "remove-pending" ||
+             value == "held";
+    case dhcpv6_clear_lease_state:
+      return value == "advertised" || value == "remove-pending" ||
+             value == "held" || value == "internal" ||
+             value == "internal-orphan" || value == "internal-offered";
     case dhcpv6_lease_type:
       return value == "pd" || value == "slaac" || value == "wan" ||
              value == "wan-host";
+    case dhcpv6_show_lease_type:
+      return value == "pd" || value == "wan-host";
+    case dhcpv6_clear_lease_type:
+      return value == "pd" || value == "slaac" || value == "wan-host";
+    case dhcpv6_reset_lease_type:
+      return value == "pd" || value == "slaac" || value == "wan";
+    case dhcp_time_days:
+    case dhcp_time_hours:
+    case dhcp_time_minutes:
+    case dhcp_time_seconds:
+      // Classic CLI time components are plain non-negative integers. The
+      // owning editor sums the present components with an overflow guard and
+      // enforces the per-command total, so the grammar accepts any decimal.
+      return decimal_text(value);
     case ppk_ascii_value:
     case ipsec_pre_shared_key: {
       // SR OS encrypted-leaf text may be clear input or an opaque protected
@@ -644,6 +701,7 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case service_interface_name:
   case sap_id:
   case ethernet_mode:
+  case classic_ethernet_mode:
   case ethernet_encapsulation:
   case ipv6_prefix_length:
   case relay_interface_id_string:
@@ -674,10 +732,20 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case dhcp_offer_seconds:
   case dhcp_maximum_declined:
   case dhcp_lease_state:
+  case dhcpv4_clear_lease_state:
   case dhcpv6_lease_state:
+  case dhcpv6_show_lease_state:
+  case dhcpv6_clear_lease_state:
   case dhcpv6_lease_type:
+  case dhcpv6_show_lease_type:
+  case dhcpv6_clear_lease_type:
+  case dhcpv6_reset_lease_type:
   case dhcpv6_lifetime_seconds:
   case dhcpv6_timer_seconds:
+  case dhcp_time_days:
+  case dhcp_time_hours:
+  case dhcp_time_minutes:
+  case dhcp_time_seconds:
   case dhcpv6_delegated_length:
   case dhcp_remote_id_ascii:
   case bof_client_id:
@@ -692,8 +760,12 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case mld_limit:
   case policy_name:
   case prefix_list_name:
+  case prefix_list_type:
+  case tls_timer_minutes:
   case policy_entry_number:
   case policy_action:
+  case md_policy_action:
+  case policy_action_metric:
   case redirect_number:
   case redirect_seconds:
   case ike_policy_id:
@@ -745,6 +817,7 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case ospf_preference:
   case ospf_authentication_key:
   case ospf_key_id:
+  case ospf_md5_key_id:
   case ospf_keychain_name:
   case ospf_keychain_time:
   case ospf_tolerance:
@@ -784,12 +857,17 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
     add_candidate(items, std::string{token.display}, false, false, partial,
                   token.description, context);
     break;
-  case ospf_interface_type:
-    // The network type is a closed SR OS enumeration. Supplying the four real
-    // values makes Tab and question-mark help useful without teaching the
-    // parser any command path or runtime behavior.
+  case classic_ospf_interface_type:
+    // Classic CLI documents only the broadcast, point-to-point and
+    // non-broadcast network types. MD-CLI uses the YANG p2mp-nbma spelling
+    // for the same network type.
+    for (const auto value : {"point-to-point", "broadcast", "non-broadcast"})
+      add_candidate(items, value, true, false, partial, token.description,
+                    context);
+    break;
+  case md_ospf_interface_type:
     for (const auto value : {"point-to-point", "broadcast", "non-broadcast",
-                             "point-to-multipoint"})
+                             "p2mp-nbma"})
       add_candidate(items, value, true, false, partial, token.description,
                     context);
     break;
@@ -1351,6 +1429,28 @@ std::string parent_command_prefix(const CliSession &session,
       return canonical_command_prefix(session, candidate);
   }
   return {};
+}
+
+std::string context_command_path(const cli_schema::CommandSpec &spec,
+                                 std::string_view effective) {
+  const auto line = tokenize(trim_view(effective), false);
+  if (!line.valid || line.count == 0)
+    return {};
+  std::uint8_t count = spec.context_token_count;
+  if (count == 0) {
+    count = line.count;
+    if (line.tokens[count - 1U] == "create")
+      --count;
+  }
+  if (count == 0 || count > line.count)
+    return {};
+  std::string path;
+  for (std::uint8_t index = 0; index < count; ++index) {
+    if (!path.empty())
+      path += ' ';
+    path += line.tokens[index];
+  }
+  return path;
 }
 
 } // namespace router::cli_detail

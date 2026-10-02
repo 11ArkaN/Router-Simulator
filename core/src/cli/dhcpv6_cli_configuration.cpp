@@ -134,7 +134,7 @@ Pool *pool_by_name(Server &server, std::string_view name) noexcept {
 Pool *ensure_pool(Server &server, std::string_view name) {
   if (auto *existing = pool_by_name(server, name))
     return existing;
-  if (name.empty() || name.size() > 32U ||
+  if (name.empty() || name.size() > device_catalog::dhcpv6_pool_name_bytes ||
       server.pools.size() >=
           device_catalog::dhcpv6_address_pools_per_server +
               device_catalog::dhcpv6_prefix_pools_per_server)
@@ -220,8 +220,8 @@ bool is_md_command(CommandId id) noexcept {
 
 bool is_classic_command(CommandId id) noexcept {
   using enum CommandId;
-  return id >= classic_dhcpv6_server_shutdown &&
-         id <= classic_dhcpv6_prefix_no_rebind_time;
+  return id >= classic_dhcpv6_server_remove &&
+         id <= classic_dhcpv6_prefix_no_rebind_timer;
 }
 
 EditResult edit(RouterConfiguration &configuration,
@@ -244,25 +244,40 @@ EditResult edit(RouterConfiguration &configuration,
     return {.recognized = true};
 
   auto next = configuration;
+  // Documented MD-CLI delete never creates configuration: absent elements
+  // resolve without materializing their ancestors and stay a silent no-op.
+  const bool md_removal = engine == CliEngine::md && command.spec &&
+                          cli_detail::removal_command(*command.spec);
   auto *server = server_by_name(next, *server_name);
-  if (!server && !deletes_server(id))
+  if (!server && !deletes_server(id) && !md_removal)
     server = ensure_server(next, *server_name, entropy);
-  if (!server)
+  if (!server && !md_removal)
     return {.recognized = true};
 
-  auto *pool =
-      pool_name ? pool_by_name(*server, *pool_name) : nullptr;
-  if (pool_name && !pool && !deletes_pool(id))
+  auto *pool = pool_name && server ? pool_by_name(*server, *pool_name)
+                                   : nullptr;
+  if (pool_name && !pool && !deletes_pool(id) && !md_removal)
     pool = ensure_pool(*server, *pool_name);
-  if (pool_name && !pool)
+  if (pool_name && !pool && !md_removal)
     return {.recognized = true};
 
-  auto *prefix =
-      pool && prefix_key ? prefix_by_key(*pool, *prefix_key) : nullptr;
-  if (pool && prefix_key && !prefix && !deletes_prefix(id))
+  auto *prefix = pool && prefix_key ? prefix_by_key(*pool, *prefix_key)
+                                    : nullptr;
+  bool prefix_created = false;
+  if (pool && prefix_key && !prefix && !deletes_prefix(id) && !md_removal) {
     prefix = ensure_prefix(*server, *pool, *prefix_key, entropy);
-  if (prefix_key && !prefix)
+    prefix_created = prefix != nullptr;
+  }
+  if (prefix_key && !prefix && !md_removal)
     return {.recognized = true};
+  if (md_removal && (!server || (pool_name && !pool) ||
+                     (prefix_key && !prefix)))
+    return {.recognized = true,
+            .valid = true,
+            .changed = false,
+            .instance = instance_path(
+                *server_name, pool_name ? *pool_name : std::string_view{},
+                prefix_text ? *prefix_text : std::string_view{})};
 
   bool accepted = true;
   const auto set_lifetime = [&](TokenKind kind, std::uint32_t minimum,
@@ -276,16 +291,42 @@ EditResult edit(RouterConfiguration &configuration,
     target = *value;
     return true;
   };
+  // Classic CLI expresses lifetimes as [days d] [hrs h] [min m] [sec s]
+  // keyword groups. Every non-empty subset is a generated row, so the editor
+  // only sums whichever components are present before enforcing the same
+  // per-command total as the bare MD-CLI form.
+  const auto keyword_lifetime = [&](std::uint32_t minimum,
+                                    std::uint32_t maximum,
+                                    std::uint32_t &target) {
+    const auto add_component = [&](TokenKind kind, std::uint64_t factor,
+                                   std::uint64_t &total) {
+      const auto text = argument_at(command, kind);
+      if (!text)
+        return true;
+      const auto value = decimal<std::uint64_t>(*text);
+      if (!value)
+        return false;
+      total += *value * factor;
+      return total <= 0xFFFFFFFFULL;
+    };
+    std::uint64_t total{};
+    if (!add_component(TokenKind::dhcp_time_days, 86400ULL, total) ||
+        !add_component(TokenKind::dhcp_time_hours, 3600ULL, total) ||
+        !add_component(TokenKind::dhcp_time_minutes, 60ULL, total) ||
+        !add_component(TokenKind::dhcp_time_seconds, 1ULL, total) ||
+        total < minimum || total > maximum)
+      return false;
+    target = static_cast<std::uint32_t>(total);
+    return true;
+  };
 
   using enum CommandId;
   switch (id) {
   case md_dhcpv6_server_enable:
-  case classic_dhcpv6_server_no_shutdown:
     server->admin_enabled = true;
     server->admin_state_configured = true;
     break;
   case md_dhcpv6_server_disable:
-  case classic_dhcpv6_server_shutdown:
     server->admin_enabled = false;
     server->admin_state_configured = true;
     break;
@@ -333,38 +374,153 @@ EditResult edit(RouterConfiguration &configuration,
     server->lease_query = false;
     server->lease_query_configured = false;
     break;
+  case md_dhcpv6_server_auto_provisioned: {
+    bool value{};
+    accepted = server && boolean(command, value);
+    if (accepted) {
+      // YANG marks auto-provisioned immutable: an existing server keeps its
+      // mode and a conflicting reconfiguration is rejected.
+      if (server->auto_provisioned_configured &&
+          server->auto_provisioned != value)
+        accepted = false;
+      else {
+        server->auto_provisioned = value;
+        server->auto_provisioned_configured = true;
+      }
+    }
+    break;
+  }
+  case md_delete_dhcpv6_server_auto_provisioned:
+    // YANG marks auto-provisioned immutable: only an untouched default is
+    // the silent no-op, while deleting a configured value is rejected.
+    accepted = server && !server->auto_provisioned_configured;
+    break;
+  case classic_dhcpv6_server_auto_provisioned:
+    accepted = server != nullptr &&
+               (!server->auto_provisioned_configured ||
+                server->auto_provisioned);
+    if (accepted) {
+      server->auto_provisioned = true;
+      server->auto_provisioned_configured = true;
+    }
+    break;
+  case classic_dhcpv6_server_no_auto_provisioned:
+    accepted = server != nullptr && !server->auto_provisioned_configured;
+    break;
   case md_delete_dhcpv6_server:
   case classic_dhcpv6_server_remove:
-    next.servers.erase(
-        std::ranges::find(next.servers, *server_name, &Server::name));
+    // The documented classic no form carries no shutdown precondition. An
+    // absent server is an explicit error in classic while documented MD
+    // delete stays silent. Absent servers already return above without
+    // materializing state.
+    accepted = server != nullptr || id == md_delete_dhcpv6_server;
+    if (accepted && server != nullptr)
+      next.servers.erase(
+          std::ranges::find(next.servers, *server_name, &Server::name));
     break;
   case md_dhcpv6_default_preferred_lifetime:
-  case classic_dhcpv6_default_preferred_lifetime:
     accepted = set_lifetime(TokenKind::dhcpv6_lifetime_seconds, 300U,
                             315446399U,
                             server->default_preferred_lifetime_seconds);
     if (accepted)
       server->default_preferred_lifetime_configured = true;
     break;
+  case classic_dhcpv6_default_preferred_lifetime_days:
+  case classic_dhcpv6_default_preferred_lifetime_hours:
+  case classic_dhcpv6_default_preferred_lifetime_days_hours:
+  case classic_dhcpv6_default_preferred_lifetime_minutes:
+  case classic_dhcpv6_default_preferred_lifetime_days_minutes:
+  case classic_dhcpv6_default_preferred_lifetime_hours_minutes:
+  case classic_dhcpv6_default_preferred_lifetime_days_hours_minutes:
+  case classic_dhcpv6_default_preferred_lifetime_seconds:
+  case classic_dhcpv6_default_preferred_lifetime_days_seconds:
+  case classic_dhcpv6_default_preferred_lifetime_hours_seconds:
+  case classic_dhcpv6_default_preferred_lifetime_days_hours_seconds:
+  case classic_dhcpv6_default_preferred_lifetime_minutes_seconds:
+  case classic_dhcpv6_default_preferred_lifetime_days_minutes_seconds:
+  case classic_dhcpv6_default_preferred_lifetime_hours_minutes_seconds:
+  case classic_dhcpv6_default_preferred_lifetime_days_hours_minutes_seconds:
+    accepted = keyword_lifetime(300U, 315446399U,
+                                server->default_preferred_lifetime_seconds);
+    if (accepted)
+      server->default_preferred_lifetime_configured = true;
+    break;
   case md_dhcpv6_default_valid_lifetime:
-  case classic_dhcpv6_default_valid_lifetime:
     accepted = set_lifetime(TokenKind::dhcpv6_lifetime_seconds, 300U,
                             315446399U,
                             server->default_valid_lifetime_seconds);
     if (accepted)
       server->default_valid_lifetime_configured = true;
     break;
+  case classic_dhcpv6_default_valid_lifetime_days:
+  case classic_dhcpv6_default_valid_lifetime_hours:
+  case classic_dhcpv6_default_valid_lifetime_days_hours:
+  case classic_dhcpv6_default_valid_lifetime_minutes:
+  case classic_dhcpv6_default_valid_lifetime_days_minutes:
+  case classic_dhcpv6_default_valid_lifetime_hours_minutes:
+  case classic_dhcpv6_default_valid_lifetime_days_hours_minutes:
+  case classic_dhcpv6_default_valid_lifetime_seconds:
+  case classic_dhcpv6_default_valid_lifetime_days_seconds:
+  case classic_dhcpv6_default_valid_lifetime_hours_seconds:
+  case classic_dhcpv6_default_valid_lifetime_days_hours_seconds:
+  case classic_dhcpv6_default_valid_lifetime_minutes_seconds:
+  case classic_dhcpv6_default_valid_lifetime_days_minutes_seconds:
+  case classic_dhcpv6_default_valid_lifetime_hours_minutes_seconds:
+  case classic_dhcpv6_default_valid_lifetime_days_hours_minutes_seconds:
+    accepted = keyword_lifetime(300U, 315446399U,
+                                server->default_valid_lifetime_seconds);
+    if (accepted)
+      server->default_valid_lifetime_configured = true;
+    break;
   case md_dhcpv6_default_renew_time:
-  case classic_dhcpv6_default_renew_time:
     accepted = set_lifetime(TokenKind::dhcpv6_timer_seconds, 0U, 604800U,
                             server->default_renewal_time_seconds);
     if (accepted)
       server->default_renewal_time_configured = true;
     break;
+  case classic_dhcpv6_default_renew_timer_days:
+  case classic_dhcpv6_default_renew_timer_hours:
+  case classic_dhcpv6_default_renew_timer_days_hours:
+  case classic_dhcpv6_default_renew_timer_minutes:
+  case classic_dhcpv6_default_renew_timer_days_minutes:
+  case classic_dhcpv6_default_renew_timer_hours_minutes:
+  case classic_dhcpv6_default_renew_timer_days_hours_minutes:
+  case classic_dhcpv6_default_renew_timer_seconds:
+  case classic_dhcpv6_default_renew_timer_days_seconds:
+  case classic_dhcpv6_default_renew_timer_hours_seconds:
+  case classic_dhcpv6_default_renew_timer_days_hours_seconds:
+  case classic_dhcpv6_default_renew_timer_minutes_seconds:
+  case classic_dhcpv6_default_renew_timer_days_minutes_seconds:
+  case classic_dhcpv6_default_renew_timer_hours_minutes_seconds:
+  case classic_dhcpv6_default_renew_timer_days_hours_minutes_seconds:
+    accepted = keyword_lifetime(0U, 604800U,
+                                server->default_renewal_time_seconds);
+    if (accepted)
+      server->default_renewal_time_configured = true;
+    break;
   case md_dhcpv6_default_rebind_time:
-  case classic_dhcpv6_default_rebind_time:
     accepted = set_lifetime(TokenKind::dhcpv6_timer_seconds, 0U, 1209600U,
                             server->default_rebinding_time_seconds);
+    if (accepted)
+      server->default_rebinding_time_configured = true;
+    break;
+  case classic_dhcpv6_default_rebind_timer_days:
+  case classic_dhcpv6_default_rebind_timer_hours:
+  case classic_dhcpv6_default_rebind_timer_days_hours:
+  case classic_dhcpv6_default_rebind_timer_minutes:
+  case classic_dhcpv6_default_rebind_timer_days_minutes:
+  case classic_dhcpv6_default_rebind_timer_hours_minutes:
+  case classic_dhcpv6_default_rebind_timer_days_hours_minutes:
+  case classic_dhcpv6_default_rebind_timer_seconds:
+  case classic_dhcpv6_default_rebind_timer_days_seconds:
+  case classic_dhcpv6_default_rebind_timer_hours_seconds:
+  case classic_dhcpv6_default_rebind_timer_days_hours_seconds:
+  case classic_dhcpv6_default_rebind_timer_minutes_seconds:
+  case classic_dhcpv6_default_rebind_timer_days_minutes_seconds:
+  case classic_dhcpv6_default_rebind_timer_hours_minutes_seconds:
+  case classic_dhcpv6_default_rebind_timer_days_hours_minutes_seconds:
+    accepted = keyword_lifetime(0U, 1209600U,
+                                server->default_rebinding_time_seconds);
     if (accepted)
       server->default_rebinding_time_configured = true;
     break;
@@ -379,12 +535,12 @@ EditResult edit(RouterConfiguration &configuration,
     server->default_valid_lifetime_configured = false;
     break;
   case md_delete_dhcpv6_default_renew_time:
-  case classic_dhcpv6_default_no_renew_time:
+  case classic_dhcpv6_default_no_renew_timer:
     server->default_renewal_time_seconds = 1800U;
     server->default_renewal_time_configured = false;
     break;
   case md_delete_dhcpv6_default_rebind_time:
-  case classic_dhcpv6_default_no_rebind_time:
+  case classic_dhcpv6_default_no_rebind_timer:
     server->default_rebinding_time_seconds = 2880U;
     server->default_rebinding_time_configured = false;
     break;
@@ -406,13 +562,13 @@ EditResult edit(RouterConfiguration &configuration,
   case classic_dhcpv6_pool_remove: {
     const auto found =
         std::ranges::find(server->pools, *pool_name, &Pool::name);
-    accepted = found != server->pools.end();
-    if (accepted)
+    accepted =
+        found != server->pools.end() || id == md_delete_dhcpv6_pool;
+    if (accepted && found != server->pools.end())
       server->pools.erase(found);
     break;
   }
-  case md_dhcpv6_pool_delegated_length:
-  case classic_dhcpv6_pool_delegated_length: {
+  case md_dhcpv6_pool_delegated_length: {
     const auto text =
         argument_at(command, TokenKind::dhcpv6_delegated_length);
     const auto value =
@@ -448,27 +604,46 @@ EditResult edit(RouterConfiguration &configuration,
       pool->maximum_delegated_length_configured = true;
     break;
   }
-  case classic_dhcpv6_pool_delegated_range: {
-    const auto length_text =
-        argument_at(command, TokenKind::dhcpv6_delegated_length, 0U);
+  case classic_dhcpv6_pool_delegated_minimum: {
+    // Classic delegated-prefix-length carries no primary value: minimum and
+    // maximum are optional keywords with the same 48..127 contract as MD.
+    const auto text =
+        argument_at(command, TokenKind::dhcpv6_delegated_length);
+    const auto value =
+        text ? decimal<std::uint8_t>(*text) : std::nullopt;
+    accepted = pool && value && *value >= 48U && *value <= 127U;
+    if (accepted)
+      pool->minimum_delegated_length = *value;
+    if (accepted)
+      pool->minimum_delegated_length_configured = true;
+    break;
+  }
+  case classic_dhcpv6_pool_delegated_maximum: {
+    const auto text =
+        argument_at(command, TokenKind::dhcpv6_delegated_length);
+    const auto value =
+        text ? decimal<std::uint8_t>(*text) : std::nullopt;
+    accepted = pool && value && *value >= 48U && *value <= 127U;
+    if (accepted)
+      pool->maximum_delegated_length = *value;
+    if (accepted)
+      pool->maximum_delegated_length_configured = true;
+    break;
+  }
+  case classic_dhcpv6_pool_delegated_minimum_maximum: {
     const auto minimum_text =
-        argument_at(command, TokenKind::dhcpv6_delegated_length, 1U);
+        argument_at(command, TokenKind::dhcpv6_delegated_length, 0U);
     const auto maximum_text =
-        argument_at(command, TokenKind::dhcpv6_delegated_length, 2U);
-    const auto length =
-        length_text ? decimal<std::uint8_t>(*length_text) : std::nullopt;
+        argument_at(command, TokenKind::dhcpv6_delegated_length, 1U);
     const auto minimum =
         minimum_text ? decimal<std::uint8_t>(*minimum_text) : std::nullopt;
     const auto maximum =
         maximum_text ? decimal<std::uint8_t>(*maximum_text) : std::nullopt;
-    accepted = pool && length && minimum && maximum &&
-               *minimum >= 48U && *maximum <= 127U &&
-               *minimum <= *length && *length <= *maximum;
+    accepted = pool && minimum && maximum && *minimum >= 48U &&
+               *maximum <= 127U && *minimum <= *maximum;
     if (accepted) {
-      pool->delegated_length = *length;
       pool->minimum_delegated_length = *minimum;
       pool->maximum_delegated_length = *maximum;
-      pool->delegated_length_configured = true;
       pool->minimum_delegated_length_configured = true;
       pool->maximum_delegated_length_configured = true;
     }
@@ -495,68 +670,122 @@ EditResult edit(RouterConfiguration &configuration,
     pool->maximum_delegated_length_configured = false;
     break;
   case classic_dhcpv6_prefix_default:
+  case classic_dhcpv6_prefix_default_create:
+    // Bare prefix ensures existence; creation defaults already apply.
+    accepted = prefix != nullptr;
+    break;
   case classic_dhcpv6_prefix_both:
-    prefix->delegated_prefix = true;
-    prefix->wan_host = true;
-    prefix->delegated_prefix_configured =
-        id == classic_dhcpv6_prefix_both;
-    prefix->wan_host_configured = id == classic_dhcpv6_prefix_both;
+  case classic_dhcpv6_prefix_both_create:
+    // YANG marks prefix-type immutable: an existing prefix keeps its type
+    // and a conflicting reconfiguration is rejected.
+    accepted = prefix != nullptr &&
+               (prefix_created || (prefix->delegated_prefix &&
+                                   prefix->wan_host));
+    if (accepted) {
+      prefix->delegated_prefix = true;
+      prefix->wan_host = true;
+      prefix->delegated_prefix_configured = true;
+      prefix->wan_host_configured = true;
+    }
     break;
   case classic_dhcpv6_prefix_pd:
-    prefix->delegated_prefix = true;
-    prefix->wan_host = false;
-    prefix->delegated_prefix_configured = true;
-    prefix->wan_host_configured = true;
+  case classic_dhcpv6_prefix_pd_create:
+    // YANG marks prefix-type immutable: an existing prefix keeps its type
+    // and a conflicting reconfiguration is rejected.
+    accepted = prefix != nullptr &&
+               (prefix_created || (prefix->delegated_prefix &&
+                                   !prefix->wan_host));
+    if (accepted) {
+      prefix->delegated_prefix = true;
+      prefix->wan_host = false;
+      prefix->delegated_prefix_configured = true;
+      prefix->wan_host_configured = true;
+    }
     break;
   case classic_dhcpv6_prefix_wan_host:
-    prefix->delegated_prefix = false;
-    prefix->wan_host = true;
-    prefix->delegated_prefix_configured = true;
-    prefix->wan_host_configured = true;
-    break;
-  case md_dhcpv6_prefix_pd:
-    accepted = prefix && boolean(command, prefix->delegated_prefix);
-    if (accepted)
+  case classic_dhcpv6_prefix_wan_host_create:
+    // YANG marks prefix-type immutable: an existing prefix keeps its type
+    // and a conflicting reconfiguration is rejected.
+    accepted = prefix != nullptr &&
+               (prefix_created || (!prefix->delegated_prefix &&
+                                   prefix->wan_host));
+    if (accepted) {
+      prefix->delegated_prefix = false;
+      prefix->wan_host = true;
       prefix->delegated_prefix_configured = true;
-    break;
-  case md_dhcpv6_prefix_wan_host:
-    accepted = prefix && boolean(command, prefix->wan_host);
-    if (accepted)
       prefix->wan_host_configured = true;
+    }
     break;
+  case md_dhcpv6_prefix_pd: {
+    bool value{};
+    accepted = prefix && boolean(command, value);
+    if (accepted) {
+      // YANG marks prefix-type immutable: an existing prefix keeps its type
+      // and a conflicting reconfiguration is rejected.
+      if (!prefix_created && prefix->delegated_prefix != value)
+        accepted = false;
+      else {
+        prefix->delegated_prefix = value;
+        prefix->delegated_prefix_configured = true;
+      }
+    }
+    break;
+  }
+  case md_dhcpv6_prefix_wan_host: {
+    bool value{};
+    accepted = prefix && boolean(command, value);
+    if (accepted) {
+      // YANG marks prefix-type immutable: an existing prefix keeps its type
+      // and a conflicting reconfiguration is rejected.
+      if (!prefix_created && prefix->wan_host != value)
+        accepted = false;
+      else {
+        prefix->wan_host = value;
+        prefix->wan_host_configured = true;
+      }
+    }
+    break;
+  }
   case md_dhcpv6_prefix_drain:
     accepted = prefix && boolean(command, prefix->drain);
     if (accepted)
       prefix->drain_configured = true;
     break;
-  case classic_dhcpv6_prefix_drain:
-    prefix->drain = true;
-    prefix->drain_configured = true;
-    break;
   case md_delete_dhcpv6_prefix_drain:
-  case classic_dhcpv6_prefix_no_drain:
     prefix->drain = false;
     prefix->drain_configured = false;
     break;
   case md_delete_dhcpv6_prefix_pd:
-    prefix->delegated_prefix = true;
-    prefix->delegated_prefix_configured = false;
+    // YANG marks prefix-type immutable: only an untouched default is the
+    // silent no-op, while deleting an explicitly configured value is
+    // rejected instead of mutating it back.
+    accepted = prefix && !prefix->delegated_prefix_configured;
+    if (accepted) {
+      prefix->delegated_prefix = true;
+      prefix->delegated_prefix_configured = false;
+    }
     break;
   case md_delete_dhcpv6_prefix_wan_host:
-    prefix->wan_host = true;
-    prefix->wan_host_configured = false;
+    // YANG marks prefix-type immutable: only an untouched default is the
+    // silent no-op, while deleting an explicitly configured value is
+    // rejected instead of mutating it back.
+    accepted = prefix && !prefix->wan_host_configured;
+    if (accepted) {
+      prefix->wan_host = true;
+      prefix->wan_host_configured = false;
+    }
     break;
   case md_delete_dhcpv6_prefix:
   case classic_dhcpv6_prefix_remove: {
     const auto found =
         std::ranges::find(pool->prefixes, *prefix_key, &Prefix::aggregate);
-    accepted = found != pool->prefixes.end();
-    if (accepted)
+    accepted =
+        found != pool->prefixes.end() || id == md_delete_dhcpv6_prefix;
+    if (accepted && found != pool->prefixes.end())
       pool->prefixes.erase(found);
     break;
   }
   case md_dhcpv6_prefix_preferred_lifetime:
-  case classic_dhcpv6_prefix_preferred_lifetime:
     accepted = prefix &&
                set_lifetime(TokenKind::dhcpv6_lifetime_seconds, 300U,
                             315446399U,
@@ -564,49 +793,131 @@ EditResult edit(RouterConfiguration &configuration,
     if (accepted)
       prefix->preferred_lifetime_configured = true;
     break;
+  case classic_dhcpv6_prefix_preferred_lifetime_days:
+  case classic_dhcpv6_prefix_preferred_lifetime_hours:
+  case classic_dhcpv6_prefix_preferred_lifetime_days_hours:
+  case classic_dhcpv6_prefix_preferred_lifetime_minutes:
+  case classic_dhcpv6_prefix_preferred_lifetime_days_minutes:
+  case classic_dhcpv6_prefix_preferred_lifetime_hours_minutes:
+  case classic_dhcpv6_prefix_preferred_lifetime_days_hours_minutes:
+  case classic_dhcpv6_prefix_preferred_lifetime_seconds:
+  case classic_dhcpv6_prefix_preferred_lifetime_days_seconds:
+  case classic_dhcpv6_prefix_preferred_lifetime_hours_seconds:
+  case classic_dhcpv6_prefix_preferred_lifetime_days_hours_seconds:
+  case classic_dhcpv6_prefix_preferred_lifetime_minutes_seconds:
+  case classic_dhcpv6_prefix_preferred_lifetime_days_minutes_seconds:
+  case classic_dhcpv6_prefix_preferred_lifetime_hours_minutes_seconds:
+  case classic_dhcpv6_prefix_preferred_lifetime_days_hours_minutes_seconds:
+    accepted = prefix &&
+               keyword_lifetime(300U, 315446399U,
+                                prefix->preferred_lifetime_seconds);
+    if (accepted)
+      prefix->preferred_lifetime_configured = true;
+    break;
   case md_dhcpv6_prefix_valid_lifetime:
-  case classic_dhcpv6_prefix_valid_lifetime:
     accepted = prefix &&
                set_lifetime(TokenKind::dhcpv6_lifetime_seconds, 300U,
                             315446399U, prefix->valid_lifetime_seconds);
     if (accepted)
       prefix->valid_lifetime_configured = true;
     break;
+  case classic_dhcpv6_prefix_valid_lifetime_days:
+  case classic_dhcpv6_prefix_valid_lifetime_hours:
+  case classic_dhcpv6_prefix_valid_lifetime_days_hours:
+  case classic_dhcpv6_prefix_valid_lifetime_minutes:
+  case classic_dhcpv6_prefix_valid_lifetime_days_minutes:
+  case classic_dhcpv6_prefix_valid_lifetime_hours_minutes:
+  case classic_dhcpv6_prefix_valid_lifetime_days_hours_minutes:
+  case classic_dhcpv6_prefix_valid_lifetime_seconds:
+  case classic_dhcpv6_prefix_valid_lifetime_days_seconds:
+  case classic_dhcpv6_prefix_valid_lifetime_hours_seconds:
+  case classic_dhcpv6_prefix_valid_lifetime_days_hours_seconds:
+  case classic_dhcpv6_prefix_valid_lifetime_minutes_seconds:
+  case classic_dhcpv6_prefix_valid_lifetime_days_minutes_seconds:
+  case classic_dhcpv6_prefix_valid_lifetime_hours_minutes_seconds:
+  case classic_dhcpv6_prefix_valid_lifetime_days_hours_minutes_seconds:
+    accepted = prefix &&
+               keyword_lifetime(300U, 315446399U,
+                                prefix->valid_lifetime_seconds);
+    if (accepted)
+      prefix->valid_lifetime_configured = true;
+    break;
   case md_dhcpv6_prefix_renew_time:
-  case classic_dhcpv6_prefix_renew_time:
     accepted = prefix &&
                set_lifetime(TokenKind::dhcpv6_timer_seconds, 0U, 604800U,
                             prefix->renewal_time_seconds);
     if (accepted)
       prefix->renewal_time_configured = true;
     break;
+  case classic_dhcpv6_prefix_renew_timer_days:
+  case classic_dhcpv6_prefix_renew_timer_hours:
+  case classic_dhcpv6_prefix_renew_timer_days_hours:
+  case classic_dhcpv6_prefix_renew_timer_minutes:
+  case classic_dhcpv6_prefix_renew_timer_days_minutes:
+  case classic_dhcpv6_prefix_renew_timer_hours_minutes:
+  case classic_dhcpv6_prefix_renew_timer_days_hours_minutes:
+  case classic_dhcpv6_prefix_renew_timer_seconds:
+  case classic_dhcpv6_prefix_renew_timer_days_seconds:
+  case classic_dhcpv6_prefix_renew_timer_hours_seconds:
+  case classic_dhcpv6_prefix_renew_timer_days_hours_seconds:
+  case classic_dhcpv6_prefix_renew_timer_minutes_seconds:
+  case classic_dhcpv6_prefix_renew_timer_days_minutes_seconds:
+  case classic_dhcpv6_prefix_renew_timer_hours_minutes_seconds:
+  case classic_dhcpv6_prefix_renew_timer_days_hours_minutes_seconds:
+    accepted = prefix &&
+               keyword_lifetime(0U, 604800U, prefix->renewal_time_seconds);
+    if (accepted)
+      prefix->renewal_time_configured = true;
+    break;
   case md_dhcpv6_prefix_rebind_time:
-  case classic_dhcpv6_prefix_rebind_time:
     accepted = prefix &&
                set_lifetime(TokenKind::dhcpv6_timer_seconds, 0U, 1209600U,
                             prefix->rebinding_time_seconds);
     if (accepted)
       prefix->rebinding_time_configured = true;
     break;
+  case classic_dhcpv6_prefix_rebind_timer_days:
+  case classic_dhcpv6_prefix_rebind_timer_hours:
+  case classic_dhcpv6_prefix_rebind_timer_days_hours:
+  case classic_dhcpv6_prefix_rebind_timer_minutes:
+  case classic_dhcpv6_prefix_rebind_timer_days_minutes:
+  case classic_dhcpv6_prefix_rebind_timer_hours_minutes:
+  case classic_dhcpv6_prefix_rebind_timer_days_hours_minutes:
+  case classic_dhcpv6_prefix_rebind_timer_seconds:
+  case classic_dhcpv6_prefix_rebind_timer_days_seconds:
+  case classic_dhcpv6_prefix_rebind_timer_hours_seconds:
+  case classic_dhcpv6_prefix_rebind_timer_days_hours_seconds:
+  case classic_dhcpv6_prefix_rebind_timer_minutes_seconds:
+  case classic_dhcpv6_prefix_rebind_timer_days_minutes_seconds:
+  case classic_dhcpv6_prefix_rebind_timer_hours_minutes_seconds:
+  case classic_dhcpv6_prefix_rebind_timer_days_hours_minutes_seconds:
+    accepted = prefix &&
+               keyword_lifetime(0U, 1209600U, prefix->rebinding_time_seconds);
+    if (accepted)
+      prefix->rebinding_time_configured = true;
+    break;
   case md_delete_dhcpv6_prefix_preferred_lifetime:
   case classic_dhcpv6_prefix_no_preferred_lifetime:
+    // The pool prefix leaves carry fixed YANG defaults (3600, 86400, 1800
+    // and 2880 seconds). The delete and no forms restore those defaults;
+    // they do not fall back to the server level defaults.
     prefix->preferred_lifetime_configured = false;
-    prefix->preferred_lifetime_seconds = 0U;
+    prefix->preferred_lifetime_seconds = 3600U;
     break;
   case md_delete_dhcpv6_prefix_valid_lifetime:
   case classic_dhcpv6_prefix_no_valid_lifetime:
     prefix->valid_lifetime_configured = false;
-    prefix->valid_lifetime_seconds = 0U;
+    prefix->valid_lifetime_seconds = 86400U;
     break;
   case md_delete_dhcpv6_prefix_renew_time:
-  case classic_dhcpv6_prefix_no_renew_time:
+  case classic_dhcpv6_prefix_no_renew_timer:
     prefix->renewal_time_configured = false;
-    prefix->renewal_time_seconds = 0U;
+    prefix->renewal_time_seconds = 1800U;
     break;
   case md_delete_dhcpv6_prefix_rebind_time:
-  case classic_dhcpv6_prefix_no_rebind_time:
+  case classic_dhcpv6_prefix_no_rebind_timer:
     prefix->rebinding_time_configured = false;
-    prefix->rebinding_time_seconds = 0U;
+    prefix->rebinding_time_seconds = 2880U;
     break;
   default:
     return {.recognized = true};

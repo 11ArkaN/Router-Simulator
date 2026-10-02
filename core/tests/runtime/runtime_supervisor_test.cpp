@@ -1057,7 +1057,8 @@ void runtime_supervisor_tests() {
   require(checkpoint_policy_prefix.has_value(),
           "classic policy checkpoint fixture prefix was invalid");
   classic_policy_candidate.mld_prefix_lists.push_back(
-      {.name = "CLASSIC-CHECKPOINT", .prefixes = {*checkpoint_policy_prefix}});
+      {.name = "CLASSIC-CHECKPOINT",
+       .prefixes = {{.prefix = *checkpoint_policy_prefix}}});
   classic_policy_candidate.mld_import_policies.push_back(
       {.name = "CLASSIC-CHECKPOINT-POLICY",
        .entries = {{.number = 10U,

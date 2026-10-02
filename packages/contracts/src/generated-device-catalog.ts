@@ -322,11 +322,6 @@ export const PROFILE_CATALOG = {
         "sros": "tls-aes128-ccm-sha256",
         "openssl": "TLS_AES_128_CCM_SHA256",
         "pqc": false
-      },
-      {
-        "sros": "tls-aes128-ccm8-sha256",
-        "openssl": "TLS_AES_128_CCM_8_SHA256",
-        "pqc": false
       }
     ],
     "tls13_groups": [
@@ -362,21 +357,6 @@ export const PROFILE_CATALOG = {
       }
     ],
     "tls13_signatures": [
-      {
-        "sros": "tls-rsa-pkcs1-sha256",
-        "openssl": "rsa_pkcs1_sha256",
-        "pqc": false
-      },
-      {
-        "sros": "tls-rsa-pkcs1-sha384",
-        "openssl": "rsa_pkcs1_sha384",
-        "pqc": false
-      },
-      {
-        "sros": "tls-rsa-pkcs1-sha512",
-        "openssl": "rsa_pkcs1_sha512",
-        "pqc": false
-      },
       {
         "sros": "tls-ecdsa-secp256r1-sha256",
         "openssl": "ecdsa_secp256r1_sha256",
@@ -441,6 +421,8 @@ export const PROFILE_CATALOG = {
   },
   "protocol_defaults": {
     "dhcpv4_server_name_bytes": 32,
+    "dhcpv4_pool_name_bytes": 32,
+    "dhcpv6_pool_name_bytes": 32,
     "dhcpv4_description_bytes": 80,
     "dhcpv4_lease_time_minimum_seconds": 10,
     "dhcpv4_lease_time_maximum_seconds": 315446399,
@@ -467,6 +449,8 @@ export const PROFILE_CATALOG = {
     "ospf_interface_priority": 1,
     "ospf_interface_metric_minimum": 1,
     "ospf_interface_metric_maximum": 65535,
+    "ospf_stub_default_metric_minimum": 1,
+    "ospf_stub_default_metric_maximum": 16777214,
     "ospf_reference_bandwidth_kbps": 100000000,
     "ospf_router_preference": 10,
     "ospf_external_preference": 150,
@@ -1185,5 +1169,5 @@ export const PROFILE_CATALOG_COMPILED = {
   "maximumMdaSlotsPerCard": 2,
   "maximumPortsPerMda": 40
 } as const;
-export const PROFILE_CATALOG_HASH = "7e766c2229de2671" as const;
-export const LAB_BUILD_HASH = "163a9553ac87d134" as const;
+export const PROFILE_CATALOG_HASH = "bffa3ca9012399f2" as const;
+export const LAB_BUILD_HASH = "17ac32bdc9f34ae6" as const;

@@ -53,7 +53,9 @@ ParsedCommand parse(CliEngine engine, std::string_view text) {
       engine, engine == CliEngine::md ? MdCliWorkflow::explicit_private
                                       : MdCliWorkflow::operational,
       text);
-  require(command.has_value(), "generated IPsec command did not parse");
+  if (!command.has_value())
+    throw std::runtime_error("generated IPsec command did not parse: " +
+                             std::string{text});
   return *command;
 }
 
@@ -65,9 +67,10 @@ void edit(Configuration &state, CliEngine engine, std::string_view text,
   if (!result.recognized || !result.changed)
     throw std::runtime_error("parsed IPsec command did not change: " +
                              std::string{text});
-  require(router::ipsec::configuration::validate(
-              state, engine == CliEngine::md),
-          "IPsec command produced invalid canonical configuration");
+  if (!router::ipsec::configuration::validate(state, engine == CliEngine::md))
+    throw std::runtime_error("IPsec command produced invalid canonical "
+                             "configuration: " +
+                             std::string{text});
 }
 
 } // namespace
@@ -339,13 +342,34 @@ void ipsec_cli_configuration_tests() {
        "delete ipsec ts-list protected-v6 local entry 2 protocol id icmp6 "
        "port-range end-icmp-code");
   require(!state.traffic_selector_lists[0]
-               .local[1]
-               .end_icmp_code_configured &&
-              validate(state, true) && !validate(state),
+                .local[1]
+                .end_icmp_code_configured &&
+               validate(state, true) && !validate(state),
           "MD leaf deletion did not retain an incomplete private candidate");
+  // YANG bounds every ICMP type and code leaf at 0 through 255.
+  const auto icmp_big = parse(
+      CliEngine::md,
+      "configure ipsec ts-list protected-v6 local entry 2 protocol id icmp6 "
+      "port-range begin-icmp-type 300");
+  const auto icmp_big_result =
+      router::lab::ipsec_cli::edit(state, icmp_big, CliEngine::md);
+  require(icmp_big_result.recognized && !icmp_big_result.valid,
+          "ICMP type above 255 was not rejected");
   edit(state, CliEngine::md,
        "configure ipsec ts-list protected-v6 local entry 2 protocol id icmp6 "
        "port-range end-icmp-code 255");
+  // YANG bounds certificate profile entries at 1 through 8.
+  edit(state, CliEngine::md,
+       "configure ipsec cert-profile router-certificate entry 8 cert "
+       "router-h.crt");
+  const auto entry_big = parse(
+      CliEngine::md,
+      "configure ipsec cert-profile router-certificate entry 9 cert "
+      "router-i.crt");
+  const auto entry_big_result =
+      router::lab::ipsec_cli::edit(state, entry_big, CliEngine::md);
+  require(entry_big_result.recognized && !entry_big_result.valid,
+          "certificate entry above 8 was not rejected");
 
   const auto before = state;
   const auto invalid_reference = parse(
@@ -359,8 +383,8 @@ void ipsec_cli_configuration_tests() {
       parse(CliEngine::md, "delete ipsec ike-transform 19");
   const auto protected_result = router::lab::ipsec_cli::edit(
       state, delete_referenced, CliEngine::md);
-  require(protected_result.recognized && !protected_result.changed &&
-              find_ike(state, 19U),
+  require(protected_result.recognized && !protected_result.valid &&
+              !protected_result.changed && find_ike(state, 19U),
           "referenced IKE transform was deleted");
 
   Configuration classic;
@@ -368,13 +392,13 @@ void ipsec_cli_configuration_tests() {
   edit(classic, CliEngine::classic,
        "configure ipsec ike-transform 1 create");
   edit(classic, CliEngine::classic,
-       "configure ipsec ike-transform 1 dh-group group-19");
+       "configure ipsec ike-transform 1 dh-group 19");
   edit(classic, CliEngine::classic,
        "configure ipsec ike-transform 1 ike-prf-algorithm sha256");
   edit(classic, CliEngine::classic,
        "configure ipsec ike-transform 2 create");
   edit(classic, CliEngine::classic,
-       "configure ipsec ike-transform 2 dh-group group-19");
+       "configure ipsec ike-transform 2 dh-group 19");
   edit(classic, CliEngine::classic,
        "configure ipsec ike-transform 2 ike-prf-algorithm sha256");
   edit(classic, CliEngine::classic,
@@ -399,6 +423,15 @@ void ipsec_cli_configuration_tests() {
   edit(classic, CliEngine::classic,
        "configure ipsec ike-policy 1 nat-traversal force "
        "keep-alive-interval 180 force-keep-alive");
+  // YANG defaults force-keep-alive to true: omitting the flag keeps the
+  // default instead of storing false.
+  edit(classic, CliEngine::classic, "configure ipsec ike-policy 9 create");
+  edit(classic, CliEngine::classic,
+       "configure ipsec ike-policy 9 nat-traversal");
+  require(find_policy(classic, 9U)->nat_force_keepalive &&
+              !find_policy(classic, 9U)->nat_force_keepalive_configured &&
+              !find_policy(classic, 9U)->nat_force,
+          "bare classic nat-traversal did not keep the default keepalive");
   require(find_policy(classic, 1U)->ike_transforms ==
               std::vector<std::uint16_t>{2U},
           "classic IKE transform command appended instead of replacing");
@@ -448,6 +481,20 @@ void ipsec_cli_configuration_tests() {
   edit(classic, CliEngine::classic,
        "configure ipsec trust-anchor-profile classic-roots trust-anchor "
        "root-ca");
+  // Classic create of an existing keyed object is a select, not a rejection.
+  for (const auto [text, message] :
+       {std::pair<std::string_view, const char *>{
+            "configure ipsec cert-profile classic-certificate create",
+            "cert-profile re-create was not a select"},
+        {"configure ipsec cert-profile classic-certificate entry 1 create",
+         "cert entry re-create was not a select"},
+        {"configure ipsec trust-anchor-profile classic-roots create",
+         "trust-profile re-create was not a select"}}) {
+    const auto reselect = router::lab::ipsec_cli::edit(
+        classic, parse(CliEngine::classic, text), CliEngine::classic);
+    require(reselect.recognized && reselect.valid && !reselect.changed,
+            message);
+  }
   edit(classic, CliEngine::classic,
        "configure ipsec ppk-list classic-post-quantum create");
   edit(classic, CliEngine::classic,
@@ -527,6 +574,12 @@ void ipsec_cli_configuration_tests() {
        "replay-window 256");
   edit(classic, CliEngine::classic,
        "configure ipsec tunnel-template 1 create");
+  // YANG defaults both propagate leaves to true on a fresh template.
+  require(classic.tunnel_templates[0].propagate_pmtu_v4 &&
+              !classic.tunnel_templates[0].propagate_pmtu_v4_configured &&
+              classic.tunnel_templates[0].propagate_pmtu_v6 &&
+              !classic.tunnel_templates[0].propagate_pmtu_v6_configured,
+          "fresh tunnel template did not default propagate-pmtu to true");
   edit(classic, CliEngine::classic,
        "configure ipsec tunnel-template 1 transform 1");
   edit(classic, CliEngine::classic,
@@ -636,4 +689,140 @@ void ipsec_cli_configuration_tests() {
               classic.tunnel_templates[0].service_provider_reverse_route ==
                   ServiceProviderReverseRoute::use_security_policy,
           "classic selector address or protocol grammar lost wire values");
+
+  const auto existing_create = parse(
+      CliEngine::classic, "configure ipsec ike-transform 1 create");
+  const auto selected = router::lab::ipsec_cli::edit(
+      classic, existing_create, CliEngine::classic);
+  require(selected.recognized && selected.valid && !selected.changed,
+          "classic IKE transform create of an existing object was not a select");
+
+  Configuration gcm;
+  edit(gcm, CliEngine::classic, "configure ipsec ipsec-transform 3 create");
+  const auto gcm_without_auth = parse(
+      CliEngine::classic,
+      "configure ipsec ipsec-transform 3 esp-encryption-algorithm "
+      "aes128-gcm16");
+  const auto gcm_result = router::lab::ipsec_cli::edit(
+      gcm, gcm_without_auth, CliEngine::classic);
+  require(gcm_result.recognized && !gcm_result.valid && !gcm_result.changed,
+          "GCM encryption was accepted without auth-encryption");
+
+  edit(classic, CliEngine::classic,
+       "configure ipsec ipsec-transform 1 pfs-dh-group 19");
+  require(find_ipsec(classic, 1U)->pfs_enabled &&
+              find_ipsec(classic, 1U)->pfs_group_configured,
+          "classic numeric PFS group 19 was rejected");
+  edit(classic, CliEngine::classic,
+       "configure ipsec ipsec-transform 1 esp-encryption-algorithm "
+       "aes128-gcm16");
+  edit(classic, CliEngine::classic,
+       "configure ipsec ipsec-transform 1 no esp-encryption-algorithm");
+  require(!find_ipsec(classic, 1U)->encryption_configured &&
+              ipsec::configuration::configured_encryption_name(
+                  find_ipsec(classic, 1U)->encryption,
+                  find_ipsec(classic, 1U)->encryption_configured) == "aes-128",
+          "delete encryption did not restore the YANG aes-128 default");
+
+  // The classic CLI spells PFS none as inherit and ESN as a flag command.
+  edit(classic, CliEngine::classic,
+       "configure ipsec ipsec-transform 1 pfs-dh-group inherit");
+  require(!find_ipsec(classic, 1U)->pfs_enabled &&
+              find_ipsec(classic, 1U)->pfs_group_configured,
+          "classic pfs-dh-group inherit did not disable PFS");
+  edit(classic, CliEngine::classic,
+       "configure ipsec ipsec-transform 1 extended-sequence-number");
+  require(find_ipsec(classic, 1U)->extended_sequence_number &&
+              find_ipsec(classic, 1U)->extended_sequence_number_configured,
+          "classic ESN flag did not enable extended sequencing");
+  edit(classic, CliEngine::classic,
+       "configure ipsec ipsec-transform 1 no extended-sequence-number");
+  require(!find_ipsec(classic, 1U)->extended_sequence_number &&
+              find_ipsec(classic, 1U)->extended_sequence_number_configured,
+          "classic ESN no form did not revert to 32-bit numbering");
+
+  // The MD delete restores the YANG dh-group default of group-14 while the
+  // classic CLI reverts by setting the documented default value.
+  edit(classic, CliEngine::classic,
+       "configure ipsec ipsec-transform 1 pfs-dh-group 14");
+  require(find_ipsec(classic, 1U)->pfs_group ==
+                  DiffieHellmanGroup::modp2048 &&
+              find_ipsec(classic, 1U)->pfs_enabled,
+          "classic numeric PFS group 14 was rejected");
+  Configuration md_default;
+  edit(md_default, CliEngine::md,
+       "configure ipsec ike-transform 2 dh-group group-19");
+  edit(md_default, CliEngine::md,
+       "delete ipsec ike-transform 2 dh-group");
+  require(find_ike(md_default, 2U)->dh_group ==
+                  DiffieHellmanGroup::modp2048 &&
+              !find_ike(md_default, 2U)->dh_group_configured,
+          "MD delete dh-group did not restore the YANG group-14 default");
+
+  // The five undocumented classic ike-transform no forms are gone from the
+  // grammar: parsing must reject them in both engines.
+  for (const auto *removed :
+       {"configure ipsec ike-transform 1 no dh-group",
+        "configure ipsec ike-transform 1 no ike-auth-algorithm",
+        "configure ipsec ike-transform 1 no ike-encryption-algorithm",
+        "configure ipsec ike-transform 1 no ike-prf-algorithm",
+        "configure ipsec ike-transform 1 no isakmp-lifetime",
+        "configure ipsec ipsec-transform 1 no ipsec-lifetime"}) {
+    require(!router::cli_detail::parse_command(CliEngine::classic,
+                                               MdCliWorkflow::operational,
+                                               removed)
+                 .has_value(),
+            "undocumented classic no form still parses");
+  }
+
+  // An IKE policy referenced by a transport profile is protected by the YANG
+  // leafref: the removal must be rejected in both engines.
+  Configuration guarded;
+  edit(guarded, CliEngine::md, "configure ipsec ike-policy 3 description g");
+  edit(guarded, CliEngine::md,
+       "configure ipsec ipsec-transport-mode-profile protected key-exchange "
+       "dynamic ike-policy 3");
+  const auto guarded_delete = parse(CliEngine::md, "delete ipsec ike-policy 3");
+  const auto guarded_result = router::lab::ipsec_cli::edit(
+      guarded, guarded_delete, CliEngine::md);
+  require(guarded_result.recognized && !guarded_result.valid &&
+              !guarded_result.changed,
+          "referenced IKE policy was deleted");
+  require(find_policy(guarded, 3U) != nullptr,
+          "referenced IKE policy removal did not preserve the policy");
+
+  // Documented MD-CLI delete stays silent on absent elements without
+  // materializing their ancestors, while classic no forms keep the rejected
+  // result for the same input.
+  Configuration absent;
+  for (const auto *text :
+       {"delete ipsec ike-transform 99",
+        "delete ipsec ipsec-transform 99",
+        "delete ipsec ike-policy 99",
+        "delete ipsec static-sa ghost",
+        "delete ipsec cert-profile ghost",
+        "delete ipsec trust-anchor-profile ghost",
+        "delete ipsec ppk-list ghost",
+        "delete ipsec ts-list ghost",
+        "delete ipsec ipsec-transport-mode-profile ghost",
+        "delete ipsec tunnel-template 99",
+        "delete ipsec ike-transform 2 dh-group",
+        "delete ipsec tunnel-template 1 ip-mtu"}) {
+    const auto before_absent = absent;
+    const auto silent = router::lab::ipsec_cli::edit(
+        absent, parse(CliEngine::md, text), CliEngine::md);
+    require(silent.recognized && silent.valid && !silent.changed &&
+                absent == before_absent,
+            "MD delete of an absent IPsec element was not silent");
+  }
+  for (const auto *text :
+       {"configure ipsec no ike-transform 99",
+        "configure ipsec no static-sa ghost",
+        "configure ipsec static-sa classic-manual no description"}) {
+    const auto rejected = router::lab::ipsec_cli::edit(
+        classic, parse(CliEngine::classic, text), CliEngine::classic,
+        &classic_vault);
+    require(rejected.recognized && !rejected.valid,
+            "classic no form accepted an absent IPsec element");
+  }
 }

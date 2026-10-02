@@ -150,7 +150,7 @@ IesInterfaceConfiguration *md_interface(Configuration &configuration,
   service.interfaces.push_back({.logical_id = *id,
                                 .name = std::string{name},
                                 .ip_mtu = 1500U,
-                                .admin_enabled = false});
+                                .admin_enabled = true});
   return &service.interfaces.back();
 }
 
@@ -337,7 +337,8 @@ parse_interface_address(std::string_view text) noexcept {
     return std::nullopt;
   const auto address = ip::parse_ipv6(text.substr(0U, slash));
   const auto prefix = decimal<std::uint8_t>(text.substr(slash + 1U));
-  if (!address || !prefix || *prefix > 128U)
+  // YANG bounds the service interface prefix length at 4 through 128.
+  if (!address || !prefix || *prefix < 4U || *prefix > 128U)
     return std::nullopt;
   return InterfaceAddress{.address = *address, .prefix_length = *prefix};
 }
@@ -349,10 +350,24 @@ bool edit_relay(const Configuration &configuration,
   using enum CommandId;
   if (id == md_delete_ies_relay || id == classic_ies_relay_remove) {
     if (!relay.configured)
-      return false;
+      return id == md_delete_ies_relay;
     relay = {};
     return true;
   }
+  // Documented MD-CLI delete stays silent on absent elements. An unconfigured
+  // relay holds every leaf at its default, so MD removals below return
+  // without touching it while classic no forms keep the rejected result.
+  const bool unconfigured_relay =
+      id == md_delete_ies_relay_server ||
+      id == md_delete_ies_relay_link_address ||
+      id == md_delete_ies_relay_source_address ||
+      id == md_delete_ies_relay_neighbor_resolution ||
+      id == md_delete_ies_relay_interface_id ||
+      id == md_delete_ies_relay_lease_population ||
+      id == md_delete_ies_relay_route_na || id == md_delete_ies_relay_route_pd ||
+      id == md_delete_ies_relay_route_ta;
+  if (unconfigured_relay && !relay.configured)
+    return true;
   configure_relay_leaf(relay);
   if (id == md_ies_relay_admin_enable || id == classic_ies_relay_no_shutdown)
     return set_distinct(relay.admin_enabled, true);
@@ -369,7 +384,7 @@ bool edit_relay(const Configuration &configuration,
                                  *destination);
     if (id == md_delete_ies_relay_server) {
       if (found == relay.servers.end())
-        return false;
+        return true;
       relay.servers.erase(found);
       return true;
     }
@@ -386,12 +401,24 @@ bool edit_relay(const Configuration &configuration,
     relay.servers.clear();
     return true;
   }
+  if (id == classic_ies_relay_no_server_address) {
+    const auto destination = relay_destination(
+        configuration, value(command, TokenKind::ipv6_with_zone));
+    if (!destination)
+      return false;
+    const auto found = std::find(relay.servers.begin(), relay.servers.end(),
+                                 *destination);
+    if (found == relay.servers.end())
+      return false;
+    relay.servers.erase(found);
+    return true;
+  }
 
   const auto address_leaf = [&](std::optional<packet::Ipv6> &leaf,
-                                bool deleting) {
+                                bool deleting, bool silent_absent) {
     if (deleting) {
       if (!leaf)
-        return false;
+        return silent_absent;
       leaf.reset();
       return true;
     }
@@ -406,14 +433,16 @@ bool edit_relay(const Configuration &configuration,
       id == classic_ies_relay_no_link_address)
     return address_leaf(relay.link_address,
                         id == md_delete_ies_relay_link_address ||
-                            id == classic_ies_relay_no_link_address);
+                            id == classic_ies_relay_no_link_address,
+                        id == md_delete_ies_relay_link_address);
   if (id == md_ies_relay_source_address ||
       id == md_delete_ies_relay_source_address ||
       id == classic_ies_relay_source_address ||
       id == classic_ies_relay_no_source_address)
     return address_leaf(relay.source_address,
                         id == md_delete_ies_relay_source_address ||
-                            id == classic_ies_relay_no_source_address);
+                            id == classic_ies_relay_no_source_address,
+                        id == md_delete_ies_relay_source_address);
 
   if (id == md_ies_relay_neighbor_resolution) {
     const auto enabled = boolean_value(command);
@@ -421,14 +450,17 @@ bool edit_relay(const Configuration &configuration,
   }
   if (id == md_delete_ies_relay_neighbor_resolution ||
       id == classic_ies_relay_no_neighbor_resolution)
-    return set_distinct(relay.neighbor_resolution, false);
+    // An already-default leaf is the silent no-op in MD-CLI. The disjunction
+    // preserves the classic change report while silencing the MD default.
+    return set_distinct(relay.neighbor_resolution, false) ||
+           id == md_delete_ies_relay_neighbor_resolution;
   if (id == classic_ies_relay_neighbor_resolution)
     return set_distinct(relay.neighbor_resolution, true);
 
   if (id == md_delete_ies_relay_interface_id ||
       id == classic_ies_relay_no_interface_id) {
     if (relay.interface_id_kind == RelayInterfaceIdKind::absent)
-      return false;
+      return id == md_delete_ies_relay_interface_id;
     relay.interface_id_kind = RelayInterfaceIdKind::absent;
     relay.interface_id_string.clear();
     return true;
@@ -465,7 +497,7 @@ bool edit_relay(const Configuration &configuration,
   if (id == md_delete_ies_relay_lease_population ||
       id == classic_ies_relay_no_lease_population) {
     if (relay.lease_population_limit == 0U)
-      return false;
+      return id == md_delete_ies_relay_lease_population;
     relay.lease_population_limit = 0U;
     relay.route_populate_na = false;
     relay.route_populate_pd = false;
@@ -483,8 +515,14 @@ bool edit_relay(const Configuration &configuration,
   if (id == md_ies_relay_lease_limit || id == classic_ies_relay_lease_limit) {
     const auto limit = decimal<std::uint16_t>(
         value(command, TokenKind::relay_lease_limit));
-    return limit && *limit != 0U && *limit <= service::maximum_relay_leases &&
-           set_distinct(relay.lease_population_limit, *limit);
+    // MD-CLI max-nbr-of-leases spans 0 through 32767 with 0 as the default
+    // leaf value, while classic nbr-of-leases spans 1 through 8000.
+    const bool in_range =
+        limit && (id == md_ies_relay_lease_limit
+                      ? *limit <= service::maximum_relay_leases
+                      : *limit != 0U &&
+                            *limit <= service::classic_maximum_relay_leases);
+    return in_range && set_distinct(relay.lease_population_limit, *limit);
   }
 
   const auto set_route = [&](bool &leaf, bool next) {
@@ -496,17 +534,17 @@ bool edit_relay(const Configuration &configuration,
     const auto enabled = boolean_value(command);
     return enabled && set_route(relay.route_populate_na, *enabled);
   }
-  if (id == md_delete_ies_relay_route_na ||
-      id == classic_ies_relay_no_route_na)
-    return set_route(relay.route_populate_na, false);
+  if (id == md_delete_ies_relay_route_na)
+    // An already-default leaf is the silent no-op; see neighbor_resolution.
+    return set_route(relay.route_populate_na, false) ||
+           id == md_delete_ies_relay_route_na;
   if (id == classic_ies_relay_route_na)
     return set_route(relay.route_populate_na, true);
   if (id == md_ies_relay_route_pd_context || id == classic_ies_relay_route_pd)
     return set_route(relay.route_populate_pd, true);
-  if (id == md_delete_ies_relay_route_pd ||
-      id == classic_ies_relay_no_route_pd) {
+  if (id == md_delete_ies_relay_route_pd) {
     if (!relay.route_populate_pd && !relay.route_populate_pd_exclude)
-      return false;
+      return true;
     relay.route_populate_pd = false;
     relay.route_populate_pd_exclude = false;
     return true;
@@ -528,9 +566,10 @@ bool edit_relay(const Configuration &configuration,
     const auto enabled = boolean_value(command);
     return enabled && set_route(relay.route_populate_ta, *enabled);
   }
-  if (id == md_delete_ies_relay_route_ta ||
-      id == classic_ies_relay_no_route_ta)
-    return set_route(relay.route_populate_ta, false);
+  if (id == md_delete_ies_relay_route_ta)
+    // An already-default leaf is the silent no-op; see neighbor_resolution.
+    return set_route(relay.route_populate_ta, false) ||
+           id == md_delete_ies_relay_route_ta;
   if (id == classic_ies_relay_route_ta)
     return set_route(relay.route_populate_ta, true);
   return false;
@@ -540,7 +579,7 @@ bool relay_command(CommandId id) noexcept {
   using enum CommandId;
   return (id >= md_ies_relay_admin_enable && id <= md_delete_ies_relay) ||
          (id >= classic_ies_relay_shutdown &&
-          id <= classic_ies_relay_no_route_ta);
+          id <= classic_ies_relay_route_ta);
 }
 
 bool edit_impl(Configuration &configuration,
@@ -559,13 +598,16 @@ bool edit_impl(Configuration &configuration,
     instance = "/service/customer/" + std::string{customer_name};
     auto *customer = customer_by_name(configuration, customer_name);
     if (id == md_delete_service_customer) {
-      if (!customer || std::any_of(configuration.ies_services.begin(),
-                                   configuration.ies_services.end(),
-                                   [&](const auto &service) {
-                                     return service.customer_id != 0U &&
-                                            service.customer_id ==
-                                                customer->customer_id;
-                                   }))
+      // Documented MD-CLI delete stays silent on absent elements while a
+      // customer referenced by an IES service keeps the rejected result.
+      if (!customer)
+        return true;
+      if (std::any_of(configuration.ies_services.begin(),
+                       configuration.ies_services.end(),
+                       [&](const auto &service) {
+                         return service.customer_id != 0U &&
+                                service.customer_id == customer->customer_id;
+                       }))
         return false;
       configuration.customers.erase(
           configuration.customers.begin() + (customer - configuration.customers.data()));
@@ -600,7 +642,7 @@ bool edit_impl(Configuration &configuration,
     auto *customer = customer_by_id(configuration, *number);
     if (id == classic_service_customer_create) {
       if (customer)
-        return false;
+        return true;
       configuration.customers.push_back({.name = std::to_string(*number),
                                          .customer_id = *number});
       return true;
@@ -628,27 +670,45 @@ bool edit_impl(Configuration &configuration,
       id == classic_service_port_encapsulation) {
     const auto port_text = value(command, TokenKind::port_id);
     instance = "/port/" + std::string{port_text} + "/ethernet";
-    auto *port = service_port(configuration, inventory, port_text, true);
+    // Documented MD-CLI delete stays silent on absent elements without
+    // materializing the port; setters keep creating it explicitly.
+    const bool port_removal = id == md_delete_service_port_mode ||
+                              id == md_delete_service_port_encapsulation;
+    auto *port =
+        service_port(configuration, inventory, port_text, !port_removal);
     if (!port)
-      return false;
-    if (id == md_service_port_mode || id == classic_service_port_mode) {
+      return port_removal;
+    if (id == md_service_port_mode) {
       const auto text = value(command, TokenKind::ethernet_mode);
       const auto mode = text == "access" ? EthernetPortMode::access
                         : text == "network" ? EthernetPortMode::network
                         : text == "hybrid" ? EthernetPortMode::hybrid
-                                            : EthernetPortMode::network;
+                                              : EthernetPortMode::network;
       if (text != "access" && text != "network" && text != "hybrid")
         return false;
       return set_distinct(port->mode, mode);
     }
+    if (id == classic_service_port_mode) {
+      // Classic accepts only network and hybrid; access is not a classic
+      // keyword. The grammar owns that value set.
+      const auto text = value(command, TokenKind::classic_ethernet_mode);
+      if (text != "network" && text != "hybrid")
+        return false;
+      return set_distinct(port->mode, text == "network"
+                                          ? EthernetPortMode::network
+                                          : EthernetPortMode::hybrid);
+    }
     if (id == md_delete_service_port_mode)
-      return set_distinct(port->mode, EthernetPortMode::network);
+      // Deleting an already-default leaf is the silent no-op.
+      return set_distinct(port->mode, EthernetPortMode::network) ||
+             port_removal;
     if (id == md_delete_service_port_encapsulation) {
       const bool changed = port->encapsulation != EthernetEncapsulation::null ||
                            port->outer_tpid != 0U;
       port->encapsulation = EthernetEncapsulation::null;
       port->outer_tpid = 0U;
-      return changed;
+      // Deleting an already-default leaf is the silent no-op.
+      return changed || port_removal;
     }
     const auto text = value(command, TokenKind::ethernet_encapsulation);
     const auto encapsulation = text == "null" ? EthernetEncapsulation::null
@@ -669,17 +729,28 @@ bool edit_impl(Configuration &configuration,
 
   IesConfiguration *ies{};
   if (engine == CliEngine::md) {
-    ies = id == md_delete_ies ? service_by_name(configuration, service_name)
-                              : md_service(configuration, service_name);
+    // Documented MD-CLI delete never creates configuration: removals resolve
+    // without materializing the service.
+    const bool service_removal =
+        command.spec && cli_detail::removal_command(*command.spec);
+    ies = service_removal ? service_by_name(configuration, service_name)
+                          : md_service(configuration, service_name);
   } else {
     const auto service_id = decimal<std::uint32_t>(value(command, TokenKind::service_id));
-    if (!service_id)
+    if (!service_id || *service_id < service::minimum_identifier ||
+        *service_id > service::maximum_service_identifier)
       return false;
     ies = service_by_id(configuration, *service_id);
     if (id == classic_ies_create) {
       const auto customer_id = decimal<std::uint32_t>(value(command, TokenKind::customer_id));
-      if (ies || !customer_id || !customer_by_id(configuration, *customer_id))
+      if (!customer_id || !customer_by_id(configuration, *customer_id))
         return false;
+      if (ies) {
+        if (ies->customer_id != *customer_id)
+          return false;
+        instance = instance_path(ies->name);
+        return true;
+      }
       configuration.ies_services.push_back({.service_id = *service_id,
                                             .customer_id = *customer_id,
                                             .name = std::to_string(*service_id),
@@ -688,11 +759,22 @@ bool edit_impl(Configuration &configuration,
       return true;
     }
   }
-  if (!ies)
-    return false;
+  if (!ies) {
+    // Documented MD-CLI delete stays silent on absent elements without
+    // materializing the service. Classic commands keep the rejected result
+    // because removal_command also matches the classic no literal.
+    const bool md_removal = engine == CliEngine::md && command.spec &&
+                            cli_detail::removal_command(*command.spec);
+    return md_removal;
+  }
   instance = instance_path(ies->name, interface_name);
 
-  if (id == md_delete_ies || id == classic_ies_no_service) {
+  if (id == md_delete_ies) {
+    configuration.ies_services.erase(configuration.ies_services.begin() +
+                                     (ies - configuration.ies_services.data()));
+    return true;
+  }
+  if (id == classic_ies_no_service) {
     if (ies->admin_enabled || !ies->interfaces.empty())
       return false;
     configuration.ies_services.erase(configuration.ies_services.begin() +
@@ -702,7 +784,7 @@ bool edit_impl(Configuration &configuration,
   if (id == md_ies_service_id) {
     const auto number = decimal<std::uint32_t>(value(command, TokenKind::service_id));
     return number && *number >= service::minimum_identifier &&
-           *number <= service::maximum_identifier &&
+           *number <= service::maximum_service_identifier &&
            !service_by_id(configuration, *number) &&
            set_distinct(ies->service_id, *number);
   }
@@ -714,58 +796,83 @@ bool edit_impl(Configuration &configuration,
   if (id == md_ies_description || id == classic_ies_description)
     return set_distinct(ies->description,
                         std::string{value(command, TokenKind::description)});
-  if (id == md_ies_admin_enable || id == classic_ies_no_shutdown)
-    return set_distinct(ies->admin_enabled, true);
-  if (id == md_ies_admin_disable || id == classic_ies_shutdown)
-    return set_distinct(ies->admin_enabled, false);
+  if (id == md_ies_admin_enable || id == classic_ies_no_shutdown) {
+    set_distinct(ies->admin_enabled, true);
+    return true;
+  }
+  if (id == md_ies_admin_disable || id == classic_ies_shutdown) {
+    set_distinct(ies->admin_enabled, false);
+    return true;
+  }
 
   IesInterfaceConfiguration *interface{};
   if (engine == CliEngine::md) {
-    interface = id == md_delete_ies_interface
-                    ? interface_by_name(*ies, interface_name)
-                    : md_interface(configuration, *ies, interface_name);
+    // Documented MD-CLI delete stays silent on absent elements while classic
+    // no forms keep the rejected result. MD removals therefore resolve
+    // without materializing their ancestors.
+    const bool md_removal =
+        command.spec && cli_detail::removal_command(*command.spec);
+    if (id == md_delete_ies_interface || md_removal)
+      interface = interface_by_name(*ies, interface_name);
+    else
+      interface = md_interface(configuration, *ies, interface_name);
+    if (!interface)
+      return md_removal;
   } else {
     interface = interface_by_name(*ies, interface_name);
     if (id == classic_ies_interface_create) {
       if (interface)
-        return false;
+        return true;
       const auto logical_id = next_logical_id(configuration);
       if (!logical_id || interface_name.empty())
         return false;
       ies->interfaces.push_back({.logical_id = *logical_id,
                                  .name = std::string{interface_name},
                                  .ip_mtu = 1500U,
-                                 .admin_enabled = false});
+                                 .admin_enabled = true});
       return true;
     }
   }
   if (!interface)
     return false;
-  if (id == md_delete_ies_interface || id == classic_ies_no_interface) {
-    if (interface->admin_enabled || interface->sap != SapKey{})
+  if (id == md_delete_ies_interface) {
+    ies->interfaces.erase(ies->interfaces.begin() +
+                          (interface - ies->interfaces.data()));
+    return true;
+  }
+  if (id == classic_ies_no_interface) {
+    // The documented classic no interface removes the interface while it is
+    // administratively shut down; a configured SAP does not block removal.
+    if (interface->admin_enabled)
       return false;
     ies->interfaces.erase(ies->interfaces.begin() +
                           (interface - ies->interfaces.data()));
     return true;
   }
   if (id == md_ies_interface_admin_enable ||
-      id == classic_ies_interface_no_shutdown)
-    return set_distinct(interface->admin_enabled, true);
+      id == classic_ies_interface_no_shutdown) {
+    set_distinct(interface->admin_enabled, true);
+    return true;
+  }
   if (id == md_ies_interface_admin_disable ||
-      id == classic_ies_interface_shutdown)
-    return set_distinct(interface->admin_enabled, false);
+      id == classic_ies_interface_shutdown) {
+    set_distinct(interface->admin_enabled, false);
+    return true;
+  }
   if (id == md_ies_interface_description ||
       id == classic_ies_interface_description)
     return set_distinct(interface->description,
                         std::string{value(command, TokenKind::description)});
   if (id == md_ies_interface_mtu || id == classic_ies_interface_mtu) {
     const auto mtu = decimal<std::uint16_t>(value(command, TokenKind::mtu));
-    return mtu && *mtu >= 1280U && set_distinct(interface->ip_mtu, *mtu);
+    return mtu && *mtu >= 512U && *mtu <= 9786U &&
+           set_distinct(interface->ip_mtu, *mtu);
   }
   if (id == md_ies_interface_ipv6_address) {
     const auto address = ip::parse_ipv6(value(command, TokenKind::ipv6));
     const auto prefix = decimal<std::uint8_t>(value(command, TokenKind::ipv6_prefix_length));
-    return address && prefix && set_address(*interface, *address, *prefix);
+    return address && prefix && *prefix >= 4U &&
+           set_address(*interface, *address, *prefix);
   }
   if (id == classic_ies_interface_ipv6_address) {
     const auto prefix = parse_interface_address(
@@ -773,16 +880,23 @@ bool edit_impl(Configuration &configuration,
     return prefix && set_address(*interface, prefix->address,
                                  prefix->prefix_length);
   }
-  if (id == md_delete_ies_interface_ipv6_address ||
-      id == classic_ies_interface_no_ipv6_address) {
-    if (id == classic_ies_interface_no_ipv6_address) {
-      const auto expected = parse_interface_address(
-          value(command, TokenKind::ipv6_address_prefix));
-      if (!expected || !interface->address_configured ||
-          interface->address != expected->address ||
-          interface->prefix_length != expected->prefix_length)
-        return false;
-    }
+  if (id == md_delete_ies_interface_ipv6_address) {
+    // The address list is keyed by ipv6-address: only the addressed entry is
+    // removed, and an absent key is the documented silent no-op.
+    const auto address = ip::parse_ipv6(value(command, TokenKind::ipv6));
+    if (!address)
+      return false;
+    if (!interface->address_configured || interface->address != *address)
+      return true;
+    return clear_address(*interface);
+  }
+  if (id == classic_ies_interface_no_ipv6_address) {
+    const auto expected = parse_interface_address(
+        value(command, TokenKind::ipv6_address_prefix));
+    if (!expected || !interface->address_configured ||
+        interface->address != expected->address ||
+        interface->prefix_length != expected->prefix_length)
+      return false;
     return clear_address(*interface);
   }
 
@@ -792,7 +906,11 @@ bool edit_impl(Configuration &configuration,
     const auto mac = sap ? inventory.physical_mac(
                                sap_text.substr(0U, sap_text.find(':')))
                          : std::optional<packet::Mac>{};
-    if (!sap || !mac || interface->sap != SapKey{})
+    if (!sap || !mac)
+      return false;
+    if (interface->sap == *sap)
+      return true;
+    if (interface->sap != SapKey{})
       return false;
     interface->sap = *sap;
     interface->mac = *mac;
@@ -804,8 +922,12 @@ bool edit_impl(Configuration &configuration,
       id == classic_ies_interface_no_sap) {
     const auto expected = parse_sap(configuration, inventory,
                                     value(command, TokenKind::sap_id));
-    if (interface->admin_enabled || !expected || interface->sap != *expected)
+    if (interface->admin_enabled)
       return false;
+    // Deleting an absent SAP key is the documented MD silent no-op while the
+    // classic no form keeps the rejected result.
+    if (!expected || interface->sap != *expected)
+      return id == md_delete_ies_interface_sap;
     interface->sap = {};
     interface->mac = {};
     interface->link_local = {};
@@ -836,7 +958,7 @@ bool is_md_command(CommandId id) noexcept {
 bool is_classic_command(CommandId id) noexcept {
   using enum CommandId;
   return id >= classic_service_customer_create &&
-         id <= classic_ies_relay_no_route_ta;
+         id <= classic_ies_relay_route_ta;
 }
 
 EditResult edit(Configuration &configuration,
@@ -863,12 +985,20 @@ EditResult edit(Configuration &configuration,
   const auto validation = engine == CliEngine::md
                               ? service::validate_candidate(configuration)
                               : service::validate(configuration);
-  const bool valid = validation == service::ValidationError::none;
-  if (!structurally_changed || !valid) {
+  const bool valid = edited && validation == service::ValidationError::none;
+  if (!valid) {
     configuration = before;
-    return {.recognized = true, .changed = false, .instance = std::move(instance)};
+    return {.recognized = true,
+            .valid = false,
+            .changed = false,
+            .instance = std::move(instance)};
   }
-  return {.recognized = true, .changed = true, .instance = std::move(instance)};
+  if (!structurally_changed)
+    configuration = before;
+  return {.recognized = true,
+          .valid = true,
+          .changed = structurally_changed,
+          .instance = std::move(instance)};
 }
 
 } // namespace router::lab::ies_cli

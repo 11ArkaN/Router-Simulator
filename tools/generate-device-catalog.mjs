@@ -873,6 +873,10 @@ inline constexpr std::chrono::seconds dynamic_arp_timeout{
     ${catalog.protocol_defaults.dynamic_arp_timeout_seconds}};
 inline constexpr std::size_t dhcpv4_server_name_bytes =
     ${catalog.protocol_defaults.dhcpv4_server_name_bytes};
+inline constexpr std::size_t dhcpv4_pool_name_bytes =
+    ${catalog.protocol_defaults.dhcpv4_pool_name_bytes};
+inline constexpr std::size_t dhcpv6_pool_name_bytes =
+    ${catalog.protocol_defaults.dhcpv6_pool_name_bytes};
 inline constexpr std::size_t dhcpv4_description_bytes =
     ${catalog.protocol_defaults.dhcpv4_description_bytes};
 inline constexpr std::uint32_t dhcpv4_lease_time_minimum_seconds =
@@ -925,6 +929,10 @@ inline constexpr std::uint32_t ospf_interface_metric_minimum =
     ${catalog.protocol_defaults.ospf_interface_metric_minimum}U;
 inline constexpr std::uint32_t ospf_interface_metric_maximum =
     ${catalog.protocol_defaults.ospf_interface_metric_maximum}U;
+inline constexpr std::uint32_t ospf_stub_default_metric_minimum =
+    ${catalog.protocol_defaults.ospf_stub_default_metric_minimum}U;
+inline constexpr std::uint32_t ospf_stub_default_metric_maximum =
+    ${catalog.protocol_defaults.ospf_stub_default_metric_maximum}U;
 inline constexpr std::uint32_t ospf_reference_bandwidth_kbps =
     ${catalog.protocol_defaults.ospf_reference_bandwidth_kbps}U;
 inline constexpr std::uint32_t ospf_router_preference =

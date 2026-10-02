@@ -933,9 +933,10 @@ void mld_policy_prefix_lists(
   for (const auto &list : lists) {
     out.string(list.name);
     count(out, list.prefixes);
-    for (const auto &prefix : list.prefixes) {
-      ip_address(out, prefix.network);
-      out.integer(prefix.length);
+    for (const auto &entry : list.prefixes) {
+      ip_address(out, entry.prefix.network);
+      out.integer(entry.prefix.length);
+      out.integer(entry.type);
     }
   }
 }
@@ -959,16 +960,20 @@ bool mld_policy_prefix_lists(
     } catch (const std::bad_alloc &) {
       return false;
     }
-    for (auto &prefix : list.prefixes)
-      if (!ip_address(in, prefix.network) || !in.integer(prefix.length) ||
-          prefix.length > ip::address_bits(prefix.network.family) ||
-          ip::mask(prefix.network, prefix.length) != prefix.network)
+    for (auto &entry : list.prefixes)
+      if (!ip_address(in, entry.prefix.network) ||
+          !in.integer(entry.prefix.length) ||
+          !in.integer(entry.type) ||
+          entry.type > MldPrefixListType::address_mask ||
+          entry.prefix.length > ip::address_bits(entry.prefix.network.family) ||
+          ip::mask(entry.prefix.network, entry.prefix.length) !=
+              entry.prefix.network)
         return false;
     std::sort(list.prefixes.begin(), list.prefixes.end(),
               [](const auto &left, const auto &right) {
-                return left.length < right.length ||
-                       (left.length == right.length &&
-                        left.network < right.network);
+                return left.prefix.length < right.prefix.length ||
+                       (left.prefix.length == right.prefix.length &&
+                        left.prefix.network < right.prefix.network);
               });
     if (std::adjacent_find(list.prefixes.begin(), list.prefixes.end()) !=
         list.prefixes.end())
@@ -7698,6 +7703,8 @@ void tls_configuration(Writer &out, const tls_profile::Configuration &state) {
     out.string(profile.client_common_name_list);
     out.integer(profile.protocol_version);
     out.boolean(profile.protocol_version_configured);
+    out.integer(profile.renegotiate_timer_minutes);
+    out.boolean(profile.renegotiate_timer_configured);
     tls_status_verification(out, profile.status_verification);
   }
 }
@@ -7806,6 +7813,9 @@ bool tls_configuration(Reader &in, tls_profile::Configuration &state) {
         !in.integer(profile.protocol_version) ||
         !in.boolean(profile.protocol_version_configured) ||
         profile.protocol_version > tls_profile::ProtocolVersion::all ||
+        !in.integer(profile.renegotiate_timer_minutes) ||
+        !in.boolean(profile.renegotiate_timer_configured) ||
+        profile.renegotiate_timer_minutes > 65000U ||
         !tls_status_verification(in, profile.status_verification))
       return false;
   }
@@ -8528,7 +8538,7 @@ bool dhcpv4_router_configuration(
           if (!ipv4(in, range.first) || !ipv4(in, range.last) ||
               !in.integer(range.failover_control) ||
               range.failover_control >
-                  dhcpv4::configuration::FailoverControlType::remote)
+                  dhcpv4::configuration::FailoverControlType::access_driven)
             return false;
         if (!count(in, excluded_count,
                    device_catalog::dhcpv4_leases_per_server))
@@ -8563,6 +8573,7 @@ void bof_autoconfigure(Writer &out,
   common(state.ipv4);
   common(state.ipv6);
   out.integer(state.ipv6.client_type);
+  out.boolean(state.ipv6.client_type_configured);
   out.octets(state.ipv4_transaction_secret);
   out.octets(state.ipv6_transaction_secret);
 }
@@ -8580,6 +8591,7 @@ bool bof_autoconfigure(Reader &in,
   if (!common(state.ipv4, 127U) || !common(state.ipv6, 124U) ||
       !in.integer(state.ipv6.client_type) ||
       state.ipv6.client_type > bof::Dhcpv6ClientType::duid_link_local ||
+      !in.boolean(state.ipv6.client_type_configured) ||
       !in.octets(state.ipv4_transaction_secret) ||
       !in.octets(state.ipv6_transaction_secret))
     return false;
@@ -8617,6 +8629,8 @@ void dhcpv6_router_configuration(
     out.boolean(server.rapid_commit_configured);
     out.boolean(server.lease_query_configured);
     out.boolean(server.admin_state_configured);
+    out.boolean(server.auto_provisioned);
+    out.boolean(server.auto_provisioned_configured);
     count(out, server.pools);
     for (const auto &pool : server.pools) {
       out.string(pool.name);
@@ -8690,6 +8704,8 @@ bool dhcpv6_router_configuration(
         !in.boolean(server.rapid_commit_configured) ||
         !in.boolean(server.lease_query_configured) ||
         !in.boolean(server.admin_state_configured) ||
+        !in.boolean(server.auto_provisioned) ||
+        !in.boolean(server.auto_provisioned_configured) ||
         !count(in, pool_count,
                device_catalog::dhcpv6_address_pools_per_server +
                    device_catalog::dhcpv6_prefix_pools_per_server))
@@ -9164,7 +9180,7 @@ bool portable_router(Reader &in, PortableRouterIntentCheckpoint &state) {
         port.mtu < device_catalog::minimum_network_mtu ||
         port.mtu > device_catalog::maximum_network_mtu ||
         !in.integer(port.speed_mbps) || !port.speed_mbps ||
-        !in.string(port.description, 80))
+        !in.string(port.description, profile::port_description_bytes))
       return false;
   }
   // The physical port vector above is bounded by inventory. Interface intent
@@ -9338,7 +9354,7 @@ bool portable_configuration(Reader &in,
         port.mtu < device_catalog::minimum_network_mtu ||
         port.mtu > device_catalog::maximum_network_mtu ||
         !in.integer(port.speed_mbps) || !port.speed_mbps ||
-        !in.string(port.description, 80))
+        !in.string(port.description, profile::port_description_bytes))
       return false;
   // Candidate configuration uses the same logical capacity as running state:
   // every physical routed port plus the portless system interface.

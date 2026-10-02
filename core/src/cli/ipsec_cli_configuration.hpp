@@ -16,6 +16,7 @@ namespace router::lab::ipsec_cli {
 
 struct EditResult {
   bool recognized{};
+  bool valid{};
   bool changed{};
   std::string instance;
 };

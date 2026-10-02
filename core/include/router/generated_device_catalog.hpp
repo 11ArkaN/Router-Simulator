@@ -38,10 +38,10 @@ struct EthernetSwitchProfile {
 // One release owns this entire generated catalog. Runtime capability output
 // consumes this value instead of repeating the release pin in hand-written C++.
 inline constexpr std::string_view release{"26.7.R1"};
-inline constexpr std::uint64_t catalog_hash = 0x7e766c2229de2671ULL;
+inline constexpr std::uint64_t catalog_hash = 0xbffa3ca9012399f2ULL;
 inline constexpr std::uint64_t checkpoint_schema_hash = 0x23b42724ffac6c04ULL;
 inline constexpr std::uint64_t runtime_protocol_hash = 0x0bc477cf9500a83bULL;
-inline constexpr std::uint64_t build_hash = 0x163a9553ac87d134ULL;
+inline constexpr std::uint64_t build_hash = 0x17ac32bdc9f34ae6ULL;
 
 inline constexpr std::size_t maximum_routers = 16;
 inline constexpr std::size_t maximum_sr_routers = 16;
@@ -235,12 +235,11 @@ inline constexpr std::size_t tls_profile_name_bytes = 32;
 inline constexpr std::size_t tls_certificate_file_name_bytes = 95;
 inline constexpr std::uint8_t tls_algorithm_index_minimum = 1;
 inline constexpr std::uint8_t tls_algorithm_index_maximum = 255;
-inline constexpr std::array<TlsAlgorithmName, 5> tls13_ciphers{{
+inline constexpr std::array<TlsAlgorithmName, 4> tls13_ciphers{{
     {"tls-aes128-gcm-sha256", "TLS_AES_128_GCM_SHA256", false},
     {"tls-aes256-gcm-sha384", "TLS_AES_256_GCM_SHA384", true},
     {"tls-chacha20-poly1305-sha256", "TLS_CHACHA20_POLY1305_SHA256", false},
-    {"tls-aes128-ccm-sha256", "TLS_AES_128_CCM_SHA256", false},
-    {"tls-aes128-ccm8-sha256", "TLS_AES_128_CCM_8_SHA256", false}
+    {"tls-aes128-ccm-sha256", "TLS_AES_128_CCM_SHA256", false}
 }};
 inline constexpr std::array<TlsAlgorithmName, 6> tls13_groups{{
     {"tls-ecdhe-256", "P-256", false},
@@ -250,10 +249,7 @@ inline constexpr std::array<TlsAlgorithmName, 6> tls13_groups{{
     {"tls-x448", "X448", false},
     {"tls-ml-kem1024", "MLKEM1024", true}
 }};
-inline constexpr std::array<TlsAlgorithmName, 15> tls13_signatures{{
-    {"tls-rsa-pkcs1-sha256", "rsa_pkcs1_sha256", false},
-    {"tls-rsa-pkcs1-sha384", "rsa_pkcs1_sha384", false},
-    {"tls-rsa-pkcs1-sha512", "rsa_pkcs1_sha512", false},
+inline constexpr std::array<TlsAlgorithmName, 12> tls13_signatures{{
     {"tls-ecdsa-secp256r1-sha256", "ecdsa_secp256r1_sha256", false},
     {"tls-ecdsa-secp384r1-sha384", "ecdsa_secp384r1_sha384", false},
     {"tls-ecdsa-secp521r1-sha512", "ecdsa_secp521r1_sha512", false},
@@ -270,6 +266,10 @@ inline constexpr std::array<TlsAlgorithmName, 15> tls13_signatures{{
 inline constexpr std::chrono::seconds dynamic_arp_timeout{
     14400};
 inline constexpr std::size_t dhcpv4_server_name_bytes =
+    32;
+inline constexpr std::size_t dhcpv4_pool_name_bytes =
+    32;
+inline constexpr std::size_t dhcpv6_pool_name_bytes =
     32;
 inline constexpr std::size_t dhcpv4_description_bytes =
     80;
@@ -323,6 +323,10 @@ inline constexpr std::uint32_t ospf_interface_metric_minimum =
     1U;
 inline constexpr std::uint32_t ospf_interface_metric_maximum =
     65535U;
+inline constexpr std::uint32_t ospf_stub_default_metric_minimum =
+    1U;
+inline constexpr std::uint32_t ospf_stub_default_metric_maximum =
+    16777214U;
 inline constexpr std::uint32_t ospf_reference_bandwidth_kbps =
     100000000U;
 inline constexpr std::uint32_t ospf_router_preference =

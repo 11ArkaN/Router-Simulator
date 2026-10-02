@@ -30,6 +30,10 @@ InstanceConfiguration default_instance(AddressFamily family,
           device_catalog::ospf_lsa_maximum_wait.count()),
       .instance_id = instance_id,
       .address_family = family,
+      // YANG models graceful-restart as a plain presence container with no
+      // default, so a new instance starts without it and an explicit
+      // graceful-restart command is required to enable the helper.
+      .graceful_restart_helper = false,
       // Nokia creates OSPF and OSPF3 instances shutdown. A terminal command
       // must explicitly enable the process after its required configuration.
       .admin_enabled = false};

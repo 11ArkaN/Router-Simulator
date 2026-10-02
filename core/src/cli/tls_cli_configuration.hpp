@@ -14,9 +14,10 @@ namespace router::lab::tls_cli {
 
 struct EditResult {
   // recognized distinguishes a non-TLS command from an invalid TLS edit.
-  // changed enforces the repository no-successful-no-op contract. Instance is
-  // a stable schema-key path used by MD candidate conflict tracking.
+  // valid distinguishes an accepted idempotent write or classic create-or-select
+  // from a rejected value. changed is true only when the canonical model moved.
   bool recognized{};
+  bool valid{};
   bool changed{};
   std::string instance;
 };

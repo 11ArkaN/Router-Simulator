@@ -56,16 +56,22 @@ bool profile_mda_slot(const ParsedCommand &command) {
          *slot == std::to_string(profile::mda_slot);
 }
 
-// Validates the complete provisionable MDA identity from generated capability.
-bool profile_mda(const ParsedCommand &command) {
+// Validates the complete provisionable MDA identity from generated capability
+// and returns the profile-owned type storage. Both modeled and additionally
+// supported MDA types are provisionable; the pointer always targets generated
+// profile storage so candidate copies retain stable identity.
+const char *profile_mda_type(const ParsedCommand &command) {
   const auto card_slot = argument(command, cli_schema::TokenKind::card_slot);
   const auto mda_slot = argument(command, cli_schema::TokenKind::mda_slot);
   const auto type = argument(command, cli_schema::TokenKind::mda_type);
   if (!card_slot || !mda_slot || !type ||
       *card_slot != std::to_string(profile::line_card_slot) ||
       *mda_slot != std::to_string(profile::mda_slot))
-    return false;
-  return *type == profile::modeled_mda_type;
+    return nullptr;
+  for (const auto *supported : profile::supported_mda_types)
+    if (*type == supported)
+      return supported;
+  return nullptr;
 }
 
 } // namespace
@@ -108,16 +114,16 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
       router::profile_card(candidate).type = profile::line_card_type;
       return changed(modified);
     }
-  case configure_mda_type:
-    if (!profile_mda(command))
+  case configure_mda_type: {
+    const auto *type = profile_mda_type(command);
+    if (!type)
       return "MINOR: MGMT_CORE #2301: Invalid element value";
     if (!router::profile_card(candidate).type)
       return "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
-    {
-      const bool modified = !router::profile_mda(candidate).type;
-      router::profile_mda(candidate).type = profile::modeled_mda_type;
-      return changed(modified);
-    }
+    const bool modified = router::profile_mda(candidate).type != type;
+    router::profile_mda(candidate).type = type;
+    return changed(modified);
+  }
   case md_card_enable:
   case md_card_disable: {
     if (!profile_card_slot(command) || !router::profile_card(candidate).type)
@@ -257,18 +263,28 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
     if (!profile_card_slot(command))
       return "MINOR: MGMT_CORE #2301: Invalid element value";
     {
-      const bool modified = router::profile_card(candidate).type ||
-                            router::profile_mda(candidate).type;
-      router::profile_card(candidate).type = nullptr;
-      router::profile_mda(candidate).type = nullptr;
+      // Deleting the card restores the YANG default administrative state so a
+      // recreated card starts enabled, matching the multi-router engine reset.
+      auto &card = router::profile_card(candidate);
+      auto &mda = router::profile_mda(candidate);
+      const bool modified = card.type || mda.type || !card.admin_enabled ||
+                            !mda.admin_enabled;
+      card.type = nullptr;
+      card.admin_enabled = true;
+      mda.type = nullptr;
+      mda.admin_enabled = true;
       return changed(modified);
     }
   case md_delete_mda:
     if (!profile_mda_slot(command))
       return "MINOR: MGMT_CORE #2301: Invalid element value";
     {
-      const bool modified = router::profile_mda(candidate).type;
-      router::profile_mda(candidate).type = nullptr;
+      // Deleting the MDA restores the YANG default administrative state so a
+      // recreated MDA starts enabled, matching the multi-router engine reset.
+      auto &mda = router::profile_mda(candidate);
+      const bool modified = mda.type || !mda.admin_enabled;
+      mda.type = nullptr;
+      mda.admin_enabled = true;
       return changed(modified);
     }
   case md_delete_port_description: {
@@ -288,14 +304,17 @@ std::string execute_md(ConfigurationState &configuration, CliSession &session,
     const auto current =
         route ? std::find_if(candidate.static_routes.begin(),
                              candidate.static_routes.end(),
-                             [&](const auto &entry) {
-                               return entry.valid &&
-                                      entry.network == route->network &&
-                                      entry.prefix_length == route->prefix;
-                             })
-              : candidate.static_routes.end();
-    if (current == candidate.static_routes.end() || current->admin_enabled)
-      return "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+                              [&](const auto &entry) {
+                                return entry.valid &&
+                                       entry.network == route->network &&
+                                       entry.prefix_length == route->prefix;
+                              })
+               : candidate.static_routes.end();
+    if (current == candidate.static_routes.end())
+      // Deleting an absent keyed entry is the documented silent no-op.
+      return changed(false);
+    // MD delete removes the entry regardless of its admin-state leaf. The
+    // classic shutdown precondition never applies to candidate edits.
     const auto before = candidate.static_routes;
     if (!remove_static(candidate,
                        *argument(command, cli_schema::TokenKind::ipv4_prefix)))

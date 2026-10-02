@@ -132,18 +132,40 @@ void cli_tests() {
               contains(card_edit, "*[ex:/configure]"),
           "MD card edit was not silent or did not mark the candidate");
   router::execute_cli(state, session, "card 1 mda 1 mda-type me10-10gb-sfp+",
-                      no_ping);
-  const auto maximum_description = std::string(80, 'x');
+                       no_ping);
+  // The profile supports me1-100gb-cfp2 alongside the modeled MDA type.
+  // Deleting a card or MDA restores the YANG default enabled admin-state so
+  // a recreated element does not inherit a stale shutdown.
+  router::execute_cli(state, session, "card 1 mda 1 mda-type me1-100gb-cfp2",
+                       no_ping);
+  require(std::string_view{
+              router::profile_mda(state.configuration.candidate).type} ==
+              "me1-100gb-cfp2",
+          "MD MDA provisioning rejected the profile-supported cfp2 type");
+  router::execute_cli(state, session, "card 1 mda 1 admin-state disable",
+                       no_ping);
+  require(!router::profile_mda(state.configuration.candidate).admin_enabled,
+          "MD MDA disable did not stick");
+  router::execute_cli(state, session, "/delete card 1 mda 1", no_ping);
+  require(router::profile_mda(state.configuration.candidate).admin_enabled,
+          "MD MDA delete left a stale disabled admin-state behind");
+  // Restore the fixture MDA; later tests commit this provisioning.
+  router::execute_cli(state, session, "card 1 mda 1 mda-type me10-10gb-sfp+",
+                       no_ping);
+  require(router::profile_mda(state.configuration.candidate).type != nullptr,
+          "MD MDA re-provisioning did not restore the fixture");
+  // The 26.7 very-long-description range allows 1 through 255 characters.
+  const auto maximum_description = std::string(255, 'x');
   router::execute_cli(state, session,
                       "port 1/1/1 description \"" + maximum_description + "\"",
                       no_ping);
-  require(state.configuration.candidate.ports[0].description[79] == 'x',
-          "MD port description rejected the documented 80-character limit");
+  require(state.configuration.candidate.ports[0].description[254] == 'x',
+          "MD port description rejected the documented 255-character limit");
   const auto oversized_description = router::execute_cli(
-      state, session, "port 1/1/1 description \"" + std::string(81, 'x') + "\"",
-      no_ping);
+      state, session,
+      "port 1/1/1 description \"" + std::string(256, 'x') + "\"", no_ping);
   require(contains(oversized_description, "MINOR: MGMT_CORE #2301"),
-          "MD port description accepted more than 80 characters");
+          "MD port description accepted more than 255 characters");
   // MD-CLI accepts the edit operator at the selected child as well as at the
   // beginning of a relative line. This spelling exercises the mid-path form
   // and must resolve to the same generated delete owner without changing PWC.
@@ -323,18 +345,19 @@ void cli_tests() {
                           no_ping);
   require(contains(old_route, "Unknown element"),
           "Obsolete shortened MD static-route syntax remained executable");
+  // Static-route destinations must not carry host bits in either engine.
+  const auto host_bits_md = router::execute_cli(
+      state, session,
+      "router \"Base\" static-routes route 203.0.113.1/24 route-type unicast "
+      "next-hop 198.51.100.2",
+      no_ping);
+  require(contains(host_bits_md, "Invalid element"),
+          "MD static route accepted a destination with host bits");
   router::execute_cli(
       state, session,
       "router \"Base\" static-routes route 203.0.113.0/24 route-type unicast "
       "next-hop 198.51.100.2",
       no_ping);
-  const auto active_md_delete = router::execute_cli(
-      state, session,
-      "/delete router static-routes route 203.0.113.0/24 "
-      "route-type unicast",
-      no_ping);
-  require(contains(active_md_delete, "currently not allowed"),
-          "MD deleted a static route while its next hop was enabled");
   router::execute_cli(state, session, "admin-state disable", no_ping);
   const auto route_compare =
       router::execute_cli(state, session, "compare", no_ping);
@@ -368,6 +391,43 @@ void cli_tests() {
   require(!state.configuration.running.static_routes[0].valid,
           "MD delete did not remove the keyed static-route entry");
   router::execute_cli(state, session, "top", no_ping);
+
+  // MD delete removes a list entry regardless of its admin-state leaf. The
+  // classic shutdown precondition never applies to candidate edits, so an
+  // enabled route is removed instead of rejected with an explicit error.
+  router::DeviceState enabled_state;
+  router::CliSession enabled_session;
+  router::execute_cli(enabled_state, enabled_session, "configure exclusive",
+                      no_ping);
+  router::execute_cli(
+      enabled_state, enabled_session,
+      "router \"Base\" static-routes route 203.0.113.0/24 route-type unicast "
+      "next-hop 198.51.100.2",
+      no_ping);
+  const auto enabled_delete = router::execute_cli(
+      enabled_state, enabled_session,
+      "/delete router static-routes route 203.0.113.0/24 "
+      "route-type unicast",
+      no_ping);
+  require(!contains(enabled_delete, "Invalid element") &&
+              !contains(enabled_delete, "not allowed") &&
+              !contains(enabled_delete, "Unknown element"),
+          "MD delete of an enabled static route was rejected");
+  const auto enabled_compare =
+      router::execute_cli(enabled_state, enabled_session, "compare", no_ping);
+  require(!contains(enabled_compare, "+           route") &&
+              !contains(enabled_compare, "-           route"),
+          "MD delete left a removed static route in the candidate");
+  // Deleting an already-absent keyed entry is the documented silent no-op.
+  const auto absent_delete = router::execute_cli(
+      enabled_state, enabled_session,
+      "/delete router static-routes route 203.0.113.0/24 "
+      "route-type unicast",
+      no_ping);
+  require(!contains(absent_delete, "Invalid element") &&
+              !contains(absent_delete, "MINOR:") &&
+              !contains(absent_delete, "Unknown element"),
+          "MD delete of an absent static route was not silent");
 
   // System reports consume modeled state rather than fixed demo text. Uptime,
   // pinned image identity and the unsaved configuration indicator must exist.
@@ -530,6 +590,13 @@ void cli_tests() {
                       no_ping);
   require(!state.configuration.running.static_routes[0].valid,
           "Classic no static-route-entry did not remove the route");
+  const auto host_bits_classic = router::execute_cli(
+      state, session,
+      "configure router static-route-entry 203.0.113.1/24 next-hop "
+      "198.51.100.2",
+      no_ping);
+  require(contains(host_bits_classic, "Error: Bad command."),
+          "Classic static route accepted a destination with host bits");
   const auto incomplete_classic_no =
       router::execute_cli(state, session, "configure router no", no_ping);
   require(contains(incomplete_classic_no, "Error: Bad command.") &&
@@ -546,9 +613,38 @@ void cli_tests() {
   require(contains(backslash_show, "Card Summary") &&
               contains(router::cli_prompt(state, session), ">config>card#"),
           "Classic backslash absolute path changed the working context");
-  router::execute_cli(state, session, "\\", no_ping);
-  require(router::cli_prompt(state, session) == "\n*A:R1# ",
-          "Classic standalone backslash did not return to root");
+  // A bare backslash is not a documented navigation command: 26.7 documents
+  // backslash only as an absolute-path prefix. The working context stays put.
+  const auto bare_backslash = router::execute_cli(state, session, "\\", no_ping);
+  require(contains(bare_backslash, "Error: Bad command.") &&
+              contains(router::cli_prompt(state, session), ">config>card#"),
+          "Classic standalone backslash left its documented prefix role");
+  // A bare slash returns to the operational root in MD-CLI, while classic
+  // documents slash only as an absolute-path prefix.
+  router::CliSession md_root_session;
+  router::execute_cli(state, md_root_session, "configure global", no_ping);
+  require(contains(router::cli_prompt(state, md_root_session), "/configure]"),
+          "MD-CLI fixture could not enter configuration for slash test");
+  router::execute_cli(state, md_root_session, "/", no_ping);
+  require(router::cli_prompt(state, md_root_session) == "\n[/]\nA:admin@R1# ",
+          "MD-CLI bare slash did not return to the operational root");
+  const auto classic_slash = router::execute_cli(state, session, "/", no_ping);
+  require(contains(classic_slash, "Error: Bad command.") &&
+              contains(router::cli_prompt(state, session), ">config>card#"),
+          "Classic bare slash left its documented prefix role");
+  // Nokia documents only help globals: a bare help global has no SR OS form
+  // and resolves through the documented unambiguous-prefix abbreviation.
+  const auto help_globals =
+      router::execute_cli(state, session, "help globals", no_ping);
+  require(contains(help_globals, "ping            - Verify the reachability"),
+          "Classic help globals did not expose the documented global commands");
+  const auto help_global_parsed = router::cli_detail::parse_command(
+      router::CliEngine::classic, router::MdCliWorkflow::operational,
+      "help global");
+  require(help_global_parsed &&
+              help_global_parsed->spec->id ==
+                  router::cli_schema::CommandId::help_globals,
+          "help global did not abbreviate to the documented help globals");
 
   // A command prefixed with // runs as an absolute command in the other engine
   // and immediately restores the originating engine and context.

@@ -581,6 +581,7 @@ if(ROUTER_BUILD_TESTS)
     tests/security/ipsec_lifetime_test.cpp
     tests/security/ipsec_integrity_test.cpp
     tests/cli/ipsec_cli_configuration_test.cpp
+    tests/cli/tls_cli_configuration_test.cpp
     tests/security/ipsec_nat_t_test.cpp
     tests/ip/mld_packet_test.cpp
     tests/ip/mld_import_policy_test.cpp

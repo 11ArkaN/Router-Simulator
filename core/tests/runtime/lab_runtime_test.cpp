@@ -738,6 +738,22 @@ void lab_runtime_tests() {
                   std::string_view::npos &&
               md_interface_show.find("Down/Down") != std::string_view::npos,
           "show router interface hid an unbound MD interface");
+  // Policy accounting requires an interface selector in 26.7; the bare form
+  // does not exist. An unknown selector is an explicit error.
+  const auto policy_accounting_show = contextual_command(
+      "show router interface md-loop policy-accounting");
+  require(policy_accounting_show.find("Interface Policy Accounting") !=
+                  std::string_view::npos &&
+              policy_accounting_show.find("No. of Entries: 0") !=
+                  std::string_view::npos,
+          "interface policy-accounting did not render its empty report");
+  require(contextual_command("show router interface policy-accounting")
+                  .find("Interface Policy Accounting") ==
+              std::string_view::npos,
+          "bare interface policy-accounting parsed");
+  require(contextual_command("show router interface missing policy-accounting")
+                  .find("Invalid element value") != std::string_view::npos,
+          "interface policy-accounting accepted an unknown interface");
 
   // Classic places DHCP directly below an interface, while the shared model
   // stores that subtree below ipv4. Drive the real classic PWC one component
@@ -761,6 +777,30 @@ void lab_runtime_tests() {
               classic_dhcp_detail.find("--------------------------------") !=
                   std::string_view::npos,
           "classic DHCP info detail did not map through the IPv4 model node");
+  // Classic selects the gateway as the source address with the gi-address
+  // src-ip-addr flag form. Standalone src-ip-addr rows do not exist, and the
+  // documented `no server` form carries no address.
+  for (const auto command : {"server 192.0.2.10",
+                             "gi-address 192.0.2.1 src-ip-addr", "no server",
+                             "no gi-address"}) {
+    const std::string result{contextual_command(command)};
+    require(result.find("Error:") == std::string_view::npos &&
+                result.find("MINOR:") == std::string_view::npos,
+            "classic DHCP relay edit failed");
+  }
+  // Removing the gateway reverts the source selection to automatic, and a
+  // second bare removal is rejected on the now empty element.
+  require(contextual_command("info detail").find("src-ip-addr auto") !=
+              std::string_view::npos,
+          "classic no gi-address kept the src-ip-addr selection");
+  for (const auto command : {"no server", "no server 192.0.2.10",
+                             "src-ip-addr auto", "src-ip-addr gi-address",
+                             "no src-ip-addr"}) {
+    const std::string result{contextual_command(command)};
+    require(result.find("Error:") != std::string_view::npos ||
+                result.find("MINOR:") != std::string_view::npos,
+            "classic DHCP relay accepted an undocumented form");
+  }
   // Classic `info` is global within configuration mode just as MD `info` is
   // global within an editor. Exercise a different deep branch in the same
   // session so dispatch cannot accidentally depend on the DHCP-specific path.
@@ -965,7 +1005,7 @@ void lab_runtime_tests() {
                   std::string_view::npos,
           "DHCPv6 server candidate could not leave its workflow");
   const auto dhcpv6_server_statistics = contextual_command(
-      "show router \"Base\" dhcp-server dhcpv6 browser-v6 server-stats");
+      "show router dhcp6 local-dhcp-server browser-v6 server-stats");
   if (dhcpv6_server_statistics.find("Statistics for DHCPv6 Server") ==
           std::string_view::npos ||
       dhcpv6_server_statistics.find("browser-v6") ==
@@ -975,6 +1015,91 @@ void lab_runtime_tests() {
     throw std::runtime_error(
         "committed DHCPv6 server was absent from operational state: " +
         std::string{dhcpv6_server_statistics});
+  // A rejected filter fails parsing before reaching the operational owner.
+  // MD reports MINOR diagnostics while classic reports a bad command.
+  const auto lease_parse_rejected = [&](std::string_view command,
+                                        const char *message) {
+    const std::string result{contextual_command(command)};
+    require(result.find("leases found") == std::string_view::npos &&
+                (result.find("Unknown element") != std::string_view::npos ||
+                 result.find("Invalid element value") !=
+                     std::string_view::npos ||
+                 result.find("Error:") != std::string_view::npos),
+            message);
+  };
+  for (const auto command :
+       {"show router dhcp6 local-dhcp-server browser-v6 leases type pd",
+        "show router dhcp6 local-dhcp-server browser-v6 leases type wan-host",
+        "show router dhcp6 local-dhcp-server browser-v6 leases state held"})
+    require(contextual_command(command).find("leases found") !=
+                std::string_view::npos,
+            "documented DHCPv6 show lease filter did not render");
+  // CMST documents prefix combined with type and state selectors.
+  for (const auto command :
+       {"show router dhcp6 local-dhcp-server browser-v6 leases "
+        "2001:db8::/32 type pd",
+        "show router dhcp6 local-dhcp-server browser-v6 leases "
+        "2001:db8::/32 state held",
+        "show router dhcp6 local-dhcp-server browser-v6 leases "
+        "2001:db8::/32 type pd state held"})
+    require(contextual_command(command).find("leases found") !=
+                    std::string_view::npos &&
+                contextual_command(command).find("Unknown element") ==
+                    std::string_view::npos,
+            "documented DHCPv6 show lease prefix filter did not render");
+  lease_parse_rejected(
+      "show router dhcp6 local-dhcp-server browser-v6 leases type slaac",
+      "show accepted undocumented lease type slaac");
+  lease_parse_rejected(
+      "show router dhcp6 local-dhcp-server browser-v6 leases type wan",
+      "show accepted undocumented lease type wan");
+  lease_parse_rejected(
+      "show router dhcp6 local-dhcp-server browser-v6 leases state stable",
+      "show accepted undocumented lease state stable");
+  lease_parse_rejected(
+      "show router dhcp6 local-dhcp-server browser-v6 leases state internal",
+      "show accepted undocumented lease state internal");
+  // MD reset accepts pd, slaac and wan but not wan-host. Reaching the owner
+  // proves the grammar; the empty lease set exercises the no-op path.
+  require(contextual_command(
+              "reset router \"Base\" dhcp-server dhcpv6 browser-v6 leases all "
+              "type pd")
+                  .find("Unknown element") == std::string_view::npos,
+          "documented DHCPv6 reset lease filter did not reach the owner");
+  lease_parse_rejected(
+      "reset router \"Base\" dhcp-server dhcpv6 browser-v6 leases all type "
+      "wan-host",
+      "reset accepted undocumented lease type wan-host");
+  require(contextual_command("//").find("classic CLI engine") !=
+              std::string_view::npos,
+          "DHCPv6 lease fixture could not enter classic CLI");
+  // Classic clear accepts pd, slaac and wan-host for type and the six
+  // documented states. The empty lease set exercises the no-op path.
+  for (const auto command :
+       {"show router dhcp6 local-dhcp-server browser-v6 leases type pd state "
+        "held",
+        "clear router dhcp6 local-dhcp-server browser-v6 leases all type pd",
+        "clear router dhcp6 local-dhcp-server browser-v6 leases all state "
+        "internal"})
+    require(contextual_command(command).find("MINOR:") ==
+                    std::string_view::npos &&
+                contextual_command(command).find("Error:") ==
+                    std::string_view::npos,
+            "documented DHCPv6 clear lease filter did not clear");
+  lease_parse_rejected(
+      "clear router dhcp6 local-dhcp-server browser-v6 leases all type wan",
+      "clear accepted undocumented lease type wan");
+  lease_parse_rejected(
+      "clear router dhcp6 local-dhcp-server browser-v6 leases all state "
+      "stable",
+      "clear accepted undocumented lease state stable");
+  lease_parse_rejected(
+      "clear router dhcp6 local-dhcp-server browser-v6 leases all state "
+      "internal-held",
+      "clear accepted undocumented lease state internal-held");
+  require(contextual_command("//").find("MD-CLI engine") !=
+              std::string_view::npos,
+          "DHCPv6 lease fixture could not return to MD-CLI");
 
   // Each source-backed configuration family must own contextual rendering,
   // not merely accept root-relative edits. This transcript creates one real
@@ -1028,11 +1153,11 @@ void lab_runtime_tests() {
         "enable",
         "configure router \"Base\" interface md-loop ipv4 dhcp option-82 "
         "action replace",
-        "configure router \"Base\" interface md-loop icmp redirects "
+        "configure router \"Base\" interface md-loop ipv4 icmp redirects "
         "admin-state enable",
-        "configure router \"Base\" interface md-loop icmp redirects number "
+        "configure router \"Base\" interface md-loop ipv4 icmp redirects number "
         "30",
-        "configure router \"Base\" interface md-loop icmp redirects seconds "
+        "configure router \"Base\" interface md-loop ipv4 icmp redirects seconds "
         "5",
         "configure router \"Base\" interface md-loop ipv6 address "
         "2001:db8:ffff::1 prefix-length 64",
@@ -1055,13 +1180,13 @@ void lab_runtime_tests() {
         "group-range start ff3e::200 end ff3e::20f source "
         "2001:db8:ffff::20",
         "configure policy-options prefix-list info-prefix prefix "
-        "2001:db8:ffff::/64",
+        "2001:db8:ffff::/64 type exact",
         "configure system security keychains keychain info-keychain "
         "bidirectional entry 1 algorithm hmac-sha-256",
         "configure system security keychains keychain info-keychain "
         "bidirectional entry 1 authentication-key info-secret",
         "configure system security keychains keychain info-keychain "
-        "bidirectional entry 1 begin-time now",
+        "bidirectional entry 1 begin-time 2026-07-16T12:00:00Z",
         "configure system security keychains keychain info-keychain "
         "bidirectional entry 1 tolerance 30",
         "configure system security tls use-pqc-only false",
@@ -1090,12 +1215,38 @@ void lab_runtime_tests() {
       "timeout 120");
   require_context_info("configure router interface md-loop ipv4 dhcp",
                        "admin-state enable");
+  // The documented circuit-id default is ascii-tuple: both removal forms
+  // restore it instead of none.
+  for (const auto command :
+       {"configure router \"Base\" interface md-loop ipv4 dhcp option-82 "
+        "circuit-id if-name",
+        "delete router \"Base\" interface md-loop ipv4 dhcp option-82 "
+        "circuit-id"}) {
+    const std::string result{contextual_command(command)};
+    require(result.find("MINOR:") == std::string_view::npos,
+            "MD circuit-id set or delete failed");
+  }
   require_context_info(
       "configure router interface md-loop ipv4 dhcp option-82",
       "action replace");
-  require_context_info("configure router interface md-loop icmp",
+  // Plain info suppresses default-valued leaves, so the restored ascii-tuple
+  // default is verified through info detail.
+  require(contextual_command("exit all").find("MINOR:") ==
+              std::string_view::npos,
+          "circuit-id fixture could not reset its PWC");
+  require(contextual_command(
+              "configure router \"Base\" interface md-loop ipv4 dhcp option-82")
+                  .find("MINOR:") == std::string_view::npos,
+          "circuit-id fixture could not navigate to option-82");
+  require(contextual_command("info detail").find("ascii-tuple") !=
+              std::string_view::npos,
+          "circuit-id delete did not restore ascii-tuple");
+  require(contextual_command("exit all").find("MINOR:") ==
+              std::string_view::npos,
+          "circuit-id fixture could not leave its PWC");
+  require_context_info("configure router interface md-loop ipv4 icmp",
                        "redirects {");
-  require_context_info("configure router interface md-loop icmp redirects",
+  require_context_info("configure router interface md-loop ipv4 icmp redirects",
                        "admin-state enable");
   require_context_info("configure router interface md-loop ipv6",
                        "address 2001:db8:ffff::1 {");
@@ -1118,7 +1269,7 @@ void lab_runtime_tests() {
                        "reachable-time 75");
   require_context_info("configure router \"Base\" mld", "admin-state disable");
   require_context_info("configure policy-options prefix-list info-prefix",
-                       "prefix 2001:db8:ffff::/64");
+                       "prefix 2001:db8:ffff::/64 type exact");
   require_context_info(
       "configure system security keychains keychain info-keychain "
       "bidirectional entry 1",
@@ -1145,8 +1296,104 @@ void lab_runtime_tests() {
               std::string_view::npos,
           "context-info fixture could not commit before static-route test");
   require(contextual_command("exit all").find("(ex)[/]") !=
-              std::string_view::npos,
+                  std::string_view::npos,
           "static-route context fixture did not return to MD root");
+  // A dedicated enabled DHCPv4 server exercises the declined and sticky
+  // show selectors, the clear state contract and the classic-only tools
+  // action against operational state.
+  for (const auto command :
+       {"configure router \"Base\" dhcp-server dhcpv4 decl-test pool users "
+        "subnet 192.0.2.0/24 address-range 192.0.2.10 end 192.0.2.200 "
+        "failover-control-type local",
+        "configure router \"Base\" dhcp-server dhcpv4 decl-test admin-state "
+        "enable",
+        "commit",
+        "exit all"}) {
+    const std::string result{contextual_command(command)};
+    require(result.find("MINOR:") == std::string_view::npos,
+            "DHCPv4 show fixture could not commit its server");
+  }
+  // Operational show commands run outside the exclusive candidate: quit the
+  // editor first and re-enter it afterwards for the static-route fixture.
+  require(contextual_command("quit-config").find("CLI #2064: Exiting exclusive") !=
+              std::string_view::npos,
+          "DHCPv4 show fixture could not leave its MD workflow");
+  for (const auto command :
+       {"show router dhcp local-dhcp-server decl-test declined-addresses "
+        "192.0.2.0/24",
+        "show router dhcp local-dhcp-server decl-test declined-addresses "
+        "192.0.2.0/24 detail",
+        "show router dhcp local-dhcp-server decl-test sticky-leases"})
+    require(contextual_command(command).find("leases found") !=
+                std::string_view::npos,
+            "documented DHCPv4 show form did not render");
+  // The pool selector parses and an unknown pool is an explicit error.
+  require(contextual_command(
+              "show router dhcp local-dhcp-server decl-test declined-addresses "
+              "pool missing-pool")
+                  .find("Unknown element") != std::string_view::npos,
+          "DHCPv4 declined pool selector did not resolve pool names");
+  const auto show_rejected = [&](std::string_view command,
+                                   const char *message) {
+    // Undocumented selectors never reach the operational owner. Depending on
+    // the failure layer the session reports Unknown element, Invalid element
+    // value or that configuration input is not allowed in operational mode.
+    const std::string result{contextual_command(command)};
+    require(result.find("Unknown element") != std::string_view::npos ||
+                result.find("Invalid element value") !=
+                    std::string_view::npos ||
+                result.find("Operation not allowed") != std::string_view::npos,
+            message);
+  };
+  show_rejected(
+      "show router dhcp local-dhcp-server decl-test declined-addresses",
+      "bare declined-addresses parsed");
+  show_rejected(
+      "show router dhcp local-dhcp-server decl-test declined-addresses detail",
+      "detail-only declined-addresses parsed");
+  show_rejected(
+      "show router dhcp local-dhcp-server decl-test sticky-leases detail",
+      "sticky-leases detail parsed");
+  // Classic clear accepts every documented state except internal-offered.
+  // Reaching the owner proves the grammar; the empty lease set is a no-op.
+  require(contextual_command("//").find("classic CLI engine") !=
+              std::string_view::npos,
+          "DHCPv4 clear fixture could not enter classic CLI");
+  for (const auto command :
+       {"clear router dhcp local-dhcp-server decl-test leases all state sticky",
+        "clear router dhcp local-dhcp-server decl-test leases 192.0.2.0/24 "
+        "state held"}) {
+    const std::string result{contextual_command(command)};
+    require(result.find("Unknown element") == std::string_view::npos &&
+                result.find("Invalid element value") ==
+                    std::string_view::npos,
+            "documented DHCPv4 clear state did not reach the owner");
+  }
+  for (const auto command :
+       {"clear router dhcp local-dhcp-server decl-test leases all state "
+        "internal-offered",
+        "clear router dhcp local-dhcp-server decl-test leases 192.0.2.0/24 "
+        "state internal-offered"}) {
+    const std::string result{contextual_command(command)};
+    require(result.find("Unknown element") != std::string_view::npos ||
+                result.find("Invalid element value") !=
+                    std::string_view::npos ||
+                result.find("Error:") != std::string_view::npos,
+            "classic DHCPv4 clear accepted internal-offered");
+  }
+  require(contextual_command("//").find("MD-CLI engine") !=
+              std::string_view::npos,
+          "DHCPv4 clear fixture could not return to MD-CLI");
+  // tools perform router dhcp send-force-renew is classic-only: the MD
+  // perform tree carries no dhcp node.
+  require(contextual_command(
+              "tools perform router dhcp local-dhcp-server decl-test "
+              "send-force-renew 192.0.2.10")
+                  .find("Unknown element") != std::string_view::npos,
+          "MD perform accepted the classic-only send-force-renew");
+  require(contextual_command("edit-config exclusive").find("(ex)[/]") !=
+              std::string_view::npos,
+          "DHCPv4 show fixture could not re-enter its MD workflow");
   for (const auto command :
        {"configure", "router", "static-routes",
         "route 203.0.114.0/24", "route-type unicast"}) {
@@ -1366,7 +1613,7 @@ void lab_runtime_tests() {
   require_classic_context_info("configure router mld", "shutdown");
   require_classic_context_info(
       "configure router policy-options prefix-list info-prefix",
-      "prefix 2001:db8:ffff::/64");
+      "prefix 2001:db8:ffff::/64 type exact");
   require_classic_context_info(
       "configure system security keychain info-keychain direction bi entry 1",
       "key \"******\" algorithm hmac-sha-256");
@@ -1376,7 +1623,7 @@ void lab_runtime_tests() {
   require_classic_context_info("configure system security tls",
                                "use-pqc-only false");
   require_classic_context_info("configure ipsec ike-transform 1",
-                               "dh-group group-19");
+                               "dh-group 19");
   require_classic_context_info("configure service ies 900", "service-id 900");
   require_classic_context_info(
       "configure router",
@@ -2089,9 +2336,11 @@ void lab_runtime_tests() {
         // SR OS treats the system interface as a loopback and therefore
         // accepts an IPv6 host address without a physical port.  This command
         // guards the contextual candidate editor that previously rejected all
-        // IPv6 system-interface leaves with MGMT_CORE #2301.
+        // IPv6 system-interface leaves with MGMT_CORE #2301. The address must
+        // stay distinct from checkpoint-edge: assigning the same IPv6 address
+        // twice is rejected at commit.
         "router \"Base\" interface system ipv6 address "
-        "2001:db8:ffff::1 prefix-length 128",
+        "2001:db8:ffff::ffff prefix-length 128",
         "router \"Base\" interface system admin-state enable"}) {
     const auto result = runtime.command(message(
         lab_runtime_protocol::session_execute, {"r1-console-1", command}));
@@ -2100,21 +2349,26 @@ void lab_runtime_tests() {
           "valid system interface MD edit failed: " + std::string{command} +
           " output=" + std::string{result});
   }
+  // The system interface is permanent in SR OS: MD delete of the list entry
+  // is an explicit error in both engines, never a successful removal. The
+  // failed delete must leave the configured system leaves intact.
   require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1",
                                    "delete router \"Base\" interface system"}))
-                  .find("MINOR:") == std::string_view::npos,
-          "MD could not remove the complete system-interface list entry");
+                  .find("MINOR:") != std::string_view::npos,
+          "MD delete wrongly removed the permanent system interface");
   for (const auto command :
        {"router \"Base\" interface system ipv4 primary address "
         "10.255.0.1 prefix-length 32",
+        // The system loopback address must not duplicate checkpoint-edge:
+        // assigning the same IPv6 address twice is rejected at commit.
         "router \"Base\" interface system ipv6 address "
-        "2001:db8:ffff::1 prefix-length 128",
+        "2001:db8:ffff::ffff prefix-length 128",
         "router \"Base\" interface system admin-state enable"})
     require(runtime.command(message(lab_runtime_protocol::session_execute,
                                     {"r1-console-1", command}))
                     .find("MINOR:") == std::string_view::npos,
-            "MD could not recreate the system interface after list deletion");
+            "MD could not edit the system interface after rejected deletion");
 
   // The system-interface address must survive candidate publication and be
   // visible through the same operational report used by Browser Use.  Looking
@@ -2127,7 +2381,7 @@ void lab_runtime_tests() {
   const auto dual_stack_system = runtime.command(message(
       lab_runtime_protocol::session_execute,
       {"r1-console-1", "//show router interface system detail"}));
-  require(dual_stack_system.find("2001:db8:ffff::1/128") !=
+  require(dual_stack_system.find("2001:db8:ffff::ffff/128") !=
               std::string_view::npos,
           "show router interface omitted the committed IPv6 system address");
 
@@ -2135,9 +2389,9 @@ void lab_runtime_tests() {
   // not merely accepted grammar. Exercise MD leaf presence and exact release
   // ranges before the shared dual-stack commit publishes it to forwarding.
   for (const auto command :
-       {"router \"Base\" interface edge icmp redirects admin-state disable",
-        "router \"Base\" interface edge icmp redirects number 321",
-        "router \"Base\" interface edge icmp redirects seconds 17"}) {
+       {"router \"Base\" interface edge ipv4 icmp redirects admin-state disable",
+        "router \"Base\" interface edge ipv4 icmp redirects number 321",
+        "router \"Base\" interface edge ipv4 icmp redirects seconds 17"}) {
     const auto result = runtime.command(message(
         lab_runtime_protocol::session_execute, {"r1-console-1", command}));
     if (result.find("MINOR:") != std::string_view::npos)
@@ -2146,10 +2400,10 @@ void lab_runtime_tests() {
           " output=" + std::string{result});
   }
   for (const auto command :
-       {"router \"Base\" interface edge icmp redirects number 9",
-        "router \"Base\" interface edge icmp redirects number 1001",
-        "router \"Base\" interface edge icmp redirects seconds 0",
-        "router \"Base\" interface edge icmp redirects seconds 61"})
+       {"router \"Base\" interface edge ipv4 icmp redirects number 9",
+        "router \"Base\" interface edge ipv4 icmp redirects number 1001",
+        "router \"Base\" interface edge ipv4 icmp redirects seconds 0",
+        "router \"Base\" interface edge ipv4 icmp redirects seconds 61"})
     require(runtime.command(message(lab_runtime_protocol::session_execute,
                                     {"r1-console-1", command}))
                     .find("MINOR:") != std::string_view::npos,
@@ -2188,7 +2442,7 @@ void lab_runtime_tests() {
       "router \"Base\" ipv6 router-advertisement dns-options "
       "rdnss-lifetime 1200",
       "router \"Base\" ipv6 router-advertisement interface edge "
-      "dns-options include-dns true",
+      "dns-options include-rdnss true",
       "router \"Base\" ipv6 router-advertisement interface edge "
       "admin-state enable",
       "router \"Base\" static-routes route 2001:db8:ffff::/64 "
@@ -2413,6 +2667,8 @@ void lab_runtime_tests() {
           "MD could not delete RA leaf: " + std::string{command} +
           " output=" + std::string{result});
   }
+  // Nokia MD-CLI deletes a nonexistent element silently: no warning
+  // messages are displayed, so a repeated delete succeeds without output.
   require(
       runtime
               .command(message(
@@ -2420,8 +2676,44 @@ void lab_runtime_tests() {
                   {"r1-console-1",
                    "delete router \"Base\" ipv6 router-advertisement interface "
                    "edge current-hop-limit"}))
-              .find("MGMT_CORE #2301") != std::string_view::npos,
-      "MD accepted deletion of an absent RA leaf");
+              .find("MGMT_CORE #2301") == std::string_view::npos,
+      "MD delete of an absent RA leaf was not silent");
+  // Interface dns-options rdnss-lifetime follows the same silent rule: set it,
+  // delete it, then delete again and require silence on the absent leaf.
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                   {"r1-console-1",
+                                    "router \"Base\" ipv6 router-advertisement "
+                                    "interface edge dns-options rdnss-lifetime "
+                                    "1200"}))
+                      .find("MINOR:") == std::string_view::npos &&
+              runtime.command(message(lab_runtime_protocol::session_execute,
+                                        {"r1-console-1",
+                                         "delete router \"Base\" ipv6 "
+                                         "router-advertisement interface edge "
+                                         "dns-options rdnss-lifetime"}))
+                      .find("MINOR:") == std::string_view::npos &&
+              runtime
+                  .command(message(
+                      lab_runtime_protocol::session_execute,
+                      {"r1-console-1",
+                       "delete router \"Base\" ipv6 router-advertisement "
+                       "interface edge dns-options rdnss-lifetime"}))
+                  .find("MGMT_CORE #2301") == std::string_view::npos,
+          "MD delete of an absent interface rdnss-lifetime was not silent");
+  // Router advertisements are link-scoped: the loopback system interface can
+  // never host an RA instance, so both engines must reject it and stay
+  // consistent with the show resolver.
+  for (const auto command :
+       {"router \"Base\" ipv6 router-advertisement interface system "
+        "current-hop-limit 17",
+        "delete router \"Base\" ipv6 router-advertisement interface system "
+        "current-hop-limit",
+        "configure router router-advertisement interface system shutdown",
+        "configure router router-advertisement interface system no shutdown"})
+    require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                    {"r1-console-1", command}))
+                    .find("MINOR:") != std::string_view::npos,
+            "RA on the system interface was not rejected");
   require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1",
                                    "router \"Base\" ipv6 router-advertisement "
@@ -2457,6 +2749,34 @@ void lab_runtime_tests() {
                                     {"r1-console-1", command}))
                     .find("MINOR:") != std::string_view::npos,
             "MD ICMPv6 Redirect configuration admitted an invalid YANG value");
+  // YANG allows the infinite lifetime keyword alongside decimal seconds, and
+  // rdnss-lifetime additionally allows 0 while MTU 0 stays rejected.
+  for (const auto command :
+       {"router \"Base\" ipv6 router-advertisement interface edge prefix "
+        "2001:db8:9::/64 valid-lifetime infinite",
+        "router \"Base\" ipv6 router-advertisement interface edge prefix "
+        "2001:db8:9::/64 preferred-lifetime infinite",
+        "router \"Base\" ipv6 router-advertisement dns-options rdnss-lifetime "
+        "0"})
+    require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                    {"r1-console-1", command}))
+                    .find("MINOR:") == std::string_view::npos,
+            "MD RA lifetime keyword was rejected");
+  for (const auto command :
+       {"delete router \"Base\" ipv6 router-advertisement interface edge "
+        "prefix 2001:db8:9::/64",
+        "delete router \"Base\" ipv6 router-advertisement dns-options "
+        "rdnss-lifetime"})
+    require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                    {"r1-console-1", command}))
+                    .find("MINOR:") == std::string_view::npos,
+            "MD RA lifetime cleanup did not restore the fixture");
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1",
+                                   "router \"Base\" ipv6 "
+                                   "router-advertisement interface edge mtu 0"}))
+                  .find("MINOR:") != std::string_view::npos,
+          "MD RA mtu 0 was not rejected");
   // Keep one non-default RA scalar in the candidate through commit. Earlier
   // coverage exercised every leaf and its delete form, but restoring the
   // default before commit could not detect a lost candidate-to-forwarding
@@ -2876,7 +3196,7 @@ void lab_runtime_tests() {
         "configure router interface system no address",
         "configure router interface system address 10.255.0.1/32",
         "configure router interface system no shutdown",
-        "configure router no interface system",
+        "configure router interface system shutdown",
         "configure router interface system address 10.255.0.1/32",
         "configure router interface system no shutdown"}) {
     const auto result = runtime.command(message(
@@ -2886,6 +3206,13 @@ void lab_runtime_tests() {
                                std::string{command} +
                                " output=" + std::string{result});
   }
+  // The system interface is permanent: classic removal fails explicitly even
+  // after shutdown, and the shutdown interface stays editable afterwards.
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1",
+                                   "configure router no interface system"}))
+                  .find("Error:") != std::string_view::npos,
+          "classic wrongly removed the permanent system interface");
   const std::vector<std::string_view> tls_classic_commands{
       "configure system security tls no use-pqc-only",
       "configure system security tls client-cipher-list classic-ciphers create",
@@ -2943,7 +3270,7 @@ void lab_runtime_tests() {
   // make it impossible for this path to pass by reusing the MD objects above.
   const std::array<std::string_view, 17> ipsec_classic_commands{
       "configure ipsec ike-transform 20 create",
-      "configure ipsec ike-transform 20 dh-group group-19",
+      "configure ipsec ike-transform 20 dh-group 19",
       "configure ipsec ike-transform 20 ike-auth-algorithm auth-encryption",
       "configure ipsec ike-transform 20 ike-encryption-algorithm aes128-gcm16",
       "configure ipsec ike-transform 20 ike-prf-algorithm sha256",
@@ -3510,8 +3837,8 @@ void lab_runtime_tests() {
   // No client Reply has crossed the wire yet, therefore every selector must
   // report an empty forwarding-owned table rather than a canned example row.
   for (const auto command :
-       {"configure port 1/1/2 ethernet mode access",
-        "configure port 1/1/2 ethernet encap-type dot1q",
+       {"configure port 1/1/2 ethernet encap-type dot1q",
+        "configure port 1/1/2 ethernet mode hybrid",
         "configure service customer 10 create",
         "configure service ies 100 customer 10 create",
         "configure service ies 100 interface subscriber create",
@@ -3541,7 +3868,7 @@ void lab_runtime_tests() {
        {"show service id 100 dhcp6 lease-state",
         "show service id 100 dhcp6 lease-state detail",
         "show service id 100 dhcp6 lease-state interface subscriber",
-        "show service id 100 dhcp6 lease-state 2001:db8:100::/64",
+        "show service id 100 dhcp6 lease-state ipv6-address 2001:db8:100::/64",
         "show service id 100 dhcp6 lease-state mac 02:00:00:00:aa:01"}) {
     const std::string result{runtime.command(message(
         lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
@@ -3553,9 +3880,10 @@ void lab_runtime_tests() {
   for (const auto command :
        {"clear service id 100 dhcp6 lease-state all",
         "clear service id 100 dhcp6 lease-state all no-dhcp-release",
-        "clear service id 100 dhcp6 lease-state 2001:db8:100::10/128",
-        "clear service id 100 dhcp6 lease-state 2001:db8:100::10/128 "
-        "no-dhcp-release",
+        "clear service id 100 dhcp6 lease-state ipv6-address "
+        "2001:db8:100::10/128",
+        "clear service id 100 dhcp6 lease-state ipv6-address "
+        "2001:db8:100::10/128 no-dhcp-release",
         "clear service id 100 dhcp6 lease-state mac 02:00:00:00:aa:01",
         "clear service id 100 dhcp6 lease-state mac 02:00:00:00:aa:01 "
         "no-dhcp-release",
@@ -3580,9 +3908,38 @@ void lab_runtime_tests() {
         "log-only threshold 75"}) {
     const std::string result{runtime.command(message(
         lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
-    require(result.find("Error:") == std::string::npos,
+    require(result.find("Error:") == std::string_view::npos,
             "idempotent classic IPv6 configuration was rejected");
   }
+  // The 26.7 FIB summary form carries no slot number: it aggregates every
+  // slot with an optional family selector and all keyword. The old
+  // slot-number summary form no longer parses.
+  for (const auto command :
+       {"show router fib summary", "show router fib summary all",
+        "show router fib ipv6 summary", "show router fib ipv6 summary all"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    require(result.find("FIB Display") != std::string_view::npos &&
+                result.find("Total Entries") != std::string_view::npos,
+            "slot-less FIB summary did not render");
+  }
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1",
+                                   "show router fib 1 summary"}))
+                  .find("Error: Bad command.") != std::string_view::npos,
+          "slot-number FIB summary still parses");
+  // Port descriptions allow 1 through 255 characters in both engines.
+  const std::string long_description(200, 'x');
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1",
+                                   "configure port 1/1/2 description \"" +
+                                       long_description + "\""}))
+                  .find("Error:") == std::string_view::npos &&
+              runtime.command(message(lab_runtime_protocol::session_execute,
+                                      {"r1-console-1",
+                                       "configure port 1/1/2 no description"}))
+                      .find("Error:") == std::string_view::npos,
+          "classic port description rejected the documented 255 limit");
   require(
       runtime.command(message(lab_runtime_protocol::session_execute,
                               {"r1-console-1",
@@ -3639,14 +3996,41 @@ void lab_runtime_tests() {
   // mapping. The second show reaches the cache again after the clear command,
   // proving persistence rather than inspecting the prior response string.
   require(runtime.command(message(lab_runtime_protocol::session_execute,
-                                  {"r1-console-1",
-                                   "clear router neighbor 2001:db8:1::2"}))
+                                   {"r1-console-1",
+                                    "clear router neighbor 2001:db8:1::2"}))
                       .find("Error:") == std::string_view::npos &&
               runtime.command(message(lab_runtime_protocol::session_execute,
-                                      {"r1-console-1",
-                                       "show router neighbor static"}))
+                                       {"r1-console-1",
+                                        "show router neighbor static"}))
                       .find("2001:db8:1::2") != std::string_view::npos,
           "classic neighbor clear deleted static configuration");
+  // The 26.7 show syntax has no `all` option and no `interface` keyword: the
+  // interface name is a positional selector, and the address plus interface
+  // combination exists only for clear.
+  for (const auto command :
+       {"show router neighbor all",
+        "show router neighbor interface edge",
+        "show router neighbor 2001:db8:1::2 interface edge"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    require(result.find("Error:") != std::string_view::npos ||
+                result.find("MINOR:") != std::string_view::npos,
+            "undocumented neighbor show selector parsed");
+  }
+  // SR OS rejects the value 0 for primary-preference and tag in both
+  // engines. Rejected edits must not touch running state.
+  for (const auto command :
+       {"configure router interface edge ipv6 address 2001:db8:1::10/64 "
+        "primary-preference 0",
+        "configure router interface edge ipv6 address 2001:db8:1::10/64 tag 0",
+        "configure router interface edge ipv6 address 2001:db8:1::10/64 "
+        "primary-preference 0 tag 0"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    require(result.find("Error:") != std::string_view::npos ||
+                result.find("MINOR:") != std::string_view::npos,
+            "zero IPv6 primary-preference or tag was accepted");
+  }
   for (const auto command :
        {"configure router interface edge ipv6 icmp6 redirects 9 1",
         "configure router interface edge ipv6 icmp6 redirects 1001 1",
@@ -3777,11 +4161,24 @@ void lab_runtime_tests() {
                   .find("2001:db8:1::54") != std::string_view::npos,
       "include-dns restore did not republish inherited RDNSS state");
   for (const auto command : {"clear router router-advertisement interface edge",
-                             "clear router router-advertisement all"})
+                              "clear router router-advertisement all"})
     require(runtime.command(message(lab_runtime_protocol::session_execute,
                                     {"r1-console-1", command}))
                     .find("Error:") == std::string_view::npos,
             "classic RA counter clear did not reach forwarding ownership");
+  // SR OS 26.7.R1 documents no reset router router-advertisement action in
+  // the MD-CLI or the reset YANG model. Both MD rows were removed, so only
+  // the classic clear forms above may reach the operational owner.
+  for (const auto command :
+       {"reset router \"Base\" router-advertisement all",
+        "reset router \"Base\" router-advertisement interface "
+        "interface-name edge"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    require(result.find("MINOR:") != std::string_view::npos ||
+                result.find("Error:") != std::string_view::npos,
+            "MD-CLI accepted the undocumented router-advertisement reset");
+  }
 
   // IPv4 ICMP uses the same operational owner as the packet path. Exercise
   // both terminal engines here so schema exposure, named-interface resolution,
@@ -3835,6 +4232,10 @@ void lab_runtime_tests() {
                     .find("Error:") == std::string_view::npos,
             "classic ICMPv6 clear did not reach forwarding ownership");
   require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "exit all"}))
+                  .find("Error:") == std::string_view::npos,
+          "ICMPv6 reset fixture could not leave classic configuration context");
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1", "//"}))
                   .find("A:admin@private-first#") != std::string_view::npos,
           "ICMPv6 reset fixture could not enter MD-CLI");
@@ -3862,9 +4263,9 @@ void lab_runtime_tests() {
   const std::array<std::string_view, 9> classic_mld_commands{
       "configure router mld no shutdown",
       "configure router mld query-interval 126",
+      "configure router mld robust-count 3",
       "configure router mld interface edge no shutdown",
       "configure router mld interface edge version 2",
-      "configure router mld interface edge robust-count 3",
       "configure router mld interface edge max-groups 16000",
       "configure router mld interface edge max-grp-sources 32000",
       "configure router mld interface edge max-sources 1000",
@@ -3883,11 +4284,11 @@ void lab_runtime_tests() {
   for (const auto command :
        {"configure router policy-options begin",
         "configure router policy-options prefix-list MLD-GROUPS prefix "
-        "192.0.2.0/24",
+        "192.0.2.0/24 type exact",
         "configure router policy-options prefix-list MLD-GROUPS prefix "
-        "ff3e:500::/40",
+        "ff3e:500::/40 type exact",
         "configure router policy-options prefix-list MLD-SOURCES prefix "
-        "2001:db8:1::/64",
+        "2001:db8:1::/64 type exact",
         "configure router policy-options policy-statement MLD-IN entry 10 "
         "from group-address MLD-GROUPS",
         "configure router policy-options policy-statement MLD-IN entry 10 "
@@ -3896,6 +4297,10 @@ void lab_runtime_tests() {
         "from protocol mld",
         "configure router policy-options policy-statement MLD-IN entry 10 "
         "action drop",
+        "configure router policy-options policy-statement MLD-IN entry 10 "
+        "action metric set 0",
+        "configure router policy-options policy-statement MLD-IN entry 10 "
+        "action metric set 4294967295",
         "configure router policy-options policy-statement MLD-IN "
         "default-action accept",
         "configure router policy-options commit",
@@ -4122,6 +4527,28 @@ void lab_runtime_tests() {
                                   {"r1-console-1", "//"}))
                   .find("A:admin@private-first#") != std::string_view::npos,
           "classic IPv6 fixture could not return to MD-CLI");
+  // MD-CLI reset actions carry the YANG action keywords. The bare database
+  // and statistics forms and the keyword-less version selector do not exist.
+  for (const auto command :
+       {"reset router \"Base\" mld database all",
+        "reset router \"Base\" mld version interface interface-name edge",
+        "reset router \"Base\" mld statistics all",
+        "reset router \"Base\" mld statistics interface interface-name edge"})
+    require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                    {"r1-console-1", command}))
+                    .find("MINOR:") == std::string_view::npos,
+            "MD-CLI MLD reset did not reach forwarding-owned state");
+  for (const auto command :
+       {"reset router \"Base\" mld database",
+        "reset router \"Base\" mld version interface-name edge",
+        "reset router \"Base\" mld statistics",
+        "reset router \"Base\" mld statistics interface-name edge"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    require(result.find("MINOR:") != std::string_view::npos ||
+                result.find("Error:") != std::string_view::npos,
+            "MD-CLI accepted a keyword-less MLD reset form");
+  }
 
   std::string ping_output{runtime.command(message(
       lab_runtime_protocol::session_execute,
@@ -4367,13 +4794,15 @@ void lab_runtime_tests() {
   const auto delete_md_limit =
       "delete router \"Base\" mld interface checkpoint-edge "
       "maximum-number-sources";
+  // Deleting an already-default leaf is the silent no-op, while the value
+  // stays restorable afterwards.
   require(
       runtime.command(message(lab_runtime_protocol::session_execute,
                               {"r1-console-1", delete_md_limit}))
                   .find("MINOR:") == std::string_view::npos &&
           runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1", delete_md_limit}))
-                  .find("MINOR:") != std::string_view::npos &&
+                  .find("MINOR:") == std::string_view::npos &&
           runtime.command(
                      message(lab_runtime_protocol::session_execute,
                              {"r1-console-1",
@@ -4384,13 +4813,15 @@ void lab_runtime_tests() {
   const auto delete_md_router_alert =
       "delete router \"Base\" mld interface checkpoint-edge "
       "router-alert-check";
+  // Deleting an already-default leaf is the silent no-op, while an explicit
+  // boolean value stays configurable afterwards.
   require(
       runtime.command(message(lab_runtime_protocol::session_execute,
                               {"r1-console-1", delete_md_router_alert}))
                   .find("MINOR:") == std::string_view::npos &&
           runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1", delete_md_router_alert}))
-                  .find("MINOR:") != std::string_view::npos &&
+                  .find("MINOR:") == std::string_view::npos &&
           runtime.command(
                      message(lab_runtime_protocol::session_execute,
                              {"r1-console-1",
@@ -4410,11 +4841,11 @@ void lab_runtime_tests() {
   // generated candidate-key resource test with policy semantics.
   for (const auto command :
        {"policy-options prefix-list CHECKPOINT-MLD-GROUPS prefix "
-        "ff3e:d000::/52",
+        "ff3e:d000::/52 type exact",
         "policy-options prefix-list CHECKPOINT-MLD-GROUPS prefix "
-        "198.51.100.0/24",
+        "198.51.100.0/24 type exact",
         "policy-options prefix-list CHECKPOINT-MLD-SOURCES prefix "
-        "2001:db8:ffff::/64",
+        "2001:db8:ffff::/64 type exact",
         "policy-options policy-statement CHECKPOINT-MLD-IN entry 10 from "
         "group-address CHECKPOINT-MLD-GROUPS",
         "policy-options policy-statement CHECKPOINT-MLD-IN entry 10 from "
@@ -4422,7 +4853,7 @@ void lab_runtime_tests() {
         "policy-options policy-statement CHECKPOINT-MLD-IN entry 10 from "
         "protocol name mld",
         "policy-options policy-statement CHECKPOINT-MLD-IN entry 10 action "
-        "action-type drop",
+        "action-type reject",
         "policy-options policy-statement CHECKPOINT-MLD-IN default-action "
         "action-type accept",
         "router \"Base\" mld interface checkpoint-edge import-policy "
@@ -4492,12 +4923,12 @@ void lab_runtime_tests() {
   require(
       checkpoint_prefix_list != precommit_candidate.mld_prefix_lists.end() &&
           checkpoint_prefix_list->prefixes.size() == 2U &&
-          checkpoint_prefix_list->prefixes.front().network.family ==
+          checkpoint_prefix_list->prefixes.front().prefix.network.family ==
               ip::AddressFamily::ipv4 &&
           checkpoint_policy != precommit_candidate.mld_import_policies.end() &&
           checkpoint_policy->entries.size() == 1U &&
           checkpoint_policy->entries.front().action ==
-              mld::ImportPolicyAction::drop &&
+              mld::ImportPolicyAction::reject &&
           checkpoint_interface != precommit_candidate.interfaces.end() &&
           checkpoint_interface->mld_import_policy == "CHECKPOINT-MLD-IN",
       "MD candidate checkpoint lost policy leaves before commit");
@@ -4507,6 +4938,113 @@ void lab_runtime_tests() {
     throw std::runtime_error(
         "MD MLD policy checkpoint fixture could not be committed: " +
         checkpoint_commit);
+  // MD-CLI action-type follows the YANG enumeration, which defines no drop
+  // value. Both MD rows must reject drop while classic keeps accepting it
+  // (covered by the classic MLD policy fixture above).
+  for (const auto command :
+       {"policy-options policy-statement DROP-PROBE entry 10 action "
+        "action-type drop",
+        "policy-options policy-statement DROP-PROBE default-action "
+        "action-type drop"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    require(result.find("MINOR:") != std::string_view::npos ||
+                result.find("Error:") != std::string_view::npos,
+            "MD-CLI policy accepted the undocumented drop action");
+  }
+  for (const auto command :
+       {"policy-options policy-statement DROP-PROBE entry 10 action "
+        "action-type reject",
+        "policy-options policy-statement DROP-PROBE default-action "
+        "action-type accept"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    if (result.find("MINOR:") != std::string_view::npos ||
+        result.find("Error:") != std::string_view::npos)
+      throw std::runtime_error(
+          "MD-CLI policy rejected a documented action-type value: " +
+          std::string{command} + " output=" + result);
+  }
+  // A route-policy action metric spans the full unsigned 32-bit range in
+  // both engines, unlike the 1 through 65535 OSPF interface metric.
+  for (const auto command :
+       {"policy-options policy-statement METRIC-PROBE entry 10 action metric "
+        "set 0",
+        "policy-options policy-statement METRIC-PROBE entry 10 action metric "
+        "set 65536",
+        "policy-options policy-statement METRIC-PROBE entry 10 action metric "
+        "set 4294967295"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    if (result.find("MINOR:") != std::string_view::npos ||
+        result.find("Error:") != std::string_view::npos)
+      throw std::runtime_error(
+          "MD-CLI policy rejected a documented action metric: " +
+          std::string{command} + " output=" + result);
+  }
+  for (const auto command :
+       {"policy-options policy-statement METRIC-PROBE entry 10 action metric "
+        "set 4294967296",
+        "policy-options policy-statement METRIC-PROBE entry 10 action metric "
+        "set xyz"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    require(result.find("MINOR:") != std::string_view::npos ||
+                result.find("Error:") != std::string_view::npos,
+            "MD-CLI policy accepted an out-of-range action metric");
+  }
+  // Documented MD-CLI delete stays silent on absent MLD, service-customer
+  // and policy elements without materializing their ancestors.
+  for (const auto command :
+       {"delete router \"Base\" mld interface missing-edge version",
+        "delete router \"Base\" mld interface missing-edge query-interval",
+        "delete router \"Base\" mld interface missing-edge router-alert-check",
+        "delete router \"Base\" mld interface missing-edge import-policy",
+        "delete router \"Base\" mld query-interval",
+        "delete router \"Base\" mld robust-count",
+        "delete service customer customer-1",
+        "delete service ies ghost",
+        "delete ipsec ike-transform 99",
+        "delete router \"Base\" ecmp",
+        "delete router \"Base\" interface missing-edge port",
+        "delete router \"Base\" ipv6 neighbor-discovery reachable-time",
+        "delete router \"Base\" interface missing-edge ipv6 "
+        "neighbor-discovery reachable-time",
+        "delete router \"Base\" interface missing-edge ipv6 "
+        "neighbor-discovery limit",
+        "delete policy-options policy-statement MISSING entry 10 action metric",
+        "delete policy-options policy-statement MISSING entry 10",
+        "delete policy-options policy-statement MISSING",
+        "delete policy-options prefix-list MISSING"}) {
+    const std::string result{runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
+    require(result.find("MINOR:") == std::string_view::npos &&
+                result.find("Error:") == std::string_view::npos,
+            "MD delete of an absent element was not silent");
+  }
+  // Classic no forms keep the rejected result for absent elements, matching
+  // the MD silent loop above on the same missing interface.
+  const auto classic_threshold = [&](std::string_view command) {
+    return runtime.command(message(lab_runtime_protocol::session_execute,
+                                   {"r1-console-1", command}));
+  };
+  require(classic_threshold("//configure router interface missing-edge ipv6 "
+                            "neighbor-limit 1024 threshold 0")
+                  .find("Error:") != std::string_view::npos,
+          "classic neighbor-limit on a missing interface was not rejected");
+  // YANG forbids static neighbors on the system interface in both engines.
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                 {"r1-console-1",
+                                  "router \"Base\" interface system ipv6 "
+                                  "neighbor-discovery static-neighbor "
+                                  "2001:db8:ffff::9 mac-address "
+                                  "02:00:00:00:ff:09"}))
+                  .find("MINOR:") != std::string_view::npos,
+          "static IPv6 neighbor on the system interface was not rejected");
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "discard"}))
+                  .find("MINOR:") == std::string_view::npos,
+          "MD-CLI policy probe left an undiscarded candidate");
   require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1",
                                    "system name checkpoint-candidate"}))
@@ -4668,25 +5206,31 @@ void lab_runtime_tests() {
         "; ssm=" + std::string{restored_ssm} +
         "; snapshot=" + std::string{restored_snapshot});
   // The restored exclusive candidate and the restored running intent are two
-  // separate portable graphs. Delete the explicit defaulted leaves once from
-  // each graph. A successful second delete would prove that checkpoint import
-  // collapsed presence into an effective scalar or accepted a no-op.
+  // separate portable graphs. Presence must survive the checkpoint round
+  // trip: info renders the configured 777, the first delete removes it, and
+  // a repeated delete is the documented MD silent no-op.
   const auto delete_redirect_number =
       "delete router \"Base\" interface checkpoint-edge ipv6 icmp6 "
       "redirects number";
+  const auto info_before = restored.command(message(
+      lab_runtime_protocol::session_execute, {"r1-console-1", "info"}));
   require(
-      restored.command(message(lab_runtime_protocol::session_execute,
-                               {"r1-console-1", delete_redirect_number}))
-                  .find("MINOR:") == std::string_view::npos &&
-          restored.command(message(lab_runtime_protocol::session_execute,
-                                   {"r1-console-1", delete_redirect_number}))
-                  .find("MINOR:") != std::string_view::npos &&
-          restored.command(message(lab_runtime_protocol::session_execute,
-                                   {"r1-console-1", "discard"}))
-                  .find("MINOR:") == std::string_view::npos &&
-          restored.command(message(lab_runtime_protocol::session_execute,
-                                   {"r1-console-1", delete_redirect_number}))
-                  .find("MINOR:") == std::string_view::npos,
+      info_before.find("number 777") != std::string_view::npos &&
+              restored.command(message(lab_runtime_protocol::session_execute,
+                                       {"r1-console-1", delete_redirect_number}))
+                      .find("MINOR:") == std::string_view::npos &&
+              restored.command(message(lab_runtime_protocol::session_execute,
+                                       {"r1-console-1", "info"}))
+                      .find("number 777") == std::string_view::npos &&
+              restored.command(message(lab_runtime_protocol::session_execute,
+                                       {"r1-console-1", delete_redirect_number}))
+                      .find("MINOR:") == std::string_view::npos &&
+              restored.command(message(lab_runtime_protocol::session_execute,
+                                       {"r1-console-1", "discard"}))
+                      .find("MINOR:") == std::string_view::npos &&
+              restored.command(message(lab_runtime_protocol::session_execute,
+                                       {"r1-console-1", delete_redirect_number}))
+                      .find("MINOR:") == std::string_view::npos,
       "checkpoint lost ICMPv6 Redirect leaf presence in candidate or running "
       "intent");
   require(!restored

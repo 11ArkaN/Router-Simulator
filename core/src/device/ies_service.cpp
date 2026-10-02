@@ -290,7 +290,8 @@ ValidationError validate(const Configuration &configuration) {
         if (interface.logical_id == 0U ||
             !usable_name(interface.name, maximum_interface_name_octets) ||
             interface.description.size() > maximum_description_octets ||
-            !printable_ascii(interface.description) || interface.ip_mtu < 1280U)
+            !printable_ascii(interface.description) ||
+            interface.ip_mtu < 512U || interface.ip_mtu > 9786U)
           return ValidationError::invalid_interface;
         if (std::find(logical_ids.begin(), logical_ids.end(),
                       interface.logical_id) != logical_ids.end())
@@ -440,7 +441,8 @@ ValidationError validate_candidate(const Configuration &configuration) {
         if (interface.logical_id == 0U ||
             !usable_name(interface.name, maximum_interface_name_octets) ||
             interface.description.size() > maximum_description_octets ||
-            !printable_ascii(interface.description) || interface.ip_mtu < 1280U)
+            !printable_ascii(interface.description) ||
+            interface.ip_mtu < 512U || interface.ip_mtu > 9786U)
           return ValidationError::invalid_interface;
         if (std::find(logical_ids.begin(), logical_ids.end(),
                       interface.logical_id) != logical_ids.end())

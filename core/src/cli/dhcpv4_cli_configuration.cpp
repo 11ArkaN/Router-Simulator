@@ -120,7 +120,7 @@ Pool *ensure_pool(Server &server, std::string_view name) {
   if (auto *existing = pool_by_name(server, name))
     return existing;
   if (name.empty() ||
-      name.size() > device_catalog::dhcpv4_server_name_bytes ||
+      name.size() > device_catalog::dhcpv4_pool_name_bytes ||
       server.pools.size() >= device_catalog::dhcpv4_pools_per_server)
     return nullptr;
   server.pools.push_back({.name = std::string{name}});
@@ -243,20 +243,59 @@ EditResult edit(RouterConfiguration &configuration,
     return {.recognized = true};
 
   auto next = configuration;
-  auto *server = ensure_server(next, *server_name);
-  if (!server)
+  // Documented MD-CLI delete never creates configuration: absent elements
+  // resolve without materializing their ancestors and stay a silent no-op.
+  const bool md_removal = engine == CliEngine::md && command.spec &&
+                          cli_detail::removal_command(*command.spec);
+  auto *server = md_removal ? server_by_name(next, *server_name)
+                            : ensure_server(next, *server_name);
+  if (!server && !md_removal)
     return {.recognized = true};
-  auto *pool = pool_name ? ensure_pool(*server, *pool_name) : nullptr;
-  if (pool_name && !pool)
+  auto *pool = pool_name && server ? (md_removal ? pool_by_name(*server, *pool_name)
+                                                : ensure_pool(*server, *pool_name))
+                                   : nullptr;
+  if (pool_name && !pool && !md_removal)
     return {.recognized = true};
-  auto *subnet =
-      pool && subnet_key
-          ? ensure_subnet(*server, *pool, *subnet_key)
-          : nullptr;
-  if (subnet_key && !subnet)
+  auto *subnet = pool && subnet_key ? (md_removal ? subnet_by_key(*pool, *subnet_key)
+                                                  : ensure_subnet(*server, *pool, *subnet_key))
+                                    : nullptr;
+  if (subnet_key && !subnet && !md_removal)
     return {.recognized = true};
+  if (md_removal &&
+      (!server || (pool_name && !pool) || (subnet_key && !subnet)))
+    return {.recognized = true,
+            .valid = true,
+            .changed = false,
+            .instance = instance_path(
+                *server_name, pool_name ? *pool_name : std::string_view{},
+                subnet_text ? *subnet_text : std::string_view{})};
 
   bool accepted = true;
+  // Classic CLI expresses pool timers as [days d] [hrs h] [min m] [sec s]
+  // keyword groups. Every non-empty subset is a generated row, so the editor
+  // only sums whichever components are present. The total keeps the bare
+  // MD-CLI contract of any uint32 value; overflow rejects the edit.
+  const auto keyword_seconds = [&](std::uint32_t &target) {
+    const auto add_component = [&](TokenKind kind, std::uint64_t factor,
+                                   std::uint64_t &total) {
+      const auto text = argument_at(command, kind);
+      if (!text)
+        return true;
+      const auto value = decimal<std::uint64_t>(*text);
+      if (!value)
+        return false;
+      total += *value * factor;
+      return total <= 0xFFFFFFFFULL;
+    };
+    std::uint64_t total{};
+    if (!add_component(TokenKind::dhcp_time_days, 86400ULL, total) ||
+        !add_component(TokenKind::dhcp_time_hours, 3600ULL, total) ||
+        !add_component(TokenKind::dhcp_time_minutes, 60ULL, total) ||
+        !add_component(TokenKind::dhcp_time_seconds, 1ULL, total))
+      return false;
+    target = static_cast<std::uint32_t>(total);
+    return true;
+  };
   using enum CommandId;
   switch (id) {
   case md_dhcpv4_server_enable:
@@ -291,10 +330,18 @@ EditResult edit(RouterConfiguration &configuration,
     server->force_renews = false;
     break;
   case md_delete_dhcpv4_server:
-  case classic_dhcpv4_server_remove:
-    next.servers.erase(std::ranges::find(next.servers, *server_name,
-                                         &Server::name));
+  case classic_dhcpv4_server_remove: {
+    // Removing an absent server is an explicit error in classic, while
+    // documented MD delete stays silent. The documented classic no form
+    // carries no shutdown precondition.
+    const bool existed =
+        server_by_name(configuration, *server_name) != nullptr;
+    accepted = existed || id == md_delete_dhcpv4_server;
+    if (accepted && existed)
+      next.servers.erase(std::ranges::find(next.servers, *server_name,
+                                           &Server::name));
     break;
+  }
   case md_dhcpv4_pool_description:
   case classic_dhcpv4_pool_description: {
     const auto value = argument_at(command, TokenKind::description);
@@ -310,8 +357,7 @@ EditResult edit(RouterConfiguration &configuration,
     if (accepted)
       pool->description.clear();
     break;
-  case md_dhcpv4_pool_min_lease:
-  case classic_dhcpv4_pool_min_lease: {
+  case md_dhcpv4_pool_min_lease: {
     const auto value = argument_at(command, TokenKind::dhcp_lease_seconds);
     const auto seconds =
         value ? decimal<std::uint32_t>(*value) : std::nullopt;
@@ -320,8 +366,24 @@ EditResult edit(RouterConfiguration &configuration,
       pool->minimum_lease_seconds = *seconds;
     break;
   }
-  case md_dhcpv4_pool_max_lease:
-  case classic_dhcpv4_pool_max_lease: {
+  case classic_dhcpv4_pool_min_lease_days:
+  case classic_dhcpv4_pool_min_lease_hours:
+  case classic_dhcpv4_pool_min_lease_days_hours:
+  case classic_dhcpv4_pool_min_lease_minutes:
+  case classic_dhcpv4_pool_min_lease_days_minutes:
+  case classic_dhcpv4_pool_min_lease_hours_minutes:
+  case classic_dhcpv4_pool_min_lease_days_hours_minutes:
+  case classic_dhcpv4_pool_min_lease_seconds:
+  case classic_dhcpv4_pool_min_lease_days_seconds:
+  case classic_dhcpv4_pool_min_lease_hours_seconds:
+  case classic_dhcpv4_pool_min_lease_days_hours_seconds:
+  case classic_dhcpv4_pool_min_lease_minutes_seconds:
+  case classic_dhcpv4_pool_min_lease_days_minutes_seconds:
+  case classic_dhcpv4_pool_min_lease_hours_minutes_seconds:
+  case classic_dhcpv4_pool_min_lease_days_hours_minutes_seconds:
+    accepted = pool && keyword_seconds(pool->minimum_lease_seconds);
+    break;
+  case md_dhcpv4_pool_max_lease: {
     const auto value = argument_at(command, TokenKind::dhcp_lease_seconds);
     const auto seconds =
         value ? decimal<std::uint32_t>(*value) : std::nullopt;
@@ -330,8 +392,24 @@ EditResult edit(RouterConfiguration &configuration,
       pool->maximum_lease_seconds = *seconds;
     break;
   }
-  case md_dhcpv4_pool_offer_time:
-  case classic_dhcpv4_pool_offer_time: {
+  case classic_dhcpv4_pool_max_lease_days:
+  case classic_dhcpv4_pool_max_lease_hours:
+  case classic_dhcpv4_pool_max_lease_days_hours:
+  case classic_dhcpv4_pool_max_lease_minutes:
+  case classic_dhcpv4_pool_max_lease_days_minutes:
+  case classic_dhcpv4_pool_max_lease_hours_minutes:
+  case classic_dhcpv4_pool_max_lease_days_hours_minutes:
+  case classic_dhcpv4_pool_max_lease_seconds:
+  case classic_dhcpv4_pool_max_lease_days_seconds:
+  case classic_dhcpv4_pool_max_lease_hours_seconds:
+  case classic_dhcpv4_pool_max_lease_days_hours_seconds:
+  case classic_dhcpv4_pool_max_lease_minutes_seconds:
+  case classic_dhcpv4_pool_max_lease_days_minutes_seconds:
+  case classic_dhcpv4_pool_max_lease_hours_minutes_seconds:
+  case classic_dhcpv4_pool_max_lease_days_hours_minutes_seconds:
+    accepted = pool && keyword_seconds(pool->maximum_lease_seconds);
+    break;
+  case md_dhcpv4_pool_offer_time: {
     const auto value = argument_at(command, TokenKind::dhcp_offer_seconds);
     const auto seconds =
         value ? decimal<std::uint32_t>(*value) : std::nullopt;
@@ -340,6 +418,23 @@ EditResult edit(RouterConfiguration &configuration,
       pool->offer_seconds = *seconds;
     break;
   }
+  case classic_dhcpv4_pool_offer_time_days:
+  case classic_dhcpv4_pool_offer_time_hours:
+  case classic_dhcpv4_pool_offer_time_days_hours:
+  case classic_dhcpv4_pool_offer_time_minutes:
+  case classic_dhcpv4_pool_offer_time_days_minutes:
+  case classic_dhcpv4_pool_offer_time_hours_minutes:
+  case classic_dhcpv4_pool_offer_time_days_hours_minutes:
+  case classic_dhcpv4_pool_offer_time_seconds:
+  case classic_dhcpv4_pool_offer_time_days_seconds:
+  case classic_dhcpv4_pool_offer_time_hours_seconds:
+  case classic_dhcpv4_pool_offer_time_days_hours_seconds:
+  case classic_dhcpv4_pool_offer_time_minutes_seconds:
+  case classic_dhcpv4_pool_offer_time_days_minutes_seconds:
+  case classic_dhcpv4_pool_offer_time_hours_minutes_seconds:
+  case classic_dhcpv4_pool_offer_time_days_hours_minutes_seconds:
+    accepted = pool && keyword_seconds(pool->offer_seconds);
+    break;
   case md_delete_dhcpv4_pool_min_lease:
   case classic_dhcpv4_pool_no_min_lease:
     accepted = pool != nullptr;
@@ -380,8 +475,8 @@ EditResult edit(RouterConfiguration &configuration,
                            ? std::ranges::find(server->pools, *pool_name,
                                                &Pool::name)
                            : server->pools.end();
-    accepted = found != server->pools.end();
-    if (accepted)
+    accepted = found != server->pools.end() || id == md_delete_dhcpv4_pool;
+    if (accepted && found != server->pools.end())
       server->pools.erase(found);
     break;
   }
@@ -427,16 +522,18 @@ EditResult edit(RouterConfiguration &configuration,
             return value.network == subnet_key->network &&
                    value.prefix_length == subnet_key->length;
           });
-      accepted = found != pool->subnets.end();
-      if (accepted)
+      accepted = found != pool->subnets.end() || id == md_delete_dhcpv4_subnet;
+      if (accepted && found != pool->subnets.end())
         pool->subnets.erase(found);
     }
     break;
   }
   case md_dhcpv4_range_local:
   case md_dhcpv4_range_remote:
+  case md_dhcpv4_range_access_driven:
   case classic_dhcpv4_range_local:
-  case classic_dhcpv4_range_remote: {
+  case classic_dhcpv4_range_remote:
+  case classic_dhcpv4_range_access_driven: {
     const auto first_text = argument_at(command, TokenKind::ipv4, 0U);
     const auto last_text = argument_at(command, TokenKind::ipv4, 1U);
     const auto first = first_text ? ipv4(*first_text) : std::nullopt;
@@ -452,12 +549,17 @@ EditResult edit(RouterConfiguration &configuration,
           id == md_dhcpv4_range_remote ||
                   id == classic_dhcpv4_range_remote
               ? FailoverControlType::remote
-              : FailoverControlType::local;
+              : id == md_dhcpv4_range_access_driven ||
+                      id == classic_dhcpv4_range_access_driven
+                ? FailoverControlType::access_driven
+                : FailoverControlType::local;
       if (existing == subnet->address_ranges.end())
         subnet->address_ranges.push_back(
             {.first = *first, .last = *last, .failover_control = control});
-      else
-        existing->failover_control = control;
+      else if (existing->failover_control != control)
+        // YANG marks failover-control-type immutable: an existing range keeps
+        // its control type and a conflicting reconfiguration is rejected.
+        accepted = false;
     }
     break;
   }
@@ -467,8 +569,12 @@ EditResult edit(RouterConfiguration &configuration,
     const auto last_text = argument_at(command, TokenKind::ipv4, 1U);
     const auto first = first_text ? ipv4(*first_text) : std::nullopt;
     const auto last = last_text ? ipv4(*last_text) : std::nullopt;
-    accepted = subnet && first && last &&
-               erase_range(*subnet, *first, *last);
+    if (!subnet || !first || !last) {
+      accepted = id == md_delete_dhcpv4_range;
+      break;
+    }
+    accepted = erase_range(*subnet, *first, *last) ||
+               id == md_delete_dhcpv4_range;
     break;
   }
   case md_dhcpv4_exclude_range:
@@ -495,8 +601,12 @@ EditResult edit(RouterConfiguration &configuration,
     const auto last_text = argument_at(command, TokenKind::ipv4, 1U);
     const auto first = first_text ? ipv4(*first_text) : std::nullopt;
     const auto last = last_text ? ipv4(*last_text) : std::nullopt;
-    accepted = subnet && first && last &&
-               erase_exclusion(*subnet, *first, *last);
+    if (!subnet || !first || !last) {
+      accepted = id == md_delete_dhcpv4_exclude_range;
+      break;
+    }
+    accepted = erase_exclusion(*subnet, *first, *last) ||
+               id == md_delete_dhcpv4_exclude_range;
     break;
   }
   default:

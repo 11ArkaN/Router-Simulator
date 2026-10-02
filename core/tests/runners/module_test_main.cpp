@@ -161,6 +161,7 @@ void secret_vault_tests();
 void pki_store_tests();
 void tls_engine_tests();
 void tls_profile_tests();
+void tls_cli_configuration_tests();
 void http2_session_tests();
 void dot_session_tests();
 void doh2_session_tests();
@@ -223,6 +224,7 @@ int main() {
     pki_store_tests();
     tls_engine_tests();
     tls_profile_tests();
+    tls_cli_configuration_tests();
     http2_session_tests();
     dot_session_tests();
     doh2_session_tests();

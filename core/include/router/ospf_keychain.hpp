@@ -17,7 +17,17 @@ enum class KeychainAlgorithm : std::uint8_t {
   password,
   message_digest,
   hmac_sha1,
-  hmac_sha256
+  hmac_sha256,
+  // Release YANG keychain algorithms without a dedicated packet-crypto
+  // mapping. They are stored as configured intent; the packet plane fails
+  // closed for algorithms it cannot speak instead of substituting another.
+  hmac_md5,
+  hmac_sha_1_96,
+  aes_128_cmac_96,
+  aes_128_cmac_128,
+  aes_128_gcm_16,
+  hmac_sha_256_96,
+  hmac_sha_256_128
 };
 
 struct KeychainEntry {

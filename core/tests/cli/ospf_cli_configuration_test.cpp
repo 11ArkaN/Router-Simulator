@@ -64,28 +64,47 @@ void ospf_cli_configuration_tests() {
        "configure router ospf 0 asbr trace-path 7");
   edit(classic, CliEngine::classic,
        "configure router ospf 0 overload");
+  // YANG models graceful-restart as a plain presence container with no
+  // default, so a fresh instance starts without it.
+  require(!classic.instances[0].graceful_restart_helper,
+          "classic graceful-restart did not default to absent");
   edit(classic, CliEngine::classic,
-       "configure router ospf 0 graceful-restart helper");
+       "configure router ospf 0 graceful-restart");
   edit(classic, CliEngine::classic,
-       "configure router ospf 0 loopfree-alternates");
+       "configure router ospf 0 loopfree-alternate");
+  // Classic spf-wait and lsa-generate carry the maximum as a mandatory
+  // positional value with optional initial and second keywords after it.
+  // The keyword-only and spf-max-wait spellings are MD-CLI/YANG forms.
   edit(classic, CliEngine::classic,
-       "configure router ospf 0 timers spf-wait spf-max-wait 12000");
+       "configure router ospf 0 timers spf-wait 12000");
   edit(classic, CliEngine::classic,
-       "configure router ospf 0 timers spf-wait spf-second-wait 2000");
+       "configure router ospf 0 timers spf-wait 12000 spf-second-wait 2000");
   edit(classic, CliEngine::classic,
-       "configure router ospf 0 timers spf-wait spf-initial-wait 500");
+       "configure router ospf 0 timers spf-wait 12000 spf-initial-wait 500 "
+       "spf-second-wait 2000");
   edit(classic, CliEngine::classic,
-       "configure router ospf 0 timers lsa-generate max-lsa-wait 7000");
+       "configure router ospf 0 timers lsa-generate 7000");
   edit(classic, CliEngine::classic,
-       "configure router ospf 0 timers lsa-generate lsa-second-wait 6000");
+       "configure router ospf 0 timers lsa-generate 7000 lsa-second-wait "
+       "6000");
   edit(classic, CliEngine::classic,
-       "configure router ospf 0 timers lsa-generate lsa-initial-wait 4000");
+       "configure router ospf 0 timers lsa-generate 7000 lsa-initial-wait "
+       "4000");
+  for (const auto rejected :
+       {"configure router ospf 0 timers spf-wait spf-initial-wait 500",
+        "configure router ospf 0 timers spf-wait spf-max-wait 12000",
+        "configure router ospf 0 timers lsa-generate lsa-initial-wait 4000",
+        "configure router ospf 0 timers lsa-generate max-lsa-wait 7000"})
+    require(!router::cli_detail::parse_command(CliEngine::classic,
+                                               MdCliWorkflow::operational,
+                                               rejected),
+            "classic OSPF accepted a keyword-only timer form");
   edit(classic, CliEngine::classic,
        "configure router ospf 0 area 0.0.0.1 stub");
   edit(classic, CliEngine::classic,
-       "configure router ospf 0 area 0.0.0.1 no summaries");
+       "configure router ospf 0 area 0.0.0.1 stub no summaries");
   edit(classic, CliEngine::classic,
-       "configure router ospf 0 area 0.0.0.1 default-metric 17");
+       "configure router ospf 0 area 0.0.0.1 stub default-metric 17");
   edit(classic, CliEngine::classic,
        "configure router ospf 0 area 0.0.0.1 area-range "
        "192.0.2.0/24 advertise");
@@ -153,9 +172,9 @@ void ospf_cli_configuration_tests() {
        "configure router \"Base\" ospf3 0 area 1 nssa");
   edit(md, CliEngine::md,
        "configure router \"Base\" ospf3 0 area 1 area-range "
-       "2001:db8:100::/48 not-advertise");
+       "2001:db8:100::/48 advertise false");
   edit(md, CliEngine::md,
-       "configure router \"Base\" ospf3 0 loopfree-alternates true");
+       "configure router \"Base\" ospf3 0 loopfree-alternate");
   edit(md, CliEngine::md,
        "configure router \"Base\" ospf3 0 asbr");
   require(router::ospf::validate(md) ==
@@ -172,10 +191,11 @@ void ospf_cli_configuration_tests() {
 
   // OSPFv3 manual protection names IPsec SAs, not OSPF keychains.  Preserve
   // the two directions independently because SR OS permits key rollover by
-  // receiving under one SA while transmitting under another.
+  // receiving under one SA while transmitting under another. The MD grammar
+  // has no bidirectional shorthand: both directions are always named.
   edit(md, CliEngine::md,
        "configure router \"Base\" ospf3 0 area 0 interface core-v6 "
-       "authentication bidirectional sa-name ospf3-core");
+       "authentication inbound ospf3-core outbound ospf3-core");
   const auto md_ipsec = [&]() -> const auto & {
     return md.instances[0].areas[0].interfaces[0];
   };
@@ -185,7 +205,7 @@ void ospf_cli_configuration_tests() {
               md_ipsec().ipsec_sa_inbound == "ospf3-core" &&
               md_ipsec().ipsec_sa_outbound == "ospf3-core" &&
               md_ipsec().keychain.empty(),
-          "MD bidirectional OSPF3 authentication was not stored as an IPsec SA");
+          "MD directional OSPF3 authentication was not stored as an IPsec SA");
   edit(md, CliEngine::md,
        "configure router \"Base\" ospf3 0 area 0 interface core-v6 "
        "authentication inbound ospf3-old outbound ospf3-new");
@@ -354,7 +374,7 @@ void ospf_cli_configuration_tests() {
           "MD OSPF3 virtual-link timers did not reach canonical intent");
   edit(md_virtual, CliEngine::md,
        "configure router \"Base\" ospf3 0 area 0 virtual-link 3.3.3.3 "
-       "transit-area 1 authentication bidirectional sa-name vl-shared");
+       "transit-area 1 authentication inbound vl-shared outbound vl-shared");
   const auto md_virtual_auth = [&]() -> const auto & {
     return md_virtual.instances[0].areas[1].virtual_links[0];
   };
@@ -363,7 +383,7 @@ void ospf_cli_configuration_tests() {
                   ipsec_security_association &&
               md_virtual_auth().ipsec_sa_inbound == "vl-shared" &&
               md_virtual_auth().ipsec_sa_outbound == "vl-shared",
-          "MD OSPF3 virtual-link did not preserve its bidirectional SA");
+          "MD OSPF3 virtual-link did not preserve its directional SAs");
   edit(md_virtual, CliEngine::md,
        "configure router \"Base\" ospf3 0 area 0 virtual-link 3.3.3.3 "
        "transit-area 1 authentication inbound vl-old outbound vl-new");
@@ -402,4 +422,319 @@ void ospf_cli_configuration_tests() {
        "transit-area 1");
   require(md_virtual.instances[0].areas[1].virtual_links.empty(),
           "MD delete virtual-link retained the configured endpoint");
+
+  router::ospf::RouterConfiguration ethernet;
+  edit(ethernet, CliEngine::classic,
+       "configure router ospf 0 area 0 interface to-r2 metric 10");
+  require(ethernet.instances[0].areas[0].interfaces[0].network_type ==
+              router::ospf::NetworkType::broadcast,
+          "classic OSPF Ethernet interface did not default to broadcast");
+  edit(ethernet, CliEngine::md,
+       "configure router \"Base\" ospf 0 area 0 interface nbma "
+       "interface-type p2mp-nbma");
+  require(ethernet.instances[0].areas[0].interfaces[1].network_type ==
+              router::ospf::NetworkType::point_to_multipoint,
+          "MD p2mp-nbma did not map to the point-to-multipoint network type");
+
+  router::ospf::RouterConfiguration presence;
+  edit(presence, CliEngine::md,
+       "configure router \"Base\" ospf 0 asbr");
+  edit(presence, CliEngine::md,
+       "configure router \"Base\" ospf 0 graceful-restart");
+  require(presence.instances[0].graceful_restart_helper &&
+              presence.instances[0].asbr,
+          "MD OSPF presence containers did not materialize");
+  edit(presence, CliEngine::md,
+       "delete router \"Base\" ospf 0 graceful-restart");
+  require(!presence.instances[0].graceful_restart_helper,
+          "MD delete graceful-restart retained the presence container");
+
+  router::ospf::RouterConfiguration classic_delete;
+  edit(classic_delete, CliEngine::classic, "configure router ospf 0");
+  edit(classic_delete, CliEngine::classic,
+       "configure router ospf 0 no shutdown");
+  const auto enabled_remove = parse(CliEngine::classic,
+                                    "configure router no ospf 0");
+  const auto enabled_result = router::lab::ospf_cli::edit(
+      classic_delete, enabled_remove, CliEngine::classic);
+  require(enabled_result.recognized && !enabled_result.valid &&
+              !enabled_result.changed &&
+              classic_delete.instances.size() == 1U,
+          "classic no ospf removed an administratively enabled instance");
+  edit(classic_delete, CliEngine::classic, "configure router ospf 0 shutdown");
+  edit(classic_delete, CliEngine::classic, "configure router no ospf 0");
+  require(classic_delete.instances.empty(),
+          "classic no ospf after shutdown retained the instance");
+
+  const auto existing_create = parse(CliEngine::classic,
+                                     "configure router ospf 0");
+  router::ospf::RouterConfiguration select;
+  edit(select, CliEngine::classic, "configure router ospf 0");
+  const auto selected = router::lab::ospf_cli::edit(
+      select, existing_create, CliEngine::classic);
+  require(selected.recognized && selected.valid && !selected.changed &&
+              select.instances.size() == 1U,
+          "classic ospf create of an existing instance was not a select");
+
+  const auto reject = [&](router::ospf::RouterConfiguration &configuration,
+                          CliEngine engine, std::string_view text) {
+    const auto parsed_command = parse(engine, text);
+    const auto result =
+        router::lab::ospf_cli::edit(configuration, parsed_command, engine);
+    require(result.recognized && !result.valid && !result.changed,
+            "invalid OSPF command was not reported explicitly");
+  };
+
+  // YANG nests summaries and default-metric under stub and nssa. The flat
+  // area-level forms no longer parse; the nested forms reach the model.
+  router::ospf::RouterConfiguration areas;
+  edit(areas, CliEngine::md,
+       "configure router \"Base\" ospf 0 area 0 stub");
+  edit(areas, CliEngine::md,
+       "configure router \"Base\" ospf 0 area 0 stub summaries false");
+  edit(areas, CliEngine::md,
+       "configure router \"Base\" ospf 0 area 0 stub default-metric 5");
+  edit(areas, CliEngine::md,
+       "configure router \"Base\" ospf 0 area 1 nssa");
+  edit(areas, CliEngine::md,
+       "configure router \"Base\" ospf 0 area 1 nssa summaries false");
+  require(!areas.instances[0].areas[0].summaries &&
+              areas.instances[0].areas[0].default_metric == 5U &&
+              !areas.instances[0].areas[1].summaries,
+          "MD stub/nssa summaries and default-metric did not reach the model");
+  require(!router::cli_detail::parse_command(
+               CliEngine::md, MdCliWorkflow::explicit_private,
+               "configure router \"Base\" ospf 0 area 0 summaries true"),
+          "flat area summaries still parses after the stub/nssa move");
+  // YANG bounds stub default-metric at 1 through 16777214, separately from
+  // the interface metric range.
+  edit(areas, CliEngine::md,
+       "configure router \"Base\" ospf 0 area 0 stub default-metric 16777214");
+  require(areas.instances[0].areas[0].default_metric == 16777214U,
+          "stub default-metric rejected the YANG maximum");
+  for (const auto text :
+       {"configure router \"Base\" ospf 0 area 0 stub default-metric 0",
+        "configure router \"Base\" ospf 0 area 0 stub default-metric "
+        "16777215"}) {
+    const auto parsed = router::cli_detail::parse_command(
+        CliEngine::md, MdCliWorkflow::explicit_private, text);
+    require(parsed.has_value(),
+            "stub default-metric out-of-range form did not parse");
+    require(!router::lab::ospf_cli::edit(areas, *parsed, CliEngine::md).valid,
+            "stub default-metric accepted a value outside 1..16777214");
+  }
+  // MD-CLI follows the YANG singular loopfree-alternate container while the
+  // documented classic spelling keeps the plural.
+  require(router::cli_detail::parse_command(
+                 CliEngine::md, MdCliWorkflow::explicit_private,
+                 "configure router \"Base\" ospf 0 loopfree-alternate")
+                 .has_value(),
+          "MD singular loopfree-alternate did not parse");
+  require(!router::cli_detail::parse_command(
+                 CliEngine::md, MdCliWorkflow::explicit_private,
+                 "configure router \"Base\" ospf 0 loopfree-alternates")
+                 .has_value(),
+          "MD plural loopfree-alternates still parses");
+
+  // MD interface timer deletes restore release defaults without shutdown.
+  router::ospf::RouterConfiguration timers;
+  edit(timers, CliEngine::md,
+       "configure router \"Base\" ospf 0 area 0 interface eth hello-interval 7");
+  edit(timers, CliEngine::md,
+       "configure router \"Base\" ospf 0 area 0 interface eth dead-interval 21");
+  edit(timers, CliEngine::md,
+       "delete router \"Base\" ospf 0 area 0 interface eth hello-interval");
+  edit(timers, CliEngine::md,
+       "delete router \"Base\" ospf 0 area 0 interface eth dead-interval");
+  require(timers.instances[0].areas[0].interfaces[0].hello_interval_seconds ==
+                  router::device_catalog::ospf_hello_interval.count() &&
+              timers.instances[0].areas[0].interfaces[0].dead_interval_seconds ==
+                  router::device_catalog::ospf_dead_interval.count(),
+          "MD delete interface timer did not restore the release default");
+
+  // Classic interface timers, shutdown and area removal mirror the
+  // virtual-link operator set added for 26.7 conformance.
+  router::ospf::RouterConfiguration classic_iface_timers;
+  edit(classic_iface_timers, CliEngine::classic,
+       "configure router ospf 0 area 0 interface eth hello-interval 7");
+  edit(classic_iface_timers, CliEngine::classic,
+       "configure router ospf 0 area 0 interface eth dead-interval 30");
+  edit(classic_iface_timers, CliEngine::classic,
+       "configure router ospf 0 area 0 interface eth shutdown");
+  require(!classic_iface_timers.instances[0].areas[0].interfaces[0].admin_enabled,
+          "classic interface shutdown did not disable the interface");
+  edit(classic_iface_timers, CliEngine::classic,
+       "configure router ospf 0 area 0 interface eth no shutdown");
+  edit(classic_iface_timers, CliEngine::classic,
+       "configure router ospf 0 area 0 interface eth no hello-interval");
+  require(classic_iface_timers.instances[0].areas[0].interfaces[0]
+                  .hello_interval_seconds ==
+              router::device_catalog::ospf_hello_interval.count(),
+          "classic no hello-interval did not restore the release default");
+  reject(classic_iface_timers, CliEngine::classic,
+         "configure router ospf 0 area 0 no interface eth");
+  edit(classic_iface_timers, CliEngine::classic,
+       "configure router ospf 0 area 0 interface eth shutdown");
+  edit(classic_iface_timers, CliEngine::classic,
+       "configure router ospf 0 area 0 no interface eth");
+  require(classic_iface_timers.instances[0].areas[0].interfaces.empty(),
+          "classic no interface after shutdown retained the interface");
+  edit(classic_iface_timers, CliEngine::classic,
+       "configure router ospf 0 no area 0");
+  require(classic_iface_timers.instances[0].areas.empty(),
+          "classic no area retained the area");
+
+  // Virtual-link admin-state defaults to enabled in both engines.
+  router::ospf::RouterConfiguration link_admin;
+  edit(link_admin, CliEngine::classic,
+       "configure router ospf 0 area 1 interface transit "
+       "interface-type point-to-point");
+  edit(link_admin, CliEngine::classic,
+       "configure router ospf 0 area 0.0.0.0 virtual-link 2.2.2.2 "
+       "transit-area 0.0.0.1");
+  require(link_admin.instances[0].areas[1].virtual_links[0].admin_enabled,
+          "virtual-link did not default to administratively enabled");
+  edit(link_admin, CliEngine::classic,
+       "configure router ospf 0 area 0.0.0.0 virtual-link 2.2.2.2 "
+       "transit-area 0.0.0.1 shutdown");
+  require(!link_admin.instances[0].areas[1].virtual_links[0].admin_enabled,
+          "classic virtual-link shutdown did not disable the link");
+  edit(link_admin, CliEngine::md,
+       "configure router \"Base\" ospf 0 area 0.0.0.0 virtual-link 2.2.2.2 "
+       "transit-area 0.0.0.1 admin-state enable");
+  require(link_admin.instances[0].areas[1].virtual_links[0].admin_enabled,
+          "MD virtual-link admin-state enable did not enable the link");
+
+  // OSPFv2 virtual links carry the interface authentication leaves.
+  router::ospf::RouterConfiguration link_auth;
+  edit(link_auth, CliEngine::classic,
+       "configure router ospf 0 area 1 interface transit "
+       "interface-type point-to-point");
+  edit(link_auth, CliEngine::classic,
+       "configure router ospf 0 area 0.0.0.0 virtual-link 2.2.2.2 "
+       "transit-area 0.0.0.1");
+  edit(link_auth, CliEngine::classic,
+       "configure router ospf 0 area 0.0.0.0 virtual-link 2.2.2.2 "
+       "transit-area 0.0.0.1 authentication-type message-digest");
+  require(link_auth.instances[0].areas[1].virtual_links[0].authentication ==
+              router::ospf::AuthenticationMode::message_digest,
+          "virtual-link authentication-type did not reach the model");
+  edit(link_auth, CliEngine::classic,
+       "configure router ospf 0 area 0.0.0.0 virtual-link 2.2.2.2 "
+       "transit-area 0.0.0.1 no authentication-type");
+  require(link_auth.instances[0].areas[1].virtual_links[0].authentication ==
+              router::ospf::AuthenticationMode::none,
+          "virtual-link no authentication-type retained the mode");
+
+  // Per-leaf authentication removal clears only the addressed leaf. Removing
+  // an unset secret is an explicit error rather than a silent no-op.
+  router::ospf::RouterConfiguration leaf_auth;
+  edit(leaf_auth, CliEngine::md,
+       "configure system security keychains keychain main bidirectional "
+       "entry 1 algorithm password");
+  edit(leaf_auth, CliEngine::md,
+       "configure router \"Base\" ospf 0 area 0 interface eth "
+       "authentication-type password");
+  edit(leaf_auth, CliEngine::md,
+       "delete router \"Base\" ospf 0 area 0 interface eth authentication-type");
+  require(leaf_auth.instances[0].areas[0].interfaces[0].authentication ==
+              router::ospf::AuthenticationMode::none,
+          "MD delete authentication-type retained the mode");
+  reject(leaf_auth, CliEngine::md,
+         "delete router \"Base\" ospf 0 area 0 interface eth "
+         "authentication-key");
+  edit(leaf_auth, CliEngine::classic,
+       "configure router ospf 0 area 0 interface eth auth-keychain main");
+  edit(leaf_auth, CliEngine::classic,
+       "configure router ospf 0 area 0 interface eth no auth-keychain");
+  require(leaf_auth.instances[0].areas[0].interfaces[0].keychain.empty(),
+          "classic no auth-keychain retained the keychain reference");
+
+  // Metric zero and digest key zero are explicit errors, not silent clamps.
+  router::ospf::RouterConfiguration ranges;
+  edit(ranges, CliEngine::md,
+       "configure router \"Base\" ospf 0 area 0 interface eth metric 10");
+  reject(ranges, CliEngine::md,
+         "configure router \"Base\" ospf 0 area 0 interface eth metric 0");
+  reject(ranges, CliEngine::classic,
+         "configure router ospf 0 reference-bandwidth 1000000001");
+
+  // Export policy keeps a single configured entry: a different policy is an
+  // explicit error, the same policy is idempotent, delete removes the entry.
+  router::ospf::RouterConfiguration export_policy;
+  edit(export_policy, CliEngine::md,
+       "configure router \"Base\" ospf 0 export-policy direct-v4");
+  {
+    // Repeating the configured policy is an idempotent success without a
+    // datastore change, not a value error.
+    const auto repeated = parse(CliEngine::md,
+                                "configure router \"Base\" ospf 0 "
+                                "export-policy direct-v4");
+    const auto result = router::lab::ospf_cli::edit(
+        export_policy, repeated, CliEngine::md);
+    require(result.recognized && result.valid && !result.changed,
+            "repeated export-policy was not idempotent");
+  }
+  reject(export_policy, CliEngine::md,
+         "configure router \"Base\" ospf 0 export-policy other-v4");
+  edit(export_policy, CliEngine::md,
+       "delete router \"Base\" ospf 0 export-policy direct-v4");
+  require(export_policy.instances[0].export_policy.empty(),
+          "MD delete export-policy retained the entry");
+  edit(export_policy, CliEngine::md,
+       "configure router \"Base\" ospf 0 reference-bandwidth 100000");
+  edit(export_policy, CliEngine::md,
+       "delete router \"Base\" ospf 0 reference-bandwidth");
+  require(export_policy.instances[0].reference_bandwidth_kbps ==
+              router::device_catalog::ospf_reference_bandwidth_kbps,
+          "MD delete reference-bandwidth did not restore the default");
+
+  // Graceful restart defaults to absent per YANG; keychain accepts the full
+  // 26.7 algorithm set, infinite tolerance and classic begin-time dates.
+  router::ospf::RouterConfiguration defaults;
+  edit(defaults, CliEngine::md,
+       "configure router \"Base\" ospf 0 overload true");
+  require(!defaults.instances[0].graceful_restart_helper,
+          "graceful-restart did not default to absent");
+  edit(defaults, CliEngine::md,
+       "configure system security keychains keychain main bidirectional "
+       "entry 1 algorithm aes-128-gcm-16");
+  edit(defaults, CliEngine::md,
+       "configure system security keychains keychain main bidirectional "
+       "entry 1 tolerance infinite");
+  require(defaults.keychains[0].bidirectional[0].algorithm ==
+                  router::ospf::KeychainAlgorithm::aes_128_gcm_16 &&
+              defaults.keychains[0].bidirectional[0].tolerance_seconds ==
+                  0xFFFFFFFFU,
+          "keychain algorithm and infinite tolerance did not reach the model");
+  edit(defaults, CliEngine::classic,
+       "configure system security keychain main direction bi entry 1 "
+       "begin-time 2026-01-01T00:00:00Z");
+  require(defaults.keychains[0].bidirectional[0].begin_utc_seconds > 0,
+          "classic keychain begin-time did not parse RFC 3339");
+
+  // MD-CLI deletes of absent elements are documented silent no-ops that never
+  // create configuration at any ancestor level; classic no forms stay
+  // rejected for the same input.
+  router::ospf::RouterConfiguration absent;
+  const auto absent_edit = [&](CliEngine engine, std::string_view text) {
+    const auto before = absent;
+    const auto result =
+        router::lab::ospf_cli::edit(absent, parse(engine, text), engine);
+    require(result.recognized, "absent-element command was not recognized");
+    require(result.valid == (engine == CliEngine::md),
+            "absent-element delete validity did not follow the engine");
+    require(!result.changed, "absent-element delete changed configuration");
+    require(absent == before, "absent-element delete persisted ancestors");
+  };
+  absent_edit(CliEngine::md,
+              "delete router \"Base\" ospf 7 reference-bandwidth");
+  absent_edit(CliEngine::md, "delete router \"Base\" ospf 7");
+  absent_edit(CliEngine::md, "delete router \"Base\" ospf 7 area 0.0.0.0");
+  absent_edit(CliEngine::md,
+              "delete router \"Base\" ospf 7 area 0.0.0.0 stub");
+  absent_edit(CliEngine::md,
+              "delete router \"Base\" ospf 7 area 0.0.0.0 interface eth "
+              "hello-interval");
+  absent_edit(CliEngine::classic, "configure router no ospf 7");
 }

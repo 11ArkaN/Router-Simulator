@@ -516,7 +516,9 @@ bool valid_router_advertisement(
   }
 
   const auto rdnss_lifetime = config.rdnss_lifetime_seconds;
-  if (rdnss_lifetime != device_catalog::ra_infinite_lifetime &&
+  // YANG allows 0 alongside 4 through 3600 seconds plus the infinite sentinel.
+  if (rdnss_lifetime != 0U &&
+      rdnss_lifetime != device_catalog::ra_infinite_lifetime &&
       (rdnss_lifetime < device_catalog::ra_minimum_rdnss_lifetime ||
        rdnss_lifetime > device_catalog::ra_maximum_rdnss_lifetime))
     return false;
@@ -713,16 +715,17 @@ bool valid_mld_import_policies(
       return false;
     for (std::size_t prefix_index = 0; prefix_index < list.prefixes.size();
          ++prefix_index) {
-      const auto &prefix = list.prefixes[prefix_index];
+      const auto &entry = list.prefixes[prefix_index];
       // policy-options owns a generic IP prefix set. The MLD consumer limits
       // the runtime value to a multicast group or unicast source, but it does
       // not impose an extra address-family subset on configured list entries.
-      if (prefix.length > ip::address_bits(prefix.network.family) ||
-          ip::mask(prefix.network, prefix.length) != prefix.network ||
+      if (entry.prefix.length > ip::address_bits(entry.prefix.network.family) ||
+          ip::mask(entry.prefix.network, entry.prefix.length) !=
+              entry.prefix.network ||
           std::find(list.prefixes.begin(),
                     list.prefixes.begin() +
                         static_cast<std::ptrdiff_t>(prefix_index),
-                    prefix) !=
+                    entry) !=
               list.prefixes.begin() + static_cast<std::ptrdiff_t>(prefix_index))
         return false;
     }
@@ -824,20 +827,23 @@ std::optional<routing::RoutePolicyProgram> compile_route_policy(
             .set_metric_type = entry.set_metric_type,
             .set_tag = entry.set_route_tag};
         if (destinations) {
-          const auto &prefix = destinations->prefixes[term];
+          const auto &entry = destinations->prefixes[term];
           output.destination =
               routing::PolicyPrefix{.ipv6 =
-                                        prefix.network.family ==
+                                        entry.prefix.network.family ==
                                         ip::AddressFamily::ipv6,
-                                    .length = prefix.length};
+                                    .length = entry.prefix.length};
           if (output.destination->ipv6) {
-            output.destination->ipv6_network = prefix.network.bytes;
+            output.destination->ipv6_network = entry.prefix.network.bytes;
           } else {
             output.destination->ipv4_network =
-                static_cast<std::uint32_t>(prefix.network.bytes[0U]) << 24U |
-                static_cast<std::uint32_t>(prefix.network.bytes[1U]) << 16U |
-                static_cast<std::uint32_t>(prefix.network.bytes[2U]) << 8U |
-                prefix.network.bytes[3U];
+                static_cast<std::uint32_t>(entry.prefix.network.bytes[0U])
+                    << 24U |
+                static_cast<std::uint32_t>(entry.prefix.network.bytes[1U])
+                    << 16U |
+                static_cast<std::uint32_t>(entry.prefix.network.bytes[2U])
+                    << 8U |
+                entry.prefix.network.bytes[3U];
           }
         }
         compiled.push_back(std::move(output));
@@ -904,11 +910,11 @@ std::optional<mld::ImportPolicyCheckpoint> compile_mld_import_policy(
         if (!list)
           return;
         output.reserve(list->prefixes.size());
-        for (const auto &prefix : list->prefixes) {
-          if (prefix.network.family != ip::AddressFamily::ipv6)
+        for (const auto &entry : list->prefixes) {
+          if (entry.prefix.network.family != ip::AddressFamily::ipv6)
             continue;
-          output.push_back(
-              {.network = prefix.network.bytes, .length = prefix.length});
+          output.push_back({.network = entry.prefix.network.bytes,
+                            .length = entry.prefix.length});
         }
       };
       collect_ipv6(groups, group_prefixes);
@@ -1007,6 +1013,28 @@ route_policy_metric_type(std::string_view text) noexcept {
   return std::nullopt;
 }
 
+// Maps the documented prefix list match type spelling to its YANG
+// enumeration value. The generated grammar restricts the token to these six
+// names, so any other text is a rejected value.
+std::optional<MldPrefixListType> prefix_list_type_value(
+    std::optional<std::string_view> text) noexcept {
+  if (!text)
+    return std::nullopt;
+  if (*text == "exact")
+    return MldPrefixListType::exact;
+  if (*text == "longer")
+    return MldPrefixListType::longer;
+  if (*text == "through")
+    return MldPrefixListType::through;
+  if (*text == "range")
+    return MldPrefixListType::range;
+  if (*text == "to")
+    return MldPrefixListType::to;
+  if (*text == "address-mask")
+    return MldPrefixListType::address_mask;
+  return std::nullopt;
+}
+
 template <typename Configuration>
 bool edit_mld_import_policy(Configuration &configuration,
                             const cli_detail::ParsedCommand &command) {
@@ -1039,25 +1067,32 @@ bool edit_mld_import_policy(Configuration &configuration,
     const bool remove_list = id == md_delete_policy_prefix_list ||
                              id == classic_policy_no_prefix_list;
     if (remove_list) {
+      // Documented MD-CLI delete stays silent on absent elements while the
+      // classic no form keeps the rejected result.
       if (list == configuration.mld_prefix_lists.end())
-        return false;
+        return id == md_delete_policy_prefix_list;
       configuration.mld_prefix_lists.erase(list);
       return true;
     }
     const auto raw_prefix = argument(cli_schema::TokenKind::ip_prefix);
     const auto prefix = raw_prefix ? ip::parse_ip_prefix(*raw_prefix)
                                    : std::optional<ip::IpPrefix>{};
-    if (!prefix)
+    // YANG keys the prefix list by (ip-prefix, type); both tokens are
+    // mandatory in the 26.7 grammar for the set and the delete form.
+    const auto raw_type = argument(cli_schema::TokenKind::prefix_list_type);
+    const auto type = prefix_list_type_value(raw_type);
+    if (!prefix || !type)
       return false;
+    const MldPolicyPrefixListEntryIntent entry{*prefix, *type};
     const bool removing =
         id == md_delete_policy_prefix || id == classic_policy_no_prefix;
     if (removing) {
       if (list == configuration.mld_prefix_lists.end())
-        return false;
+        return id == md_delete_policy_prefix;
       const auto found =
-          std::find(list->prefixes.begin(), list->prefixes.end(), *prefix);
+          std::find(list->prefixes.begin(), list->prefixes.end(), entry);
       if (found == list->prefixes.end())
-        return false;
+        return id == md_delete_policy_prefix;
       list->prefixes.erase(found);
       return true;
     }
@@ -1066,15 +1101,15 @@ bool edit_mld_import_policy(Configuration &configuration,
           {.name = std::string{*name}, .prefixes = {}});
       list = std::prev(configuration.mld_prefix_lists.end());
     }
-    if (std::find(list->prefixes.begin(), list->prefixes.end(), *prefix) !=
+    if (std::find(list->prefixes.begin(), list->prefixes.end(), entry) !=
         list->prefixes.end())
       return true;
-    list->prefixes.push_back(*prefix);
+    list->prefixes.push_back(entry);
     std::sort(list->prefixes.begin(), list->prefixes.end(),
               [](const auto &left, const auto &right) {
-                return left.network < right.network ||
-                       (left.network == right.network &&
-                        left.length < right.length);
+                return left.prefix.network < right.prefix.network ||
+                       (left.prefix.network == right.prefix.network &&
+                        left.prefix.length < right.prefix.length);
               });
     return true;
   }
@@ -1089,11 +1124,23 @@ bool edit_mld_import_policy(Configuration &configuration,
       [&](const auto &value) { return value.name == *policy_name_value; });
   if (id == md_delete_policy_statement || id == classic_policy_no_statement) {
     if (policy == configuration.mld_import_policies.end())
-      return false;
+      return id == md_delete_policy_statement;
     configuration.mld_import_policies.erase(policy);
     return true;
   }
+  // Documented MD-CLI delete never creates configuration: absent statements
+  // stay a silent no-op instead of materializing an empty policy.
+  const bool md_policy_removal =
+      id == md_delete_policy_default_action || id == md_delete_policy_entry ||
+      id == md_delete_policy_group_address ||
+      id == md_delete_policy_source_address || id == md_delete_policy_protocol ||
+      id == md_delete_policy_route_prefix_list ||
+      id == md_delete_policy_route_tag || id == md_delete_policy_action_metric ||
+      id == md_delete_policy_action_type || id == md_delete_policy_action_tag ||
+      id == md_delete_policy_entry_action;
   if (policy == configuration.mld_import_policies.end()) {
+    if (md_policy_removal)
+      return true;
     configuration.mld_import_policies.push_back(
         {.name = std::string{*policy_name_value}, .entries = {}});
     policy = std::prev(configuration.mld_import_policies.end());
@@ -1108,12 +1155,15 @@ bool edit_mld_import_policy(Configuration &configuration,
                           id == classic_policy_no_default_action;
     if (removing) {
       if (!policy->default_action_configured)
-        return false;
+        return id == md_delete_policy_default_action;
       policy->default_action = mld::ImportPolicyAction::accept;
       policy->default_action_configured = false;
       return true;
     }
-    const auto text = argument(cli_schema::TokenKind::policy_action);
+    const auto default_action_kind =
+        id == md_policy_default_action ? cli_schema::TokenKind::md_policy_action
+                                       : cli_schema::TokenKind::policy_action;
+    const auto text = argument(default_action_kind);
     const auto action = text ? policy_action(*text) : std::nullopt;
     if (!action)
       return false;
@@ -1131,11 +1181,13 @@ bool edit_mld_import_policy(Configuration &configuration,
                    [&](const auto &value) { return value.number == number; });
   if (id == md_delete_policy_entry || id == classic_policy_no_entry) {
     if (entry == policy->entries.end())
-      return false;
+      return id == md_delete_policy_entry;
     policy->entries.erase(entry);
     return true;
   }
   if (entry == policy->entries.end()) {
+    if (md_policy_removal)
+      return true;
     policy->entries.push_back({.number = number,
                                .group_prefix_list = {},
                                .source_address = std::nullopt,
@@ -1170,7 +1222,7 @@ bool edit_mld_import_policy(Configuration &configuration,
   if (id == md_delete_policy_group_address ||
       id == classic_policy_no_group_address) {
     if (entry->group_prefix_list.empty())
-      return false;
+      return id == md_delete_policy_group_address;
     entry->group_prefix_list.clear();
     return true;
   }
@@ -1196,7 +1248,7 @@ bool edit_mld_import_policy(Configuration &configuration,
   if (id == md_delete_policy_source_address ||
       id == classic_policy_no_source_address) {
     if (!entry->source_address && entry->source_prefix_list.empty())
-      return false;
+      return id == md_delete_policy_source_address;
     entry->source_address.reset();
     entry->source_prefix_list.clear();
     return true;
@@ -1217,7 +1269,7 @@ bool edit_mld_import_policy(Configuration &configuration,
   if (id == md_delete_policy_route_prefix_list ||
       id == classic_policy_no_route_prefix_list) {
     if (entry->route_prefix_list.empty())
-      return false;
+      return id == md_delete_policy_route_prefix_list;
     entry->route_prefix_list.clear();
     return true;
   }
@@ -1260,14 +1312,16 @@ bool edit_mld_import_policy(Configuration &configuration,
   if (id == md_delete_policy_route_tag ||
       id == classic_policy_no_route_tag) {
     if (!entry->route_tag)
-      return false;
+      return id == md_delete_policy_route_tag;
     entry->route_tag.reset();
     return true;
   }
   if (id == md_policy_action_metric ||
       id == classic_policy_action_metric) {
-    const auto value = route_number(cli_schema::TokenKind::ospf_metric);
-    if (!value || *value > 0x00ffffffU)
+    // The action metric spans the full unsigned 32-bit range including zero,
+    // unlike the 1 through 65535 OSPF interface metric.
+    const auto value = route_number(cli_schema::TokenKind::policy_action_metric);
+    if (!value)
       return false;
     entry->set_metric = *value;
     return true;
@@ -1275,7 +1329,7 @@ bool edit_mld_import_policy(Configuration &configuration,
   if (id == md_delete_policy_action_metric ||
       id == classic_policy_no_action_metric) {
     if (!entry->set_metric)
-      return false;
+      return id == md_delete_policy_action_metric;
     entry->set_metric.reset();
     return true;
   }
@@ -1292,7 +1346,7 @@ bool edit_mld_import_policy(Configuration &configuration,
   if (id == md_delete_policy_action_type ||
       id == classic_policy_no_action_type) {
     if (!entry->set_metric_type)
-      return false;
+      return id == md_delete_policy_action_type;
     entry->set_metric_type.reset();
     return true;
   }
@@ -1306,20 +1360,23 @@ bool edit_mld_import_policy(Configuration &configuration,
   if (id == md_delete_policy_action_tag ||
       id == classic_policy_no_action_tag) {
     if (!entry->set_route_tag)
-      return false;
+      return id == md_delete_policy_action_tag;
     entry->set_route_tag.reset();
     return true;
   }
   if (id == md_delete_policy_protocol || id == classic_policy_no_protocol) {
     if (!entry->protocol_mld && !entry->route_source)
-      return false;
+      return id == md_delete_policy_protocol;
     entry->protocol_mld = false;
     entry->route_source.reset();
     entry->protocol_instance.reset();
     return true;
   }
   if (id == md_policy_entry_action || id == classic_policy_entry_action) {
-    const auto text = argument(cli_schema::TokenKind::policy_action);
+    const auto entry_action_kind =
+        id == md_policy_entry_action ? cli_schema::TokenKind::md_policy_action
+                                     : cli_schema::TokenKind::policy_action;
+    const auto text = argument(entry_action_kind);
     const auto action = text ? policy_action(*text) : std::nullopt;
     if (!action)
       return false;
@@ -1330,7 +1387,7 @@ bool edit_mld_import_policy(Configuration &configuration,
   if (id == md_delete_policy_entry_action ||
       id == classic_policy_no_entry_action) {
     if (!entry->action_configured)
-      return false;
+      return id == md_delete_policy_entry_action;
     entry->action = mld::ImportPolicyAction::next_entry;
     entry->action_configured = false;
     return true;
@@ -1692,6 +1749,7 @@ bool ipv6_neighbor_show_command(cli_schema::CommandId id) noexcept {
   using enum cli_schema::CommandId;
   switch (id) {
   case show_router_neighbor:
+  case show_router_neighbor_address:
   case show_router_neighbor_selector:
   case show_router_neighbor_mac:
   case show_router_neighbor_summary:
@@ -1751,10 +1809,10 @@ bool dhcpv4_server_show_command(cli_schema::CommandId id) noexcept {
   case show_dhcpv4_server_leases_prefix:
   case show_dhcpv4_server_leases_prefix_detail:
   case show_dhcpv4_server_statistics:
-  case show_dhcpv4_server_declined:
-  case show_dhcpv4_server_declined_detail:
+  case show_dhcpv4_server_declined_address:
+  case show_dhcpv4_server_declined_address_detail:
+  case show_dhcpv4_server_declined_pool:
   case show_dhcpv4_server_sticky:
-  case show_dhcpv4_server_sticky_detail:
     return true;
   default:
     return false;
@@ -1790,13 +1848,10 @@ bool dhcpv6_server_show_command(cli_schema::CommandId id) noexcept {
   case show_dhcpv6_server_leases_type:
   case show_dhcpv6_server_leases_state:
   case show_dhcpv6_server_leases_type_state:
-  case show_dhcpv6_server_leases_md:
-  case show_dhcpv6_server_leases_md_detail:
-  case show_dhcpv6_server_leases_md_prefix:
-  case show_dhcpv6_server_leases_md_type:
-  case show_dhcpv6_server_leases_md_state:
+  case show_dhcpv6_server_leases_prefix_type:
+  case show_dhcpv6_server_leases_prefix_state:
+  case show_dhcpv6_server_leases_prefix_type_state:
   case show_dhcpv6_server_statistics:
-  case show_dhcpv6_server_statistics_md:
     return true;
   default:
     return false;
@@ -2110,8 +2165,6 @@ bool classic_mld_configuration_command(cli_schema::CommandId id) noexcept {
   case classic_mld_interface_no_query_response_interval:
   case classic_mld_interface_last_listener_interval:
   case classic_mld_interface_no_last_listener_interval:
-  case classic_mld_interface_robust_count:
-  case classic_mld_interface_no_robust_count:
   case classic_mld_interface_max_groups:
   case classic_mld_interface_no_max_groups:
   case classic_mld_interface_max_group_sources:
@@ -2246,7 +2299,6 @@ bool md_mld_configuration_command(cli_schema::CommandId id) noexcept {
   case md_mld_interface_query_interval:
   case md_mld_interface_query_response_interval:
   case md_mld_interface_last_member_interval:
-  case md_mld_interface_robust_count:
   case md_mld_interface_maximum_number_groups:
   case md_mld_interface_maximum_number_group_sources:
   case md_mld_interface_maximum_number_sources:
@@ -2261,7 +2313,6 @@ bool md_mld_configuration_command(cli_schema::CommandId id) noexcept {
   case md_delete_mld_interface_query_interval:
   case md_delete_mld_interface_query_response_interval:
   case md_delete_mld_interface_last_member_interval:
-  case md_delete_mld_interface_robust_count:
   case md_delete_mld_interface_maximum_number_groups:
   case md_delete_mld_interface_maximum_number_group_sources:
   case md_delete_mld_interface_maximum_number_sources:
@@ -2356,12 +2407,10 @@ bool classic_configuration_command(cli_schema::CommandId id) noexcept {
   case classic_dhcpv4_relay_description:
   case classic_dhcpv4_relay_no_description:
   case classic_dhcpv4_relay_gi_address:
+  case classic_dhcpv4_relay_gi_address_src:
   case classic_dhcpv4_relay_no_gi_address:
   case classic_dhcpv4_relay_server:
   case classic_dhcpv4_relay_no_server:
-  case classic_dhcpv4_relay_source_auto:
-  case classic_dhcpv4_relay_source_gi:
-  case classic_dhcpv4_relay_no_source:
   case classic_dhcpv4_relay_trusted:
   case classic_dhcpv4_relay_no_trusted:
   case classic_dhcpv4_relay_plain_bootp:
@@ -2378,7 +2427,6 @@ bool classic_configuration_command(cli_schema::CommandId id) noexcept {
   case classic_dhcpv4_circuit_ifindex:
   case classic_dhcpv4_circuit_port_id:
   case classic_dhcpv4_circuit_no:
-  case classic_dhcpv4_remote_none:
   case classic_dhcpv4_remote_mac:
   case classic_dhcpv4_remote_ascii:
   case classic_dhcpv4_remote_no:
@@ -2432,12 +2480,14 @@ bool classic_configuration_command(cli_schema::CommandId id) noexcept {
   case classic_remove_static_next_hop:
   case classic_remove_static_indirect:
   case classic_remove_static_indirect_child:
+  case classic_remove_static_next_hop_child:
   case classic_static_route_ipv6:
   case classic_indirect_static_route_ipv6:
   case classic_remove_static_route_ipv6:
   case classic_remove_static_next_hop_ipv6:
   case classic_remove_static_indirect_ipv6:
   case classic_remove_static_indirect_child_ipv6:
+  case classic_remove_static_next_hop_child_ipv6:
   case classic_static_route_shutdown:
   case classic_static_route_no_shutdown:
   case classic_indirect_static_route_shutdown:
@@ -2555,12 +2605,10 @@ bool dhcpv4_relay_configuration_command(
   case classic_dhcpv4_relay_description:
   case classic_dhcpv4_relay_no_description:
   case classic_dhcpv4_relay_gi_address:
+  case classic_dhcpv4_relay_gi_address_src:
   case classic_dhcpv4_relay_no_gi_address:
   case classic_dhcpv4_relay_server:
   case classic_dhcpv4_relay_no_server:
-  case classic_dhcpv4_relay_source_auto:
-  case classic_dhcpv4_relay_source_gi:
-  case classic_dhcpv4_relay_no_source:
   case classic_dhcpv4_relay_trusted:
   case classic_dhcpv4_relay_no_trusted:
   case classic_dhcpv4_relay_plain_bootp:
@@ -2577,7 +2625,6 @@ bool dhcpv4_relay_configuration_command(
   case classic_dhcpv4_circuit_ifindex:
   case classic_dhcpv4_circuit_port_id:
   case classic_dhcpv4_circuit_no:
-  case classic_dhcpv4_remote_none:
   case classic_dhcpv4_remote_mac:
   case classic_dhcpv4_remote_ascii:
   case classic_dhcpv4_remote_no:
@@ -2611,7 +2658,6 @@ bool terminal_global_command(cli_schema::CommandId id) noexcept {
   case switch_engine:
   case help:
   case help_edit:
-  case help_global:
   case help_globals:
   case help_special_characters:
   case navigate_back:
@@ -2621,7 +2667,6 @@ bool terminal_global_command(cli_schema::CommandId id) noexcept {
   case navigate_exit_all:
   case navigate_top:
   case navigate_root:
-  case navigate_classic_root:
   case md_quit_config:
   case md_configure_exclusive:
   case md_configure_global:
@@ -2688,7 +2733,6 @@ bool router_interface_show_command(cli_schema::CommandId id) noexcept {
   case show_router_interface_named_ipv4:
   case show_router_interface_named_ipv6:
   case show_router_interface_exclude_services:
-  case show_router_interface_description:
   case show_router_interface_statistics:
   case show_router_interface_global_index:
   case show_router_interface_global_index_detail:
@@ -3052,11 +3096,9 @@ std::optional<std::string> md_rendered_context_body(
   return std::nullopt;
 }
 
-void md_dhcpv6_prefix_info(
-    std::ostringstream &out,
-    const dhcpv6::configuration::Prefix &prefix,
-    const dhcpv6::configuration::Server &server, std::size_t depth,
-    bool detail) {
+void md_dhcpv6_prefix_info(std::ostringstream &out,
+                           const dhcpv6::configuration::Prefix &prefix,
+                           std::size_t depth, bool detail) {
   // Presence bits distinguish inherited values from explicit overrides.
   // `info detail` resolves inheritance at the server renderer before calling
   // this function, while ordinary `info` prints only configured leaves.
@@ -3084,29 +3126,28 @@ void md_dhcpv6_prefix_info(
   scalar("preferred-lifetime",
          prefix.preferred_lifetime_configured
              ? prefix.preferred_lifetime_seconds
-             : server.default_preferred_lifetime_seconds,
+             : 3600U,
          prefix.preferred_lifetime_configured);
+  // The prefix lifetime leaves carry fixed YANG defaults (3600, 86400,
+  // 1800 and 2880 seconds); an unset leaf renders its default, not the
+  // server level default leaves.
   scalar("valid-lifetime",
-         prefix.valid_lifetime_configured
-             ? prefix.valid_lifetime_seconds
-             : server.default_valid_lifetime_seconds,
+         prefix.valid_lifetime_configured ? prefix.valid_lifetime_seconds
+                                          : 86400U,
          prefix.valid_lifetime_configured);
   scalar("renew-time",
-         prefix.renewal_time_configured
-             ? prefix.renewal_time_seconds
-             : server.default_renewal_time_seconds,
+         prefix.renewal_time_configured ? prefix.renewal_time_seconds
+                                        : 1800U,
          prefix.renewal_time_configured);
   scalar("rebind-time",
-         prefix.rebinding_time_configured
-             ? prefix.rebinding_time_seconds
-             : server.default_rebinding_time_seconds,
+         prefix.rebinding_time_configured ? prefix.rebinding_time_seconds
+                                          : 2880U,
          prefix.rebinding_time_configured);
 }
 
-void md_dhcpv6_pool_info(
-    std::ostringstream &out, const dhcpv6::configuration::Pool &pool,
-    const dhcpv6::configuration::Server &server, std::size_t depth,
-    bool detail) {
+void md_dhcpv6_pool_info(std::ostringstream &out,
+                         const dhcpv6::configuration::Pool &pool,
+                         std::size_t depth, bool detail) {
   if (!pool.description.empty()) {
     md_indent(out, depth);
     out << "description \"" << pool.description << "\"\n";
@@ -3138,7 +3179,7 @@ void md_dhcpv6_pool_info(
     md_indent(out, depth);
     out << "prefix " << ip::format_ipv6(prefix.aggregate.network) << '/'
         << static_cast<unsigned>(prefix.aggregate.length) << " {\n";
-    md_dhcpv6_prefix_info(out, prefix, server, depth + 1U, detail);
+    md_dhcpv6_prefix_info(out, prefix, depth + 1U, detail);
     md_indent(out, depth);
     out << "}\n";
   }
@@ -3194,7 +3235,7 @@ void md_dhcpv6_server_info(
   for (const auto &pool : server.pools) {
     md_indent(out, depth);
     out << "pool \"" << pool.name << "\" {\n";
-    md_dhcpv6_pool_info(out, pool, server, depth + 1U, detail);
+    md_dhcpv6_pool_info(out, pool, depth + 1U, detail);
     md_indent(out, depth);
     out << "}\n";
   }
@@ -3282,7 +3323,7 @@ std::optional<std::string> md_dhcpv6_configuration_info(
   if (pool == server->pools.end())
     return std::string{};
   if (tokens->size() == 8U) {
-    md_dhcpv6_pool_info(out, *pool, *server, 0U, detail);
+    md_dhcpv6_pool_info(out, *pool, 0U, detail);
     return out.str();
   }
   if ((*tokens)[8] == "delegated-prefix" && tokens->size() == 9U) {
@@ -3312,7 +3353,7 @@ std::optional<std::string> md_dhcpv6_configuration_info(
   if (prefix == pool->prefixes.end())
     return std::string{};
   if (tokens->size() == 10U) {
-    md_dhcpv6_prefix_info(out, *prefix, *server, 0U, detail);
+    md_dhcpv6_prefix_info(out, *prefix, 0U, detail);
     return out.str();
   }
   if ((*tokens)[10] == "prefix-type" && tokens->size() == 11U) {
@@ -3351,7 +3392,10 @@ void md_dhcpv4_subnet_info(
         << (range.failover_control ==
                     dhcpv4::configuration::FailoverControlType::local
                 ? "local"
-                : "remote")
+            : range.failover_control ==
+                    dhcpv4::configuration::FailoverControlType::remote
+                ? "remote"
+                : "access-driven")
         << '\n';
   }
   for (const auto &range : subnet.excluded_ranges) {
@@ -3513,9 +3557,9 @@ std::string_view policy_action_text(mld::ImportPolicyAction action) noexcept;
 std::string_view tls_protocol_text(tls_profile::ProtocolVersion value) {
   switch (value) {
   case tls_profile::ProtocolVersion::tls12:
-    return "tls-version12";
+    return "tls-version-12";
   case tls_profile::ProtocolVersion::tls13:
-    return "tls-version13";
+    return "tls-version-13";
   case tls_profile::ProtocolVersion::all:
     return "tls-version-all";
   }
@@ -3698,6 +3742,11 @@ void md_tls_configuration_body(std::ostringstream &out,
     md_indent(out, depth);
     out << "server-tls-profile \"" << profile.name << "\" {\n";
     md_tls_endpoint_profile_info(out, profile, depth + 1U, detail);
+    if (detail || profile.renegotiate_timer_configured) {
+      md_indent(out, depth + 1U);
+      out << "tls-re-negotiate-timer " << profile.renegotiate_timer_minutes
+          << '\n';
+    }
     if (!profile.client_trust_anchor_profile.empty() ||
         !profile.client_common_name_list.empty()) {
       md_indent(out, depth + 1U);
@@ -3989,11 +4038,14 @@ void md_ipsec_configuration_body(
         out << name << ' ' << value << '\n';
       }
     };
-    leaf("dh-group", "group-19", transform.dh_group_configured);
+    leaf("dh-group",
+         ipsec::configuration::dh_group_name(transform.dh_group),
+         transform.dh_group_configured);
     leaf("ike-auth-algorithm", "auth-encryption",
          transform.authentication_encryption_configured);
     leaf("ike-encryption-algorithm",
-         ipsec::configuration::encryption_name(transform.encryption),
+         ipsec::configuration::configured_encryption_name(
+             transform.encryption, transform.encryption_configured),
          transform.encryption_configured);
     leaf("ike-prf-algorithm", "sha-256",
          transform.prf_sha256_configured);
@@ -4015,7 +4067,8 @@ void md_ipsec_configuration_body(
     leaf("esp-auth-algorithm", "auth-encryption",
          transform.authentication_encryption_configured);
     leaf("esp-encryption-algorithm",
-         ipsec::configuration::encryption_name(transform.encryption),
+         ipsec::configuration::configured_encryption_name(
+             transform.encryption, transform.encryption_configured),
          transform.encryption_configured);
     leaf("extended-sequence-number",
          transform.extended_sequence_number ? "true" : "false",
@@ -4235,11 +4288,16 @@ void md_ipsec_configuration_body(
       md_indent(out, depth + 2U);
       // SR OS conceals secret values in normal configuration output. The
       // datastore owns only a sealed handle, so no renderer can recover or
-      // leak the original secret bytes.
+      // leak the original secret bytes. The value container and ascii/hex
+      // leaf names mirror the configuration command shape.
+      out << "value {\n";
+      md_indent(out, depth + 3U);
       out << (entry.format == ipsec::configuration::PpkValueFormat::ascii
-                  ? "ascii-value"
-                  : "hex-value")
+                  ? "ascii"
+                  : "hex")
           << " \"******\"\n";
+      md_indent(out, depth + 2U);
+      out << "}\n";
       md_indent(out, depth + 1U);
       out << "}\n";
     }
@@ -4874,11 +4932,29 @@ md_policy_configuration_info(const Configuration &configuration,
       (*tokens)[1] != "policy-options")
     return std::nullopt;
 
+  const auto prefix_type_name = [](MldPrefixListType type) {
+    switch (type) {
+    case MldPrefixListType::exact:
+      return "exact";
+    case MldPrefixListType::longer:
+      return "longer";
+    case MldPrefixListType::through:
+      return "through";
+    case MldPrefixListType::range:
+      return "range";
+    case MldPrefixListType::to:
+      return "to";
+    case MldPrefixListType::address_mask:
+      return "address-mask";
+    }
+    return "exact";
+  };
   const auto emit_prefix_list = [&](std::ostringstream &out,
                                     const auto &list, std::size_t depth) {
-    for (const auto &prefix : list.prefixes) {
+    for (const auto &entry : list.prefixes) {
       md_indent(out, depth);
-      out << "prefix " << ip::format_ip_prefix(prefix) << '\n';
+      out << "prefix " << ip::format_ip_prefix(entry.prefix)
+          << " type " << prefix_type_name(entry.type) << '\n';
     }
   };
   const auto emit_entry = [&](std::ostringstream &out, const auto &entry,
@@ -5084,23 +5160,36 @@ void md_ospf_area_info(std::ostringstream &out,
     md_indent(out, depth);
     out << name << ' ' << value << '\n';
   };
-  if (area.type == ospf::AreaType::stub ||
-      area.type == ospf::AreaType::totally_stub) {
+  // YANG places summaries and default-metric only under area/stub and
+  // area/nssa. Rendering follows the same hierarchy so info output remains
+  // valid MD-CLI input. A totally stubby area renders as a stub without
+  // summaries, matching its classic no-summaries origin.
+  const bool stub_area = area.type == ospf::AreaType::stub ||
+                         area.type == ospf::AreaType::totally_stub;
+  if (stub_area) {
     md_indent(out, depth);
-    out << "stub\n";
+    out << "stub {\n";
+    md_indent(out, depth + 1U);
+    out << "summaries " << (area.summaries ? "true" : "false") << '\n';
+    md_indent(out, depth + 1U);
+    out << "default-metric " << area.default_metric << '\n';
+    md_indent(out, depth);
+    out << "}\n";
   } else if (area.type == ospf::AreaType::nssa) {
     md_indent(out, depth);
-    out << "nssa\n";
+    out << "nssa {\n";
+    md_indent(out, depth + 1U);
+    out << "summaries " << (area.summaries ? "true" : "false") << '\n';
+    md_indent(out, depth);
+    out << "}\n";
   }
-  leaf("summaries", area.summaries ? "true" : "false");
-  leaf("default-metric", area.default_metric);
   if (area.type == ospf::AreaType::nssa)
     leaf("nssa-translate-always",
          area.nssa_translate_always ? "true" : "false");
   for (const auto &range : area.ranges) {
     md_indent(out, depth);
-    out << "area-range " << ip::format_ip_prefix(range.prefix) << ' '
-        << (range.advertise ? "advertise" : "not-advertise");
+    out << "area-range " << ip::format_ip_prefix(range.prefix)
+        << " advertise " << (range.advertise ? "true" : "false");
     if (range.advertised_metric)
       out << " metric " << *range.advertised_metric;
     out << '\n';
@@ -5128,24 +5217,18 @@ void md_ospf_area_info(std::ostringstream &out,
     md_indent(out, depth + 1U);
     out << "transit-delay " << link.transmit_delay_seconds << '\n';
     if (!link.ipsec_sa_inbound.empty() || !link.ipsec_sa_outbound.empty()) {
+      // MD-CLI names both directions explicitly; the bidirectional shorthand
+      // exists only in classic CLI. Render the directional form so info output
+      // parses back through the MD grammar.
       md_indent(out, depth + 1U);
       out << "authentication {\n";
-      if (link.ipsec_sa_inbound == link.ipsec_sa_outbound) {
+      if (!link.ipsec_sa_inbound.empty()) {
         md_indent(out, depth + 2U);
-        out << "bidirectional {\n";
-        md_indent(out, depth + 3U);
-        out << "sa-name \"" << link.ipsec_sa_inbound << "\"\n";
+        out << "inbound \"" << link.ipsec_sa_inbound << "\"\n";
+      }
+      if (!link.ipsec_sa_outbound.empty()) {
         md_indent(out, depth + 2U);
-        out << "}\n";
-      } else {
-        if (!link.ipsec_sa_inbound.empty()) {
-          md_indent(out, depth + 2U);
-          out << "inbound \"" << link.ipsec_sa_inbound << "\"\n";
-        }
-        if (!link.ipsec_sa_outbound.empty()) {
-          md_indent(out, depth + 2U);
-          out << "outbound \"" << link.ipsec_sa_outbound << "\"\n";
-        }
+        out << "outbound \"" << link.ipsec_sa_outbound << "\"\n";
       }
       md_indent(out, depth + 1U);
       out << "}\n";
@@ -5180,10 +5263,17 @@ void md_ospf_instance_info(std::ostringstream &out,
     leaf("asbr trace-path",
          static_cast<unsigned>(*instance.asbr_trace_path_domain_id));
   leaf("overload", instance.overload ? "true" : "false");
-  leaf("graceful-restart",
-       instance.graceful_restart_helper ? "true" : "false");
-  leaf("loopfree-alternates",
-       instance.loopfree_alternates ? "true" : "false");
+  // graceful-restart and loopfree-alternate are presence containers in MD-CLI
+  // grammar, not boolean leaves. Render the bare keyword when present so info
+  // output remains valid MD-CLI input.
+  if (instance.graceful_restart_helper) {
+    md_indent(out, depth);
+    out << "graceful-restart\n";
+  }
+  if (instance.loopfree_alternates) {
+    md_indent(out, depth);
+    out << "loopfree-alternate\n";
+  }
   md_indent(out, depth);
   out << "timers {\n";
   md_indent(out, depth + 1U);
@@ -5229,6 +5319,20 @@ ospf_keychain_algorithm_text(ospf::KeychainAlgorithm algorithm) noexcept {
     return "hmac-sha-1";
   case ospf::KeychainAlgorithm::hmac_sha256:
     return "hmac-sha-256";
+  case ospf::KeychainAlgorithm::hmac_md5:
+    return "hmac-md5";
+  case ospf::KeychainAlgorithm::hmac_sha_1_96:
+    return "hmac-sha-1-96";
+  case ospf::KeychainAlgorithm::aes_128_cmac_96:
+    return "aes-128-cmac-96";
+  case ospf::KeychainAlgorithm::aes_128_cmac_128:
+    return "aes-128-cmac-128";
+  case ospf::KeychainAlgorithm::aes_128_gcm_16:
+    return "aes-128-gcm-16";
+  case ospf::KeychainAlgorithm::hmac_sha_256_96:
+    return "hmac-sha-256-96";
+  case ospf::KeychainAlgorithm::hmac_sha_256_128:
+    return "hmac-sha-256-128";
   }
   return {};
 }
@@ -5741,38 +5845,37 @@ void md_base_interface_info(std::ostringstream &out,
       md_indent(out, depth + 1U);
       out << "}\n";
     }
-    md_indent(out, depth);
-    out << "}\n";
-  }
-
-  // IPv4 ICMP is a direct child of the router interface in the 26.7 MD
-  // model. It is not nested below `ipv4`. Redirect controls form their own
-  // presence container and use admin-state, number and seconds leaf names.
-  // Keeping the exact hierarchy here is required for both root `info` and PWC
-  // scoping through md_rendered_context_body().
-  if (detail || interface.icmp_redirect_admin_configured ||
-      interface.icmp_redirect_maximum_configured ||
-      interface.icmp_redirect_interval_configured) {
-    md_indent(out, depth);
-    out << "icmp {\n";
-    md_indent(out, depth + 1U);
-    out << "redirects {\n";
-    if (detail || interface.icmp_redirect_admin_configured) {
+    // YANG nests IPv4 ICMP redirects under the interface ipv4 container
+    // (nokia-conf.yang:306737). The redirects presence container keeps the
+    // admin-state, number and seconds leaf names. Rendering the exact
+    // hierarchy is required for both root `info` and PWC scoping through
+    // md_rendered_context_body().
+    if (detail || interface.icmp_redirect_admin_configured ||
+        interface.icmp_redirect_maximum_configured ||
+        interface.icmp_redirect_interval_configured) {
+      md_indent(out, depth + 1U);
+      out << "icmp {\n";
       md_indent(out, depth + 2U);
-      out << "admin-state "
-          << (interface.icmp_redirects_enabled ? "enable" : "disable")
-          << '\n';
-    }
-    if (detail || interface.icmp_redirect_maximum_configured) {
+      out << "redirects {\n";
+      if (detail || interface.icmp_redirect_admin_configured) {
+        md_indent(out, depth + 3U);
+        out << "admin-state "
+            << (interface.icmp_redirects_enabled ? "enable" : "disable")
+            << '\n';
+      }
+      if (detail || interface.icmp_redirect_maximum_configured) {
+        md_indent(out, depth + 3U);
+        out << "number " << interface.icmp_redirect_maximum << '\n';
+      }
+      if (detail || interface.icmp_redirect_interval_configured) {
+        md_indent(out, depth + 3U);
+        out << "seconds " << interface.icmp_redirect_interval_seconds << '\n';
+      }
       md_indent(out, depth + 2U);
-      out << "number " << interface.icmp_redirect_maximum << '\n';
+      out << "}\n";
+      md_indent(out, depth + 1U);
+      out << "}\n";
     }
-    if (detail || interface.icmp_redirect_interval_configured) {
-      md_indent(out, depth + 2U);
-      out << "seconds " << interface.icmp_redirect_interval_seconds << '\n';
-    }
-    md_indent(out, depth + 1U);
-    out << "}\n";
     md_indent(out, depth);
     out << "}\n";
   }
@@ -5930,9 +6033,8 @@ md_bof_configuration_info(const Configuration &configuration,
           << (client.client_id_hex ? client.client_id
                                    : "\"" + client.client_id + "\"")
           << "\n";
-    if (ipv6 && (detail || static_cast<const bof::Dhcpv6ClientIntent &>(client)
-                                   .client_type !=
-                               bof::Dhcpv6ClientType::duid_enterprise))
+    if (ipv6 && static_cast<const bof::Dhcpv6ClientIntent &>(client)
+                       .client_type_configured)
       out << "client-type "
           << (static_cast<const bof::Dhcpv6ClientIntent &>(client)
                           .client_type ==
@@ -7163,7 +7265,17 @@ std::string classic_info_text(std::string_view md_text,
         md_context.starts_with("configure router \"Base\" ospf");
     if (ospf_context && content.starts_with("keychain "))
       content.replace(0U, std::string{"keychain"}.size(), "auth-keychain");
-    if (content == "admin-state enable")
+    // YANG nests summaries under area/stub and area/nssa with a boolean leaf.
+    // Classic keeps the same nesting but uses bare and negated keywords.
+    const bool stub_nssa_context =
+        ospf_context && !container_stack.empty() &&
+        (container_stack.back() == "stub" ||
+         container_stack.back() == "nssa");
+    if (stub_nssa_context && content == "summaries true")
+      content = "summaries";
+    else if (stub_nssa_context && content == "summaries false")
+      content = "no summaries";
+    else if (content == "admin-state enable")
       content = "no shutdown";
     else if (content == "admin-state disable")
       content = "shutdown";
@@ -7179,6 +7291,19 @@ std::string classic_info_text(std::string_view md_text,
       content.replace(0U, std::string{"certificate-file"}.size(), "cert");
     else if (content.starts_with("key-file "))
       content.replace(0U, std::string{"key-file"}.size(), "key");
+    else if (content.starts_with("pfs-dh-group group-"))
+      // Classic spells Diffie-Hellman groups numerically while MD-CLI
+      // follows the YANG group- enumerations.
+      content.replace(0U, std::string{"pfs-dh-group group-"}.size(),
+                      "pfs-dh-group ");
+    else if (content.starts_with("dh-group group-"))
+      content.replace(0U, std::string{"dh-group group-"}.size(), "dh-group ");
+    else if (content.starts_with("protocol-version tls-version-12"))
+      content.replace(0U, std::string{"protocol-version tls-version-12"}.size(),
+                      "protocol-version tls-version12");
+    else if (content.starts_with("protocol-version tls-version-13"))
+      content.replace(0U, std::string{"protocol-version tls-version-13"}.size(),
+                      "protocol-version tls-version13");
     else if (content.starts_with("common-name-list "))
       content.replace(0U, std::string{"common-name-list"}.size(),
                       "cn-authentication");
@@ -7563,7 +7688,8 @@ void json_policy_options(std::ostringstream &out,
          ++prefix_index) {
       if (prefix_index)
         out << ',';
-      json_string(out, ip::format_ip_prefix(list.prefixes[prefix_index]));
+      json_string(
+          out, ip::format_ip_prefix(list.prefixes[prefix_index].prefix));
     }
     out << "]}";
   }
@@ -11026,7 +11152,7 @@ bool LabRuntime::replace_router_configuration(
         !next_netstring(payload, speed_text) ||
         !next_netstring(payload, description) || !boolean(admin_text, admin) ||
         !decimal(mtu_text, mtu) || mtu > 0xffffU ||
-        !decimal(speed_text, speed) || description.size() > 80U ||
+        !decimal(speed_text, speed) || description.size() > 255U ||
         !inventory->coordinate_ordinal(id) ||
         std::any_of(next.ports.begin(), next.ports.end(),
                     [id](const auto &item) { return item.id == id; }))
@@ -11277,7 +11403,8 @@ bool LabRuntime::replace_router_configuration(
       const auto parsed = ip::parse_ip_prefix(prefix_text);
       if (!parsed)
         return false;
-      list.prefixes.push_back(*parsed);
+      list.prefixes.push_back({.prefix = *parsed,
+                               .type = MldPrefixListType::exact});
     }
     next.mld_prefix_lists.push_back(std::move(list));
   }
@@ -13410,9 +13537,23 @@ std::string LabRuntime::execute_session(std::string_view session_id,
   const auto workflow = terminal->cli.md_workflow;
   const auto effective =
       cli_detail::resolve_session_input(terminal->cli, input);
+  auto trimmed_line = cli_detail::trim(std::string{input});
+  std::string_view classic_line{trimmed_line};
+  if (engine == CliEngine::classic &&
+      (classic_line.starts_with('\\') || classic_line.starts_with('/')))
+    classic_line.remove_prefix(1U);
+  const bool classic_configure =
+      engine == CliEngine::classic &&
+      (classic_line == "configure" ||
+       classic_line.starts_with("configure "));
+  auto matched_command_text = std::string{input};
   auto parsed = cli_detail::parse_command(engine, workflow, input);
-  if (!parsed || !terminal_global_command(parsed->spec->id))
+  if (!parsed ||
+      (!terminal_global_command(parsed->spec->id) && !classic_configure)) {
     parsed = cli_detail::parse_command(engine, workflow, effective);
+    if (parsed)
+      matched_command_text = effective;
+  }
   std::string output;
   if (!parsed) {
     // Container navigation, incomplete syntax help and bad-command wording are
@@ -13517,18 +13658,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     interface.mld_ssm_translations.clear();
     interface.mld_static_groups.clear();
   };
-  const auto reset_icmp6_redirects = [](auto &interface) {
-    // Removing IPv6 removes this child context. Defaults are release-owned and
-    // explicit leaf-presence flags must be cleared with the effective values.
-    interface.icmp6_redirect_maximum =
-        device_catalog::icmp6_redirect_default_maximum;
-    interface.icmp6_redirect_interval_seconds = static_cast<std::uint16_t>(
-        device_catalog::icmp6_redirect_default_interval.count());
-    interface.icmp6_redirects_enabled = true;
-    interface.icmp6_redirect_admin_configured = false;
-    interface.icmp6_redirect_maximum_configured = false;
-    interface.icmp6_redirect_interval_configured = false;
-  };
   const auto reset_icmp_redirects = [](auto &interface) {
     // The IPv4 ICMP subtree cannot outlive its parent address. Reset both the
     // effective policy and MD leaf-presence state, otherwise adding IPv4 back
@@ -13541,27 +13670,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     interface.icmp_redirect_admin_configured = false;
     interface.icmp_redirect_maximum_configured = false;
     interface.icmp_redirect_interval_configured = false;
-  };
-  const auto reset_neighbor_discovery = [](auto &interface) {
-    // Both children belong to the IPv6 interface. Retaining either after the
-    // address leaf is deleted would produce configuration that the 26.7 YANG
-    // constraints and classic CLI context cannot represent.
-    interface.ipv6_unsolicited_learning = Ipv6UnsolicitedLearning::none;
-    interface.ipv6_unsolicited_learning_configured = false;
-    interface.ipv6_nd_reachable_time_seconds = 0U;
-    interface.ipv6_nd_stale_time_seconds = 0U;
-    interface.ipv6_proactive_refresh = Ipv6UnsolicitedLearning::none;
-    interface.ipv6_neighbor_limit = 0U;
-    interface.ipv6_neighbor_limit_threshold_percent =
-        device_catalog::nd_default_neighbor_limit_threshold_percent;
-    interface.ipv6_nd_reachable_time_configured = false;
-    interface.ipv6_nd_stale_time_configured = false;
-    interface.ipv6_proactive_refresh_configured = false;
-    interface.ipv6_neighbor_limit_configured = false;
-    interface.ipv6_neighbor_limit_log_only = false;
-    interface.ipv6_neighbor_limit_log_only_configured = false;
-    interface.ipv6_neighbor_limit_threshold_configured = false;
-    interface.static_ipv6_neighbors.clear();
   };
   const auto edit_global_ipv6_neighbor_policy =
       [&](ConfigurationIntent &configuration, cli_schema::CommandId id) {
@@ -13583,8 +13691,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             reachable ? device_catalog::nd_default_reachable_time_seconds
                       : device_catalog::nd_default_stale_time_seconds;
         if (removing) {
+          // Deleting an absent leaf is the documented MD silent no-op
+          // while the classic no form keeps the rejected result.
           if (!configured)
-            return false;
+            return id == md_delete_ipv6_nd_reachable_time ||
+                   id == md_delete_ipv6_nd_stale_time;
           value = default_value;
           configured = false;
           return true;
@@ -13620,10 +13731,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         [&](const auto &entry) { return entry.name == name; });
     // The system interface has no Ethernet adjacency and therefore no ARP
     // process. Ordinary interfaces retain these leaves even while address or
-    // port configuration keeps their operational state down.
-    if (name.empty() || name == system_interface_name ||
-        interface == configuration.interfaces.end())
+    // port configuration keeps their operational state down. A missing
+    // interface holds nothing to remove: MD delete stays silent.
+    if (name.empty() || name == system_interface_name)
       return false;
+    if (interface == configuration.interfaces.end())
+      return id == md_delete_interface_ipv4_arp_timeout ||
+             id == md_delete_interface_ipv4_arp_retry_timer;
 
     const bool timeout = id == md_interface_ipv4_arp_timeout ||
                          id == md_delete_interface_ipv4_arp_timeout ||
@@ -13634,10 +13748,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                           id == classic_interface_no_arp_timeout ||
                           id == classic_interface_no_arp_retry_timer;
     auto &configured = timeout ? interface->arp_timeout_configured
-                               : interface->arp_retry_configured;
+                                : interface->arp_retry_configured;
     if (removing) {
+      // Deleting an absent leaf is the documented MD silent no-op
+      // while the classic no form keeps the rejected result.
       if (!configured)
-        return false;
+        return id == md_delete_interface_ipv4_arp_timeout ||
+               id == md_delete_interface_ipv4_arp_retry_timer;
       if (timeout)
         interface->arp_timeout_seconds = static_cast<std::uint32_t>(
             device_catalog::dynamic_arp_timeout.count());
@@ -13677,9 +13794,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     auto interface = std::find_if(
         configuration.interfaces.begin(), configuration.interfaces.end(),
         [&](const auto &entry) { return entry.name == name; });
-    if (name.empty() || name == system_interface_name ||
-        interface == configuration.interfaces.end() ||
-        !interface->port_configured || !interface->address_configured)
+    if (name.empty() || name == system_interface_name)
+      return false;
+    // A missing interface holds no ARP entries to remove: MD delete stays
+    // silent without materializing it, while classic keeps the reject.
+    if (interface == configuration.interfaces.end())
+      return id == md_delete_static_ipv4_neighbor;
+    if (!interface->port_configured || !interface->address_configured)
       return false;
 
     const auto address_text =
@@ -13743,8 +13864,22 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     auto interface = std::find_if(
         configuration.interfaces.begin(), configuration.interfaces.end(),
         [&](const auto &entry) { return entry.name == name; });
-    if (name.empty() || interface == configuration.interfaces.end() ||
-        !interface->ipv6_address_configured)
+    // A missing interface holds no ND state to remove: MD delete stays
+    // silent without materializing it, while classic keeps the reject.
+    // Other rejections (empty name, unaddressed interface) are unchanged.
+    if (name.empty())
+      return false;
+    if (interface == configuration.interfaces.end())
+      return id == md_delete_ipv6_neighbor_limit ||
+             id == md_delete_ipv6_neighbor_limit_max_entries ||
+             id == md_delete_ipv6_neighbor_limit_log_only ||
+             id == md_delete_ipv6_neighbor_limit_threshold ||
+             id == md_delete_static_ipv6_neighbor ||
+             id == md_delete_ipv6_learn_unsolicited ||
+             id == md_delete_ipv6_proactive_refresh ||
+             id == md_delete_interface_ipv6_nd_reachable_time ||
+             id == md_delete_interface_ipv6_nd_stale_time;
+    if (!interface->ipv6_address_configured)
       return false;
 
     const bool policy_command = id == md_ipv6_learn_unsolicited ||
@@ -13755,8 +13890,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       const bool removing = id == md_delete_ipv6_learn_unsolicited ||
                             id == classic_no_ipv6_learn_unsolicited;
       if (removing) {
+        // Deleting an absent leaf is the documented MD silent no-op
+        // while the classic no form keeps the rejected result.
         if (!interface->ipv6_unsolicited_learning_configured)
-          return false;
+          return id == md_delete_ipv6_learn_unsolicited;
         interface->ipv6_unsolicited_learning = Ipv6UnsolicitedLearning::none;
         interface->ipv6_unsolicited_learning_configured = false;
         return true;
@@ -13790,8 +13927,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       const bool removing = id == md_delete_ipv6_proactive_refresh ||
                             id == classic_no_ipv6_proactive_refresh;
       if (removing) {
+        // Deleting an absent leaf is the documented MD silent no-op
+        // while the classic no form keeps the rejected result.
         if (!interface->ipv6_proactive_refresh_configured)
-          return false;
+          return id == md_delete_ipv6_proactive_refresh;
         interface->ipv6_proactive_refresh = Ipv6UnsolicitedLearning::none;
         interface->ipv6_proactive_refresh_configured = false;
         return true;
@@ -13835,8 +13974,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                              ? interface->ipv6_nd_reachable_time_configured
                              : interface->ipv6_nd_stale_time_configured;
       if (removing) {
+        // Deleting an absent leaf is the documented MD silent no-op
+        // while the classic no form keeps the rejected result.
         if (!configured)
-          return false;
+          return id == md_delete_interface_ipv6_nd_reachable_time ||
+                 id == md_delete_interface_ipv6_nd_stale_time;
         value = 0U;
         configured = false;
         return true;
@@ -13889,28 +14031,32 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           interface->ipv6_neighbor_limit_threshold_configured;
       if (id == md_delete_ipv6_neighbor_limit ||
           id == classic_no_ipv6_neighbor_limit) {
+        // Deleting absent leaves is the documented MD silent no-op
+        // while the classic no form keeps the rejected result.
         if (!any_limit_leaf)
-          return false;
+          return id == md_delete_ipv6_neighbor_limit;
         reset_limit();
         return true;
       }
       if (id == md_delete_ipv6_neighbor_limit_max_entries) {
         if (!interface->ipv6_neighbor_limit_configured)
-          return false;
+          return true;
         interface->ipv6_neighbor_limit = 0U;
         interface->ipv6_neighbor_limit_configured = false;
         return true;
       }
       if (id == md_delete_ipv6_neighbor_limit_log_only) {
+        // Deleting an absent leaf is the documented MD silent no-op.
         if (!interface->ipv6_neighbor_limit_log_only_configured)
-          return false;
+          return true;
         interface->ipv6_neighbor_limit_log_only = false;
         interface->ipv6_neighbor_limit_log_only_configured = false;
         return true;
       }
       if (id == md_delete_ipv6_neighbor_limit_threshold) {
+        // Deleting an absent leaf is the documented MD silent no-op.
         if (!interface->ipv6_neighbor_limit_threshold_configured)
-          return false;
+          return true;
         interface->ipv6_neighbor_limit_threshold_percent =
             device_catalog::nd_default_neighbor_limit_threshold_percent;
         interface->ipv6_neighbor_limit_threshold_configured = false;
@@ -13965,7 +14111,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           cli_detail::argument(*parsed, cli_schema::TokenKind::nd_threshold);
       if (has_threshold &&
           (!threshold_text || !decimal(*threshold_text, threshold) ||
-           threshold > 100U))
+           threshold < 1U || threshold > 100U))
         return false;
       interface->ipv6_neighbor_limit = limit;
       interface->ipv6_neighbor_limit_configured = true;
@@ -13981,6 +14127,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         cli_detail::argument(*parsed, cli_schema::TokenKind::ipv6);
     const auto address = address_text ? ip::parse_ipv6(*address_text)
                                       : std::optional<packet::Ipv6>{};
+    // YANG forbids static neighbors on the system interface, matching the
+    // IPv4 ARP path.
+    if (name == system_interface_name)
+      return false;
     if (!address || ip::is_unspecified(*address) ||
         ip::is_multicast(*address) ||
         (!ip::is_link_local(*address) &&
@@ -13994,8 +14144,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     const bool removing = id == md_delete_static_ipv6_neighbor ||
                           id == classic_remove_static_ipv6_neighbor;
     if (removing) {
+      // Deleting an absent entry is the documented MD silent no-op
+      // while the classic no form keeps the rejected result.
       if (configured == interface->static_ipv6_neighbors.end())
-        return false;
+        return id == md_delete_static_ipv6_neighbor;
       interface->static_ipv6_neighbors.erase(configured);
       return true;
     }
@@ -14216,6 +14368,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     std::vector<MldSsmTranslation> *translations{
         &configuration.mld.ssm_translations};
     InterfaceIntent *interface{};
+    // Documented MD-CLI delete stays silent on absent elements while classic
+    // no forms keep the rejected result.
+    const bool md_ssm_removal = id == md_delete_mld_ssm_source ||
+                                id == md_delete_mld_ssm_range ||
+                                id == md_delete_mld_interface_ssm_source ||
+                                id == md_delete_mld_interface_ssm_range;
     if (interface_command) {
       const auto raw_name =
           cli_detail::argument(*parsed, cli_schema::TokenKind::interface_name);
@@ -14226,7 +14384,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           [&](const auto &entry) { return entry.name == name; });
       if (name.empty() || found == configuration.interfaces.end() ||
           !found->ipv6_address_configured)
-        return false;
+        return md_ssm_removal;
       interface = &*found;
       translations = &interface->mld_ssm_translations;
     }
@@ -14240,7 +14398,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       std::erase_if(*translations, [&](const auto &entry) {
         return entry.start == *start && entry.end == *end;
       });
-      return translations->size() != before &&
+      return (translations->size() != before || md_ssm_removal) &&
              valid_mld_candidate(configuration);
     }
     if (!source || ip::is_unspecified(*source) || ip::is_multicast(*source))
@@ -14255,7 +14413,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                                id == classic_mld_interface_ssm_no_source;
     if (remove_source) {
       if (found == translations->end())
-        return false;
+        return md_ssm_removal;
       translations->erase(found);
       return valid_mld_candidate(configuration);
     }
@@ -14314,11 +14472,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           return false;
         }
         if (removing) {
-          // Deleting an absent leaf is not reported as a successful no-op. This
-          // also keeps candidate dirty markers aligned with a real value
-          // change.
+          // Documented MD-CLI delete stays silent on absent elements while
+          // classic no forms keep the rejected result. This also keeps
+          // candidate dirty markers aligned with a real value change.
           if (!*configured)
-            return false;
+            return id == md_delete_mld_interface_maximum_number_groups ||
+                   id == md_delete_mld_interface_maximum_number_group_sources ||
+                   id == md_delete_mld_interface_maximum_number_sources;
           *value = 0U;
           *configured = false;
           return true;
@@ -14349,9 +14509,16 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     auto interface = std::find_if(
         configuration.interfaces.begin(), configuration.interfaces.end(),
         [&](const auto &entry) { return entry.name == name; });
+    // Documented MD-CLI delete stays silent on absent elements while classic
+    // no forms keep the rejected result.
+    const bool md_static_removal =
+        id == md_delete_mld_static_group || id == md_delete_mld_static_starg ||
+        id == md_delete_mld_static_source || id == md_delete_mld_static_range ||
+        id == md_delete_mld_static_range_starg ||
+        id == md_delete_mld_static_range_source;
     if (name.empty() || interface == configuration.interfaces.end() ||
         !interface->ipv6_address_configured)
-      return false;
+      return md_static_removal;
 
     const bool range_command = id == md_mld_static_range_starg ||
                                id == md_mld_static_range_source ||
@@ -14431,7 +14598,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                                 id == classic_mld_static_no_range_step;
       if (remove_range) {
         if (configured == staged_groups.end())
-          return false;
+          return md_static_removal;
         staged_groups.erase(configured);
         return commit_range_edit();
       }
@@ -14453,14 +14620,16 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           id == classic_mld_static_range_no_source ||
           id == classic_mld_static_range_step_no_source;
       if (remove_range_starg) {
-        if (!configured->starg)
-          return false;
+        if (configured == staged_groups.end() || !configured->starg)
+          return md_static_removal;
         configured->starg = false;
       } else if (remove_range_source) {
+        if (configured == staged_groups.end())
+          return md_static_removal;
         const auto before = configured->sources.size();
         std::erase(configured->sources, *source);
         if (configured->sources.size() == before)
-          return false;
+          return md_static_removal;
       } else if (source_range) {
         if (configured->starg)
           return false;
@@ -14498,23 +14667,24 @@ std::string LabRuntime::execute_session(std::string_view session_id,
 
     if (remove_group) {
       if (configured == interface->mld_static_groups.end())
-        return false;
+        return md_static_removal;
       interface->mld_static_groups.erase(configured);
       return valid_mld_candidate(configuration);
     }
     if (remove_starg) {
       if (configured == interface->mld_static_groups.end() ||
           !configured->starg)
-        return false;
+        return md_static_removal;
       configured->starg = false;
       return valid_mld_candidate(configuration);
     }
     if (remove_source) {
       if (configured == interface->mld_static_groups.end())
-        return false;
+        return md_static_removal;
       const auto before = configured->sources.size();
       std::erase(configured->sources, *source);
-      return configured->sources.size() != before &&
+      return (configured->sources.size() != before ||
+              md_static_removal) &&
              valid_mld_candidate(configuration);
     }
 
@@ -14571,14 +14741,29 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         std::find_if(configuration.interfaces.begin(),
                      configuration.interfaces.end(),
                      [&](const auto &entry) { return entry.name == name; });
+    // Documented MD-CLI delete stays silent on absent elements while classic
+    // no forms keep the rejected result. MD deletes therefore never create
+    // missing ancestors.
+    const bool md_relay_removal =
+        id == md_delete_dhcpv4_relay || id == md_delete_dhcpv4_relay_description ||
+        id == md_delete_dhcpv4_relay_gi_address ||
+        id == md_delete_dhcpv4_relay_server ||
+        id == md_delete_dhcpv4_relay_source ||
+        id == md_delete_dhcpv4_relay_trusted ||
+        id == md_delete_dhcpv4_relay_plain_bootp ||
+        id == md_delete_dhcpv4_relay_release_gi ||
+        id == md_delete_dhcpv4_option82_action ||
+        id == md_delete_dhcpv4_circuit || id == md_delete_dhcpv4_remote;
     if (id == md_delete_dhcpv4_relay) {
       if (interface == configuration.interfaces.end() ||
           !interface->dhcpv4_relay)
-        return false;
+        return true;
       interface->dhcpv4_relay.reset();
       return true;
     }
     if (interface == configuration.interfaces.end()) {
+      if (md_relay_removal)
+        return true;
       // A full MD list path creates missing presence containers. Classic
       // context traversal reaches the same canonical configuration object.
       // Enabling an incomplete relay is still rejected by the transaction
@@ -14588,8 +14773,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       configuration.interfaces.push_back(std::move(created));
       interface = std::prev(configuration.interfaces.end());
     }
-    if (!interface->dhcpv4_relay)
+    if (!interface->dhcpv4_relay) {
+      if (md_relay_removal)
+        return true;
       interface->dhcpv4_relay.emplace();
+    }
     auto &relay = *interface->dhcpv4_relay;
 
     if (id == md_dhcpv4_relay_enable ||
@@ -14612,10 +14800,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     } else if (id == md_delete_dhcpv4_relay_description ||
                id == classic_dhcpv4_relay_no_description) {
       if (relay.description.empty())
-        return false;
+        return id == md_delete_dhcpv4_relay_description;
       relay.description.clear();
     } else if (id == md_dhcpv4_relay_gi_address ||
-               id == classic_dhcpv4_relay_gi_address) {
+               id == classic_dhcpv4_relay_gi_address ||
+               id == classic_dhcpv4_relay_gi_address_src) {
       const auto text =
           cli_detail::argument(*parsed, cli_schema::TokenKind::ipv4);
       const auto address = text ? ipv4(*text) : std::optional<std::uint32_t>{};
@@ -14623,16 +14812,26 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         return false;
       relay.gateway_address = ipv4_bytes(*address);
       relay.gateway_address_configured = true;
-    } else if (id == md_delete_dhcpv4_relay_gi_address ||
-               id == classic_dhcpv4_relay_no_gi_address) {
+      // Classic selects the gateway as the source address with the
+      // gi-address src-ip-addr flag form.
+      if (id == classic_dhcpv4_relay_gi_address_src)
+        relay.source_address = dhcpv4::RelaySourceAddress::gi_address;
+    } else if (id == md_delete_dhcpv4_relay_gi_address) {
+      if (!relay.gateway_address_configured)
+        return true;
+      relay.gateway_address = {};
+      relay.gateway_address_configured = false;
+    } else if (id == classic_dhcpv4_relay_no_gi_address) {
       if (!relay.gateway_address_configured)
         return false;
       relay.gateway_address = {};
       relay.gateway_address_configured = false;
+      // The src-ip-addr flag lives under gi-address; removing the gateway
+      // reverts the source selection to automatic.
+      relay.source_address = dhcpv4::RelaySourceAddress::automatic;
     } else if (id == md_dhcpv4_relay_server ||
                id == classic_dhcpv4_relay_server ||
-               id == md_delete_dhcpv4_relay_server ||
-               id == classic_dhcpv4_relay_no_server) {
+               id == md_delete_dhcpv4_relay_server) {
       const auto text =
           cli_detail::argument(*parsed, cli_schema::TokenKind::ipv4);
       const auto parsed_address =
@@ -14645,11 +14844,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                        [&](const auto &entry) {
                          return entry.address == address;
                        });
-      const bool remove = id == md_delete_dhcpv4_relay_server ||
-                          id == classic_dhcpv4_relay_no_server;
+      const bool remove = id == md_delete_dhcpv4_relay_server;
       if (remove) {
         if (existing == relay.servers.end())
-          return false;
+          return true;
         relay.servers.erase(existing);
       } else if (existing == relay.servers.end()) {
         if (relay.servers.size() ==
@@ -14657,13 +14855,16 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           return false;
         relay.servers.push_back({.address = address});
       }
-    } else if (id == md_dhcpv4_relay_source_gi ||
-               id == classic_dhcpv4_relay_source_gi) {
+    } else if (id == classic_dhcpv4_relay_no_server) {
+      // The documented classic removal form carries no address: it clears
+      // every configured server back to the default empty set.
+      if (relay.servers.empty())
+        return false;
+      relay.servers.clear();
+    } else if (id == md_dhcpv4_relay_source_gi) {
       relay.source_address = dhcpv4::RelaySourceAddress::gi_address;
     } else if (id == md_dhcpv4_relay_source_auto ||
-               id == md_delete_dhcpv4_relay_source ||
-               id == classic_dhcpv4_relay_source_auto ||
-               id == classic_dhcpv4_relay_no_source) {
+               id == md_delete_dhcpv4_relay_source) {
       relay.source_address = dhcpv4::RelaySourceAddress::automatic;
     } else if (id == md_dhcpv4_relay_trusted) {
       const auto text =
@@ -14711,10 +14912,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       relay.existing_information =
           dhcpv4::ExistingRelayInformationAction::drop;
     } else if (id == md_dhcpv4_circuit_none ||
-               id == md_delete_dhcpv4_circuit ||
-               id == classic_dhcpv4_circuit_none ||
-               id == classic_dhcpv4_circuit_no) {
+               id == classic_dhcpv4_circuit_none) {
       relay.circuit_id_source = dhcpv4::CircuitIdSource::none;
+    } else if (id == md_delete_dhcpv4_circuit ||
+               id == classic_dhcpv4_circuit_no) {
+      // The documented circuit-id default is ascii-tuple, not none.
+      relay.circuit_id_source = dhcpv4::CircuitIdSource::ascii_tuple;
     } else if (id == md_dhcpv4_circuit_ascii_tuple ||
                id == classic_dhcpv4_circuit_ascii_tuple) {
       relay.circuit_id_source = dhcpv4::CircuitIdSource::ascii_tuple;
@@ -14729,7 +14932,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       relay.circuit_id_source = dhcpv4::CircuitIdSource::port_id;
     } else if (id == md_dhcpv4_remote_none ||
                id == md_delete_dhcpv4_remote ||
-               id == classic_dhcpv4_remote_none ||
                id == classic_dhcpv4_remote_no) {
       relay.remote_id_source = dhcpv4::RemoteIdSource::none;
       relay.remote_id_ascii.clear();
@@ -14768,14 +14970,16 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     const auto interface = std::ranges::find(
         configuration.interfaces, name, &InterfaceIntent::name);
     if (interface == configuration.interfaces.end())
-      return false;
+      return id == md_delete_interface_dhcpv6_local_server;
 
     const bool remove =
         id == md_delete_interface_dhcpv6_local_server ||
         id == classic_interface_no_dhcpv6_local_server;
     if (remove) {
+      // Documented MD-CLI delete stays silent on absent elements while the
+      // classic no form keeps the rejected result.
       if (interface->dhcpv6_local_server.empty())
-        return false;
+        return id == md_delete_interface_dhcpv6_local_server;
       interface->dhcpv6_local_server.clear();
       return true;
     }
@@ -14802,7 +15006,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     case switch_engine:
     case help:
     case help_edit:
-    case help_global:
     case help_globals:
     case help_special_characters:
     case navigate_back:
@@ -14812,7 +15015,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     case navigate_exit_all:
     case navigate_top:
     case navigate_root:
-    case navigate_classic_root:
     case md_quit_config:
     case md_configure_exclusive:
     case md_configure_global:
@@ -15226,13 +15428,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                                         CliEngine::md, &secrets);
                 }();
       if (ipsec_edit.recognized) {
-        valid = ipsec_edit.changed;
+        valid = ipsec_edit.valid;
         instance = ipsec_edit.instance;
       } else if (tls_edit.recognized) {
-        valid = tls_edit.changed;
+        valid = tls_edit.valid;
         instance = tls_edit.instance;
       } else if (ies_edit.recognized) {
-        valid = ies_edit.changed;
+        valid = ies_edit.valid;
         instance = ies_edit.instance;
       } else if (dhcpv4_edit.recognized) {
         valid = dhcpv4_edit.valid;
@@ -15328,7 +15530,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           const auto raw = argument(cli_schema::TokenKind::description);
           const auto text =
               raw ? cli_detail::unquote(*raw) : std::string_view{};
-          valid = raw && !text.empty() && text.size() <= 80U &&
+          valid = raw && !text.empty() &&
+                  text.size() <= profile::port_description_bytes &&
                   cli_detail::valid_cli_string(*raw);
           if (valid)
             current->description.assign(text);
@@ -15353,8 +15556,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         const auto current = std::find_if(
             candidate->interfaces.begin(), candidate->interfaces.end(),
             [&](const auto &entry) { return entry.name == name; });
-        valid = !name.empty() && current != candidate->interfaces.end();
-        if (valid) {
+        // The system interface is permanent. Deleting an absent interface
+        // is the documented silent no-op.
+        valid = !name.empty() && name != system_interface_name;
+        if (valid && current != candidate->interfaces.end()) {
           // Deleting the list instance removes all of its children in the
           // candidate. apply_configuration performs the dependency-ordered
           // forwarding teardown only when the transaction is committed.
@@ -15426,12 +15631,17 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         const bool deletes_existing_ipv4_leaf =
             id == md_delete_interface_port ||
             id == md_delete_interface_ipv4_primary;
+        // MD delete never materializes the list entry it is trying to
+        // remove. An absent interface is the documented silent no-op.
+        const bool interface_leaf_removal =
+            deletes_existing_ipv4_leaf ||
+            id == md_delete_interface_ipv6_address ||
+            id == md_delete_interface_ipv6_address_dad ||
+            id == md_delete_interface_ipv6_address_eui64 ||
+            id == md_delete_interface_ipv6_address_primary_preference ||
+            id == md_delete_interface_ipv6_address_tag;
         if (valid && current == candidate->interfaces.end() &&
-            deletes_existing_ipv4_leaf) {
-          // MD delete never materializes the list entry it is trying to
-          // remove. The unchanged candidate is restored below and the command
-          // reports the ordinary invalid-element result.
-          valid = false;
+            interface_leaf_removal) {
         } else if (valid && current == candidate->interfaces.end()) {
           candidate->interfaces.push_back({.name = std::string{name},
                                            .port_id = {},
@@ -15453,16 +15663,18 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         }
         if (valid && (id == md_interface_enable || id == md_interface_disable))
           current->admin_enabled = id == md_interface_enable;
-        else if (valid && id == md_delete_interface_port) {
-          valid = current->port_configured;
-          if (valid) {
+        else if (valid && id == md_delete_interface_port &&
+                 current != candidate->interfaces.end()) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (current->port_configured) {
             current->port_id.clear();
             current->mac = {};
             current->port_configured = false;
           }
-        } else if (valid && id == md_delete_interface_ipv4_primary) {
-          valid = current->address_configured;
-          if (valid) {
+        } else if (valid && id == md_delete_interface_ipv4_primary &&
+                   current != candidate->interfaces.end()) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (current->address_configured) {
             current->address = 0U;
             current->prefix_length = 0U;
             current->address_configured = false;
@@ -15490,7 +15702,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             current->prefix_length = static_cast<std::uint8_t>(bits);
             current->address_configured = true;
           }
-        } else if (valid) {
+        } else if (valid && current != candidate->interfaces.end()) {
           const auto address = argument(cli_schema::TokenKind::ipv6);
           const auto parsed_address = address ? ip::parse_ipv6(*address)
                                               : std::optional<packet::Ipv6>{};
@@ -15525,24 +15737,41 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               const bool next_eui64 =
                   id == md_delete_interface_ipv6_address_eui64 ? false
                                                                : enabled;
-              configured_address->eui64 = next_eui64;
-              if (!next_eui64) {
-                configured_address->eui64_source_mac = {};
-              } else if (std::none_of(
-                             configured_address->eui64_source_mac.begin(),
-                             configured_address->eui64_source_mac.end(),
-                             [](auto byte) { return byte != 0U; })) {
-                const auto *hardware = supervisor_.hardware(intent->handle);
-                const auto source =
-                    hardware && current->port_configured
-                        ? hardware->physical_mac(current->port_id)
-                    : hardware
-                        ? std::optional<packet::Mac>{hardware
-                                                         ->chassis_base_mac()}
-                        : std::nullopt;
-                valid = source.has_value();
-                if (valid)
-                  configured_address->eui64_source_mac = *source;
+              const auto running_interface = std::find_if(
+                  intent->interfaces.begin(), intent->interfaces.end(),
+                  [&](const auto &entry) { return entry.name == name; });
+              if (running_interface != intent->interfaces.end()) {
+                const auto running_address = std::find_if(
+                    running_interface->ipv6_addresses.begin(),
+                    running_interface->ipv6_addresses.end(),
+                    [&](const auto &entry) {
+                      return entry.address == *parsed_address;
+                    });
+                if (running_address !=
+                        running_interface->ipv6_addresses.end() &&
+                    running_address->eui64 != next_eui64)
+                  valid = false;
+              }
+              if (valid) {
+                configured_address->eui64 = next_eui64;
+                if (!next_eui64) {
+                  configured_address->eui64_source_mac = {};
+                } else if (std::none_of(
+                               configured_address->eui64_source_mac.begin(),
+                               configured_address->eui64_source_mac.end(),
+                               [](auto byte) { return byte != 0U; })) {
+                  const auto *hardware = supervisor_.hardware(intent->handle);
+                  const auto source =
+                      hardware && current->port_configured
+                          ? hardware->physical_mac(current->port_id)
+                      : hardware
+                          ? std::optional<packet::Mac>{hardware
+                                                           ->chassis_base_mac()}
+                          : std::nullopt;
+                  valid = source.has_value();
+                  if (valid)
+                    configured_address->eui64_source_mac = *source;
+                }
               }
             }
           } else if (id == md_interface_ipv6_address_primary_preference ||
@@ -15555,7 +15784,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 parsed_address &&
                 configured_address != current->ipv6_addresses.end() &&
                 (id == md_delete_interface_ipv6_address_primary_preference ||
-                 (text && decimal(*text, preference)));
+                 (text && decimal(*text, preference) && preference != 0U));
             if (valid &&
                 id == md_delete_interface_ipv6_address_primary_preference) {
               // An absent primary-preference receives the lowest free index,
@@ -15592,7 +15821,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             valid = parsed_address &&
                     configured_address != current->ipv6_addresses.end() &&
                     (id == md_delete_interface_ipv6_address_tag ||
-                     (text && decimal(*text, tag)));
+                     (text && decimal(*text, tag) && tag != 0U));
             if (valid) {
               // Deleting the optional leaf differs from setting numeric zero.
               // Preserve that distinction for `info` and checkpoint output.
@@ -15622,22 +15851,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 current->ipv6_addresses.erase(configured);
               if (current->ipv6_addresses.empty()) {
                 current->ipv6_address = {};
-                current->ipv6_link_local = {};
                 current->ipv6_prefix_length = 0;
                 current->ipv6_address_configured = false;
-                // Removing the last address removes the IPv6 interface child
-                // and every configuration subtree that depends on it.
-                current->router_advertisement = {};
-                current->router_advertisement_configured = false;
-                current->router_advertisement_enabled = false;
-                current->router_advertisement_leaf_presence = 0U;
-                current->router_advertisement_prefix_leaf_presence.fill(0U);
-                current->router_advertisement_rdnss_lifetime_configured = false;
-                current->router_advertisement_include_dns = true;
-                current->router_advertisement_include_dns_configured = false;
-                reset_icmp6_redirects(*current);
-                reset_neighbor_discovery(*current);
-                reset_mld_interface(*current);
               } else {
                 const auto primary =
                     std::min_element(current->ipv6_addresses.begin(),
@@ -15663,7 +15878,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             unsigned bits{};
             valid = parsed_address && !ip::is_unspecified(*parsed_address) &&
                     !ip::is_multicast(*parsed_address) && length &&
-                    decimal(*length, bits) && bits >= 1U &&
+                    decimal(*length, bits) && bits >= 4U &&
                     bits <= ip::ipv6_address_bits;
             if (valid) {
               auto configured = std::find_if(
@@ -15779,21 +15994,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             return route.network == parsed_destination->network &&
                    route.prefix_length == parsed_destination->length;
           };
-          valid = std::any_of(candidate->ipv6_routes.begin(),
-                              candidate->ipv6_routes.end(), matches) &&
-                  std::none_of(candidate->ipv6_routes.begin(),
-                               candidate->ipv6_routes.end(),
-                               [&](const auto &route) {
-                                 return matches(route) && route.admin_enabled;
-                               });
-          if (valid)
-            std::erase_if(candidate->ipv6_routes, matches);
+          // Deleting an absent prefix is the documented silent no-op,
+          // matching the IPv4 prefix lifecycle above.
+          std::erase_if(candidate->ipv6_routes, matches);
         } else if (valid && deleting_path) {
-          // A configured path must first be disabled. This preserves the
-          // documented two-step lifecycle and prevents deletion from acting
-          // as an implicit routing-state transition.
-          valid = current != candidate->ipv6_routes.end() &&
-                  !current->admin_enabled;
+          // MD delete removes the path regardless of its admin-state leaf,
+          // matching the IPv4 prefix lifecycle above.
+          valid = current != candidate->ipv6_routes.end();
           if (valid)
             candidate->ipv6_routes.erase(current);
         } else if (valid &&
@@ -15835,21 +16042,21 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               id == md_icmp6_redirect_admin_enable;
           interface->icmp6_redirect_admin_configured = true;
         } else if (valid && id == md_delete_icmp6_redirect_admin) {
-          valid = interface->icmp6_redirect_admin_configured;
-          if (valid) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (interface->icmp6_redirect_admin_configured) {
             interface->icmp6_redirects_enabled = true;
             interface->icmp6_redirect_admin_configured = false;
           }
         } else if (valid && id == md_delete_icmp6_redirect_number) {
-          valid = interface->icmp6_redirect_maximum_configured;
-          if (valid) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (interface->icmp6_redirect_maximum_configured) {
             interface->icmp6_redirect_maximum =
                 device_catalog::icmp6_redirect_default_maximum;
             interface->icmp6_redirect_maximum_configured = false;
           }
         } else if (valid && id == md_delete_icmp6_redirect_seconds) {
-          valid = interface->icmp6_redirect_interval_configured;
-          if (valid) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (interface->icmp6_redirect_interval_configured) {
             interface->icmp6_redirect_interval_seconds =
                 static_cast<std::uint16_t>(
                     device_catalog::icmp6_redirect_default_interval.count());
@@ -15906,21 +16113,21 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               id == md_icmp_redirect_admin_enable;
           interface->icmp_redirect_admin_configured = true;
         } else if (valid && id == md_delete_icmp_redirect_admin) {
-          valid = interface->icmp_redirect_admin_configured;
-          if (valid) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (interface->icmp_redirect_admin_configured) {
             interface->icmp_redirects_enabled = true;
             interface->icmp_redirect_admin_configured = false;
           }
         } else if (valid && id == md_delete_icmp_redirect_number) {
-          valid = interface->icmp_redirect_maximum_configured;
-          if (valid) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (interface->icmp_redirect_maximum_configured) {
             interface->icmp_redirect_maximum =
                 device_catalog::icmp_redirect_default_maximum;
             interface->icmp_redirect_maximum_configured = false;
           }
         } else if (valid && id == md_delete_icmp_redirect_seconds) {
-          valid = interface->icmp_redirect_interval_configured;
-          if (valid) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (interface->icmp_redirect_interval_configured) {
             interface->icmp_redirect_interval_seconds =
                 static_cast<std::uint16_t>(
                     device_catalog::icmp_redirect_default_interval.count());
@@ -15956,6 +16163,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         }
       } else if (id == md_ra_global_rdnss_server ||
                  id == md_ra_global_rdnss_lifetime ||
+                 id == md_ra_global_rdnss_lifetime_infinite ||
                  id == md_delete_ra_global_rdnss_server ||
                  id == md_delete_ra_global_rdnss_lifetime) {
         auto dns = candidate->router_advertisement_dns;
@@ -15972,8 +16180,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           else if (valid)
             valid = erase_router_advertisement_rdnss(dns.rdnss, *address);
         } else if (id == md_delete_ra_global_rdnss_lifetime) {
-          valid = dns.rdnss_lifetime_configured;
-          if (valid) {
+          // Deleting an absent leaf is the documented silent no-op.
+          if (dns.rdnss_lifetime_configured) {
             dns.rdnss_lifetime_seconds = device_catalog::ra_infinite_lifetime;
             dns.rdnss_lifetime_configured = false;
             for (std::size_t index = 0; index < dns.rdnss.count; ++index)
@@ -15981,10 +16189,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                   dns.rdnss_lifetime_seconds;
           }
         } else {
-          std::uint32_t value{};
-          const auto text = argument(cli_schema::TokenKind::seconds);
-          valid = text && decimal(*text, value) &&
-                  valid_router_advertisement_dns(dns.rdnss, value);
+          // The infinite keyword stores the documented infinite sentinel.
+          std::uint32_t value = device_catalog::ra_infinite_lifetime;
+          const bool infinite = id == md_ra_global_rdnss_lifetime_infinite;
+          const auto text =
+              infinite ? std::optional<std::string_view>{}
+                       : argument(cli_schema::TokenKind::seconds);
+          valid = infinite ||
+                  (text && decimal(*text, value) &&
+                   valid_router_advertisement_dns(dns.rdnss, value));
           if (valid) {
             dns.rdnss_lifetime_seconds = value;
             dns.rdnss_lifetime_configured = true;
@@ -16004,7 +16217,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                  id == md_ra_prefix_autonomous || id == md_ra_prefix_on_link ||
                  id == md_ra_prefix_preferred_lifetime ||
                  id == md_ra_prefix_valid_lifetime ||
+                 id == md_ra_prefix_preferred_lifetime_infinite ||
+                 id == md_ra_prefix_valid_lifetime_infinite ||
                  id == md_ra_rdnss_server || id == md_ra_rdnss_lifetime ||
+                 id == md_ra_rdnss_lifetime_infinite ||
                  id == md_ra_include_dns || id == md_delete_ra_admin_state ||
                  id == md_delete_ra_current_hop_limit ||
                  id == md_delete_ra_managed_configuration ||
@@ -16029,7 +16245,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         auto interface = std::find_if(
             candidate->interfaces.begin(), candidate->interfaces.end(),
             [&](const auto &entry) { return entry.name == name; });
-        valid = !name.empty() && interface != candidate->interfaces.end();
+        // Router advertisements are link-scoped and need a bound port, so the
+        // loopback system interface can never host an RA instance. Rejecting
+        // here keeps configure and show consistent: a delete below the
+        // missing instance is not a successful no-op.
+        valid = !name.empty() && interface != candidate->interfaces.end() &&
+                name != system_interface_name;
         if (valid) {
           // Edit a value copy and publish it only after every cross-leaf check
           // succeeds. This preserves the MD candidate when a syntactically
@@ -16145,9 +16366,9 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 : id == md_delete_ra_retransmit_time
                     ? RouterAdvertisementLeaf::retransmit_time
                     : RouterAdvertisementLeaf::router_lifetime;
-            valid =
-                presence_has(updated.router_advertisement_leaf_presence, leaf);
-            if (valid) {
+            // Deleting an absent leaf is the documented silent no-op.
+            if (presence_has(updated.router_advertisement_leaf_presence,
+                             leaf)) {
               if (leaf == RouterAdvertisementLeaf::admin_state)
                 updated.router_advertisement_enabled = false;
               else if (leaf == RouterAdvertisementLeaf::current_hop_limit)
@@ -16247,8 +16468,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             else if (valid)
               valid = erase_router_advertisement_rdnss(config.rdnss, *address);
           } else if (id == md_delete_ra_rdnss_lifetime) {
-            valid = updated.router_advertisement_rdnss_lifetime_configured;
-            if (valid) {
+            // Deleting an absent leaf is the documented silent no-op.
+            if (updated.router_advertisement_rdnss_lifetime_configured) {
               config.rdnss_lifetime_seconds =
                   device_catalog::ra_infinite_lifetime;
               updated.router_advertisement_rdnss_lifetime_configured = false;
@@ -16259,7 +16480,9 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           } else if (id == md_ra_prefix_autonomous ||
                      id == md_ra_prefix_on_link ||
                      id == md_ra_prefix_preferred_lifetime ||
-                     id == md_ra_prefix_valid_lifetime) {
+                     id == md_ra_prefix_valid_lifetime ||
+                     id == md_ra_prefix_preferred_lifetime_infinite ||
+                     id == md_ra_prefix_valid_lifetime_infinite) {
             const auto text = argument(cli_schema::TokenKind::ipv6_prefix);
             const auto parsed_prefix = text ? ip::parse_ipv6_prefix(*text)
                                             : std::optional<ip::Ipv6Prefix>{};
@@ -16314,10 +16537,18 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                     RouterAdvertisementPrefixLeaf::on_link, true);
               }
             } else if (valid) {
-              std::uint32_t value{};
-              const auto text_value = argument(cli_schema::TokenKind::seconds);
-              valid = text_value && decimal(*text_value, value);
-              if (valid && id == md_ra_prefix_preferred_lifetime) {
+              // The infinite keyword stores the documented infinite sentinel.
+              const bool infinite =
+                  id == md_ra_prefix_preferred_lifetime_infinite ||
+                  id == md_ra_prefix_valid_lifetime_infinite;
+              std::uint32_t value = device_catalog::ra_infinite_lifetime;
+              const auto text_value =
+                  infinite ? std::optional<std::string_view>{}
+                           : argument(cli_schema::TokenKind::seconds);
+              valid = infinite ||
+                      (text_value && decimal(*text_value, value));
+              if (valid && (id == md_ra_prefix_preferred_lifetime ||
+                            id == md_ra_prefix_preferred_lifetime_infinite)) {
                 prefix_entry->preferred_lifetime_seconds = value;
                 const auto index = static_cast<std::size_t>(
                     prefix_entry - config.prefixes.begin());
@@ -16334,14 +16565,20 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               }
             }
           } else {
-            std::uint32_t value{};
-            const auto kind =
-                id == md_ra_mtu ? cli_schema::TokenKind::mtu
-                : id == md_ra_reachable_time || id == md_ra_retransmit_time
-                    ? cli_schema::TokenKind::milliseconds
-                    : cli_schema::TokenKind::seconds;
-            const auto text = argument(kind);
-            valid = text && decimal(*text, value);
+            // The infinite keyword stores the documented infinite sentinel.
+            const bool rdnss_infinite = id == md_ra_rdnss_lifetime_infinite;
+            std::uint32_t value = device_catalog::ra_infinite_lifetime;
+            if (rdnss_infinite) {
+              valid = true;
+            } else {
+              const auto kind =
+                  id == md_ra_mtu ? cli_schema::TokenKind::mtu
+                  : id == md_ra_reachable_time || id == md_ra_retransmit_time
+                      ? cli_schema::TokenKind::milliseconds
+                      : cli_schema::TokenKind::seconds;
+              const auto text = argument(kind);
+              valid = text && decimal(*text, value);
+            }
             if (valid && id == md_ra_max_interval) {
               config.max_advertisement_interval_seconds = value;
               presence_set(updated.router_advertisement_leaf_presence,
@@ -16350,11 +16587,14 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               config.min_advertisement_interval_seconds = value;
               presence_set(updated.router_advertisement_leaf_presence,
                            RouterAdvertisementLeaf::minimum_interval, true);
-            } else if (valid && id == md_ra_mtu &&
-                       value <= std::numeric_limits<std::uint16_t>::max()) {
-              config.advertised_mtu = static_cast<std::uint16_t>(value);
-              presence_set(updated.router_advertisement_leaf_presence,
-                           RouterAdvertisementLeaf::mtu, true);
+            } else if (valid && id == md_ra_mtu) {
+              valid = value >= device_catalog::ra_minimum_advertised_mtu &&
+                      value <= device_catalog::ra_maximum_advertised_mtu;
+              if (valid) {
+                config.advertised_mtu = static_cast<std::uint16_t>(value);
+                presence_set(updated.router_advertisement_leaf_presence,
+                             RouterAdvertisementLeaf::mtu, true);
+              }
             } else if (valid && id == md_ra_reachable_time) {
               config.reachable_time_milliseconds = value;
               presence_set(updated.router_advertisement_leaf_presence,
@@ -16369,7 +16609,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                   static_cast<std::uint16_t>(value);
               presence_set(updated.router_advertisement_leaf_presence,
                            RouterAdvertisementLeaf::router_lifetime, true);
-            } else if (valid && id == md_ra_rdnss_lifetime) {
+            } else if (valid && (id == md_ra_rdnss_lifetime ||
+                                 id == md_ra_rdnss_lifetime_infinite)) {
               config.rdnss_lifetime_seconds = value;
               updated.router_advertisement_rdnss_lifetime_configured = true;
               for (std::size_t index = 0; index < config.rdnss.count; ++index)
@@ -16394,7 +16635,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             id == md_mld_interface_query_interval ||
             id == md_mld_interface_query_response_interval ||
             id == md_mld_interface_last_member_interval ||
-            id == md_mld_interface_robust_count ||
             id == md_mld_interface_maximum_number_groups ||
             id == md_mld_interface_maximum_number_group_sources ||
             id == md_mld_interface_maximum_number_sources ||
@@ -16405,7 +16645,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             id == md_delete_mld_interface_query_interval ||
             id == md_delete_mld_interface_query_response_interval ||
             id == md_delete_mld_interface_last_member_interval ||
-            id == md_delete_mld_interface_robust_count ||
             id == md_delete_mld_interface_maximum_number_groups ||
             id == md_delete_mld_interface_maximum_number_group_sources ||
             id == md_delete_mld_interface_maximum_number_sources ||
@@ -16429,10 +16668,26 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           auto interface = std::find_if(
               candidate->interfaces.begin(), candidate->interfaces.end(),
               [&](const auto &entry) { return entry.name == name; });
-          valid = !name.empty() && interface != candidate->interfaces.end();
-          if (valid && id == md_delete_mld_interface) {
-            valid = interface->mld_configured;
-            if (valid)
+          // Documented MD-CLI delete stays silent on absent elements: a
+          // missing interface holds no MLD state to remove.
+          const bool interface_removal =
+              id == md_delete_mld_interface ||
+              id == md_delete_mld_interface_version ||
+              id == md_delete_mld_interface_query_interval ||
+              id == md_delete_mld_interface_query_response_interval ||
+              id == md_delete_mld_interface_last_member_interval ||
+              id == md_delete_mld_interface_maximum_number_groups ||
+              id == md_delete_mld_interface_maximum_number_group_sources ||
+              id == md_delete_mld_interface_maximum_number_sources ||
+              id == md_delete_mld_interface_router_alert_check ||
+              id == md_delete_mld_interface_import_policy;
+          valid = !name.empty() &&
+                  (interface != candidate->interfaces.end() ||
+                   interface_removal);
+          if (valid && interface == candidate->interfaces.end()) {
+            // Silent no-op: valid stays true and nothing is mutated.
+          } else if (valid && id == md_delete_mld_interface) {
+            if (interface->mld_configured)
               reset_mld_interface(*interface);
           } else if (valid) {
             // SR OS rejects an MLD interface whose referenced routed interface
@@ -16443,7 +16698,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 id == md_delete_mld_interface_query_interval ||
                 id == md_delete_mld_interface_query_response_interval ||
                 id == md_delete_mld_interface_last_member_interval ||
-                id == md_delete_mld_interface_robust_count ||
                 id == md_delete_mld_interface_maximum_number_groups ||
                 id == md_delete_mld_interface_maximum_number_group_sources ||
                 id == md_delete_mld_interface_maximum_number_sources ||
@@ -16466,33 +16720,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                       (text && decimal(*text, version) &&
                        version >= device_catalog::mld_minimum_version &&
                        version <= device_catalog::mld_maximum_version);
-              if (valid)
-                interface->mld_version = static_cast<std::uint8_t>(version);
-              if (valid && id == md_delete_mld_interface_version) {
-                valid = interface->mld_version_configured;
-                interface->mld_version_configured = false;
-              } else if (valid) {
-                interface->mld_version_configured = true;
-              }
-            } else if (valid && (id == md_mld_interface_robust_count ||
-                                 id == md_delete_mld_interface_robust_count)) {
-              if (id == md_delete_mld_interface_robust_count) {
-                valid = interface->mld_robustness_variable_configured;
-                if (valid) {
-                  interface->mld_robustness_variable = 0U;
-                  interface->mld_robustness_variable_configured = false;
-                }
-              } else {
-                unsigned value{};
-                const auto text = argument(cli_schema::TokenKind::robust_count);
-                valid =
-                    text && decimal(*text, value) &&
-                    value >= device_catalog::mld_minimum_robustness_variable &&
-                    value <= device_catalog::mld_maximum_robustness_variable;
-                if (valid) {
-                  interface->mld_robustness_variable =
-                      static_cast<std::uint8_t>(value);
-                  interface->mld_robustness_variable_configured = true;
+              if (valid) {
+                // Deleting an already-default leaf is the silent no-op.
+                if (id != md_delete_mld_interface_version ||
+                    interface->mld_version_configured) {
+                  interface->mld_version = static_cast<std::uint8_t>(version);
+                  interface->mld_version_configured =
+                      id != md_delete_mld_interface_version;
                 }
               }
             } else if (
@@ -16513,11 +16747,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               // The MD model stores the boolean leaf presence independently
               // from its value. That distinction is required because an
               // explicitly configured `true` must survive compare, commit and
-              // checkpoint, while delete must reject an absent leaf instead
-              // of reporting a successful no-op.
+              // checkpoint, while deleting an already-default leaf is the
+              // silent no-op.
               if (id == md_delete_mld_interface_router_alert_check) {
-                valid = interface->mld_router_alert_check_configured;
-                if (valid) {
+                if (interface->mld_router_alert_check_configured) {
                   interface->mld_router_alert_check = true;
                   interface->mld_router_alert_check_configured = false;
                 }
@@ -16536,8 +16769,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             } else if (valid && (id == md_mld_interface_import_policy ||
                                  id == md_delete_mld_interface_import_policy)) {
               if (id == md_delete_mld_interface_import_policy) {
-                valid = !interface->mld_import_policy.empty();
-                if (valid)
+                // Deleting an already-default leaf is the silent no-op.
+                if (!interface->mld_import_policy.empty())
                   interface->mld_import_policy.clear();
               } else {
                 const auto raw = argument(cli_schema::TokenKind::policy_name);
@@ -16565,14 +16798,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                          device_catalog::mld_minimum_query_interval_seconds &&
                      value <=
                          device_catalog::mld_maximum_query_interval_seconds);
-                if (valid) {
-                  if (deleting)
-                    valid = interface->mld_query_interval_configured;
+              if (valid) {
+                // Deleting an already-default leaf is the silent no-op.
+                if (!deleting || interface->mld_query_interval_configured) {
                   interface->mld_query_interval =
                       deleting ? std::chrono::seconds::zero()
                                : std::chrono::seconds{value};
                   interface->mld_query_interval_configured = !deleting;
                 }
+              }
               } else if (
                   valid &&
                   (id == md_mld_interface_query_response_interval ||
@@ -16584,12 +16818,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                      value <= device_catalog::
                                   mld_maximum_query_response_interval_seconds);
                 if (valid) {
-                  if (deleting)
-                    valid = interface->mld_query_response_interval_configured;
-                  interface->mld_query_response_interval =
-                      deleting ? std::chrono::milliseconds::zero()
-                               : std::chrono::seconds{value};
-                  interface->mld_query_response_interval_configured = !deleting;
+                  // Deleting an already-default leaf is the silent no-op.
+                  if (!deleting ||
+                      interface->mld_query_response_interval_configured) {
+                    interface->mld_query_response_interval =
+                        deleting ? std::chrono::milliseconds::zero()
+                                 : std::chrono::seconds{value};
+                    interface->mld_query_response_interval_configured =
+                        !deleting;
+                  }
                 }
               } else if (valid) {
                 valid =
@@ -16601,27 +16838,40 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                          device_catalog::
                              mld_maximum_last_listener_query_interval_seconds);
                 if (valid) {
-                  if (deleting)
-                    valid =
-                        interface->mld_last_listener_query_interval_configured;
-                  interface->mld_last_listener_query_interval =
-                      deleting ? std::chrono::milliseconds::zero()
-                               : std::chrono::seconds{value};
-                  interface->mld_last_listener_query_interval_configured =
-                      !deleting;
+                  // Deleting an already-default leaf is the silent no-op.
+                  if (!deleting ||
+                      interface->mld_last_listener_query_interval_configured) {
+                    interface->mld_last_listener_query_interval =
+                        deleting ? std::chrono::milliseconds::zero()
+                                 : std::chrono::seconds{value};
+                    interface->mld_last_listener_query_interval_configured =
+                        !deleting;
+                  }
                 }
               }
             }
           }
         } else {
-          candidate->mld.configured = true;
-          if (id == md_mld_enable || id == md_mld_disable) {
+          // Documented MD-CLI delete stays silent on absent elements: an
+          // unconfigured protocol node holds every leaf at its default, so
+          // removals resolve without materializing it.
+          const bool protocol_leaf_removal =
+              id == md_delete_mld_robust_count ||
+              id == md_delete_mld_query_interval ||
+              id == md_delete_mld_query_response_interval ||
+              id == md_delete_mld_last_member_interval;
+          const bool materialize =
+              candidate->mld.configured || !protocol_leaf_removal;
+          if (materialize)
+            candidate->mld.configured = true;
+          if (!materialize) {
+            // Silent no-op: valid stays true and nothing is mutated.
+          } else if (id == md_mld_enable || id == md_mld_disable) {
             candidate->mld.enabled = id == md_mld_enable;
-          } else if (id == md_mld_robust_count ||
-                     id == md_delete_mld_robust_count) {
+          } else if (materialize && (id == md_mld_robust_count ||
+                                     id == md_delete_mld_robust_count)) {
             if (id == md_delete_mld_robust_count) {
-              valid = candidate->mld.robustness_variable_configured;
-              if (valid) {
+              if (candidate->mld.robustness_variable_configured) {
                 candidate->mld.robustness_variable =
                     device_catalog::mld_robustness_variable;
                 candidate->mld.robustness_variable_configured = false;
@@ -16639,7 +16889,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               if (valid)
                 candidate->mld.robustness_variable_configured = true;
             }
-          } else {
+          } else if (materialize) {
             const bool deleting = id == md_delete_mld_query_interval ||
                                   id == md_delete_mld_query_response_interval ||
                                   id == md_delete_mld_last_member_interval;
@@ -16653,14 +16903,14 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                   (value >=
                        device_catalog::mld_minimum_query_interval_seconds &&
                    value <= device_catalog::mld_maximum_query_interval_seconds);
-              if (valid)
-                if (deleting)
-                  valid = candidate->mld.query_interval_configured;
               if (valid) {
-                candidate->mld.query_interval =
-                    deleting ? device_catalog::mld_query_interval
-                             : std::chrono::seconds{value};
-                candidate->mld.query_interval_configured = !deleting;
+                // Deleting an already-default leaf is the silent no-op.
+                if (!deleting || candidate->mld.query_interval_configured) {
+                  candidate->mld.query_interval =
+                      deleting ? device_catalog::mld_query_interval
+                               : std::chrono::seconds{value};
+                  candidate->mld.query_interval_configured = !deleting;
+                }
               }
             } else if (valid && (id == md_mld_query_response_interval ||
                                  id == md_delete_mld_query_response_interval)) {
@@ -16670,14 +16920,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                                 mld_minimum_query_response_interval_seconds &&
                    value <= device_catalog::
                                 mld_maximum_query_response_interval_seconds);
-              if (valid)
-                if (deleting)
-                  valid = candidate->mld.query_response_interval_configured;
               if (valid) {
-                candidate->mld.query_response_interval =
-                    deleting ? device_catalog::mld_query_response_interval
-                             : std::chrono::seconds{value};
-                candidate->mld.query_response_interval_configured = !deleting;
+                // Deleting an already-default leaf is the silent no-op.
+                if (!deleting ||
+                    candidate->mld.query_response_interval_configured) {
+                  candidate->mld.query_response_interval =
+                      deleting ? device_catalog::mld_query_response_interval
+                               : std::chrono::seconds{value};
+                  candidate->mld.query_response_interval_configured = !deleting;
+                }
               }
             } else if (valid) {
               valid =
@@ -16688,16 +16939,16 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                    value <=
                        device_catalog::
                            mld_maximum_last_listener_query_interval_seconds);
-              if (valid)
-                if (deleting)
-                  valid =
-                      candidate->mld.last_listener_query_interval_configured;
               if (valid) {
-                candidate->mld.last_listener_query_interval =
-                    deleting ? device_catalog::mld_last_listener_query_interval
-                             : std::chrono::seconds{value};
-                candidate->mld.last_listener_query_interval_configured =
-                    !deleting;
+                // Deleting an already-default leaf is the silent no-op.
+                if (!deleting ||
+                    candidate->mld.last_listener_query_interval_configured) {
+                  candidate->mld.last_listener_query_interval =
+                      deleting ? device_catalog::mld_last_listener_query_interval
+                               : std::chrono::seconds{value};
+                  candidate->mld.last_listener_query_interval_configured =
+                      !deleting;
+                }
               }
             }
           }
@@ -16705,7 +16956,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         valid = valid && valid_mld_candidate(*candidate);
       } else if (id == md_ecmp || id == md_delete_ecmp) {
         if (id == md_delete_ecmp) {
-          valid = candidate->maximum_ecmp_paths != 1U;
+          // Deleting an already-default leaf is the documented silent no-op.
           candidate->maximum_ecmp_paths = 1U;
         } else {
           unsigned paths{};
@@ -16728,7 +16979,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         const auto destination = argument(cli_schema::TokenKind::ipv4_prefix);
         const auto parsed_destination =
             destination ? prefix(*destination) : std::optional<Prefix>{};
-        valid = parsed_destination.has_value();
+        // Static-route destinations must not carry host bits, matching the
+        // single-device parser and the classic reference.
+        valid = parsed_destination.has_value() &&
+                ((parsed_destination->address &
+                  routing::prefix_mask(parsed_destination->length)) ==
+                 parsed_destination->address);
         const bool deleting_prefix = id == md_delete_static_route;
         const bool indirect = id == md_indirect_static_route ||
                               id == md_indirect_static_route_enable ||
@@ -16758,18 +17014,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             return route.network == parsed_destination->address &&
                    route.prefix_length == parsed_destination->length;
           };
-          valid = std::any_of(candidate->routes.begin(),
-                              candidate->routes.end(), matches) &&
-                  std::none_of(candidate->routes.begin(),
-                               candidate->routes.end(),
-                               [&](const auto &route) {
-                                 return matches(route) && route.admin_enabled;
-                               });
-          if (valid)
-            std::erase_if(candidate->routes, matches);
+          // MD delete removes the whole prefix subtree regardless of the
+          // descendant admin-state leaves. Classic shutdown cascades never
+          // apply to the candidate workflow. Deleting an absent prefix is
+          // the documented silent no-op.
+          std::erase_if(candidate->routes, matches);
         } else if (valid && deleting_path) {
-          valid = current != candidate->routes.end() &&
-                  !current->admin_enabled;
+          valid = current != candidate->routes.end();
           if (valid)
             candidate->routes.erase(current);
         } else if (valid &&
@@ -16936,6 +17187,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           id == classic_remove_static_next_hop ||
           id == classic_remove_static_indirect ||
           id == classic_remove_static_indirect_child ||
+          id == classic_remove_static_next_hop_child ||
           id == classic_static_route_ipv6 ||
           id == classic_indirect_static_route_ipv6 ||
           id == classic_static_route_shutdown_ipv6 ||
@@ -16944,7 +17196,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           id == classic_indirect_static_route_no_shutdown_ipv6 ||
           id == classic_remove_static_next_hop_ipv6 ||
           id == classic_remove_static_indirect_ipv6 ||
-          id == classic_remove_static_indirect_child_ipv6) {
+          id == classic_remove_static_indirect_child_ipv6 ||
+          id == classic_remove_static_next_hop_child_ipv6) {
         const auto next_hop = argument(
             id == classic_static_route ||
                     id == classic_indirect_static_route ||
@@ -16954,7 +17207,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                     id == classic_indirect_static_route_no_shutdown ||
                     id == classic_remove_static_next_hop ||
                     id == classic_remove_static_indirect ||
-                    id == classic_remove_static_indirect_child
+                    id == classic_remove_static_indirect_child ||
+                    id == classic_remove_static_next_hop_child
                 ? cli_schema::TokenKind::ipv4
                 : cli_schema::TokenKind::ipv6);
         if (next_hop) {
@@ -16980,15 +17234,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         IpsecVaultSink vault_sink{secret_vault_ ? &*secret_vault_ : nullptr};
         const auto ipsec_edit = ipsec_cli::edit(
             next.ipsec, *parsed, CliEngine::classic, &vault_sink);
-        applied = ipsec_edit.recognized && ipsec_edit.changed &&
-                  apply_configuration(*intent, next);
+        applied = ipsec_edit.recognized && ipsec_edit.valid &&
+                  (!ipsec_edit.changed || apply_configuration(*intent, next));
         instance = ipsec_edit.instance;
       } else if (applied && tls_cli::is_classic_command(id)) {
         auto next = before_running;
         const auto tls_edit =
             tls_cli::edit(next.tls, *parsed, CliEngine::classic);
-        applied = tls_edit.recognized && tls_edit.changed &&
-                  apply_configuration(*intent, next);
+        applied = tls_edit.recognized && tls_edit.valid &&
+                  (!tls_edit.changed || apply_configuration(*intent, next));
         instance = tls_edit.instance;
       } else if (applied && ies_cli::is_classic_command(id)) {
         auto next = before_running;
@@ -16997,8 +17251,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             inventory ? ies_cli::edit(next.ies, *parsed, CliEngine::classic,
                                       *inventory, next.system_name)
                       : ies_cli::EditResult{};
-        applied = ies_edit.recognized && ies_edit.changed &&
-                  apply_configuration(*intent, next);
+        applied = ies_edit.recognized && ies_edit.valid &&
+                  (!ies_edit.changed || apply_configuration(*intent, next));
         instance = ies_edit.instance;
       } else if (applied && dhcpv4_cli::is_classic_command(id)) {
         auto next = before_running;
@@ -17140,7 +17394,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           const auto value =
               raw ? cli_detail::unquote(*raw) : std::string_view{};
           applied = raw && !value.empty() &&
-                    cli_detail::valid_cli_string(*raw) && value.size() <= 80U;
+                    cli_detail::valid_cli_string(*raw) &&
+                    value.size() <= profile::port_description_bytes;
           if (applied)
             description.assign(value);
         } else {
@@ -17173,11 +17428,14 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         const auto current =
             std::find_if(next.interfaces.begin(), next.interfaces.end(),
                          [&](const auto &entry) { return entry.name == name; });
-        applied = !name.empty() && current != next.interfaces.end();
+        applied = !name.empty() && name != system_interface_name &&
+                  current != next.interfaces.end() &&
+                  !current->admin_enabled;
         if (applied) {
           // Classic immediate mode removes the same canonical list instance,
           // but apply_configuration still supplies atomic rollback across RIB,
-          // forwarding and protocol-child owners if teardown fails.
+          // forwarding and protocol-child owners if teardown fails. An
+          // administratively enabled interface must be shut down first.
           next.interfaces.erase(current);
           applied = apply_configuration(*intent, next);
         }
@@ -17361,9 +17619,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                     address->address == ip::mask(address->address, 64U))) &&
                   (!(sets_preference || eui64_sets_preference) ||
                    (preference_text &&
-                    decimal(*preference_text, requested_preference))) &&
+                    decimal(*preference_text, requested_preference) &&
+                    requested_preference != 0U)) &&
                   (!(sets_tag || eui64_sets_tag) ||
-                   (tag_text && decimal(*tag_text, requested_tag))) &&
+                   (tag_text && decimal(*tag_text, requested_tag) &&
+                    requested_tag != 0U)) &&
                   (!uses_eui64 || eui64_source.has_value());
         if (applied && id == classic_remove_interface_ipv6_address) {
           auto configured = std::find_if(
@@ -17382,20 +17642,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               interface->ipv6_addresses.erase(configured);
             if (interface->ipv6_addresses.empty()) {
               interface->ipv6_address = {};
-              interface->ipv6_link_local = {};
               interface->ipv6_prefix_length = 0U;
               interface->ipv6_address_configured = false;
-              interface->router_advertisement = {};
-              interface->router_advertisement_configured = false;
-              interface->router_advertisement_enabled = false;
-              interface->router_advertisement_leaf_presence = 0U;
-              interface->router_advertisement_prefix_leaf_presence.fill(0U);
-              interface->router_advertisement_rdnss_lifetime_configured = false;
-              interface->router_advertisement_include_dns = true;
-              interface->router_advertisement_include_dns_configured = false;
-              reset_icmp6_redirects(*interface);
-              reset_neighbor_discovery(*interface);
-              reset_mld_interface(*interface);
             } else {
               const auto primary = std::min_element(
                   interface->ipv6_addresses.begin(),
@@ -17507,15 +17755,16 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           applied = apply_configuration(*intent, next);
       } else if (applied &&
                  (id == classic_static_route_ipv6 ||
-                  id == classic_indirect_static_route_ipv6 ||
-                  id == classic_static_route_shutdown_ipv6 ||
-                  id == classic_static_route_no_shutdown_ipv6 ||
-                  id == classic_indirect_static_route_shutdown_ipv6 ||
-                  id == classic_indirect_static_route_no_shutdown_ipv6 ||
-                  id == classic_remove_static_route_ipv6 ||
-                  id == classic_remove_static_next_hop_ipv6 ||
-                  id == classic_remove_static_indirect_ipv6 ||
-                  id == classic_remove_static_indirect_child_ipv6)) {
+                   id == classic_indirect_static_route_ipv6 ||
+                   id == classic_static_route_shutdown_ipv6 ||
+                   id == classic_static_route_no_shutdown_ipv6 ||
+                   id == classic_indirect_static_route_shutdown_ipv6 ||
+                   id == classic_indirect_static_route_no_shutdown_ipv6 ||
+                   id == classic_remove_static_route_ipv6 ||
+                   id == classic_remove_static_next_hop_ipv6 ||
+                   id == classic_remove_static_indirect_ipv6 ||
+                   id == classic_remove_static_indirect_child_ipv6 ||
+                   id == classic_remove_static_next_hop_child_ipv6)) {
         auto next = before_running;
         const auto destination = argument(cli_schema::TokenKind::ipv6_prefix);
         const auto parsed_destination =
@@ -17531,7 +17780,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         const bool deleting_path =
             id == classic_remove_static_next_hop_ipv6 ||
             id == classic_remove_static_indirect_ipv6 ||
-            id == classic_remove_static_indirect_child_ipv6;
+            id == classic_remove_static_indirect_child_ipv6 ||
+            id == classic_remove_static_next_hop_child_ipv6;
         std::optional<packet::Ipv6> next_hop;
         std::string outgoing_port;
         if (applied && !deleting_prefix) {
@@ -17584,10 +17834,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                              : next.ipv6_routes.end();
           // Prefix-only removal is valid only when it identifies one disabled
           // route. ECMP siblings require the qualified child form, preventing
-          // vector order from deciding which path the operator removes.
-          applied = matching == 0U ||
-                    (route_to_remove != next.ipv6_routes.end() &&
-                     !route_to_remove->admin_enabled);
+          // vector order from deciding which path the operator removes. A
+          // classic no form of an absent destination stays rejected.
+          applied = matching != 0U &&
+                    route_to_remove != next.ipv6_routes.end() &&
+                    !route_to_remove->admin_enabled;
           if (applied && route_to_remove != next.ipv6_routes.end())
             next.ipv6_routes.erase(route_to_remove);
         } else if (applied && deleting_path) {
@@ -17796,7 +18047,9 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         auto interface =
             std::find_if(next.interfaces.begin(), next.interfaces.end(),
                          [&](const auto &entry) { return entry.name == name; });
-        applied = !name.empty() && interface != next.interfaces.end();
+        // Same link-scope rule as the MD path above: RA on system is rejected.
+        applied = !name.empty() && interface != next.interfaces.end() &&
+                  name != system_interface_name;
         if (applied) {
           auto &config = interface->router_advertisement;
           interface->router_advertisement_configured = true;
@@ -18048,11 +18301,14 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               config.min_advertisement_interval_seconds = value;
               presence_set(interface->router_advertisement_leaf_presence,
                            RouterAdvertisementLeaf::minimum_interval, true);
-            } else if (applied && id == classic_ra_mtu &&
-                       value <= std::numeric_limits<std::uint16_t>::max()) {
-              config.advertised_mtu = static_cast<std::uint16_t>(value);
-              presence_set(interface->router_advertisement_leaf_presence,
-                           RouterAdvertisementLeaf::mtu, true);
+            } else if (applied && id == classic_ra_mtu) {
+              applied = value >= device_catalog::ra_minimum_advertised_mtu &&
+                        value <= device_catalog::ra_maximum_advertised_mtu;
+              if (applied) {
+                config.advertised_mtu = static_cast<std::uint16_t>(value);
+                presence_set(interface->router_advertisement_leaf_presence,
+                             RouterAdvertisementLeaf::mtu, true);
+              }
             } else if (applied && id == classic_ra_reachable_time) {
               config.reachable_time_milliseconds = value;
               presence_set(interface->router_advertisement_leaf_presence,
@@ -18093,8 +18349,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             id == classic_mld_interface_no_query_response_interval ||
             id == classic_mld_interface_last_listener_interval ||
             id == classic_mld_interface_no_last_listener_interval ||
-            id == classic_mld_interface_robust_count ||
-            id == classic_mld_interface_no_robust_count ||
             id == classic_mld_interface_max_groups ||
             id == classic_mld_interface_no_max_groups ||
             id == classic_mld_interface_max_group_sources ||
@@ -18134,7 +18388,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 id == classic_mld_interface_no_query_interval ||
                 id == classic_mld_interface_no_query_response_interval ||
                 id == classic_mld_interface_no_last_listener_interval ||
-                id == classic_mld_interface_no_robust_count ||
                 id == classic_mld_interface_no_max_groups ||
                 id == classic_mld_interface_no_max_group_sources ||
                 id == classic_mld_interface_no_max_sources ||
@@ -18166,28 +18419,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 if (applied) {
                   interface->mld_version = static_cast<std::uint8_t>(version);
                   interface->mld_version_configured = true;
-                }
-              }
-            } else if (applied &&
-                       (id == classic_mld_interface_robust_count ||
-                        id == classic_mld_interface_no_robust_count)) {
-              if (id == classic_mld_interface_no_robust_count) {
-                applied = interface->mld_robustness_variable_configured;
-                if (applied) {
-                  interface->mld_robustness_variable = 0U;
-                  interface->mld_robustness_variable_configured = false;
-                }
-              } else {
-                unsigned value{};
-                const auto text = argument(cli_schema::TokenKind::robust_count);
-                applied =
-                    text && decimal(*text, value) &&
-                    value >= device_catalog::mld_minimum_robustness_variable &&
-                    value <= device_catalog::mld_maximum_robustness_variable;
-                if (applied) {
-                  interface->mld_robustness_variable =
-                      static_cast<std::uint8_t>(value);
-                  interface->mld_robustness_variable_configured = true;
                 }
               }
             } else if (applied &&
@@ -18406,21 +18637,27 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         if (applied)
           applied = apply_configuration(*intent, next);
       } else if (applied &&
-                 (id == classic_static_route ||
-                  id == classic_indirect_static_route ||
-                  id == classic_static_route_shutdown ||
-                  id == classic_static_route_no_shutdown ||
-                  id == classic_indirect_static_route_shutdown ||
-                  id == classic_indirect_static_route_no_shutdown ||
-                  id == classic_remove_static_route ||
-                  id == classic_remove_static_next_hop ||
-                  id == classic_remove_static_indirect ||
-                  id == classic_remove_static_indirect_child)) {
+                  (id == classic_static_route ||
+                   id == classic_indirect_static_route ||
+                   id == classic_static_route_shutdown ||
+                   id == classic_static_route_no_shutdown ||
+                   id == classic_indirect_static_route_shutdown ||
+                   id == classic_indirect_static_route_no_shutdown ||
+                   id == classic_remove_static_route ||
+                   id == classic_remove_static_next_hop ||
+                   id == classic_remove_static_indirect ||
+                   id == classic_remove_static_indirect_child ||
+                   id == classic_remove_static_next_hop_child)) {
         auto next = before_running;
         const auto destination = argument(cli_schema::TokenKind::ipv4_prefix);
         const auto parsed_destination =
             destination ? prefix(*destination) : std::optional<Prefix>{};
-        applied = parsed_destination.has_value();
+        // Static-route destinations must not carry host bits, matching the
+        // MD-CLI path and the classic reference.
+        applied = parsed_destination.has_value() &&
+                  ((parsed_destination->address &
+                    routing::prefix_mask(parsed_destination->length)) ==
+                   parsed_destination->address);
         const bool deleting_prefix = id == classic_remove_static_route;
         const bool indirect = id == classic_indirect_static_route ||
                               id == classic_indirect_static_route_shutdown ||
@@ -18429,7 +18666,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                               id == classic_remove_static_indirect_child;
         const bool deleting_path = id == classic_remove_static_next_hop ||
                                    id == classic_remove_static_indirect ||
-                                   id == classic_remove_static_indirect_child;
+                                   id == classic_remove_static_indirect_child ||
+                                   id == classic_remove_static_next_hop_child;
         const auto next_hop_text = deleting_prefix
                                        ? std::optional<std::string_view>{}
                                        : argument(cli_schema::TokenKind::ipv4);
@@ -18460,9 +18698,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           // identifies one route. Multiple next hops require enough
           // parameters to select one exact child. Shutdown remains a required
           // dependency and a rejected operation leaves all siblings intact.
-          applied = matching == 0U ||
-                    (route_to_remove != next.routes.end() &&
-                     !route_to_remove->admin_enabled);
+          // A classic no form of an absent destination stays rejected.
+          applied = matching != 0U &&
+                    route_to_remove != next.routes.end() &&
+                    !route_to_remove->admin_enabled;
           if (applied && route_to_remove != next.routes.end())
             next.routes.erase(route_to_remove);
         } else if (applied && deleting_path) {
@@ -18527,40 +18766,18 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       // runtime owns the real configuration transaction, while this narrow
       // postcondition updates only the same terminal session's PWC after that
       // transaction succeeds.
-      if (applied &&
-          parsed->spec->enters_context) {
+      if (applied && parsed->spec->enters_context) {
         // A successful classic creation command can also select the exact
-        // keyed child it created. Static next-hop and indirect paths use this
-        // rule so their relative `shutdown`, `no shutdown` and `info`
-        // commands operate on the selected path rather than its destination
-        // parent. The release schema owns which commands have this dual
-        // behavior; failed edits never move the PWC.
-        const auto context =
-            cli_detail::resolve_session_input(terminal->cli, input);
-        if (!cli_detail::enter_classic_context(terminal->cli, context))
+        // keyed child it created. Trailing `create` and create-time arguments
+        // stay out of the stored PWC. Failed edits never move the prompt.
+        const auto context = cli_detail::context_command_path(
+            *parsed->spec, matched_command_text);
+        if (context.empty() ||
+            !cli_detail::enter_classic_context(terminal->cli, context))
           output = "Error: Bad command.";
         else
           static_cast<void>(
               supervisor_.set_cli_session(terminal->handle, terminal->cli));
-      } else if (applied &&
-          (id == classic_ospf_create || id == classic_ospf3_create ||
-           id == classic_ospf_create_router_id ||
-           id == classic_ospf3_create_router_id)) {
-        auto context =
-            cli_detail::resolve_session_input(terminal->cli, input);
-        if (id == classic_ospf_create_router_id ||
-            id == classic_ospf3_create_router_id) {
-          // The optional router ID initializes a leaf but is not a list key.
-          const auto separator = context.find_last_of(' ');
-          if (separator != std::string::npos)
-            context.resize(separator);
-        }
-        if (!cli_detail::enter_classic_context(terminal->cli, context)) {
-          output = "Error: Bad command.";
-        } else {
-          static_cast<void>(
-              supervisor_.set_cli_session(terminal->handle, terminal->cli));
-        }
       }
     }
     output += cli_prompt(view, terminal->cli);
@@ -18587,8 +18804,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                                ? cli_detail::unquote(*server_text)
                                : std::string_view{}} +
                "'";
-    } else if (id == show_dhcpv6_server_statistics ||
-               id == show_dhcpv6_server_statistics_md) {
+    } else if (id == show_dhcpv6_server_statistics) {
       const auto &stats = server->protocol.statistics;
       // Field names and ordering follow the SR OS 26.7 server-stats example.
       // Unsupported subscriber-management failure classes are not invented;
@@ -18624,12 +18840,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           prefix_text ? ip::parse_ipv6_prefix(*prefix_text)
                       : std::optional<ip::Ipv6Prefix>{};
       const auto state_text = cli_detail::argument(
-          *parsed, cli_schema::TokenKind::dhcpv6_lease_state);
+          *parsed, cli_schema::TokenKind::dhcpv6_show_lease_state);
       const auto selected_state =
           state_text ? dhcpv6_operational_lease_state(*state_text)
                      : std::optional<dhcpv6::OperationalLeaseState>{};
       const auto type_text = cli_detail::argument(
-          *parsed, cli_schema::TokenKind::dhcpv6_lease_type);
+          *parsed, cli_schema::TokenKind::dhcpv6_show_lease_type);
       const auto selected_type =
           type_text ? dhcpv6_operational_lease_type(*type_text)
                     : std::optional<dhcpv6::LeaseClearFilter::Type>{};
@@ -18775,16 +18991,25 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           filter.value_specific = true;
         }
       }
-      const auto state_text = cli_detail::argument(
-          *parsed, cli_schema::TokenKind::dhcpv6_lease_state);
+      // Clear, reset and show rows carry engine-specific filter parameters
+      // with documented value subsets. Fall back to the shared reset-state
+      // kind, which keeps the wider historical contract.
+      auto state_text = cli_detail::argument(
+          *parsed, cli_schema::TokenKind::dhcpv6_clear_lease_state);
+      if (!state_text)
+        state_text = cli_detail::argument(*parsed,
+                                          cli_schema::TokenKind::dhcpv6_lease_state);
       if (state_text && output.empty()) {
         filter.state = dhcpv6_operational_lease_state(*state_text);
         if (!filter.state)
           output =
               "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
       }
-      const auto type_text = cli_detail::argument(
-          *parsed, cli_schema::TokenKind::dhcpv6_lease_type);
+      auto type_text = cli_detail::argument(
+          *parsed, cli_schema::TokenKind::dhcpv6_clear_lease_type);
+      if (!type_text)
+        type_text = cli_detail::argument(
+            *parsed, cli_schema::TokenKind::dhcpv6_reset_lease_type);
       if (type_text && output.empty()) {
         filter.type = dhcpv6_operational_lease_type(*type_text);
         if (!filter.type)
@@ -18858,15 +19083,39 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           cli_detail::argument(*parsed, cli_schema::TokenKind::ipv4_prefix);
       const auto selected_prefix =
           prefix_text ? prefix(*prefix_text) : std::optional<Prefix>{};
+      // A pool selector matches leases by configuration range containment:
+      // declined bindings originate from pool offers, so an address inside
+      // one of the named pool's allocation ranges belongs to that pool.
+      const bool pool_command = id == show_dhcpv4_server_declined_pool;
+      const auto pool_text = pool_command
+          ? cli_detail::argument(*parsed, cli_schema::TokenKind::dhcp_pool_name)
+          : std::optional<std::string_view>{};
+      const auto pool_name =
+          pool_text ? cli_detail::unquote(*pool_text) : std::string_view{};
+      const dhcpv4::configuration::Pool *named_pool{};
+      if (pool_command && !pool_name.empty()) {
+        for (const auto &candidate_server : intent->dhcpv4_servers.servers) {
+          if (candidate_server.name != server->name)
+            continue;
+          const auto found = std::find_if(
+              candidate_server.pools.begin(), candidate_server.pools.end(),
+              [&](const auto &pool) { return pool.name == pool_name; });
+          if (found != candidate_server.pools.end())
+            named_pool = &*found;
+        }
+      }
       if (prefix_text && !selected_prefix) {
         output =
             "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
+      } else if (pool_command && !named_pool) {
+        output = "MINOR: MGMT_CORE #2201: Unknown element - '" +
+                 std::string{pool_name} + "'";
       } else {
         const bool declined =
-            id == show_dhcpv4_server_declined ||
-            id == show_dhcpv4_server_declined_detail;
-        const bool sticky = id == show_dhcpv4_server_sticky ||
-                            id == show_dhcpv4_server_sticky_detail;
+            id == show_dhcpv4_server_declined_address ||
+            id == show_dhcpv4_server_declined_address_detail ||
+            id == show_dhcpv4_server_declined_pool;
+        const bool sticky = id == show_dhcpv4_server_sticky;
         const bool detail =
             parsed->has_modifier(cli_schema::OutputModifier::detail);
         std::vector<const dhcpv4::LeaseCheckpoint *> leases;
@@ -18883,6 +19132,22 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             const auto mask = routing::prefix_mask(selected_prefix->length);
             if ((ipv4_value(lease.address) & mask) !=
                 (selected_prefix->address & mask))
+              continue;
+          }
+          if (named_pool) {
+            const auto address = ipv4_value(lease.address);
+            const bool in_pool = std::any_of(
+                named_pool->subnets.begin(), named_pool->subnets.end(),
+                [&](const auto &subnet) {
+                  return std::any_of(
+                      subnet.address_ranges.begin(),
+                      subnet.address_ranges.end(),
+                      [&](const auto &range) {
+                        return ipv4_value(range.first) <= address &&
+                               address <= ipv4_value(range.last);
+                      });
+                });
+            if (!in_pool)
               continue;
           }
           leases.push_back(&lease);
@@ -19007,9 +19272,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         }
       }
       const auto state_text = cli_detail::argument(
-          *parsed, cli_schema::TokenKind::dhcp_lease_state);
-      if (state_text && output.empty()) {
-        const auto selected = dhcpv4_operational_lease_state(*state_text);
+          *parsed, cli_schema::TokenKind::dhcpv4_clear_lease_state);
+      // MD reset rows keep the wider shared state contract.
+      const auto reset_state_text =
+          state_text ? state_text
+                     : cli_detail::argument(*parsed,
+                                            cli_schema::TokenKind::dhcp_lease_state);
+      if (reset_state_text && output.empty()) {
+        const auto selected =
+            dhcpv4_operational_lease_state(*reset_state_text);
         if (!selected)
           output =
               "MINOR: MGMT_CORE #2203: Invalid element - currently not allowed";
@@ -19367,15 +19638,28 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     // The classic selector is intentionally a union: an interface name or an
     // IPv6 address can occupy the same token. Resolve it against router-owned
     // intent after first trying strict IPv6 syntax. UI topology labels never
-    // participate in the decision.
+    // participate in the decision. The newer keyword forms carry the address
+    // in a dedicated ipv6 parameter instead of the union token.
     std::optional<std::uint16_t> selected_ordinal;
     std::optional<packet::Ipv6> selected_address;
     std::string_view selected_port;
-    bool selector_valid = !raw_selector;
+    const auto raw_address_text =
+        cli_detail::argument(*parsed, cli_schema::TokenKind::ipv6);
+    bool selector_valid = !raw_selector && !raw_address_text;
+    bool address_ok = true;
+    if (raw_address_text) {
+      if (const auto address = ip::parse_ipv6(*raw_address_text)) {
+        selected_address = *address;
+      } else {
+        address_ok = false;
+      }
+      selector_valid = address_ok;
+    }
     if (raw_selector) {
+      bool interface_ok = false;
       if (const auto address = ip::parse_ipv6(selector)) {
         selected_address = *address;
-        selector_valid = true;
+        interface_ok = true;
       } else if (inventory) {
         const auto interface = std::find_if(
             intent->interfaces.begin(), intent->interfaces.end(),
@@ -19385,10 +19669,13 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           selected_ordinal = inventory->coordinate_ordinal(interface->port_id);
           if (selected_ordinal) {
             selected_port = interface->port_id;
-            selector_valid = true;
+            interface_ok = true;
           }
         }
       }
+      // A combined address+interface selector requires both halves.
+      selector_valid =
+          raw_address_text ? (address_ok && interface_ok) : interface_ok;
     }
 
     // In `clear ... interface <ipv6-address>` the address identifies a local
@@ -19574,10 +19861,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                                      show_router_rtr_advertisement_interface ||
              parsed->spec->id ==
                  cli_schema::CommandId::show_router_rtr_advertisement_prefix ||
-             parsed->spec->id ==
-                 cli_schema::CommandId::clear_router_advertisement_all ||
-             parsed->spec->id ==
-                 cli_schema::CommandId::clear_router_advertisement_interface) {
+              parsed->spec->id ==
+                   cli_schema::CommandId::clear_router_advertisement_all ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::clear_router_advertisement_interface) {
     using enum cli_schema::CommandId;
     const auto id = parsed->spec->id;
     const bool interface_command =
@@ -20003,10 +20290,21 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                  cli_schema::CommandId::clear_mld_database_interface ||
              parsed->spec->id ==
                  cli_schema::CommandId::clear_mld_database_interface_group ||
-             parsed->spec->id == cli_schema::CommandId::clear_mld_version ||
-             parsed->spec->id == cli_schema::CommandId::clear_mld_statistics ||
-             parsed->spec->id ==
-                 cli_schema::CommandId::clear_mld_statistics_interface) {
+              parsed->spec->id == cli_schema::CommandId::clear_mld_version ||
+              parsed->spec->id == cli_schema::CommandId::clear_mld_statistics ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::clear_mld_statistics_interface ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::md_reset_mld_database ||
+              parsed->spec->id == cli_schema::CommandId::
+                  md_reset_mld_database_interface ||
+              parsed->spec->id == cli_schema::CommandId::
+                  md_reset_mld_database_interface_group ||
+              parsed->spec->id == cli_schema::CommandId::md_reset_mld_version ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::md_reset_mld_statistics ||
+              parsed->spec->id == cli_schema::CommandId::
+                  md_reset_mld_statistics_interface) {
     using enum cli_schema::CommandId;
     const auto id = parsed->spec->id;
     const auto raw_name =
@@ -20051,28 +20349,36 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     const bool clear_command =
         id == clear_mld_database || id == clear_mld_database_interface ||
         id == clear_mld_database_interface_group || id == clear_mld_version ||
-        id == clear_mld_statistics || id == clear_mld_statistics_interface;
+        id == clear_mld_statistics || id == clear_mld_statistics_interface ||
+        id == md_reset_mld_database ||
+        id == md_reset_mld_database_interface ||
+        id == md_reset_mld_database_interface_group ||
+        id == md_reset_mld_version || id == md_reset_mld_statistics ||
+        id == md_reset_mld_statistics_interface;
     if (clear_command) {
       bool cleared{};
-      if (id == clear_mld_database) {
+      if (id == clear_mld_database || id == md_reset_mld_database) {
         // Router-wide clear is one forwarding-shard operation, so bounded
         // mailbox pressure cannot produce a half-cleared set of interfaces.
         cleared = supervisor_.clear_mld_database_all(intent->handle);
-      } else if (id == clear_mld_statistics) {
+      } else if (id == clear_mld_statistics ||
+                 id == md_reset_mld_statistics) {
         // SR OS accepts the command without a selector as a router-instance
         // clear. The forwarding shard performs it atomically across all MLD
         // interfaces and leaves membership state untouched.
         cleared = supervisor_.clear_mld_statistics_all(intent->handle);
       } else if (const auto selected = resolve_interface(requested_name)) {
-        if (id == clear_mld_version) {
+        if (id == clear_mld_version || id == md_reset_mld_version) {
           cleared = supervisor_.clear_mld_version(intent->handle,
                                                   selected->first->port_id);
-        } else if (id == clear_mld_statistics_interface) {
+        } else if (id == clear_mld_statistics_interface ||
+                   id == md_reset_mld_statistics_interface) {
           cleared = supervisor_.clear_mld_statistics(intent->handle,
                                                      selected->first->port_id);
         } else {
           std::optional<packet::Ipv6> group;
-          if (id == clear_mld_database_interface_group) {
+          if (id == clear_mld_database_interface_group ||
+              id == md_reset_mld_database_interface_group) {
             const auto text =
                 cli_detail::argument(*parsed, cli_schema::TokenKind::ipv6);
             group = text ? ip::parse_ipv6(*text) : std::nullopt;
@@ -20556,7 +20862,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             << (item.authentication_encryption_configured ? "auth-encryption"
                                                           : "sha256")
             << std::setw(17)
-            << ipsec::configuration::encryption_name(item.encryption)
+            << ipsec::configuration::configured_encryption_name(
+                   item.encryption, item.encryption_configured)
             << item.lifetime_seconds;
       }
       out << '\n'
@@ -20581,14 +20888,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             << (item.authentication_encryption_configured ? "auth-encryption"
                                                           : "sha256")
             << std::setw(17)
-            << ipsec::configuration::encryption_name(item.encryption)
+            << ipsec::configuration::configured_encryption_name(
+                   item.encryption, item.encryption_configured)
             << std::setw(7)
             << (item.extended_sequence_number ? "true" : "false")
             << std::setw(12)
             << (item.lifetime_configured ? std::to_string(item.lifetime_seconds)
                                          : std::string{"Inherited"})
             << (item.pfs_group_configured
-                    ? (item.pfs_enabled ? "group-19" : "none")
+                    ? (item.pfs_enabled ? "19" : "none")
                     : "Inherited");
       }
       out << '\n'
@@ -20615,7 +20923,9 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         }
         out << '\n'
             << std::left << std::setw(8) << policy.id << std::setw(9)
-            << (policy.ike_version2_configured ? "2" : "-") << std::setw(16)
+            // IKEv2 is the only version this platform represents, so the
+            // effective version is always 2 regardless of explicit selection.
+            << "2" << std::setw(16)
             << authentication_method(policy.peer_authentication)
             << std::setw(18) << (transforms.empty() ? "None" : transforms)
             << policy.ipsec_lifetime_seconds;
@@ -21453,21 +21763,30 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                  cli_schema::CommandId::clear_router_arp_address ||
              parsed->spec->id ==
                  cli_schema::CommandId::clear_router_arp_interface ||
+             parsed->spec->id == cli_schema::CommandId::
+                 clear_router_arp_interface_address ||
              parsed->spec->id ==
-                 cli_schema::CommandId::clear_router_arp_interface_address) {
+                 cli_schema::CommandId::md_reset_router_arp_all ||
+             parsed->spec->id ==
+                 cli_schema::CommandId::md_reset_router_arp_address ||
+             parsed->spec->id == cli_schema::CommandId::
+                 md_reset_router_arp_interface) {
     using enum cli_schema::CommandId;
     std::optional<std::uint32_t> address;
     std::optional<std::string_view> selected_port;
     bool valid = true;
-    if (parsed->spec->id == clear_router_arp_address) {
+    if (parsed->spec->id == clear_router_arp_address ||
+        parsed->spec->id == md_reset_router_arp_address) {
       const auto text =
           cli_detail::argument(*parsed, cli_schema::TokenKind::ipv4);
       address = text ? ipv4(*text) : std::nullopt;
       valid = address.has_value();
     } else if (parsed->spec->id == clear_router_arp_interface ||
-               parsed->spec->id == clear_router_arp_interface_address) {
+               parsed->spec->id == clear_router_arp_interface_address ||
+               parsed->spec->id == md_reset_router_arp_interface) {
       const auto name_text =
-          parsed->spec->id == clear_router_arp_interface
+          parsed->spec->id == clear_router_arp_interface ||
+                  parsed->spec->id == md_reset_router_arp_interface
               ? cli_detail::argument(*parsed,
                                      cli_schema::TokenKind::interface_name)
               : std::nullopt;
@@ -21615,8 +21934,28 @@ std::string LabRuntime::execute_session(std::string_view session_id,
              parsed->spec->id ==
                  cli_schema::CommandId::show_router_ospf3_routes ||
              route_table_show_command(parsed->spec->id) ||
-             parsed->spec->id == cli_schema::CommandId::show_router_fib ||
-             parsed->spec->id == cli_schema::CommandId::show_router_arp ||
+              parsed->spec->id == cli_schema::CommandId::show_router_fib ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_fib_ipv4 ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_fib_ipv6 ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_fib_prefix_ipv4 ||
+              parsed->spec->id == cli_schema::CommandId::
+                  show_router_fib_prefix_ipv4_longer ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_fib_prefix_ipv6 ||
+              parsed->spec->id == cli_schema::CommandId::
+                  show_router_fib_prefix_ipv6_longer ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_fib_summary ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_fib_summary_all ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_fib_summary_ipv6 ||
+              parsed->spec->id == cli_schema::CommandId::
+                  show_router_fib_summary_ipv6_all ||
+              parsed->spec->id == cli_schema::CommandId::show_router_arp ||
              parsed->spec->id ==
                  cli_schema::CommandId::show_router_arp_address ||
              parsed->spec->id ==
@@ -21626,10 +21965,24 @@ std::string LabRuntime::execute_session(std::string_view session_id,
              parsed->spec->id == cli_schema::CommandId::show_router_arp_mac ||
              parsed->spec->id ==
                  cli_schema::CommandId::show_router_arp_summary ||
-             parsed->spec->id ==
-                 cli_schema::CommandId::show_router_arp_dynamic ||
-             parsed->spec->id ==
-                 cli_schema::CommandId::show_router_static_arp ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_arp_dynamic ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_arp_local ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_arp_static ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_arp_managed ||
+              parsed->spec->id == cli_schema::CommandId::
+                  show_router_arp_summary_dynamic ||
+              parsed->spec->id == cli_schema::CommandId::
+                  show_router_arp_summary_local ||
+              parsed->spec->id == cli_schema::CommandId::
+                  show_router_arp_summary_static ||
+              parsed->spec->id == cli_schema::CommandId::
+                  show_router_arp_summary_managed ||
+              parsed->spec->id ==
+                  cli_schema::CommandId::show_router_static_arp ||
              parsed->spec->id ==
                  cli_schema::CommandId::show_router_static_arp_interface ||
              parsed->spec->id ==
@@ -22359,8 +22712,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         using enum cli_schema::CommandId;
         const auto interface_command = parsed->spec->id;
         const bool summary = interface_command == show_router_interface_summary;
-        const bool description =
-            interface_command == show_router_interface_description;
         const bool statistics =
             interface_command == show_router_interface_statistics;
         const bool mac_report =
@@ -22386,7 +22737,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             interface_command == show_router_interface_detail ||
             interface_command == show_router_interface_named_ipv4 ||
             interface_command == show_router_interface_named_ipv6 ||
-            statistics || mac_report || eth_cfm || policy_accounting;
+            interface_command == show_router_interface_policy_accounting ||
+            statistics || mac_report || eth_cfm;
         const auto requested_text =
             named ? cli_detail::argument(*parsed,
                                          cli_schema::TokenKind::interface_name)
@@ -22539,40 +22891,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           // allowed to synthesize a row for an interface that is absent from
           // running configuration.
           output = "MINOR: MGMT_CORE #2301: Invalid element value";
-        } else if (description) {
-          out << table_rule << "\nRouter Interface Summary\n" << table_rule
-              << "\nPort/SAP                       Admin Oper   Description\n"
-                 "                                     v4/v6\n"
-              << row_rule;
-          for (const auto &interface : intent->interfaces) {
-            const bool system = interface.name == system_interface_name;
-            const auto port = std::find_if(
-                operational->ports.begin(), operational->ports.end(),
-                [&](const auto &value) {
-                  return port_id(value.ordinal) == interface.port_id;
-                });
-            const bool physical_up =
-                system ||
-                (port != operational->ports.end() && port->operational);
-            const bool ipv4_up = interface.admin_enabled && physical_up &&
-                                 interface.address_configured;
-            const auto ipv6_id =
-                system ? system_interface_id
-                       : port == operational->ports.end()
-                             ? 0U
-                             : physical_interface_id(port->ordinal);
-            const bool ipv6_up =
-                interface.admin_enabled && physical_up && ipv6_id &&
-                ipv6_interface_up(ipv6_id);
-            out << '\n' << std::left << std::setw(31)
-                << (system ? std::string{system_interface_name}
-                           : interface.port_id)
-                << std::setw(6)
-                << (interface.admin_enabled ? "Up" : "Down")
-                << (ipv4_up ? "Up" : "Dn") << '/'
-                << (ipv6_up ? "Up" : "Dn");
-          }
-          out << '\n' << table_rule;
         } else if (statistics) {
           const auto &interface = *selected;
           const auto port = std::find_if(
@@ -22617,11 +22935,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           // These reports are valid even when the selected interface has no
           // configured association. The zero-row result is derived from the
           // empty running subsystem, not a successful configuration no-op.
+          // The documented policy-accounting form selects one interface; an
+          // unknown selector is rejected above like every other named show.
           out << table_rule << '\n'
               << (eth_cfm ? "Ethernet CFM Interface Information"
                           : "Interface Policy Accounting")
-              << "\n" << table_rule << "\nInterface : " << selected->name
-              << "\nNo. of Entries: 0\n" << table_rule;
+              << "\n" << table_rule;
+          if (eth_cfm)
+            out << "\nInterface : " << selected->name;
+          out << "\nNo. of Entries: 0\n" << table_rule;
         } else if (parsed->has_modifier(
                        cli_schema::OutputModifier::detail)) {
           const auto &interface = *selected;
@@ -23245,49 +23567,222 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           out << '\n' << row_rule << "\nNo. of Routes: " << route_count
               << '\n' << table_rule;
         }
-      } else if (parsed->spec->id == cli_schema::CommandId::show_router_fib) {
+      } else if (parsed->spec->id == cli_schema::CommandId::show_router_fib ||
+                 parsed->spec->id ==
+                     cli_schema::CommandId::show_router_fib_ipv4 ||
+                 parsed->spec->id ==
+                     cli_schema::CommandId::show_router_fib_ipv6 ||
+                 parsed->spec->id ==
+                     cli_schema::CommandId::show_router_fib_prefix_ipv4 ||
+                 parsed->spec->id == cli_schema::CommandId::
+                     show_router_fib_prefix_ipv4_longer ||
+                 parsed->spec->id ==
+                     cli_schema::CommandId::show_router_fib_prefix_ipv6 ||
+                 parsed->spec->id == cli_schema::CommandId::
+                     show_router_fib_prefix_ipv6_longer ||
+                 parsed->spec->id ==
+                     cli_schema::CommandId::show_router_fib_summary ||
+                 parsed->spec->id ==
+                     cli_schema::CommandId::show_router_fib_summary_all ||
+                 parsed->spec->id ==
+                     cli_schema::CommandId::show_router_fib_summary_ipv6 ||
+                 parsed->spec->id == cli_schema::CommandId::
+                     show_router_fib_summary_ipv6_all) {
+        using enum cli_schema::CommandId;
+        const auto fib_id = parsed->spec->id;
         const auto slot =
             cli_detail::argument(*parsed, cli_schema::TokenKind::card_slot);
         unsigned card{};
         const auto maximum =
             device->profile->fixed ? 1U : device->profile->card_slots;
-        if (!slot || !decimal(*slot, card) || !card || card > maximum) {
+        const bool ipv6_family = fib_id == show_router_fib_ipv6 ||
+                                 fib_id == show_router_fib_prefix_ipv6 ||
+                                 fib_id == show_router_fib_prefix_ipv6_longer;
+        const bool fib_summary = fib_id == show_router_fib_summary ||
+                                 fib_id == show_router_fib_summary_all ||
+                                 fib_id == show_router_fib_summary_ipv6 ||
+                                 fib_id == show_router_fib_summary_ipv6_all;
+        // The documented summary form carries no slot number: it aggregates
+        // every slot, and `all` selects the same single-card aggregate.
+        // The ipv6 family rows count only IPv6 entries.
+        const bool fib_summary_ipv6 =
+            fib_id == show_router_fib_summary_ipv6 ||
+            fib_id == show_router_fib_summary_ipv6_all;
+        const bool fib_longer =
+            fib_id == show_router_fib_prefix_ipv4_longer ||
+            fib_id == show_router_fib_prefix_ipv6_longer;
+        const auto fib_v4_prefix_text =
+            fib_id == show_router_fib_prefix_ipv4 || fib_longer
+                ? cli_detail::argument(*parsed,
+                                       cli_schema::TokenKind::ipv4_prefix)
+                : std::nullopt;
+        const auto fib_v4_prefix =
+            fib_v4_prefix_text ? prefix(*fib_v4_prefix_text)
+                               : std::optional<Prefix>{};
+        const auto fib_v6_prefix_text =
+            fib_id == show_router_fib_prefix_ipv6 ||
+                    fib_id == show_router_fib_prefix_ipv6_longer
+                ? cli_detail::argument(*parsed,
+                                       cli_schema::TokenKind::ipv6_prefix)
+                : std::nullopt;
+        const auto fib_v6_prefix =
+            fib_v6_prefix_text ? ip::parse_ipv6_prefix(*fib_v6_prefix_text)
+                               : std::optional<ip::Ipv6Prefix>{};
+        const bool valid_fib_prefix =
+            ((fib_id != show_router_fib_prefix_ipv4 &&
+              fib_id != show_router_fib_prefix_ipv4_longer) ||
+             (fib_v4_prefix &&
+              (fib_v4_prefix->address &
+               routing::prefix_mask(fib_v4_prefix->length)) ==
+                  fib_v4_prefix->address)) &&
+            ((fib_id != show_router_fib_prefix_ipv6 &&
+              fib_id != show_router_fib_prefix_ipv6_longer) ||
+             fib_v6_prefix.has_value());
+        if ((!fib_summary && (!slot || !decimal(*slot, card) || !card ||
+                              card > maximum)) ||
+            !valid_fib_prefix) {
           output = "MINOR: MGMT_CORE #2301: Invalid element value";
         } else {
+          const auto fib_v4_matches = [&](const routing::Route &route) {
+            if (!fib_v4_prefix)
+              return true;
+            const auto mask =
+                routing::prefix_mask(fib_v4_prefix->length);
+            const bool within =
+                route.prefix_length >= fib_v4_prefix->length &&
+                (route.network & mask) == fib_v4_prefix->address;
+            if (fib_longer)
+              return within;
+            return route.prefix_length == fib_v4_prefix->length &&
+                   route.network == fib_v4_prefix->address;
+          };
+          const auto fib_v6_matches =
+              [&](const routing::Ipv6Route &route) {
+                if (!fib_v6_prefix)
+                  return true;
+                if (route.prefix_length < fib_v6_prefix->length)
+                  return false;
+                const auto full = fib_v6_prefix->length / 8U;
+                const auto partial = fib_v6_prefix->length % 8U;
+                if (!std::equal(route.network.begin(),
+                                route.network.begin() + full,
+                                fib_v6_prefix->network.begin()))
+                  return false;
+                if (partial) {
+                  const auto mask = static_cast<std::uint8_t>(0xffU
+                                                              << (8U - partial));
+                  if ((route.network[full] & mask) !=
+                      (fib_v6_prefix->network[full] & mask))
+                    return false;
+                }
+                return fib_longer ||
+                       (route.prefix_length == fib_v6_prefix->length &&
+                        route.network == fib_v6_prefix->network);
+              };
+          const auto fib_source_text = [](routing::RouteSource source) {
+            switch (source) {
+            case routing::RouteSource::connected:
+              return "LOCAL";
+            case routing::RouteSource::static_route:
+              return "STATIC";
+            case routing::RouteSource::ospf:
+              return "OSPF";
+            case routing::RouteSource::ospf3:
+              return "OSPF3";
+            }
+            return "LOCAL";
+          };
+          const auto fib_slot_matches = [&](std::uint16_t ordinal,
+                                            bool local) {
+            return local || ordinal /
+                                   (device_catalog::
+                                        maximum_mda_slots_per_card *
+                                    device_catalog::maximum_ports_per_mda) +
+                               1U ==
+                           card;
+          };
           out << table_rule << "\nFIB Display\n"
-              << table_rule
-              << "\nPrefix [Flags]                                             "
-                 " Protocol\n"
-              << "  NextHop\n"
-              << row_rule;
+              << table_rule;
+          if (fib_summary) {
+            std::size_t v4_count{};
+            if (!fib_summary_ipv6) {
+              for (std::size_t index = 0; index < operational->fib.count;
+                   ++index) {
+                const auto &route = operational->fib.routes[index];
+                if (!fib_summary && !route.local_system &&
+                    !fib_slot_matches(route.port_ordinal, false))
+                  continue;
+                ++v4_count;
+              }
+            }
+            std::size_t v6_count{};
+            for (std::size_t index = 0; index < operational->ipv6_fib.count;
+                 ++index) {
+              const auto &route = operational->ipv6_fib.routes[index];
+              if (route.physical_port_ordinal !=
+                      system_interface_port_ordinal)
+                continue;
+              ++v6_count;
+            }
+            out << "\nIPv4 Entries : " << v4_count << "\nIPv6 Entries : "
+                << v6_count << '\n'
+                << row_rule << "\nTotal Entries : " << v4_count + v6_count
+                << '\n'
+                << table_rule;
+          } else {
+            out << "\nPrefix [Flags]                                             "
+                   " Protocol\n"
+                << "  NextHop\n"
+                << row_rule;
           std::size_t count{};
-          for (std::size_t index = 0; index < operational->fib.count; ++index) {
-            const auto &route = operational->fib.routes[index];
-            if (!route.local_system &&
-                route.port_ordinal /
-                            (device_catalog::maximum_mda_slots_per_card *
-                             device_catalog::maximum_ports_per_mda) +
-                        1U !=
-                    card)
-              continue;
-            ++count;
-            const auto *interface = route.local_system
-                                        ? system_interface
-                                        : interface_for(route.port_ordinal);
-            out << '\n'
-                << std::left << std::setw(61)
-                << (ipv4_text(route.network) + '/' +
-                    std::to_string(route.prefix_length))
-                << (route.next_hop ? "STATIC" : "LOCAL") << "\n  "
-                << (route.next_hop       ? ipv4_text(route.next_hop)
-                    : route.local_system ? std::string{system_interface_name}
-                                         : ipv4_text(route.network));
-            if (interface)
-              out << " (" << interface->name << ')';
+          if (!ipv6_family) {
+            for (std::size_t index = 0;
+                 index < operational->fib.count;
+                 ++index) {
+              const auto &route = operational->fib.routes[index];
+              if ((!route.local_system &&
+                   !fib_slot_matches(route.port_ordinal, false)) ||
+                  !fib_v4_matches(route))
+                continue;
+              ++count;
+              const auto *interface = route.local_system
+                                          ? system_interface
+                                          : interface_for(route.port_ordinal);
+              out << '\n'
+                  << std::left << std::setw(61)
+                  << (ipv4_text(route.network) + '/' +
+                      std::to_string(route.prefix_length))
+                  << (route.next_hop ? "STATIC" : "LOCAL") << "\n  "
+                  << (route.next_hop       ? ipv4_text(route.next_hop)
+                      : route.local_system ? std::string{system_interface_name}
+                                           : ipv4_text(route.network));
+              if (interface)
+                out << " (" << interface->name << ')';
+            }
+          } else {
+            for (std::size_t index = 0;
+                 index < operational->ipv6_fib.count;
+                 ++index) {
+              const auto &route = operational->ipv6_fib.routes[index];
+              const bool local = route.physical_port_ordinal ==
+                                 system_interface_port_ordinal;
+              if ((!local &&
+                   !fib_slot_matches(route.physical_port_ordinal, false)) ||
+                  !fib_v6_matches(route))
+                continue;
+              ++count;
+              out << '\n'
+                  << std::left << std::setw(61)
+                  << (ip::format_ipv6(route.network) + '/' +
+                      std::to_string(route.prefix_length))
+                  << fib_source_text(route.source) << "\n  "
+                  << ip::format_ipv6(route.next_hop);
+            }
           }
           out << '\n'
               << row_rule << "\nTotal Entries : " << count << '\n'
               << table_rule;
+          }
         }
       } else {
         using enum cli_schema::CommandId;
@@ -23326,7 +23821,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                 : std::nullopt;
         const auto selected_mac =
             mac_argument ? mac_address(*mac_argument) : std::nullopt;
-        if (id == show_router_arp_summary) {
+        if (id == show_router_arp_summary ||
+            id == show_router_arp_summary_dynamic ||
+            id == show_router_arp_summary_local ||
+            id == show_router_arp_summary_static ||
+            id == show_router_arp_summary_managed) {
           const auto static_count = static_cast<std::size_t>(std::count_if(
               operational->adjacencies.begin(), operational->adjacencies.end(),
               [](const auto &entry) { return entry.configured_static; }));
@@ -23355,6 +23854,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                     : 0U;
             if ((static_report && !entry.configured_static) ||
                 (id == show_router_arp_dynamic && entry.configured_static) ||
+                // The forwarding cache stores only static and dynamic rows.
+                // Local and managed selectors therefore yield truthful empty
+                // reports until those owners gain their own record kinds.
+                id == show_router_arp_local ||
+                id == show_router_arp_managed ||
+                (id == show_router_arp_static && !entry.configured_static) ||
                 (selected_address && entry.address != *selected_address) ||
                 (selected_prefix &&
                  (entry.address & mask) != (selected_prefix->address & mask)) ||
@@ -23814,8 +24319,11 @@ std::string LabRuntime::complete_session(std::string_view session_id,
     case md_ra_prefix_on_link:
     case md_ra_prefix_preferred_lifetime:
     case md_ra_prefix_valid_lifetime:
+    case md_ra_prefix_preferred_lifetime_infinite:
+    case md_ra_prefix_valid_lifetime_infinite:
     case md_ra_rdnss_server:
     case md_ra_rdnss_lifetime:
+    case md_ra_rdnss_lifetime_infinite:
     case md_compare:
     case md_commit:
     case md_discard:
