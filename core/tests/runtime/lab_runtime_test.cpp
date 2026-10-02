@@ -1034,6 +1034,19 @@ void lab_runtime_tests() {
     require(contextual_command(command).find("leases found") !=
                 std::string_view::npos,
             "documented DHCPv6 show lease filter did not render");
+  // CMST documents prefix combined with type and state selectors.
+  for (const auto command :
+       {"show router dhcp6 local-dhcp-server browser-v6 leases "
+        "2001:db8::/32 type pd",
+        "show router dhcp6 local-dhcp-server browser-v6 leases "
+        "2001:db8::/32 state held",
+        "show router dhcp6 local-dhcp-server browser-v6 leases "
+        "2001:db8::/32 type pd state held"})
+    require(contextual_command(command).find("leases found") !=
+                    std::string_view::npos &&
+                contextual_command(command).find("Unknown element") ==
+                    std::string_view::npos,
+            "documented DHCPv6 show lease prefix filter did not render");
   lease_parse_rejected(
       "show router dhcp6 local-dhcp-server browser-v6 leases type slaac",
       "show accepted undocumented lease type slaac");
@@ -2665,6 +2678,42 @@ void lab_runtime_tests() {
                    "edge current-hop-limit"}))
               .find("MGMT_CORE #2301") == std::string_view::npos,
       "MD delete of an absent RA leaf was not silent");
+  // Interface dns-options rdnss-lifetime follows the same silent rule: set it,
+  // delete it, then delete again and require silence on the absent leaf.
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                   {"r1-console-1",
+                                    "router \"Base\" ipv6 router-advertisement "
+                                    "interface edge dns-options rdnss-lifetime "
+                                    "1200"}))
+                      .find("MINOR:") == std::string_view::npos &&
+              runtime.command(message(lab_runtime_protocol::session_execute,
+                                        {"r1-console-1",
+                                         "delete router \"Base\" ipv6 "
+                                         "router-advertisement interface edge "
+                                         "dns-options rdnss-lifetime"}))
+                      .find("MINOR:") == std::string_view::npos &&
+              runtime
+                  .command(message(
+                      lab_runtime_protocol::session_execute,
+                      {"r1-console-1",
+                       "delete router \"Base\" ipv6 router-advertisement "
+                       "interface edge dns-options rdnss-lifetime"}))
+                  .find("MGMT_CORE #2301") == std::string_view::npos,
+          "MD delete of an absent interface rdnss-lifetime was not silent");
+  // Router advertisements are link-scoped: the loopback system interface can
+  // never host an RA instance, so both engines must reject it and stay
+  // consistent with the show resolver.
+  for (const auto command :
+       {"router \"Base\" ipv6 router-advertisement interface system "
+        "current-hop-limit 17",
+        "delete router \"Base\" ipv6 router-advertisement interface system "
+        "current-hop-limit",
+        "configure router router-advertisement interface system shutdown",
+        "configure router router-advertisement interface system no shutdown"})
+    require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                    {"r1-console-1", command}))
+                    .find("MINOR:") != std::string_view::npos,
+            "RA on the system interface was not rejected");
   require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1",
                                    "router \"Base\" ipv6 router-advertisement "
@@ -2700,6 +2749,34 @@ void lab_runtime_tests() {
                                     {"r1-console-1", command}))
                     .find("MINOR:") != std::string_view::npos,
             "MD ICMPv6 Redirect configuration admitted an invalid YANG value");
+  // YANG allows the infinite lifetime keyword alongside decimal seconds, and
+  // rdnss-lifetime additionally allows 0 while MTU 0 stays rejected.
+  for (const auto command :
+       {"router \"Base\" ipv6 router-advertisement interface edge prefix "
+        "2001:db8:9::/64 valid-lifetime infinite",
+        "router \"Base\" ipv6 router-advertisement interface edge prefix "
+        "2001:db8:9::/64 preferred-lifetime infinite",
+        "router \"Base\" ipv6 router-advertisement dns-options rdnss-lifetime "
+        "0"})
+    require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                    {"r1-console-1", command}))
+                    .find("MINOR:") == std::string_view::npos,
+            "MD RA lifetime keyword was rejected");
+  for (const auto command :
+       {"delete router \"Base\" ipv6 router-advertisement interface edge "
+        "prefix 2001:db8:9::/64",
+        "delete router \"Base\" ipv6 router-advertisement dns-options "
+        "rdnss-lifetime"})
+    require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                    {"r1-console-1", command}))
+                    .find("MINOR:") == std::string_view::npos,
+            "MD RA lifetime cleanup did not restore the fixture");
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1",
+                                   "router \"Base\" ipv6 "
+                                   "router-advertisement interface edge mtu 0"}))
+                  .find("MINOR:") != std::string_view::npos,
+          "MD RA mtu 0 was not rejected");
   // Keep one non-default RA scalar in the candidate through commit. Earlier
   // coverage exercised every leaf and its delete form, but restoring the
   // default before commit could not detect a lost candidate-to-forwarding
@@ -3791,7 +3868,7 @@ void lab_runtime_tests() {
        {"show service id 100 dhcp6 lease-state",
         "show service id 100 dhcp6 lease-state detail",
         "show service id 100 dhcp6 lease-state interface subscriber",
-        "show service id 100 dhcp6 lease-state 2001:db8:100::/64",
+        "show service id 100 dhcp6 lease-state ipv6-address 2001:db8:100::/64",
         "show service id 100 dhcp6 lease-state mac 02:00:00:00:aa:01"}) {
     const std::string result{runtime.command(message(
         lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
@@ -3803,9 +3880,10 @@ void lab_runtime_tests() {
   for (const auto command :
        {"clear service id 100 dhcp6 lease-state all",
         "clear service id 100 dhcp6 lease-state all no-dhcp-release",
-        "clear service id 100 dhcp6 lease-state 2001:db8:100::10/128",
-        "clear service id 100 dhcp6 lease-state 2001:db8:100::10/128 "
-        "no-dhcp-release",
+        "clear service id 100 dhcp6 lease-state ipv6-address "
+        "2001:db8:100::10/128",
+        "clear service id 100 dhcp6 lease-state ipv6-address "
+        "2001:db8:100::10/128 no-dhcp-release",
         "clear service id 100 dhcp6 lease-state mac 02:00:00:00:aa:01",
         "clear service id 100 dhcp6 lease-state mac 02:00:00:00:aa:01 "
         "no-dhcp-release",
@@ -4929,6 +5007,11 @@ void lab_runtime_tests() {
         "delete ipsec ike-transform 99",
         "delete router \"Base\" ecmp",
         "delete router \"Base\" interface missing-edge port",
+        "delete router \"Base\" ipv6 neighbor-discovery reachable-time",
+        "delete router \"Base\" interface missing-edge ipv6 "
+        "neighbor-discovery reachable-time",
+        "delete router \"Base\" interface missing-edge ipv6 "
+        "neighbor-discovery limit",
         "delete policy-options policy-statement MISSING entry 10 action metric",
         "delete policy-options policy-statement MISSING entry 10",
         "delete policy-options policy-statement MISSING",
@@ -4939,6 +5022,25 @@ void lab_runtime_tests() {
                 result.find("Error:") == std::string_view::npos,
             "MD delete of an absent element was not silent");
   }
+  // Classic no forms keep the rejected result for absent elements, matching
+  // the MD silent loop above on the same missing interface.
+  const auto classic_threshold = [&](std::string_view command) {
+    return runtime.command(message(lab_runtime_protocol::session_execute,
+                                   {"r1-console-1", command}));
+  };
+  require(classic_threshold("//configure router interface missing-edge ipv6 "
+                            "neighbor-limit 1024 threshold 0")
+                  .find("Error:") != std::string_view::npos,
+          "classic neighbor-limit on a missing interface was not rejected");
+  // YANG forbids static neighbors on the system interface in both engines.
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                 {"r1-console-1",
+                                  "router \"Base\" interface system ipv6 "
+                                  "neighbor-discovery static-neighbor "
+                                  "2001:db8:ffff::9 mac-address "
+                                  "02:00:00:00:ff:09"}))
+                  .find("MINOR:") != std::string_view::npos,
+          "static IPv6 neighbor on the system interface was not rejected");
   require(runtime.command(message(lab_runtime_protocol::session_execute,
                                   {"r1-console-1", "discard"}))
                   .find("MINOR:") == std::string_view::npos,

@@ -4288,11 +4288,16 @@ void md_ipsec_configuration_body(
       md_indent(out, depth + 2U);
       // SR OS conceals secret values in normal configuration output. The
       // datastore owns only a sealed handle, so no renderer can recover or
-      // leak the original secret bytes.
+      // leak the original secret bytes. The value container and ascii/hex
+      // leaf names mirror the configuration command shape.
+      out << "value {\n";
+      md_indent(out, depth + 3U);
       out << (entry.format == ipsec::configuration::PpkValueFormat::ascii
-                  ? "ascii-value"
-                  : "hex-value")
+                  ? "ascii"
+                  : "hex")
           << " \"******\"\n";
+      md_indent(out, depth + 2U);
+      out << "}\n";
       md_indent(out, depth + 1U);
       out << "}\n";
     }
@@ -16158,6 +16163,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         }
       } else if (id == md_ra_global_rdnss_server ||
                  id == md_ra_global_rdnss_lifetime ||
+                 id == md_ra_global_rdnss_lifetime_infinite ||
                  id == md_delete_ra_global_rdnss_server ||
                  id == md_delete_ra_global_rdnss_lifetime) {
         auto dns = candidate->router_advertisement_dns;
@@ -16183,10 +16189,15 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                   dns.rdnss_lifetime_seconds;
           }
         } else {
-          std::uint32_t value{};
-          const auto text = argument(cli_schema::TokenKind::seconds);
-          valid = text && decimal(*text, value) &&
-                  valid_router_advertisement_dns(dns.rdnss, value);
+          // The infinite keyword stores the documented infinite sentinel.
+          std::uint32_t value = device_catalog::ra_infinite_lifetime;
+          const bool infinite = id == md_ra_global_rdnss_lifetime_infinite;
+          const auto text =
+              infinite ? std::optional<std::string_view>{}
+                       : argument(cli_schema::TokenKind::seconds);
+          valid = infinite ||
+                  (text && decimal(*text, value) &&
+                   valid_router_advertisement_dns(dns.rdnss, value));
           if (valid) {
             dns.rdnss_lifetime_seconds = value;
             dns.rdnss_lifetime_configured = true;
@@ -16206,7 +16217,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                  id == md_ra_prefix_autonomous || id == md_ra_prefix_on_link ||
                  id == md_ra_prefix_preferred_lifetime ||
                  id == md_ra_prefix_valid_lifetime ||
+                 id == md_ra_prefix_preferred_lifetime_infinite ||
+                 id == md_ra_prefix_valid_lifetime_infinite ||
                  id == md_ra_rdnss_server || id == md_ra_rdnss_lifetime ||
+                 id == md_ra_rdnss_lifetime_infinite ||
                  id == md_ra_include_dns || id == md_delete_ra_admin_state ||
                  id == md_delete_ra_current_hop_limit ||
                  id == md_delete_ra_managed_configuration ||
@@ -16231,7 +16245,12 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         auto interface = std::find_if(
             candidate->interfaces.begin(), candidate->interfaces.end(),
             [&](const auto &entry) { return entry.name == name; });
-        valid = !name.empty() && interface != candidate->interfaces.end();
+        // Router advertisements are link-scoped and need a bound port, so the
+        // loopback system interface can never host an RA instance. Rejecting
+        // here keeps configure and show consistent: a delete below the
+        // missing instance is not a successful no-op.
+        valid = !name.empty() && interface != candidate->interfaces.end() &&
+                name != system_interface_name;
         if (valid) {
           // Edit a value copy and publish it only after every cross-leaf check
           // succeeds. This preserves the MD candidate when a syntactically
@@ -16449,8 +16468,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
             else if (valid)
               valid = erase_router_advertisement_rdnss(config.rdnss, *address);
           } else if (id == md_delete_ra_rdnss_lifetime) {
-            valid = updated.router_advertisement_rdnss_lifetime_configured;
-            if (valid) {
+            // Deleting an absent leaf is the documented silent no-op.
+            if (updated.router_advertisement_rdnss_lifetime_configured) {
               config.rdnss_lifetime_seconds =
                   device_catalog::ra_infinite_lifetime;
               updated.router_advertisement_rdnss_lifetime_configured = false;
@@ -16461,7 +16480,9 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           } else if (id == md_ra_prefix_autonomous ||
                      id == md_ra_prefix_on_link ||
                      id == md_ra_prefix_preferred_lifetime ||
-                     id == md_ra_prefix_valid_lifetime) {
+                     id == md_ra_prefix_valid_lifetime ||
+                     id == md_ra_prefix_preferred_lifetime_infinite ||
+                     id == md_ra_prefix_valid_lifetime_infinite) {
             const auto text = argument(cli_schema::TokenKind::ipv6_prefix);
             const auto parsed_prefix = text ? ip::parse_ipv6_prefix(*text)
                                             : std::optional<ip::Ipv6Prefix>{};
@@ -16516,10 +16537,18 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                     RouterAdvertisementPrefixLeaf::on_link, true);
               }
             } else if (valid) {
-              std::uint32_t value{};
-              const auto text_value = argument(cli_schema::TokenKind::seconds);
-              valid = text_value && decimal(*text_value, value);
-              if (valid && id == md_ra_prefix_preferred_lifetime) {
+              // The infinite keyword stores the documented infinite sentinel.
+              const bool infinite =
+                  id == md_ra_prefix_preferred_lifetime_infinite ||
+                  id == md_ra_prefix_valid_lifetime_infinite;
+              std::uint32_t value = device_catalog::ra_infinite_lifetime;
+              const auto text_value =
+                  infinite ? std::optional<std::string_view>{}
+                           : argument(cli_schema::TokenKind::seconds);
+              valid = infinite ||
+                      (text_value && decimal(*text_value, value));
+              if (valid && (id == md_ra_prefix_preferred_lifetime ||
+                            id == md_ra_prefix_preferred_lifetime_infinite)) {
                 prefix_entry->preferred_lifetime_seconds = value;
                 const auto index = static_cast<std::size_t>(
                     prefix_entry - config.prefixes.begin());
@@ -16536,14 +16565,20 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               }
             }
           } else {
-            std::uint32_t value{};
-            const auto kind =
-                id == md_ra_mtu ? cli_schema::TokenKind::mtu
-                : id == md_ra_reachable_time || id == md_ra_retransmit_time
-                    ? cli_schema::TokenKind::milliseconds
-                    : cli_schema::TokenKind::seconds;
-            const auto text = argument(kind);
-            valid = text && decimal(*text, value);
+            // The infinite keyword stores the documented infinite sentinel.
+            const bool rdnss_infinite = id == md_ra_rdnss_lifetime_infinite;
+            std::uint32_t value = device_catalog::ra_infinite_lifetime;
+            if (rdnss_infinite) {
+              valid = true;
+            } else {
+              const auto kind =
+                  id == md_ra_mtu ? cli_schema::TokenKind::mtu
+                  : id == md_ra_reachable_time || id == md_ra_retransmit_time
+                      ? cli_schema::TokenKind::milliseconds
+                      : cli_schema::TokenKind::seconds;
+              const auto text = argument(kind);
+              valid = text && decimal(*text, value);
+            }
             if (valid && id == md_ra_max_interval) {
               config.max_advertisement_interval_seconds = value;
               presence_set(updated.router_advertisement_leaf_presence,
@@ -16574,7 +16609,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                   static_cast<std::uint16_t>(value);
               presence_set(updated.router_advertisement_leaf_presence,
                            RouterAdvertisementLeaf::router_lifetime, true);
-            } else if (valid && id == md_ra_rdnss_lifetime) {
+            } else if (valid && (id == md_ra_rdnss_lifetime ||
+                                 id == md_ra_rdnss_lifetime_infinite)) {
               config.rdnss_lifetime_seconds = value;
               updated.router_advertisement_rdnss_lifetime_configured = true;
               for (std::size_t index = 0; index < config.rdnss.count; ++index)
@@ -18011,7 +18047,9 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         auto interface =
             std::find_if(next.interfaces.begin(), next.interfaces.end(),
                          [&](const auto &entry) { return entry.name == name; });
-        applied = !name.empty() && interface != next.interfaces.end();
+        // Same link-scope rule as the MD path above: RA on system is rejected.
+        applied = !name.empty() && interface != next.interfaces.end() &&
+                  name != system_interface_name;
         if (applied) {
           auto &config = interface->router_advertisement;
           interface->router_advertisement_configured = true;
@@ -24281,8 +24319,11 @@ std::string LabRuntime::complete_session(std::string_view session_id,
     case md_ra_prefix_on_link:
     case md_ra_prefix_preferred_lifetime:
     case md_ra_prefix_valid_lifetime:
+    case md_ra_prefix_preferred_lifetime_infinite:
+    case md_ra_prefix_valid_lifetime_infinite:
     case md_ra_rdnss_server:
     case md_ra_rdnss_lifetime:
+    case md_ra_rdnss_lifetime_infinite:
     case md_compare:
     case md_commit:
     case md_discard:

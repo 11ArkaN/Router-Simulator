@@ -71,6 +71,13 @@ void tls_cli_configuration_tests() {
   parse_rejected(router::CliEngine::md,
                  "configure system security tls cert-profile missing entry 9 "
                  "certificate-file missing.pem");
+  // YANG forbids backslash in certificate and key filenames in both engines.
+  parse_rejected(router::CliEngine::md,
+                 "configure system security tls cert-profile router-cert "
+                 "entry 1 certificate-file bad\\name.pem");
+  parse_rejected(router::CliEngine::classic,
+                 "configure system security tls cert-profile router-cert "
+                 "entry 1 key-file bad\\name.pem");
 
   // Classic no forms keep the rejected result for absent elements.
   const auto reject = [&](router::CliEngine engine, std::string_view text) {

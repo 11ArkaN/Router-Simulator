@@ -441,12 +441,12 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
       const auto file = scalar_text(value);
       return !file.empty() &&
              file.size() <= device_catalog::tls_certificate_file_name_bytes &&
-             file.find_first_of(":/") == std::string_view::npos;
+             file.find_first_of(":/\\") == std::string_view::npos;
     }
     case pki_file_name: {
       const auto file = scalar_text(value);
       return !file.empty() && file.size() <= 95U &&
-             file.find_first_of(":/") == std::string_view::npos;
+             file.find_first_of(":/\\") == std::string_view::npos;
     }
     case tls_cert_profile_name:
     case tls_trust_anchor_profile_name:

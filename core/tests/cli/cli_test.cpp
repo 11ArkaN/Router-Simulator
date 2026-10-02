@@ -345,6 +345,14 @@ void cli_tests() {
                           no_ping);
   require(contains(old_route, "Unknown element"),
           "Obsolete shortened MD static-route syntax remained executable");
+  // Static-route destinations must not carry host bits in either engine.
+  const auto host_bits_md = router::execute_cli(
+      state, session,
+      "router \"Base\" static-routes route 203.0.113.1/24 route-type unicast "
+      "next-hop 198.51.100.2",
+      no_ping);
+  require(contains(host_bits_md, "Invalid element"),
+          "MD static route accepted a destination with host bits");
   router::execute_cli(
       state, session,
       "router \"Base\" static-routes route 203.0.113.0/24 route-type unicast "
@@ -582,6 +590,13 @@ void cli_tests() {
                       no_ping);
   require(!state.configuration.running.static_routes[0].valid,
           "Classic no static-route-entry did not remove the route");
+  const auto host_bits_classic = router::execute_cli(
+      state, session,
+      "configure router static-route-entry 203.0.113.1/24 next-hop "
+      "198.51.100.2",
+      no_ping);
+  require(contains(host_bits_classic, "Error: Bad command."),
+          "Classic static route accepted a destination with host bits");
   const auto incomplete_classic_no =
       router::execute_cli(state, session, "configure router no", no_ping);
   require(contains(incomplete_classic_no, "Error: Bad command.") &&

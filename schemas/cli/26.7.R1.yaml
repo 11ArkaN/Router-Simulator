@@ -96,8 +96,8 @@ parameters:
   policy_action: { display: "<accept|drop|reject|next-entry|next-policy>", description: "Route policy action" }
   md_policy_action: { display: "<accept|reject|next-entry|next-policy>", description: "MD-CLI route policy action" }
   policy_action_metric: { display: "<metric>", description: "Route policy action metric from 0 through 4294967295" }
-  redirect_number: { display: "<number>", description: "Maximum ICMPv6 Redirect messages per interval" }
-  redirect_seconds: { display: "<seconds>", description: "ICMPv6 Redirect rate interval in seconds" }
+  redirect_number: { display: "<number>", description: "Maximum ICMP Redirect messages per interval" }
+  redirect_seconds: { display: "<seconds>", description: "ICMP Redirect rate interval in seconds" }
   tls_cert_profile_name: { display: "<cert-profile-name>", description: "TLS certificate profile name" }
   tls_trust_anchor_profile_name: { display: "<trust-anchor-profile-name>", description: "TLS trust anchor profile name" }
   tls_client_cipher_list_name: { display: "<client-cipher-list-name>", description: "TLS client cipher list name" }
@@ -250,7 +250,7 @@ literals:
   ascii: "Use an ASCII secret value"
   address: "Configure an IP address"
   alarms: "Display facility alarms"
-  all: "Navigate to the operational root"
+  all: "Select all entries"
   leases: "Display or clear DHCP server leases"
   server-stats: "Display or clear local DHCP server statistics"
   declined-addresses: "Display declined DHCP addresses"
@@ -297,9 +297,9 @@ literals:
   interface: "Configure or display router interfaces"
   ipv6-address: "Identify an IPv6 neighbor address"
   ipv4-address: "Identify an IPv4 address"
-  mac: "Select an IPv6 neighbor by MAC address"
-  summary: "Display summarized IPv6 neighbor information"
-  dynamic: "Select dynamically learned IPv6 neighbors"
+  mac: "Select by MAC address"
+  summary: "Display summarized information"
+  dynamic: "Configure dynamic key exchange"
   managed: "Select managed IPv6 neighbors"
   max-groups: "Limit learned multicast groups on an interface"
   max-grp-sources: "Limit learned group and source pairs on an interface"
@@ -357,11 +357,11 @@ literals:
   ping: "Verify reachability of a remote host"
   port: "Configure or display physical ports"
   primary-preference: "Set the primary IPv6 address preference index"
-  prefix-length: "Configure the IPv4 prefix length"
+  prefix-length: "Configure the prefix length"
   primary: "Configure the primary IPv4 address"
   size: "Configure the ICMP data field size"
-  ipv4: "Configure IPv4 parameters"
-  ipv6: "Configure IPv6 parameters"
+  ipv4: "IPv4 address family"
+  ipv6: "IPv6 address family"
   router-advertisement: "Configure IPv6 router advertisements"
   rtr-advertisement: "Display IPv6 router advertisement information"
   icmp6: "Configure ICMPv6 parameters"
@@ -578,7 +578,7 @@ literals:
   tls13-signature: "Configure a TLS 1.3 signature list entry"
   trust-anchor: "Reference a PKI CA profile as a trust anchor"
   trust-anchor-profile: "Configure or assign a TLS trust anchor profile"
-  use-pqc-only: "Advertise only post-quantum algorithms"
+  use-pqc-only: "Negotiate only PQC ciphers, groups, and signatures"
   ipsec: "Configure or display Internet Protocol Security"
   icmp: "Select ICMP protocol traffic"
   ike-policy: "Configure or display an IKE policy"
@@ -872,7 +872,7 @@ commands:
   - { id: md_delete_ospf3_interface_retransmit, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, retransmit-interval] }
   - { id: md_ospf3_interface_transit_delay, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, transit-delay, { parameter: ospf_interval }] }
   - { id: md_delete_ospf3_interface_transit_delay, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, transit-delay] }
-  - { id: md_ospf3_interface_neighbor, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, neighbor, { parameter: ipv6 }] }
+  - { id: md_ospf3_interface_neighbor, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, { literal: "neighbor", description: "Configure a static OSPF neighbor" }, { parameter: ipv6 }] }
   - { id: md_delete_ospf3_interface_neighbor, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, neighbor, { parameter: ipv6 }] }
   - { id: md_delete_ospf3_interface, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }] }
   - { id: md_delete_ospf3_area, engines: [md], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [delete, router, '"Base"', ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }] }
@@ -1011,7 +1011,7 @@ commands:
   - { id: classic_ospf3_interface_priority, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, priority, { parameter: ospf_priority }] }
   - { id: classic_ospf3_interface_passive, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, passive] }
   - { id: classic_ospf3_interface_no_passive, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, no, passive] }
-  - { id: classic_ospf3_interface_neighbor, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, neighbor, { parameter: ipv6 }] }
+  - { id: classic_ospf3_interface_neighbor, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, { literal: "neighbor", description: "Configure a static OSPF neighbor" }, { parameter: ipv6 }] }
   - { id: classic_ospf3_interface_no_neighbor, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, interface, { parameter: interface_name }, no, neighbor, { parameter: ipv6 }] }
   - { id: classic_ospf3_no_interface, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, area, { parameter: ospf_area_id }, no, interface, { parameter: interface_name }] }
   - { id: classic_no_ospf3_area, engines: [classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [configure, router, ospf3, { parameter: ospf_instance }, no, area, { parameter: ospf_area_id }] }
@@ -1265,7 +1265,7 @@ commands:
   - id: navigate_exit_all
     engines: [md, classic]
     source_id: nokia.sros.26_7.md_cli.navigation
-    tokens: [exit, all]
+    tokens: [exit, { literal: "all", description: "Exit all configuration contexts" }]
   - id: navigate_top
     engines: [md]
     source_id: nokia.sros.26_7.md_cli.navigation
@@ -1344,11 +1344,11 @@ commands:
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.system_alarms
     tokens: [show, system, alarms]
-  - { id: show_system_alarms_count, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, count, { parameter: alarm_count }] }
+  - { id: show_system_alarms_count, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, { literal: "count", description: "Number of alarms to display" }, { parameter: alarm_count }] }
   - { id: show_system_alarms_newer_than, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, newer-than, { parameter: alarm_newer_than_days }] }
   - { id: show_system_alarms_severity, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, severity, { parameter: alarm_severity }] }
   - { id: show_system_alarms_cleared, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, cleared] }
-  - { id: show_system_alarms_cleared_count, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, cleared, count, { parameter: alarm_count }] }
+  - { id: show_system_alarms_cleared_count, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, cleared, { literal: "count", description: "Number of alarms to display" }, { parameter: alarm_count }] }
   - { id: show_system_alarms_cleared_newer_than, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, cleared, newer-than, { parameter: alarm_newer_than_days }] }
   - { id: show_system_alarms_cleared_severity, engines: [md, classic], source_id: nokia.sros.26_7.show.system_alarms, tokens: [show, system, alarms, cleared, severity, { parameter: alarm_severity }] }
   # Local server operational commands share one runtime owner but retain both
@@ -1492,9 +1492,9 @@ commands:
   - { id: show_router_route_table_prefix_ipv6_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, { parameter: ipv6_prefix }, extensive] }
   - { id: show_router_route_table_prefix_ipv6_longer_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, { parameter: ipv6_prefix }, longer, extensive] }
   - { id: show_router_route_table_prefix_ipv6_exact_extensive, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, { parameter: ipv6_prefix }, exact, extensive] }
-  - { id: show_router_route_table_protocol_static, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, protocol, static] }
+  - { id: show_router_route_table_protocol_static, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, protocol, { literal: "static", description: "Select static route entries" }] }
   - { id: show_router_route_table_protocol_local, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, protocol, local] }
-  - { id: show_router_route_table_ipv6_protocol_static, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, protocol, static] }
+  - { id: show_router_route_table_ipv6_protocol_static, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, protocol, { literal: "static", description: "Select static route entries" }] }
   - { id: show_router_route_table_ipv6_protocol_local, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, ipv6, protocol, local] }
   - { id: show_router_route_table_protocol_ospf_instance, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, protocol, ospf, instance, { parameter: ospf_instance }] }
   - { id: show_router_route_table_protocol_ospf3_instance, engines: [md, classic], source_id: nokia.sros.26_7.show.route_table, tokens: [show, router, route-table, protocol, ospf3, instance, { parameter: ospf_instance }] }
@@ -1586,7 +1586,7 @@ commands:
   - id: show_router_arp_dynamic
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.arp
-    tokens: [show, router, arp, dynamic]
+    tokens: [show, router, arp, { literal: "dynamic", description: "Select dynamically learned entries" }]
   - id: show_router_arp_local
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.arp
@@ -1594,7 +1594,7 @@ commands:
   - id: show_router_arp_static
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.arp
-    tokens: [show, router, arp, static]
+    tokens: [show, router, arp, { literal: "static", description: "Select static route entries" }]
   - id: show_router_arp_managed
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.arp
@@ -1602,7 +1602,7 @@ commands:
   - id: show_router_arp_summary_dynamic
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.arp
-    tokens: [show, router, arp, summary, dynamic]
+    tokens: [show, router, arp, summary, { literal: "dynamic", description: "Select dynamically learned entries" }]
   - id: show_router_arp_summary_local
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.arp
@@ -1610,7 +1610,7 @@ commands:
   - id: show_router_arp_summary_static
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.arp
-    tokens: [show, router, arp, summary, static]
+    tokens: [show, router, arp, summary, { literal: "static", description: "Select static route entries" }]
   - id: show_router_arp_summary_managed
     engines: [md, classic]
     source_id: nokia.sros.26_7.show.arp
@@ -1634,31 +1634,31 @@ commands:
   - id: clear_router_arp_all
     engines: [classic]
     source_id: nokia.sros.26_7.clear.arp
-    tokens: [clear, router, arp, all]
+    tokens: [clear, router, { literal: "arp", description: "Clear matching ARP entries" }, all]
   - id: clear_router_arp_address
     engines: [classic]
     source_id: nokia.sros.26_7.clear.arp
-    tokens: [clear, router, arp, { parameter: ipv4 }]
+    tokens: [clear, router, { literal: "arp", description: "Clear matching ARP entries" }, { parameter: ipv4 }]
   - id: clear_router_arp_interface
     engines: [classic]
     source_id: nokia.sros.26_7.clear.arp
-    tokens: [clear, router, arp, interface, { parameter: interface_name }]
+    tokens: [clear, router, { literal: "arp", description: "Clear matching ARP entries" }, interface, { parameter: interface_name }]
   - id: clear_router_arp_interface_address
     engines: [classic]
     source_id: nokia.sros.26_7.clear.arp
-    tokens: [clear, router, arp, interface, { parameter: ipv4 }]
+    tokens: [clear, router, { literal: "arp", description: "Clear matching ARP entries" }, interface, { parameter: ipv4 }]
   - id: md_reset_router_arp_all
     engines: [md]
     source_id: nokia.sros.26_7.clear.arp
-    tokens: [reset, router, '"Base"', arp, all]
+    tokens: [reset, router, '"Base"', { literal: "arp", description: "Clear matching ARP entries" }, all]
   - id: md_reset_router_arp_address
     engines: [md]
     source_id: nokia.sros.26_7.clear.arp
-    tokens: [reset, router, '"Base"', arp, address, ipv4-address, { parameter: ipv4 }]
+    tokens: [reset, router, '"Base"', { literal: "arp", description: "Clear matching ARP entries" }, address, ipv4-address, { parameter: ipv4 }]
   - id: md_reset_router_arp_interface
     engines: [md]
     source_id: nokia.sros.26_7.clear.arp
-    tokens: [reset, router, '"Base"', arp, interface, interface-name, { parameter: interface_name }]
+    tokens: [reset, router, '"Base"', { literal: "arp", description: "Clear matching ARP entries" }, interface, interface-name, { parameter: interface_name }]
   - id: ping
     engines: [md, classic]
     source_id: nokia.sros.26_7.ping
@@ -1720,56 +1720,56 @@ commands:
   - id: show_service_dhcp6_lease_state
     engines: [md, classic]
     source_id: nokia.sros.26_7.ies.dhcpv6_lease_operational
-    tokens: [show, service, id, { parameter: service_id }, dhcp6, lease-state]
+    tokens: [show, service, { literal: "id", description: "Select a service by ID" }, { parameter: service_id }, dhcp6, lease-state]
   - id: show_service_dhcp6_lease_state_detail
     engines: [md, classic]
     modifier: detail
     source_id: nokia.sros.26_7.ies.dhcpv6_lease_operational
-    tokens: [show, service, id, { parameter: service_id }, dhcp6, lease-state, detail]
+    tokens: [show, service, { literal: "id", description: "Select a service by ID" }, { parameter: service_id }, dhcp6, lease-state, detail]
   - id: show_service_dhcp6_lease_state_interface
     engines: [md, classic]
     source_id: nokia.sros.26_7.ies.dhcpv6_lease_operational
-    tokens: [show, service, id, { parameter: service_id }, dhcp6, lease-state, interface, { parameter: service_interface_name }]
+    tokens: [show, service, { literal: "id", description: "Select a service by ID" }, { parameter: service_id }, dhcp6, lease-state, interface, { parameter: service_interface_name }]
   - id: show_service_dhcp6_lease_state_prefix
     engines: [md, classic]
     source_id: nokia.sros.26_7.ies.dhcpv6_lease_operational
-    tokens: [show, service, id, { parameter: service_id }, dhcp6, lease-state, { parameter: ipv6_address_prefix }]
+    tokens: [show, service, { literal: "id", description: "Select a service by ID" }, { parameter: service_id }, dhcp6, lease-state, ipv6-address, { parameter: ipv6_address_prefix }]
   - id: show_service_dhcp6_lease_state_mac
     engines: [md, classic]
     source_id: nokia.sros.26_7.ies.dhcpv6_lease_operational
-    tokens: [show, service, id, { parameter: service_id }, dhcp6, lease-state, mac, { parameter: mac_address }]
+    tokens: [show, service, { literal: "id", description: "Select a service by ID" }, { parameter: service_id }, dhcp6, lease-state, mac, { parameter: mac_address }]
   - id: clear_service_dhcp6_lease_state_all
     engines: [md, classic]
     source_id: nokia.sros.26_7.ies.dhcpv6_lease_operational
-    tokens: [clear, service, id, { parameter: service_id }, dhcp6, lease-state, all]
+    tokens: [clear, service, { literal: "id", description: "Select a service by ID" }, { parameter: service_id }, dhcp6, lease-state, all]
   - id: clear_service_dhcp6_lease_state_all_no_release
     engines: [md, classic]
     source_id: nokia.sros.26_7.ies.dhcpv6_lease_operational
-    tokens: [clear, service, id, { parameter: service_id }, dhcp6, lease-state, all, no-dhcp-release]
+    tokens: [clear, service, { literal: "id", description: "Select a service by ID" }, { parameter: service_id }, dhcp6, lease-state, all, no-dhcp-release]
   - id: clear_service_dhcp6_lease_state_prefix
     engines: [md, classic]
     source_id: nokia.sros.26_7.ies.dhcpv6_lease_operational
-    tokens: [clear, service, id, { parameter: service_id }, dhcp6, lease-state, { parameter: ipv6_address_prefix }]
+    tokens: [clear, service, { literal: "id", description: "Select a service by ID" }, { parameter: service_id }, dhcp6, lease-state, ipv6-address, { parameter: ipv6_address_prefix }]
   - id: clear_service_dhcp6_lease_state_prefix_no_release
     engines: [md, classic]
     source_id: nokia.sros.26_7.ies.dhcpv6_lease_operational
-    tokens: [clear, service, id, { parameter: service_id }, dhcp6, lease-state, { parameter: ipv6_address_prefix }, no-dhcp-release]
+    tokens: [clear, service, { literal: "id", description: "Select a service by ID" }, { parameter: service_id }, dhcp6, lease-state, ipv6-address, { parameter: ipv6_address_prefix }, no-dhcp-release]
   - id: clear_service_dhcp6_lease_state_mac
     engines: [md, classic]
     source_id: nokia.sros.26_7.ies.dhcpv6_lease_operational
-    tokens: [clear, service, id, { parameter: service_id }, dhcp6, lease-state, mac, { parameter: mac_address }]
+    tokens: [clear, service, { literal: "id", description: "Select a service by ID" }, { parameter: service_id }, dhcp6, lease-state, mac, { parameter: mac_address }]
   - id: clear_service_dhcp6_lease_state_mac_no_release
     engines: [md, classic]
     source_id: nokia.sros.26_7.ies.dhcpv6_lease_operational
-    tokens: [clear, service, id, { parameter: service_id }, dhcp6, lease-state, mac, { parameter: mac_address }, no-dhcp-release]
+    tokens: [clear, service, { literal: "id", description: "Select a service by ID" }, { parameter: service_id }, dhcp6, lease-state, mac, { parameter: mac_address }, no-dhcp-release]
   - id: clear_service_dhcp6_lease_state_sap
     engines: [md, classic]
     source_id: nokia.sros.26_7.ies.dhcpv6_lease_operational
-    tokens: [clear, service, id, { parameter: service_id }, dhcp6, lease-state, sap, { parameter: sap_id }]
+    tokens: [clear, service, { literal: "id", description: "Select a service by ID" }, { parameter: service_id }, dhcp6, lease-state, sap, { parameter: sap_id }]
   - id: clear_service_dhcp6_lease_state_sap_no_release
     engines: [md, classic]
     source_id: nokia.sros.26_7.ies.dhcpv6_lease_operational
-    tokens: [clear, service, id, { parameter: service_id }, dhcp6, lease-state, sap, { parameter: sap_id }, no-dhcp-release]
+    tokens: [clear, service, { literal: "id", description: "Select a service by ID" }, { parameter: service_id }, dhcp6, lease-state, sap, { parameter: sap_id }, no-dhcp-release]
   - id: show_router_neighbor_selector
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_operational
@@ -1785,11 +1785,11 @@ commands:
   - id: show_router_neighbor_dynamic
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_operational
-    tokens: [show, router, neighbor, dynamic]
+    tokens: [show, router, neighbor, { literal: "dynamic", description: "Select dynamically learned entries" }]
   - id: show_router_neighbor_static
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_operational
-    tokens: [show, router, neighbor, static]
+    tokens: [show, router, neighbor, { literal: "static", description: "Select static neighbor entries" }]
   - id: show_router_neighbor_managed
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_operational
@@ -1797,11 +1797,11 @@ commands:
   - id: show_router_neighbor_selector_dynamic
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_operational
-    tokens: [show, router, neighbor, { parameter: interface_name }, dynamic]
+    tokens: [show, router, neighbor, { parameter: interface_name }, { literal: "dynamic", description: "Select dynamically learned entries" }]
   - id: show_router_neighbor_selector_static
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_operational
-    tokens: [show, router, neighbor, { parameter: interface_name }, static]
+    tokens: [show, router, neighbor, { parameter: interface_name }, { literal: "static", description: "Select static neighbor entries" }]
   - id: show_router_neighbor_selector_managed
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_operational
@@ -1809,11 +1809,11 @@ commands:
   - id: show_router_neighbor_mac_dynamic
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_operational
-    tokens: [show, router, neighbor, mac, { parameter: mac_address }, dynamic]
+    tokens: [show, router, neighbor, mac, { parameter: mac_address }, { literal: "dynamic", description: "Select dynamically learned entries" }]
   - id: show_router_neighbor_mac_static
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_operational
-    tokens: [show, router, neighbor, mac, { parameter: mac_address }, static]
+    tokens: [show, router, neighbor, mac, { parameter: mac_address }, { literal: "static", description: "Select static neighbor entries" }]
   - id: show_router_neighbor_mac_managed
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_operational
@@ -1821,11 +1821,11 @@ commands:
   - id: show_router_neighbor_summary_dynamic
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_operational
-    tokens: [show, router, neighbor, summary, dynamic]
+    tokens: [show, router, neighbor, summary, { literal: "dynamic", description: "Select dynamically learned entries" }]
   - id: show_router_neighbor_summary_static
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_operational
-    tokens: [show, router, neighbor, summary, static]
+    tokens: [show, router, neighbor, summary, { literal: "static", description: "Select static neighbor entries" }]
   - id: show_router_neighbor_summary_managed
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_operational
@@ -1869,11 +1869,11 @@ commands:
   - id: classic_clear_router_icmp_all
     engines: [classic]
     source_id: nokia.sros.26_7.ipv4.icmp_statistics
-    tokens: [clear, router, icmp, all]
+    tokens: [clear, router, icmp, { literal: "all", description: "Clear all entries" }]
   - id: classic_clear_router_icmp_global
     engines: [classic]
     source_id: nokia.sros.26_7.ipv4.icmp_statistics
-    tokens: [clear, router, icmp, global]
+    tokens: [clear, router, icmp, { literal: "global", description: "Select global statistics" }]
   - id: classic_clear_router_icmp_interface
     engines: [classic]
     source_id: nokia.sros.26_7.ipv4.icmp_statistics
@@ -1881,11 +1881,11 @@ commands:
   - id: md_reset_router_icmp_all
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_statistics
-    tokens: [reset, router, '"Base"', icmp, all]
+    tokens: [reset, router, '"Base"', icmp, { literal: "all", description: "Clear all entries" }]
   - id: md_reset_router_icmp_global
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_statistics
-    tokens: [reset, router, '"Base"', icmp, global]
+    tokens: [reset, router, '"Base"', icmp, { literal: "global", description: "Select global statistics" }]
   - id: md_reset_router_icmp_interface
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_statistics
@@ -1893,7 +1893,7 @@ commands:
   - id: show_router_icmp6
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.icmp6_statistics
-    tokens: [show, router, icmp6]
+    tokens: [show, router, { literal: "icmp6", description: "Display ICMPv6 information" }]
   - id: show_router_rtr_advertisement
     engines: [md, classic]
     source_id: nokia.sros.26_7.ipv6.router_advertisement_operational
@@ -1921,11 +1921,11 @@ commands:
   - id: classic_clear_router_icmp6_all
     engines: [classic]
     source_id: nokia.sros.26_7.ipv6.icmp6_statistics
-    tokens: [clear, router, icmp6, all]
+    tokens: [clear, router, icmp6, { literal: "all", description: "Clear all entries" }]
   - id: classic_clear_router_icmp6_global
     engines: [classic]
     source_id: nokia.sros.26_7.ipv6.icmp6_statistics
-    tokens: [clear, router, icmp6, global]
+    tokens: [clear, router, icmp6, { literal: "global", description: "Select global statistics" }]
   - id: classic_clear_router_icmp6_interface
     engines: [classic]
     source_id: nokia.sros.26_7.ipv6.icmp6_statistics
@@ -1933,11 +1933,11 @@ commands:
   - id: md_reset_router_icmp6_all
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.icmp6_statistics
-    tokens: [reset, router, '"Base"', icmp6, all]
+    tokens: [reset, router, '"Base"', icmp6, { literal: "all", description: "Clear all entries" }]
   - id: md_reset_router_icmp6_global
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.icmp6_statistics
-    tokens: [reset, router, '"Base"', icmp6, global]
+    tokens: [reset, router, '"Base"', icmp6, { literal: "global", description: "Select global statistics" }]
   - id: md_reset_router_icmp6_interface
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.icmp6_statistics
@@ -2022,11 +2022,11 @@ commands:
   - id: show_mld_static
     engines: [md, classic]
     source_id: nokia.sros.26_7.mld.configuration
-    tokens: [show, router, mld, static]
+    tokens: [show, router, mld, { literal: "static", description: "Select static multicast entries" }]
   - id: show_mld_static_interface
     engines: [md, classic]
     source_id: nokia.sros.26_7.mld.configuration
-    tokens: [show, router, mld, static, { parameter: interface_name }]
+    tokens: [show, router, mld, { literal: "static", description: "Select static multicast entries" }, { parameter: interface_name }]
   - id: md_mld_enable
     engines: [md]
     source_id: nokia.sros.26_7.mld.configuration
@@ -2094,11 +2094,11 @@ commands:
   - id: md_mld_static_group
     engines: [md]
     source_id: nokia.sros.26_7.mld.configuration
-    tokens: [configure, router, '"Base"', mld, interface, { parameter: interface_name }, static, group, { parameter: ipv6 }]
+    tokens: [configure, router, '"Base"', mld, interface, { parameter: interface_name }, { literal: "static", description: "Select static multicast entries" }, group, { parameter: ipv6 }]
   - id: md_mld_static_starg
     engines: [md]
     source_id: nokia.sros.26_7.mld.configuration
-    tokens: [configure, router, '"Base"', mld, interface, { parameter: interface_name }, static, group, { parameter: ipv6 }, starg]
+    tokens: [configure, router, '"Base"', mld, interface, { parameter: interface_name }, { literal: "static", description: "Select static multicast entries" }, group, { parameter: ipv6 }, starg]
   - id: md_mld_static_source
     engines: [md]
     source_id: nokia.sros.26_7.mld.configuration
@@ -2263,22 +2263,22 @@ commands:
   - { id: md_dhcpv4_relay_disable, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, admin-state, disable] }
   - { id: md_dhcpv4_relay_description, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, description, { parameter: description }] }
   - { id: md_dhcpv4_relay_gi_address, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, gi-address, { parameter: ipv4 }] }
-  - { id: md_dhcpv4_relay_server, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, server, { parameter: ipv4 }] }
+  - { id: md_dhcpv4_relay_server, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, { literal: "server", description: "Configure a DHCP server address" }, { parameter: ipv4 }] }
   - { id: md_dhcpv4_relay_source_auto, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, src-ip-addr, auto] }
   - { id: md_dhcpv4_relay_source_gi, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, src-ip-addr, gi-address] }
   - { id: md_dhcpv4_relay_trusted, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, trusted, { parameter: boolean }] }
   - { id: md_dhcpv4_relay_plain_bootp, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, relay-plain-bootp, { parameter: boolean }] }
   - { id: md_dhcpv4_relay_release_gi, engines: [md], source_id: nokia.sros.26_7.dhcpv4.relay, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, release-include-gi-address, { parameter: boolean }] }
-  - { id: md_dhcpv4_option82_keep, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, action, keep] }
+  - { id: md_dhcpv4_option82_keep, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, { literal: "action", description: "Select the Option 82 action" }, keep] }
   - { id: md_dhcpv4_option82_replace, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, action, replace] }
   - { id: md_dhcpv4_option82_drop, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, action, drop] }
-  - { id: md_dhcpv4_circuit_none, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, circuit-id, none] }
+  - { id: md_dhcpv4_circuit_none, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, circuit-id, { literal: "none", description: "Send no circuit ID" }] }
   - { id: md_dhcpv4_circuit_ascii_tuple, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, circuit-id, ascii-tuple] }
   - { id: md_dhcpv4_circuit_if_name, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, circuit-id, if-name] }
   - { id: md_dhcpv4_circuit_ifindex, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, circuit-id, ifindex] }
   - { id: md_dhcpv4_circuit_port_id, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, circuit-id, port-id] }
   - { id: md_dhcpv4_remote_none, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, remote-id, none] }
-  - { id: md_dhcpv4_remote_mac, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, remote-id, mac] }
+  - { id: md_dhcpv4_remote_mac, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, remote-id, { literal: "mac", description: "Select by MAC address" }] }
   - { id: md_dhcpv4_remote_ascii, engines: [md], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, dhcp, option-82, remote-id, ascii-string, { parameter: dhcp_remote_id_ascii }] }
   - { id: md_dhcpv4_server_enable, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, admin-state, enable] }
   - { id: md_dhcpv4_server_disable, engines: [md], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, '"Base"', dhcp-server, dhcpv4, { parameter: dhcp_server_name }, admin-state, disable] }
@@ -2420,7 +2420,7 @@ commands:
   - id: md_ipv6_nd_reachable_time
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.neighbor_policy
-    tokens: [configure, router, '"Base"', ipv6, neighbor-discovery, reachable-time, { parameter: nd_reachable_seconds }]
+    tokens: [configure, router, '"Base"', ipv6, neighbor-discovery, { literal: "reachable-time", description: "Configure the neighbor reachable time" }, { parameter: nd_reachable_seconds }]
   - id: md_ipv6_nd_stale_time
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.neighbor_policy
@@ -2428,7 +2428,7 @@ commands:
   - id: md_interface_ipv6_nd_reachable_time
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.neighbor_policy
-    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv6, neighbor-discovery, reachable-time, { parameter: nd_reachable_seconds }]
+    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv6, neighbor-discovery, { literal: "reachable-time", description: "Configure the neighbor reachable time" }, { parameter: nd_reachable_seconds }]
   - id: md_interface_ipv6_nd_stale_time
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.neighbor_policy
@@ -2468,19 +2468,19 @@ commands:
   - id: md_icmp_redirect_admin_enable
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, redirects, admin-state, enable]
+    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, { literal: "redirects", description: "Configure IPv4 ICMP Redirect message generation" }, admin-state, enable]
   - id: md_icmp_redirect_admin_disable
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, redirects, admin-state, disable]
+    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, { literal: "redirects", description: "Configure IPv4 ICMP Redirect message generation" }, admin-state, disable]
   - id: md_icmp_redirect_number
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, redirects, number, { parameter: redirect_number }]
+    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, { literal: "redirects", description: "Configure IPv4 ICMP Redirect message generation" }, number, { parameter: redirect_number }]
   - id: md_icmp_redirect_seconds
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, redirects, seconds, { parameter: redirect_seconds }]
+    tokens: [configure, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, { literal: "redirects", description: "Configure IPv4 ICMP Redirect message generation" }, seconds, { parameter: redirect_seconds }]
   - id: md_static_route_ipv6
     engines: [md]
     source_id: nokia.sros.26_7.static_route.configuration
@@ -2526,7 +2526,7 @@ commands:
   - id: md_ra_mtu
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
-    tokens: [configure, router, '"Base"', ipv6, router-advertisement, interface, { parameter: interface_name }, mtu, { parameter: mtu }]
+    tokens: [configure, router, '"Base"', ipv6, router-advertisement, interface, { parameter: interface_name }, { literal: "mtu", description: "Configure the advertised RA MTU" }, { parameter: mtu }]
   - id: md_ra_preference
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
@@ -2555,10 +2555,18 @@ commands:
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
     tokens: [configure, router, '"Base"', ipv6, router-advertisement, interface, { parameter: interface_name }, prefix, { parameter: ipv6_prefix }, preferred-lifetime, { parameter: seconds }]
+  - id: md_ra_prefix_preferred_lifetime_infinite
+    engines: [md]
+    source_id: nokia.sros.26_7.ipv6.router_advertisement
+    tokens: [configure, router, '"Base"', ipv6, router-advertisement, interface, { parameter: interface_name }, prefix, { parameter: ipv6_prefix }, preferred-lifetime, { literal: "infinite", description: "Never expire the preferred lifetime" }]
   - id: md_ra_prefix_valid_lifetime
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
     tokens: [configure, router, '"Base"', ipv6, router-advertisement, interface, { parameter: interface_name }, prefix, { parameter: ipv6_prefix }, valid-lifetime, { parameter: seconds }]
+  - id: md_ra_prefix_valid_lifetime_infinite
+    engines: [md]
+    source_id: nokia.sros.26_7.ipv6.router_advertisement
+    tokens: [configure, router, '"Base"', ipv6, router-advertisement, interface, { parameter: interface_name }, prefix, { parameter: ipv6_prefix }, valid-lifetime, { literal: "infinite", description: "Never expire the valid lifetime" }]
   - id: md_ra_rdnss_server
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
@@ -2567,6 +2575,10 @@ commands:
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
     tokens: [configure, router, '"Base"', ipv6, router-advertisement, interface, { parameter: interface_name }, dns-options, rdnss-lifetime, { parameter: seconds }]
+  - id: md_ra_rdnss_lifetime_infinite
+    engines: [md]
+    source_id: nokia.sros.26_7.ipv6.router_advertisement
+    tokens: [configure, router, '"Base"', ipv6, router-advertisement, interface, { parameter: interface_name }, dns-options, rdnss-lifetime, { literal: "infinite", description: "Never expire the RDNSS lifetime" }]
   - id: md_ra_include_dns
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
@@ -2579,6 +2591,10 @@ commands:
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
     tokens: [configure, router, '"Base"', ipv6, router-advertisement, dns-options, rdnss-lifetime, { parameter: seconds }]
+  - id: md_ra_global_rdnss_lifetime_infinite
+    engines: [md]
+    source_id: nokia.sros.26_7.ipv6.router_advertisement
+    tokens: [configure, router, '"Base"', ipv6, router-advertisement, dns-options, rdnss-lifetime, { literal: "infinite", description: "Never expire the RDNSS lifetime" }]
   - id: md_static_route
     engines: [md]
     source_id: nokia.sros.26_7.static_route.configuration
@@ -2672,7 +2688,7 @@ commands:
   - id: md_delete_ipv6_nd_reachable_time
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.neighbor_policy
-    tokens: [delete, router, '"Base"', ipv6, neighbor-discovery, reachable-time]
+    tokens: [delete, router, '"Base"', ipv6, neighbor-discovery, { literal: "reachable-time", description: "Configure the neighbor reachable time" }]
   - id: md_delete_ipv6_nd_stale_time
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.neighbor_policy
@@ -2680,7 +2696,7 @@ commands:
   - id: md_delete_interface_ipv6_nd_reachable_time
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.neighbor_policy
-    tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv6, neighbor-discovery, reachable-time]
+    tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv6, neighbor-discovery, { literal: "reachable-time", description: "Configure the neighbor reachable time" }]
   - id: md_delete_interface_ipv6_nd_stale_time
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.neighbor_policy
@@ -2720,15 +2736,15 @@ commands:
   - id: md_delete_icmp_redirect_admin
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, redirects, admin-state]
+    tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, { literal: "redirects", description: "Configure IPv4 ICMP Redirect message generation" }, admin-state]
   - id: md_delete_icmp_redirect_number
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, redirects, number]
+    tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, { literal: "redirects", description: "Configure IPv4 ICMP Redirect message generation" }, number]
   - id: md_delete_icmp_redirect_seconds
     engines: [md]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, redirects, seconds]
+    tokens: [delete, router, '"Base"', interface, { parameter: interface_name }, ipv4, icmp, { literal: "redirects", description: "Configure IPv4 ICMP Redirect message generation" }, seconds]
   - id: md_delete_static_route_ipv6
     engines: [md]
     source_id: nokia.sros.26_7.static_route.configuration
@@ -2772,7 +2788,7 @@ commands:
   - id: md_delete_ra_mtu
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
-    tokens: [delete, router, '"Base"', ipv6, router-advertisement, interface, { parameter: interface_name }, mtu]
+    tokens: [delete, router, '"Base"', ipv6, router-advertisement, interface, { parameter: interface_name }, { literal: "mtu", description: "Configure the advertised RA MTU" }]
   - id: md_delete_ra_preference
     engines: [md]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
@@ -2880,7 +2896,7 @@ commands:
   - id: classic_port_mtu
     engines: [classic]
     source_id: nokia.sros.26_7.port.configuration
-    tokens: [configure, port, { parameter: port_id }, ethernet, mtu, { parameter: mtu }]
+    tokens: [configure, port, { parameter: port_id }, ethernet, { literal: "mtu", description: "Configure the advertised RA MTU" }, { parameter: mtu }]
   - id: classic_interface_shutdown
     engines: [classic]
     source_id: nokia.sros.26_7.router_interface.configuration
@@ -2926,7 +2942,7 @@ commands:
   - { id: classic_dhcpv4_circuit_ifindex, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, circuit-id, ifindex] }
   - { id: classic_dhcpv4_circuit_port_id, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, circuit-id, port-id] }
   - { id: classic_dhcpv4_circuit_no, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, no, circuit-id] }
-  - { id: classic_dhcpv4_remote_mac, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, remote-id, mac] }
+  - { id: classic_dhcpv4_remote_mac, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, remote-id, { literal: "mac", description: "Select by MAC address" }] }
   - { id: classic_dhcpv4_remote_ascii, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, remote-id, string, { parameter: dhcp_remote_id_ascii }] }
   - { id: classic_dhcpv4_remote_no, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.option82, tokens: [configure, router, interface, { parameter: interface_name }, dhcp, option, no, remote-id] }
   - { id: classic_dhcpv4_server_shutdown, engines: [classic], source_id: nokia.sros.26_7.dhcpv4.local_server, tokens: [configure, router, dhcp, local-dhcp-server, { parameter: dhcp_server_name }, shutdown] }
@@ -3258,7 +3274,7 @@ commands:
   - id: classic_ipv6_nd_reachable_time
     engines: [classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_policy
-    tokens: [configure, router, ipv6, reachable-time, { parameter: nd_reachable_seconds }]
+    tokens: [configure, router, ipv6, { literal: "reachable-time", description: "Configure the neighbor reachable time" }, { parameter: nd_reachable_seconds }]
   - id: classic_ipv6_nd_stale_time
     engines: [classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_policy
@@ -3266,7 +3282,7 @@ commands:
   - id: classic_interface_ipv6_nd_reachable_time
     engines: [classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_policy
-    tokens: [configure, router, interface, { parameter: interface_name }, ipv6, reachable-time, { parameter: nd_reachable_seconds }]
+    tokens: [configure, router, interface, { parameter: interface_name }, ipv6, { literal: "reachable-time", description: "Configure the neighbor reachable time" }, { parameter: nd_reachable_seconds }]
   - id: classic_interface_ipv6_nd_stale_time
     engines: [classic]
     source_id: nokia.sros.26_7.ipv6.neighbor_policy
@@ -3306,15 +3322,15 @@ commands:
   - id: classic_icmp_redirects_default
     engines: [classic]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [configure, router, interface, { parameter: interface_name }, icmp, redirects]
+    tokens: [configure, router, interface, { parameter: interface_name }, icmp, { literal: "redirects", description: "Configure IPv4 ICMP Redirect message generation" }]
   - id: classic_icmp_redirects_rate
     engines: [classic]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [configure, router, interface, { parameter: interface_name }, icmp, redirects, { parameter: redirect_number }, { parameter: redirect_seconds }]
+    tokens: [configure, router, interface, { parameter: interface_name }, icmp, { literal: "redirects", description: "Configure IPv4 ICMP Redirect message generation" }, { parameter: redirect_number }, { parameter: redirect_seconds }]
   - id: classic_icmp_no_redirects
     engines: [classic]
     source_id: nokia.sros.26_7.ipv4.icmp_redirects
-    tokens: [configure, router, interface, { parameter: interface_name }, icmp, no, redirects]
+    tokens: [configure, router, interface, { parameter: interface_name }, icmp, no, { literal: "redirects", description: "Configure IPv4 ICMP Redirect message generation" }]
   - id: classic_remove_interface_ipv6_address
     engines: [classic]
     source_id: nokia.sros.26_7.ipv6.interface_address
@@ -3482,11 +3498,11 @@ commands:
   - id: classic_ra_mtu
     engines: [classic]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
-    tokens: [configure, router, router-advertisement, interface, { parameter: interface_name }, mtu, { parameter: mtu }]
+    tokens: [configure, router, router-advertisement, interface, { parameter: interface_name }, { literal: "mtu", description: "Configure the advertised RA MTU" }, { parameter: mtu }]
   - id: classic_ra_no_mtu
     engines: [classic]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
-    tokens: [configure, router, router-advertisement, interface, { parameter: interface_name }, no, mtu]
+    tokens: [configure, router, router-advertisement, interface, { parameter: interface_name }, no, { literal: "mtu", description: "Configure the advertised RA MTU" }]
   - id: classic_ra_preference
     engines: [classic]
     source_id: nokia.sros.26_7.ipv6.router_advertisement
@@ -3850,18 +3866,18 @@ commands:
   - { id: md_policy_protocol_mld, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, name, mld] }
   - { id: md_policy_route_prefix_list, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, prefix-list, { parameter: prefix_list_name }] }
   - { id: md_policy_protocol_direct, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, name, direct] }
-  - { id: md_policy_protocol_static, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, name, static] }
+  - { id: md_policy_protocol_static, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, name, { literal: "static", description: "Select the static route source" }] }
   - { id: md_policy_protocol_ospf, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, name, ospf] }
   - { id: md_policy_protocol_ospf3, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, name, ospf3] }
-  - { id: md_policy_route_tag, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, tag, { parameter: policy_route_tag }] }
+  - { id: md_policy_route_tag, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, { literal: "tag", description: "Configure an OSPF route tag" }, { parameter: policy_route_tag }] }
   - { id: md_policy_action_metric, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, metric, set, { parameter: policy_action_metric }] }
   - { id: md_policy_action_type, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, type, { parameter: ospf_metric_type }] }
-  - { id: md_policy_action_tag, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, tag, { parameter: policy_route_tag }] }
+  - { id: md_policy_action_tag, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, { literal: "tag", description: "Configure the route tag set by the action" }, { parameter: policy_route_tag }] }
   - { id: md_delete_policy_route_prefix_list, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, prefix-list] }
-  - { id: md_delete_policy_route_tag, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, tag] }
+  - { id: md_delete_policy_route_tag, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, { literal: "tag", description: "Configure an OSPF route tag" }] }
   - { id: md_delete_policy_action_metric, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, metric] }
   - { id: md_delete_policy_action_type, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, type] }
-  - { id: md_delete_policy_action_tag, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, tag] }
+  - { id: md_delete_policy_action_tag, engines: [md], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, { literal: "tag", description: "Configure the route tag set by the action" }] }
   - { id: md_delete_policy_protocol, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol] }
   - { id: md_policy_entry_action, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, action-type, { parameter: md_policy_action }] }
   - { id: md_delete_policy_entry_action, engines: [md], source_id: nokia.sros.26_7.mld.import_policy, tokens: [delete, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action] }
@@ -3886,18 +3902,18 @@ commands:
   - { id: classic_policy_protocol_mld, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, mld] }
   - { id: classic_policy_route_prefix_list, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, prefix-list, { parameter: prefix_list_name }] }
   - { id: classic_policy_protocol_direct, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, direct] }
-  - { id: classic_policy_protocol_static, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, static] }
+  - { id: classic_policy_protocol_static, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, { literal: "static", description: "Select the static route source" }] }
   - { id: classic_policy_protocol_ospf, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, ospf] }
   - { id: classic_policy_protocol_ospf3, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, protocol, ospf3] }
-  - { id: classic_policy_route_tag, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, tag, { parameter: policy_route_tag }] }
+  - { id: classic_policy_route_tag, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, { literal: "tag", description: "Configure an OSPF route tag" }, { parameter: policy_route_tag }] }
   - { id: classic_policy_action_metric, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, metric, set, { parameter: policy_action_metric }] }
   - { id: classic_policy_action_type, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, type, { parameter: ospf_metric_type }] }
-  - { id: classic_policy_action_tag, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, tag, { parameter: policy_route_tag }] }
+  - { id: classic_policy_action_tag, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, { literal: "tag", description: "Configure the route tag set by the action" }, { parameter: policy_route_tag }] }
   - { id: classic_policy_no_route_prefix_list, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, no, prefix-list] }
-  - { id: classic_policy_no_route_tag, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, no, tag] }
+  - { id: classic_policy_no_route_tag, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, no, { literal: "tag", description: "Configure an OSPF route tag" }] }
   - { id: classic_policy_no_action_metric, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, no, metric] }
   - { id: classic_policy_no_action_type, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, no, type] }
-  - { id: classic_policy_no_action_tag, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, no, tag] }
+  - { id: classic_policy_no_action_tag, engines: [classic], source_id: nokia.sros.26_7.ospf.redistribution, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, no, { literal: "tag", description: "Configure the route tag set by the action" }] }
   - { id: classic_policy_no_protocol, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, from, no, protocol] }
   - { id: classic_policy_entry_action, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, action, { parameter: policy_action }] }
   - { id: classic_policy_no_entry_action, engines: [classic], source_id: nokia.sros.26_7.mld.import_policy, tokens: [configure, router, policy-options, policy-statement, { parameter: policy_name }, entry, { parameter: policy_entry_number }, no, action] }
@@ -3912,8 +3928,8 @@ commands:
   # active profile. Other documented SR OS keywords stay absent until their
   # wire algorithm is real, tested and enabled in the release catalog.
   - { id: show_ipsec_static_sas, engines: [md, classic], source_id: nokia.sros.26_7.ipsec.operational, tokens: [show, ipsec, static-sa] }
-  - { id: show_ipsec_static_sa_name, engines: [md, classic], source_id: nokia.sros.26_7.ipsec.operational, tokens: [show, ipsec, static-sa, name, { parameter: static_sa_name }] }
-  - { id: show_ipsec_static_sa_spi, engines: [md, classic], source_id: nokia.sros.26_7.ipsec.operational, tokens: [show, ipsec, static-sa, spi, { parameter: static_sa_spi }] }
+  - { id: show_ipsec_static_sa_name, engines: [md, classic], source_id: nokia.sros.26_7.ipsec.operational, tokens: [show, ipsec, static-sa, { literal: "name", description: "Select a static SA by name" }, { parameter: static_sa_name }] }
+  - { id: show_ipsec_static_sa_spi, engines: [md, classic], source_id: nokia.sros.26_7.ipsec.operational, tokens: [show, ipsec, static-sa, { literal: "spi", description: "Select a static SA by SPI" }, { parameter: static_sa_spi }] }
   - { id: show_ipsec_ike_transforms, engines: [md, classic], source_id: nokia.sros.26_7.ipsec.operational, tokens: [show, ipsec, ike-transform] }
   - { id: show_ipsec_ike_transform, engines: [md, classic], source_id: nokia.sros.26_7.ipsec.operational, tokens: [show, ipsec, ike-transform, { parameter: ike_transform_id }] }
   - { id: show_ipsec_transforms, engines: [md, classic], source_id: nokia.sros.26_7.ipsec.operational, tokens: [show, ipsec, { literal: "transform", description: "Display IPsec transform configuration" }] }
@@ -3972,7 +3988,7 @@ commands:
   - { id: md_ipsec_transform_pfs15, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transform, { parameter: ipsec_transform_id }, pfs-dh-group, { literal: "group-15", description: "Use Diffie-Hellman group 15" }] }
   - { id: md_ipsec_transform_pfs20, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transform, { parameter: ipsec_transform_id }, pfs-dh-group, { literal: "group-20", description: "Use Diffie-Hellman group 20" }] }
   - { id: md_ipsec_transform_pfs21, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transform, { parameter: ipsec_transform_id }, pfs-dh-group, { literal: "group-21", description: "Use Diffie-Hellman group 21" }] }
-  - { id: md_ipsec_transform_pfs_none, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transform, { parameter: ipsec_transform_id }, pfs-dh-group, none] }
+  - { id: md_ipsec_transform_pfs_none, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transform, { parameter: ipsec_transform_id }, pfs-dh-group, { literal: "none", description: "Disable perfect forward secrecy" }] }
   - { id: md_delete_ipsec_transform, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transform, { parameter: ipsec_transform_id }] }
   - { id: md_delete_ipsec_transform_auth, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transform, { parameter: ipsec_transform_id }, esp-auth-algorithm] }
   - { id: md_delete_ipsec_transform_encryption, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transform, { parameter: ipsec_transform_id }, esp-encryption-algorithm] }
@@ -3985,7 +4001,7 @@ commands:
   - { id: md_ike_policy_description, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ike-policy, { parameter: ike_policy_id }, description, { parameter: description }] }
   - { id: md_ike_policy_auth_psk, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ike-policy, { parameter: ike_policy_id }, ike-version-2, auth-method, psk] }
   - { id: md_ike_policy_own_symmetric, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ike-policy, { parameter: ike_policy_id }, ike-version-2, own-auth-method, symmetric] }
-  - { id: md_ike_policy_fragment_mtu, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ike-policy, { parameter: ike_policy_id }, ike-version-2, ikev2-fragment, mtu, { parameter: ike_fragment_mtu }] }
+  - { id: md_ike_policy_fragment_mtu, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ike-policy, { parameter: ike_policy_id }, ike-version-2, ikev2-fragment, { literal: "mtu", description: "Configure the IKE fragmentation MTU" }, { parameter: ike_fragment_mtu }] }
   - { id: md_ike_policy_fragment_timeout, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ike-policy, { parameter: ike_policy_id }, ike-version-2, ikev2-fragment, reassembly-timeout, { parameter: ike_reassembly_timeout }] }
   - { id: md_ike_policy_dpd_interval, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ike-policy, { parameter: ike_policy_id }, dpd, interval, { parameter: dpd_interval }] }
   - { id: md_ike_policy_dpd_retries, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ike-policy, { parameter: ike_policy_id }, dpd, max-retries, { parameter: dpd_retries }] }
@@ -4112,7 +4128,7 @@ commands:
   - { id: md_delete_ts_remote_entry, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ts-list, { parameter: ts_list_name }, remote, entry, { parameter: ts_entry_id }] }
   - { id: md_delete_ts_list, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ts-list, { parameter: ts_list_name }] }
 
-  - { id: md_ipsec_cert_admin_enable, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, cert-profile, { parameter: ipsec_cert_profile_name }, admin-state, enable] }
+  - { id: md_ipsec_cert_admin_enable, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, { literal: "cert-profile", description: "Configure or reference an IPsec certificate profile" }, { parameter: ipsec_cert_profile_name }, admin-state, enable] }
   - { id: md_ipsec_cert_admin_disable, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, cert-profile, { parameter: ipsec_cert_profile_name }, admin-state, disable] }
   - { id: md_delete_ipsec_cert_admin, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, cert-profile, { parameter: ipsec_cert_profile_name }, admin-state] }
   - { id: md_ipsec_cert_entry_cert, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, cert-profile, { parameter: ipsec_cert_profile_name }, entry, { parameter: ipsec_certificate_entry_id }, cert, { parameter: pki_file_name }] }
@@ -4128,8 +4144,8 @@ commands:
   - { id: md_delete_ipsec_cert_entry_send_chain, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, cert-profile, { parameter: ipsec_cert_profile_name }, entry, { parameter: ipsec_certificate_entry_id }, send-chain, ca-profile, { parameter: ca_profile_name }] }
   - { id: md_delete_ipsec_cert_entry, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, cert-profile, { parameter: ipsec_cert_profile_name }, entry, { parameter: ipsec_certificate_entry_id }] }
   - { id: md_delete_ipsec_cert_profile, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, cert-profile, { parameter: ipsec_cert_profile_name }] }
-  - { id: md_ipsec_trust_anchor, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, trust-anchor-profile, { parameter: ipsec_trust_anchor_profile_name }, trust-anchor, { parameter: ca_profile_name }] }
-  - { id: md_delete_ipsec_trust_anchor, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, trust-anchor-profile, { parameter: ipsec_trust_anchor_profile_name }, trust-anchor, { parameter: ca_profile_name }] }
+  - { id: md_ipsec_trust_anchor, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, { literal: "trust-anchor-profile", description: "Configure or assign an IPsec trust anchor profile" }, { parameter: ipsec_trust_anchor_profile_name }, trust-anchor, { parameter: ca_profile_name }] }
+  - { id: md_delete_ipsec_trust_anchor, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, { literal: "trust-anchor-profile", description: "Configure or assign an IPsec trust anchor profile" }, { parameter: ipsec_trust_anchor_profile_name }, trust-anchor, { parameter: ca_profile_name }] }
   - { id: md_delete_ipsec_trust_anchor_profile, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, trust-anchor-profile, { parameter: ipsec_trust_anchor_profile_name }] }
 
   # PPK leaf values are accepted only through the secret-sink boundary. The
@@ -4143,36 +4159,36 @@ commands:
 
   - { id: md_transport_description, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, description, { parameter: description }] }
   - { id: md_transport_auto_establish, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, auto-establish, { parameter: boolean }] }
-  - { id: md_transport_cert_profile, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, cert-profile, { parameter: ipsec_cert_profile_name }] }
+  - { id: md_transport_cert_profile, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, { literal: "cert", description: "Configure certificate authentication" }, { literal: "cert-profile", description: "Configure or reference an IPsec certificate profile" }, { parameter: ipsec_cert_profile_name }] }
   - { id: md_transport_cert_default_revoked, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, default-result, revoked] }
   - { id: md_transport_cert_default_good, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, default-result, good] }
-  - { id: md_transport_cert_primary_crl, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, primary, crl] }
-  - { id: md_transport_cert_primary_ocsp, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, primary, ocsp] }
-  - { id: md_transport_cert_secondary_none, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, secondary, none] }
-  - { id: md_transport_cert_secondary_crl, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, secondary, crl] }
-  - { id: md_transport_cert_secondary_ocsp, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, secondary, ocsp] }
+  - { id: md_transport_cert_primary_crl, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, { literal: "primary", description: "Select the primary certificate verification method" }, crl] }
+  - { id: md_transport_cert_primary_ocsp, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, { literal: "primary", description: "Select the primary certificate verification method" }, ocsp] }
+  - { id: md_transport_cert_secondary_none, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, { literal: "secondary", description: "Select the secondary certificate verification method" }, none] }
+  - { id: md_transport_cert_secondary_crl, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, { literal: "secondary", description: "Select the secondary certificate verification method" }, crl] }
+  - { id: md_transport_cert_secondary_ocsp, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, { literal: "secondary", description: "Select the secondary certificate verification method" }, ocsp] }
   - { id: md_transport_trust_anchor_profile, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, trust-anchor-profile, { parameter: ipsec_trust_anchor_profile_name }] }
   - { id: md_transport_id_fqdn, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, id, fqdn, { parameter: ike_identity_fqdn }] }
   - { id: md_transport_id_ipv4, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, id, ipv4, { parameter: ipv4 }] }
   - { id: md_transport_id_ipv6, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, id, ipv6, { parameter: ip_address }] }
   - { id: md_transport_ike_policy, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, ike-policy, { parameter: ike_policy_id }] }
-  - { id: md_transport_ipsec_transform, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, ipsec-transform, { parameter: ipsec_transform_id }] }
+  - { id: md_transport_ipsec_transform, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, { literal: "ipsec-transform", description: "Reference an IPsec transform" }, { parameter: ipsec_transform_id }] }
   - { id: md_transport_ppk_list, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, ppk, list, { parameter: ppk_list_name }] }
-  - { id: md_transport_ppk_id, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, ppk, id, { parameter: ppk_id }] }
+  - { id: md_transport_ppk_id, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, ppk, { literal: "id", description: "Select a PPK entry by ID" }, { parameter: ppk_id }] }
   - { id: md_transport_pre_shared_key, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, pre-shared-key, { parameter: ipsec_pre_shared_key }] }
   - { id: md_transport_history_esp, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, max-history-key-records, esp, { parameter: history_esp_records }] }
   - { id: md_transport_history_ike, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, max-history-key-records, ike, { parameter: history_ike_records }] }
   - { id: md_transport_replay_window, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, replay-window, { parameter: replay_window }] }
   - { id: md_delete_transport_description, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, description] }
   - { id: md_delete_transport_auto_establish, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, auto-establish] }
-  - { id: md_delete_transport_cert_profile, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, cert-profile] }
+  - { id: md_delete_transport_cert_profile, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, { literal: "cert", description: "Configure certificate authentication" }, { literal: "cert-profile", description: "Configure or reference an IPsec certificate profile" }] }
   - { id: md_delete_transport_cert_default, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, default-result] }
-  - { id: md_delete_transport_cert_primary, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, primary] }
-  - { id: md_delete_transport_cert_secondary, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, secondary] }
+  - { id: md_delete_transport_cert_primary, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, { literal: "primary", description: "Select the primary certificate verification method" }] }
+  - { id: md_delete_transport_cert_secondary, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, status-verify, { literal: "secondary", description: "Select the secondary certificate verification method" }] }
   - { id: md_delete_transport_trust_anchor, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, cert, trust-anchor-profile] }
   - { id: md_delete_transport_identity, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, id] }
   - { id: md_delete_transport_ike_policy, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, ike-policy] }
-  - { id: md_delete_transport_ipsec_transform, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, ipsec-transform, { parameter: ipsec_transform_id }] }
+  - { id: md_delete_transport_ipsec_transform, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, { literal: "ipsec-transform", description: "Reference an IPsec transform" }, { parameter: ipsec_transform_id }] }
   - { id: md_delete_transport_ppk_list, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, ppk, list] }
   - { id: md_delete_transport_ppk_id, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, ppk, id] }
   - { id: md_delete_transport_pre_shared_key, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, key-exchange, dynamic, pre-shared-key] }
@@ -4182,7 +4198,7 @@ commands:
   - { id: md_delete_transport_profile, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }] }
 
   - { id: md_tunnel_description, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, tunnel-template, { parameter: tunnel_template_id }, description, { parameter: description }] }
-  - { id: md_tunnel_transform, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, tunnel-template, { parameter: tunnel_template_id }, ipsec-transform, { parameter: ipsec_transform_id }] }
+  - { id: md_tunnel_transform, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, tunnel-template, { parameter: tunnel_template_id }, { literal: "ipsec-transform", description: "Reference an IPsec transform" }, { parameter: ipsec_transform_id }] }
   - { id: md_tunnel_replay_window, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, tunnel-template, { parameter: tunnel_template_id }, replay-window, { parameter: replay_window }] }
   - { id: md_tunnel_encapsulated_mtu, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, tunnel-template, { parameter: tunnel_template_id }, encapsulated-ip-mtu, { parameter: mtu }] }
   - { id: md_tunnel_ip_mtu, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, tunnel-template, { parameter: tunnel_template_id }, ip-mtu, { parameter: mtu }] }
@@ -4209,7 +4225,7 @@ commands:
   - { id: md_tunnel_propagate_pmtu_v4, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, tunnel-template, { parameter: tunnel_template_id }, propagate-pmtu-v4, { parameter: boolean }] }
   - { id: md_tunnel_propagate_pmtu_v6, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, tunnel-template, { parameter: tunnel_template_id }, propagate-pmtu-v6, { parameter: boolean }] }
   - { id: md_delete_tunnel_description, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, tunnel-template, { parameter: tunnel_template_id }, description] }
-  - { id: md_delete_tunnel_transform, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, tunnel-template, { parameter: tunnel_template_id }, ipsec-transform, { parameter: ipsec_transform_id }] }
+  - { id: md_delete_tunnel_transform, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, tunnel-template, { parameter: tunnel_template_id }, { literal: "ipsec-transform", description: "Reference an IPsec transform" }, { parameter: ipsec_transform_id }] }
   - { id: md_delete_tunnel_replay_window, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, tunnel-template, { parameter: tunnel_template_id }, replay-window] }
   - { id: md_delete_tunnel_encapsulated_mtu, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, tunnel-template, { parameter: tunnel_template_id }, encapsulated-ip-mtu] }
   - { id: md_delete_tunnel_ip_mtu, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, tunnel-template, { parameter: tunnel_template_id }, ip-mtu] }
@@ -4244,7 +4260,7 @@ commands:
   - { id: md_static_sa_spi, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, static-sa, { parameter: static_sa_name }, spi, { parameter: static_sa_spi }] }
   - { id: md_static_sa_auth_md5, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, static-sa, { parameter: static_sa_name }, authentication, algorithm, md5] }
   - { id: md_static_sa_auth_sha1, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, static-sa, { parameter: static_sa_name }, authentication, algorithm, sha1] }
-  - { id: md_static_sa_key, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, static-sa, { parameter: static_sa_name }, authentication, key, { parameter: static_sa_key }] }
+  - { id: md_static_sa_key, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, static-sa, { parameter: static_sa_name }, authentication, { literal: "key", description: "Supply the manual SA authentication key" }, { parameter: static_sa_key }] }
   - { id: md_static_sa_key_hash, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, static-sa, { parameter: static_sa_name }, authentication, key, { parameter: static_sa_key }, hash] }
   - { id: md_static_sa_key_hash2, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, static-sa, { parameter: static_sa_name }, authentication, key, { parameter: static_sa_key }, hash2] }
   - { id: md_static_sa_key_hash3, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, static-sa, { parameter: static_sa_name }, authentication, key, { parameter: static_sa_key }, hash3] }
@@ -4314,7 +4330,7 @@ commands:
   # Classic IKE policy containers are compound commands. The variants are
   # explicit grammar rows because omitting an option applies the documented
   # default and must not preserve an earlier child value accidentally.
-  - { id: classic_ike_policy_fragment, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ike-policy, { parameter: ike_policy_id }, ikev2-fragment, mtu, { parameter: ike_fragment_mtu }, reassembly-timeout, { parameter: ike_reassembly_timeout }] }
+  - { id: classic_ike_policy_fragment, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ike-policy, { parameter: ike_policy_id }, ikev2-fragment, { literal: "mtu", description: "Configure the IKE fragmentation MTU" }, { parameter: ike_fragment_mtu }, reassembly-timeout, { parameter: ike_reassembly_timeout }] }
   - { id: classic_ike_policy_no_fragment, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ike-policy, { parameter: ike_policy_id }, no, ikev2-fragment] }
   - { id: classic_ike_policy_dpd, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ike-policy, { parameter: ike_policy_id }, dpd] }
   - { id: classic_ike_policy_dpd_interval, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ike-policy, { parameter: ike_policy_id }, dpd, interval, { parameter: dpd_interval }] }
@@ -4378,8 +4394,8 @@ commands:
   - { id: classic_ipsec_cert_entry_no_send_ca, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, cert-profile, { parameter: ipsec_cert_profile_name }, entry, { parameter: ipsec_certificate_entry_id }, send-chain, no, ca-profile, { parameter: ca_profile_name }] }
   - { id: classic_ipsec_trust_profile_create, engines: [classic], enters_context: true, source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, trust-anchor-profile, { parameter: ipsec_trust_anchor_profile_name }, create] }
   - { id: classic_ipsec_trust_profile_remove, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, no, trust-anchor-profile, { parameter: ipsec_trust_anchor_profile_name }] }
-  - { id: classic_ipsec_trust_anchor, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, trust-anchor-profile, { parameter: ipsec_trust_anchor_profile_name }, trust-anchor, { parameter: ca_profile_name }] }
-  - { id: classic_ipsec_no_trust_anchor, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, trust-anchor-profile, { parameter: ipsec_trust_anchor_profile_name }, no, trust-anchor, { parameter: ca_profile_name }] }
+  - { id: classic_ipsec_trust_anchor, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, { literal: "trust-anchor-profile", description: "Configure or assign an IPsec trust anchor profile" }, { parameter: ipsec_trust_anchor_profile_name }, trust-anchor, { parameter: ca_profile_name }] }
+  - { id: classic_ipsec_no_trust_anchor, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, { literal: "trust-anchor-profile", description: "Configure or assign an IPsec trust anchor profile" }, { parameter: ipsec_trust_anchor_profile_name }, no, trust-anchor, { parameter: ca_profile_name }] }
   - { id: classic_ipsec_ppk_list_create, engines: [classic], enters_context: true, source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ppk-list, { parameter: ppk_list_name }, create] }
   - { id: classic_ipsec_ppk_list_remove, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, no, ppk-list, { parameter: ppk_list_name }] }
   - { id: classic_ipsec_ppk_ascii, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ppk-list, { parameter: ppk_list_name }, ppk-id, { parameter: ppk_id }, value, { parameter: ppk_ascii_value }, format, ascii] }
@@ -4392,17 +4408,17 @@ commands:
   - { id: classic_transport_no_description, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, no, description] }
   - { id: classic_transport_auto_establish, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, auto-establish] }
   - { id: classic_transport_no_auto_establish, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, no, auto-establish] }
-  - { id: classic_transport_cert_profile, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, cert-profile, { parameter: ipsec_cert_profile_name }] }
-  - { id: classic_transport_no_cert_profile, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, no, cert-profile] }
+  - { id: classic_transport_cert_profile, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, { literal: "cert", description: "Configure certificate authentication" }, { literal: "cert-profile", description: "Configure or reference an IPsec certificate profile" }, { parameter: ipsec_cert_profile_name }] }
+  - { id: classic_transport_no_cert_profile, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, { literal: "cert", description: "Configure certificate authentication" }, no, { literal: "cert-profile", description: "Configure or reference an IPsec certificate profile" }] }
   - { id: classic_transport_cert_default_revoked, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, status-verify, default-result, revoked] }
   - { id: classic_transport_cert_default_good, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, status-verify, default-result, good] }
   - { id: classic_transport_cert_no_default, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, status-verify, no, default-result] }
-  - { id: classic_transport_cert_crl_none, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, status-verify, primary, crl, secondary, none] }
-  - { id: classic_transport_cert_crl_crl, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, status-verify, primary, crl, secondary, crl] }
-  - { id: classic_transport_cert_crl_ocsp, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, status-verify, primary, crl, secondary, ocsp] }
-  - { id: classic_transport_cert_ocsp_none, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, status-verify, primary, ocsp, secondary, none] }
-  - { id: classic_transport_cert_ocsp_crl, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, status-verify, primary, ocsp, secondary, crl] }
-  - { id: classic_transport_cert_ocsp_ocsp, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, status-verify, primary, ocsp, secondary, ocsp] }
+  - { id: classic_transport_cert_crl_none, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, status-verify, { literal: "primary", description: "Select the primary certificate verification method" }, crl, { literal: "secondary", description: "Select the secondary certificate verification method" }, none] }
+  - { id: classic_transport_cert_crl_crl, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, status-verify, { literal: "primary", description: "Select the primary certificate verification method" }, crl, { literal: "secondary", description: "Select the secondary certificate verification method" }, crl] }
+  - { id: classic_transport_cert_crl_ocsp, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, status-verify, { literal: "primary", description: "Select the primary certificate verification method" }, crl, { literal: "secondary", description: "Select the secondary certificate verification method" }, ocsp] }
+  - { id: classic_transport_cert_ocsp_none, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, status-verify, { literal: "primary", description: "Select the primary certificate verification method" }, ocsp, { literal: "secondary", description: "Select the secondary certificate verification method" }, none] }
+  - { id: classic_transport_cert_ocsp_crl, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, status-verify, { literal: "primary", description: "Select the primary certificate verification method" }, ocsp, { literal: "secondary", description: "Select the secondary certificate verification method" }, crl] }
+  - { id: classic_transport_cert_ocsp_ocsp, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, status-verify, { literal: "primary", description: "Select the primary certificate verification method" }, ocsp, { literal: "secondary", description: "Select the secondary certificate verification method" }, ocsp] }
   - { id: classic_transport_trust_anchor_profile, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, trust-anchor-profile, { parameter: ipsec_trust_anchor_profile_name }] }
   - { id: classic_transport_no_trust_anchor_profile, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, cert, no, trust-anchor-profile] }
   - { id: classic_transport_local_id_fqdn, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ipsec-transport-mode-profile, { parameter: transport_profile_name }, dynamic-keying, local-id, fqdn, value, { parameter: ike_identity_fqdn }] }
@@ -4516,9 +4532,9 @@ commands:
   - { id: show_tls_client_profiles, engines: [md, classic], source_id: nokia.sros.26_7.tls_operational_show, tokens: [show, system, security, tls, client-tls-profile] }
   - { id: show_tls_client_profile, engines: [md, classic], source_id: nokia.sros.26_7.tls_operational_show, tokens: [show, system, security, tls, client-tls-profile, { parameter: tls_client_profile_name }] }
   - { id: show_tls_client_profile_association, engines: [md, classic], source_id: nokia.sros.26_7.tls_operational_show, tokens: [show, system, security, tls, client-tls-profile, { parameter: tls_client_profile_name }, association] }
-  - { id: show_tls_server_profiles, engines: [md, classic], source_id: nokia.sros.26_7.tls_operational_show, tokens: [show, system, security, tls, server-tls-profile] }
-  - { id: show_tls_server_profile, engines: [md, classic], source_id: nokia.sros.26_7.tls_operational_show, tokens: [show, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }] }
-  - { id: show_tls_server_profile_association, engines: [md, classic], source_id: nokia.sros.26_7.tls_operational_show, tokens: [show, system, security, tls, server-tls-profile, { parameter: tls_server_profile_name }, association] }
+  - { id: show_tls_server_profiles, engines: [md, classic], source_id: nokia.sros.26_7.tls_operational_show, tokens: [show, system, security, tls, { literal: "server-tls-profile", description: "Select a TLS server profile to display" }] }
+  - { id: show_tls_server_profile, engines: [md, classic], source_id: nokia.sros.26_7.tls_operational_show, tokens: [show, system, security, tls, { literal: "server-tls-profile", description: "Select a TLS server profile to display" }, { parameter: tls_server_profile_name }] }
+  - { id: show_tls_server_profile_association, engines: [md, classic], source_id: nokia.sros.26_7.tls_operational_show, tokens: [show, system, security, tls, { literal: "server-tls-profile", description: "Select a TLS server profile to display" }, { parameter: tls_server_profile_name }, association] }
   - { id: show_tls_trust_anchor_profiles, engines: [md, classic], source_id: nokia.sros.26_7.tls_operational_show, tokens: [show, system, security, tls, trust-anchor-profile] }
   - { id: show_tls_trust_anchor_profile, engines: [md, classic], source_id: nokia.sros.26_7.tls_operational_show, tokens: [show, system, security, tls, trust-anchor-profile, { parameter: tls_trust_anchor_profile_name }] }
   - { id: show_tls_trust_anchor_profile_association, engines: [md, classic], source_id: nokia.sros.26_7.tls_operational_show, tokens: [show, system, security, tls, trust-anchor-profile, { parameter: tls_trust_anchor_profile_name }, association] }

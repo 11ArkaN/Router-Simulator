@@ -24,10 +24,10 @@ bool valid_text(std::string_view value, std::size_t maximum) noexcept {
 
 bool valid_file_name(std::string_view value) noexcept {
   // The 26.7.R1 certificate-file and key-file leaves accept a filename only.
-  // A colon or slash would turn the leaf into a URL or path and is explicitly
-  // rejected by the Nokia YANG constraint.
+  // A colon, slash or backslash would turn the leaf into a URL or path and
+  // is explicitly rejected by the Nokia YANG constraint.
   return valid_text(value, device_catalog::tls_certificate_file_name_bytes) &&
-         value.find_first_of(":/") == std::string_view::npos;
+         value.find_first_of(":/\\") == std::string_view::npos;
 }
 
 Diagnostic problem(Error error, std::string_view object,

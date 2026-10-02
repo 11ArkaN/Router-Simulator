@@ -342,13 +342,34 @@ void ipsec_cli_configuration_tests() {
        "delete ipsec ts-list protected-v6 local entry 2 protocol id icmp6 "
        "port-range end-icmp-code");
   require(!state.traffic_selector_lists[0]
-               .local[1]
-               .end_icmp_code_configured &&
-              validate(state, true) && !validate(state),
+                .local[1]
+                .end_icmp_code_configured &&
+               validate(state, true) && !validate(state),
           "MD leaf deletion did not retain an incomplete private candidate");
+  // YANG bounds every ICMP type and code leaf at 0 through 255.
+  const auto icmp_big = parse(
+      CliEngine::md,
+      "configure ipsec ts-list protected-v6 local entry 2 protocol id icmp6 "
+      "port-range begin-icmp-type 300");
+  const auto icmp_big_result =
+      router::lab::ipsec_cli::edit(state, icmp_big, CliEngine::md);
+  require(icmp_big_result.recognized && !icmp_big_result.valid,
+          "ICMP type above 255 was not rejected");
   edit(state, CliEngine::md,
        "configure ipsec ts-list protected-v6 local entry 2 protocol id icmp6 "
        "port-range end-icmp-code 255");
+  // YANG bounds certificate profile entries at 1 through 8.
+  edit(state, CliEngine::md,
+       "configure ipsec cert-profile router-certificate entry 8 cert "
+       "router-h.crt");
+  const auto entry_big = parse(
+      CliEngine::md,
+      "configure ipsec cert-profile router-certificate entry 9 cert "
+      "router-i.crt");
+  const auto entry_big_result =
+      router::lab::ipsec_cli::edit(state, entry_big, CliEngine::md);
+  require(entry_big_result.recognized && !entry_big_result.valid,
+          "certificate entry above 8 was not rejected");
 
   const auto before = state;
   const auto invalid_reference = parse(
@@ -402,6 +423,15 @@ void ipsec_cli_configuration_tests() {
   edit(classic, CliEngine::classic,
        "configure ipsec ike-policy 1 nat-traversal force "
        "keep-alive-interval 180 force-keep-alive");
+  // YANG defaults force-keep-alive to true: omitting the flag keeps the
+  // default instead of storing false.
+  edit(classic, CliEngine::classic, "configure ipsec ike-policy 9 create");
+  edit(classic, CliEngine::classic,
+       "configure ipsec ike-policy 9 nat-traversal");
+  require(find_policy(classic, 9U)->nat_force_keepalive &&
+              !find_policy(classic, 9U)->nat_force_keepalive_configured &&
+              !find_policy(classic, 9U)->nat_force,
+          "bare classic nat-traversal did not keep the default keepalive");
   require(find_policy(classic, 1U)->ike_transforms ==
               std::vector<std::uint16_t>{2U},
           "classic IKE transform command appended instead of replacing");
@@ -544,6 +574,12 @@ void ipsec_cli_configuration_tests() {
        "replay-window 256");
   edit(classic, CliEngine::classic,
        "configure ipsec tunnel-template 1 create");
+  // YANG defaults both propagate leaves to true on a fresh template.
+  require(classic.tunnel_templates[0].propagate_pmtu_v4 &&
+              !classic.tunnel_templates[0].propagate_pmtu_v4_configured &&
+              classic.tunnel_templates[0].propagate_pmtu_v6 &&
+              !classic.tunnel_templates[0].propagate_pmtu_v6_configured,
+          "fresh tunnel template did not default propagate-pmtu to true");
   edit(classic, CliEngine::classic,
        "configure ipsec tunnel-template 1 transform 1");
   edit(classic, CliEngine::classic,
