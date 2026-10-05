@@ -81,10 +81,13 @@ bool RuntimeSupervisor::configure_ies_services(
 
     const auto configured_local_source = [&](const packet::Ipv6 &address) {
       for (const auto &service : configuration.ies_services)
-        for (const auto &interface : service.interfaces)
-          if (interface.address_configured &&
-              (interface.address == address || interface.link_local == address))
+        for (const auto &interface : service.interfaces) {
+          if (interface.link_local == address)
             return true;
+          for (const auto &entry : interface.addresses)
+            if (entry.address == address)
+              return true;
+        }
       for (const auto &port : state.ports)
         if (port.configured && port.ipv6_configured &&
             (port.ipv6_address == address || port.ipv6_link_local == address))
@@ -126,41 +129,54 @@ bool RuntimeSupervisor::configure_ies_services(
                          service::EthernetEncapsulation::qinq
                      ? packet::ethernet_type_customer_vlan
                      : 0U)});
-        const bool operational = interface.address_configured &&
-                                 ies.admin_enabled && interface.admin_enabled &&
-                                 physical.operational;
-        candidate_interfaces.push_back(
-            {.interface_id = interface.logical_id,
-             .physical_port_ordinal = ordinal,
-             .mtu = interface.ip_mtu,
-             .mac = interface.mac,
-             .address = interface.address,
-             .network =
-                 interface.address_configured
-                     ? ip::mask(interface.address, interface.prefix_length)
-                     : packet::Ipv6{},
-             .link_local = interface.link_local,
-             .prefix_length = interface.prefix_length,
-             .nd_reachable_time_milliseconds =
-                 device_catalog::nd_default_reachable_time_seconds * 1000U,
-             .nd_stale_time_seconds =
-                 device_catalog::nd_default_stale_time_seconds,
-             .neighbor_limit_threshold_percent =
-                 device_catalog::nd_default_neighbor_limit_threshold_percent,
-             .redirect_maximum = device_catalog::icmp6_redirect_default_maximum,
-             .redirect_interval_seconds = static_cast<std::uint16_t>(
-                 device_catalog::icmp6_redirect_default_interval.count()),
-             .redirects_enabled = true,
-             .configured = interface.address_configured,
-             .operational = operational});
-        if (interface.address_configured)
-          candidate_connected.push_back(
-              {.configured = true,
-               .operational = operational,
-               .network = ip::mask(interface.address, interface.prefix_length),
-               .interface_id = interface.logical_id,
+        const bool addressed = !interface.addresses.empty();
+        const bool operational =
+            addressed && ies.admin_enabled && interface.admin_enabled &&
+            physical.operational;
+        // One forwarding record per configured address shares the stable
+        // logical interface identity; the SAP table keys records by address.
+        // An unaddressed interface still publishes one unconfigured record so
+        // attachment validation observes the same cardinality contract.
+        const std::size_t record_count = addressed ? interface.addresses.size()
+                                                  : 1U;
+        for (std::size_t record{}; record < record_count; ++record) {
+          const auto address = addressed ? interface.addresses[record].address
+                                         : packet::Ipv6{};
+          const auto prefix_length = addressed
+                                         ? interface.addresses[record]
+                                               .prefix_length
+                                         : static_cast<std::uint8_t>(0U);
+          candidate_interfaces.push_back(
+              {.interface_id = interface.logical_id,
                .physical_port_ordinal = ordinal,
-               .prefix_length = interface.prefix_length});
+               .mtu = interface.ip_mtu,
+               .mac = interface.mac,
+               .address = address,
+               .network = addressed ? ip::mask(address, prefix_length)
+                                    : packet::Ipv6{},
+               .link_local = interface.link_local,
+               .prefix_length = prefix_length,
+               .nd_reachable_time_milliseconds =
+                   device_catalog::nd_default_reachable_time_seconds * 1000U,
+               .nd_stale_time_seconds =
+                   device_catalog::nd_default_stale_time_seconds,
+               .neighbor_limit_threshold_percent =
+                   device_catalog::nd_default_neighbor_limit_threshold_percent,
+               .redirect_maximum = device_catalog::icmp6_redirect_default_maximum,
+               .redirect_interval_seconds = static_cast<std::uint16_t>(
+                   device_catalog::icmp6_redirect_default_interval.count()),
+               .redirects_enabled = true,
+               .configured = addressed,
+               .operational = operational});
+          if (addressed)
+            candidate_connected.push_back(
+                {.configured = true,
+                 .operational = operational,
+                 .network = ip::mask(address, prefix_length),
+                 .interface_id = interface.logical_id,
+                 .physical_port_ordinal = ordinal,
+                 .prefix_length = prefix_length});
+        }
 
         const auto &relay_intent = interface.dhcpv6_relay;
         if (!relay_intent.configured || !relay_intent.admin_enabled ||
@@ -175,8 +191,8 @@ bool RuntimeSupervisor::configure_ies_services(
         dhcpv6::RelayInterfaceConfig relay{
             .interface_id = interface.logical_id,
             .physical_port_ordinal = ordinal,
-            .link_address =
-                relay_intent.link_address.value_or(interface.address),
+            .link_address = relay_intent.link_address.value_or(
+                interface.addresses.front().address),
             .source_address =
                 relay_intent.source_address.value_or(packet::Ipv6{}),
             .has_source_address = relay_intent.source_address.has_value(),
@@ -184,9 +200,11 @@ bool RuntimeSupervisor::configure_ies_services(
             .server_count = relay_intent.servers.size(),
             .upstream_policy =
                 dhcpv6::RelayUpstreamPolicy::explicit_servers_required,
-            .client_prefix = {.network = ip::mask(interface.address,
-                                                  interface.prefix_length),
-                              .length = interface.prefix_length},
+            .client_prefix = {.network = ip::mask(
+                                  interface.addresses.front().address,
+                                  interface.addresses.front().prefix_length),
+                              .length = interface.addresses.front()
+                                            .prefix_length},
             .lease_population_limit = relay_intent.lease_population_limit,
             .neighbor_resolution = relay_intent.neighbor_resolution,
             .route_non_temporary = relay_intent.route_populate_na,

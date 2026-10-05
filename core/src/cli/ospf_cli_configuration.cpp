@@ -218,6 +218,10 @@ bool version_three(CommandId id) noexcept {
   case classic_ospf3_preference:
   case classic_ospf3_external_preference:
   case classic_ospf3_export_policy:
+  case classic_ospf3_export_policy_2:
+  case classic_ospf3_export_policy_3:
+  case classic_ospf3_export_policy_4:
+  case classic_ospf3_export_policy_5:
   case classic_ospf3_no_export:
   case classic_ospf3_asbr:
   case classic_ospf3_no_asbr:
@@ -720,30 +724,81 @@ EditResult edit(ospf::RouterConfiguration &configuration,
         return {.recognized = true, .changed = false, .instance = {}};
       instance->external_preference = *value;
     } else if (id == CommandId::md_ospf_export_policy ||
-               id == CommandId::md_ospf3_export_policy ||
-               id == CommandId::classic_ospf_export_policy ||
-               id == CommandId::classic_ospf3_export_policy) {
+               id == CommandId::md_ospf3_export_policy) {
+      // MD-CLI appends one leaf-list entry. A repeat is idempotent, and a
+      // sixth distinct policy is an explicit error rather than a silent
+      // replacement, matching the YANG max-elements bound.
       const auto name = argument_text(command, TokenKind::policy_name);
       if (name.empty() || name.size() > 64U)
         return {.recognized = true, .changed = false, .instance = {}};
-      // YANG models export-policy as a leaf-list of up to five entries. This
-      // slice stores a single entry; configuring a different policy while one
-      // is present is an explicit error rather than a silent replacement, and
-      // repeating the configured policy is idempotent.
-      if (!instance->export_policy.empty() && instance->export_policy != name)
+      const auto present =
+          std::find(instance->export_policies.begin(),
+                    instance->export_policies.end(), name);
+      // A repeat falls through to model equality below, which reports the
+      // documented idempotent success. Only a sixth distinct policy is an
+      // explicit error.
+      if (present == instance->export_policies.end()) {
+        if (instance->export_policies.size() >=
+            ospf::InstanceConfiguration::maximum_export_policies)
+          return {.recognized = true, .changed = false, .instance = {}};
+        instance->export_policies.emplace_back(name);
+      }
+    } else if (id == CommandId::classic_ospf_export_policy ||
+               id == CommandId::classic_ospf3_export_policy ||
+               id == CommandId::classic_ospf_export_policy_2 ||
+               id == CommandId::classic_ospf_export_policy_3 ||
+               id == CommandId::classic_ospf_export_policy_4 ||
+               id == CommandId::classic_ospf_export_policy_5 ||
+               id == CommandId::classic_ospf3_export_policy_2 ||
+               id == CommandId::classic_ospf3_export_policy_3 ||
+               id == CommandId::classic_ospf3_export_policy_4 ||
+               id == CommandId::classic_ospf3_export_policy_5) {
+      // Classic replaces the whole chain with one command: the last entered
+      // command wins. Names keep their command order, must be unique and must
+      // fit the policy-name bound, mirroring the compound ike-transform form.
+      std::vector<std::string> names;
+      names.reserve(
+          ospf::InstanceConfiguration::maximum_export_policies);
+      for (std::size_t occurrence{}; occurrence <
+           ospf::InstanceConfiguration::maximum_export_policies;
+           ++occurrence) {
+        const auto text =
+            indexed_argument(command, TokenKind::policy_name, occurrence);
+        if (text.empty())
+          break;
+        if (text.size() > 64U)
+          return {.recognized = true, .changed = false, .instance = {}};
+        names.emplace_back(text);
+      }
+      bool unique = !names.empty();
+      for (std::size_t left{}; unique && left < names.size(); ++left)
+        for (std::size_t right{left + 1U}; right < names.size(); ++right)
+          if (names[left] == names[right])
+            unique = false;
+      if (!unique)
         return {.recognized = true, .changed = false, .instance = {}};
-      instance->export_policy = name;
+      // Replacing with the identical chain falls through to model equality
+      // below, which reports the idempotent success.
+      if (names != instance->export_policies)
+        instance->export_policies = std::move(names);
     } else if (id == CommandId::md_delete_ospf_export_policy ||
                id == CommandId::md_delete_ospf3_export_policy) {
+      // Deleting below an empty chain addresses a missing list instance and
+      // stays rejected. Removing an absent entry from a populated chain is
+      // the documented silent no-op.
       const auto name = argument_text(command, TokenKind::policy_name);
-      if (name.empty() || instance->export_policy != name)
+      if (name.empty() || instance->export_policies.empty())
         return {.recognized = true, .changed = false, .instance = {}};
-      instance->export_policy.clear();
+      const auto present =
+          std::find(instance->export_policies.begin(),
+                    instance->export_policies.end(), name);
+      if (present != instance->export_policies.end())
+        instance->export_policies.erase(present);
     } else if (id == CommandId::classic_ospf_no_export ||
                id == CommandId::classic_ospf3_no_export) {
-      if (instance->export_policy.empty())
+      if (instance->export_policies.empty())
         return {.recognized = true, .changed = false, .instance = {}};
-      instance->export_policy.clear();
+      instance->export_policies.clear();
     } else if (id == CommandId::md_ospf_asbr ||
                id == CommandId::md_ospf3_asbr ||
                id == CommandId::classic_ospf_asbr ||

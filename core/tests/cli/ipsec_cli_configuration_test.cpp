@@ -825,4 +825,368 @@ void ipsec_cli_configuration_tests() {
     require(rejected.recognized && !rejected.valid,
             "classic no form accepted an absent IPsec element");
   }
+
+  // The client database carries match criteria, tunnel setup references,
+  // address assignment and certificate intent. MD-CLI materializes parents
+  // while configuring a leaf; classic create and removal keep their select
+  // and rejected semantics, and dangling ts-list and tunnel references are
+  // rejected atomically in both engines.
+  Configuration clients;
+  TestSecretSink client_vault;
+  edit(clients, CliEngine::md,
+       "configure ipsec ts-list match-list local entry 1 address prefix "
+       "2001:db8:1::/64",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec tunnel-template 10 ip-mtu 1400", &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a admin-state enable",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a description branch-db",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a match-list idi true",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a match-list peer-ip-prefix true",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a client 7 admin-state enable",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a client 7 client-name walker",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a client 7 action reject",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a client 7 private-interface lan-7",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a client 7 private-service-name "
+       "lan-service",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a client 7 ts-list match-list",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a client 7 tunnel-template 10",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a client 7 credential pre-shared-key "
+       "aabbccdd",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a client 7 identification idi "
+       "ipv6-prefix 2001:db8:2::/64",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a client 7 identification "
+       "peer-ip-prefix ip-prefix 2001:db8:3::/64",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a client 7 local address-assignment "
+       "ipv4 dhcp-server local-v4",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a client 7 local address-assignment "
+       "ipv4 pool office-v4",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a client 7 local address-assignment "
+       "ipv6 pool office-v6",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec cert-profile branch-cert admin-state enable",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a client 7 cert cert-profile "
+       "branch-cert",
+       &client_vault);
+  edit(clients, CliEngine::md,
+       "configure ipsec client-db branch-a client 7 cert status-verify "
+       "primary ocsp",
+       &client_vault);
+  {
+    const auto &database = clients.client_databases.front();
+    const auto &entry = database.clients.front();
+    require(database.name == "branch-a" && database.admin_enabled &&
+                database.description == "branch-db" && database.match_idi &&
+                database.match_peer_ip_prefix && entry.id == 7U &&
+                entry.admin_enabled && entry.client_name == "walker" &&
+                entry.action ==
+                    router::ipsec::configuration::ClientAction::reject &&
+                entry.private_interface == "lan-7" &&
+                entry.private_service == "lan-service" &&
+                entry.ts_list == "match-list" &&
+                entry.tunnel_template == 10U &&
+                entry.tunnel_template_configured && entry.psk_configured &&
+                entry.psk_handle != 0U &&
+                entry.idi.kind ==
+                    router::ipsec::configuration::ClientIdiKind::
+                        ipv6_prefix &&
+                entry.idi.prefix == "2001:db8:2::/64" &&
+                entry.peer.kind ==
+                    router::ipsec::configuration::ClientPeerKind::ip_prefix &&
+                entry.peer.prefix == "2001:db8:3::/64" &&
+                entry.local.ipv4.dhcp_server == "local-v4" &&
+                entry.local.ipv4.pool == "office-v4" &&
+                entry.local.ipv6.pool == "office-v6" &&
+                entry.certificate.certificate_profile == "branch-cert" &&
+                entry.certificate.primary_method ==
+                    router::ipsec::configuration::RevocationMethod::ocsp,
+            "client database intent did not reach the canonical model");
+  }
+  // A dangling tunnel reference is rejected without mutating the entry, and
+  // an out-of-range client key never parses.
+  {
+    const auto before_dangling = clients;
+    const auto dangling = router::lab::ipsec_cli::edit(
+        clients,
+        parse(CliEngine::md,
+              "configure ipsec client-db branch-a client 7 tunnel-template "
+              "99"),
+        CliEngine::md, &client_vault);
+    require(dangling.recognized && !dangling.valid && clients == before_dangling,
+            "dangling tunnel-template reference changed client intent");
+  }
+  require(!router::cli_detail::parse_command(
+               CliEngine::md, MdCliWorkflow::explicit_private,
+               "configure ipsec client-db branch-a client 0 admin-state "
+               "enable")
+               .has_value() &&
+              !router::cli_detail::parse_command(
+                   CliEngine::md, MdCliWorkflow::explicit_private,
+                   "configure ipsec client-db branch-a client 8001 "
+                   "admin-state enable")
+                  .has_value(),
+          "out-of-range client key parsed");
+  // MD deletes restore defaults and stay silent on absent leaves; the whole
+  // entry and database delete removes the subtree.
+  edit(clients, CliEngine::md,
+       "delete ipsec client-db branch-a client 7 action", &client_vault);
+  require(clients.client_databases.front().clients.front().action ==
+                  router::ipsec::configuration::ClientAction::accept &&
+              !clients.client_databases.front()
+                   .clients.front()
+                   .action_configured,
+          "MD delete action did not restore the accept default");
+  edit(clients, CliEngine::md,
+       "delete ipsec client-db branch-a client 7 identification idi",
+       &client_vault);
+  require(clients.client_databases.front().clients.front().idi.kind ==
+                  router::ipsec::configuration::ClientIdiKind::none,
+          "MD delete idi did not clear the criterion");
+  {
+    const auto silent_idi = router::lab::ipsec_cli::edit(
+        clients,
+        parse(CliEngine::md,
+              "delete ipsec client-db branch-a client 7 identification idi"),
+        CliEngine::md, &client_vault);
+    require(silent_idi.recognized && silent_idi.valid &&
+                !silent_idi.changed,
+            "MD delete of an absent idi was not silent");
+  }
+  edit(clients, CliEngine::md, "delete ipsec client-db branch-a client 7",
+       &client_vault);
+  require(clients.client_databases.front().clients.empty(),
+          "MD delete client did not remove the entry");
+  edit(clients, CliEngine::md, "delete ipsec client-db branch-a",
+       &client_vault);
+  require(clients.client_databases.empty(),
+          "MD delete client-db did not remove the database");
+  {
+    const auto before_ghost = clients;
+    const auto silent_db = router::lab::ipsec_cli::edit(
+        clients, parse(CliEngine::md, "delete ipsec client-db ghost"),
+        CliEngine::md, &client_vault);
+    require(silent_db.recognized && silent_db.valid && !silent_db.changed &&
+                clients == before_ghost,
+            "MD delete of an absent client-db was not silent");
+  }
+  // Classic keeps create-select, compound replacement and rejected absent
+  // removals across the same leaves.
+  Configuration classic_clients;
+  TestSecretSink classic_client_vault;
+  edit(classic_clients, CliEngine::classic,
+       "configure ipsec ts-list match-list create", &classic_client_vault);
+  edit(classic_clients, CliEngine::classic,
+       "configure ipsec tunnel-template 10 create", &classic_client_vault);
+  edit(classic_clients, CliEngine::classic,
+       "configure ipsec client-db branch-a create", &classic_client_vault);
+  {
+    const auto selected = router::lab::ipsec_cli::edit(
+        classic_clients,
+        parse(CliEngine::classic,
+              "configure ipsec client-db branch-a create"),
+        CliEngine::classic, &classic_client_vault);
+    require(selected.recognized && selected.valid && !selected.changed,
+            "classic client-db create of an existing database was not a "
+            "select");
+  }
+  edit(classic_clients, CliEngine::classic,
+       "configure ipsec client-db branch-a match-list idi",
+       &classic_client_vault);
+  edit(classic_clients, CliEngine::classic,
+       "configure ipsec client-db branch-a client 7 create",
+       &classic_client_vault);
+  edit(classic_clients, CliEngine::classic,
+       "configure ipsec client-db branch-a client 7 no shutdown",
+       &classic_client_vault);
+  edit(classic_clients, CliEngine::classic,
+       "configure ipsec client-db branch-a client 7 client-name walker",
+       &classic_client_vault);
+  edit(classic_clients, CliEngine::classic,
+       "configure ipsec client-db branch-a client 7 ts-negotiation ts-list "
+       "match-list",
+       &classic_client_vault);
+  edit(classic_clients, CliEngine::classic,
+       "configure ipsec client-db branch-a client 7 tunnel-template 10",
+       &classic_client_vault);
+  edit(classic_clients, CliEngine::classic,
+       "configure ipsec client-db branch-a client 7 credential pre-shared-key "
+       "aabbccdd",
+       &classic_client_vault);
+  edit(classic_clients, CliEngine::classic,
+       "configure ipsec client-db branch-a client 7 client-identification idi "
+       "ipv6-prefix 2001:db8:2::/64",
+       &classic_client_vault);
+  edit(classic_clients, CliEngine::classic,
+       "configure ipsec client-db branch-a client 7 local-address-assignment "
+       "ipv4 address-source router Base dhcp-server local-v4 pool office-v4",
+       &classic_client_vault);
+  {
+    const auto &entry =
+        classic_clients.client_databases.front().clients.front();
+    require(entry.admin_enabled && entry.client_name == "walker" &&
+                entry.ts_list == "match-list" &&
+                entry.tunnel_template == 10U && entry.psk_configured &&
+                entry.idi.kind ==
+                    router::ipsec::configuration::ClientIdiKind::
+                        ipv6_prefix &&
+                entry.local.ipv4.router_instance == "Base" &&
+                entry.local.ipv4.dhcp_server == "local-v4" &&
+                entry.local.ipv4.pool == "office-v4" &&
+                entry.local.configured,
+            "classic client intent did not reach the canonical model");
+  }
+  edit(classic_clients, CliEngine::classic,
+       "configure ipsec client-db branch-a client 7 no tunnel-template",
+       &classic_client_vault);
+  require(classic_clients.client_databases.front()
+                  .clients.front()
+                  .tunnel_template_configured == false,
+          "classic no tunnel-template retained the reference");
+  {
+    const auto rejected = router::lab::ipsec_cli::edit(
+        classic_clients,
+        parse(CliEngine::classic,
+              "configure ipsec client-db branch-a no client 8"),
+        CliEngine::classic, &classic_client_vault);
+    require(rejected.recognized && !rejected.valid,
+            "classic removal accepted an absent client entry");
+  }
+  edit(classic_clients, CliEngine::classic,
+       "configure ipsec client-db branch-a no client 7",
+       &classic_client_vault);
+  edit(classic_clients, CliEngine::classic,
+       "configure ipsec no client-db branch-a", &classic_client_vault);
+  require(classic_clients.client_databases.empty(),
+          "classic removal did not clear the database");
+  // RADIUS policies validate ranges, seal the authentication password and
+  // keep accounting and authentication attributes on separate lists.
+  Configuration radius;
+  TestSecretSink radius_vault;
+  edit(radius, CliEngine::md,
+       "configure ipsec radius accounting-policy acct-lab radius-server-policy "
+       "aaa-main",
+       &radius_vault);
+  edit(radius, CliEngine::md,
+       "configure ipsec radius accounting-policy acct-lab update-interval "
+       "value 30",
+       &radius_vault);
+  edit(radius, CliEngine::md,
+       "configure ipsec radius accounting-policy acct-lab update-interval "
+       "jitter 120",
+       &radius_vault);
+  edit(radius, CliEngine::md,
+       "configure ipsec radius accounting-policy acct-lab "
+       "include-radius-attribute called-station-id true",
+       &radius_vault);
+  edit(radius, CliEngine::md,
+       "configure ipsec radius authentication-policy auth-lab "
+       "radius-server-policy aaa-main",
+       &radius_vault);
+  edit(radius, CliEngine::md,
+       "configure ipsec radius authentication-policy auth-lab password "
+       "secret123",
+       &radius_vault);
+  edit(radius, CliEngine::md,
+       "configure ipsec radius authentication-policy auth-lab "
+       "include-radius-attribute nas-identifier true",
+       &radius_vault);
+  {
+    const auto &acct = radius.radius_accounting_policies.front();
+    const auto &auth = radius.radius_authentication_policies.front();
+    require(acct.radius_server_policy == "aaa-main" &&
+                acct.update_value_minutes == 30U &&
+                acct.update_value_configured &&
+                acct.update_jitter_seconds == 120U &&
+                acct.include_.called_station_id &&
+                !acct.include_.nas_identifier && auth.password_configured &&
+                auth.password_handle != 0U &&
+                auth.include_.nas_identifier &&
+                !auth.include_.called_station_id,
+            "RADIUS intent did not reach the canonical model");
+  }
+  require(!router::cli_detail::parse_command(
+               CliEngine::md, MdCliWorkflow::explicit_private,
+               "configure ipsec radius accounting-policy acct-lab "
+               "update-interval value 4")
+               .has_value() &&
+              !router::cli_detail::parse_command(
+                   CliEngine::md, MdCliWorkflow::explicit_private,
+                   "configure ipsec radius accounting-policy acct-lab "
+                   "update-interval value 259201")
+                  .has_value(),
+          "out-of-range update interval parsed");
+  edit(radius, CliEngine::md,
+       "delete ipsec radius accounting-policy acct-lab update-interval value",
+       &radius_vault);
+  require(radius.radius_accounting_policies.front().update_value_minutes ==
+                  10U &&
+              !radius.radius_accounting_policies.front()
+                   .update_value_configured,
+          "MD delete update value did not restore the default");
+  edit(radius, CliEngine::classic,
+       "configure ipsec radius-authentication-policy auth-classic create",
+       &radius_vault);
+  {
+    const auto selected = router::lab::ipsec_cli::edit(
+        radius,
+        parse(CliEngine::classic,
+              "configure ipsec radius-authentication-policy auth-classic "
+              "create"),
+        CliEngine::classic, &radius_vault);
+    require(selected.recognized && selected.valid && !selected.changed,
+            "classic RADIUS create of an existing policy was not a select");
+  }
+  edit(radius, CliEngine::classic,
+       "configure ipsec radius-authentication-policy auth-classic "
+       "include-radius-attribute nas-identifier",
+       &radius_vault);
+  edit(radius, CliEngine::classic,
+       "configure ipsec radius-authentication-policy auth-classic "
+       "include-radius-attribute no nas-identifier",
+       &radius_vault);
+  require(!radius.radius_authentication_policies.back()
+               .include_.nas_identifier,
+          "classic no include-radius-attribute retained the member");
+  edit(radius, CliEngine::classic,
+       "configure ipsec no radius-authentication-policy auth-classic",
+       &radius_vault);
+  require(radius.radius_authentication_policies.size() == 1U &&
+              radius.radius_authentication_policies.front().name == "auth-lab",
+          "classic removal did not clear only the named policy");
 }

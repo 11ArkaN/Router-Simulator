@@ -860,6 +860,8 @@ void lab_runtime_tests() {
   // the parser sees the complete schema path in one input. These individual
   // entries therefore prove that every keyed parent survives into the next
   // command and that the global `info` command reads the deepest saved path.
+  // command() returns a view into the facade response buffer, so each result
+  // is consumed before the next command overwrites it.
   require(contextual_command("edit-config exclusive")
                   .find("(ex)[/]") != std::string_view::npos &&
               contextual_command("configure router \"Base\"")
@@ -1193,7 +1195,11 @@ void lab_runtime_tests() {
         "configure ipsec ike-transform 1 dh-group group-19",
         "configure service customer info-customer customer-id 900",
         "configure service ies info-ies service-id 900",
-        "configure service ies info-ies customer info-customer"}) {
+        "configure service ies info-ies customer info-customer",
+        "configure service ies info-ies interface info-if ipv6 address "
+        "2001:db8:90::1 prefix-length 64",
+        "configure service ies info-ies interface info-if ipv6 address "
+        "2001:db8:90::2 prefix-length 64"}) {
     const auto result = contextual_command(command);
     if (result.find("MINOR:") != std::string_view::npos)
       throw std::runtime_error("contextual info setup failed: " +
@@ -1280,7 +1286,52 @@ void lab_runtime_tests() {
   // rule as Nokia's documented MD-CLI `info` examples.
   require_context_info("configure ipsec ike-transform 1",
                        "dh-group group-19");
+  // Client database and RADIUS leaves render through the same MD info body.
+  // The database needs no tunnel reference for a description-only fixture,
+  // while the update interval materializes its policy.
+  require(contextual_command("configure ipsec client-db info-db description "
+                             "info-database")
+                  .find("MINOR:") == std::string_view::npos,
+          "info fixture could not describe the client database");
+  require_context_info("configure ipsec client-db info-db",
+                       "description \"info-database\"");
+  require(contextual_command("configure ipsec radius accounting-policy "
+                             "info-acct update-interval value 30")
+                  .find("MINOR:") == std::string_view::npos,
+          "info fixture could not configure the update interval");
+  require_context_info("configure ipsec radius accounting-policy info-acct",
+                       "value 30");
+  // Unconfigured transform leaves must render their effective YANG defaults
+  // in detail, never the configured-only keywords: sha-256 rather than
+  // auth-encryption, and the actual PFS group rather than a hardcoded one.
+  require(contextual_command("configure ipsec ipsec-transform 9 pfs-dh-group "
+                             "group-20")
+                  .find("MINOR:") == std::string_view::npos,
+          "info fixture could not configure the PFS-only transform");
+  require(contextual_command("exit all").find("(ex)[/]") !=
+              std::string_view::npos,
+          "info fixture could not reset its PWC");
+  require(contextual_command("configure ipsec ipsec-transform 9").find("MINOR:") ==
+              std::string_view::npos,
+          "info fixture could not enter the transform context");
+  const auto transform_detail = contextual_command("info detail");
+  require(transform_detail.find("esp-auth-algorithm sha-256") !=
+                  std::string_view::npos &&
+              transform_detail.find("pfs-dh-group group-20") !=
+                  std::string_view::npos,
+          "transform info detail did not render effective defaults");
+  const auto transform_brief = contextual_command("info");
+  require(transform_brief.find("pfs-dh-group group-20") !=
+                  std::string_view::npos &&
+              transform_brief.find("esp-auth-algorithm") ==
+                  std::string_view::npos,
+          "transform info leaked an unconfigured leaf");
   require_context_info("configure service ies info-ies", "service-id 900");
+  // Both configured addresses of one interface render as sibling rows.
+  require_context_info("configure service ies info-ies interface info-if",
+                       "address 2001:db8:90::1 prefix-length 64");
+  require_context_info("configure service ies info-ies interface info-if",
+                       "address 2001:db8:90::2 prefix-length 64");
 
   // Build a direct static route exactly as an operator traverses the MD tree.
   // Root-form coverage cannot detect a broken saved context because it sends
@@ -1572,6 +1623,33 @@ void lab_runtime_tests() {
                   std::string_view::npos,
           "quit-config was not global from a deeply keyed MD context");
 
+  // Bare `/` is MD-only root navigation per the MD-CLI guide. A deep MD
+  // context must unwind to the root marker. The Base router key stays
+  // implicit in MD navigation input.
+  require(contextual_command("edit-config exclusive").find("(ex)[/]") !=
+              std::string_view::npos,
+          "navigation fixture could not enter the MD explicit workflow");
+  require(contextual_command("configure router mld").find("MINOR:") ==
+              std::string_view::npos,
+          "navigation fixture could not enter the MD mld context");
+  require(contextual_command("info").find("mld") != std::string_view::npos,
+          "navigation fixture did not reach the deep MD context");
+  const auto rooted = contextual_command("/");
+  require(rooted.find("MINOR:") == std::string_view::npos &&
+              rooted.find("Unknown element") == std::string_view::npos &&
+              rooted.find("Error:") == std::string_view::npos &&
+              rooted.find("/]") != std::string_view::npos &&
+              rooted.find("mld") == std::string_view::npos,
+          "MD bare / did not return to the root context");
+  // Release the exclusive lock so later sessions can edit: discard any
+  // navigation residue, then leave the explicit workflow.
+  require(contextual_command("discard").find("MINOR:") ==
+              std::string_view::npos,
+          "navigation fixture could not discard its candidate");
+  require(contextual_command("quit-config").find("Exiting exclusive") !=
+              std::string_view::npos,
+          "navigation fixture could not leave the explicit workflow");
+
   // Classic CLI owns immediate running edits rather than an MD candidate.
   // Validate the root-relative form because operators commonly paste complete
   // commands instead of navigating one context at a time. The address command
@@ -1580,6 +1658,10 @@ void lab_runtime_tests() {
   require(contextual_command("//").find("Switching to the classic CLI") !=
               std::string_view::npos,
           "contextual fixture could not enter classic CLI");
+  // The classic engine has no `/` navigation form: it must reject the
+  // MD-only token instead of navigating.
+  require(contextual_command("/").find("Error:") != std::string_view::npos,
+          "classic CLI accepted the MD-only root navigation");
   // Engine switching restores the independent classic PWC by design. Reset
   // that saved path before testing complete commands so the fixture does not
   // accidentally concatenate them below a context used earlier in the same
@@ -3056,8 +3138,12 @@ void lab_runtime_tests() {
   // Build a complete PQC-only TLS 1.3 client and server through the same
   // terminal byte path used by xterm. References are created before profiles
   // are enabled, matching SR OS leafref and PQC assignment validation instead
-  // of relying on a test-only configuration injection.
+  // of relying on a test-only configuration injection. The PKI CA profile
+  // comes first because send-chain and trust-anchor leaves resolve against
+  // the configured PKI store at edit time.
   const std::vector<std::string_view> tls_md_commands{
+      "system security pki ca-profile root-ca admin-state enable",
+      "system security pki ca-profile root-ca cert-file root-ca.crt",
       "system security tls cert-profile router-cert admin-state enable",
       "system security tls cert-profile router-cert entry 1 certificate-file "
       "router.pem",
@@ -3864,6 +3950,31 @@ void lab_runtime_tests() {
       throw std::runtime_error("valid classic IES DHCPv6 command failed: " +
                                std::string{command} + " output=" + result);
   }
+  // Configured service-port mode and encapsulation must reach the port
+  // reports. Port 1/1/2 is hybrid/dot1q from the IES fixture above, while
+  // untouched port 1/1/1 reports the Nokia network/null defaults.
+  const auto hybrid_port_report{runtime.command(message(
+      lab_runtime_protocol::session_execute, {"r1-console-1", "show port 1/1/2"}))};
+  require(hybrid_port_report.find("Configured Mode") !=
+                  std::string_view::npos &&
+              hybrid_port_report.find("hybrid") != std::string_view::npos &&
+              hybrid_port_report.find("802.1q") != std::string_view::npos &&
+              hybrid_port_report.find("0x8100") != std::string_view::npos,
+          "show port hid the configured service-port mode or encapsulation");
+  const auto default_port_report{runtime.command(message(
+      lab_runtime_protocol::session_execute, {"r1-console-1", "show port 1/1/1"}))};
+  require(default_port_report.find("Configured Mode") !=
+                  std::string_view::npos &&
+              default_port_report.find("network") != std::string_view::npos &&
+              default_port_report.find("null") != std::string_view::npos,
+          "show port hid the default service-port mode or encapsulation");
+  const auto port_summary_report{runtime.command(message(
+      lab_runtime_protocol::session_execute, {"r1-console-1", "show port"}))};
+  require(port_summary_report.find("Encp Type") != std::string_view::npos &&
+              port_summary_report.find("hybrid") != std::string_view::npos &&
+              port_summary_report.find("802.1q") != std::string_view::npos &&
+              port_summary_report.find("network") != std::string_view::npos,
+          "port summary hid the service-port mode or encapsulation columns");
   for (const auto command :
        {"show service id 100 dhcp6 lease-state",
         "show service id 100 dhcp6 lease-state detail",
@@ -4662,26 +4773,40 @@ void lab_runtime_tests() {
   // same physical wire again, then send a real ICMP exchange. This guards both
   // halves of the contract. Historic EPBs must disappear, and retained binding
   // metadata must not prevent the restarted session from seeing new frames.
-  const auto stopped_capture = runtime.command(message(
-      lab_runtime_protocol::capture_selection_replace, {nested({"0"})}));
-  require(!stopped_capture.starts_with("ERROR:") &&
-              capture_projection(stopped_capture).empty(),
-          "stopping capture did not retire every live observation point");
-  require(runtime.clear_capture(),
-          "capture generation could not rotate after all points were stopped");
-  const auto restarted_capture_selection =
-      nested({"2", "link-direction", "edge-link", "", "0", "1",
-              "link-direction", "edge-link", "", "1", "1"});
-  const auto restarted_capture = runtime.command(message(
-      lab_runtime_protocol::capture_selection_replace,
-      {restarted_capture_selection}));
-  require(!restarted_capture.starts_with("ERROR:") &&
-              capture_projection(restarted_capture).find("link-direction") !=
-                  std::string_view::npos,
-          "restarting capture did not restore the physical wire taps");
-  const auto empty_generation = runtime.prepare_capture();
-  require(pcapng_enhanced_packet_blocks(empty_generation) == 0U,
-          "fresh capture generation retained packets from the stopped session");
+  // The ping cancelled above can leave a finite number of in-flight frames
+  // that land after any single rotation. Rotate until a fresh generation
+  // observes wire silence, bounded so a genuinely chatty wire still fails
+  // instead of spinning: each rotation discards history, so only new wire
+  // traffic can keep the count above zero.
+  bool observed_silence = false;
+  for (std::size_t generation_attempt = 0U; generation_attempt < 10U;
+       ++generation_attempt) {
+    const auto stopped_attempt = runtime.command(message(
+        lab_runtime_protocol::capture_selection_replace, {nested({"0"})}));
+    require(!stopped_attempt.starts_with("ERROR:") &&
+                capture_projection(stopped_attempt).empty(),
+            "stopping capture did not retire every live observation point");
+    require(runtime.clear_capture(),
+            "capture generation could not rotate after all points were "
+            "stopped");
+    const auto restarted_attempt_selection =
+        nested({"2", "link-direction", "edge-link", "", "0", "1",
+                "link-direction", "edge-link", "", "1", "1"});
+    const auto restarted_attempt = runtime.command(message(
+        lab_runtime_protocol::capture_selection_replace,
+        {restarted_attempt_selection}));
+    require(!restarted_attempt.starts_with("ERROR:") &&
+                capture_projection(restarted_attempt)
+                        .find("link-direction") != std::string_view::npos,
+            "restarting capture did not restore the physical wire taps");
+    if (pcapng_enhanced_packet_blocks(runtime.prepare_capture()) == 0U) {
+      observed_silence = true;
+      break;
+    }
+  }
+  require(observed_silence,
+          "fresh capture generation retained packets from the stopped "
+          "session");
   std::string capture_ping{runtime.command(message(
       lab_runtime_protocol::session_execute,
       {"r1-console-1", "ping 192.0.2.2 count 1"}))};
@@ -4856,6 +4981,14 @@ void lab_runtime_tests() {
         "action-type reject",
         "policy-options policy-statement CHECKPOINT-MLD-IN default-action "
         "action-type accept",
+        "policy-options policy-statement CHECKPOINT-EXPORT-A entry 10 action "
+        "action-type accept",
+        "policy-options policy-statement CHECKPOINT-EXPORT-A default-action "
+        "action-type next-policy",
+        "policy-options policy-statement CHECKPOINT-EXPORT-B entry 10 action "
+        "action-type accept",
+        "policy-options policy-statement CHECKPOINT-EXPORT-B default-action "
+        "action-type reject",
         "router \"Base\" mld interface checkpoint-edge import-policy "
         "CHECKPOINT-MLD-IN",
         // Keep an active protocol key in both portable intent and the control
@@ -4876,7 +5009,12 @@ void lab_runtime_tests() {
         "authentication-type password",
         "router \"Base\" ospf 0 area 0 interface checkpoint-edge "
         "authentication-key ospfkey1",
-        "router \"Base\" ospf 0 admin-state enable"}) {
+        "router \"Base\" ospf 0 export-policy CHECKPOINT-EXPORT-A",
+        "router \"Base\" ospf 0 export-policy CHECKPOINT-EXPORT-B",
+        "router \"Base\" ospf 0 admin-state enable",
+        "ipsec client-db checkpoint-db description checkpoint",
+        "ipsec radius accounting-policy checkpoint-acct update-interval "
+        "value 30"}) {
     const std::string result{runtime.command(message(
         lab_runtime_protocol::session_execute, {"r1-console-1", command}))};
     if (result.find("MINOR:") != std::string_view::npos)
@@ -4930,7 +5068,17 @@ void lab_runtime_tests() {
           checkpoint_policy->entries.front().action ==
               mld::ImportPolicyAction::reject &&
           checkpoint_interface != precommit_candidate.interfaces.end() &&
-          checkpoint_interface->mld_import_policy == "CHECKPOINT-MLD-IN",
+          checkpoint_interface->mld_import_policy == "CHECKPOINT-MLD-IN" &&
+          precommit_candidate.ospf.instances.size() == 1U &&
+          precommit_candidate.ospf.instances.front().export_policies ==
+              std::vector<std::string>{"CHECKPOINT-EXPORT-A",
+                                       "CHECKPOINT-EXPORT-B"} &&
+          precommit_candidate.ipsec.client_databases.size() == 1U &&
+          precommit_candidate.ipsec.client_databases.front().description ==
+              "checkpoint" &&
+          precommit_candidate.ipsec.radius_accounting_policies.size() == 1U &&
+          precommit_candidate.ipsec.radius_accounting_policies.front()
+                  .update_value_minutes == 30U,
       "MD candidate checkpoint lost policy leaves before commit");
   const std::string checkpoint_commit{runtime.command(message(
       lab_runtime_protocol::session_execute, {"r1-console-1", "commit"}))};

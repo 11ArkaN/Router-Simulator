@@ -85,4 +85,61 @@ void route_policy_tests() {
                           .source = RouteSource::static_route})
                       .decision == PolicyDecision::accept,
           "one policy entry did not preserve every expanded prefix-list term");
+
+  // next-policy exits the program with the mutated candidate so a chain can
+  // continue in the next policy. It is a legal default; next-entry is not.
+  std::array<PolicyEntry, 1U> handoff{};
+  handoff[0].number = 10U;
+  handoff[0].destination = connected_range;
+  handoff[0].decision = PolicyDecision::next_policy;
+  handoff[0].set_metric = 50U;
+  RoutePolicyProgram first;
+  require(first.replace(handoff, PolicyDecision::next_policy),
+          "next-policy default was rejected");
+  const auto handed = first.evaluate(source);
+  require(handed.decision == PolicyDecision::next_policy &&
+              handed.candidate.metric == 50U,
+          "next-policy did not exit with the mutated candidate");
+  RoutePolicyProgram invalid_default;
+  require(!invalid_default.replace(handoff, PolicyDecision::next_entry),
+          "next-entry default was accepted");
+
+  // The chain applies in order and the first match wins. The first program
+  // hands a static route off with a metric mutation, the second accepts only
+  // mutated metrics, and an exhausted chain rejects.
+  std::array<PolicyEntry, 1U> acceptor{};
+  acceptor[0].number = 10U;
+  acceptor[0].decision = PolicyDecision::accept;
+  RoutePolicyProgram second;
+  require(second.replace(acceptor, PolicyDecision::reject),
+          "chain acceptor was rejected");
+  const std::array<RoutePolicyProgram, 2U> chain{first, second};
+  const PolicyCandidate static_source{
+      .destination =
+          PolicyPrefix{.ipv4_network = ipv4(10U, 2U, 0U, 0U), .length = 16U},
+      .source = RouteSource::connected};
+  const auto chained = evaluate_policy_chain(chain, static_source);
+  require(chained.decision == PolicyDecision::accept &&
+              chained.candidate.metric == 50U,
+          "policy chain did not thread the handoff into the next policy");
+  const std::array<RoutePolicyProgram, 1U> exhausted{first};
+  require(evaluate_policy_chain(exhausted, static_source).decision ==
+                  PolicyDecision::reject,
+          "exhausted policy chain did not reject");
+  require(evaluate_policy_chain({}, static_source).decision ==
+                  PolicyDecision::reject,
+          "empty policy chain did not reject");
+
+  // A reject in the first program terminates the chain before the acceptor.
+  std::array<PolicyEntry, 1U> denier{};
+  denier[0].number = 10U;
+  denier[0].destination = connected_range;
+  denier[0].decision = PolicyDecision::reject;
+  RoutePolicyProgram stopper;
+  require(stopper.replace(denier, PolicyDecision::reject),
+          "chain stopper was rejected");
+  const std::array<RoutePolicyProgram, 2U> stopped{stopper, second};
+  require(evaluate_policy_chain(stopped, static_source).decision ==
+                  PolicyDecision::reject,
+          "policy chain did not stop at the first match");
 }

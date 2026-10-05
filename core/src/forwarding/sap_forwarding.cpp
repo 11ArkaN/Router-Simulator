@@ -147,15 +147,23 @@ SapProgramStatus SapForwardingTable::replace(
 
     std::vector<ServiceIpv6Interface> candidate_interfaces{
         interfaces.begin(), interfaces.end()};
+    // Records sort by interface identity, then address: one logical interface
+    // owns one record per configured address plus link-local state shared
+    // across its records. Address bytes break ties deterministically so
+    // checkpoint restore and repeated programming converge.
     std::sort(candidate_interfaces.begin(), candidate_interfaces.end(),
               [](const auto &left, const auto &right) {
-                return left.interface_id < right.interface_id;
+                return left.interface_id < right.interface_id ||
+                       (left.interface_id == right.interface_id &&
+                        left.address < right.address);
               });
     for (std::size_t index = 0U; index < candidate_interfaces.size(); ++index) {
       const auto &interface = candidate_interfaces[index];
-      const bool duplicate = index != 0U &&
+      const bool duplicate =
+          index != 0U &&
           candidate_interfaces[index - 1U].interface_id ==
-              interface.interface_id;
+              interface.interface_id &&
+          candidate_interfaces[index - 1U].address == interface.address;
       // Validate protocol values before relating them to the wire attachment.
       // MTU is L3 and RFC 8200 requires at least 1280 octets.
       const bool configured_address_valid =
@@ -191,9 +199,20 @@ SapProgramStatus SapForwardingTable::replace(
           matching->sap.port.ordinal != interface.physical_port_ordinal)
         return SapProgramStatus::incomplete_service_generation;
     }
-    if (!candidate_interfaces.empty() &&
-        candidate_interfaces.size() != candidate.size())
-      return SapProgramStatus::incomplete_service_generation;
+    // One SAP attachment owns one or more interface records. When records are
+    // present, every attachment must own at least one; extra records are
+    // additional addresses of an attached interface, not orphan state. An
+    // empty record list keeps the legacy attachment-only programming path.
+    if (!candidate_interfaces.empty())
+      for (const auto &attachment : candidate) {
+        const auto owned = std::find_if(
+            candidate_interfaces.begin(), candidate_interfaces.end(),
+            [&](const auto &interface) {
+              return interface.interface_id == attachment.logical_interface_id;
+            });
+        if (owned == candidate_interfaces.end())
+          return SapProgramStatus::incomplete_service_generation;
+      }
 
     attachments_ = std::move(candidate);
     logical_index_ = std::move(logical);
@@ -215,6 +234,17 @@ const ServiceIpv6Interface *SapForwardingTable::find_interface(
                  found->interface_id == logical_interface_id
              ? &*found
              : nullptr;
+}
+
+const ServiceIpv6Interface *SapForwardingTable::find_address(
+    std::uint64_t logical_interface_id,
+    const packet::Ipv6 &address) const noexcept {
+  const auto found = std::find_if(
+      interfaces_.begin(), interfaces_.end(), [&](const auto &entry) {
+        return entry.interface_id == logical_interface_id &&
+               entry.address == address;
+      });
+  return found != interfaces_.end() ? &*found : nullptr;
 }
 
 void SapForwardingTable::remove_physical_port(

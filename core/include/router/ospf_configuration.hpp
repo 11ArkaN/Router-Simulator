@@ -120,7 +120,12 @@ struct AreaConfiguration {
 };
 
 struct InstanceConfiguration {
-  std::string export_policy{};
+  // YANG models export-policy as an ordered leaf-list of up to five route
+  // policies. The chain evaluates in configured order and the first match
+  // wins; classic replaces the whole chain with one command while MD-CLI
+  // appends and removes single entries.
+  static constexpr std::size_t maximum_export_policies = 5U;
+  std::vector<std::string> export_policies{};
   std::optional<std::uint32_t> configured_router_id{};
   // The ASBR presence container gates all RTM export. OSPFv2 trace-path uses
   // one domain bit to prevent redistribution loops between protocol instances;

@@ -6,6 +6,7 @@
 #include "ies_cli_configuration.hpp"
 
 #include "cli_internal.hpp"
+#include "router/generated_device_catalog.hpp"
 #include "router/interface_identity.hpp"
 #include "router/ip_address.hpp"
 
@@ -245,28 +246,40 @@ std::string instance_path(std::string_view service_name,
 bool set_address(IesInterfaceConfiguration &interface, packet::Ipv6 address,
                  std::uint8_t prefix_length) {
   if (ip::is_unspecified(address) || ip::is_multicast(address) ||
-      prefix_length > 128U)
+      prefix_length < 4U || prefix_length > 128U)
     return false;
-  if (interface.address_configured && interface.address == address &&
-      interface.prefix_length == prefix_length)
+  const auto found =
+      std::find_if(interface.addresses.begin(), interface.addresses.end(),
+                   [&](const auto &entry) { return entry.address == address; });
+  if (found != interface.addresses.end()) {
+    if (found->prefix_length == prefix_length)
+      return false;
+    found->prefix_length = prefix_length;
+    return true;
+  }
+  // The list shares the documented per-interface address ceiling with native
+  // router interfaces. A new key beyond it is an explicit error, never a
+  // silent drop.
+  if (interface.addresses.size() >=
+      device_catalog::network_interface_ip_addresses)
     return false;
-  interface.address = address;
-  interface.prefix_length = prefix_length;
-  interface.address_configured = true;
+  interface.addresses.push_back({.address = address,
+                                 .prefix_length = prefix_length});
   if (std::any_of(interface.mac.begin(), interface.mac.end(),
                   [](std::uint8_t byte) { return byte != 0U; }))
     interface.link_local = ip::link_local_from_mac(interface.mac);
   return true;
 }
 
-bool clear_address(IesInterfaceConfiguration &interface) {
-  if (!interface.address_configured)
+bool clear_address(IesInterfaceConfiguration &interface,
+                   packet::Ipv6 address) {
+  const auto found =
+      std::find_if(interface.addresses.begin(), interface.addresses.end(),
+                   [&](const auto &entry) { return entry.address == address; });
+  if (found == interface.addresses.end())
     return false;
-  interface.address = {};
-  interface.link_local = {};
-  interface.prefix_length = 0U;
-  interface.address_configured = false;
-  // DHCPv6 relay depends on an addressed routed interface. Removing the
+  interface.addresses.erase(found);
+  // DHCPv6 relay depends on an addressed routed interface. Removing the last
   // address while retaining an active child would create invalid running
   // state, so the command is rejected by final validation unless relay was
   // removed first. We deliberately do not cascade-delete operator intent.
@@ -886,18 +899,25 @@ bool edit_impl(Configuration &configuration,
     const auto address = ip::parse_ipv6(value(command, TokenKind::ipv6));
     if (!address)
       return false;
-    if (!interface->address_configured || interface->address != *address)
+    const auto found = std::find_if(
+        interface->addresses.begin(), interface->addresses.end(),
+        [&](const auto &entry) { return entry.address == *address; });
+    if (found == interface->addresses.end())
       return true;
-    return clear_address(*interface);
+    return clear_address(*interface, *address);
   }
   if (id == classic_ies_interface_no_ipv6_address) {
     const auto expected = parse_interface_address(
         value(command, TokenKind::ipv6_address_prefix));
-    if (!expected || !interface->address_configured ||
-        interface->address != expected->address ||
-        interface->prefix_length != expected->prefix_length)
+    if (!expected)
       return false;
-    return clear_address(*interface);
+    const auto found = std::find_if(
+        interface->addresses.begin(), interface->addresses.end(),
+        [&](const auto &entry) { return entry.address == expected->address; });
+    if (found == interface->addresses.end() ||
+        found->prefix_length != expected->prefix_length)
+      return false;
+    return clear_address(*interface, expected->address);
   }
 
   if (id == md_ies_interface_sap || id == classic_ies_interface_sap_create) {
@@ -914,7 +934,7 @@ bool edit_impl(Configuration &configuration,
       return false;
     interface->sap = *sap;
     interface->mac = *mac;
-    if (interface->address_configured)
+    if (!interface->addresses.empty())
       interface->link_local = ip::link_local_from_mac(*mac);
     return true;
   }

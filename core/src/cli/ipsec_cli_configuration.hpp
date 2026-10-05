@@ -25,7 +25,9 @@ enum class SecretKind : std::uint8_t {
   ppk_ascii,
   ppk_hexadecimal,
   ike_pre_shared_key,
-  static_authentication_key
+  static_authentication_key,
+  client_db_pre_shared_key,
+  radius_auth_password
 };
 
 class SecretSink {

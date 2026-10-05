@@ -467,6 +467,15 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
     case ipsec_trust_anchor_profile_name:
     case ppk_list_name:
     case ca_profile_name:
+    case ipsec_client_db_name:
+    case ipsec_client_name:
+    case private_interface_name:
+    case private_service_name:
+    case router_instance_name:
+    case radius_policy_name:
+    case pki_ca_profile_name:
+    case pki_common_name_list_name:
+    case pki_est_profile_name:
       // Both SR OS list keys have their own documented 1..32 contract. Keep
       // them independent from TLS catalog constants even though the current
       // maximum happens to be equal.
@@ -545,7 +554,8 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
       const auto secret = scalar_text(value);
       return !secret.empty() && secret.size() <= 166U;
     }
-    case ppk_hex_value: {
+    case ppk_hex_value:
+    case client_db_psk: {
       const auto secret = scalar_text(value);
       if (secret.empty() || secret.size() > 166U)
         return false;
@@ -564,7 +574,74 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
                       (byte >= 'A' && byte <= 'F');
              });
     }
+    case radius_password: {
+      // RADIUS authentication passwords use the encrypted-leaf 1..166
+      // envelope with the same protected spellings as other secrets.
+      const auto secret = scalar_text(value);
+      return !secret.empty() && secret.size() <= 166U;
+    }
+    case ipsec_client_id: {
+      // YANG bounds client list keys at 1 through 8000.
+      if (!decimal_text(value) || value.size() > 4U)
+        return false;
+      unsigned id{};
+      for (const auto byte : value)
+        id = id * 10U + static_cast<unsigned>(byte - '0');
+      return id >= 1U && id <= 8000U;
+    }
+    case radius_update_value: {
+      // YANG update-interval value is 0 or 5 through 259200 minutes.
+      if (!decimal_text(value) || value.size() > 6U)
+        return false;
+      unsigned minutes{};
+      for (const auto byte : value)
+        minutes = minutes * 10U + static_cast<unsigned>(byte - '0');
+      return minutes == 0U || (minutes >= 5U && minutes <= 259200U);
+    }
+    case radius_update_jitter: {
+      if (!decimal_text(value) || value.size() > 4U)
+        return false;
+      unsigned seconds{};
+      for (const auto byte : value)
+        seconds = seconds * 10U + static_cast<unsigned>(byte - '0');
+      return seconds <= 3600U;
+    }
+    case pki_cn_index: {
+      // YANG bounds common-name indexes at 1 through 128.
+      if (!decimal_text(value) || value.size() > 3U)
+        return false;
+      unsigned index{};
+      for (const auto byte : value)
+        index = index * 10U + static_cast<unsigned>(byte - '0');
+      return index >= 1U && index <= 128U;
+    }
+    case pki_cn_value: {
+      // YANG requires a regular expression that is not all spaces.
+      const auto text = scalar_text(value);
+      return !text.empty() && text.size() <= 255U &&
+             std::any_of(text.begin(), text.end(),
+                         [](char byte) { return byte != ' '; });
+    }
+    case pki_fqdn:
+      return bounded_name(value, 255U);
+    case pki_username:
+    case pki_transmission_profile:
+      return bounded_name(value, 32U);
+    case pki_path: {
+      // EST server paths must start with / per the YANG pattern.
+      const auto text = scalar_text(value);
+      return !text.empty() && text.size() <= 255U && text.front() == '/';
+    }
+    case pki_server_port: {
+      if (!decimal_text(value) || value.size() > 5U)
+        return false;
+      unsigned port{};
+      for (const auto byte : value)
+        port = port * 10U + static_cast<unsigned>(byte - '0');
+      return port >= 1U && port <= 65535U;
+    }
     case ike_identity_fqdn:
+    case idi_string:
       return bounded_name(value, 255U);
     case boolean:
       return value == "true" || value == "false";
@@ -851,6 +928,28 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case tls_certificate_entry_index:
   case tls_algorithm_index:
   case tls_common_name_list_name:
+  case ipsec_client_db_name:
+  case ipsec_client_id:
+  case ipsec_client_name:
+  case private_interface_name:
+  case private_service_name:
+  case router_instance_name:
+  case idi_string:
+  case client_db_psk:
+  case radius_policy_name:
+  case radius_password:
+  case radius_update_value:
+  case radius_update_jitter:
+  case pki_ca_profile_name:
+  case pki_common_name_list_name:
+  case pki_est_profile_name:
+  case pki_cn_index:
+  case pki_cn_value:
+  case pki_path:
+  case pki_server_port:
+  case pki_fqdn:
+  case pki_username:
+  case pki_transmission_profile:
     // Redirect rate leaves are user supplied scalars. Their release-specific
     // numeric ranges are enforced by the command handler because completion
     // must not manufacture a preferred rate value that SR OS does not suggest.

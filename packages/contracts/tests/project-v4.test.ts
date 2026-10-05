@@ -191,7 +191,7 @@ describe("multi-router project format", () => {
     };
     router.running.ospf.instances.push({
       instanceId: 0, addressFamily: "ipv4", routerId: "10.255.0.1",
-      exportPolicy: "redistribute-selected", asbr: true,
+      exportPolicies: ["redistribute-selected"], asbr: true,
       asbrTracePathDomainId: 7, referenceBandwidthKbps: 100000000,
       routerPreference: 10, externalPreference: 150,
       spfTimersMilliseconds: { initial: 1000, second: 1000, maximum: 10000 },
@@ -204,8 +204,8 @@ describe("multi-router project format", () => {
 
     const restored = parseLabProjectV4(project).routers[0].running;
     expect(restored.policyOptions).toEqual(router.running.policyOptions);
-    expect(restored.ospf.instances[0].exportPolicy)
-      .toBe("redistribute-selected");
+    expect(restored.ospf.instances[0].exportPolicies)
+      .toEqual(["redistribute-selected"]);
   });
 
   it("persists router IPv6 interfaces and scoped static routes", () => {

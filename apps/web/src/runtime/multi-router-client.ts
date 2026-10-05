@@ -196,7 +196,8 @@ function routerConfigurationPayload(router:
   values.push(String(router.running.ospf.instances.length));
   for (const instance of router.running.ospf.instances) {
     values.push(String(instance.instanceId), instance.addressFamily,
-      instance.routerId ?? "", instance.exportPolicy,
+      instance.routerId ?? "",
+      String(instance.exportPolicies.length), ...instance.exportPolicies,
       instance.asbrTracePathDomainId?.toString() ?? "",
       String(instance.referenceBandwidthKbps),
       String(instance.routerPreference), String(instance.externalPreference),

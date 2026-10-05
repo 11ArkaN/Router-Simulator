@@ -945,13 +945,17 @@ service::SapProgramStatus RouterForwarder::program_sap_generation(
 
     // Remove a deleted or changed interface only from the private DAD image.
     // An unchanged projection retains its probe progress and duplicate state.
+    // Records match by address so adding a second address to an interface
+    // keeps DAD progress for the addresses that did not change.
     for (const auto &old : sap_forwarding_.interfaces()) {
       const auto replacement =
-          candidate_table->find_interface(old.interface_id);
+          candidate_table->find_address(old.interface_id, old.address);
       if (identity_changed(old, replacement))
         candidate_dad->remove_interface(old.interface_id);
     }
     const auto now = Clock::now();
+    std::uint64_t dad_link_id{};
+    bool dad_link_done{};
     for (const auto &interface : interfaces) {
       const auto *physical = port(interface.physical_port_ordinal);
       if (!interface.operational || !physical || !physical->operational)
@@ -962,16 +966,23 @@ service::SapProgramStatus RouterForwarder::program_sap_generation(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 device_catalog::ipv6_dad_max_initial_delay));
       };
-      if ((!candidate_dad->find(interface.interface_id, interface.link_local) &&
-           !candidate_dad->configure(
-               interface.interface_id, interface.physical_port_ordinal,
-               interface.link_local, device_catalog::ipv6_dad_transmits,
-               initial_delay(interface.link_local), now)) ||
-          (!candidate_dad->find(interface.interface_id, interface.address) &&
-           !candidate_dad->configure(
-               interface.interface_id, interface.physical_port_ordinal,
-               interface.address, device_catalog::ipv6_dad_transmits,
-               initial_delay(interface.address), now)))
+      // Link-local state is shared across the records of one interface:
+      // probe it once per interface identity, then probe every address.
+      if (!dad_link_done || dad_link_id != interface.interface_id) {
+        dad_link_id = interface.interface_id;
+        dad_link_done = true;
+        if (!candidate_dad->find(interface.interface_id, interface.link_local) &&
+            !candidate_dad->configure(
+                interface.interface_id, interface.physical_port_ordinal,
+                interface.link_local, device_catalog::ipv6_dad_transmits,
+                initial_delay(interface.link_local), now))
+          return service::SapProgramStatus::resource_exhausted;
+      }
+      if (!candidate_dad->find(interface.interface_id, interface.address) &&
+          !candidate_dad->configure(
+              interface.interface_id, interface.physical_port_ordinal,
+              interface.address, device_catalog::ipv6_dad_transmits,
+              initial_delay(interface.address), now))
         return service::SapProgramStatus::resource_exhausted;
     }
     // Validation and every fallible DAD insertion have completed. Operational
@@ -981,7 +992,7 @@ service::SapProgramStatus RouterForwarder::program_sap_generation(
     // service-interface generation.
     for (const auto &old : sap_forwarding_.interfaces()) {
       const auto replacement =
-          candidate_table->find_interface(old.interface_id);
+          candidate_table->find_address(old.interface_id, old.address);
       const bool changed = identity_changed(old, replacement);
       if (changed) {
         ipv6_neighbors_.remove_interface(old.interface_id);
@@ -4477,17 +4488,18 @@ bool RouterForwarder::validate_checkpoint(
                    state.service_ipv6_interfaces.begin(),
                    state.service_ipv6_interfaces.end(),
                    [&](const auto &value) {
-                     return value.interface_id == entry.interface_id;
+                     return value.interface_id == entry.interface_id &&
+                            (entry.address == value.address ||
+                             entry.address == value.link_local);
                    });
                service != state.service_ipv6_interfaces.end()) {
       // An IES address is owned by the routed service interface. Its physical
       // access port supplies carrier only and is correctly allowed to have no
-      // native IPv6 address at all.
+      // native IPv6 address at all. Any configured address record of the
+      // interface owns the neighbor entry.
       configured_address =
           service->configured &&
-          service->physical_port_ordinal == entry.port_ordinal &&
-          (entry.address == service->address ||
-           entry.address == service->link_local);
+          service->physical_port_ordinal == entry.port_ordinal;
     } else if (const auto relay = std::find_if(
                    state.dhcpv6_relay_interfaces.begin(),
                    state.dhcpv6_relay_interfaces.end(),

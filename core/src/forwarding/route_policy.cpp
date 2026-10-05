@@ -45,6 +45,10 @@ namespace {
 
 bool RoutePolicyProgram::valid(std::span<const PolicyEntry> entries,
                                PolicyDecision default_decision) noexcept {
+  // next-entry as a default has no later entry and stays rejected. next-policy
+  // as a default exits to the next chained policy; a chain evaluator maps the
+  // exhausted chain to reject, while single-policy consumers keep their own
+  // terminal mapping.
   if (default_decision == PolicyDecision::next_entry)
     return false;
   std::uint32_t previous{};
@@ -94,7 +98,8 @@ RoutePolicyProgram::evaluate(const PolicyCandidate &candidate) const noexcept {
     // Attribute actions precede the disposition of the same entry. next-entry
     // deliberately carries the modified candidate into subsequent clauses,
     // matching ordered route-policy processing rather than restarting from the
-    // original source route.
+    // original source route. next-policy exits this program with the modified
+    // candidate so the caller can continue the chain in the next policy.
     if (entry.set_metric)
       result.candidate.metric = *entry.set_metric;
     if (entry.set_metric_type)

@@ -117,6 +117,18 @@ struct Dhcpv6RelayConfiguration {
              const Dhcpv6RelayConfiguration &) noexcept = default;
 };
 
+struct IesInterfaceAddress {
+  // YANG keys the service interface address list by ipv6-address. The first
+  // configured entry is the primary source for relay link-address fallback,
+  // connected-route origination and link-local derivation order.
+  packet::Ipv6 address{};
+  std::uint8_t prefix_length{};
+
+  [[nodiscard]] friend bool
+  operator==(const IesInterfaceAddress &,
+             const IesInterfaceAddress &) noexcept = default;
+};
+
 struct IesInterfaceConfiguration {
   // logical_id is allocated by the service owner and never derived from vector
   // position or port ordinal. All FIB, ND, relay and checkpoint references use
@@ -126,11 +138,12 @@ struct IesInterfaceConfiguration {
   std::string description{};
   SapKey sap{};
   packet::Mac mac{};
-  packet::Ipv6 address{};
+  // Ordered address list, bounded by the documented per-interface ceiling
+  // shared with native router interfaces. An empty list means the interface
+  // carries no global address yet.
+  std::vector<IesInterfaceAddress> addresses{};
   packet::Ipv6 link_local{};
-  std::uint8_t prefix_length{};
   std::uint16_t ip_mtu{1500U};
-  bool address_configured{};
   // YANG defaults the interface admin-state leaf to enable, so a freshly
   // created interface is administratively up until explicitly disabled.
   bool admin_enabled{true};

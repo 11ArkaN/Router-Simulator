@@ -15,6 +15,7 @@
 #include "router/secret_vault.hpp"
 #include "router/session_workflows.hpp"
 #include "router/tls_profile.hpp"
+#include "router/pki_configuration.hpp"
 
 #include <array>
 #include <chrono>
@@ -483,6 +484,7 @@ struct PortableConfigurationCheckpoint {
   bool ipv6_nd_stale_time_configured{};
   tls_profile::Configuration tls;
   ipsec::configuration::Configuration ipsec;
+  pki::Configuration pki;
   // Service intent is portable control state. Forwarding checkpoints retain
   // only the compiled SAP and logical-interface generation, which is not
   // sufficient to reconstruct customer ownership or CLI presence semantics.
@@ -522,6 +524,7 @@ struct PortableRouterIntentCheckpoint {
   bool ipv6_nd_stale_time_configured{};
   tls_profile::Configuration tls;
   ipsec::configuration::Configuration ipsec;
+  pki::Configuration pki;
   service::Configuration ies;
   bof::AutoconfigureIntent bof_autoconfigure;
   dhcpv4::configuration::RouterConfiguration dhcpv4_servers;

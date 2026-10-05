@@ -7,6 +7,7 @@
 #pragma once
 
 #include "router/generated_profile.hpp"
+#include "router/ipsec_client_database.hpp"
 #include "router/ipsec_credentials_configuration.hpp"
 #include "router/ipsec_traffic_selector_configuration.hpp"
 #include "router/ipsec_tunnel_configuration.hpp"
@@ -163,6 +164,9 @@ struct Configuration {
   std::vector<TrafficSelectorList> traffic_selector_lists;
   std::vector<TransportModeProfile> transport_mode_profiles;
   std::vector<TunnelTemplate> tunnel_templates;
+  std::vector<ClientDatabase> client_databases;
+  std::vector<RadiusAccountingPolicy> radius_accounting_policies;
+  std::vector<RadiusAuthenticationPolicy> radius_authentication_policies;
 
   bool operator==(const Configuration &) const = default;
 };
@@ -275,7 +279,11 @@ dh_group_name(DiffieHellmanGroup value) noexcept {
       !validate_traffic_selector_lists(state.traffic_selector_lists,
                                        allow_incomplete) ||
       !validate_transport_profiles(state.transport_mode_profiles) ||
-      !validate_tunnel_templates(state.tunnel_templates))
+      !validate_tunnel_templates(state.tunnel_templates) ||
+      !validate_client_databases(state.client_databases, allow_incomplete) ||
+      !validate_radius_accounting_policies(state.radius_accounting_policies) ||
+      !validate_radius_authentication_policies(
+          state.radius_authentication_policies))
     return false;
   for (const auto &association : state.static_sas) {
     const bool valid_authentication =

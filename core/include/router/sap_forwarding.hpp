@@ -136,6 +136,12 @@ public:
   find_logical(std::uint64_t logical_interface_id) const noexcept;
   [[nodiscard]] const ServiceIpv6Interface *
   find_interface(std::uint64_t logical_interface_id) const noexcept;
+  // Per-address record lookup for multi-address interfaces. Records of one
+  // interface sort adjacently by address, so identity comparison and DAD
+  // progress stay per address instead of restarting the whole interface.
+  [[nodiscard]] const ServiceIpv6Interface *
+  find_address(std::uint64_t logical_interface_id,
+               const packet::Ipv6 &address) const noexcept;
   [[nodiscard]] bool
   has_physical_port(std::uint16_t physical_port_ordinal) const noexcept {
     return first_on_port(physical_port_ordinal) != nullptr;

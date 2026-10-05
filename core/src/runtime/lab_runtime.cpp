@@ -11,6 +11,7 @@
 #include "cli/ies_cli_configuration.hpp"
 #include "cli/ipsec_cli_configuration.hpp"
 #include "cli/ospf_cli_configuration.hpp"
+#include "cli/pki_cli_configuration.hpp"
 #include "router/cli.hpp"
 #include "router/dns_master_file.hpp"
 #include "router/generated_lab_runtime_protocol.hpp"
@@ -122,6 +123,12 @@ public:
     case ipsec_cli::SecretKind::static_authentication_key:
       purpose = vault::SecretKind::ipsec_static_authentication_key;
       break;
+    case ipsec_cli::SecretKind::client_db_pre_shared_key:
+      purpose = vault::SecretKind::ipsec_client_db_pre_shared_key;
+      break;
+    case ipsec_cli::SecretKind::radius_auth_password:
+      purpose = vault::SecretKind::ipsec_radius_auth_password;
+      break;
     }
     const auto [result, handle] = owner_->seal(purpose, plaintext);
     return result == vault::Result::applied
@@ -135,9 +142,36 @@ private:
   vault::SecretVault *owner_{};
 };
 
-class Dhcpv6EntropySource final : public dhcpv6_cli::EntropySource,
-                                  public bof_cli::EntropySource {
+class PkiVaultSink final : public pki_cli::SecretSink {
 public:
+  explicit PkiVaultSink(vault::SecretVault *owner) noexcept : owner_(owner) {}
+
+  std::optional<std::uint64_t>
+  seal(pki_cli::SecretKind kind,
+       std::span<const std::uint8_t> plaintext) noexcept override {
+    if (!owner_)
+      return std::nullopt;
+    // EST HTTP passwords are the only sealable PKI secret in this slice.
+    // The switch stays exhaustive so a future secret kind cannot seal under
+    // a wrong purpose.
+    vault::SecretKind purpose{};
+    switch (kind) {
+    case pki_cli::SecretKind::est_http_password:
+      purpose = vault::SecretKind::pki_est_http_password;
+      break;
+    }
+    const auto [result, handle] = owner_->seal(purpose, plaintext);
+    return result == vault::Result::applied
+               ? std::optional<std::uint64_t>{handle}
+               : std::nullopt;
+  }
+
+private:
+  vault::SecretVault *owner_{};
+};
+
+class Dhcpv6EntropySource final : public dhcpv6_cli::EntropySource,
+                                  public bof_cli::EntropySource {public:
   [[nodiscard]] bool
   fill(std::span<std::uint8_t> output) noexcept override {
     // OpenSSL is backed by the browser or native operating-system CSPRNG.
@@ -774,21 +808,14 @@ bool valid_mld_import_policies(
   return true;
 }
 
-std::optional<routing::RoutePolicyProgram> compile_route_policy(
+std::optional<std::vector<routing::RoutePolicyProgram>> compile_route_policy(
     std::span<const MldPolicyPrefixListIntent> prefix_lists,
     std::span<const MldNamedImportPolicyIntent> policies,
-    std::string_view policy_name) noexcept {
+    std::span<const std::string> policy_names) noexcept {
   // A missing export policy has a precise meaning in SR OS: no route is
-  // redistributed. Returning an empty default-reject program preserves that
-  // behavior without a special allow-list name or hidden default clause.
-  routing::RoutePolicyProgram program;
-  if (policy_name.empty())
-    return program;
-  const auto policy = std::find_if(
-      policies.begin(), policies.end(),
-      [&](const auto &candidate) { return candidate.name == policy_name; });
-  if (policy == policies.end())
-    return std::nullopt;
+  // redistributed. An empty chain preserves that behavior without a special
+  // allow-list name or hidden default clause.
+  std::vector<routing::RoutePolicyProgram> chain;
   const auto prefix_list =
       [&](std::string_view name) -> const MldPolicyPrefixListIntent * {
     if (name.empty())
@@ -801,6 +828,14 @@ std::optional<routing::RoutePolicyProgram> compile_route_policy(
     return found == prefix_lists.end() ? nullptr : &*found;
   };
   try {
+    chain.reserve(policy_names.size());
+    for (const auto &policy_name : policy_names) {
+      const auto policy = std::find_if(
+          policies.begin(), policies.end(), [&](const auto &candidate) {
+            return candidate.name == policy_name;
+          });
+      if (policy == policies.end())
+        return std::nullopt;
     std::vector<routing::PolicyEntry> compiled;
     for (const auto &entry : policy->entries) {
       const auto *destinations = prefix_list(entry.route_prefix_list);
@@ -821,8 +856,10 @@ std::optional<routing::RoutePolicyProgram> compile_route_policy(
                     ? routing::PolicyDecision::accept
                     : entry.action == mld::ImportPolicyAction::reject ||
                               entry.action == mld::ImportPolicyAction::drop
-                          ? routing::PolicyDecision::reject
-                          : routing::PolicyDecision::next_entry,
+                        ? routing::PolicyDecision::reject
+                    : entry.action == mld::ImportPolicyAction::next_policy
+                        ? routing::PolicyDecision::next_policy
+                        : routing::PolicyDecision::next_entry,
             .set_metric = entry.set_metric,
             .set_metric_type = entry.set_metric_type,
             .set_tag = entry.set_route_tag};
@@ -850,17 +887,24 @@ std::optional<routing::RoutePolicyProgram> compile_route_policy(
       }
     }
     // SR OS route policies reject unmatched routes unless an explicit default
-    // action accepts them. next-entry at the default clause has no later entry
-    // and therefore also falls through as reject for this single policy.
+    // action accepts them. A default next-entry or next-policy continues the
+    // chain in the next policy, exactly like the MLD import fallthrough.
     const auto default_decision =
         policy->default_action_configured &&
                 policy->default_action == mld::ImportPolicyAction::accept
             ? routing::PolicyDecision::accept
+        : policy->default_action_configured &&
+                  (policy->default_action ==
+                       mld::ImportPolicyAction::next_policy ||
+                   policy->default_action == mld::ImportPolicyAction::next_entry)
+            ? routing::PolicyDecision::next_policy
             : routing::PolicyDecision::reject;
-    return program.replace(compiled, default_decision)
-               ? std::optional<routing::RoutePolicyProgram>{
-                     std::move(program)}
-               : std::nullopt;
+    routing::RoutePolicyProgram program;
+    if (!program.replace(compiled, default_decision))
+      return std::nullopt;
+    chain.push_back(std::move(program));
+    }
+    return chain;
   } catch (const std::bad_alloc &) {
     return std::nullopt;
   }
@@ -2372,6 +2416,8 @@ bool classic_configuration_command(cli_schema::CommandId id) noexcept {
     return true;
   if (ipsec_cli::is_classic_command(id))
     return true;
+  if (pki_cli::is_classic_command(id))
+    return true;
   if (tls_cli::is_classic_command(id))
     return true;
   if (ies_cli::is_classic_command(id))
@@ -3879,13 +3925,15 @@ void md_ies_interface_info(std::ostringstream &out,
     md_indent(out, depth);
     out << "ip-mtu " << interface.ip_mtu << '\n';
   }
-  if (interface.address_configured) {
+  if (!interface.addresses.empty()) {
     md_indent(out, depth);
     out << "ipv6 {\n";
-    md_indent(out, depth + 1U);
-    out << "address " << ip::format_ipv6(interface.address)
-        << " prefix-length " << static_cast<unsigned>(interface.prefix_length)
-        << '\n';
+    for (const auto &entry : interface.addresses) {
+      md_indent(out, depth + 1U);
+      out << "address " << ip::format_ipv6(entry.address)
+          << " prefix-length "
+          << static_cast<unsigned>(entry.prefix_length) << '\n';
+    }
     if (interface.dhcpv6_relay.configured) {
       md_indent(out, depth + 1U);
       out << "dhcp6 {\n";
@@ -4024,6 +4072,446 @@ std::string_view ipsec_authentication_text(
   return {};
 }
 
+std::string_view md_ipsec_revocation_method(
+    ipsec::configuration::RevocationMethod method) noexcept {
+  using Method = ipsec::configuration::RevocationMethod;
+  return method == Method::ocsp ? "ocsp"
+       : method == Method::crl  ? "crl"
+                                : "none";
+}
+
+void md_ipsec_client_idi_info(
+    std::ostringstream &out, const ipsec::configuration::ClientEntry &entry,
+    std::size_t depth) {
+  using Kind = ipsec::configuration::ClientIdiKind;
+  const auto &idi = entry.idi;
+  if (idi.kind == Kind::none)
+    return;
+  md_indent(out, depth);
+  out << "idi ";
+  switch (idi.kind) {
+  case Kind::any:
+    out << "any true\n";
+    break;
+  case Kind::ipv4_prefix:
+    out << "ipv4-prefix " << idi.prefix << '\n';
+    break;
+  case Kind::ipv4_prefix_any:
+    out << "ipv4-prefix-any true\n";
+    break;
+  case Kind::ipv6_prefix:
+    out << "ipv6-prefix " << idi.prefix << '\n';
+    break;
+  case Kind::ipv6_prefix_any:
+    out << "ipv6-prefix-any true\n";
+    break;
+  case Kind::fqdn:
+  case Kind::fqdn_suffix:
+  case Kind::rfc822:
+  case Kind::rfc822_suffix:
+  case Kind::regexp: {
+    out << (idi.kind == Kind::fqdn           ? "fqdn "
+            : idi.kind == Kind::fqdn_suffix  ? "fqdn-suffix "
+            : idi.kind == Kind::rfc822       ? "rfc822 "
+            : idi.kind == Kind::rfc822_suffix ? "rfc822-suffix "
+                                              : "regexp ")
+        << '"' << idi.string_value << "\"\n";
+    break;
+  }
+  case Kind::none:
+    break;
+  }
+}
+
+void md_ipsec_client_peer_info(
+    std::ostringstream &out, const ipsec::configuration::ClientEntry &entry,
+    std::size_t depth) {
+  using Kind = ipsec::configuration::ClientPeerKind;
+  const auto &peer = entry.peer;
+  if (peer.kind == Kind::none)
+    return;
+  md_indent(out, depth);
+  out << "peer-ip-prefix ";
+  switch (peer.kind) {
+  case Kind::ip_prefix:
+    out << "ip-prefix " << peer.prefix << '\n';
+    break;
+  case Kind::ipv4_only:
+    out << "ipv4-only true\n";
+    break;
+  case Kind::ipv6_only:
+    out << "ipv6-only true\n";
+    break;
+  case Kind::none:
+    break;
+  }
+}
+
+void md_ipsec_client_local_family_info(
+    std::ostringstream &out,
+    const ipsec::configuration::ClientLocalV4 &family, std::size_t depth) {
+  if (family.router_instance.empty() && family.dhcp_server.empty() &&
+      family.pool.empty() && family.secondary_pool.empty())
+    return;
+  md_indent(out, depth);
+  out << "ipv4 {\n";
+  if (!family.router_instance.empty()) {
+    md_indent(out, depth + 1U);
+    out << "router-instance \"" << family.router_instance << "\"\n";
+  }
+  if (!family.dhcp_server.empty()) {
+    md_indent(out, depth + 1U);
+    out << "dhcp-server \"" << family.dhcp_server << "\"\n";
+  }
+  if (!family.pool.empty()) {
+    md_indent(out, depth + 1U);
+    out << "pool \"" << family.pool << "\"\n";
+  }
+  if (!family.secondary_pool.empty()) {
+    md_indent(out, depth + 1U);
+    out << "secondary-pool \"" << family.secondary_pool << "\"\n";
+  }
+  md_indent(out, depth);
+  out << "}\n";
+}
+
+void md_ipsec_client_local_family_info(
+    std::ostringstream &out,
+    const ipsec::configuration::ClientLocalV6 &family, std::size_t depth) {
+  if (family.router_instance.empty() && family.dhcp_server.empty() &&
+      family.pool.empty())
+    return;
+  md_indent(out, depth);
+  out << "ipv6 {\n";
+  if (!family.router_instance.empty()) {
+    md_indent(out, depth + 1U);
+    out << "router-instance \"" << family.router_instance << "\"\n";
+  }
+  if (!family.dhcp_server.empty()) {
+    md_indent(out, depth + 1U);
+    out << "dhcp-server \"" << family.dhcp_server << "\"\n";
+  }
+  if (!family.pool.empty()) {
+    md_indent(out, depth + 1U);
+    out << "pool \"" << family.pool << "\"\n";
+  }
+  md_indent(out, depth);
+  out << "}\n";
+}
+
+void md_radius_include_info(
+    std::ostringstream &out,
+    const ipsec::configuration::RadiusIncludeAccounting &include_,
+    std::size_t depth, bool detail) {
+  if (detail || include_.acct_stats || include_.called_station_id ||
+      include_.calling_station_id || include_.framed_ip_addr ||
+      include_.framed_ipv6_prefix || include_.nas_identifier ||
+      include_.nas_ip_addr || include_.nas_port_id) {
+    md_indent(out, depth);
+    out << "include-radius-attribute {\n";
+    const auto flag = [&](std::string_view name, bool value) {
+      if (!detail && !value)
+        return;
+      md_indent(out, depth);
+      out << name << ' ' << (value ? "true" : "false") << '\n';
+    };
+    flag("acct-stats", include_.acct_stats);
+    flag("called-station-id", include_.called_station_id);
+    flag("calling-station-id", include_.calling_station_id);
+    flag("framed-ip-addr", include_.framed_ip_addr);
+    flag("framed-ipv6-prefix", include_.framed_ipv6_prefix);
+    flag("nas-identifier", include_.nas_identifier);
+    flag("nas-ip-addr", include_.nas_ip_addr);
+    flag("nas-port-id", include_.nas_port_id);
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+void md_radius_include_info(
+    std::ostringstream &out,
+    const ipsec::configuration::RadiusIncludeAuthentication &include_,
+    std::size_t depth, bool detail) {
+  if (detail || include_.called_station_id || include_.calling_station_id ||
+      include_.client_cert_subject_key_id || include_.nas_identifier ||
+      include_.nas_ip_addr || include_.nas_port_id) {
+    md_indent(out, depth);
+    out << "include-radius-attribute {\n";
+    const auto flag = [&](std::string_view name, bool value) {
+      if (!detail && !value)
+        return;
+      md_indent(out, depth);
+      out << name << ' ' << (value ? "true" : "false") << '\n';
+    };
+    flag("called-station-id", include_.called_station_id);
+    flag("calling-station-id", include_.calling_station_id);
+    flag("client-cert-subject-key-id", include_.client_cert_subject_key_id);
+    flag("nas-identifier", include_.nas_identifier);
+    flag("nas-ip-addr", include_.nas_ip_addr);
+    flag("nas-port-id", include_.nas_port_id);
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+void md_ipsec_client_info(std::ostringstream &out,
+                           const ipsec::configuration::ClientEntry &entry,
+                           std::size_t depth, bool detail) {
+  md_indent(out, depth);
+  out << "client " << entry.id << " {\n";
+  md_indent(out, depth + 1U);
+  out << "admin-state " << (entry.admin_enabled ? "enable" : "disable")
+      << '\n';
+  if (!entry.client_name.empty()) {
+    md_indent(out, depth + 1U);
+    out << "client-name \"" << entry.client_name << "\"\n";
+  }
+  if (detail || entry.action_configured) {
+    md_indent(out, depth + 1U);
+    out << "action "
+        << (entry.action == ipsec::configuration::ClientAction::accept
+                ? "accept"
+                : "reject")
+        << '\n';
+  }
+  if (!entry.private_interface.empty()) {
+    md_indent(out, depth + 1U);
+    out << "private-interface \"" << entry.private_interface << "\"\n";
+  }
+  if (!entry.private_service.empty()) {
+    md_indent(out, depth + 1U);
+    out << "private-service-name \"" << entry.private_service << "\"\n";
+  }
+  if (!entry.ts_list.empty()) {
+    md_indent(out, depth + 1U);
+    out << "ts-list \"" << entry.ts_list << "\"\n";
+  }
+  if (detail || entry.tunnel_template_configured) {
+    md_indent(out, depth + 1U);
+    out << "tunnel-template " << entry.tunnel_template << '\n';
+  }
+  if (entry.psk_configured) {
+    md_indent(out, depth + 1U);
+    out << "credential {\n";
+    md_indent(out, depth + 2U);
+    out << "pre-shared-key \"******\"\n";
+    md_indent(out, depth + 1U);
+    out << "}\n";
+  }
+  if (entry.idi.kind != ipsec::configuration::ClientIdiKind::none ||
+      entry.peer.kind != ipsec::configuration::ClientPeerKind::none) {
+    md_indent(out, depth + 1U);
+    out << "identification {\n";
+    md_ipsec_client_idi_info(out, entry, depth + 2U);
+    md_ipsec_client_peer_info(out, entry, depth + 2U);
+    md_indent(out, depth + 1U);
+    out << "}\n";
+  }
+  if (entry.local.configured) {
+    md_indent(out, depth + 1U);
+    out << "local {\n";
+    md_indent(out, depth + 2U);
+    out << "address-assignment {\n";
+    md_ipsec_client_local_family_info(out, entry.local.ipv4, depth + 3U);
+    md_ipsec_client_local_family_info(out, entry.local.ipv6, depth + 3U);
+    md_indent(out, depth + 2U);
+    out << "}\n";
+    md_indent(out, depth + 1U);
+    out << "}\n";
+  }
+  const auto &cert = entry.certificate;
+  if (detail || !cert.certificate_profile.empty() ||
+      !cert.trust_anchor_profile.empty() || cert.default_result_configured ||
+      cert.methods_configured) {
+    md_indent(out, depth + 1U);
+    out << "cert {\n";
+    if (!cert.certificate_profile.empty()) {
+      md_indent(out, depth + 2U);
+      out << "cert-profile \"" << cert.certificate_profile << "\"\n";
+    }
+    if (!cert.trust_anchor_profile.empty()) {
+      md_indent(out, depth + 2U);
+      out << "trust-anchor-profile \"" << cert.trust_anchor_profile << "\"\n";
+    }
+    if (detail || cert.default_result_configured ||
+        cert.methods_configured) {
+      md_indent(out, depth + 2U);
+      out << "status-verify {\n";
+      md_indent(out, depth + 3U);
+      out << "default-result "
+          << (cert.default_result ==
+                      ipsec::configuration::RevocationResult::good
+                  ? "good"
+                  : "revoked")
+          << '\n';
+      md_indent(out, depth + 3U);
+      out << "primary "
+          << md_ipsec_revocation_method(cert.primary_method) << '\n';
+      md_indent(out, depth + 3U);
+      out << "secondary "
+          << md_ipsec_revocation_method(cert.secondary_method) << '\n';
+      md_indent(out, depth + 2U);
+      out << "}\n";
+    }
+    md_indent(out, depth + 1U);
+    out << "}\n";
+  }
+  md_indent(out, depth);
+  out << "}\n";
+}
+
+void md_pki_configuration_body(std::ostringstream &out,
+                                 const pki::Configuration &pki,
+                                 std::size_t depth, bool detail) {
+  for (const auto &profile : pki.ca_profiles) {
+    md_indent(out, depth);
+    out << "ca-profile \"" << profile.name << "\" {\n";
+    md_indent(out, depth + 1U);
+    out << "admin-state " << (profile.admin_enabled ? "enable" : "disable")
+        << '\n';
+    if (!profile.description.empty()) {
+      md_indent(out, depth + 1U);
+      out << "description \"" << profile.description << "\"\n";
+    }
+    if (!profile.certificate_file.empty()) {
+      md_indent(out, depth + 1U);
+      out << "cert-file \"" << profile.certificate_file << "\"\n";
+    }
+    if (!profile.crl_file.empty()) {
+      md_indent(out, depth + 1U);
+      out << "crl-file \"" << profile.crl_file << "\"\n";
+    }
+    if (detail || profile.revocation_check_configured) {
+      md_indent(out, depth + 1U);
+      out << "revocation-check "
+          << (profile.revocation_check == pki::RevocationCheck::crl_optional
+                  ? "crl-optional"
+                  : "crl")
+          << '\n';
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  for (const auto &list : pki.common_name_lists) {
+    md_indent(out, depth);
+    out << "common-name-list \"" << list.name << "\" {\n";
+    for (const auto &entry : list.entries) {
+      md_indent(out, depth + 1U);
+      out << "common-name " << entry.index << " {\n";
+      md_indent(out, depth + 2U);
+      out << "cn-type "
+          << (entry.type == pki::CommonNameType::ip_address ? "ip-address"
+                                                            : "domain-name")
+          << '\n';
+      md_indent(out, depth + 2U);
+      out << "cn-value \"" << entry.value << "\"\n";
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  for (const auto &profile : pki.est_profiles) {
+    md_indent(out, depth);
+    out << "est-profile \"" << profile.name << "\" {\n";
+    if (!profile.transmission_profile.empty()) {
+      md_indent(out, depth + 1U);
+      out << "transmission-profile \"" << profile.transmission_profile
+          << "\"\n";
+    }
+    if (!profile.client_tls_profile.empty()) {
+      md_indent(out, depth + 1U);
+      out << "client-tls-profile \"" << profile.client_tls_profile << "\"\n";
+    }
+    if (detail || profile.check_id_kp_cmcra_only_configured) {
+      md_indent(out, depth + 1U);
+      out << "check-id-kp-cmcra-only "
+          << (profile.check_id_kp_cmcra_only ? "true" : "false") << '\n';
+    }
+    if (detail || profile.server.port_configured ||
+        profile.server.address_kind != pki::EstServerAddressKind::none ||
+        !profile.server.path.cacerts.empty() ||
+        !profile.server.path.simple_enroll.empty() ||
+        !profile.server.path.simple_reenroll.empty()) {
+      md_indent(out, depth + 1U);
+      out << "server {\n";
+      if (detail || profile.server.port_configured) {
+        md_indent(out, depth + 2U);
+        out << "port " << profile.server.port << '\n';
+      }
+      if (profile.server.address_kind != pki::EstServerAddressKind::none) {
+        md_indent(out, depth + 2U);
+        out << (profile.server.address_kind == pki::EstServerAddressKind::ipv4
+                    ? "ipv4 "
+                : profile.server.address_kind ==
+                          pki::EstServerAddressKind::ipv6
+                    ? "ipv6 "
+                    : "fqdn ")
+            << '"' << profile.server.address << "\"\n";
+      }
+      if (!profile.server.path.cacerts.empty() ||
+          !profile.server.path.simple_enroll.empty() ||
+          !profile.server.path.simple_reenroll.empty()) {
+        md_indent(out, depth + 2U);
+        out << "path {\n";
+        if (!profile.server.path.cacerts.empty()) {
+          md_indent(out, depth + 3U);
+          out << "cacerts \"" << profile.server.path.cacerts << "\"\n";
+        }
+        if (!profile.server.path.simple_enroll.empty()) {
+          md_indent(out, depth + 3U);
+          out << "simpleenroll \"" << profile.server.path.simple_enroll
+              << "\"\n";
+        }
+        if (!profile.server.path.simple_reenroll.empty()) {
+          md_indent(out, depth + 3U);
+          out << "simplereenroll \"" << profile.server.path.simple_reenroll
+              << "\"\n";
+        }
+        md_indent(out, depth + 2U);
+        out << "}\n";
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    const auto &http = profile.http_authentication;
+    if (!http.username.empty() || http.password_configured) {
+      md_indent(out, depth + 1U);
+      out << "http-authentication {\n";
+      if (!http.username.empty()) {
+        md_indent(out, depth + 2U);
+        out << "username \"" << http.username << "\"\n";
+      }
+      // Secret values never leave the vault: the renderer prints the same
+      // concealed marker the IPsec bodies use instead of key material.
+      if (http.password_configured) {
+        md_indent(out, depth + 2U);
+        out << "password \"******\"\n";
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
+}
+
+std::optional<std::string>
+md_pki_configuration_info(const pki::Configuration &pki, std::string_view path,
+                          bool detail) {
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->size() < 4U || (*tokens)[0] != "configure" ||
+      (*tokens)[1] != "system" || (*tokens)[2] != "security" ||
+      (*tokens)[3] != "pki")
+    return std::nullopt;
+  // PKI nests keyed lists below one container. Selecting the requested
+  // container from the canonical typed body keeps PWC behavior uniform with
+  // the IPsec renderer instead of duplicating scoping logic.
+  std::ostringstream out;
+  md_pki_configuration_body(out, pki, 0U, detail);
+  return md_rendered_context_body(out.str(), *tokens, 4U);
+}
+
 void md_ipsec_configuration_body(
     std::ostringstream &out,
     const ipsec::configuration::Configuration &configuration,
@@ -4064,7 +4552,9 @@ void md_ipsec_configuration_body(
         out << name << ' ' << value << '\n';
       }
     };
-    leaf("esp-auth-algorithm", "auth-encryption",
+    leaf("esp-auth-algorithm",
+         transform.authentication_encryption_configured ? "auth-encryption"
+                                                        : "sha-256",
          transform.authentication_encryption_configured);
     leaf("esp-encryption-algorithm",
          ipsec::configuration::configured_encryption_name(
@@ -4078,7 +4568,10 @@ void md_ipsec_configuration_body(
     if (detail || transform.pfs_group_configured) {
       md_indent(out, depth + 1U);
       out << "pfs-dh-group "
-          << (transform.pfs_enabled ? "group-19" : "none") << '\n';
+          << (transform.pfs_enabled
+                  ? ipsec::configuration::dh_group_name(transform.pfs_group)
+                  : "none")
+          << '\n';
     }
     md_indent(out, depth);
     out << "}\n";
@@ -4740,6 +5233,89 @@ void md_ipsec_configuration_body(
     md_indent(out, depth);
     out << "}\n";
   }
+  for (const auto &database : configuration.client_databases) {
+    md_indent(out, depth);
+    out << "client-db \"" << database.name << "\" {\n";
+    md_indent(out, depth + 1U);
+    out << "admin-state " << (database.admin_enabled ? "enable" : "disable")
+        << '\n';
+    if (!database.description.empty()) {
+      md_indent(out, depth + 1U);
+      out << "description \"" << database.description << "\"\n";
+    }
+    if (detail || database.match_idi_configured ||
+        database.match_peer_configured) {
+      md_indent(out, depth + 1U);
+      out << "match-list {\n";
+      if (detail || database.match_idi_configured) {
+        md_indent(out, depth + 2U);
+        out << "idi " << (database.match_idi ? "true" : "false") << '\n';
+      }
+      if (detail || database.match_peer_configured) {
+        md_indent(out, depth + 2U);
+        out << "peer-ip-prefix "
+            << (database.match_peer_ip_prefix ? "true" : "false") << '\n';
+      }
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    for (const auto &entry : database.clients)
+      md_ipsec_client_info(out, entry, depth + 1U, detail);
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  // The radius container is always navigable, so its header renders even
+  // when both policy lists are empty. Scoped info inside an empty container
+  // succeeds with empty output instead of reporting an unsupported context.
+  md_indent(out, depth);
+  out << "radius {\n";
+    for (const auto &policy : configuration.radius_accounting_policies) {
+      md_indent(out, depth + 1U);
+      out << "accounting-policy \"" << policy.name << "\" {\n";
+      if (!policy.radius_server_policy.empty()) {
+        md_indent(out, depth + 2U);
+        out << "radius-server-policy \"" << policy.radius_server_policy
+            << "\"\n";
+      }
+      if (detail || policy.update_value_configured ||
+          policy.update_jitter_configured) {
+        md_indent(out, depth + 2U);
+        out << "update-interval {\n";
+        if (detail || policy.update_value_configured) {
+          md_indent(out, depth + 3U);
+          out << "value " << policy.update_value_minutes << '\n';
+        }
+        if (detail || policy.update_jitter_configured) {
+          md_indent(out, depth + 3U);
+          out << "jitter " << policy.update_jitter_seconds << '\n';
+        }
+        md_indent(out, depth + 2U);
+        out << "}\n";
+      }
+      md_radius_include_info(out, policy.include_, depth + 2U, detail);
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    for (const auto &policy : configuration.radius_authentication_policies) {
+      md_indent(out, depth + 1U);
+      out << "authentication-policy \"" << policy.name << "\" {\n";
+      if (!policy.radius_server_policy.empty()) {
+        md_indent(out, depth + 2U);
+        out << "radius-server-policy \"" << policy.radius_server_policy
+            << "\"\n";
+      }
+      // Secret values never leave the vault: the renderer prints the same
+      // concealed marker the PPK body uses instead of key material.
+      if (policy.password_configured) {
+        md_indent(out, depth + 2U);
+        out << "password \"******\"\n";
+      }
+      md_radius_include_info(out, policy.include_, depth + 2U, detail);
+      md_indent(out, depth + 1U);
+      out << "}\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
 }
 
 std::optional<std::string>
@@ -5251,9 +5827,12 @@ void md_ospf_instance_info(std::ostringstream &out,
   leaf("reference-bandwidth", instance.reference_bandwidth_kbps);
   leaf("preference", instance.router_preference);
   leaf("external-preference", instance.external_preference);
-  if (!instance.export_policy.empty()) {
+  if (!instance.export_policies.empty()) {
     md_indent(out, depth);
-    out << "export-policy \"" << instance.export_policy << "\"\n";
+    out << "export-policy";
+    for (const auto &policy : instance.export_policies)
+      out << " \"" << policy << '"';
+    out << '\n';
   }
   if (instance.asbr) {
     md_indent(out, depth);
@@ -7620,6 +8199,8 @@ classic_configuration_info(const Configuration &configuration,
   if (!rendered)
     rendered = md_tls_configuration_info(configuration.tls, *md_path, detail);
   if (!rendered)
+    rendered = md_pki_configuration_info(configuration.pki, *md_path, detail);
+  if (!rendered)
     rendered = md_ies_configuration_info(configuration.ies, *md_path, detail);
   if (!rendered)
     rendered =
@@ -7808,8 +8389,13 @@ void json_ospf_configuration(std::ostringstream &out,
         << instance.lsa_initial_wait_milliseconds << ",\"second\":"
         << instance.lsa_second_wait_milliseconds << ",\"maximum\":"
         << instance.lsa_maximum_wait_milliseconds
-        << "},\"exportPolicy\":";
-    json_string(out, instance.export_policy);
+        << "},\"exportPolicies\":[";
+    for (std::size_t index{}; index < instance.export_policies.size(); ++index) {
+      if (index)
+        out << ',';
+      json_string(out, instance.export_policies[index]);
+    }
+    out << "]";
     out << ",\"gracefulRestartHelper\":"
         << (instance.graceful_restart_helper ? "true" : "false")
         << ",\"loopfreeAlternates\":"
@@ -8041,6 +8627,7 @@ LabRuntime::running_configuration(const RouterIntent &router_intent) const {
       router_intent.ipv6_nd_stale_time_configured;
   value.tls = router_intent.tls;
   value.ipsec = router_intent.ipsec;
+  value.pki = router_intent.pki;
   value.ies = router_intent.ies;
   value.bof_autoconfigure = router_intent.bof_autoconfigure;
   value.dhcpv4_servers = router_intent.dhcpv4_servers;
@@ -8294,10 +8881,75 @@ LabRuntime::portable_configuration(const ConfigurationIntent &source) const {
   return target;
 }
 
+bool pki_cross_references_resolve(
+    const tls_profile::Configuration &tls,
+    const ipsec::configuration::Configuration &ipsec,
+    const pki::Configuration &pki) noexcept {
+  // Every CA and common-name reference stored by TLS and IPsec must resolve
+  // to a configured PKI object, and every EST profile must reference a
+  // configured TLS client profile. References to file leaves and to owners
+  // that do not exist in this slice (transmission profiles, DHCP servers,
+  // private services, AAA policies) validate structurally in their editors
+  // and resolve when those owners connect them. File names never imply file
+  // existence: provisioning stays with the file owner.
+  const auto ca_exists = [&](std::string_view name) {
+    return !name.empty() && pki::find_ca_profile(pki, name) != nullptr;
+  };
+  for (const auto &profile : tls.certificate_profiles)
+    for (const auto &entry : profile.entries)
+      for (const auto &ca : entry.send_chain_ca_profiles)
+        if (!ca_exists(ca))
+          return false;
+  for (const auto &profile : tls.trust_anchor_profiles)
+    for (const auto &ca : profile.ca_profiles)
+      if (!ca_exists(ca))
+        return false;
+  for (const auto &profile : tls.server_profiles)
+    if (!profile.client_common_name_list.empty() &&
+        !pki::find_common_name_list(pki, profile.client_common_name_list))
+      return false;
+  for (const auto &profile : ipsec.certificate_profiles)
+    for (const auto &entry : profile.entries) {
+      if (!entry.compare_chain_include.empty() &&
+          !ca_exists(entry.compare_chain_include))
+        return false;
+      for (const auto &ca : entry.send_chain_ca_profiles)
+        if (!ca_exists(ca))
+          return false;
+    }
+  for (const auto &profile : ipsec.trust_anchor_profiles)
+    for (const auto &ca : profile.ca_profiles)
+      if (!ca_exists(ca))
+        return false;
+  for (const auto &database : ipsec.client_databases)
+    for (const auto &entry : database.clients) {
+      const auto &cert = entry.certificate;
+      if (!cert.certificate_profile.empty() &&
+          !ipsec::configuration::find_named(ipsec.certificate_profiles,
+                                             cert.certificate_profile))
+        return false;
+      if (!cert.trust_anchor_profile.empty() &&
+          !ipsec::configuration::find_named(ipsec.trust_anchor_profiles,
+                                            cert.trust_anchor_profile))
+        return false;
+    }
+  for (const auto &profile : pki.est_profiles) {
+    if (profile.client_tls_profile.empty())
+      continue;
+    const auto found =
+        std::find_if(tls.client_profiles.begin(), tls.client_profiles.end(),
+                     [&](const auto &client) {
+                       return client.name == profile.client_tls_profile;
+                     });
+    if (found == tls.client_profiles.end())
+      return false;
+  }
+  return true;
+}
+
 bool LabRuntime::apply_configuration(RouterIntent &router_intent,
                                      const ConfigurationIntent &value,
-                                     bool boot_effective) {
-  // The supervisor checkpoint is the transaction boundary across registry,
+                                     bool boot_effective) {  // The supervisor checkpoint is the transaction boundary across registry,
   // hardware, forwarding and workflow owners. Configuration intent is copied
   // only after every owner accepts the staged candidate.
   auto *inventory = supervisor_.hardware(router_intent.handle);
@@ -8336,6 +8988,8 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
           ospf::ConfigurationStatus::valid ||
       tls_profile::validate(value.tls) ||
       !ipsec::configuration::validate(value.ipsec) ||
+      !pki::validate(value.pki) ||
+      !pki_cross_references_resolve(value.tls, value.ipsec, value.pki) ||
       service::validate(value.ies) != service::ValidationError::none ||
       !bof::valid(value.bof_autoconfigure) ||
       dhcpv4::configuration::validate(value.dhcpv4_servers, false) !=
@@ -9785,7 +10439,7 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
       const auto export_policy =
           compile_route_policy(value.mld_prefix_lists,
                                value.mld_import_policies,
-                               instance.export_policy);
+                               instance.export_policies);
       if (!export_policy) {
         applied = false;
         break;
@@ -10371,11 +11025,12 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
         const auto append_external =
             [&](routing::PolicyCandidate candidate,
                 const ip::IpPrefix &prefix) {
-          if (!instance.asbr || instance.export_policy.empty() ||
+          if (!instance.asbr || instance.export_policies.empty() ||
               area.type == ospf::AreaType::stub ||
               area.type == ospf::AreaType::totally_stub)
             return true;
-          const auto evaluated = export_policy->evaluate(candidate);
+          const auto evaluated = routing::evaluate_policy_chain(
+              *export_policy, candidate);
           if (evaluated.decision != routing::PolicyDecision::accept)
             return true;
           ospf::CoordinatorAdvertisement advertisement{
@@ -10962,6 +11617,11 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
       value.ipv6_nd_stale_time_configured;
   router_intent.tls = value.tls;
   router_intent.ipsec = value.ipsec;
+  // Every ConfigurationIntent section validated above must be copied here.
+  // Later transactions derive their values from running, so a dropped section
+  // turns previously committed cross-references into dangling references and
+  // rejects every subsequent write on the router.
+  router_intent.pki = value.pki;
   router_intent.ies = value.ies;
   router_intent.bof_autoconfigure = value.bof_autoconfigure;
   router_intent.dhcpv4_servers = value.dhcpv4_servers;
@@ -11026,6 +11686,7 @@ bool LabRuntime::create_router(std::span<const std::string_view> fields) {
                         .ipv6_nd_stale_time_configured = false,
                         .tls = {},
                         .ipsec = {},
+                        .pki = {},
                         .ies = {},
                         .bof_autoconfigure = {},
                         .dhcpv4_servers = {},
@@ -11085,6 +11746,7 @@ bool LabRuntime::create_dhcp_server(
                         .ipv6_nd_stale_time_configured = false,
                         .tls = {},
                         .ipsec = {},
+                        .pki = {},
                         .ies = {},
                         .bof_autoconfigure = {},
                         .dhcpv4_servers = {},
@@ -11524,7 +12186,7 @@ bool LabRuntime::replace_router_configuration(
     std::string_view instance_id_text;
     std::string_view family_text;
     std::string_view router_id_text;
-    std::string_view export_policy;
+    std::string_view export_count_text;
     std::string_view asbr_domain_id_text;
     std::array<std::string_view, 9U> numeric{};
     std::string_view asbr_text;
@@ -11543,9 +12205,29 @@ bool LabRuntime::replace_router_configuration(
     if (!next_netstring(payload, instance_id_text) ||
         !next_netstring(payload, family_text) ||
         !next_netstring(payload, router_id_text) ||
-        !next_netstring(payload, export_policy) ||
+        !next_netstring(payload, export_count_text) ||
         !next_netstring(payload, asbr_domain_id_text))
       return false;
+    // The export chain is an ordered leaf-list of at most five names kept in
+    // payload order. Duplicates and overlong names are rejected exactly like
+    // the CLI editor rejects them.
+    std::size_t export_count{};
+    if (!decimal(export_count_text, export_count) ||
+        export_count >
+            ospf::InstanceConfiguration::maximum_export_policies)
+      return false;
+    std::vector<std::string> export_policies;
+    export_policies.reserve(export_count);
+    for (std::size_t export_index{}; export_index < export_count;
+         ++export_index) {
+      std::string_view policy_name;
+      if (!next_netstring(payload, policy_name) || policy_name.empty() ||
+          policy_name.size() > 64U ||
+          std::find(export_policies.begin(), export_policies.end(),
+                    policy_name) != export_policies.end())
+        return false;
+      export_policies.emplace_back(policy_name);
+    }
     for (auto &item : numeric)
       if (!next_netstring(payload, item))
         return false;
@@ -11564,7 +12246,7 @@ bool LabRuntime::replace_router_configuration(
         !boolean(graceful_text, graceful) ||
         !boolean(loopfree_text, loopfree) ||
         !boolean(overload_text, overload) ||
-        !boolean(admin_text, admin) || export_policy.size() > 64U)
+        !boolean(admin_text, admin))
       return false;
     std::size_t area_count{};
     if (!decimal(area_count_text, area_count) ||
@@ -11595,7 +12277,7 @@ bool LabRuntime::replace_router_configuration(
       return false;
 
     ospf::InstanceConfiguration instance{
-        .export_policy = std::string{export_policy},
+        .export_policies = std::move(export_policies),
         .configured_router_id = configured_router_id,
         .asbr_trace_path_domain_id =
             asbr_domain_id_text.empty()
@@ -15099,6 +15781,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
     if (!rendered)
       rendered = md_tls_configuration_info(selected.tls, path, detail);
     if (!rendered)
+      rendered = md_pki_configuration_info(selected.pki, path, detail);
+    if (!rendered)
       rendered = md_ies_configuration_info(selected.ies, path, detail);
     if (!rendered)
       rendered = md_ipsec_configuration_info(selected.ipsec, path, detail);
@@ -15313,6 +15997,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         comparison << "~ policy-options\n";
       if (candidate->tls != running.tls)
         comparison << "~ system security tls\n";
+      if (candidate->pki != running.pki)
+        comparison << "~ system security pki\n";
       if (candidate->ipsec != running.ipsec)
         comparison << "~ ipsec\n";
       if (candidate->ies != running.ies)
@@ -15390,36 +16076,45 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           ipsec_edit.recognized
               ? tls_cli::EditResult{}
               : tls_cli::edit(candidate->tls, *parsed, CliEngine::md);
+      PkiVaultSink pki_vault_sink{secret_vault_ ? &*secret_vault_ : nullptr};
+      const auto pki_edit =
+          ipsec_edit.recognized || tls_edit.recognized
+              ? pki_cli::EditResult{}
+              : pki_cli::edit(candidate->pki, *parsed, CliEngine::md,
+                              &pki_vault_sink);
       const auto *ies_inventory = supervisor_.hardware(intent->handle);
       const auto ies_edit =
-          ipsec_edit.recognized || tls_edit.recognized || !ies_inventory
+          ipsec_edit.recognized || tls_edit.recognized ||
+                  pki_edit.recognized || !ies_inventory
               ? ies_cli::EditResult{}
               : ies_cli::edit(candidate->ies, *parsed, CliEngine::md,
                               *ies_inventory, candidate->system_name);
       const auto dhcpv4_edit =
           ipsec_edit.recognized || tls_edit.recognized ||
-                  ies_edit.recognized
+                  pki_edit.recognized || ies_edit.recognized
               ? dhcpv4_cli::EditResult{}
               : dhcpv4_cli::edit(candidate->dhcpv4_servers, *parsed,
                                  CliEngine::md);
       Dhcpv6EntropySource dhcpv6_entropy;
       const auto dhcpv6_edit =
           ipsec_edit.recognized || tls_edit.recognized ||
-                  ies_edit.recognized || dhcpv4_edit.recognized
+                  pki_edit.recognized || ies_edit.recognized ||
+                  dhcpv4_edit.recognized
               ? dhcpv6_cli::EditResult{}
               : dhcpv6_cli::edit(candidate->dhcpv6_servers, *parsed,
                                  CliEngine::md, &dhcpv6_entropy);
       const auto bof_edit =
           ipsec_edit.recognized || tls_edit.recognized ||
-                  ies_edit.recognized || dhcpv4_edit.recognized ||
-                  dhcpv6_edit.recognized
+                  pki_edit.recognized || ies_edit.recognized ||
+                  dhcpv4_edit.recognized || dhcpv6_edit.recognized
               ? bof_cli::EditResult{}
               : bof_cli::edit(candidate->bof_autoconfigure, *parsed,
                               &dhcpv6_entropy);
       const auto ospf_edit =
           ipsec_edit.recognized || tls_edit.recognized ||
-                  ies_edit.recognized || dhcpv4_edit.recognized ||
-                  dhcpv6_edit.recognized || bof_edit.recognized
+                  pki_edit.recognized || ies_edit.recognized ||
+                  dhcpv4_edit.recognized || dhcpv6_edit.recognized ||
+                  bof_edit.recognized
               ? ospf_cli::EditResult{}
               : [&] {
                   OspfVaultSink secrets{
@@ -15433,6 +16128,9 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       } else if (tls_edit.recognized) {
         valid = tls_edit.valid;
         instance = tls_edit.instance;
+      } else if (pki_edit.recognized) {
+        valid = pki_edit.valid;
+        instance = pki_edit.instance;
       } else if (ies_edit.recognized) {
         valid = ies_edit.valid;
         instance = ies_edit.instance;
@@ -17042,6 +17740,19 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         valid = false;
       }
 
+      // TLS, IPsec and PKI edits share one cross-reference contract: every CA
+      // and common-name reference must resolve once the edit changed intent.
+      // Gating on changed keeps unrelated commands from tripping over state
+      // restored from older images, while commit still enforces the complete
+      // graph through apply_configuration. A rejected reference rolls the
+      // candidate back with the generic path below. This check stands outside
+      // the editor dispatch chain above so it never breaks its else-if
+      // continuity: a stray else here would reroute every later branch.
+      if (valid && (ipsec_edit.changed || tls_edit.changed ||
+                    pki_edit.changed) &&
+          !pki_cross_references_resolve(candidate->tls, candidate->ipsec,
+                                        candidate->pki))
+        valid = false;
       if (valid && *candidate != before) {
         const auto recorded = supervisor_.record_session_edit(
             terminal->handle, configuration_key(id, instance));
@@ -17235,15 +17946,33 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         const auto ipsec_edit = ipsec_cli::edit(
             next.ipsec, *parsed, CliEngine::classic, &vault_sink);
         applied = ipsec_edit.recognized && ipsec_edit.valid &&
-                  (!ipsec_edit.changed || apply_configuration(*intent, next));
+                  (!ipsec_edit.changed ||
+                   (pki_cross_references_resolve(next.tls, next.ipsec,
+                                                 next.pki) &&
+                    apply_configuration(*intent, next)));
         instance = ipsec_edit.instance;
       } else if (applied && tls_cli::is_classic_command(id)) {
         auto next = before_running;
         const auto tls_edit =
             tls_cli::edit(next.tls, *parsed, CliEngine::classic);
         applied = tls_edit.recognized && tls_edit.valid &&
-                  (!tls_edit.changed || apply_configuration(*intent, next));
+                  (!tls_edit.changed ||
+                   (pki_cross_references_resolve(next.tls, next.ipsec,
+                                                 next.pki) &&
+                    apply_configuration(*intent, next)));
         instance = tls_edit.instance;
+      } else if (applied && pki_cli::is_classic_command(id)) {
+        auto next = before_running;
+        PkiVaultSink pki_vault_sink{secret_vault_ ? &*secret_vault_ : nullptr};
+        const auto pki_edit = pki_cli::edit(next.pki, *parsed,
+                                            CliEngine::classic,
+                                            &pki_vault_sink);
+        applied = pki_edit.recognized && pki_edit.valid &&
+                  (!pki_edit.changed ||
+                   (pki_cross_references_resolve(next.tls, next.ipsec,
+                                                 next.pki) &&
+                    apply_configuration(*intent, next)));
+        instance = pki_edit.instance;
       } else if (applied && ies_cli::is_classic_command(id)) {
         auto next = before_running;
         const auto *inventory = supervisor_.hardware(intent->handle);
@@ -21570,6 +22299,44 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           // Emit only values owned by the current hardware model. Omitting an
           // unavailable sensor is safer than presenting a made-up optical or
           // manufacturing value as if it came from equipped hardware.
+          //
+          // Configured Mode and Encap Type come from the service port intent,
+          // defaulting to network/null exactly like the editor's implicit
+          // port. Unconfigured ports therefore report Nokia defaults rather
+          // than hiding the leaves.
+          const auto *service_port = [&]() -> const service::
+                                             EthernetPortConfiguration * {
+            for (const auto &entry : intent->ies.ports)
+              if (entry.coordinate.card == port.card_slot &&
+                  entry.coordinate.mda == port.mda_slot &&
+                  entry.coordinate.port == port.port_number)
+                return &entry;
+            return nullptr;
+          }();
+          const auto port_mode = service_port ? service_port->mode
+                                             : service::EthernetPortMode::network;
+          const auto port_encap =
+              service_port ? service_port->encapsulation
+                           : service::EthernetEncapsulation::null;
+          const std::string_view mode_text =
+              port_mode == service::EthernetPortMode::access   ? "access"
+              : port_mode == service::EthernetPortMode::hybrid ? "hybrid"
+                                                              : "network";
+          const std::string_view encap_text =
+              port_encap == service::EthernetEncapsulation::dot1q ? "802.1q"
+              : port_encap == service::EthernetEncapsulation::qinq
+                  ? "QinQ"
+                  : "null";
+          const auto tpid_text = [&] {
+            const std::uint16_t value =
+                service_port && service_port->outer_tpid != 0U
+                    ? service_port->outer_tpid
+                    : 0x8100U;
+            std::ostringstream text;
+            text << "0x" << std::nouppercase << std::hex << std::setfill('0')
+                 << std::setw(4) << value;
+            return text.str();
+          }();
           out << table_rule << "\nEthernet Interface\n"
               << table_rule << "\nDescription        : "
               << (configured == intent->ports.end()
@@ -21582,7 +22349,11 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               << "\nOper State         : " << (operational ? "up" : "down")
               << "\nPhysical Link      : " << (port.link_signal ? "Yes" : "No")
               << "\nMTU                : " << port.mtu
-              << "\nConfig Speed       : " << port.speed_mbps << " Mbps\n";
+              << "\nConfig Speed       : " << port.speed_mbps << " Mbps"
+              << "\nConfigured Mode    : " << std::left << std::setw(25)
+              << mode_text << "Encap Type       : " << encap_text
+              << "\nDot1Q Ethertype    : " << std::left << std::setw(25)
+              << tpid_text << "QinQ Ethertype   : " << tpid_text << '\n';
           if (id == cli_schema::CommandId::show_port_detail) {
             const bool valid_mda_coordinate =
                 port.card_slot > 0U && port.mda_slot > 0U &&
@@ -21625,7 +22396,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           out << table_rule << "\nPort Summary\n"
               << table_rule
               << "\nPort          Admin  Link  Oper  MTU    Speed       "
-                 "Description\n"
+                 "Mode    Encp Type Description\n"
               << row_rule;
           std::size_t count{};
           for (std::size_t ordinal = 0;
@@ -21640,6 +22411,33 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                   return item.id ==
                          port_id(static_cast<std::uint16_t>(ordinal));
                 });
+            // Same service-port projection as the named report: unconfigured
+            // ports report the Nokia network/null defaults.
+            const auto *summary_service_port =
+                [&]() -> const service::EthernetPortConfiguration * {
+              for (const auto &entry : intent->ies.ports)
+                if (entry.coordinate.card == port.card_slot &&
+                    entry.coordinate.mda == port.mda_slot &&
+                    entry.coordinate.port == port.port_number)
+                  return &entry;
+              return nullptr;
+            }();
+            const auto summary_mode =
+                summary_service_port ? summary_service_port->mode
+                                     : service::EthernetPortMode::network;
+            const auto summary_encap =
+                summary_service_port ? summary_service_port->encapsulation
+                                     : service::EthernetEncapsulation::null;
+            const std::string_view summary_mode_text =
+                summary_mode == service::EthernetPortMode::access   ? "access"
+                : summary_mode == service::EthernetPortMode::hybrid ? "hybrid"
+                                                                   : "network";
+            const std::string_view summary_encap_text =
+                summary_encap == service::EthernetEncapsulation::dot1q
+                    ? "802.1q"
+                : summary_encap == service::EthernetEncapsulation::qinq
+                    ? "QinQ"
+                    : "null";
             out << '\n'
                 << std::left << std::setw(14)
                 << port_id(static_cast<std::uint16_t>(ordinal)) << std::setw(7)
@@ -21652,6 +22450,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
                         : "Down")
                 << std::setw(7) << port.mtu << std::setw(12)
                 << (std::to_string(port.speed_mbps) + " Mb/s")
+                << std::setw(8) << summary_mode_text << std::setw(10)
+                << summary_encap_text
                 << (configured == intent->ports.end()
                         ? std::string_view{}
                         : configured->description);
@@ -24358,8 +25158,8 @@ std::string LabRuntime::complete_session(std::string_view session_id,
       // completion even though the parser could execute them.
       return md_configuration_command(id) || ipsec_cli::is_md_command(id) ||
              ipsec_cli::is_classic_command(id) || tls_cli::is_md_command(id) ||
-             tls_cli::is_classic_command(id) ||
-             md_mld_configuration_command(id) ||
+             tls_cli::is_classic_command(id) || pki_cli::is_md_command(id) ||
+             pki_cli::is_classic_command(id) || md_mld_configuration_command(id) ||
              classic_mld_configuration_command(id);
     }
   };
@@ -26633,6 +27433,7 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
               portable->ipv6_nd_stale_time_configured,
           .tls = portable->tls,
           .ipsec = portable->ipsec,
+          .pki = portable->pki,
           .ies = portable->ies,
           .bof_autoconfigure = portable->bof_autoconfigure,
           .dhcpv4_servers = portable->dhcpv4_servers,

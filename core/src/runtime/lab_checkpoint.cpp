@@ -1224,11 +1224,15 @@ void ies_configuration(Writer &out, const service::Configuration &value) {
       sap_attachment(out, {.logical_interface_id = interface.logical_id,
                            .sap = interface.sap});
       mac(out, interface.mac);
-      ipv6(out, interface.address);
+      // The address list keeps key order: the first entry stays the primary
+      // source for relay fallback and connected origination after restore.
+      count(out, interface.addresses);
+      for (const auto &entry : interface.addresses) {
+        ipv6(out, entry.address);
+        out.integer(entry.prefix_length);
+      }
       ipv6(out, interface.link_local);
-      out.integer(interface.prefix_length);
       out.integer(interface.ip_mtu);
-      out.boolean(interface.address_configured);
       out.boolean(interface.admin_enabled);
       const auto &relay = interface.dhcpv6_relay;
       out.boolean(relay.configured);
@@ -1300,6 +1304,7 @@ bool ies_configuration(Reader &in, service::Configuration &value,
         bool link_present{};
         bool source_present{};
         std::uint32_t server_count{};
+        std::uint32_t address_count{};
         if (!in.integer(interface.logical_id) ||
             !in.string(interface.name,
                        service::maximum_interface_name_octets) ||
@@ -1307,11 +1312,16 @@ bool ies_configuration(Reader &in, service::Configuration &value,
                        service::maximum_description_octets) ||
             !sap_attachment(in, encoded_sap) ||
             encoded_sap.logical_interface_id != interface.logical_id ||
-            !mac(in, interface.mac) || !ipv6(in, interface.address) ||
-            !ipv6(in, interface.link_local) ||
-            !in.integer(interface.prefix_length) ||
+            !mac(in, interface.mac) ||
+            !count(in, address_count,
+                   device_catalog::network_interface_ip_addresses))
+          return false;
+        interface.addresses.resize(address_count);
+        for (auto &entry : interface.addresses)
+          if (!ipv6(in, entry.address) || !in.integer(entry.prefix_length))
+            return false;
+        if (!ipv6(in, interface.link_local) ||
             !in.integer(interface.ip_mtu) ||
-            !in.boolean(interface.address_configured) ||
             !in.boolean(interface.admin_enabled) ||
             !in.boolean(interface.dhcpv6_relay.configured) ||
             !in.boolean(interface.dhcpv6_relay.admin_enabled) ||
@@ -8068,6 +8078,174 @@ bool ipsec_tunnel_template(Reader &in,
          in.boolean(item.service_provider_reverse_route_configured);
 }
 
+void ipsec_client_database(
+    Writer &out, const ipsec::configuration::ClientDatabase &value) {
+  out.string(value.name);
+  out.string(value.description);
+  out.boolean(value.match_idi);
+  out.boolean(value.match_idi_configured);
+  out.boolean(value.match_peer_ip_prefix);
+  out.boolean(value.match_peer_configured);
+  out.boolean(value.admin_enabled);
+  out.boolean(value.admin_state_configured);
+  count(out, value.clients);
+  for (const auto &entry : value.clients) {
+    out.integer(entry.id);
+    out.string(entry.client_name);
+    out.string(entry.private_interface);
+    out.string(entry.private_service);
+    out.string(entry.ts_list);
+    out.integer(entry.tunnel_template);
+    out.integer(entry.action);
+    out.integer(entry.psk_handle);
+    out.integer(entry.psk_format);
+    out.boolean(entry.psk_configured);
+    out.integer(entry.idi.kind);
+    out.string(entry.idi.prefix);
+    out.integer(entry.idi.string_kind);
+    out.string(entry.idi.string_value);
+    out.integer(entry.peer.kind);
+    out.string(entry.peer.prefix);
+    out.string(entry.local.ipv4.router_instance);
+    out.string(entry.local.ipv4.dhcp_server);
+    out.string(entry.local.ipv4.pool);
+    out.string(entry.local.ipv4.secondary_pool);
+    out.string(entry.local.ipv6.router_instance);
+    out.string(entry.local.ipv6.dhcp_server);
+    out.string(entry.local.ipv6.pool);
+    out.boolean(entry.local.configured);
+    out.string(entry.certificate.certificate_profile);
+    out.string(entry.certificate.trust_anchor_profile);
+    out.integer(entry.certificate.default_result);
+    out.integer(entry.certificate.primary_method);
+    out.integer(entry.certificate.secondary_method);
+    out.boolean(entry.certificate.default_result_configured);
+    out.boolean(entry.certificate.methods_configured);
+    out.boolean(entry.admin_enabled);
+    out.boolean(entry.admin_state_configured);
+    out.boolean(entry.action_configured);
+    out.boolean(entry.tunnel_template_configured);
+  }
+}
+
+bool ipsec_client_database(
+    Reader &in, ipsec::configuration::ClientDatabase &value) {
+  std::uint32_t client_count{};
+  // Names follow the 32-octet named-item contract; the description follows
+  // the 80-octet rule and IDi strings the 255-octet display-string bound.
+  // Client keys are bounded by the YANG 1..8000 range.
+  if (!in.string(value.name, 32U) || !in.string(value.description, 80U) ||
+      !in.boolean(value.match_idi) ||
+      !in.boolean(value.match_idi_configured) ||
+      !in.boolean(value.match_peer_ip_prefix) ||
+      !in.boolean(value.match_peer_configured) ||
+      !in.boolean(value.admin_enabled) ||
+      !in.boolean(value.admin_state_configured) ||
+      !count(in, client_count,
+             ipsec::configuration::maximum_client_id))
+    return false;
+  value.clients.resize(client_count);
+  for (auto &entry : value.clients) {
+    if (!in.integer(entry.id) || !in.string(entry.client_name, 32U) ||
+        !in.string(entry.private_interface, 32U) ||
+        !in.string(entry.private_service, 32U) ||
+        !in.string(entry.ts_list, 32U) ||
+        !in.integer(entry.tunnel_template) || !in.integer(entry.action) ||
+        !in.integer(entry.psk_handle) || !in.integer(entry.psk_format) ||
+        !in.boolean(entry.psk_configured) || !in.integer(entry.idi.kind) ||
+        !in.string(entry.idi.prefix, 64U) ||
+        !in.integer(entry.idi.string_kind) ||
+        !in.string(entry.idi.string_value, 255U) ||
+        !in.integer(entry.peer.kind) || !in.string(entry.peer.prefix, 64U) ||
+        !in.string(entry.local.ipv4.router_instance, 32U) ||
+        !in.string(entry.local.ipv4.dhcp_server, 32U) ||
+        !in.string(entry.local.ipv4.pool, 32U) ||
+        !in.string(entry.local.ipv4.secondary_pool, 32U) ||
+        !in.string(entry.local.ipv6.router_instance, 32U) ||
+        !in.string(entry.local.ipv6.dhcp_server, 32U) ||
+        !in.string(entry.local.ipv6.pool, 32U) ||
+        !in.boolean(entry.local.configured) ||
+        !in.string(entry.certificate.certificate_profile, 32U) ||
+        !in.string(entry.certificate.trust_anchor_profile, 32U) ||
+        !in.integer(entry.certificate.default_result) ||
+        !in.integer(entry.certificate.primary_method) ||
+        !in.integer(entry.certificate.secondary_method) ||
+        !in.boolean(entry.certificate.default_result_configured) ||
+        !in.boolean(entry.certificate.methods_configured) ||
+        !in.boolean(entry.admin_enabled) ||
+        !in.boolean(entry.admin_state_configured) ||
+        !in.boolean(entry.action_configured) ||
+        !in.boolean(entry.tunnel_template_configured))
+      return false;
+  }
+  return true;
+}
+
+void ipsec_radius_accounting(
+    Writer &out, const ipsec::configuration::RadiusAccountingPolicy &value) {
+  out.string(value.name);
+  out.string(value.radius_server_policy);
+  out.integer(value.update_value_minutes);
+  out.integer(value.update_jitter_seconds);
+  out.boolean(value.include_.acct_stats);
+  out.boolean(value.include_.called_station_id);
+  out.boolean(value.include_.calling_station_id);
+  out.boolean(value.include_.framed_ip_addr);
+  out.boolean(value.include_.framed_ipv6_prefix);
+  out.boolean(value.include_.nas_identifier);
+  out.boolean(value.include_.nas_ip_addr);
+  out.boolean(value.include_.nas_port_id);
+  out.boolean(value.update_value_configured);
+  out.boolean(value.update_jitter_configured);
+}
+
+bool ipsec_radius_accounting(
+    Reader &in, ipsec::configuration::RadiusAccountingPolicy &value) {
+  return in.string(value.name, 32U) &&
+         in.string(value.radius_server_policy, 32U) &&
+         in.integer(value.update_value_minutes) &&
+         in.integer(value.update_jitter_seconds) &&
+         in.boolean(value.include_.acct_stats) &&
+         in.boolean(value.include_.called_station_id) &&
+         in.boolean(value.include_.calling_station_id) &&
+         in.boolean(value.include_.framed_ip_addr) &&
+         in.boolean(value.include_.framed_ipv6_prefix) &&
+         in.boolean(value.include_.nas_identifier) &&
+         in.boolean(value.include_.nas_ip_addr) &&
+         in.boolean(value.include_.nas_port_id) &&
+         in.boolean(value.update_value_configured) &&
+         in.boolean(value.update_jitter_configured);
+}
+
+void ipsec_radius_authentication(
+    Writer &out,
+    const ipsec::configuration::RadiusAuthenticationPolicy &value) {
+  out.string(value.name);
+  out.string(value.radius_server_policy);
+  out.integer(value.password_handle);
+  out.boolean(value.password_configured);
+  out.boolean(value.include_.called_station_id);
+  out.boolean(value.include_.calling_station_id);
+  out.boolean(value.include_.client_cert_subject_key_id);
+  out.boolean(value.include_.nas_identifier);
+  out.boolean(value.include_.nas_ip_addr);
+  out.boolean(value.include_.nas_port_id);
+}
+
+bool ipsec_radius_authentication(
+    Reader &in, ipsec::configuration::RadiusAuthenticationPolicy &value) {
+  return in.string(value.name, 32U) &&
+         in.string(value.radius_server_policy, 32U) &&
+         in.integer(value.password_handle) &&
+         in.boolean(value.password_configured) &&
+         in.boolean(value.include_.called_station_id) &&
+         in.boolean(value.include_.calling_station_id) &&
+         in.boolean(value.include_.client_cert_subject_key_id) &&
+         in.boolean(value.include_.nas_identifier) &&
+         in.boolean(value.include_.nas_ip_addr) &&
+         in.boolean(value.include_.nas_port_id);
+}
+
 void ipsec_certificate_profile(
     Writer &out, const ipsec::configuration::CertificateProfile &profile) {
   out.string(profile.name);
@@ -8263,6 +8441,15 @@ void ipsec_configuration(Writer &out,
   count(out, state.tunnel_templates);
   for (const auto &item : state.tunnel_templates)
     ipsec_tunnel_template(out, item);
+  count(out, state.client_databases);
+  for (const auto &database : state.client_databases)
+    ipsec_client_database(out, database);
+  count(out, state.radius_accounting_policies);
+  for (const auto &policy : state.radius_accounting_policies)
+    ipsec_radius_accounting(out, policy);
+  count(out, state.radius_authentication_policies);
+  for (const auto &policy : state.radius_authentication_policies)
+    ipsec_radius_authentication(out, policy);
 }
 
 bool ipsec_configuration(Reader &in, ipsec::configuration::Configuration &state,
@@ -8414,9 +8601,124 @@ bool ipsec_configuration(Reader &in, ipsec::configuration::Configuration &state,
   for (auto &item : state.tunnel_templates)
     if (!ipsec_tunnel_template(in, item))
       return false;
+  if (!count(in, size, ipsec::configuration::maximum_client_databases))
+    return false;
+  state.client_databases.resize(size);
+  for (auto &database : state.client_databases)
+    if (!ipsec_client_database(in, database))
+      return false;
+  if (!count(in, size,
+             ipsec::configuration::maximum_radius_accounting_policies))
+    return false;
+  state.radius_accounting_policies.resize(size);
+  for (auto &policy : state.radius_accounting_policies)
+    if (!ipsec_radius_accounting(in, policy))
+      return false;
+  if (!count(in, size,
+             ipsec::configuration::maximum_radius_authentication_policies))
+    return false;
+  state.radius_authentication_policies.resize(size);
+  for (auto &policy : state.radius_authentication_policies)
+    if (!ipsec_radius_authentication(in, policy))
+      return false;
   // Validation rejects invalid enum values, duplicate IDs, out-of-range
   // timers and dangling leafrefs before restored intent reaches the owner.
   return ipsec::configuration::validate(state, allow_incomplete);
+}
+
+void pki_configuration(Writer &out, const pki::Configuration &state) {
+  count(out, state.ca_profiles);
+  for (const auto &profile : state.ca_profiles) {
+    out.string(profile.name);
+    out.string(profile.description);
+    out.string(profile.certificate_file);
+    out.string(profile.crl_file);
+    out.integer(profile.revocation_check);
+    out.boolean(profile.admin_enabled);
+    out.boolean(profile.admin_state_configured);
+    out.boolean(profile.revocation_check_configured);
+  }
+  count(out, state.common_name_lists);
+  for (const auto &list : state.common_name_lists) {
+    out.string(list.name);
+    count(out, list.entries);
+    for (const auto &entry : list.entries) {
+      out.integer(entry.index);
+      out.integer(entry.type);
+      out.string(entry.value);
+    }
+  }
+  count(out, state.est_profiles);
+  for (const auto &profile : state.est_profiles) {
+    out.string(profile.name);
+    out.string(profile.transmission_profile);
+    out.string(profile.client_tls_profile);
+    out.boolean(profile.check_id_kp_cmcra_only);
+    out.integer(profile.server.port);
+    out.integer(profile.server.address_kind);
+    out.string(profile.server.address);
+    out.string(profile.server.path.cacerts);
+    out.string(profile.server.path.simple_enroll);
+    out.string(profile.server.path.simple_reenroll);
+    out.boolean(profile.server.port_configured);
+    out.string(profile.http_authentication.username);
+    out.integer(profile.http_authentication.password_handle);
+    out.boolean(profile.http_authentication.password_configured);
+  }
+}
+
+bool pki_configuration(Reader &in, pki::Configuration &state) {
+  std::uint32_t size{};
+  if (!count(in, size, pki::maximum_ca_profiles))
+    return false;
+  state.ca_profiles.resize(size);
+  for (auto &profile : state.ca_profiles) {
+    if (!in.string(profile.name, 32U) ||
+        !in.string(profile.description, 80U) ||
+        !in.string(profile.certificate_file, 95U) ||
+        !in.string(profile.crl_file, 95U) ||
+        !in.integer(profile.revocation_check) ||
+        !in.boolean(profile.admin_enabled) ||
+        !in.boolean(profile.admin_state_configured) ||
+        !in.boolean(profile.revocation_check_configured))
+      return false;
+  }
+  if (!count(in, size, pki::maximum_common_name_lists))
+    return false;
+  state.common_name_lists.resize(size);
+  for (auto &list : state.common_name_lists) {
+    std::uint32_t entry_count{};
+    if (!in.string(list.name, 32U) ||
+        !count(in, entry_count, pki::maximum_common_names_per_list))
+      return false;
+    list.entries.resize(entry_count);
+    for (auto &entry : list.entries) {
+      if (!in.integer(entry.index) || !in.integer(entry.type) ||
+          !in.string(entry.value, 255U))
+        return false;
+    }
+  }
+  if (!count(in, size, pki::maximum_est_profiles))
+    return false;
+  state.est_profiles.resize(size);
+  for (auto &profile : state.est_profiles) {
+    if (!in.string(profile.name, 32U) ||
+        !in.string(profile.transmission_profile, 32U) ||
+        !in.string(profile.client_tls_profile, 32U) ||
+        !in.boolean(profile.check_id_kp_cmcra_only) ||
+        !in.integer(profile.server.port) ||
+        !in.integer(profile.server.address_kind) ||
+        !in.string(profile.server.address, 255U) ||
+        !in.string(profile.server.path.cacerts, 255U) ||
+        !in.string(profile.server.path.simple_enroll, 255U) ||
+        !in.string(profile.server.path.simple_reenroll, 255U) ||
+        !in.boolean(profile.server.port_configured) ||
+        !in.string(profile.http_authentication.username, 32U) ||
+        !in.integer(profile.http_authentication.password_handle) ||
+        !in.boolean(profile.http_authentication.password_configured))
+      return false;
+  }
+  return pki::validate(state);
 }
 
 void dhcpv4_router_configuration(
@@ -8780,7 +9082,10 @@ void ospf_configuration(Writer &out,
   }
   count(out, state.instances);
   for (const auto &instance : state.instances) {
-    out.string(instance.export_policy);
+    // The export chain is an ordered leaf-list of at most five policy names.
+    count(out, instance.export_policies);
+    for (const auto &policy : instance.export_policies)
+      out.string(policy);
     out.boolean(instance.configured_router_id.has_value());
     if (instance.configured_router_id)
       out.integer(*instance.configured_router_id);
@@ -8914,8 +9219,15 @@ bool ospf_configuration(Reader &in,
     std::uint32_t router_id{};
     bool has_asbr_domain_id{};
     std::uint8_t asbr_domain_id{};
-    if (!in.string(instance.export_policy, 64U) ||
-        !in.boolean(has_router_id) ||
+    std::uint32_t export_count{};
+    if (!count(in, export_count,
+               router::ospf::InstanceConfiguration::maximum_export_policies))
+      return false;
+    instance.export_policies.resize(export_count);
+    for (auto &policy : instance.export_policies)
+      if (!in.string(policy, 64U))
+        return false;
+    if (!in.boolean(has_router_id) ||
         (has_router_id && !in.integer(router_id)) ||
         (has_router_id && router_id == 0U) ||
         !in.boolean(has_asbr_domain_id) ||
@@ -9095,6 +9407,7 @@ void portable_router(Writer &out, const PortableRouterIntentCheckpoint &state) {
   out.boolean(state.ipv6_nd_stale_time_configured);
   tls_configuration(out, state.tls);
   ipsec_configuration(out, state.ipsec);
+  pki_configuration(out, state.pki);
   ies_configuration(out, state.ies);
   bof_autoconfigure(out, state.bof_autoconfigure);
   dhcpv4_router_configuration(out, state.dhcpv4_servers);
@@ -9166,6 +9479,7 @@ bool portable_router(Reader &in, PortableRouterIntentCheckpoint &state) {
                                     state.ipv6_nd_stale_time_configured) ||
       !tls_configuration(in, state.tls) ||
       !ipsec_configuration(in, state.ipsec) ||
+      !pki_configuration(in, state.pki) ||
       !ies_configuration(in, state.ies) ||
       !bof_autoconfigure(in, state.bof_autoconfigure) ||
       !dhcpv4_router_configuration(in, state.dhcpv4_servers) ||
@@ -9265,6 +9579,7 @@ void portable_configuration(Writer &out,
   out.boolean(state.ipv6_nd_stale_time_configured);
   tls_configuration(out, state.tls);
   ipsec_configuration(out, state.ipsec);
+  pki_configuration(out, state.pki);
   ies_configuration(out, state.ies);
   bof_autoconfigure(out, state.bof_autoconfigure);
   dhcpv4_router_configuration(out, state.dhcpv4_servers);
@@ -9331,6 +9646,7 @@ bool portable_configuration(Reader &in,
                                     state.ipv6_nd_stale_time_configured) ||
       !tls_configuration(in, state.tls) ||
       !ipsec_configuration(in, state.ipsec, true) ||
+      !pki_configuration(in, state.pki) ||
       !ies_configuration(in, state.ies, true) ||
       !bof_autoconfigure(in, state.bof_autoconfigure) ||
       !dhcpv4_router_configuration(in, state.dhcpv4_servers) ||
@@ -9503,7 +9819,7 @@ bool secret_vault(Reader &in, vault::Checkpoint &state) {
         record.handle <= previous || record.handle >= state.next_handle ||
         !in.integer(record.kind) ||
         record.kind < vault::SecretKind::ipsec_ppk_ascii ||
-        record.kind > vault::SecretKind::ospf_authentication_key ||
+        record.kind > vault::SecretKind::pki_est_http_password ||
         !in.integer(sealed_size) || !sealed_size ||
         sealed_size > maximum_sealed_secret_octets)
       return false;

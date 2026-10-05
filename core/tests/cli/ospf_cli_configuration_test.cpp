@@ -133,8 +133,8 @@ void ospf_cli_configuration_tests() {
                   router::ospf::NetworkType::broadcast &&
               classic.instances[0].router_preference == 15U &&
               classic.instances[0].external_preference == 160U &&
-              classic.instances[0].export_policy ==
-                  "redistribute-connected" &&
+              classic.instances[0].export_policies ==
+                  std::vector<std::string>{"redistribute-connected"} &&
               classic.instances[0].asbr &&
               classic.instances[0].asbr_trace_path_domain_id ==
                   std::optional<std::uint8_t>{7U} &&
@@ -659,8 +659,10 @@ void ospf_cli_configuration_tests() {
   reject(ranges, CliEngine::classic,
          "configure router ospf 0 reference-bandwidth 1000000001");
 
-  // Export policy keeps a single configured entry: a different policy is an
-  // explicit error, the same policy is idempotent, delete removes the entry.
+  // MD-CLI appends export-policy leaf-list entries in order: repeats are
+  // idempotent, a sixth distinct policy is an explicit error, and delete
+  // removes one entry while staying silent on absent entries of a populated
+  // chain. Classic replaces the whole chain with one compound command.
   router::ospf::RouterConfiguration export_policy;
   edit(export_policy, CliEngine::md,
        "configure router \"Base\" ospf 0 export-policy direct-v4");
@@ -675,12 +677,53 @@ void ospf_cli_configuration_tests() {
     require(result.recognized && result.valid && !result.changed,
             "repeated export-policy was not idempotent");
   }
-  reject(export_policy, CliEngine::md,
-         "configure router \"Base\" ospf 0 export-policy other-v4");
   edit(export_policy, CliEngine::md,
-       "delete router \"Base\" ospf 0 export-policy direct-v4");
-  require(export_policy.instances[0].export_policy.empty(),
-          "MD delete export-policy retained the entry");
+       "configure router \"Base\" ospf 0 export-policy other-v4");
+  edit(export_policy, CliEngine::md,
+       "configure router \"Base\" ospf 0 export-policy third-v4");
+  edit(export_policy, CliEngine::md,
+       "configure router \"Base\" ospf 0 export-policy fourth-v4");
+  edit(export_policy, CliEngine::md,
+       "configure router \"Base\" ospf 0 export-policy fifth-v4");
+  require(export_policy.instances[0].export_policies ==
+                  std::vector<std::string>{"direct-v4", "other-v4",
+                                           "third-v4", "fourth-v4",
+                                           "fifth-v4"},
+          "MD export-policy chain lost order or entries");
+  reject(export_policy, CliEngine::md,
+         "configure router \"Base\" ospf 0 export-policy sixth-v4");
+  edit(export_policy, CliEngine::md,
+       "delete router \"Base\" ospf 0 export-policy other-v4");
+  require(export_policy.instances[0].export_policies ==
+                  std::vector<std::string>{"direct-v4", "third-v4",
+                                           "fourth-v4", "fifth-v4"},
+          "MD delete export-policy did not remove only the named entry");
+  {
+    // Deleting an absent entry from a populated chain is the documented
+    // silent no-op: valid without a datastore change.
+    const auto absent = parse(CliEngine::md,
+                              "delete router \"Base\" ospf 0 export-policy "
+                              "missing-v4");
+    const auto result = router::lab::ospf_cli::edit(
+        export_policy, absent, CliEngine::md);
+    require(result.recognized && result.valid && !result.changed,
+            "MD delete of an absent chain entry was not silent");
+  }
+  edit(export_policy, CliEngine::classic,
+       "configure router ospf 0 export one-v4 two-v4");
+  require(export_policy.instances[0].export_policies ==
+                  std::vector<std::string>{"one-v4", "two-v4"},
+          "classic export did not replace the chain");
+  reject(export_policy, CliEngine::classic,
+         "configure router ospf 0 export one-v4 one-v4");
+  edit(export_policy, CliEngine::classic,
+       "configure router ospf 0 no export");
+  require(export_policy.instances[0].export_policies.empty(),
+          "classic no export retained the chain");
+  reject(export_policy, CliEngine::classic,
+         "configure router ospf 0 no export");
+  reject(export_policy, CliEngine::md,
+         "delete router \"Base\" ospf 0 export-policy direct-v4");
   edit(export_policy, CliEngine::md,
        "configure router \"Base\" ospf 0 reference-bandwidth 100000");
   edit(export_policy, CliEngine::md,

@@ -208,6 +208,25 @@ void ies_cli_configuration_tests() {
   edit(md, CliEngine::md, hardware,
        "configure service ies internet interface uplink ipv6 address "
        "2001:db8:200::1 prefix-length 64");
+  // A second address on the same interface appends instead of replacing the
+  // first: the list is keyed by ipv6-address. Reconfiguring one key updates
+  // only its prefix length.
+  edit(md, CliEngine::md, hardware,
+       "configure service ies internet interface uplink ipv6 address "
+       "2001:db8:200::2 prefix-length 64");
+  require(md.ies_services[0].interfaces[0].addresses.size() == 2U &&
+              md.ies_services[0].interfaces[0].addresses[0].address ==
+                  *router::ip::parse_ipv6("2001:db8:200::1") &&
+              md.ies_services[0].interfaces[0].addresses[1].address ==
+                  *router::ip::parse_ipv6("2001:db8:200::2"),
+          "second MD service address replaced the first");
+  edit(md, CliEngine::md, hardware,
+       "configure service ies internet interface uplink ipv6 address "
+       "2001:db8:200::2 prefix-length 48");
+  require(md.ies_services[0].interfaces[0].addresses.size() == 2U &&
+              md.ies_services[0].interfaces[0].addresses[1].prefix_length ==
+                  48U,
+          "MD address prefix update did not retain the list");
   edit(md, CliEngine::md, hardware,
        "configure service ies internet interface uplink sap 1/1/2");
   // YANG defaults the interface admin-state leaf to enable, so enabling a
@@ -292,7 +311,7 @@ void ies_cli_configuration_tests() {
 
   // The ipv6 address list is keyed by address: only the addressed entry is
   // removed, an absent key is the silent no-op, and the bare form does not
-  // exist. The uplink address comes from the fixture above.
+  // exist. The uplink carries two addresses from the fixture above.
   const auto remove_address = parse(
       CliEngine::md,
       "delete service ies internet interface uplink ipv6 address "
@@ -300,10 +319,10 @@ void ies_cli_configuration_tests() {
   require(router::lab::ies_cli::edit(md, remove_address, CliEngine::md,
                                      hardware, "edge-a")
                   .changed &&
-              !md.ies_services[0]
-                   .interfaces[0]
-                   .address_configured,
-          "keyed MD address delete did not remove the entry");
+              md.ies_services[0].interfaces[0].addresses.size() == 1U &&
+              md.ies_services[0].interfaces[0].addresses.front().address ==
+                  *router::ip::parse_ipv6("2001:db8:200::2"),
+          "keyed MD address delete did not remove only the entry");
   const auto repeat_remove = router::lab::ies_cli::edit(
       md, remove_address, CliEngine::md, hardware, "edge-a");
   require(repeat_remove.recognized && repeat_remove.valid &&
@@ -313,7 +332,7 @@ void ies_cli_configuration_tests() {
   const auto wrong_key = parse(
       CliEngine::md,
       "delete service ies internet interface uplink ipv6 address "
-      "2001:db8:200::2");
+      "2001:db8:200::9");
   const auto wrong_result = router::lab::ies_cli::edit(
       md, wrong_key, CliEngine::md, hardware, "edge-a");
   require(wrong_result.recognized && wrong_result.valid &&
