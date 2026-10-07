@@ -1,6 +1,9 @@
 // PKI CLI editor tests prove that generated MD and classic syntax converges
-// on one valid configuration model: CA profiles, common-name lists and EST
-// profiles with their distinct creation and deletion semantics.
+// on one valid configuration model: CA profiles (with OCSP, CMPv2 and
+// automatic CRL update subtrees), common-name lists, EST profiles,
+// certificate update profiles, certificate auto-update entries and top-level
+// display, import, chain-depth and expiration-warning leaves, with their
+// distinct creation and deletion semantics.
 
 #include "cli/pki_cli_configuration.hpp"
 
@@ -306,4 +309,350 @@ void pki_cli_configuration_tests() {
     require(rejected.recognized && !rejected.valid,
             "classic removal accepted an absent PKI element");
   }
+
+  // Top-level leaves carry display, import, chain-depth and warning intent.
+  // MD restores defaults silently; classic has no removal for format leaves
+  // and rejects absent warning removals.
+  router::pki::Configuration top;
+  edit(top, CliEngine::md,
+       "configure system security pki certificate-display-format utf8");
+  edit(top, CliEngine::md,
+       "configure system security pki dynamic-ca true");
+  edit(top, CliEngine::md,
+       "configure system security pki imported-format secure");
+  edit(top, CliEngine::md,
+       "configure system security pki maximum-cert-chain-depth 5");
+  edit(top, CliEngine::md,
+       "configure system security pki certificate-expiration-warning hours "
+       "72");
+  edit(top, CliEngine::md,
+       "configure system security pki certificate-expiration-warning "
+       "repeat-hours 24");
+  edit(top, CliEngine::md,
+       "configure system security pki crl-expiration-warning hours 48");
+  require(top.display_format == router::pki::CertificateDisplayFormat::utf8 &&
+              top.dynamic_ca && top.dynamic_ca_configured &&
+              top.imported_format == router::pki::ImportedFormat::secure &&
+              top.maximum_cert_chain_depth == 5U &&
+              top.certificate_expiration_warning.hours == 72 &&
+              top.certificate_expiration_warning.repeat_hours == 24 &&
+              top.crl_expiration_warning.hours == 48,
+          "MD top-level PKI leaves did not reach the model");
+  for (const auto *text :
+       {"configure system security pki maximum-cert-chain-depth 0",
+        "configure system security pki maximum-cert-chain-depth 8",
+        "configure system security pki certificate-expiration-warning hours "
+        "8761"}) {
+    require(!router::cli_detail::parse_command(
+                 CliEngine::md, MdCliWorkflow::explicit_private, text)
+                 .has_value(),
+            "out-of-range top-level PKI value parsed");
+  }
+  edit(top, CliEngine::md,
+       "delete system security pki certificate-display-format");
+  edit(top, CliEngine::md, "delete system security pki dynamic-ca");
+  require(top.display_format == router::pki::CertificateDisplayFormat::ascii &&
+              !top.display_format_configured && !top.dynamic_ca_configured,
+          "MD delete top-level leaf did not restore the default");
+  router::pki::Configuration classic_top;
+  edit(classic_top, CliEngine::classic,
+       "configure system security pki certificate-display-format utf8");
+  edit(classic_top, CliEngine::classic,
+       "configure system security pki maximum-cert-chain-depth 3");
+  edit(classic_top, CliEngine::classic,
+       "configure system security pki certificate-expiration-warning hours "
+       "100 repeat 10");
+  require(classic_top.display_format ==
+                  router::pki::CertificateDisplayFormat::utf8 &&
+              classic_top.maximum_cert_chain_depth == 3U &&
+              classic_top.certificate_expiration_warning.hours == 100 &&
+              classic_top.certificate_expiration_warning.repeat_hours == 10,
+          "classic top-level PKI leaves did not reach the model");
+  edit(classic_top, CliEngine::classic,
+       "configure system security pki no maximum-cert-chain-depth");
+  require(!classic_top.maximum_cert_chain_depth_configured,
+          "classic no chain-depth retained the value");
+
+  // OCSP leaves hang under the CA profile. MD uses service-name; classic
+  // selects numeric services with service <id> and names with service name.
+  router::pki::Configuration ocsp;
+  edit(ocsp, CliEngine::md,
+       "configure system security pki ca-profile lab-ocsp ocsp responder-url "
+       "http://ocsp.example.test");
+  edit(ocsp, CliEngine::md,
+       "configure system security pki ca-profile lab-ocsp ocsp service-name "
+       "ocsp-service");
+  edit(ocsp, CliEngine::md,
+       "configure system security pki ca-profile lab-ocsp ocsp "
+       "transmission-profile ocsp-transport");
+  {
+    const auto &profile = ocsp.ca_profiles.front().ocsp;
+    require(profile.responder_url == "http://ocsp.example.test" &&
+                profile.service_kind == router::pki::OcspServiceKind::name &&
+                profile.service_name == "ocsp-service" &&
+                profile.transmission_profile == "ocsp-transport",
+            "MD OCSP intent did not reach the canonical model");
+  }
+  edit(ocsp, CliEngine::md,
+       "delete system security pki ca-profile lab-ocsp ocsp responder-url");
+  require(ocsp.ca_profiles.front().ocsp.responder_url.empty(),
+          "MD delete responder-url retained the reference");
+  router::pki::Configuration classic_ocsp;
+  edit(classic_ocsp, CliEngine::classic,
+       "configure system security pki ca-profile lab-ocsp create");
+  edit(classic_ocsp, CliEngine::classic,
+       "configure system security pki ca-profile lab-ocsp ocsp responder-url "
+       "http://ocsp.example.test");
+  edit(classic_ocsp, CliEngine::classic,
+       "configure system security pki ca-profile lab-ocsp ocsp service 42");
+  require(classic_ocsp.ca_profiles.front().ocsp.service_kind ==
+                  router::pki::OcspServiceKind::id &&
+              classic_ocsp.ca_profiles.front().ocsp.service_id == 42U,
+          "classic OCSP numeric service did not reach the model");
+  edit(classic_ocsp, CliEngine::classic,
+       "configure system security pki ca-profile lab-ocsp ocsp service name "
+       "ocsp-service");
+  require(classic_ocsp.ca_profiles.front().ocsp.service_kind ==
+                  router::pki::OcspServiceKind::name,
+          "classic OCSP named service did not reach the model");
+  edit(classic_ocsp, CliEngine::classic,
+       "configure system security pki ca-profile lab-ocsp ocsp no service");
+  require(classic_ocsp.ca_profiles.front().ocsp.service_kind ==
+              router::pki::OcspServiceKind::none,
+          "classic no service retained the OCSP service");
+
+  // CMPv2 covers sender, nonce, signing, recipient, unprotected-message,
+  // HTTP, URL and the sealed key list. Classic keeps its documented flat
+  // spellings for the boolean flags and the url/key rows.
+  router::pki::Configuration cmp;
+  TestSecretSink cmp_vault;
+  edit(cmp, CliEngine::md,
+       "configure system security pki ca-profile lab-cmp cmpv2 "
+       "always-set-sender-for-ir true");
+  edit(cmp, CliEngine::md,
+       "configure system security pki ca-profile lab-cmp cmpv2 "
+       "signing-cert-subject CN=cmp-signer");
+  edit(cmp, CliEngine::md,
+       "configure system security pki ca-profile lab-cmp cmpv2 "
+       "response-signing-use-extracert");
+  edit(cmp, CliEngine::md,
+       "configure system security pki ca-profile lab-cmp cmpv2 use-ca-subject");
+  edit(cmp, CliEngine::md,
+       "configure system security pki ca-profile lab-cmp cmpv2 "
+       "accept-unprotected-message error-message true");
+  edit(cmp, CliEngine::md,
+       "configure system security pki ca-profile lab-cmp cmpv2 http "
+       "response-timeout 60");
+  edit(cmp, CliEngine::md,
+       "configure system security pki ca-profile lab-cmp cmpv2 http version "
+       "1.0");
+  edit(cmp, CliEngine::md,
+       "configure system security pki ca-profile lab-cmp cmpv2 url url-string "
+       "http://cmp.example.test/cmp",
+       &cmp_vault);
+  edit(cmp, CliEngine::md,
+       "configure system security pki ca-profile lab-cmp cmpv2 key-list key "
+       "initial-key password cmp-secret",
+       &cmp_vault);
+  {
+    const auto &profile = cmp.ca_profiles.front().cmpv2;
+    require(profile.always_set_sender_for_ir &&
+                profile.signing_cert_subject == "CN=cmp-signer" &&
+                profile.response_signing ==
+                    router::pki::CmpResponseSigningKind::use_extra_cert &&
+                profile.recipient == router::pki::CmpRecipientKind::ca_subject &&
+                profile.accept_unprotected_error &&
+                profile.http_response_timeout_seconds == 60U &&
+                profile.http_version == router::pki::HttpVersion::v10 &&
+                profile.url_string == "http://cmp.example.test/cmp" &&
+                profile.keys.size() == 1U &&
+                profile.keys.front().password_configured &&
+                profile.keys.front().password_handle != 0U,
+            "MD CMPv2 intent did not reach the canonical model");
+  }
+  edit(cmp, CliEngine::md,
+       "delete system security pki ca-profile lab-cmp cmpv2 key-list key "
+       "initial-key",
+       &cmp_vault);
+  require(cmp.ca_profiles.front().cmpv2.keys.empty(),
+          "MD delete CMPv2 key retained the entry");
+  {
+    const auto silent = router::lab::pki_cli::edit(
+        cmp,
+        parse(CliEngine::md,
+              "delete system security pki ca-profile lab-cmp cmpv2 key-list "
+              "key initial-key"),
+        CliEngine::md);
+    require(silent.recognized && silent.valid && !silent.changed,
+            "MD delete of an absent CMPv2 key was not silent");
+  }
+  router::pki::Configuration classic_cmp;
+  edit(classic_cmp, CliEngine::classic,
+       "configure system security pki ca-profile lab-cmp create");
+  edit(classic_cmp, CliEngine::classic,
+       "configure system security pki ca-profile lab-cmp cmpv2 "
+       "accept-unprotected-errormsg");
+  edit(classic_cmp, CliEngine::classic,
+       "configure system security pki ca-profile lab-cmp cmpv2 url "
+       "http://cmp.example.test/cmp service-id 100",
+       &cmp_vault);
+  edit(classic_cmp, CliEngine::classic,
+       "configure system security pki ca-profile lab-cmp cmpv2 key-list key "
+       "cmp-secret reference initial-key",
+       &cmp_vault);
+  {
+    const auto &profile = classic_cmp.ca_profiles.front().cmpv2;
+    require(profile.accept_unprotected_error &&
+                profile.url_string == "http://cmp.example.test/cmp" &&
+                profile.url_transport ==
+                    router::pki::CmpUrlTransportKind::service_id &&
+                profile.url_service_id == 100U && profile.keys.size() == 1U &&
+                profile.keys.front().reference == "initial-key",
+            "classic CMPv2 intent did not reach the canonical model");
+  }
+  edit(classic_cmp, CliEngine::classic,
+       "configure system security pki ca-profile lab-cmp cmpv2 key-list no "
+       "key initial-key",
+       &cmp_vault);
+  require(classic_cmp.ca_profiles.front().cmpv2.keys.empty(),
+          "classic no CMPv2 key retained the entry");
+
+  // Automatic CRL update is a presence container with admin-state,
+  // intervals, schedule and up to eight download URLs. MD uses seconds;
+  // classic uses shutdown and days/hrs/min/sec components.
+  router::pki::Configuration crl;
+  edit(crl, CliEngine::md,
+       "configure system security pki ca-profile lab-crl auto-crl-update "
+       "admin-state enable");
+  edit(crl, CliEngine::md,
+       "configure system security pki ca-profile lab-crl auto-crl-update "
+       "periodic-update-interval 7200");
+  edit(crl, CliEngine::md,
+       "configure system security pki ca-profile lab-crl auto-crl-update "
+       "schedule-type periodic");
+  edit(crl, CliEngine::md,
+       "configure system security pki ca-profile lab-crl auto-crl-update "
+       "crl-urls url-entry 1 url http://crl.example.test/lab.crl");
+  {
+    const auto &update = crl.ca_profiles.front().auto_crl_update;
+    require(update.present && update.admin_enabled &&
+                update.periodic_update_seconds == 7200U &&
+                update.schedule ==
+                    router::pki::AutoCrlScheduleKind::periodic &&
+                update.urls.size() == 1U &&
+                update.urls.front().url == "http://crl.example.test/lab.crl",
+            "MD auto-CRL intent did not reach the canonical model");
+  }
+  for (const auto *text :
+       {"configure system security pki ca-profile lab-crl auto-crl-update "
+        "crl-urls url-entry 0 url http://crl.example.test/lab.crl",
+        "configure system security pki ca-profile lab-crl auto-crl-update "
+        "crl-urls url-entry 9 url http://crl.example.test/lab.crl"}) {
+    require(!router::cli_detail::parse_command(
+                 CliEngine::md, MdCliWorkflow::explicit_private, text)
+                 .has_value(),
+            "out-of-domain auto-CRL value parsed");
+  }
+  reject(crl, CliEngine::md,
+         "configure system security pki ca-profile lab-crl auto-crl-update "
+         "periodic-update-interval 3599");
+  edit(crl, CliEngine::md,
+       "delete system security pki ca-profile lab-crl auto-crl-update "
+       "crl-urls url-entry 1");
+  require(crl.ca_profiles.front().auto_crl_update.urls.empty(),
+          "MD delete CRL URL entry retained the record");
+  router::pki::Configuration classic_crl;
+  edit(classic_crl, CliEngine::classic,
+       "configure system security pki ca-profile lab-crl create");
+  edit(classic_crl, CliEngine::classic,
+       "configure system security pki ca-profile lab-crl auto-crl-update "
+       "create");
+  edit(classic_crl, CliEngine::classic,
+       "configure system security pki ca-profile lab-crl auto-crl-update no "
+       "shutdown");
+  edit(classic_crl, CliEngine::classic,
+       "configure system security pki ca-profile lab-crl auto-crl-update "
+       "periodic-update-interval days 1 hrs 2");
+  require(classic_crl.ca_profiles.front().auto_crl_update.present &&
+              classic_crl.ca_profiles.front().auto_crl_update.admin_enabled &&
+              classic_crl.ca_profiles.front().auto_crl_update
+                      .periodic_update_seconds == 93600U,
+          "classic auto-CRL intent did not reach the canonical model");
+  edit(classic_crl, CliEngine::classic,
+       "configure system security pki ca-profile lab-crl auto-crl-update "
+       "crl-urls url-entry 2 create");
+  edit(classic_crl, CliEngine::classic,
+       "configure system security pki ca-profile lab-crl auto-crl-update "
+       "crl-urls url-entry 2 url http://crl.example.test/lab.crl");
+  require(classic_crl.ca_profiles.front().auto_crl_update.urls.size() == 1U,
+          "classic CRL URL entry did not reach the model");
+
+  // Certificate update profiles select the enrollment protocol, key
+  // generation and schedule. Auto-update entries bind certificates to a
+  // profile with a key file.
+  router::pki::Configuration update;
+  edit(update, CliEngine::md,
+       "configure system security pki ca-profile lab-ca cert-file lab-ca.crt");
+  edit(update, CliEngine::md,
+       "configure system security pki certificate-update-profile lab-update "
+       "hash-algorithm sha512");
+  edit(update, CliEngine::md,
+       "configure system security pki certificate-update-profile lab-update "
+       "cmpv2 ca-profile lab-ca");
+  edit(update, CliEngine::md,
+       "configure system security pki certificate-update-profile lab-update "
+       "rsa key-size 4096");
+  edit(update, CliEngine::md,
+       "configure system security pki certificate-update-profile lab-update "
+       "after-issue 1000000");
+  edit(update, CliEngine::md,
+       "configure system security pki certificate-auto-update lab.crt "
+       "key-file-name lab.key");
+  edit(update, CliEngine::md,
+       "configure system security pki certificate-auto-update lab.crt profile "
+       "lab-update");
+  {
+    const auto &profile = update.update_profiles.front();
+    require(profile.hash_algorithm == router::pki::HashAlgorithm::sha512 &&
+                profile.protocol == router::pki::UpdateProtocol::cmpv2 &&
+                profile.protocol_profile == "lab-ca" &&
+                profile.key_generation == router::pki::KeyGenerationKind::rsa &&
+                profile.key_size_bits == 4096U &&
+                profile.schedule ==
+                    router::pki::UpdateScheduleKind::after_issue &&
+                update.auto_updates.size() == 1U &&
+                update.auto_updates.front().key_file == "lab.key" &&
+                update.auto_updates.front().profile == "lab-update",
+            "MD update/auto-update intent did not reach the model");
+  }
+  reject(update, CliEngine::md,
+         "configure system security pki certificate-update-profile lab-update "
+         "rsa key-size 256");
+  router::pki::Configuration classic_update;
+  edit(classic_update, CliEngine::classic,
+       "configure system security pki certificate-update-profile lab-update "
+       "create");
+  edit(classic_update, CliEngine::classic,
+       "configure system security pki certificate-update-profile lab-update "
+       "retry-interval 120");
+  edit(classic_update, CliEngine::classic,
+       "configure system security pki certificate-update-profile lab-update "
+       "key-generation rsa 2048");
+  edit(classic_update, CliEngine::classic,
+       "configure system security pki certificate-update-profile lab-update "
+       "key-generation same-as-existing-key");
+  edit(classic_update, CliEngine::classic,
+       "configure system security pki certificate-auto-update cert lab.crt "
+       "create");
+  edit(classic_update, CliEngine::classic,
+       "configure system security pki certificate-auto-update cert lab.crt key "
+       "lab.key");
+  require(classic_update.update_profiles.front().retry_seconds == 120U &&
+              classic_update.auto_updates.front().key_file == "lab.key",
+          "classic update/auto-update intent did not reach the model");
+  edit(classic_update, CliEngine::classic,
+       "configure system security pki no certificate-update-profile "
+       "lab-update");
+  require(classic_update.update_profiles.empty(),
+          "classic removal did not clear the update profile");
 }

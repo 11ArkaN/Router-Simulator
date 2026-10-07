@@ -8627,6 +8627,22 @@ bool ipsec_configuration(Reader &in, ipsec::configuration::Configuration &state,
 }
 
 void pki_configuration(Writer &out, const pki::Configuration &state) {
+  out.integer(state.display_format);
+  out.boolean(state.display_format_configured);
+  out.boolean(state.dynamic_ca);
+  out.boolean(state.dynamic_ca_configured);
+  out.integer(state.imported_format);
+  out.boolean(state.imported_format_configured);
+  out.integer(state.maximum_cert_chain_depth);
+  out.boolean(state.maximum_cert_chain_depth_configured);
+  out.boolean(state.certificate_expiration_warning.hours_configured);
+  out.integer(state.certificate_expiration_warning.hours);
+  out.boolean(state.certificate_expiration_warning.repeat_configured);
+  out.integer(state.certificate_expiration_warning.repeat_hours);
+  out.boolean(state.crl_expiration_warning.hours_configured);
+  out.integer(state.crl_expiration_warning.hours);
+  out.boolean(state.crl_expiration_warning.repeat_configured);
+  out.integer(state.crl_expiration_warning.repeat_hours);
   count(out, state.ca_profiles);
   for (const auto &profile : state.ca_profiles) {
     out.string(profile.name);
@@ -8637,6 +8653,58 @@ void pki_configuration(Writer &out, const pki::Configuration &state) {
     out.boolean(profile.admin_enabled);
     out.boolean(profile.admin_state_configured);
     out.boolean(profile.revocation_check_configured);
+    out.string(profile.ocsp.responder_url);
+    out.integer(profile.ocsp.service_kind);
+    out.integer(profile.ocsp.service_id);
+    out.string(profile.ocsp.service_name);
+    out.string(profile.ocsp.transmission_profile);
+    out.boolean(profile.cmpv2.always_set_sender_for_ir);
+    out.boolean(profile.cmpv2.always_set_sender_for_ir_configured);
+    out.boolean(profile.cmpv2.same_recipient_nonce_for_poll_request);
+    out.boolean(profile.cmpv2.same_recipient_nonce_for_poll_request_configured);
+    out.string(profile.cmpv2.signing_cert_subject);
+    out.integer(profile.cmpv2.response_signing);
+    out.string(profile.cmpv2.response_signing_cert);
+    out.boolean(profile.cmpv2.response_signing_configured);
+    out.integer(profile.cmpv2.recipient);
+    out.string(profile.cmpv2.recipient_subject);
+    out.boolean(profile.cmpv2.recipient_configured);
+    out.boolean(profile.cmpv2.accept_unprotected_error);
+    out.boolean(profile.cmpv2.accept_unprotected_error_configured);
+    out.boolean(profile.cmpv2.accept_unprotected_pkiconf);
+    out.boolean(profile.cmpv2.accept_unprotected_pkiconf_configured);
+    out.integer(profile.cmpv2.http_response_timeout_seconds);
+    out.boolean(profile.cmpv2.http_response_timeout_configured);
+    out.integer(profile.cmpv2.http_version);
+    out.boolean(profile.cmpv2.http_version_configured);
+    out.string(profile.cmpv2.url_string);
+    out.integer(profile.cmpv2.url_transport);
+    out.integer(profile.cmpv2.url_service_id);
+    out.string(profile.cmpv2.url_service_name);
+    out.string(profile.cmpv2.url_transmission_profile);
+    count(out, profile.cmpv2.keys);
+    for (const auto &key : profile.cmpv2.keys) {
+      out.string(key.reference);
+      out.integer(key.password_handle);
+      out.boolean(key.password_configured);
+    }
+    out.boolean(profile.auto_crl_update.present);
+    out.boolean(profile.auto_crl_update.admin_enabled);
+    out.boolean(profile.auto_crl_update.admin_state_configured);
+    out.integer(profile.auto_crl_update.periodic_update_seconds);
+    out.boolean(profile.auto_crl_update.periodic_update_configured);
+    out.integer(profile.auto_crl_update.pre_update_seconds);
+    out.boolean(profile.auto_crl_update.pre_update_configured);
+    out.integer(profile.auto_crl_update.retry_seconds);
+    out.boolean(profile.auto_crl_update.retry_configured);
+    out.integer(profile.auto_crl_update.schedule);
+    out.boolean(profile.auto_crl_update.schedule_configured);
+    count(out, profile.auto_crl_update.urls);
+    for (const auto &entry : profile.auto_crl_update.urls) {
+      out.integer(entry.entry_id);
+      out.string(entry.url);
+      out.string(entry.transmission_profile);
+    }
   }
   count(out, state.common_name_lists);
   for (const auto &list : state.common_name_lists) {
@@ -8665,10 +8733,50 @@ void pki_configuration(Writer &out, const pki::Configuration &state) {
     out.integer(profile.http_authentication.password_handle);
     out.boolean(profile.http_authentication.password_configured);
   }
+  count(out, state.update_profiles);
+  for (const auto &profile : state.update_profiles) {
+    out.string(profile.name);
+    out.integer(profile.hash_algorithm);
+    out.boolean(profile.hash_algorithm_configured);
+    out.integer(profile.retry_seconds);
+    out.boolean(profile.retry_configured);
+    out.integer(profile.protocol);
+    out.string(profile.protocol_profile);
+    out.boolean(profile.protocol_configured);
+    out.integer(profile.key_generation);
+    out.integer(profile.key_size_bits);
+    out.integer(profile.curve);
+    out.integer(profile.schedule);
+    out.integer(profile.schedule_seconds);
+  }
+  count(out, state.auto_updates);
+  for (const auto &entry : state.auto_updates) {
+    out.string(entry.certificate_file);
+    out.string(entry.key_file);
+    out.string(entry.profile);
+  }
 }
 
 bool pki_configuration(Reader &in, pki::Configuration &state) {
   std::uint32_t size{};
+  std::uint32_t entry_count{};
+  if (!in.integer(state.display_format) ||
+      !in.boolean(state.display_format_configured) ||
+      !in.boolean(state.dynamic_ca) ||
+      !in.boolean(state.dynamic_ca_configured) ||
+      !in.integer(state.imported_format) ||
+      !in.boolean(state.imported_format_configured) ||
+      !in.integer(state.maximum_cert_chain_depth) ||
+      !in.boolean(state.maximum_cert_chain_depth_configured) ||
+      !in.boolean(state.certificate_expiration_warning.hours_configured) ||
+      !in.integer(state.certificate_expiration_warning.hours) ||
+      !in.boolean(state.certificate_expiration_warning.repeat_configured) ||
+      !in.integer(state.certificate_expiration_warning.repeat_hours) ||
+      !in.boolean(state.crl_expiration_warning.hours_configured) ||
+      !in.integer(state.crl_expiration_warning.hours) ||
+      !in.boolean(state.crl_expiration_warning.repeat_configured) ||
+      !in.integer(state.crl_expiration_warning.repeat_hours))
+    return false;
   if (!count(in, size, pki::maximum_ca_profiles))
     return false;
   state.ca_profiles.resize(size);
@@ -8680,8 +8788,65 @@ bool pki_configuration(Reader &in, pki::Configuration &state) {
         !in.integer(profile.revocation_check) ||
         !in.boolean(profile.admin_enabled) ||
         !in.boolean(profile.admin_state_configured) ||
-        !in.boolean(profile.revocation_check_configured))
+        !in.boolean(profile.revocation_check_configured) ||
+        !in.string(profile.ocsp.responder_url, 180U) ||
+        !in.integer(profile.ocsp.service_kind) ||
+        !in.integer(profile.ocsp.service_id) ||
+        !in.string(profile.ocsp.service_name, 64U) ||
+        !in.string(profile.ocsp.transmission_profile, 32U) ||
+        !in.boolean(profile.cmpv2.always_set_sender_for_ir) ||
+        !in.boolean(profile.cmpv2.always_set_sender_for_ir_configured) ||
+        !in.boolean(profile.cmpv2.same_recipient_nonce_for_poll_request) ||
+        !in.boolean(
+            profile.cmpv2.same_recipient_nonce_for_poll_request_configured) ||
+        !in.string(profile.cmpv2.signing_cert_subject, 256U) ||
+        !in.integer(profile.cmpv2.response_signing) ||
+        !in.string(profile.cmpv2.response_signing_cert, 95U) ||
+        !in.boolean(profile.cmpv2.response_signing_configured) ||
+        !in.integer(profile.cmpv2.recipient) ||
+        !in.string(profile.cmpv2.recipient_subject, 256U) ||
+        !in.boolean(profile.cmpv2.recipient_configured) ||
+        !in.boolean(profile.cmpv2.accept_unprotected_error) ||
+        !in.boolean(profile.cmpv2.accept_unprotected_error_configured) ||
+        !in.boolean(profile.cmpv2.accept_unprotected_pkiconf) ||
+        !in.boolean(profile.cmpv2.accept_unprotected_pkiconf_configured) ||
+        !in.integer(profile.cmpv2.http_response_timeout_seconds) ||
+        !in.boolean(profile.cmpv2.http_response_timeout_configured) ||
+        !in.integer(profile.cmpv2.http_version) ||
+        !in.boolean(profile.cmpv2.http_version_configured) ||
+        !in.string(profile.cmpv2.url_string, 180U) ||
+        !in.integer(profile.cmpv2.url_transport) ||
+        !in.integer(profile.cmpv2.url_service_id) ||
+        !in.string(profile.cmpv2.url_service_name, 64U) ||
+        !in.string(profile.cmpv2.url_transmission_profile, 32U) ||
+        !count(in, entry_count, pki::maximum_cmp_keys))
       return false;
+    profile.cmpv2.keys.resize(entry_count);
+    for (auto &key : profile.cmpv2.keys) {
+      if (!in.string(key.reference, 64U) ||
+          !in.integer(key.password_handle) ||
+          !in.boolean(key.password_configured))
+        return false;
+    }
+    if (!in.boolean(profile.auto_crl_update.present) ||
+        !in.boolean(profile.auto_crl_update.admin_enabled) ||
+        !in.boolean(profile.auto_crl_update.admin_state_configured) ||
+        !in.integer(profile.auto_crl_update.periodic_update_seconds) ||
+        !in.boolean(profile.auto_crl_update.periodic_update_configured) ||
+        !in.integer(profile.auto_crl_update.pre_update_seconds) ||
+        !in.boolean(profile.auto_crl_update.pre_update_configured) ||
+        !in.integer(profile.auto_crl_update.retry_seconds) ||
+        !in.boolean(profile.auto_crl_update.retry_configured) ||
+        !in.integer(profile.auto_crl_update.schedule) ||
+        !in.boolean(profile.auto_crl_update.schedule_configured) ||
+        !count(in, entry_count, pki::maximum_crl_url_entries))
+      return false;
+    profile.auto_crl_update.urls.resize(entry_count);
+    for (auto &entry : profile.auto_crl_update.urls) {
+      if (!in.integer(entry.entry_id) || !in.string(entry.url, 180U) ||
+          !in.string(entry.transmission_profile, 32U))
+        return false;
+    }
   }
   if (!count(in, size, pki::maximum_common_name_lists))
     return false;
@@ -8716,6 +8881,32 @@ bool pki_configuration(Reader &in, pki::Configuration &state) {
         !in.string(profile.http_authentication.username, 32U) ||
         !in.integer(profile.http_authentication.password_handle) ||
         !in.boolean(profile.http_authentication.password_configured))
+      return false;
+  }
+  if (!count(in, size, pki::maximum_certificate_update_profiles))
+    return false;
+  state.update_profiles.resize(size);
+  for (auto &profile : state.update_profiles) {
+    if (!in.string(profile.name, 32U) ||
+        !in.integer(profile.hash_algorithm) ||
+        !in.boolean(profile.hash_algorithm_configured) ||
+        !in.integer(profile.retry_seconds) ||
+        !in.boolean(profile.retry_configured) ||
+        !in.integer(profile.protocol) ||
+        !in.string(profile.protocol_profile, 32U) ||
+        !in.boolean(profile.protocol_configured) ||
+        !in.integer(profile.key_generation) ||
+        !in.integer(profile.key_size_bits) ||
+        !in.integer(profile.curve) || !in.integer(profile.schedule) ||
+        !in.integer(profile.schedule_seconds))
+      return false;
+  }
+  if (!count(in, size, pki::maximum_certificate_auto_updates))
+    return false;
+  state.auto_updates.resize(size);
+  for (auto &entry : state.auto_updates) {
+    if (!in.string(entry.certificate_file, 95U) ||
+        !in.string(entry.key_file, 95U) || !in.string(entry.profile, 32U))
       return false;
   }
   return pki::validate(state);
@@ -9819,7 +10010,7 @@ bool secret_vault(Reader &in, vault::Checkpoint &state) {
         record.handle <= previous || record.handle >= state.next_handle ||
         !in.integer(record.kind) ||
         record.kind < vault::SecretKind::ipsec_ppk_ascii ||
-        record.kind > vault::SecretKind::pki_est_http_password ||
+        record.kind > vault::SecretKind::pki_cmp_initial_auth_password ||
         !in.integer(sealed_size) || !sealed_size ||
         sealed_size > maximum_sealed_secret_octets)
       return false;

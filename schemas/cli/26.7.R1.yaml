@@ -188,6 +188,19 @@ parameters:
   pki_fqdn: { display: "<fqdn>", description: "EST server fully qualified domain name" }
   pki_username: { display: "<username>", description: "EST HTTP authentication username" }
   pki_transmission_profile: { display: "<transmission-profile>", description: "EST transmission profile name" }
+  pki_url: { display: "<url>", description: "OCSP responder, CMPv2 server or CRL location URL" }
+  pki_dn_string: { display: "<subject-dn>", description: "Certificate subject distinguished-name attributes" }
+  pki_service_id: { display: "<service-id>", description: "Service identifier for PKI transport" }
+  pki_service_name: { display: "<service-name>", description: "Service name for PKI transport" }
+  pki_cmp_key_ref: { display: "<reference>", description: "CMPv2 initial-authentication key reference" }
+  pki_crl_entry_id: { display: "<entry-id>", description: "Automatic CRL update URL entry identifier" }
+  pki_update_profile_name: { display: "<update-profile-name>", description: "Certificate update profile name" }
+  pki_seconds: { display: "<seconds>", description: "PKI time interval in seconds" }
+  pki_key_size: { display: "<key-size>", description: "Generated key size in bits" }
+  pki_chain_depth: { display: "<level>", description: "Maximum certificate chain depth" }
+  pki_warning_hours: { display: "<hours>", description: "Expiration warning lead time in hours" }
+  pki_warning_repeat: { display: "<repeat-hours>", description: "Expiration warning repeat interval in hours" }
+  pki_key_file: { display: "<key-file-name>", description: "Certificate key file name" }
   static_sa_spi: { display: "<spi>", description: "Manual security association SPI" }
   ospf_instance: { display: "<ospf-instance>", description: "OSPF protocol instance identifier" }
   global_if_index: { display: "<global-if-index>", description: "Global interface index from 1 through 262144" }
@@ -826,6 +839,55 @@ literals:
   crl-file: "Configure the CRL file name"
   check-id-kp-cmcra-only: "Check id-kp-cmcra in the EST certificate"
   path: "Configure EST server paths"
+  certificate-display-format: "Configure the certificate display format"
+  dynamic-ca: "Enable dynamic sub-CA support for IPsec"
+  imported-format: "Configure the supported encrypted file formats"
+  maximum-cert-chain-depth: "Configure the maximum certificate chain depth"
+  certificate-expiration-warning: "Configure certificate expiration warnings"
+  crl-expiration-warning: "Configure CRL expiration warnings"
+  hours: "Configure the warning lead time in hours"
+  repeat-hours: "Configure the warning repeat interval in hours"
+  responder-url: "Configure the OCSP responder URL"
+  cmpv2: "Configure CMPv2 server parameters"
+  always-set-sender-for-ir: "Set the subject name in CMPv2 IR message headers"
+  same-recipient-nonce-for-poll-request: "Reuse the recipient nonce for poll requests"
+  signing-cert-subject: "Configure the CMPv2 signing certificate subject"
+  response-signing-use-extracert: "Verify responses with the extraCerts certificate"
+  response-signing-cert: "Configure the certificate file for CMPv2 response verification"
+  use-ca-subject: "Use the CA certificate subject as the request recipient"
+  recipient-subject: "Configure the CMPv2 request recipient subject"
+  accept-unprotected-message: "Configure acceptance of unprotected CMPv2 messages"
+  error-message: "Accept unprotected CMPv2 error messages"
+  pkiconf-message: "Accept unprotected CMPv2 pkiconf messages"
+  response-timeout: "Configure the CMPv2 HTTP response timeout"
+  http: "Configure CMPv2 HTTP transport parameters"
+  url-string: "Configure the CMPv2 server URL"
+  key-list: "Configure CMPv2 initial-authentication keys"
+  auto-crl-update: "Configure automatic CRL updates"
+  periodic-update-interval: "Configure the periodic CRL update interval"
+  pre-update-time: "Configure the CRL pre-update lead time"
+  retry-interval: "Configure the update retry interval"
+  schedule-type: "Configure the CRL update schedule type"
+  next-update-based: "Schedule updates from the CRL nextUpdate field"
+  crl-urls: "Configure CRL download locations"
+  url-entry: "Configure a CRL download URL entry"
+  url: "Configure the CRL download URL"
+  certificate-update-profile: "Configure a certificate update profile"
+  hash-algorithm: "Configure the certificate update hash algorithm"
+  same-as-existing-key: "Reuse the existing key for certificate updates"
+  key-size: "Configure the generated key size in bits"
+  curve: "Configure the ECDSA curve"
+  before-expiry: "Schedule updates before certificate expiry"
+  after-issue: "Schedule updates after certificate issuance"
+  certificate-auto-update: "Configure automatic certificate updates"
+  key-file-name: "Configure the certificate key file name"
+  accept-unprotected-errormsg: "Accept unprotected CMPv2 error messages"
+  accept-unprotected-pkiconf: "Accept unprotected CMPv2 pkiconf messages"
+  same-recipnonce-for-pollreq: "Reuse the recipient nonce for poll requests"
+  key-generation: "Configure the update key generation method"
+  schedule: "Configure the update schedule"
+  periodic: "Use periodic scheduling"
+  est: "Use EST for certificate updates"
   address-assignment: "Configure address assignment sources"
   router-instance: "Select router-based address assignment"
   private-service-name: "Configure the private-side service name"
@@ -4516,6 +4578,78 @@ commands:
   - { id: md_pki_est_path_simplereenroll, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, est-profile, { parameter: pki_est_profile_name }, { literal: "server", description: "Configure the EST server" }, path, simplereenroll, { parameter: pki_path }] }
   - { id: md_pki_est_http_username, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, est-profile, { parameter: pki_est_profile_name }, http-authentication, username, { parameter: pki_username }] }
   - { id: md_pki_est_http_password, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, est-profile, { parameter: pki_est_profile_name }, http-authentication, { literal: "password", description: "Configure the EST HTTP authentication password" }, { parameter: radius_password }] }
+  # PKI top-level leaves mirror the YANG pki container. Enums use one row per
+  # value; booleans use the shared boolean parameter; intervals use seconds.
+  - { id: md_pki_display_ascii, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-display-format, { literal: "ascii", description: "Display certificates in ASCII format" }] }
+  - { id: md_pki_display_utf8, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-display-format, { literal: "utf8", description: "Display certificates in UTF-8 format" }] }
+  - { id: md_pki_dynamic_ca, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, dynamic-ca, { parameter: boolean }] }
+  - { id: md_pki_imported_any, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, imported-format, { literal: "any", description: "Accept any encrypted file format" }] }
+  - { id: md_pki_imported_secure, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, imported-format, { literal: "secure", description: "Accept only secure encrypted file formats" }] }
+  - { id: md_pki_chain_depth, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, maximum-cert-chain-depth, { parameter: pki_chain_depth }] }
+  - { id: md_pki_cert_warn_hours, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-expiration-warning, hours, { parameter: pki_warning_hours }] }
+  - { id: md_pki_cert_warn_repeat, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-expiration-warning, repeat-hours, { parameter: pki_warning_hours }] }
+  - { id: md_pki_crl_warn_hours, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, crl-expiration-warning, hours, { parameter: pki_warning_hours }] }
+  - { id: md_pki_crl_warn_repeat, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, crl-expiration-warning, repeat-hours, { parameter: pki_warning_hours }] }
+  # OCSP leaves hang under the ca-profile ocsp container. MD uses service-name;
+  # numeric service selection is a classic-only spelling.
+  - { id: md_pki_ocsp_url, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, ocsp, responder-url, { parameter: pki_url }] }
+  - { id: md_pki_ocsp_service, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, ocsp, { literal: "service-name", description: "Configure the OCSP service name" }, { parameter: pki_service_name }] }
+  - { id: md_pki_ocsp_transmission, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, ocsp, transmission-profile, { parameter: pki_transmission_profile }] }
+  # CMPv2 leaves hang flat under cmpv2. The response-signing and recipient
+  # choices have no intermediate token in MD-CLI; each case is its own leaf.
+  - { id: md_pki_cmp_always_sender, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, always-set-sender-for-ir, { parameter: boolean }] }
+  - { id: md_pki_cmp_same_nonce, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, same-recipient-nonce-for-poll-request, { parameter: boolean }] }
+  - { id: md_pki_cmp_signing_subject, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, signing-cert-subject, { parameter: pki_dn_string }] }
+  - { id: md_pki_cmp_response_extracert, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, response-signing-use-extracert] }
+  - { id: md_pki_cmp_response_cert, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, response-signing-cert, { parameter: pki_file_name }] }
+  - { id: md_pki_cmp_use_ca_subject, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, use-ca-subject] }
+  - { id: md_pki_cmp_recipient_subject, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, recipient-subject, { parameter: pki_dn_string }] }
+  - { id: md_pki_cmp_accept_error, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, accept-unprotected-message, error-message, { parameter: boolean }] }
+  - { id: md_pki_cmp_accept_pkiconf, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, accept-unprotected-message, pkiconf-message, { parameter: boolean }] }
+  - { id: md_pki_cmp_http_timeout, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, http, response-timeout, { parameter: pki_seconds }] }
+  - { id: md_pki_cmp_http_v10, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, http, { literal: "version", description: "Configure the CMPv2 HTTP version" }, { literal: "1.0", description: "Use HTTP version 1.0" }] }
+  - { id: md_pki_cmp_http_v11, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, http, { literal: "version", description: "Configure the CMPv2 HTTP version" }, { literal: "1.1", description: "Use HTTP version 1.1" }] }
+  - { id: md_pki_cmp_url_string, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, url, url-string, { parameter: pki_url }] }
+  - { id: md_pki_cmp_url_service, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, url, { literal: "service-name", description: "Configure the CMPv2 service name" }, { parameter: pki_service_name }] }
+  - { id: md_pki_cmp_url_transmission, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, url, transmission-profile, { parameter: pki_transmission_profile }] }
+  - { id: md_pki_cmp_key_password, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, key-list, { literal: "key", description: "Configure the CMPv2 key entry" }, { parameter: pki_cmp_key_ref }, { literal: "password", description: "Configure the CMPv2 key password" }, { parameter: radius_password }] }
+  # Auto-CRL update is a presence container; addressing any child creates it.
+  # The MD admin-state spelling maps to classic shutdown/no shutdown.
+  - { id: md_pki_crl_admin_enable, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, admin-state, enable] }
+  - { id: md_pki_crl_admin_disable, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, admin-state, disable] }
+  - { id: md_pki_crl_periodic, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval, { parameter: pki_seconds }] }
+  - { id: md_pki_crl_preupdate, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, pre-update-time, { parameter: pki_seconds }] }
+  - { id: md_pki_crl_retry, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, retry-interval, { parameter: pki_seconds }] }
+  - { id: md_pki_crl_schedule_next, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, schedule-type, next-update-based] }
+  - { id: md_pki_crl_schedule_periodic, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, schedule-type, periodic] }
+  - { id: md_pki_crl_url, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, crl-urls, url-entry, { parameter: pki_crl_entry_id }, url, { parameter: pki_url }] }
+  - { id: md_pki_crl_transmission, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, crl-urls, url-entry, { parameter: pki_crl_entry_id }, transmission-profile, { parameter: pki_transmission_profile }] }
+  # Certificate update profiles are keyed lists. Protocol, key-generation and
+  # schedule choices hang flat with no intermediate token in MD-CLI.
+  - { id: md_pki_update_hash_md5, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, hash-algorithm, { literal: "md5", description: "Use MD5 for certificate updates" }] }
+  - { id: md_pki_update_hash_sha1, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, hash-algorithm, { literal: "sha1", description: "Use SHA-1 for certificate updates" }] }
+  - { id: md_pki_update_hash_sha224, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, hash-algorithm, { literal: "sha224", description: "Use SHA-224 for certificate updates" }] }
+  - { id: md_pki_update_hash_sha256, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, hash-algorithm, { literal: "sha256", description: "Use SHA-256 for certificate updates" }] }
+  - { id: md_pki_update_hash_sha384, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, hash-algorithm, { literal: "sha384", description: "Use SHA-384 for certificate updates" }] }
+  - { id: md_pki_update_hash_sha512, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, hash-algorithm, { literal: "sha512", description: "Use SHA-512 for certificate updates" }] }
+  - { id: md_pki_update_retry, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, retry-interval, { parameter: pki_seconds }] }
+  - { id: md_pki_update_cmpv2, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, cmpv2, ca-profile, { parameter: pki_ca_profile_name }] }
+  - { id: md_pki_update_est, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, est, est-profile, { parameter: pki_est_profile_name }] }
+  - { id: md_pki_update_samekey, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, same-as-existing-key] }
+  - { id: md_pki_update_rsa, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, { literal: "rsa", description: "Generate an RSA key for certificate updates" }] }
+  - { id: md_pki_update_rsa_size, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, { literal: "rsa", description: "Generate an RSA key for certificate updates" }, key-size, { parameter: pki_key_size }] }
+  - { id: md_pki_update_dsa, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, { literal: "dsa", description: "Generate a DSA key for certificate updates" }] }
+  - { id: md_pki_update_dsa_size, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, { literal: "dsa", description: "Generate a DSA key for certificate updates" }, key-size, { parameter: pki_key_size }] }
+  - { id: md_pki_update_ecdsa, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, { literal: "ecdsa", description: "Generate an ECDSA key for certificate updates" }] }
+  - { id: md_pki_update_curve_256, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, { literal: "ecdsa", description: "Generate an ECDSA key for certificate updates" }, curve, { literal: "secp256r1", description: "Use the secp256r1 curve" }] }
+  - { id: md_pki_update_curve_384, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, { literal: "ecdsa", description: "Generate an ECDSA key for certificate updates" }, curve, { literal: "secp384r1", description: "Use the secp384r1 curve" }] }
+  - { id: md_pki_update_curve_521, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, { literal: "ecdsa", description: "Generate an ECDSA key for certificate updates" }, curve, { literal: "secp521r1", description: "Use the secp521r1 curve" }] }
+  - { id: md_pki_update_before, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, before-expiry, { parameter: pki_seconds }] }
+  - { id: md_pki_update_after, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, after-issue, { parameter: pki_seconds }] }
+  # Certificate auto-update entries are keyed by certificate file. The key
+  # file and update profile arrive as sibling leaves of the same entry.
+  - { id: md_pki_autoupdate_key, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-auto-update, { parameter: pki_file_name }, key-file-name, { parameter: pki_key_file }] }
+  - { id: md_pki_autoupdate_profile, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-auto-update, { parameter: pki_file_name }, { literal: "profile", description: "Assign the certificate update profile" }, { parameter: pki_update_profile_name }] }
   - { id: md_delete_pki_ca, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }] }
   - { id: md_delete_pki_ca_admin, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, admin-state] }
   - { id: md_delete_pki_ca_description, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, description] }
@@ -4535,6 +4669,57 @@ commands:
   - { id: md_delete_pki_est_path_simplereenroll, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, est-profile, { parameter: pki_est_profile_name }, { literal: "server", description: "Configure the EST server" }, path, simplereenroll] }
   - { id: md_delete_pki_est_http_username, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, est-profile, { parameter: pki_est_profile_name }, http-authentication, username] }
   - { id: md_delete_pki_est_http_password, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, est-profile, { parameter: pki_est_profile_name }, http-authentication, { literal: "password", description: "Configure the EST HTTP authentication password" }] }
+  # MD deletes restore defaults without materializing absent objects. Each
+  # configurable leaf below has its exact removal operator.
+  - { id: md_delete_pki_display, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-display-format] }
+  - { id: md_delete_pki_dynamic, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, dynamic-ca] }
+  - { id: md_delete_pki_imported, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, imported-format] }
+  - { id: md_delete_pki_chain_depth, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, maximum-cert-chain-depth] }
+  - { id: md_delete_pki_cert_warn_hours, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-expiration-warning, hours] }
+  - { id: md_delete_pki_cert_warn_repeat, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-expiration-warning, repeat-hours] }
+  - { id: md_delete_pki_crl_warn_hours, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, crl-expiration-warning, hours] }
+  - { id: md_delete_pki_crl_warn_repeat, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, crl-expiration-warning, repeat-hours] }
+  - { id: md_delete_pki_ocsp_url, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, ocsp, responder-url] }
+  - { id: md_delete_pki_ocsp_service, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, ocsp, { literal: "service-name", description: "Configure the OCSP service name" }] }
+  - { id: md_delete_pki_ocsp_transmission, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, ocsp, transmission-profile] }
+  - { id: md_delete_pki_cmp_sender, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, always-set-sender-for-ir] }
+  - { id: md_delete_pki_cmp_nonce, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, same-recipient-nonce-for-poll-request] }
+  - { id: md_delete_pki_cmp_signing, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, signing-cert-subject] }
+  - { id: md_delete_pki_cmp_response, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, response-signing-cert] }
+  - { id: md_delete_pki_cmp_extracert, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, response-signing-use-extracert] }
+  - { id: md_delete_pki_cmp_recipient, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, recipient-subject] }
+  - { id: md_delete_pki_cmp_casubject, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, use-ca-subject] }
+  - { id: md_delete_pki_cmp_error, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, accept-unprotected-message, error-message] }
+  - { id: md_delete_pki_cmp_pkiconf, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, accept-unprotected-message, pkiconf-message] }
+  - { id: md_delete_pki_cmp_timeout, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, http, response-timeout] }
+  - { id: md_delete_pki_cmp_version, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, http, { literal: "version", description: "Configure the CMPv2 HTTP version" }] }
+  - { id: md_delete_pki_cmp_url, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, url, url-string] }
+  - { id: md_delete_pki_cmp_url_service, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, url, { literal: "service-name", description: "Configure the CMPv2 service name" }] }
+  - { id: md_delete_pki_cmp_url_transmission, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, url, transmission-profile] }
+  - { id: md_delete_pki_cmp_key, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, key-list, { literal: "key", description: "Configure the CMPv2 key entry" }, { parameter: pki_cmp_key_ref }] }
+  - { id: md_delete_pki_crl_update, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update] }
+  - { id: md_delete_pki_crl_admin, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, admin-state] }
+  - { id: md_delete_pki_crl_periodic, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval] }
+  - { id: md_delete_pki_crl_preupdate, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, pre-update-time] }
+  - { id: md_delete_pki_crl_retry, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, retry-interval] }
+  - { id: md_delete_pki_crl_schedule, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, schedule-type] }
+  - { id: md_delete_pki_crl_entry, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, crl-urls, url-entry, { parameter: pki_crl_entry_id }] }
+  - { id: md_delete_pki_crl_entry_url, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, crl-urls, url-entry, { parameter: pki_crl_entry_id }, url] }
+  - { id: md_delete_pki_crl_entry_transmission, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, crl-urls, url-entry, { parameter: pki_crl_entry_id }, transmission-profile] }
+  - { id: md_delete_pki_update, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }] }
+  - { id: md_delete_pki_update_hash, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, hash-algorithm] }
+  - { id: md_delete_pki_update_retry, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, retry-interval] }
+  - { id: md_delete_pki_update_protocol, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, cmpv2] }
+  - { id: md_delete_pki_update_est, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, est] }
+  - { id: md_delete_pki_update_keygen, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, same-as-existing-key] }
+  - { id: md_delete_pki_update_rsa, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, { literal: "rsa", description: "Generate an RSA key for certificate updates" }] }
+  - { id: md_delete_pki_update_dsa, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, { literal: "dsa", description: "Generate a DSA key for certificate updates" }] }
+  - { id: md_delete_pki_update_ecdsa, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, { literal: "ecdsa", description: "Generate an ECDSA key for certificate updates" }] }
+  - { id: md_delete_pki_update_schedule, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, before-expiry] }
+  - { id: md_delete_pki_update_after, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, after-issue] }
+  - { id: md_delete_pki_autoupdate, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-auto-update, { parameter: pki_file_name }] }
+  - { id: md_delete_pki_autoupdate_key, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-auto-update, { parameter: pki_file_name }, key-file-name] }
+  - { id: md_delete_pki_autoupdate_profile, engines: [md], source_id: nokia.sros.26_7.pki.configuration, tokens: [delete, system, security, pki, certificate-auto-update, { parameter: pki_file_name }, { literal: "profile", description: "Assign the certificate update profile" }] }
   - { id: md_delete_static_sa_key, engines: [md], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [delete, ipsec, static-sa, { parameter: static_sa_name }, authentication, key] }
 
   - { id: classic_ike_transform_create, engines: [classic], enters_context: true, source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, ike-transform, { parameter: ike_transform_id }, create] }
@@ -4919,6 +5104,88 @@ commands:
   - { id: classic_pki_est_http_password, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, est-profile, { parameter: pki_est_profile_name }, http-auth, { literal: "password", description: "Configure the EST HTTP authentication password" }, { parameter: radius_password }] }
   - { id: classic_pki_est_http_no_username, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, est-profile, { parameter: pki_est_profile_name }, http-auth, no, username] }
   - { id: classic_pki_est_http_no_password, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, est-profile, { parameter: pki_est_profile_name }, http-auth, no, { literal: "password", description: "Configure the EST HTTP authentication password" }] }
+  # Classic PKI keeps its documented flat spellings. Verified against the 26.7
+  # classic command reference; MD-only leaves have no classic row and stay an
+  # explicit unknown-command error in classic.
+  - { id: classic_pki_display_ascii, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-display-format, { literal: "ascii", description: "Display certificates in ASCII format" }] }
+  - { id: classic_pki_display_utf8, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-display-format, { literal: "utf8", description: "Display certificates in UTF-8 format" }] }
+  - { id: classic_pki_imported_any, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, imported-format, { literal: "any", description: "Accept any encrypted file format" }] }
+  - { id: classic_pki_imported_secure, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, imported-format, { literal: "secure", description: "Accept only secure encrypted file formats" }] }
+  - { id: classic_pki_chain_depth, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, maximum-cert-chain-depth, { parameter: pki_chain_depth }] }
+  - { id: classic_pki_no_chain_depth, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, no, maximum-cert-chain-depth] }
+  - { id: classic_pki_cert_warn, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-expiration-warning, hours, { parameter: pki_warning_hours }] }
+  - { id: classic_pki_cert_warn_repeat, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-expiration-warning, hours, { parameter: pki_warning_hours }, { literal: "repeat", description: "Configure the warning repeat interval" }, { parameter: pki_warning_repeat }] }
+  - { id: classic_pki_no_cert_warn, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, no, certificate-expiration-warning] }
+  - { id: classic_pki_crl_warn, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, crl-expiration-warning, hours, { parameter: pki_warning_hours }] }
+  - { id: classic_pki_crl_warn_repeat, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, crl-expiration-warning, hours, { parameter: pki_warning_hours }, { literal: "repeat", description: "Configure the warning repeat interval" }, { parameter: pki_warning_repeat }] }
+  - { id: classic_pki_no_crl_warn, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, no, crl-expiration-warning] }
+  - { id: classic_pki_ocsp_url, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, ocsp, responder-url, { parameter: pki_url }] }
+  - { id: classic_pki_ocsp_no_url, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, ocsp, no, responder-url] }
+  - { id: classic_pki_ocsp_service_id, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, ocsp, { literal: "service", description: "Configure the OCSP service" }, { parameter: pki_service_id }] }
+  - { id: classic_pki_ocsp_service_name, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, ocsp, { literal: "service", description: "Configure the OCSP service" }, { literal: "name", description: "Select the service by name" }, { parameter: pki_service_name }] }
+  - { id: classic_pki_ocsp_no_service, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, ocsp, no, { literal: "service", description: "Configure the OCSP service" }] }
+  - { id: classic_pki_ocsp_transmission, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, ocsp, transmission-profile, { parameter: pki_transmission_profile }] }
+  - { id: classic_pki_ocsp_no_transmission, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, ocsp, no, transmission-profile] }
+  - { id: classic_pki_cmp_url, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, url, { parameter: pki_url }] }
+  - { id: classic_pki_cmp_url_service_id, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, url, { parameter: pki_url }, service-id, { parameter: pki_service_id }] }
+  - { id: classic_pki_cmp_url_service_name, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, url, { parameter: pki_url }, { literal: "service-name", description: "Configure the CMPv2 service name" }, { parameter: pki_service_name }] }
+  - { id: classic_pki_cmp_no_url, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, no, url] }
+  - { id: classic_pki_cmp_key, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, key-list, { literal: "key", description: "Configure the CMPv2 key entry" }, { parameter: radius_password }, { literal: "reference", description: "Configure the key reference number" }, { parameter: pki_cmp_key_ref }] }
+  - { id: classic_pki_cmp_no_key, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, key-list, no, { literal: "key", description: "Remove the CMPv2 key entry" }, { parameter: pki_cmp_key_ref }] }
+  - { id: classic_pki_cmp_accept_error, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, accept-unprotected-errormsg] }
+  - { id: classic_pki_cmp_no_accept_error, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, no, accept-unprotected-errormsg] }
+  - { id: classic_pki_cmp_accept_pkiconf, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, accept-unprotected-pkiconf] }
+  - { id: classic_pki_cmp_no_accept_pkiconf, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, no, accept-unprotected-pkiconf] }
+  - { id: classic_pki_cmp_sender, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, always-set-sender-for-ir] }
+  - { id: classic_pki_cmp_no_sender, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, no, always-set-sender-for-ir] }
+  - { id: classic_pki_cmp_response_cert, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, response-signing-cert, { parameter: pki_file_name }] }
+  - { id: classic_pki_cmp_no_response_cert, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, no, response-signing-cert] }
+  - { id: classic_pki_cmp_nonce, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, same-recipnonce-for-pollreq] }
+  - { id: classic_pki_cmp_no_nonce, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, cmpv2, no, same-recipnonce-for-pollreq] }
+  # Classic auto-crl-update uses shutdown/no shutdown for admin-state and the
+  # established days/hrs/min/sec combinations for the periodic interval.
+  - { id: classic_pki_crl_create, engines: [classic], enters_context: true, source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, create] }
+  - { id: classic_pki_crl_remove, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, no, auto-crl-update] }
+  - { id: classic_pki_crl_shutdown, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, shutdown] }
+  - { id: classic_pki_crl_no_shutdown, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, no, shutdown] }
+  - { id: classic_pki_crl_schedule_next, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, schedule-type, next-update-based] }
+  - { id: classic_pki_crl_schedule_periodic, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, schedule-type, periodic] }
+  - { id: classic_pki_crl_periodic_days, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval, days, { parameter: dhcp_time_days }] }
+  - { id: classic_pki_crl_periodic_hours, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval, hrs, { parameter: dhcp_time_hours }] }
+  - { id: classic_pki_crl_periodic_days_hours, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval, days, { parameter: dhcp_time_days }, hrs, { parameter: dhcp_time_hours }] }
+  - { id: classic_pki_crl_periodic_minutes, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval, min, { parameter: dhcp_time_minutes }] }
+  - { id: classic_pki_crl_periodic_days_minutes, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval, days, { parameter: dhcp_time_days }, min, { parameter: dhcp_time_minutes }] }
+  - { id: classic_pki_crl_periodic_hours_minutes, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval, hrs, { parameter: dhcp_time_hours }, min, { parameter: dhcp_time_minutes }] }
+  - { id: classic_pki_crl_periodic_days_hours_minutes, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval, days, { parameter: dhcp_time_days }, hrs, { parameter: dhcp_time_hours }, min, { parameter: dhcp_time_minutes }] }
+  - { id: classic_pki_crl_periodic_seconds, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval, sec, { parameter: dhcp_time_seconds }] }
+  - { id: classic_pki_crl_periodic_days_seconds, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval, days, { parameter: dhcp_time_days }, sec, { parameter: dhcp_time_seconds }] }
+  - { id: classic_pki_crl_periodic_hours_seconds, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval, hrs, { parameter: dhcp_time_hours }, sec, { parameter: dhcp_time_seconds }] }
+  - { id: classic_pki_crl_periodic_days_hours_seconds, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval, days, { parameter: dhcp_time_days }, hrs, { parameter: dhcp_time_hours }, sec, { parameter: dhcp_time_seconds }] }
+  - { id: classic_pki_crl_periodic_minutes_seconds, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval, min, { parameter: dhcp_time_minutes }, sec, { parameter: dhcp_time_seconds }] }
+  - { id: classic_pki_crl_periodic_days_minutes_seconds, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval, days, { parameter: dhcp_time_days }, min, { parameter: dhcp_time_minutes }, sec, { parameter: dhcp_time_seconds }] }
+  - { id: classic_pki_crl_periodic_hours_minutes_seconds, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval, hrs, { parameter: dhcp_time_hours }, min, { parameter: dhcp_time_minutes }, sec, { parameter: dhcp_time_seconds }] }
+  - { id: classic_pki_crl_periodic_days_hours_minutes_seconds, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, periodic-update-interval, days, { parameter: dhcp_time_days }, hrs, { parameter: dhcp_time_hours }, min, { parameter: dhcp_time_minutes }, sec, { parameter: dhcp_time_seconds }] }
+  - { id: classic_pki_crl_retry, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, retry-interval, { parameter: pki_seconds }] }
+  - { id: classic_pki_crl_no_retry, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, no, retry-interval] }
+  - { id: classic_pki_crl_entry_create, engines: [classic], enters_context: true, source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, crl-urls, url-entry, { parameter: pki_crl_entry_id }, create] }
+  - { id: classic_pki_crl_entry_remove, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, crl-urls, no, url-entry, { parameter: pki_crl_entry_id }] }
+  - { id: classic_pki_crl_entry_url, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, crl-urls, url-entry, { parameter: pki_crl_entry_id }, url, { parameter: pki_url }] }
+  - { id: classic_pki_crl_entry_no_url, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, ca-profile, { parameter: pki_ca_profile_name }, auto-crl-update, crl-urls, url-entry, { parameter: pki_crl_entry_id }, no, url] }
+  # Classic update profiles and auto-update entries follow the documented
+  # create/remove spelling. Only verified leaves have classic rows.
+  - { id: classic_pki_update_create, engines: [classic], enters_context: true, source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, create] }
+  - { id: classic_pki_update_remove, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, no, certificate-update-profile, { parameter: pki_update_profile_name }] }
+  - { id: classic_pki_update_retry, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, retry-interval, { parameter: pki_seconds }] }
+  - { id: classic_pki_update_samekey, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, key-generation, same-as-existing-key] }
+  - { id: classic_pki_update_rsa, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, key-generation, { literal: "rsa", description: "Generate an RSA key for certificate updates" }, { parameter: pki_key_size }] }
+  - { id: classic_pki_update_dsa, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, key-generation, { literal: "dsa", description: "Generate a DSA key for certificate updates" }, { parameter: pki_key_size }] }
+  - { id: classic_pki_update_ecdsa_256, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, key-generation, { literal: "ecdsa", description: "Generate an ECDSA key for certificate updates" }, curve, { literal: "secp256r1", description: "Use the secp256r1 curve" }] }
+  - { id: classic_pki_update_ecdsa_384, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, key-generation, { literal: "ecdsa", description: "Generate an ECDSA key for certificate updates" }, curve, { literal: "secp384r1", description: "Use the secp384r1 curve" }] }
+  - { id: classic_pki_update_ecdsa_521, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, key-generation, { literal: "ecdsa", description: "Generate an ECDSA key for certificate updates" }, curve, { literal: "secp521r1", description: "Use the secp521r1 curve" }] }
+  - { id: classic_pki_update_schedule, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-update-profile, { parameter: pki_update_profile_name }, schedule, { literal: "time", description: "Configure the update schedule time" }, { parameter: pki_seconds }] }
+  - { id: classic_pki_autoupdate_create, engines: [classic], enters_context: true, source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-auto-update, cert, { parameter: pki_file_name }, create] }
+  - { id: classic_pki_autoupdate_remove, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-auto-update, no, cert, { parameter: pki_file_name }] }
+  - { id: classic_pki_autoupdate_key, engines: [classic], source_id: nokia.sros.26_7.pki.configuration, tokens: [configure, system, security, pki, certificate-auto-update, cert, { parameter: pki_file_name }, key, { parameter: pki_key_file }] }
   - { id: classic_static_sa_no_authentication, engines: [classic], source_id: nokia.sros.26_7.ipsec.configuration, tokens: [configure, ipsec, static-sa, { parameter: static_sa_name }, no, authentication] }
 
   # TLS commands mirror the 26.7.R1 MD model. List-entry indices are retained

@@ -34,7 +34,8 @@ enum class SecretKind : std::uint8_t {
   ospf_authentication_key = 11U,
   ipsec_client_db_pre_shared_key = 12U,
   ipsec_radius_auth_password = 13U,
-  pki_est_http_password = 14U
+  pki_est_http_password = 14U,
+  pki_cmp_initial_auth_password = 15U
 };
 
 struct SealedRecord {

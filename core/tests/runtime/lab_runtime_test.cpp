@@ -3259,9 +3259,82 @@ void lab_runtime_tests() {
           tls_md_info.find("status-verify {\n") != std::string_view::npos,
       "MD TLS info did not use the documented keyed-list hierarchy");
   require(runtime.command(message(lab_runtime_protocol::session_execute,
-                                  {"r1-console-1", "exit all"}))
-                  .find("[/]") != std::string_view::npos,
+                                   {"r1-console-1", "exit all"}))
+                   .find("[/]") != std::string_view::npos,
           "clean exclusive workflow could not return to operational mode");
+
+  // PKI update protocol and auto-update profile leaves resolve against the
+  // configured CA, EST and update stores at edit time. A dangling protocol
+  // reference is an explicit edit error; the corrected candidate commits and
+  // renders the OCSP, CMPv2, auto-CRL and update subtrees through info.
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "configure exclusive"}))
+                  .find("[ex:/configure]") != std::string_view::npos,
+          "PKI cross-reference fixture could not enter exclusive mode");
+  {
+    const auto setup = runtime.command(message(
+        lab_runtime_protocol::session_execute,
+        {"r1-console-1",
+         "system security pki ca-profile lab-pki cert-file lab-pki.crt"}));
+    if (setup.find("MINOR:") != std::string_view::npos)
+      throw std::runtime_error(
+          "valid PKI cross-reference command failed: setup output=" +
+          std::string{setup});
+    const auto dangling = runtime.command(message(
+        lab_runtime_protocol::session_execute,
+        {"r1-console-1",
+         "system security pki certificate-update-profile bad-update cmpv2 "
+         "ca-profile ghost-ca"}));
+    if (dangling.find("MINOR:") == std::string_view::npos)
+      throw std::runtime_error(
+          "PKI update with a dangling protocol reference was accepted");
+  }
+  for (const auto command : {
+           "delete system security pki certificate-update-profile bad-update",
+           "system security pki ca-profile lab-pki ocsp responder-url "
+           "http://ocsp.example.test",
+           "system security pki ca-profile lab-pki cmpv2 http response-timeout "
+           "45",
+           "system security pki ca-profile lab-pki auto-crl-update "
+           "admin-state enable",
+           "system security pki ca-profile lab-pki auto-crl-update "
+           "crl-urls url-entry 1 url http://crl.example.test/lab.crl",
+           "system security pki certificate-update-profile good-update cmpv2 "
+           "ca-profile lab-pki",
+           "system security pki certificate-auto-update lab.crt key-file-name "
+           "lab.key",
+           "system security pki certificate-auto-update lab.crt profile "
+           "good-update",
+       }) {
+    const auto result = runtime.command(message(
+        lab_runtime_protocol::session_execute, {"r1-console-1", command}));
+    if (result.find("MINOR:") != std::string_view::npos)
+      throw std::runtime_error(
+          "valid PKI cross-reference command failed: " + std::string{command} +
+          " output=" + std::string{result});
+  }
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "commit"}))
+                  .find("MGMT_CORE #") == std::string_view::npos,
+          "corrected PKI cross-reference candidate did not commit");
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1",
+                                   "system security pki ca-profile lab-pki"}))
+                  .find("MINOR:") == std::string_view::npos,
+          "PKI fixture could not enter the CA profile context");
+  const std::string pki_new_info{runtime.command(message(
+      lab_runtime_protocol::session_execute, {"r1-console-1", "info"}))};
+  require(pki_new_info.find("responder-url \"http://ocsp.example.test\"") !=
+                  std::string_view::npos &&
+              pki_new_info.find("response-timeout 45") !=
+                  std::string_view::npos &&
+              pki_new_info.find("auto-crl-update {") !=
+                  std::string_view::npos,
+          "MD PKI info did not render the OCSP, CMPv2 and auto-CRL subtrees");
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "exit all"}))
+                      .find("[/]") != std::string_view::npos,
+          "PKI cross-reference fixture could not leave exclusive mode");
 
   // Classic uses explicit object creation and immediate writes. Exercise a
   // second independent client profile so the test cannot pass by reusing the

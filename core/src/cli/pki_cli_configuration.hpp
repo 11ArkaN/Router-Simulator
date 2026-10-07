@@ -1,8 +1,11 @@
 // PKI CLI candidate editor. It translates generated SR OS command IDs into
-// atomic edits of the control-owned PKI configuration value: CA profiles,
-// common-name lists and EST profiles. It never owns live enrollment state,
-// private keys or packet-processing state and cannot call forwarding. EST
-// enrollment operations have no grammar rows and stay explicit errors.
+// atomic edits of the control-owned PKI configuration value: CA profiles
+// (with OCSP, CMPv2 and automatic CRL update subtrees), common-name lists,
+// EST profiles, certificate update profiles, certificate auto-update entries
+// and top-level display, import, chain-depth and expiration-warning leaves.
+// It never owns live enrollment state, private keys or packet-processing
+// state and cannot call forwarding. EST and CMP enrollment operations have no
+// grammar rows and stay explicit errors.
 
 #pragma once
 
@@ -23,7 +26,7 @@ struct EditResult {
   std::string instance;
 };
 
-enum class SecretKind : std::uint8_t { est_http_password };
+enum class SecretKind : std::uint8_t { est_http_password, cmp_key_password };
 
 class SecretSink {
 public:

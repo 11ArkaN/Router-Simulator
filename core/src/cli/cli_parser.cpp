@@ -443,7 +443,8 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
              file.size() <= device_catalog::tls_certificate_file_name_bytes &&
              file.find_first_of(":/\\") == std::string_view::npos;
     }
-    case pki_file_name: {
+    case pki_file_name:
+    case pki_key_file: {
       const auto file = scalar_text(value);
       return !file.empty() && file.size() <= 95U &&
              file.find_first_of(":/\\") == std::string_view::npos;
@@ -640,6 +641,66 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
         port = port * 10U + static_cast<unsigned>(byte - '0');
       return port >= 1U && port <= 65535U;
     }
+    case pki_url: {
+      // OCSP responder, CMPv2 server and CRL download locations share the
+      // YANG 1..180 octet shape-only bound. Scheme and host resolution
+      // belong to the protocol owner, never to the grammar.
+      const auto text = scalar_text(value);
+      if (text.empty() || text.size() > 180U)
+        return false;
+      return std::none_of(text.begin(), text.end(), [](char byte) {
+        return byte == ' ' || byte == '\t' || byte == '\n' || byte == '\r';
+      });
+    }
+    case pki_dn_string: {
+      // Distinguished-name attribute strings carry their own separators, so
+      // only the YANG 1..256 bound applies at parse time.
+      const auto text = scalar_text(value);
+      return !text.empty() && text.size() <= 256U;
+    }
+    case pki_service_id: {
+      // Base-router selection uses zero; service identifiers otherwise span
+      // 1 through 2147483647 per the classic reference.
+      if (!decimal_text(value) || value.size() > 10U)
+        return false;
+      unsigned long id{};
+      for (const auto byte : value)
+        id = id * 10UL + static_cast<unsigned long>(byte - '0');
+      return id <= 2147483647UL;
+    }
+    case pki_service_name:
+    case pki_cmp_key_ref:
+      return bounded_name(value, 64U);
+    case pki_update_profile_name:
+      return bounded_name(value, 32U);
+    case pki_crl_entry_id: {
+      // YANG bounds automatic CRL update URL entries at 1 through 8, and the
+      // classic reference confirms the eight-URL bound.
+      if (!decimal_text(value) || value.size() > 1U)
+        return false;
+      return value[0] >= '1' && value[0] <= '8';
+    }
+    case pki_chain_depth: {
+      if (!decimal_text(value) || value.size() > 1U)
+        return false;
+      return value[0] >= '1' && value[0] <= '7';
+    }
+    case pki_warning_hours:
+    case pki_warning_repeat: {
+      // Certificate and CRL expiration warnings span 0 through 8760 hours.
+      if (!decimal_text(value) || value.size() > 4U)
+        return false;
+      unsigned hours{};
+      for (const auto byte : value)
+        hours = hours * 10U + static_cast<unsigned>(byte - '0');
+      return hours <= 8760U;
+    }
+    case pki_seconds:
+    case pki_key_size:
+      // Per-leaf ranges differ (timeouts, retry intervals, schedules, key
+      // sizes), so the grammar accepts any decimal and the PKI owner
+      // enforces the leaf-specific bound with an explicit error.
+      return decimal_text(value);
     case ike_identity_fqdn:
     case idi_string:
       return bounded_name(value, 255U);
@@ -950,6 +1011,19 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case pki_fqdn:
   case pki_username:
   case pki_transmission_profile:
+  case pki_url:
+  case pki_dn_string:
+  case pki_service_id:
+  case pki_service_name:
+  case pki_cmp_key_ref:
+  case pki_crl_entry_id:
+  case pki_update_profile_name:
+  case pki_seconds:
+  case pki_key_size:
+  case pki_chain_depth:
+  case pki_warning_hours:
+  case pki_key_file:
+  case pki_warning_repeat:
     // Redirect rate leaves are user supplied scalars. Their release-specific
     // numeric ranges are enforced by the command handler because completion
     // must not manufacture a preferred rate value that SR OS does not suggest.

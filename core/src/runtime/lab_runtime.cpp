@@ -151,13 +151,16 @@ public:
        std::span<const std::uint8_t> plaintext) noexcept override {
     if (!owner_)
       return std::nullopt;
-    // EST HTTP passwords are the only sealable PKI secret in this slice.
-    // The switch stays exhaustive so a future secret kind cannot seal under
-    // a wrong purpose.
+    // EST HTTP and CMPv2 initial-authentication passwords seal under their
+    // own purposes. The switch stays exhaustive so a future secret kind
+    // cannot seal under a wrong purpose.
     vault::SecretKind purpose{};
     switch (kind) {
     case pki_cli::SecretKind::est_http_password:
       purpose = vault::SecretKind::pki_est_http_password;
+      break;
+    case pki_cli::SecretKind::cmp_key_password:
+      purpose = vault::SecretKind::pki_cmp_initial_auth_password;
       break;
     }
     const auto [result, handle] = owner_->seal(purpose, plaintext);
@@ -4363,6 +4366,48 @@ void md_ipsec_client_info(std::ostringstream &out,
 void md_pki_configuration_body(std::ostringstream &out,
                                  const pki::Configuration &pki,
                                  std::size_t depth, bool detail) {
+  if (detail || pki.display_format_configured) {
+    md_indent(out, depth);
+    out << "certificate-display-format "
+        << (pki.display_format == pki::CertificateDisplayFormat::utf8 ? "utf8"
+                                                                      : "ascii")
+        << '\n';
+  }
+  if (detail || pki.dynamic_ca_configured) {
+    md_indent(out, depth);
+    out << "dynamic-ca " << (pki.dynamic_ca ? "true" : "false") << '\n';
+  }
+  if (detail || pki.imported_format_configured) {
+    md_indent(out, depth);
+    out << "imported-format "
+        << (pki.imported_format == pki::ImportedFormat::secure ? "secure"
+                                                               : "any")
+        << '\n';
+  }
+  if (detail || pki.maximum_cert_chain_depth_configured) {
+    md_indent(out, depth);
+    out << "maximum-cert-chain-depth " << pki.maximum_cert_chain_depth << '\n';
+  }
+  const auto warning_body = [&](const char *name,
+                                const pki::ExpirationWarning &warning) {
+    // Static containers always render so nested `info` dispatches even when
+    // no warning leaf is configured.
+    md_indent(out, depth);
+    out << name << " {\n";
+    if (detail || warning.hours_configured) {
+      md_indent(out, depth + 1U);
+      out << "hours " << warning.hours << '\n';
+    }
+    if (detail || warning.repeat_configured) {
+      md_indent(out, depth + 1U);
+      out << "repeat-hours " << warning.repeat_hours << '\n';
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  };
+  warning_body("certificate-expiration-warning",
+               pki.certificate_expiration_warning);
+  warning_body("crl-expiration-warning", pki.crl_expiration_warning);
   for (const auto &profile : pki.ca_profiles) {
     md_indent(out, depth);
     out << "ca-profile \"" << profile.name << "\" {\n";
@@ -4388,6 +4433,181 @@ void md_pki_configuration_body(std::ostringstream &out,
                   ? "crl-optional"
                   : "crl")
           << '\n';
+    }
+    const auto &ocsp = profile.ocsp;
+    // Static containers always render their header so `info` dispatches
+    // from every navigable context, even when no leaf is configured.
+    md_indent(out, depth + 1U);
+    out << "ocsp {\n";
+    if (!ocsp.responder_url.empty()) {
+      md_indent(out, depth + 2U);
+      out << "responder-url \"" << ocsp.responder_url << "\"\n";
+    }
+    if (ocsp.service_kind == pki::OcspServiceKind::id) {
+      md_indent(out, depth + 2U);
+      out << "service " << ocsp.service_id << '\n';
+    } else if (ocsp.service_kind == pki::OcspServiceKind::name) {
+      md_indent(out, depth + 2U);
+      out << "service-name \"" << ocsp.service_name << "\"\n";
+    }
+    if (!ocsp.transmission_profile.empty()) {
+      md_indent(out, depth + 2U);
+      out << "transmission-profile \"" << ocsp.transmission_profile << "\"\n";
+    }
+    md_indent(out, depth + 1U);
+    out << "}\n";
+    const auto &cmpv2 = profile.cmpv2;
+    md_indent(out, depth + 1U);
+    out << "cmpv2 {\n";
+    if (detail || cmpv2.always_set_sender_for_ir_configured) {
+      md_indent(out, depth + 2U);
+      out << "always-set-sender-for-ir "
+          << (cmpv2.always_set_sender_for_ir ? "true" : "false") << '\n';
+    }
+    if (detail || cmpv2.same_recipient_nonce_for_poll_request_configured) {
+      md_indent(out, depth + 2U);
+      out << "same-recipient-nonce-for-poll-request "
+          << (cmpv2.same_recipient_nonce_for_poll_request ? "true" : "false")
+          << '\n';
+    }
+    if (!cmpv2.signing_cert_subject.empty()) {
+      md_indent(out, depth + 2U);
+      out << "signing-cert-subject \"" << cmpv2.signing_cert_subject << "\"\n";
+    }
+    if (cmpv2.response_signing_configured) {
+      md_indent(out, depth + 2U);
+      if (cmpv2.response_signing ==
+          pki::CmpResponseSigningKind::use_extra_cert)
+        out << "response-signing-use-extracert\n";
+      else
+        out << "response-signing-cert \"" << cmpv2.response_signing_cert
+            << "\"\n";
+    }
+    if (cmpv2.recipient_configured) {
+      md_indent(out, depth + 2U);
+      if (cmpv2.recipient == pki::CmpRecipientKind::subject)
+        out << "recipient-subject \"" << cmpv2.recipient_subject << "\"\n";
+      else
+        out << "use-ca-subject\n";
+    }
+    md_indent(out, depth + 2U);
+    out << "accept-unprotected-message {\n";
+    if (detail || cmpv2.accept_unprotected_error_configured) {
+      md_indent(out, depth + 3U);
+      out << "error-message "
+          << (cmpv2.accept_unprotected_error ? "true" : "false") << '\n';
+    }
+    if (detail || cmpv2.accept_unprotected_pkiconf_configured) {
+      md_indent(out, depth + 3U);
+      out << "pkiconf-message "
+          << (cmpv2.accept_unprotected_pkiconf ? "true" : "false") << '\n';
+    }
+    md_indent(out, depth + 2U);
+    out << "}\n";
+    md_indent(out, depth + 2U);
+    out << "http {\n";
+    if (detail || cmpv2.http_response_timeout_configured) {
+      md_indent(out, depth + 3U);
+      out << "response-timeout " << cmpv2.http_response_timeout_seconds
+          << '\n';
+    }
+    if (detail || cmpv2.http_version_configured) {
+      md_indent(out, depth + 3U);
+      out << "version "
+          << (cmpv2.http_version == pki::HttpVersion::v10 ? "1.0" : "1.1")
+          << '\n';
+    }
+    md_indent(out, depth + 2U);
+    out << "}\n";
+    md_indent(out, depth + 2U);
+    out << "url {\n";
+    if (!cmpv2.url_string.empty()) {
+      md_indent(out, depth + 3U);
+      out << "url-string \"" << cmpv2.url_string << "\"\n";
+    }
+    if (cmpv2.url_transport == pki::CmpUrlTransportKind::service_id) {
+      md_indent(out, depth + 3U);
+      out << "service-name \"" << cmpv2.url_service_id << "\"\n";
+    } else if (cmpv2.url_transport == pki::CmpUrlTransportKind::service_name) {
+      md_indent(out, depth + 3U);
+      out << "service-name \"" << cmpv2.url_service_name << "\"\n";
+    } else if (cmpv2.url_transport ==
+               pki::CmpUrlTransportKind::transmission_profile) {
+      md_indent(out, depth + 3U);
+      out << "transmission-profile \"" << cmpv2.url_transmission_profile
+          << "\"\n";
+    }
+    md_indent(out, depth + 2U);
+    out << "}\n";
+    md_indent(out, depth + 2U);
+    out << "key-list {\n";
+    for (const auto &key : cmpv2.keys) {
+      md_indent(out, depth + 3U);
+      out << "key \"" << key.reference << "\" {\n";
+      // Sealed passwords never leave the vault; the renderer prints the
+      // same concealed marker the EST body uses instead of key material.
+      if (key.password_configured) {
+        md_indent(out, depth + 4U);
+        out << "password \"******\"\n";
+      }
+      md_indent(out, depth + 3U);
+      out << "}\n";
+    }
+    md_indent(out, depth + 2U);
+    out << "}\n";
+    md_indent(out, depth + 1U);
+    out << "}\n";
+    const auto &crl = profile.auto_crl_update;
+    // The presence container renders only when created; its static children
+    // always render once it exists so nested `info` dispatches.
+    if (crl.present) {
+      md_indent(out, depth + 1U);
+      out << "auto-crl-update {\n";
+      md_indent(out, depth + 2U);
+      out << "admin-state " << (crl.admin_enabled ? "enable" : "disable")
+          << '\n';
+      if (detail || crl.periodic_update_configured) {
+        md_indent(out, depth + 2U);
+        out << "periodic-update-interval " << crl.periodic_update_seconds
+            << '\n';
+      }
+      if (detail || crl.pre_update_configured) {
+        md_indent(out, depth + 2U);
+        out << "pre-update-time " << crl.pre_update_seconds << '\n';
+      }
+      if (detail || crl.retry_configured) {
+        md_indent(out, depth + 2U);
+        out << "retry-interval " << crl.retry_seconds << '\n';
+      }
+      if (detail || crl.schedule_configured) {
+        md_indent(out, depth + 2U);
+        out << "schedule-type "
+            << (crl.schedule == pki::AutoCrlScheduleKind::periodic
+                    ? "periodic"
+                    : "next-update-based")
+            << '\n';
+      }
+      md_indent(out, depth + 2U);
+      out << "crl-urls {\n";
+      for (const auto &entry : crl.urls) {
+        md_indent(out, depth + 3U);
+        out << "url-entry " << entry.entry_id << " {\n";
+        if (!entry.url.empty()) {
+          md_indent(out, depth + 4U);
+          out << "url \"" << entry.url << "\"\n";
+        }
+        if (!entry.transmission_profile.empty()) {
+          md_indent(out, depth + 4U);
+          out << "transmission-profile \"" << entry.transmission_profile
+              << "\"\n";
+        }
+        md_indent(out, depth + 3U);
+        out << "}\n";
+      }
+      md_indent(out, depth + 2U);
+      out << "}\n";
+      md_indent(out, depth + 1U);
+      out << "}\n";
     }
     md_indent(out, depth);
     out << "}\n";
@@ -4494,6 +4714,72 @@ void md_pki_configuration_body(std::ostringstream &out,
     md_indent(out, depth);
     out << "}\n";
   }
+  for (const auto &profile : pki.update_profiles) {
+    md_indent(out, depth);
+    out << "certificate-update-profile \"" << profile.name << "\" {\n";
+    if (detail || profile.hash_algorithm_configured) {
+      md_indent(out, depth + 1U);
+      out << "hash-algorithm "
+          << (profile.hash_algorithm == pki::HashAlgorithm::md5      ? "md5"
+              : profile.hash_algorithm == pki::HashAlgorithm::sha1    ? "sha1"
+              : profile.hash_algorithm == pki::HashAlgorithm::sha224  ? "sha224"
+              : profile.hash_algorithm == pki::HashAlgorithm::sha384  ? "sha384"
+              : profile.hash_algorithm == pki::HashAlgorithm::sha512  ? "sha512"
+                                                                      : "sha256")
+          << '\n';
+    }
+    if (detail || profile.retry_configured) {
+      md_indent(out, depth + 1U);
+      out << "retry-interval " << profile.retry_seconds << '\n';
+    }
+    if (profile.protocol_configured) {
+      md_indent(out, depth + 1U);
+      if (profile.protocol == pki::UpdateProtocol::est)
+        out << "est est-profile \"" << profile.protocol_profile << "\"\n";
+      else
+        out << "cmpv2 ca-profile \"" << profile.protocol_profile << "\"\n";
+    }
+    md_indent(out, depth + 1U);
+    switch (profile.key_generation) {
+    case pki::KeyGenerationKind::rsa:
+      out << "rsa key-size " << profile.key_size_bits << '\n';
+      break;
+    case pki::KeyGenerationKind::dsa:
+      out << "dsa key-size " << profile.key_size_bits << '\n';
+      break;
+    case pki::KeyGenerationKind::ecdsa:
+      out << "ecdsa curve "
+          << (profile.curve == pki::EcdsaCurve::secp384r1   ? "secp384r1"
+              : profile.curve == pki::EcdsaCurve::secp521r1 ? "secp521r1"
+                                                            : "secp256r1")
+          << '\n';
+      break;
+    case pki::KeyGenerationKind::same_as_existing:
+      out << "same-as-existing-key\n";
+      break;
+    }
+    md_indent(out, depth + 1U);
+    if (profile.schedule == pki::UpdateScheduleKind::after_issue)
+      out << "after-issue " << profile.schedule_seconds << '\n';
+    else
+      out << "before-expiry " << profile.schedule_seconds << '\n';
+    md_indent(out, depth);
+    out << "}\n";
+  }
+  for (const auto &entry : pki.auto_updates) {
+    md_indent(out, depth);
+    out << "certificate-auto-update \"" << entry.certificate_file << "\" {\n";
+    if (!entry.key_file.empty()) {
+      md_indent(out, depth + 1U);
+      out << "key-file-name \"" << entry.key_file << "\"\n";
+    }
+    if (!entry.profile.empty()) {
+      md_indent(out, depth + 1U);
+      out << "profile \"" << entry.profile << "\"\n";
+    }
+    md_indent(out, depth);
+    out << "}\n";
+  }
 }
 
 std::optional<std::string>
@@ -4509,6 +4795,60 @@ md_pki_configuration_info(const pki::Configuration &pki, std::string_view path,
   // the IPsec renderer instead of duplicating scoping logic.
   std::ostringstream out;
   md_pki_configuration_body(out, pki, 0U, detail);
+  if (tokens->size() == 5U) {
+    // Classic exposes keyed lists as navigable container contexts (for
+    // example certificate-auto-update holds cert entries). MD addresses
+    // instances directly, so the shared selector cannot match a bare list
+    // token. Return every entry block owned by the requested list instead
+    // of reporting an unsupported context. Any other five-token path falls
+    // through to the shared selector below.
+    const std::string_view list = (*tokens)[4];
+    const bool known_list = list == "ca-profile" || list == "common-name-list" ||
+                            list == "est-profile" ||
+                            list == "certificate-update-profile" ||
+                            list == "certificate-auto-update";
+    const std::string body = out.str();
+    std::ostringstream filtered;
+    std::size_t line_begin{};
+    std::size_t block_begin = std::string::npos;
+    std::size_t depth{};
+    while (line_begin < body.size()) {
+      const auto line_end = body.find('\n', line_begin);
+      const auto line = body.substr(
+          line_begin, line_end == std::string::npos ? body.size() - line_begin
+                                                    : line_end - line_begin);
+      const auto first = line.find_first_not_of(' ');
+      const std::string content =
+          first == std::string::npos ? std::string{} : line.substr(first);
+      if (depth == 0U && block_begin == std::string::npos &&
+          content.starts_with(list) &&
+          (content.size() == list.size() || content[list.size()] == ' ' ||
+           content[list.size()] == '"')) {
+        block_begin = line_begin;
+        depth = 0U;
+      }
+      if (block_begin != std::string::npos) {
+        if (content.ends_with(" {"))
+          ++depth;
+        else if (content == "}" && depth && --depth == 0U) {
+          const auto block_end = line_end == std::string::npos ? body.size()
+                                                               : line_end + 1U;
+          filtered << body.substr(block_begin, block_end - block_begin);
+          block_begin = std::string::npos;
+        }
+      } else {
+        if (content.ends_with(" {"))
+          ++depth;
+        else if (content == "}" && depth)
+          --depth;
+      }
+      if (line_end == std::string::npos)
+        break;
+      line_begin = line_end + 1U;
+    }
+    if (known_list)
+      return filtered.str();
+  }
   return md_rendered_context_body(out.str(), *tokens, 4U);
 }
 
@@ -8942,6 +9282,32 @@ bool pki_cross_references_resolve(
                        return client.name == profile.client_tls_profile;
                      });
     if (found == tls.client_profiles.end())
+      return false;
+  }
+  // Certificate update profiles reference their enrollment protocol owner:
+  // cmpv2 names a CA profile, est names an EST profile. Auto-update entries
+  // name the update profile that drives their schedule.
+  for (const auto &profile : pki.update_profiles) {
+    if (!profile.protocol_configured || profile.protocol_profile.empty())
+      continue;
+    if (profile.protocol == pki::UpdateProtocol::est) {
+      const auto found = std::find_if(
+          pki.est_profiles.begin(), pki.est_profiles.end(),
+          [&](const auto &est) { return est.name == profile.protocol_profile; });
+      if (found == pki.est_profiles.end())
+        return false;
+    } else {
+      if (!ca_exists(profile.protocol_profile))
+        return false;
+    }
+  }
+  for (const auto &entry : pki.auto_updates) {
+    if (entry.profile.empty())
+      continue;
+    const auto found = std::find_if(
+        pki.update_profiles.begin(), pki.update_profiles.end(),
+        [&](const auto &update) { return update.name == entry.profile; });
+    if (found == pki.update_profiles.end())
       return false;
   }
   return true;
