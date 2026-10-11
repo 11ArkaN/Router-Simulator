@@ -4790,6 +4790,120 @@ md_pki_configuration_info(const pki::Configuration &pki, std::string_view path,
       (*tokens)[1] != "system" || (*tokens)[2] != "security" ||
       (*tokens)[3] != "pki")
     return std::nullopt;
+  // Nokia MD-CLI enters list contexts by key whether or not the instance
+  // exists yet (MD-CLI User Guide, Navigating: "List keys do not need to be
+  // present in the current configuration"; the guide's own example enters
+  // `configure service vprn vpn3` for a nonexistent vpn3). Navigation here is
+  // grammar-owned for the same reason. `info` inside such a phantom context
+  // reports the honest empty result; the unsupported response stays reserved
+  // for paths outside the PKI vocabulary. Presence is always read from the
+  // same configuration object the body below renders, so candidate and
+  // running views cannot disagree about what exists.
+  const auto in = [&](std::initializer_list<const char *> words,
+                      std::string_view token) {
+    return std::find_if(words.begin(), words.end(),
+                        [&](const char *word) { return token == word; }) !=
+           words.end();
+  };
+  const auto phantom = [&]() {
+    if (tokens->size() <= 5U)
+      return false;
+    const auto &list = (*tokens)[4];
+    const auto &name = (*tokens)[5];
+    if (list == "ca-profile") {
+      const auto *profile = pki::find_ca_profile(pki, name);
+      if (!profile)
+        return true;
+      if (tokens->size() == 6U)
+        return false;
+      if (!in({"admin-state", "description", "cert-file", "crl-file",
+               "revocation-check", "ocsp", "cmpv2", "auto-crl-update"},
+              (*tokens)[6]))
+        return false;
+      if ((*tokens)[6] != "cmpv2" && (*tokens)[6] != "auto-crl-update")
+        return false;
+      if (tokens->size() == 7U)
+        return false;
+      if ((*tokens)[6] == "cmpv2") {
+        if (!in({"always-set-sender-for-ir",
+                 "same-recipient-nonce-for-poll-request", "signing-cert-subject",
+                 "response-signing-use-extracert", "response-signing-cert",
+                 "use-ca-subject", "recipient-subject",
+                 "accept-unprotected-message", "http", "url", "key-list"},
+                (*tokens)[7]))
+          return false;
+        if ((*tokens)[7] != "key-list")
+          return false;
+        if (tokens->size() == 8U)
+          return false;
+        if ((*tokens)[8] != "key" || tokens->size() == 9U)
+          return false;
+        const auto &ref = (*tokens)[9];
+        return std::none_of(profile->cmpv2.keys.begin(),
+                            profile->cmpv2.keys.end(),
+                            [&](const auto &key) { return key.reference == ref; });
+      }
+      // auto-crl-update is a presence container: absent means the whole
+      // subtree below it is phantom as well.
+      if (!profile->auto_crl_update.present)
+        return true;
+      if (!in({"admin-state", "periodic-update-interval", "pre-update-time",
+               "retry-interval", "schedule-type", "crl-urls"},
+              (*tokens)[7]))
+        return false;
+      if ((*tokens)[7] != "crl-urls")
+        return false;
+      if (tokens->size() == 8U)
+        return false;
+      if ((*tokens)[8] != "url-entry" || tokens->size() == 9U)
+        return false;
+      const auto id = [&]() -> std::optional<std::uint32_t> {
+        std::uint32_t value{};
+        const auto text = (*tokens)[9];
+        const auto result = std::from_chars(text.data(),
+                                            text.data() + text.size(), value);
+        if (text.empty() || result.ec != std::errc{} ||
+            result.ptr != text.data() + text.size())
+          return std::nullopt;
+        return value;
+      }();
+      if (!id)
+        return false;
+      return std::none_of(profile->auto_crl_update.urls.begin(),
+                          profile->auto_crl_update.urls.end(),
+                          [&](const auto &entry) { return entry.entry_id == *id; });
+    }
+    if (list == "common-name-list") {
+      const auto *found = pki::find_common_name_list(pki, name);
+      if (!found)
+        return true;
+      if (tokens->size() == 6U || (*tokens)[6] != "common-name")
+        return false;
+      if (tokens->size() == 7U)
+        return false;
+      std::uint32_t index{};
+      const auto text = (*tokens)[7];
+      const auto result = std::from_chars(text.data(),
+                                          text.data() + text.size(), index);
+      if (text.empty() || result.ec != std::errc{} ||
+          result.ptr != text.data() + text.size())
+        return false;
+      return std::none_of(found->entries.begin(), found->entries.end(),
+                          [&](const auto &entry) { return entry.index == index; });
+    }
+    if (list == "est-profile")
+      return pki::find_named(pki.est_profiles, name) == nullptr;
+    if (list == "certificate-update-profile")
+      return pki::find_named(pki.update_profiles, name) == nullptr;
+    if (list == "certificate-auto-update")
+      return std::none_of(pki.auto_updates.begin(), pki.auto_updates.end(),
+                          [&](const auto &entry) {
+                            return entry.certificate_file == name;
+                          });
+    return false;
+  }();
+  if (phantom)
+    return std::string{};
   // PKI nests keyed lists below one container. Selecting the requested
   // container from the canonical typed body keeps PWC behavior uniform with
   // the IPsec renderer instead of duplicating scoping logic.

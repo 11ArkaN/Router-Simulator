@@ -3336,6 +3336,33 @@ void lab_runtime_tests() {
                       .find("[/]") != std::string_view::npos,
           "PKI cross-reference fixture could not leave exclusive mode");
 
+  // Nokia MD-CLI enters list contexts by key whether or not the instance
+  // exists (MD-CLI User Guide, Navigating). `info` inside such a phantom
+  // context reports the honest empty result instead of the unsupported
+  // response, without materializing state.
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "configure exclusive"}))
+                  .find("[ex:/configure]") != std::string_view::npos,
+          "PKI phantom fixture could not enter exclusive mode");
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1",
+                                   "system security pki ca-profile phantom-ca"}))
+                  .find("MINOR:") == std::string_view::npos,
+          "MD navigation into an absent PKI list instance was rejected");
+  const std::string phantom_info{runtime.command(message(
+      lab_runtime_protocol::session_execute, {"r1-console-1", "info"}))};
+  require(phantom_info.find("not supported") == std::string_view::npos &&
+              phantom_info.find("Unknown element") == std::string_view::npos,
+          "MD info in a phantom PKI context was not an empty result");
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "compare"}))
+                  .find("~") == std::string_view::npos,
+          "phantom PKI navigation materialized candidate state");
+  require(runtime.command(message(lab_runtime_protocol::session_execute,
+                                  {"r1-console-1", "exit all"}))
+                      .find("[/]") != std::string_view::npos,
+          "PKI phantom fixture could not leave exclusive mode");
+
   // Classic uses explicit object creation and immediate writes. Exercise a
   // second independent client profile so the test cannot pass by reusing the
   // MD-created named objects or silently treating `create` as navigation.
