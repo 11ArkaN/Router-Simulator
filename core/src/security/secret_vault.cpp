@@ -86,10 +86,13 @@ bool valid_key(std::span<const std::uint8_t> key) noexcept {
 }
 
 bool valid_kind(SecretKind kind) noexcept {
+  // The upper bound follows the newest purpose so every sealable record the
+  // CLI editors can produce is accepted. Adding a SecretKind without moving
+  // this bound silently rejects that whole secret family at seal time.
   const auto value = static_cast<std::uint8_t>(kind);
   return value >= static_cast<std::uint8_t>(SecretKind::ipsec_ppk_ascii) &&
          value <= static_cast<std::uint8_t>(
-                      SecretKind::ospf_authentication_key);
+                      SecretKind::pki_cmp_initial_auth_password);
 }
 
 void write_u32(std::span<std::uint8_t> output, std::size_t offset,
