@@ -809,4 +809,63 @@ void cli_tests() {
   require(contains(unknown, "Error: Bad command.") &&
               !contains(unknown, "milestone") && !contains(unknown, "profile"),
           "Classic error leaked emulator implementation details");
+
+  // Operational reports never become working contexts. An incomplete show or
+  // tools prefix must fail explicitly instead of parking the classic prompt
+  // inside a report path where no command can run.
+  const auto classic_bare_show =
+      router::execute_cli(classic_state, classic_session, "show", no_ping);
+  require(contains(classic_bare_show, "Error: Bad command.") &&
+              !contains(router::cli_prompt(classic_state, classic_session),
+                        ">show"),
+          "Classic bare show fabricated a report context");
+  const auto classic_dhcp_show = router::execute_cli(
+      classic_state, classic_session,
+      "show router dhcp local-dhcp-server test", no_ping);
+  require(contains(classic_dhcp_show, "Error: Bad command.") &&
+              !contains(router::cli_prompt(classic_state, classic_session),
+                        ">dhcp"),
+          "Classic DHCP show fabricated a report context");
+  const auto classic_tools_prefix = router::execute_cli(
+      classic_state, classic_session,
+      "tools perform router dhcp local-dhcp-server nosuchserver", no_ping);
+  require(contains(classic_tools_prefix, "Error: Bad command.") &&
+              !contains(router::cli_prompt(classic_state, classic_session),
+                        ">tools"),
+          "Classic tools prefix fabricated a report context");
+
+  // An unfinished MD-CLI show line is missing a mandatory selector, so the
+  // conformance contract requires an explicit error rather than a report
+  // context or a fake success. The prompt must stay at the operational root.
+  router::DeviceState md_report_state;
+  router::CliSession md_report_session;
+  const auto md_show_router = router::execute_cli(
+      md_report_state, md_report_session, "show router", no_ping);
+  require(contains(md_show_router, "Operation not allowed") &&
+              contains(router::cli_prompt(md_report_state, md_report_session),
+                       "[/]"),
+          "MD-CLI did not reject an unfinished show line explicitly");
+  const auto md_dhcp_show_prefix = router::execute_cli(
+      md_report_state, md_report_session,
+      "show router dhcp local-dhcp-server test", no_ping);
+  require(contains(md_dhcp_show_prefix, "Operation not allowed") &&
+              contains(router::cli_prompt(md_report_state, md_report_session),
+                       "[/]"),
+          "MD-CLI did not reject an unfinished DHCP show explicitly");
+
+  // Reports never own a configuration working context either: a relative
+  // unfinished show line inside an explicit candidate resolves below the
+  // saved path and is rejected without moving the prompt into a report path.
+  router::DeviceState md_config_state;
+  router::CliSession md_config_session;
+  router::execute_cli(md_config_state, md_config_session, "configure private",
+                      no_ping);
+  const auto md_config_show = router::execute_cli(
+      md_config_state, md_config_session, "show router", no_ping);
+  require(contains(md_config_show, "Unknown element") &&
+              !contains(router::cli_prompt(md_config_state, md_config_session),
+                        ">show") &&
+              contains(router::cli_prompt(md_config_state, md_config_session),
+                       "/configure]"),
+          "Configuration-mode show fabricated a report context");
 }

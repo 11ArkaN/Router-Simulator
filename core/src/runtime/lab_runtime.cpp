@@ -10031,25 +10031,39 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
                      });
     return found == value.interfaces.end() ? nullptr : &*found;
   };
-  const auto same_ipv4 = [](const InterfaceIntent &left,
-                            const InterfaceIntent &right) {
+  // Administrative state is not address identity. An admin flip must update
+  // flags in place through the normal port and interface programming below.
+  // Routing it through interface removal would withdraw the forwarding port
+  // (clearing OSPF multicast punts) while the protocol generation masks stay
+  // unchanged, so the punt would never be reprogrammed and Hellos would stay
+  // dark until a restart or an unrelated configuration change.
+  const auto same_ipv4_identity = [](const InterfaceIntent &left,
+                                     const InterfaceIntent &right) {
     return left.port_configured == right.port_configured &&
            left.port_id == right.port_id &&
            left.address_configured == right.address_configured &&
            left.address == right.address &&
            left.prefix_length == right.prefix_length &&
            left.arp_timeout_seconds == right.arp_timeout_seconds &&
-           left.arp_retry_deciseconds == right.arp_retry_deciseconds &&
+           left.arp_retry_deciseconds == right.arp_retry_deciseconds;
+  };
+  const auto same_ipv4 = [&](const InterfaceIntent &left,
+                             const InterfaceIntent &right) {
+    return same_ipv4_identity(left, right) &&
            left.admin_enabled == right.admin_enabled;
   };
-  const auto same_ipv6 = [](const InterfaceIntent &left,
-                            const InterfaceIntent &right) {
+  const auto same_ipv6_identity = [](const InterfaceIntent &left,
+                                     const InterfaceIntent &right) {
     return left.port_configured == right.port_configured &&
            left.port_id == right.port_id &&
            left.ipv6_address_configured == right.ipv6_address_configured &&
            left.ipv6_address == right.ipv6_address &&
            left.ipv6_prefix_length == right.ipv6_prefix_length &&
-           left.ipv6_link_local == right.ipv6_link_local &&
+           left.ipv6_link_local == right.ipv6_link_local;
+  };
+  const auto same_ipv6 = [&](const InterfaceIntent &left,
+                             const InterfaceIntent &right) {
+    return same_ipv6_identity(left, right) &&
            left.admin_enabled == right.admin_enabled;
   };
   const auto same_redirects = [](const InterfaceIntent &left,
@@ -10257,7 +10271,7 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
     if (!old.port_configured)
       continue;
     const auto *next = new_interface_on_port(old.port_id);
-    const bool ipv6_replaced = !next || !same_ipv6(old, *next);
+    const bool ipv6_replaced = !next || !same_ipv6_identity(old, *next);
     const auto ordinal = inventory->coordinate_ordinal(old.port_id);
     const auto *live = live_port(old.port_id);
     if (old.mld_configured && (ipv6_replaced || !next->mld_configured) &&
@@ -10273,7 +10287,7 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
     // its IPv4 parent. Remove that child before replacing or deleting the
     // address so no datagram can be accepted against a stale giaddr while the
     // candidate transaction is being published.
-    const bool ipv4_replaced = !next || !same_ipv4(old, *next);
+    const bool ipv4_replaced = !next || !same_ipv4_identity(old, *next);
     if (applied && old.dhcpv4_relay &&
         old.dhcpv4_relay->admin_enabled &&
         (ipv4_replaced || !next->dhcpv4_relay ||

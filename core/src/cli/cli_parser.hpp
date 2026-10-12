@@ -106,7 +106,16 @@ argument(const ParsedCommand &command, cli_schema::TokenKind kind) noexcept;
 // may be a parameter because this predicate also serves incomplete-command
 // help and default-key expansion.
 [[nodiscard]] bool command_prefix(const CliSession &session,
-                                  std::string_view input);
+                                 std::string_view input);
+
+// Returns true only when every supplied token matches the beginning of at
+// least one longer generated configuration command. Operational reports such
+// as show, tools or ping never own a working context: an incomplete
+// operational prefix must offer its continuations instead of parking the
+// prompt inside a report path where no command can run. Edit operators never
+// form a context.
+[[nodiscard]] bool prefix_extends_into_configuration(const CliSession &session,
+                                                     std::string_view input);
 
 // Expands abbreviated literals in a validated context prefix while preserving
 // user-supplied list keys. Empty means the input is not one unambiguous path.

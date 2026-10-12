@@ -1692,6 +1692,10 @@ std::string execute_cli(DeviceState &state, CliSession &session,
       // completion. Rechecking the same generated prefix with configuration
       // availability distinguishes a forbidden model node from an unknown
       // operational command without restoring a hand-written feature list.
+      // An unfinished operational line such as a show report awaiting its
+      // final selector is rejected here as well: the conformance contract
+      // requires an explicit error for missing mandatory selectors rather
+      // than offering continuations on Enter.
       output = "MINOR: CLI #2069: Operation not allowed - currently in "
                "operational mode";
       return output + cli_detail::prompt(state.configuration.running, session);
@@ -1734,8 +1738,15 @@ std::string execute_cli(DeviceState &state, CliSession &session,
         return output +
                cli_detail::prompt(state.configuration.running, session);
       }
-      cli_detail::move_session_path(session, canonical);
-      return cli_detail::prompt(state.configuration.running, session);
+      // Operational reports never become working contexts. A show, tools or
+      // ping prefix that reaches this point is incomplete, so only a prefix
+      // extending into configuration moves the prompt; anything else falls
+      // through to the incomplete-command diagnostics below with the stored
+      // path untouched.
+      if (cli_detail::prefix_extends_into_configuration(session, effective)) {
+        cli_detail::move_session_path(session, canonical);
+        return cli_detail::prompt(state.configuration.running, session);
+      }
     }
   }
 

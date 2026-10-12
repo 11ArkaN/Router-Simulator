@@ -543,7 +543,11 @@ const cliRows = cliSchema.commands.map((command) => {
   const contextTokenCount = command.context_token_count ?? 0;
   // Workflow ownership is generated from the documented root operator. This
   // prevents every new feature family from requiring a second manual C++ list
-  // merely to keep its leaves out of MD operational mode.
+  // merely to keep its leaves out of MD operational mode. Both engines share
+  // the same grammar rows, so the flag must not depend on MD membership:
+  // classic-only configuration subtrees such as DHCP relay live below
+  // configure as well, and navigation as well as mode diagnostics consume
+  // this flag for either engine.
   const implicitEntry = [
     "md_configure_exclusive",
     "md_configure_global",
@@ -551,10 +555,10 @@ const cliRows = cliSchema.commands.map((command) => {
     "md_configure_read_only",
   ].includes(command.id);
   const configurationCommand =
-    command.engines.includes("md") &&
     ((!implicitEntry &&
       ["configure", "delete", "bof"].includes(command.tokens[0])) ||
-      ["md_compare", "md_commit", "md_discard"].includes(command.id));
+      (command.engines.includes("md") &&
+        ["md_compare", "md_commit", "md_discard"].includes(command.id)));
   const tokens = command.tokens.map(cppToken);
   while (tokens.length < maximumTokens) tokens.push("{}");
   return `    {CommandId::${command.id}, ${mask}, ${modifierMask}, ${entersContext}, ${configurationCommand}, ${command.tokens.length}, ${contextTokenCount}, {{${tokens.join(", ")}}}, "${command.source_id}"}`;

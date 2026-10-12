@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 void lab_runtime_tests();
+void ospf_flap_recovery_tests();
 void cli_tests();
 void control_projection_worker_tests();
 void network_plane_worker_tests();
@@ -30,6 +31,7 @@ int main() {
     runtime_supervisor_tests();
     runtime_memory_growth_tests();
     lab_runtime_tests();
+    ospf_flap_recovery_tests();
     // Exercise the final C ABI after standalone runtime fixtures have joined
     // their pthreads, so the test observes the same one-owner lifecycle as the
     // browser Worker rather than overlapping unrelated laboratories.

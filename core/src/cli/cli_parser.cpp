@@ -1480,6 +1480,34 @@ bool command_prefix(const CliSession &session, std::string_view input) {
       });
 }
 
+bool prefix_extends_into_configuration(const CliSession &session,
+                                       std::string_view input) {
+  // Navigation may only target configuration containers. Mirroring the edit
+  // operator scan from navigable_command_prefix keeps every operator
+  // placement out of the working path, while the configuration_command flag
+  // keeps operational reports from becoming prompt components.
+  const auto line = tokenize(trim_view(input), false);
+  if (!line.valid || !line.count)
+    return false;
+  if (std::any_of(line.tokens.begin(), line.tokens.begin() + line.count,
+                  [](const auto token) {
+                    return token == "delete" || token == "no";
+                  }))
+    return false;
+  return std::any_of(
+      cli_schema::commands.begin(), cli_schema::commands.end(),
+      [&](const cli_schema::CommandSpec &spec) {
+        if (!available(spec, session) || !spec.configuration_command ||
+            spec.token_count <= line.count)
+          return false;
+        for (std::size_t index = 0; index < line.count; ++index) {
+          if (!accepts(spec.tokens[index], line.tokens[index]))
+            return false;
+        }
+        return true;
+      });
+}
+
 std::string canonical_command_prefix(const CliSession &session,
                                      std::string_view input) {
   // Every descendant row of one real context has the same canonical tokens up

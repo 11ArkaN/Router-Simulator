@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -5502,4 +5503,133 @@ void lab_runtime_tests() {
           "checkpoint lost asynchronous ping state or relative deadlines");
   host_ipv4_atomic_replacement_test(restored);
 
+}
+
+// An interface outage longer than the dead interval must not permanently break
+// adjacency. After re-enable, Hello rediscovery has to rebuild the neighbor
+// on both routers without a restart, a configuration rewrite or a link flap.
+void ospf_flap_recovery_tests() {
+  using namespace router;
+  using namespace router::lab;
+  LabRuntime runtime;
+  const std::array<std::uint8_t, 32U> project_key{
+      0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b,
+      0x3c, 0x3d, 0x3e, 0x3f, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46,
+      0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f, 0x50};
+  const std::array<std::uint8_t, 19U> project_context{
+      'l', 'a', 'b', '-', 'r', 'u', 'n', 't', 'i', 'm',
+      'e', '/', 'v', 'a', 'u', 'l', 't', '/', '1'};
+  require(runtime.initialize_secret_vault(project_key, project_context),
+          "flap fixture rejected valid project vault material");
+  const auto execute = [&](std::string_view session,
+                           std::string_view command) {
+    return std::string{runtime.command(
+        message(lab_runtime_protocol::session_execute, {session, command}))};
+  };
+  const auto configure = [&](std::string_view session,
+                             std::string_view command) {
+    const auto output = execute(session, command);
+    if (output.find("Error:") != std::string::npos ||
+        output.find("MINOR:") != std::string::npos)
+      throw std::runtime_error("flap fixture command rejected: " +
+                               std::string{command} + " output=" + output);
+  };
+  require(
+      !runtime
+           .command(message(lab_runtime_protocol::router_create,
+                            {"flap-r1", "7750-sr-1", "FLAP-R1"}))
+           .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::router_create,
+                                {"flap-r2", "7750-sr-1", "FLAP-R2"}))
+               .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::port_configure,
+                                {"flap-r1", "1/1/1", "1", "9212", "100000",
+                                 "to-r2"}))
+               .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::port_configure,
+                                {"flap-r2", "1/1/1", "1", "9212", "100000",
+                                 "to-r1"}))
+               .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::interface_configure,
+                                {"flap-r1", "to-r2", "1/1/1", "10.0.12.1/30",
+                                 "", "", "1"}))
+               .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::interface_configure,
+                                {"flap-r2", "to-r1", "1/1/1", "10.0.12.2/30",
+                                 "", "", "1"}))
+               .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::link_create,
+                                {"flap-link", "flap-r1", "1/1/1", "flap-r2",
+                                 "1/1/1", "100", "1", "0"}))
+               .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::session_create,
+                                {"flap-1", "flap-r1", "operational"}))
+               .starts_with("ERROR:") &&
+          !runtime
+               .command(message(lab_runtime_protocol::session_create,
+                                {"flap-2", "flap-r2", "operational"}))
+               .starts_with("ERROR:"),
+          "flap fixture could not build its two-router laboratory");
+  for (const auto session : {"flap-1", "flap-2"}) {
+    const auto switched = execute(session, "//");
+    require(switched.find("classic CLI engine") != std::string::npos,
+            "flap fixture could not switch its session to classic CLI");
+  }
+  for (const auto [session, router_id, peer] :
+       {std::tuple{"flap-1", "10.255.0.1", "to-r2"},
+        std::tuple{"flap-2", "10.255.0.2", "to-r1"}}) {
+    configure(session, std::string{"configure router ospf 0 "} + router_id);
+    configure(session, std::string{"configure router ospf 0 area 0 interface "} +
+                           peer + " interface-type point-to-point");
+    configure(session, "configure router ospf 0 no shutdown");
+  }
+  const auto neighbor_full = [&](std::string_view session,
+                                 std::string_view expected_id) {
+    const auto report = execute(session, "show router ospf neighbor");
+    return report.find(expected_id) != std::string::npos &&
+           report.find("Full") != std::string::npos;
+  };
+  for (unsigned attempt = 0; attempt < 240U; ++attempt) {
+    if (neighbor_full("flap-1", "10.255.0.2") &&
+        neighbor_full("flap-2", "10.255.0.1"))
+      break;
+    std::this_thread::sleep_for(std::chrono::milliseconds{500});
+    if (attempt == 239U)
+      throw std::runtime_error(
+          "flap fixture never converged its initial adjacency: r1=" +
+          execute("flap-1", "show router ospf neighbor") +
+          " r2=" + execute("flap-2", "show router ospf neighbor"));
+  }
+  configure("flap-1", "configure router interface to-r2 shutdown");
+  for (unsigned attempt = 0; attempt < 120U; ++attempt) {
+    const auto report = execute("flap-1", "show router ospf neighbor");
+    if (report.find("10.255.0.2") == std::string::npos)
+      break;
+    std::this_thread::sleep_for(std::chrono::milliseconds{500});
+    if (attempt == 119U)
+      throw std::runtime_error(
+          "flap fixture neighbor survived its interface shutdown");
+  }
+  // Outlast the dead interval on the undisturbed peer so its adjacency fully
+  // dissolves before the interface returns, exactly like a real carrier loss.
+  std::this_thread::sleep_for(std::chrono::seconds{50});
+  configure("flap-1", "configure router interface to-r2 no shutdown");
+  for (unsigned attempt = 0; attempt < 300U; ++attempt) {
+    if (neighbor_full("flap-1", "10.255.0.2") &&
+        neighbor_full("flap-2", "10.255.0.1"))
+      return;
+    std::this_thread::sleep_for(std::chrono::milliseconds{500});
+    if (attempt == 299U)
+      throw std::runtime_error(
+          "OSPF adjacency did not re-establish after interface recovery: r1=" +
+          execute("flap-1", "show router ospf neighbor") +
+          " r2=" + execute("flap-2", "show router ospf neighbor"));
+  }
 }
