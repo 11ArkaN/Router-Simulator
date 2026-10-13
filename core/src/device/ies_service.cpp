@@ -127,7 +127,7 @@ namespace {
            !relay.route_populate_pd_exclude;
   }
   if (!valid_coordinate(interface.sap.port) ||
-      !interface.address_configured ||
+      interface.addresses.empty() ||
       relay.servers.size() >
           device_catalog::dhcpv6_relay_servers_per_interface)
     return false;
@@ -290,7 +290,8 @@ ValidationError validate(const Configuration &configuration) {
         if (interface.logical_id == 0U ||
             !usable_name(interface.name, maximum_interface_name_octets) ||
             interface.description.size() > maximum_description_octets ||
-            !printable_ascii(interface.description) || interface.ip_mtu < 1280U)
+            !printable_ascii(interface.description) ||
+            interface.ip_mtu < 512U || interface.ip_mtu > 9786U)
           return ValidationError::invalid_interface;
         if (std::find(logical_ids.begin(), logical_ids.end(),
                       interface.logical_id) != logical_ids.end())
@@ -328,18 +329,26 @@ ValidationError validate(const Configuration &configuration) {
           return ValidationError::invalid_sap;
         }
 
-        if (interface.address_configured &&
-            (interface.prefix_length > 128U ||
-             ip::is_unspecified(interface.address) ||
-             ip::is_multicast(interface.address) ||
-             (sap_configured && !ip::is_link_local(interface.link_local)) ||
-             (!sap_configured &&
-              !ip::is_unspecified(interface.link_local))))
+        // Every list entry carries its own prefix: duplicates, out-of-range
+        // lengths and non-unicast keys are rejected, and the list stays
+        // within the documented per-interface ceiling.
+        if (interface.addresses.size() >
+            device_catalog::network_interface_ip_addresses)
           return ValidationError::invalid_ipv6_address;
-        if (!interface.address_configured &&
-            (!ip::is_unspecified(interface.address) ||
-             !ip::is_unspecified(interface.link_local) ||
-             interface.prefix_length != 0U))
+        for (std::size_t left{}; left < interface.addresses.size(); ++left) {
+          const auto &entry = interface.addresses[left];
+          if (entry.prefix_length < 4U || entry.prefix_length > 128U ||
+              ip::is_unspecified(entry.address) ||
+              ip::is_multicast(entry.address))
+            return ValidationError::invalid_ipv6_address;
+          for (std::size_t right{left + 1U};
+               right < interface.addresses.size(); ++right)
+            if (interface.addresses[right].address == entry.address)
+              return ValidationError::invalid_ipv6_address;
+        }
+        if (!interface.addresses.empty() &&
+            ((sap_configured && !ip::is_link_local(interface.link_local)) ||
+             (!sap_configured && !ip::is_unspecified(interface.link_local))))
           return ValidationError::invalid_ipv6_address;
         if (!valid_relay(configuration, service, interface))
           return ValidationError::invalid_relay;
@@ -440,7 +449,8 @@ ValidationError validate_candidate(const Configuration &configuration) {
         if (interface.logical_id == 0U ||
             !usable_name(interface.name, maximum_interface_name_octets) ||
             interface.description.size() > maximum_description_octets ||
-            !printable_ascii(interface.description) || interface.ip_mtu < 1280U)
+            !printable_ascii(interface.description) ||
+            interface.ip_mtu < 512U || interface.ip_mtu > 9786U)
           return ValidationError::invalid_interface;
         if (std::find(logical_ids.begin(), logical_ids.end(),
                       interface.logical_id) != logical_ids.end())
@@ -471,17 +481,23 @@ ValidationError validate_candidate(const Configuration &configuration) {
           return ValidationError::invalid_sap;
         }
 
-        if (interface.address_configured &&
-            (interface.prefix_length > 128U ||
-             ip::is_unspecified(interface.address) ||
-             ip::is_multicast(interface.address) ||
-             (sap_configured && !ip::is_link_local(interface.link_local)) ||
-             (!sap_configured && !ip::is_unspecified(interface.link_local))))
+        if (interface.addresses.size() >
+            device_catalog::network_interface_ip_addresses)
           return ValidationError::invalid_ipv6_address;
-        if (!interface.address_configured &&
-            (!ip::is_unspecified(interface.address) ||
-             !ip::is_unspecified(interface.link_local) ||
-             interface.prefix_length != 0U))
+        for (std::size_t left{}; left < interface.addresses.size(); ++left) {
+          const auto &entry = interface.addresses[left];
+          if (entry.prefix_length < 4U || entry.prefix_length > 128U ||
+              ip::is_unspecified(entry.address) ||
+              ip::is_multicast(entry.address))
+            return ValidationError::invalid_ipv6_address;
+          for (std::size_t right{left + 1U};
+               right < interface.addresses.size(); ++right)
+            if (interface.addresses[right].address == entry.address)
+              return ValidationError::invalid_ipv6_address;
+        }
+        if (!interface.addresses.empty() &&
+            ((sap_configured && !ip::is_link_local(interface.link_local)) ||
+             (!sap_configured && !ip::is_unspecified(interface.link_local))))
           return ValidationError::invalid_ipv6_address;
 
         const auto &relay = interface.dhcpv6_relay;

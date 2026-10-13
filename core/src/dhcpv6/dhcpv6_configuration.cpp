@@ -26,6 +26,15 @@ Status validate(const RouterConfiguration &configuration,
       return Status::invalid_name;
     if (server.description.size() > 80U)
       return Status::invalid_description;
+    // YANG gates the defaults container on auto-provisioned true and pools
+    // on auto-provisioned false.
+    const bool has_defaults = server.default_preferred_lifetime_configured ||
+                              server.default_valid_lifetime_configured ||
+                              server.default_renewal_time_configured ||
+                              server.default_rebinding_time_configured;
+    if ((has_defaults && !server.auto_provisioned) ||
+        (!server.pools.empty() && server.auto_provisioned))
+      return Status::invalid_auto_provisioned;
     if (server.default_preferred_lifetime_seconds >
             server.default_valid_lifetime_seconds ||
         server.default_renewal_time_seconds >
@@ -69,19 +78,20 @@ Status validate(const RouterConfiguration &configuration,
             prefix.aggregate.length <= 128U &&
             ip::mask(prefix.aggregate.network, prefix.aggregate.length) ==
                 prefix.aggregate.network;
-        const auto preferred =
-            prefix.preferred_lifetime_configured
-                ? prefix.preferred_lifetime_seconds
-                : server.default_preferred_lifetime_seconds;
+        // The pool prefix lifetime leaves carry fixed YANG defaults; an
+        // unset leaf does not inherit the server level default leaves.
+        const auto preferred = prefix.preferred_lifetime_configured
+                                   ? prefix.preferred_lifetime_seconds
+                                   : 3600U;
         const auto valid = prefix.valid_lifetime_configured
                                ? prefix.valid_lifetime_seconds
-                               : server.default_valid_lifetime_seconds;
+                               : 86400U;
         const auto renewal = prefix.renewal_time_configured
                                  ? prefix.renewal_time_seconds
-                                 : server.default_renewal_time_seconds;
+                                 : 1800U;
         const auto rebinding = prefix.rebinding_time_configured
                                    ? prefix.rebinding_time_seconds
-                                   : server.default_rebinding_time_seconds;
+                                   : 2880U;
         // The pool-wide minimum may be shorter than one aggregate. It is a
         // client hint policy, not a promise that every aggregate can supply
         // that length. For a /56 aggregate and a configured 48..64 policy,

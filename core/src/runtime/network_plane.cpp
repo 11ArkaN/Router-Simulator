@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <functional>
 #include <limits>
@@ -4503,6 +4504,12 @@ bool NetworkPlane::remove_port(DeviceHandle device,
   // interface. Delegating removal to that owner ensures a deleted interface
   // cannot leave a usable next-hop entry behind.
   forwarder->remove_port(ordinal);
+  // Physical removal clears the forwarding punt, so the generation mask
+  // bookkeeping must follow. Otherwise a later re-added port would keep a
+  // stale set mask while the forwarder stays deaf, and no later generation
+  // commit would reprogram it because the masks would compare equal.
+  if (device.index < impl_->ospf_punt_masks.size())
+    impl_->ospf_punt_masks[device.index][ordinal] = 0U;
   return true;
 }
 

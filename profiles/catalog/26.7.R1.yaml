@@ -407,7 +407,6 @@ tls:
     - { sros: tls-aes256-gcm-sha384, openssl: TLS_AES_256_GCM_SHA384, pqc: true }
     - { sros: tls-chacha20-poly1305-sha256, openssl: TLS_CHACHA20_POLY1305_SHA256, pqc: false }
     - { sros: tls-aes128-ccm-sha256, openssl: TLS_AES_128_CCM_SHA256, pqc: false }
-    - { sros: tls-aes128-ccm8-sha256, openssl: TLS_AES_128_CCM_8_SHA256, pqc: false }
   tls13_groups:
     - { sros: tls-ecdhe-256, openssl: P-256, pqc: false }
     - { sros: tls-ecdhe-384, openssl: P-384, pqc: false }
@@ -416,9 +415,6 @@ tls:
     - { sros: tls-x448, openssl: X448, pqc: false }
     - { sros: tls-ml-kem1024, openssl: MLKEM1024, pqc: true }
   tls13_signatures:
-    - { sros: tls-rsa-pkcs1-sha256, openssl: rsa_pkcs1_sha256, pqc: false }
-    - { sros: tls-rsa-pkcs1-sha384, openssl: rsa_pkcs1_sha384, pqc: false }
-    - { sros: tls-rsa-pkcs1-sha512, openssl: rsa_pkcs1_sha512, pqc: false }
     - { sros: tls-ecdsa-secp256r1-sha256, openssl: ecdsa_secp256r1_sha256, pqc: false }
     - { sros: tls-ecdsa-secp384r1-sha384, openssl: ecdsa_secp384r1_sha384, pqc: false }
     - { sros: tls-ecdsa-secp521r1-sha512, openssl: ecdsa_secp521r1_sha512, pqc: false }
@@ -436,6 +432,10 @@ protocol_defaults:
   # limits are management semantics, not RFC wire constants. Generated values
   # keep candidate validation, completion and the runtime compiler aligned.
   dhcpv4_server_name_bytes: 32
+  # YANG list pool keys allow 1..64 characters for both DHCPv4 and DHCPv6
+  # local servers. Server names stay at 1..32 per their own key definition.
+  dhcpv4_pool_name_bytes: 32
+  dhcpv6_pool_name_bytes: 32
   dhcpv4_description_bytes: 80
   dhcpv4_lease_time_minimum_seconds: 10
   dhcpv4_lease_time_maximum_seconds: 315446399
@@ -472,6 +472,10 @@ protocol_defaults:
   ospf_interface_priority: 1
   ospf_interface_metric_minimum: 1
   ospf_interface_metric_maximum: 65535
+  # YANG bounds the stub and NSSA default-metric leaf at 1 through 16777214,
+  # separately from the interface metric range above.
+  ospf_stub_default_metric_minimum: 1
+  ospf_stub_default_metric_maximum: 16777214
   # SR OS stores this leaf in kb/s. The 100,000,000 kb/s default is 100 Gb/s.
   ospf_reference_bandwidth_kbps: 100000000
   ospf_router_preference: 10

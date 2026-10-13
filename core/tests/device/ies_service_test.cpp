@@ -40,11 +40,9 @@ router::service::Configuration valid_configuration() {
                    EthernetEncapsulation::qinq, std::uint16_t{200U},
                    std::uint16_t{300U}};
   interface.mac = packet::Mac{0x02U, 0x00U, 0x00U, 0x00U, 0x10U, 0x01U};
-  interface.address = *address;
+  interface.addresses.push_back({.address = *address, .prefix_length = 64U});
   interface.link_local = *link_local;
-  interface.prefix_length = 64U;
   interface.ip_mtu = 1500U;
-  interface.address_configured = true;
   interface.admin_enabled = true;
   interface.dhcpv6_relay.configured = true;
   interface.dhcpv6_relay.admin_enabled = true;
@@ -158,6 +156,27 @@ void ies_service_tests() {
       {.name = "10", .customer_id = 11U});
   require_error(duplicate_customer_name, ValidationError::duplicate_customer,
                 "duplicate MD customer key was accepted");
+
+  // The address list holds several entries keyed by address. A second
+  // address is valid, a repeated key is not, and each entry keeps its own
+  // prefix length.
+  auto second_address = configuration;
+  second_address.ies_services[0].interfaces[0].addresses.push_back(
+      {.address = *router::ip::parse_ipv6("2001:db8:100::2"),
+       .prefix_length = 64U});
+  require_error(second_address, ValidationError::none,
+                "second service interface address was rejected");
+  auto duplicate_address = second_address;
+  duplicate_address.ies_services[0].interfaces[0].addresses.push_back(
+      {.address = *router::ip::parse_ipv6("2001:db8:100::2"),
+       .prefix_length = 64U});
+  require_error(duplicate_address, ValidationError::invalid_ipv6_address,
+                "duplicate service interface address was accepted");
+  auto short_prefix = configuration;
+  short_prefix.ies_services[0].interfaces[0].addresses.front().prefix_length =
+      3U;
+  require_error(short_prefix, ValidationError::invalid_ipv6_address,
+                "service interface prefix below 4 was accepted");
 
   auto unattached = configuration;
   auto &unattached_interface = unattached.ies_services[0].interfaces[0];

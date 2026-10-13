@@ -17,6 +17,7 @@ namespace router::dhcpv4::configuration {
 enum class FailoverControlType : std::uint8_t {
   local,
   remote,
+  access_driven,
 };
 
 enum class OptionValueKind : std::uint8_t {

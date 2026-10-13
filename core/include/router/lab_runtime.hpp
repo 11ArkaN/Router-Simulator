@@ -12,6 +12,7 @@
 #include "router/device.hpp"
 #include "router/generated_profile.hpp"
 #include "router/lab_checkpoint.hpp"
+#include "router/pki_configuration.hpp"
 #include "router/runtime_supervisor.hpp"
 #include "router/secret_vault.hpp"
 #include "router/telemetry.hpp"
@@ -355,6 +356,7 @@ private:
     // and can never be copied by commit, compare or discard.
     tls_profile::Configuration tls;
     ipsec::configuration::Configuration ipsec;
+    pki::Configuration pki;
     service::Configuration ies;
     bof::AutoconfigureIntent bof_autoconfigure;
     dhcpv4::configuration::RouterConfiguration dhcpv4_servers;
@@ -391,6 +393,7 @@ private:
     bool ipv6_nd_stale_time_configured{};
     tls_profile::Configuration tls;
     ipsec::configuration::Configuration ipsec;
+    pki::Configuration pki;
     service::Configuration ies;
     bof::AutoconfigureIntent bof_autoconfigure;
     dhcpv4::configuration::RouterConfiguration dhcpv4_servers;

@@ -305,6 +305,8 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
       return bounded_name(value, service::maximum_relay_interface_id_octets);
     case ethernet_mode:
       return value == "access" || value == "network" || value == "hybrid";
+    case classic_ethernet_mode:
+      return value == "network" || value == "hybrid";
     case ethernet_encapsulation:
       return value == "null" || value == "dot1q" || value == "qinq";
     case policy_name:
@@ -315,14 +317,27 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
     case policy_action:
       return value == "accept" || value == "drop" || value == "reject" ||
              value == "next-entry" || value == "next-policy";
+    case md_policy_action:
+      // The MD-CLI/YANG action-type enumeration has no drop value. Classic
+      // keeps drop, so the shared runtime mapping stays untouched.
+      return value == "accept" || value == "reject" ||
+             value == "next-entry" || value == "next-policy";
+    case policy_action_metric:
+      // A route-policy action metric spans the full unsigned 32-bit range in
+      // both engines, unlike the 1 through 65535 OSPF interface metric.
+      return decimal_text(value);
+    case ipv6_primary_preference:
+    case ipv6_address_tag:
+      // SR OS rejects the value 0 for both leaves in either engine.
+      return decimal_text(value) && value != "0";
+    case prefix_list_type:
+      return value == "exact" || value == "longer" || value == "through" ||
+             value == "range" || value == "to" || value == "address-mask";
     case sap_id:
       // Exact coordinate, VLAN and live inventory checks belong to the IES
       // editor because the release grammar alone cannot resolve a port.
       return !value.empty() && value.size() <= 45U;
     case prefix_length:
-    case ipv6_prefix_length:
-    case ipv6_primary_preference:
-    case ipv6_address_tag:
     case customer_id:
     case service_id:
     case relay_lease_limit:
@@ -368,6 +383,20 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
     case history_ike_records:
     case bof_timeout_seconds:
       return decimal_text(value);
+    case ipv6_prefix_length: {
+      if (!decimal_text(value))
+        return false;
+      unsigned length{};
+      for (const auto byte : value)
+        length = length * 10U + static_cast<unsigned>(byte - '0');
+      return length >= 4U && length <= ip::ipv6_address_bits;
+    }
+    case classic_ospf_interface_type:
+      return value == "point-to-point" || value == "broadcast" ||
+             value == "non-broadcast" || value == "p2mp-nbma";
+    case md_ospf_interface_type:
+      return value == "point-to-point" || value == "broadcast" ||
+             value == "non-broadcast" || value == "p2mp-nbma";
     case bof_client_id: {
       // The BOF model accepts either a quoted character string or an opaque
       // hexadecimal spelling. Family-specific limits differ, so the grammar
@@ -412,12 +441,13 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
       const auto file = scalar_text(value);
       return !file.empty() &&
              file.size() <= device_catalog::tls_certificate_file_name_bytes &&
-             file.find_first_of(":/") == std::string_view::npos;
+             file.find_first_of(":/\\") == std::string_view::npos;
     }
-    case pki_file_name: {
+    case pki_file_name:
+    case pki_key_file: {
       const auto file = scalar_text(value);
       return !file.empty() && file.size() <= 95U &&
-             file.find_first_of(":/") == std::string_view::npos;
+             file.find_first_of(":/\\") == std::string_view::npos;
     }
     case tls_cert_profile_name:
     case tls_trust_anchor_profile_name:
@@ -438,6 +468,15 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
     case ipsec_trust_anchor_profile_name:
     case ppk_list_name:
     case ca_profile_name:
+    case ipsec_client_db_name:
+    case ipsec_client_name:
+    case private_interface_name:
+    case private_service_name:
+    case router_instance_name:
+    case radius_policy_name:
+    case pki_ca_profile_name:
+    case pki_common_name_list_name:
+    case pki_est_profile_name:
       // Both SR OS list keys have their own documented 1..32 contract. Keep
       // them independent from TLS catalog constants even though the current
       // maximum happens to be equal.
@@ -470,14 +509,42 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
              value == "held" || value == "internal" ||
              value == "internal-orphan" || value == "internal-offered" ||
              value == "internal-held" || value == "sticky";
+    case dhcpv4_clear_lease_state:
+      // The documented classic clear state set omits internal-offered.
+      return value == "offered" || value == "stable" ||
+             value == "force-renew-pending" || value == "remove-pending" ||
+             value == "held" || value == "internal" ||
+             value == "internal-orphan" || value == "internal-held" ||
+             value == "sticky";
     case dhcpv6_lease_state:
       return value == "advertised" || value == "stable" ||
              value == "remove-pending" || value == "held" ||
              value == "internal" || value == "internal-orphan" ||
              value == "internal-offered" || value == "internal-held";
+    case dhcpv6_show_lease_state:
+      return value == "advertised" || value == "remove-pending" ||
+             value == "held";
+    case dhcpv6_clear_lease_state:
+      return value == "advertised" || value == "remove-pending" ||
+             value == "held" || value == "internal" ||
+             value == "internal-orphan" || value == "internal-offered";
     case dhcpv6_lease_type:
       return value == "pd" || value == "slaac" || value == "wan" ||
              value == "wan-host";
+    case dhcpv6_show_lease_type:
+      return value == "pd" || value == "wan-host";
+    case dhcpv6_clear_lease_type:
+      return value == "pd" || value == "slaac" || value == "wan-host";
+    case dhcpv6_reset_lease_type:
+      return value == "pd" || value == "slaac" || value == "wan";
+    case dhcp_time_days:
+    case dhcp_time_hours:
+    case dhcp_time_minutes:
+    case dhcp_time_seconds:
+      // Classic CLI time components are plain non-negative integers. The
+      // owning editor sums the present components with an overflow guard and
+      // enforces the per-command total, so the grammar accepts any decimal.
+      return decimal_text(value);
     case ppk_ascii_value:
     case ipsec_pre_shared_key: {
       // SR OS encrypted-leaf text may be clear input or an opaque protected
@@ -488,7 +555,8 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
       const auto secret = scalar_text(value);
       return !secret.empty() && secret.size() <= 166U;
     }
-    case ppk_hex_value: {
+    case ppk_hex_value:
+    case client_db_psk: {
       const auto secret = scalar_text(value);
       if (secret.empty() || secret.size() > 166U)
         return false;
@@ -507,7 +575,134 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
                       (byte >= 'A' && byte <= 'F');
              });
     }
+    case radius_password: {
+      // RADIUS authentication passwords use the encrypted-leaf 1..166
+      // envelope with the same protected spellings as other secrets.
+      const auto secret = scalar_text(value);
+      return !secret.empty() && secret.size() <= 166U;
+    }
+    case ipsec_client_id: {
+      // YANG bounds client list keys at 1 through 8000.
+      if (!decimal_text(value) || value.size() > 4U)
+        return false;
+      unsigned id{};
+      for (const auto byte : value)
+        id = id * 10U + static_cast<unsigned>(byte - '0');
+      return id >= 1U && id <= 8000U;
+    }
+    case radius_update_value: {
+      // YANG update-interval value is 0 or 5 through 259200 minutes.
+      if (!decimal_text(value) || value.size() > 6U)
+        return false;
+      unsigned minutes{};
+      for (const auto byte : value)
+        minutes = minutes * 10U + static_cast<unsigned>(byte - '0');
+      return minutes == 0U || (minutes >= 5U && minutes <= 259200U);
+    }
+    case radius_update_jitter: {
+      if (!decimal_text(value) || value.size() > 4U)
+        return false;
+      unsigned seconds{};
+      for (const auto byte : value)
+        seconds = seconds * 10U + static_cast<unsigned>(byte - '0');
+      return seconds <= 3600U;
+    }
+    case pki_cn_index: {
+      // YANG bounds common-name indexes at 1 through 128.
+      if (!decimal_text(value) || value.size() > 3U)
+        return false;
+      unsigned index{};
+      for (const auto byte : value)
+        index = index * 10U + static_cast<unsigned>(byte - '0');
+      return index >= 1U && index <= 128U;
+    }
+    case pki_cn_value: {
+      // YANG requires a regular expression that is not all spaces.
+      const auto text = scalar_text(value);
+      return !text.empty() && text.size() <= 255U &&
+             std::any_of(text.begin(), text.end(),
+                         [](char byte) { return byte != ' '; });
+    }
+    case pki_fqdn:
+      return bounded_name(value, 255U);
+    case pki_username:
+    case pki_transmission_profile:
+      return bounded_name(value, 32U);
+    case pki_path: {
+      // EST server paths must start with / per the YANG pattern.
+      const auto text = scalar_text(value);
+      return !text.empty() && text.size() <= 255U && text.front() == '/';
+    }
+    case pki_server_port: {
+      if (!decimal_text(value) || value.size() > 5U)
+        return false;
+      unsigned port{};
+      for (const auto byte : value)
+        port = port * 10U + static_cast<unsigned>(byte - '0');
+      return port >= 1U && port <= 65535U;
+    }
+    case pki_url: {
+      // OCSP responder, CMPv2 server and CRL download locations share the
+      // YANG 1..180 octet shape-only bound. Scheme and host resolution
+      // belong to the protocol owner, never to the grammar.
+      const auto text = scalar_text(value);
+      if (text.empty() || text.size() > 180U)
+        return false;
+      return std::none_of(text.begin(), text.end(), [](char byte) {
+        return byte == ' ' || byte == '\t' || byte == '\n' || byte == '\r';
+      });
+    }
+    case pki_dn_string: {
+      // Distinguished-name attribute strings carry their own separators, so
+      // only the YANG 1..256 bound applies at parse time.
+      const auto text = scalar_text(value);
+      return !text.empty() && text.size() <= 256U;
+    }
+    case pki_service_id: {
+      // Base-router selection uses zero; service identifiers otherwise span
+      // 1 through 2147483647 per the classic reference.
+      if (!decimal_text(value) || value.size() > 10U)
+        return false;
+      unsigned long id{};
+      for (const auto byte : value)
+        id = id * 10UL + static_cast<unsigned long>(byte - '0');
+      return id <= 2147483647UL;
+    }
+    case pki_service_name:
+    case pki_cmp_key_ref:
+      return bounded_name(value, 64U);
+    case pki_update_profile_name:
+      return bounded_name(value, 32U);
+    case pki_crl_entry_id: {
+      // YANG bounds automatic CRL update URL entries at 1 through 8, and the
+      // classic reference confirms the eight-URL bound.
+      if (!decimal_text(value) || value.size() > 1U)
+        return false;
+      return value[0] >= '1' && value[0] <= '8';
+    }
+    case pki_chain_depth: {
+      if (!decimal_text(value) || value.size() > 1U)
+        return false;
+      return value[0] >= '1' && value[0] <= '7';
+    }
+    case pki_warning_hours:
+    case pki_warning_repeat: {
+      // Certificate and CRL expiration warnings span 0 through 8760 hours.
+      if (!decimal_text(value) || value.size() > 4U)
+        return false;
+      unsigned hours{};
+      for (const auto byte : value)
+        hours = hours * 10U + static_cast<unsigned>(byte - '0');
+      return hours <= 8760U;
+    }
+    case pki_seconds:
+    case pki_key_size:
+      // Per-leaf ranges differ (timeouts, retry intervals, schedules, key
+      // sizes), so the grammar accepts any decimal and the PKI owner
+      // enforces the leaf-specific bound with an explicit error.
+      return decimal_text(value);
     case ike_identity_fqdn:
+    case idi_string:
       return bounded_name(value, 255U);
     case boolean:
       return value == "true" || value == "false";
@@ -644,6 +839,7 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case service_interface_name:
   case sap_id:
   case ethernet_mode:
+  case classic_ethernet_mode:
   case ethernet_encapsulation:
   case ipv6_prefix_length:
   case relay_interface_id_string:
@@ -674,10 +870,20 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case dhcp_offer_seconds:
   case dhcp_maximum_declined:
   case dhcp_lease_state:
+  case dhcpv4_clear_lease_state:
   case dhcpv6_lease_state:
+  case dhcpv6_show_lease_state:
+  case dhcpv6_clear_lease_state:
   case dhcpv6_lease_type:
+  case dhcpv6_show_lease_type:
+  case dhcpv6_clear_lease_type:
+  case dhcpv6_reset_lease_type:
   case dhcpv6_lifetime_seconds:
   case dhcpv6_timer_seconds:
+  case dhcp_time_days:
+  case dhcp_time_hours:
+  case dhcp_time_minutes:
+  case dhcp_time_seconds:
   case dhcpv6_delegated_length:
   case dhcp_remote_id_ascii:
   case bof_client_id:
@@ -692,8 +898,12 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case mld_limit:
   case policy_name:
   case prefix_list_name:
+  case prefix_list_type:
+  case tls_timer_minutes:
   case policy_entry_number:
   case policy_action:
+  case md_policy_action:
+  case policy_action_metric:
   case redirect_number:
   case redirect_seconds:
   case ike_policy_id:
@@ -745,6 +955,7 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case ospf_preference:
   case ospf_authentication_key:
   case ospf_key_id:
+  case ospf_md5_key_id:
   case ospf_keychain_name:
   case ospf_keychain_time:
   case ospf_tolerance:
@@ -778,18 +989,58 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case tls_certificate_entry_index:
   case tls_algorithm_index:
   case tls_common_name_list_name:
+  case ipsec_client_db_name:
+  case ipsec_client_id:
+  case ipsec_client_name:
+  case private_interface_name:
+  case private_service_name:
+  case router_instance_name:
+  case idi_string:
+  case client_db_psk:
+  case radius_policy_name:
+  case radius_password:
+  case radius_update_value:
+  case radius_update_jitter:
+  case pki_ca_profile_name:
+  case pki_common_name_list_name:
+  case pki_est_profile_name:
+  case pki_cn_index:
+  case pki_cn_value:
+  case pki_path:
+  case pki_server_port:
+  case pki_fqdn:
+  case pki_username:
+  case pki_transmission_profile:
+  case pki_url:
+  case pki_dn_string:
+  case pki_service_id:
+  case pki_service_name:
+  case pki_cmp_key_ref:
+  case pki_crl_entry_id:
+  case pki_update_profile_name:
+  case pki_seconds:
+  case pki_key_size:
+  case pki_chain_depth:
+  case pki_warning_hours:
+  case pki_key_file:
+  case pki_warning_repeat:
     // Redirect rate leaves are user supplied scalars. Their release-specific
     // numeric ranges are enforced by the command handler because completion
     // must not manufacture a preferred rate value that SR OS does not suggest.
     add_candidate(items, std::string{token.display}, false, false, partial,
                   token.description, context);
     break;
-  case ospf_interface_type:
-    // The network type is a closed SR OS enumeration. Supplying the four real
-    // values makes Tab and question-mark help useful without teaching the
-    // parser any command path or runtime behavior.
+  case classic_ospf_interface_type:
+    // Classic CLI documents only the broadcast, point-to-point and
+    // non-broadcast network types. MD-CLI uses the YANG p2mp-nbma spelling
+    // for the same network type.
+    for (const auto value : {"point-to-point", "broadcast", "non-broadcast"})
+      add_candidate(items, value, true, false, partial, token.description,
+                    context);
+    break;
+  case md_ospf_interface_type:
     for (const auto value : {"point-to-point", "broadcast", "non-broadcast",
-                             "point-to-multipoint"})
+                             "p2mp-nbma"})
       add_candidate(items, value, true, false, partial, token.description,
                     context);
     break;
@@ -1229,6 +1480,34 @@ bool command_prefix(const CliSession &session, std::string_view input) {
       });
 }
 
+bool prefix_extends_into_configuration(const CliSession &session,
+                                       std::string_view input) {
+  // Navigation may only target configuration containers. Mirroring the edit
+  // operator scan from navigable_command_prefix keeps every operator
+  // placement out of the working path, while the configuration_command flag
+  // keeps operational reports from becoming prompt components.
+  const auto line = tokenize(trim_view(input), false);
+  if (!line.valid || !line.count)
+    return false;
+  if (std::any_of(line.tokens.begin(), line.tokens.begin() + line.count,
+                  [](const auto token) {
+                    return token == "delete" || token == "no";
+                  }))
+    return false;
+  return std::any_of(
+      cli_schema::commands.begin(), cli_schema::commands.end(),
+      [&](const cli_schema::CommandSpec &spec) {
+        if (!available(spec, session) || !spec.configuration_command ||
+            spec.token_count <= line.count)
+          return false;
+        for (std::size_t index = 0; index < line.count; ++index) {
+          if (!accepts(spec.tokens[index], line.tokens[index]))
+            return false;
+        }
+        return true;
+      });
+}
+
 std::string canonical_command_prefix(const CliSession &session,
                                      std::string_view input) {
   // Every descendant row of one real context has the same canonical tokens up
@@ -1351,6 +1630,28 @@ std::string parent_command_prefix(const CliSession &session,
       return canonical_command_prefix(session, candidate);
   }
   return {};
+}
+
+std::string context_command_path(const cli_schema::CommandSpec &spec,
+                                 std::string_view effective) {
+  const auto line = tokenize(trim_view(effective), false);
+  if (!line.valid || line.count == 0)
+    return {};
+  std::uint8_t count = spec.context_token_count;
+  if (count == 0) {
+    count = line.count;
+    if (line.tokens[count - 1U] == "create")
+      --count;
+  }
+  if (count == 0 || count > line.count)
+    return {};
+  std::string path;
+  for (std::uint8_t index = 0; index < count; ++index) {
+    if (!path.empty())
+      path += ' ';
+    path += line.tokens[index];
+  }
+  return path;
 }
 
 } // namespace router::cli_detail

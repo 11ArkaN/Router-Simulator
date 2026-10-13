@@ -933,9 +933,10 @@ void mld_policy_prefix_lists(
   for (const auto &list : lists) {
     out.string(list.name);
     count(out, list.prefixes);
-    for (const auto &prefix : list.prefixes) {
-      ip_address(out, prefix.network);
-      out.integer(prefix.length);
+    for (const auto &entry : list.prefixes) {
+      ip_address(out, entry.prefix.network);
+      out.integer(entry.prefix.length);
+      out.integer(entry.type);
     }
   }
 }
@@ -959,16 +960,20 @@ bool mld_policy_prefix_lists(
     } catch (const std::bad_alloc &) {
       return false;
     }
-    for (auto &prefix : list.prefixes)
-      if (!ip_address(in, prefix.network) || !in.integer(prefix.length) ||
-          prefix.length > ip::address_bits(prefix.network.family) ||
-          ip::mask(prefix.network, prefix.length) != prefix.network)
+    for (auto &entry : list.prefixes)
+      if (!ip_address(in, entry.prefix.network) ||
+          !in.integer(entry.prefix.length) ||
+          !in.integer(entry.type) ||
+          entry.type > MldPrefixListType::address_mask ||
+          entry.prefix.length > ip::address_bits(entry.prefix.network.family) ||
+          ip::mask(entry.prefix.network, entry.prefix.length) !=
+              entry.prefix.network)
         return false;
     std::sort(list.prefixes.begin(), list.prefixes.end(),
               [](const auto &left, const auto &right) {
-                return left.length < right.length ||
-                       (left.length == right.length &&
-                        left.network < right.network);
+                return left.prefix.length < right.prefix.length ||
+                       (left.prefix.length == right.prefix.length &&
+                        left.prefix.network < right.prefix.network);
               });
     if (std::adjacent_find(list.prefixes.begin(), list.prefixes.end()) !=
         list.prefixes.end())
@@ -1219,11 +1224,15 @@ void ies_configuration(Writer &out, const service::Configuration &value) {
       sap_attachment(out, {.logical_interface_id = interface.logical_id,
                            .sap = interface.sap});
       mac(out, interface.mac);
-      ipv6(out, interface.address);
+      // The address list keeps key order: the first entry stays the primary
+      // source for relay fallback and connected origination after restore.
+      count(out, interface.addresses);
+      for (const auto &entry : interface.addresses) {
+        ipv6(out, entry.address);
+        out.integer(entry.prefix_length);
+      }
       ipv6(out, interface.link_local);
-      out.integer(interface.prefix_length);
       out.integer(interface.ip_mtu);
-      out.boolean(interface.address_configured);
       out.boolean(interface.admin_enabled);
       const auto &relay = interface.dhcpv6_relay;
       out.boolean(relay.configured);
@@ -1295,6 +1304,7 @@ bool ies_configuration(Reader &in, service::Configuration &value,
         bool link_present{};
         bool source_present{};
         std::uint32_t server_count{};
+        std::uint32_t address_count{};
         if (!in.integer(interface.logical_id) ||
             !in.string(interface.name,
                        service::maximum_interface_name_octets) ||
@@ -1302,11 +1312,16 @@ bool ies_configuration(Reader &in, service::Configuration &value,
                        service::maximum_description_octets) ||
             !sap_attachment(in, encoded_sap) ||
             encoded_sap.logical_interface_id != interface.logical_id ||
-            !mac(in, interface.mac) || !ipv6(in, interface.address) ||
-            !ipv6(in, interface.link_local) ||
-            !in.integer(interface.prefix_length) ||
+            !mac(in, interface.mac) ||
+            !count(in, address_count,
+                   device_catalog::network_interface_ip_addresses))
+          return false;
+        interface.addresses.resize(address_count);
+        for (auto &entry : interface.addresses)
+          if (!ipv6(in, entry.address) || !in.integer(entry.prefix_length))
+            return false;
+        if (!ipv6(in, interface.link_local) ||
             !in.integer(interface.ip_mtu) ||
-            !in.boolean(interface.address_configured) ||
             !in.boolean(interface.admin_enabled) ||
             !in.boolean(interface.dhcpv6_relay.configured) ||
             !in.boolean(interface.dhcpv6_relay.admin_enabled) ||
@@ -7698,6 +7713,8 @@ void tls_configuration(Writer &out, const tls_profile::Configuration &state) {
     out.string(profile.client_common_name_list);
     out.integer(profile.protocol_version);
     out.boolean(profile.protocol_version_configured);
+    out.integer(profile.renegotiate_timer_minutes);
+    out.boolean(profile.renegotiate_timer_configured);
     tls_status_verification(out, profile.status_verification);
   }
 }
@@ -7806,6 +7823,9 @@ bool tls_configuration(Reader &in, tls_profile::Configuration &state) {
         !in.integer(profile.protocol_version) ||
         !in.boolean(profile.protocol_version_configured) ||
         profile.protocol_version > tls_profile::ProtocolVersion::all ||
+        !in.integer(profile.renegotiate_timer_minutes) ||
+        !in.boolean(profile.renegotiate_timer_configured) ||
+        profile.renegotiate_timer_minutes > 65000U ||
         !tls_status_verification(in, profile.status_verification))
       return false;
   }
@@ -8058,6 +8078,174 @@ bool ipsec_tunnel_template(Reader &in,
          in.boolean(item.service_provider_reverse_route_configured);
 }
 
+void ipsec_client_database(
+    Writer &out, const ipsec::configuration::ClientDatabase &value) {
+  out.string(value.name);
+  out.string(value.description);
+  out.boolean(value.match_idi);
+  out.boolean(value.match_idi_configured);
+  out.boolean(value.match_peer_ip_prefix);
+  out.boolean(value.match_peer_configured);
+  out.boolean(value.admin_enabled);
+  out.boolean(value.admin_state_configured);
+  count(out, value.clients);
+  for (const auto &entry : value.clients) {
+    out.integer(entry.id);
+    out.string(entry.client_name);
+    out.string(entry.private_interface);
+    out.string(entry.private_service);
+    out.string(entry.ts_list);
+    out.integer(entry.tunnel_template);
+    out.integer(entry.action);
+    out.integer(entry.psk_handle);
+    out.integer(entry.psk_format);
+    out.boolean(entry.psk_configured);
+    out.integer(entry.idi.kind);
+    out.string(entry.idi.prefix);
+    out.integer(entry.idi.string_kind);
+    out.string(entry.idi.string_value);
+    out.integer(entry.peer.kind);
+    out.string(entry.peer.prefix);
+    out.string(entry.local.ipv4.router_instance);
+    out.string(entry.local.ipv4.dhcp_server);
+    out.string(entry.local.ipv4.pool);
+    out.string(entry.local.ipv4.secondary_pool);
+    out.string(entry.local.ipv6.router_instance);
+    out.string(entry.local.ipv6.dhcp_server);
+    out.string(entry.local.ipv6.pool);
+    out.boolean(entry.local.configured);
+    out.string(entry.certificate.certificate_profile);
+    out.string(entry.certificate.trust_anchor_profile);
+    out.integer(entry.certificate.default_result);
+    out.integer(entry.certificate.primary_method);
+    out.integer(entry.certificate.secondary_method);
+    out.boolean(entry.certificate.default_result_configured);
+    out.boolean(entry.certificate.methods_configured);
+    out.boolean(entry.admin_enabled);
+    out.boolean(entry.admin_state_configured);
+    out.boolean(entry.action_configured);
+    out.boolean(entry.tunnel_template_configured);
+  }
+}
+
+bool ipsec_client_database(
+    Reader &in, ipsec::configuration::ClientDatabase &value) {
+  std::uint32_t client_count{};
+  // Names follow the 32-octet named-item contract; the description follows
+  // the 80-octet rule and IDi strings the 255-octet display-string bound.
+  // Client keys are bounded by the YANG 1..8000 range.
+  if (!in.string(value.name, 32U) || !in.string(value.description, 80U) ||
+      !in.boolean(value.match_idi) ||
+      !in.boolean(value.match_idi_configured) ||
+      !in.boolean(value.match_peer_ip_prefix) ||
+      !in.boolean(value.match_peer_configured) ||
+      !in.boolean(value.admin_enabled) ||
+      !in.boolean(value.admin_state_configured) ||
+      !count(in, client_count,
+             ipsec::configuration::maximum_client_id))
+    return false;
+  value.clients.resize(client_count);
+  for (auto &entry : value.clients) {
+    if (!in.integer(entry.id) || !in.string(entry.client_name, 32U) ||
+        !in.string(entry.private_interface, 32U) ||
+        !in.string(entry.private_service, 32U) ||
+        !in.string(entry.ts_list, 32U) ||
+        !in.integer(entry.tunnel_template) || !in.integer(entry.action) ||
+        !in.integer(entry.psk_handle) || !in.integer(entry.psk_format) ||
+        !in.boolean(entry.psk_configured) || !in.integer(entry.idi.kind) ||
+        !in.string(entry.idi.prefix, 64U) ||
+        !in.integer(entry.idi.string_kind) ||
+        !in.string(entry.idi.string_value, 255U) ||
+        !in.integer(entry.peer.kind) || !in.string(entry.peer.prefix, 64U) ||
+        !in.string(entry.local.ipv4.router_instance, 32U) ||
+        !in.string(entry.local.ipv4.dhcp_server, 32U) ||
+        !in.string(entry.local.ipv4.pool, 32U) ||
+        !in.string(entry.local.ipv4.secondary_pool, 32U) ||
+        !in.string(entry.local.ipv6.router_instance, 32U) ||
+        !in.string(entry.local.ipv6.dhcp_server, 32U) ||
+        !in.string(entry.local.ipv6.pool, 32U) ||
+        !in.boolean(entry.local.configured) ||
+        !in.string(entry.certificate.certificate_profile, 32U) ||
+        !in.string(entry.certificate.trust_anchor_profile, 32U) ||
+        !in.integer(entry.certificate.default_result) ||
+        !in.integer(entry.certificate.primary_method) ||
+        !in.integer(entry.certificate.secondary_method) ||
+        !in.boolean(entry.certificate.default_result_configured) ||
+        !in.boolean(entry.certificate.methods_configured) ||
+        !in.boolean(entry.admin_enabled) ||
+        !in.boolean(entry.admin_state_configured) ||
+        !in.boolean(entry.action_configured) ||
+        !in.boolean(entry.tunnel_template_configured))
+      return false;
+  }
+  return true;
+}
+
+void ipsec_radius_accounting(
+    Writer &out, const ipsec::configuration::RadiusAccountingPolicy &value) {
+  out.string(value.name);
+  out.string(value.radius_server_policy);
+  out.integer(value.update_value_minutes);
+  out.integer(value.update_jitter_seconds);
+  out.boolean(value.include_.acct_stats);
+  out.boolean(value.include_.called_station_id);
+  out.boolean(value.include_.calling_station_id);
+  out.boolean(value.include_.framed_ip_addr);
+  out.boolean(value.include_.framed_ipv6_prefix);
+  out.boolean(value.include_.nas_identifier);
+  out.boolean(value.include_.nas_ip_addr);
+  out.boolean(value.include_.nas_port_id);
+  out.boolean(value.update_value_configured);
+  out.boolean(value.update_jitter_configured);
+}
+
+bool ipsec_radius_accounting(
+    Reader &in, ipsec::configuration::RadiusAccountingPolicy &value) {
+  return in.string(value.name, 32U) &&
+         in.string(value.radius_server_policy, 32U) &&
+         in.integer(value.update_value_minutes) &&
+         in.integer(value.update_jitter_seconds) &&
+         in.boolean(value.include_.acct_stats) &&
+         in.boolean(value.include_.called_station_id) &&
+         in.boolean(value.include_.calling_station_id) &&
+         in.boolean(value.include_.framed_ip_addr) &&
+         in.boolean(value.include_.framed_ipv6_prefix) &&
+         in.boolean(value.include_.nas_identifier) &&
+         in.boolean(value.include_.nas_ip_addr) &&
+         in.boolean(value.include_.nas_port_id) &&
+         in.boolean(value.update_value_configured) &&
+         in.boolean(value.update_jitter_configured);
+}
+
+void ipsec_radius_authentication(
+    Writer &out,
+    const ipsec::configuration::RadiusAuthenticationPolicy &value) {
+  out.string(value.name);
+  out.string(value.radius_server_policy);
+  out.integer(value.password_handle);
+  out.boolean(value.password_configured);
+  out.boolean(value.include_.called_station_id);
+  out.boolean(value.include_.calling_station_id);
+  out.boolean(value.include_.client_cert_subject_key_id);
+  out.boolean(value.include_.nas_identifier);
+  out.boolean(value.include_.nas_ip_addr);
+  out.boolean(value.include_.nas_port_id);
+}
+
+bool ipsec_radius_authentication(
+    Reader &in, ipsec::configuration::RadiusAuthenticationPolicy &value) {
+  return in.string(value.name, 32U) &&
+         in.string(value.radius_server_policy, 32U) &&
+         in.integer(value.password_handle) &&
+         in.boolean(value.password_configured) &&
+         in.boolean(value.include_.called_station_id) &&
+         in.boolean(value.include_.calling_station_id) &&
+         in.boolean(value.include_.client_cert_subject_key_id) &&
+         in.boolean(value.include_.nas_identifier) &&
+         in.boolean(value.include_.nas_ip_addr) &&
+         in.boolean(value.include_.nas_port_id);
+}
+
 void ipsec_certificate_profile(
     Writer &out, const ipsec::configuration::CertificateProfile &profile) {
   out.string(profile.name);
@@ -8253,6 +8441,15 @@ void ipsec_configuration(Writer &out,
   count(out, state.tunnel_templates);
   for (const auto &item : state.tunnel_templates)
     ipsec_tunnel_template(out, item);
+  count(out, state.client_databases);
+  for (const auto &database : state.client_databases)
+    ipsec_client_database(out, database);
+  count(out, state.radius_accounting_policies);
+  for (const auto &policy : state.radius_accounting_policies)
+    ipsec_radius_accounting(out, policy);
+  count(out, state.radius_authentication_policies);
+  for (const auto &policy : state.radius_authentication_policies)
+    ipsec_radius_authentication(out, policy);
 }
 
 bool ipsec_configuration(Reader &in, ipsec::configuration::Configuration &state,
@@ -8404,9 +8601,315 @@ bool ipsec_configuration(Reader &in, ipsec::configuration::Configuration &state,
   for (auto &item : state.tunnel_templates)
     if (!ipsec_tunnel_template(in, item))
       return false;
+  if (!count(in, size, ipsec::configuration::maximum_client_databases))
+    return false;
+  state.client_databases.resize(size);
+  for (auto &database : state.client_databases)
+    if (!ipsec_client_database(in, database))
+      return false;
+  if (!count(in, size,
+             ipsec::configuration::maximum_radius_accounting_policies))
+    return false;
+  state.radius_accounting_policies.resize(size);
+  for (auto &policy : state.radius_accounting_policies)
+    if (!ipsec_radius_accounting(in, policy))
+      return false;
+  if (!count(in, size,
+             ipsec::configuration::maximum_radius_authentication_policies))
+    return false;
+  state.radius_authentication_policies.resize(size);
+  for (auto &policy : state.radius_authentication_policies)
+    if (!ipsec_radius_authentication(in, policy))
+      return false;
   // Validation rejects invalid enum values, duplicate IDs, out-of-range
   // timers and dangling leafrefs before restored intent reaches the owner.
   return ipsec::configuration::validate(state, allow_incomplete);
+}
+
+void pki_configuration(Writer &out, const pki::Configuration &state) {
+  out.integer(state.display_format);
+  out.boolean(state.display_format_configured);
+  out.boolean(state.dynamic_ca);
+  out.boolean(state.dynamic_ca_configured);
+  out.integer(state.imported_format);
+  out.boolean(state.imported_format_configured);
+  out.integer(state.maximum_cert_chain_depth);
+  out.boolean(state.maximum_cert_chain_depth_configured);
+  out.boolean(state.certificate_expiration_warning.hours_configured);
+  out.integer(state.certificate_expiration_warning.hours);
+  out.boolean(state.certificate_expiration_warning.repeat_configured);
+  out.integer(state.certificate_expiration_warning.repeat_hours);
+  out.boolean(state.crl_expiration_warning.hours_configured);
+  out.integer(state.crl_expiration_warning.hours);
+  out.boolean(state.crl_expiration_warning.repeat_configured);
+  out.integer(state.crl_expiration_warning.repeat_hours);
+  count(out, state.ca_profiles);
+  for (const auto &profile : state.ca_profiles) {
+    out.string(profile.name);
+    out.string(profile.description);
+    out.string(profile.certificate_file);
+    out.string(profile.crl_file);
+    out.integer(profile.revocation_check);
+    out.boolean(profile.admin_enabled);
+    out.boolean(profile.admin_state_configured);
+    out.boolean(profile.revocation_check_configured);
+    out.string(profile.ocsp.responder_url);
+    out.integer(profile.ocsp.service_kind);
+    out.integer(profile.ocsp.service_id);
+    out.string(profile.ocsp.service_name);
+    out.string(profile.ocsp.transmission_profile);
+    out.boolean(profile.cmpv2.always_set_sender_for_ir);
+    out.boolean(profile.cmpv2.always_set_sender_for_ir_configured);
+    out.boolean(profile.cmpv2.same_recipient_nonce_for_poll_request);
+    out.boolean(profile.cmpv2.same_recipient_nonce_for_poll_request_configured);
+    out.string(profile.cmpv2.signing_cert_subject);
+    out.integer(profile.cmpv2.response_signing);
+    out.string(profile.cmpv2.response_signing_cert);
+    out.boolean(profile.cmpv2.response_signing_configured);
+    out.integer(profile.cmpv2.recipient);
+    out.string(profile.cmpv2.recipient_subject);
+    out.boolean(profile.cmpv2.recipient_configured);
+    out.boolean(profile.cmpv2.accept_unprotected_error);
+    out.boolean(profile.cmpv2.accept_unprotected_error_configured);
+    out.boolean(profile.cmpv2.accept_unprotected_pkiconf);
+    out.boolean(profile.cmpv2.accept_unprotected_pkiconf_configured);
+    out.integer(profile.cmpv2.http_response_timeout_seconds);
+    out.boolean(profile.cmpv2.http_response_timeout_configured);
+    out.integer(profile.cmpv2.http_version);
+    out.boolean(profile.cmpv2.http_version_configured);
+    out.string(profile.cmpv2.url_string);
+    out.integer(profile.cmpv2.url_transport);
+    out.integer(profile.cmpv2.url_service_id);
+    out.string(profile.cmpv2.url_service_name);
+    out.string(profile.cmpv2.url_transmission_profile);
+    count(out, profile.cmpv2.keys);
+    for (const auto &key : profile.cmpv2.keys) {
+      out.string(key.reference);
+      out.integer(key.password_handle);
+      out.boolean(key.password_configured);
+    }
+    out.boolean(profile.auto_crl_update.present);
+    out.boolean(profile.auto_crl_update.admin_enabled);
+    out.boolean(profile.auto_crl_update.admin_state_configured);
+    out.integer(profile.auto_crl_update.periodic_update_seconds);
+    out.boolean(profile.auto_crl_update.periodic_update_configured);
+    out.integer(profile.auto_crl_update.pre_update_seconds);
+    out.boolean(profile.auto_crl_update.pre_update_configured);
+    out.integer(profile.auto_crl_update.retry_seconds);
+    out.boolean(profile.auto_crl_update.retry_configured);
+    out.integer(profile.auto_crl_update.schedule);
+    out.boolean(profile.auto_crl_update.schedule_configured);
+    count(out, profile.auto_crl_update.urls);
+    for (const auto &entry : profile.auto_crl_update.urls) {
+      out.integer(entry.entry_id);
+      out.string(entry.url);
+      out.string(entry.transmission_profile);
+    }
+  }
+  count(out, state.common_name_lists);
+  for (const auto &list : state.common_name_lists) {
+    out.string(list.name);
+    count(out, list.entries);
+    for (const auto &entry : list.entries) {
+      out.integer(entry.index);
+      out.integer(entry.type);
+      out.string(entry.value);
+    }
+  }
+  count(out, state.est_profiles);
+  for (const auto &profile : state.est_profiles) {
+    out.string(profile.name);
+    out.string(profile.transmission_profile);
+    out.string(profile.client_tls_profile);
+    out.boolean(profile.check_id_kp_cmcra_only);
+    out.integer(profile.server.port);
+    out.integer(profile.server.address_kind);
+    out.string(profile.server.address);
+    out.string(profile.server.path.cacerts);
+    out.string(profile.server.path.simple_enroll);
+    out.string(profile.server.path.simple_reenroll);
+    out.boolean(profile.server.port_configured);
+    out.string(profile.http_authentication.username);
+    out.integer(profile.http_authentication.password_handle);
+    out.boolean(profile.http_authentication.password_configured);
+  }
+  count(out, state.update_profiles);
+  for (const auto &profile : state.update_profiles) {
+    out.string(profile.name);
+    out.integer(profile.hash_algorithm);
+    out.boolean(profile.hash_algorithm_configured);
+    out.integer(profile.retry_seconds);
+    out.boolean(profile.retry_configured);
+    out.integer(profile.protocol);
+    out.string(profile.protocol_profile);
+    out.boolean(profile.protocol_configured);
+    out.integer(profile.key_generation);
+    out.integer(profile.key_size_bits);
+    out.integer(profile.curve);
+    out.integer(profile.schedule);
+    out.integer(profile.schedule_seconds);
+  }
+  count(out, state.auto_updates);
+  for (const auto &entry : state.auto_updates) {
+    out.string(entry.certificate_file);
+    out.string(entry.key_file);
+    out.string(entry.profile);
+  }
+}
+
+bool pki_configuration(Reader &in, pki::Configuration &state) {
+  std::uint32_t size{};
+  std::uint32_t entry_count{};
+  if (!in.integer(state.display_format) ||
+      !in.boolean(state.display_format_configured) ||
+      !in.boolean(state.dynamic_ca) ||
+      !in.boolean(state.dynamic_ca_configured) ||
+      !in.integer(state.imported_format) ||
+      !in.boolean(state.imported_format_configured) ||
+      !in.integer(state.maximum_cert_chain_depth) ||
+      !in.boolean(state.maximum_cert_chain_depth_configured) ||
+      !in.boolean(state.certificate_expiration_warning.hours_configured) ||
+      !in.integer(state.certificate_expiration_warning.hours) ||
+      !in.boolean(state.certificate_expiration_warning.repeat_configured) ||
+      !in.integer(state.certificate_expiration_warning.repeat_hours) ||
+      !in.boolean(state.crl_expiration_warning.hours_configured) ||
+      !in.integer(state.crl_expiration_warning.hours) ||
+      !in.boolean(state.crl_expiration_warning.repeat_configured) ||
+      !in.integer(state.crl_expiration_warning.repeat_hours))
+    return false;
+  if (!count(in, size, pki::maximum_ca_profiles))
+    return false;
+  state.ca_profiles.resize(size);
+  for (auto &profile : state.ca_profiles) {
+    if (!in.string(profile.name, 32U) ||
+        !in.string(profile.description, 80U) ||
+        !in.string(profile.certificate_file, 95U) ||
+        !in.string(profile.crl_file, 95U) ||
+        !in.integer(profile.revocation_check) ||
+        !in.boolean(profile.admin_enabled) ||
+        !in.boolean(profile.admin_state_configured) ||
+        !in.boolean(profile.revocation_check_configured) ||
+        !in.string(profile.ocsp.responder_url, 180U) ||
+        !in.integer(profile.ocsp.service_kind) ||
+        !in.integer(profile.ocsp.service_id) ||
+        !in.string(profile.ocsp.service_name, 64U) ||
+        !in.string(profile.ocsp.transmission_profile, 32U) ||
+        !in.boolean(profile.cmpv2.always_set_sender_for_ir) ||
+        !in.boolean(profile.cmpv2.always_set_sender_for_ir_configured) ||
+        !in.boolean(profile.cmpv2.same_recipient_nonce_for_poll_request) ||
+        !in.boolean(
+            profile.cmpv2.same_recipient_nonce_for_poll_request_configured) ||
+        !in.string(profile.cmpv2.signing_cert_subject, 256U) ||
+        !in.integer(profile.cmpv2.response_signing) ||
+        !in.string(profile.cmpv2.response_signing_cert, 95U) ||
+        !in.boolean(profile.cmpv2.response_signing_configured) ||
+        !in.integer(profile.cmpv2.recipient) ||
+        !in.string(profile.cmpv2.recipient_subject, 256U) ||
+        !in.boolean(profile.cmpv2.recipient_configured) ||
+        !in.boolean(profile.cmpv2.accept_unprotected_error) ||
+        !in.boolean(profile.cmpv2.accept_unprotected_error_configured) ||
+        !in.boolean(profile.cmpv2.accept_unprotected_pkiconf) ||
+        !in.boolean(profile.cmpv2.accept_unprotected_pkiconf_configured) ||
+        !in.integer(profile.cmpv2.http_response_timeout_seconds) ||
+        !in.boolean(profile.cmpv2.http_response_timeout_configured) ||
+        !in.integer(profile.cmpv2.http_version) ||
+        !in.boolean(profile.cmpv2.http_version_configured) ||
+        !in.string(profile.cmpv2.url_string, 180U) ||
+        !in.integer(profile.cmpv2.url_transport) ||
+        !in.integer(profile.cmpv2.url_service_id) ||
+        !in.string(profile.cmpv2.url_service_name, 64U) ||
+        !in.string(profile.cmpv2.url_transmission_profile, 32U) ||
+        !count(in, entry_count, pki::maximum_cmp_keys))
+      return false;
+    profile.cmpv2.keys.resize(entry_count);
+    for (auto &key : profile.cmpv2.keys) {
+      if (!in.string(key.reference, 64U) ||
+          !in.integer(key.password_handle) ||
+          !in.boolean(key.password_configured))
+        return false;
+    }
+    if (!in.boolean(profile.auto_crl_update.present) ||
+        !in.boolean(profile.auto_crl_update.admin_enabled) ||
+        !in.boolean(profile.auto_crl_update.admin_state_configured) ||
+        !in.integer(profile.auto_crl_update.periodic_update_seconds) ||
+        !in.boolean(profile.auto_crl_update.periodic_update_configured) ||
+        !in.integer(profile.auto_crl_update.pre_update_seconds) ||
+        !in.boolean(profile.auto_crl_update.pre_update_configured) ||
+        !in.integer(profile.auto_crl_update.retry_seconds) ||
+        !in.boolean(profile.auto_crl_update.retry_configured) ||
+        !in.integer(profile.auto_crl_update.schedule) ||
+        !in.boolean(profile.auto_crl_update.schedule_configured) ||
+        !count(in, entry_count, pki::maximum_crl_url_entries))
+      return false;
+    profile.auto_crl_update.urls.resize(entry_count);
+    for (auto &entry : profile.auto_crl_update.urls) {
+      if (!in.integer(entry.entry_id) || !in.string(entry.url, 180U) ||
+          !in.string(entry.transmission_profile, 32U))
+        return false;
+    }
+  }
+  if (!count(in, size, pki::maximum_common_name_lists))
+    return false;
+  state.common_name_lists.resize(size);
+  for (auto &list : state.common_name_lists) {
+    std::uint32_t entry_count{};
+    if (!in.string(list.name, 32U) ||
+        !count(in, entry_count, pki::maximum_common_names_per_list))
+      return false;
+    list.entries.resize(entry_count);
+    for (auto &entry : list.entries) {
+      if (!in.integer(entry.index) || !in.integer(entry.type) ||
+          !in.string(entry.value, 255U))
+        return false;
+    }
+  }
+  if (!count(in, size, pki::maximum_est_profiles))
+    return false;
+  state.est_profiles.resize(size);
+  for (auto &profile : state.est_profiles) {
+    if (!in.string(profile.name, 32U) ||
+        !in.string(profile.transmission_profile, 32U) ||
+        !in.string(profile.client_tls_profile, 32U) ||
+        !in.boolean(profile.check_id_kp_cmcra_only) ||
+        !in.integer(profile.server.port) ||
+        !in.integer(profile.server.address_kind) ||
+        !in.string(profile.server.address, 255U) ||
+        !in.string(profile.server.path.cacerts, 255U) ||
+        !in.string(profile.server.path.simple_enroll, 255U) ||
+        !in.string(profile.server.path.simple_reenroll, 255U) ||
+        !in.boolean(profile.server.port_configured) ||
+        !in.string(profile.http_authentication.username, 32U) ||
+        !in.integer(profile.http_authentication.password_handle) ||
+        !in.boolean(profile.http_authentication.password_configured))
+      return false;
+  }
+  if (!count(in, size, pki::maximum_certificate_update_profiles))
+    return false;
+  state.update_profiles.resize(size);
+  for (auto &profile : state.update_profiles) {
+    if (!in.string(profile.name, 32U) ||
+        !in.integer(profile.hash_algorithm) ||
+        !in.boolean(profile.hash_algorithm_configured) ||
+        !in.integer(profile.retry_seconds) ||
+        !in.boolean(profile.retry_configured) ||
+        !in.integer(profile.protocol) ||
+        !in.string(profile.protocol_profile, 32U) ||
+        !in.boolean(profile.protocol_configured) ||
+        !in.integer(profile.key_generation) ||
+        !in.integer(profile.key_size_bits) ||
+        !in.integer(profile.curve) || !in.integer(profile.schedule) ||
+        !in.integer(profile.schedule_seconds))
+      return false;
+  }
+  if (!count(in, size, pki::maximum_certificate_auto_updates))
+    return false;
+  state.auto_updates.resize(size);
+  for (auto &entry : state.auto_updates) {
+    if (!in.string(entry.certificate_file, 95U) ||
+        !in.string(entry.key_file, 95U) || !in.string(entry.profile, 32U))
+      return false;
+  }
+  return pki::validate(state);
 }
 
 void dhcpv4_router_configuration(
@@ -8528,7 +9031,7 @@ bool dhcpv4_router_configuration(
           if (!ipv4(in, range.first) || !ipv4(in, range.last) ||
               !in.integer(range.failover_control) ||
               range.failover_control >
-                  dhcpv4::configuration::FailoverControlType::remote)
+                  dhcpv4::configuration::FailoverControlType::access_driven)
             return false;
         if (!count(in, excluded_count,
                    device_catalog::dhcpv4_leases_per_server))
@@ -8563,6 +9066,7 @@ void bof_autoconfigure(Writer &out,
   common(state.ipv4);
   common(state.ipv6);
   out.integer(state.ipv6.client_type);
+  out.boolean(state.ipv6.client_type_configured);
   out.octets(state.ipv4_transaction_secret);
   out.octets(state.ipv6_transaction_secret);
 }
@@ -8580,6 +9084,7 @@ bool bof_autoconfigure(Reader &in,
   if (!common(state.ipv4, 127U) || !common(state.ipv6, 124U) ||
       !in.integer(state.ipv6.client_type) ||
       state.ipv6.client_type > bof::Dhcpv6ClientType::duid_link_local ||
+      !in.boolean(state.ipv6.client_type_configured) ||
       !in.octets(state.ipv4_transaction_secret) ||
       !in.octets(state.ipv6_transaction_secret))
     return false;
@@ -8617,6 +9122,8 @@ void dhcpv6_router_configuration(
     out.boolean(server.rapid_commit_configured);
     out.boolean(server.lease_query_configured);
     out.boolean(server.admin_state_configured);
+    out.boolean(server.auto_provisioned);
+    out.boolean(server.auto_provisioned_configured);
     count(out, server.pools);
     for (const auto &pool : server.pools) {
       out.string(pool.name);
@@ -8690,6 +9197,8 @@ bool dhcpv6_router_configuration(
         !in.boolean(server.rapid_commit_configured) ||
         !in.boolean(server.lease_query_configured) ||
         !in.boolean(server.admin_state_configured) ||
+        !in.boolean(server.auto_provisioned) ||
+        !in.boolean(server.auto_provisioned_configured) ||
         !count(in, pool_count,
                device_catalog::dhcpv6_address_pools_per_server +
                    device_catalog::dhcpv6_prefix_pools_per_server))
@@ -8764,7 +9273,10 @@ void ospf_configuration(Writer &out,
   }
   count(out, state.instances);
   for (const auto &instance : state.instances) {
-    out.string(instance.export_policy);
+    // The export chain is an ordered leaf-list of at most five policy names.
+    count(out, instance.export_policies);
+    for (const auto &policy : instance.export_policies)
+      out.string(policy);
     out.boolean(instance.configured_router_id.has_value());
     if (instance.configured_router_id)
       out.integer(*instance.configured_router_id);
@@ -8898,8 +9410,15 @@ bool ospf_configuration(Reader &in,
     std::uint32_t router_id{};
     bool has_asbr_domain_id{};
     std::uint8_t asbr_domain_id{};
-    if (!in.string(instance.export_policy, 64U) ||
-        !in.boolean(has_router_id) ||
+    std::uint32_t export_count{};
+    if (!count(in, export_count,
+               router::ospf::InstanceConfiguration::maximum_export_policies))
+      return false;
+    instance.export_policies.resize(export_count);
+    for (auto &policy : instance.export_policies)
+      if (!in.string(policy, 64U))
+        return false;
+    if (!in.boolean(has_router_id) ||
         (has_router_id && !in.integer(router_id)) ||
         (has_router_id && router_id == 0U) ||
         !in.boolean(has_asbr_domain_id) ||
@@ -9079,6 +9598,7 @@ void portable_router(Writer &out, const PortableRouterIntentCheckpoint &state) {
   out.boolean(state.ipv6_nd_stale_time_configured);
   tls_configuration(out, state.tls);
   ipsec_configuration(out, state.ipsec);
+  pki_configuration(out, state.pki);
   ies_configuration(out, state.ies);
   bof_autoconfigure(out, state.bof_autoconfigure);
   dhcpv4_router_configuration(out, state.dhcpv4_servers);
@@ -9150,6 +9670,7 @@ bool portable_router(Reader &in, PortableRouterIntentCheckpoint &state) {
                                     state.ipv6_nd_stale_time_configured) ||
       !tls_configuration(in, state.tls) ||
       !ipsec_configuration(in, state.ipsec) ||
+      !pki_configuration(in, state.pki) ||
       !ies_configuration(in, state.ies) ||
       !bof_autoconfigure(in, state.bof_autoconfigure) ||
       !dhcpv4_router_configuration(in, state.dhcpv4_servers) ||
@@ -9164,7 +9685,7 @@ bool portable_router(Reader &in, PortableRouterIntentCheckpoint &state) {
         port.mtu < device_catalog::minimum_network_mtu ||
         port.mtu > device_catalog::maximum_network_mtu ||
         !in.integer(port.speed_mbps) || !port.speed_mbps ||
-        !in.string(port.description, 80))
+        !in.string(port.description, profile::port_description_bytes))
       return false;
   }
   // The physical port vector above is bounded by inventory. Interface intent
@@ -9249,6 +9770,7 @@ void portable_configuration(Writer &out,
   out.boolean(state.ipv6_nd_stale_time_configured);
   tls_configuration(out, state.tls);
   ipsec_configuration(out, state.ipsec);
+  pki_configuration(out, state.pki);
   ies_configuration(out, state.ies);
   bof_autoconfigure(out, state.bof_autoconfigure);
   dhcpv4_router_configuration(out, state.dhcpv4_servers);
@@ -9315,6 +9837,7 @@ bool portable_configuration(Reader &in,
                                     state.ipv6_nd_stale_time_configured) ||
       !tls_configuration(in, state.tls) ||
       !ipsec_configuration(in, state.ipsec, true) ||
+      !pki_configuration(in, state.pki) ||
       !ies_configuration(in, state.ies, true) ||
       !bof_autoconfigure(in, state.bof_autoconfigure) ||
       !dhcpv4_router_configuration(in, state.dhcpv4_servers) ||
@@ -9338,7 +9861,7 @@ bool portable_configuration(Reader &in,
         port.mtu < device_catalog::minimum_network_mtu ||
         port.mtu > device_catalog::maximum_network_mtu ||
         !in.integer(port.speed_mbps) || !port.speed_mbps ||
-        !in.string(port.description, 80))
+        !in.string(port.description, profile::port_description_bytes))
       return false;
   // Candidate configuration uses the same logical capacity as running state:
   // every physical routed port plus the portless system interface.
@@ -9487,7 +10010,7 @@ bool secret_vault(Reader &in, vault::Checkpoint &state) {
         record.handle <= previous || record.handle >= state.next_handle ||
         !in.integer(record.kind) ||
         record.kind < vault::SecretKind::ipsec_ppk_ascii ||
-        record.kind > vault::SecretKind::ospf_authentication_key ||
+        record.kind > vault::SecretKind::pki_cmp_initial_auth_password ||
         !in.integer(sealed_size) || !sealed_size ||
         sealed_size > maximum_sealed_secret_octets)
       return false;

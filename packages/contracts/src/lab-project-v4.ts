@@ -111,7 +111,7 @@ export interface RouterOspfIntent {
     instanceId: number;
     addressFamily: OspfAddressFamily;
     routerId: string | null;
-    exportPolicy: string;
+    exportPolicies: string[];
     asbr: boolean;
     asbrTracePathDomainId: number | null;
     referenceBandwidthKbps: number;
@@ -1601,10 +1601,12 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
         !ospfInstances.has(key) &&
         (instance.routerId === null ||
           (routerId !== undefined && routerId !== 0)) &&
-        typeof instance.exportPolicy === "string" &&
-        encoder.encode(instance.exportPolicy).length <= 64 &&
-        (instance.exportPolicy === "" ||
-          policyNames.has(instance.exportPolicy)) &&
+        Array.isArray(instance.exportPolicies) &&
+        instance.exportPolicies.length <= 5 &&
+        instance.exportPolicies.every((policy, index, chain) =>
+          typeof policy === "string" && policy !== "" &&
+          encoder.encode(policy).length <= 64 &&
+          policyNames.has(policy) && chain.indexOf(policy) === index) &&
         typeof instance.asbr === "boolean" &&
         (instance.asbrTracePathDomainId === null ||
           (instance.addressFamily === "ipv4" && instance.asbr &&

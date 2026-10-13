@@ -313,9 +313,12 @@ router::ipsec::configuration::Configuration checkpoint_ipsec_configuration() {
            .propagate_pmtu_v4_configured = true,
            .propagate_pmtu_v6 = true,
            .propagate_pmtu_v6_configured = true,
-           .public_tcp_mss_adjust_configured = true,
-           .reverse_route_metric_configured = true,
-           .reverse_route_preference_configured = true}}};
+            .public_tcp_mss_adjust_configured = true,
+            .reverse_route_metric_configured = true,
+            .reverse_route_preference_configured = true}},
+      .client_databases = {},
+      .radius_accounting_policies = {},
+      .radius_authentication_policies = {}};
   if (!validate(configuration))
     throw std::runtime_error("checkpoint IPsec fixture is invalid");
   return configuration;
@@ -1021,6 +1024,7 @@ void runtime_supervisor_tests() {
        .mld_import_policies = {},
        .tls = tls_fixture,
        .ipsec = ipsec_fixture,
+       .pki = {},
        .ies = {},
        .bof_autoconfigure = {},
        .dhcpv4_servers = {},
@@ -1057,7 +1061,8 @@ void runtime_supervisor_tests() {
   require(checkpoint_policy_prefix.has_value(),
           "classic policy checkpoint fixture prefix was invalid");
   classic_policy_candidate.mld_prefix_lists.push_back(
-      {.name = "CLASSIC-CHECKPOINT", .prefixes = {*checkpoint_policy_prefix}});
+      {.name = "CLASSIC-CHECKPOINT",
+       .prefixes = {{.prefix = *checkpoint_policy_prefix}}});
   classic_policy_candidate.mld_import_policies.push_back(
       {.name = "CLASSIC-CHECKPOINT-POLICY",
        .entries = {{.number = 10U,
@@ -1252,16 +1257,18 @@ void runtime_supervisor_tests() {
                        .encapsulation =
                            router::service::EthernetEncapsulation::null};
   ies_interface.mac = {0x02U, 0U, 0U, 0U, 0x60U, 1U};
-  ies_interface.address = ipv6("2001:db8:60::1");
+  ies_interface.addresses.push_back(
+      {.address = ipv6("2001:db8:60::1"), .prefix_length = 64U});
+  ies_interface.addresses.push_back(
+      {.address = ipv6("2001:db8:60::2"), .prefix_length = 64U});
   ies_interface.link_local = ipv6("fe80::6001");
-  ies_interface.prefix_length = 64U;
   ies_interface.ip_mtu = 1500U;
-  ies_interface.address_configured = true;
   ies_interface.admin_enabled = true;
   ies_interface.dhcpv6_relay.configured = true;
   ies_interface.dhcpv6_relay.admin_enabled = true;
   ies_interface.dhcpv6_relay.neighbor_resolution = true;
-  ies_interface.dhcpv6_relay.source_address = ies_interface.address;
+  ies_interface.dhcpv6_relay.source_address =
+      ies_interface.addresses.front().address;
   ies_interface.dhcpv6_relay.servers.push_back(
       {.address = ipv6("2001:db8:ffff::53")});
   ies_interface.dhcpv6_relay.interface_id_kind =
@@ -1277,26 +1284,38 @@ void runtime_supervisor_tests() {
   require(runtime->configure_ies_services(*service_router, ies_configuration),
           "RuntimeSupervisor rejected a valid complete IES generation");
   const auto published_ies = runtime->router_operational_state(*service_router);
+  // One attachment owns two address records: the SAP table keys records by
+  // address while the attachment stays singular.
   require(published_ies && published_ies->sap_attachments.size() == 1U &&
-              published_ies->service_ipv6_interfaces.size() == 1U,
-          "IES runtime did not publish its atomic SAP and IPv6 interface");
+              published_ies->service_ipv6_interfaces.size() == 2U,
+          "IES runtime did not publish one SAP with two IPv6 addresses");
   require(published_ies->dhcpv6_relay_interfaces.size() == 1U,
           "IES runtime did not publish its DHCPv6 relay child");
   require(wait_for(
               [&] {
                 const auto state =
                     runtime->router_operational_state(*service_router);
-                return state &&
-                       std::any_of(
-                           state->ipv6_dad.begin(), state->ipv6_dad.end(),
-                           [&](const auto &dad) {
-                             return dad.interface_id == 60'001U &&
-                                    dad.address == ipv6("2001:db8:60::1") &&
-                                    dad.state == Ipv6DadState::preferred;
-                           });
+                if (!state)
+                  return false;
+                // Both addresses of the interface must complete DAD; the
+                // table keys progress per address, not per interface.
+                for (const auto *expected :
+                     {"2001:db8:60::1", "2001:db8:60::2"}) {
+                  const auto wanted = ipv6(expected);
+                  const auto done = std::any_of(
+                      state->ipv6_dad.begin(), state->ipv6_dad.end(),
+                      [&](const auto &dad) {
+                        return dad.interface_id == 60'001U &&
+                               dad.address == wanted &&
+                               dad.state == Ipv6DadState::preferred;
+                      });
+                  if (!done)
+                    return false;
+                }
+                return true;
               },
               std::chrono::seconds{5}),
-          "IES runtime service address did not complete DAD");
+          "IES runtime service addresses did not complete DAD");
   auto ies_checkpoint = runtime->checkpoint();
   require(static_cast<bool>(ies_checkpoint),
           "IES runtime checkpoint was unavailable");
@@ -1346,7 +1365,7 @@ void runtime_supervisor_tests() {
           "portable restore rejected the active IES generation");
   const auto restored_ies = runtime->router_operational_state(*service_router);
   require(restored_ies && restored_ies->sap_attachments.size() == 1U &&
-              restored_ies->service_ipv6_interfaces.size() == 1U &&
+              restored_ies->service_ipv6_interfaces.size() == 2U &&
               restored_ies->dhcpv6_relay_interfaces.size() == 1U,
           "portable restore lost IES, SAP or DHCPv6 relay ownership");
 

@@ -314,6 +314,7 @@ add_library(router_management STATIC
   src/cli/bof_cli_configuration.cpp
   src/cli/ipsec_cli_configuration.cpp
   src/cli/ospf_cli_configuration.cpp
+  src/cli/pki_cli_configuration.cpp
   src/runtime/session_workflows.cpp
   src/cli/tls_cli_configuration.cpp
 )
@@ -581,6 +582,8 @@ if(ROUTER_BUILD_TESTS)
     tests/security/ipsec_lifetime_test.cpp
     tests/security/ipsec_integrity_test.cpp
     tests/cli/ipsec_cli_configuration_test.cpp
+    tests/cli/tls_cli_configuration_test.cpp
+    tests/cli/pki_cli_configuration_test.cpp
     tests/security/ipsec_nat_t_test.cpp
     tests/ip/mld_packet_test.cpp
     tests/ip/mld_import_policy_test.cpp

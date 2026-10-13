@@ -110,3 +110,9 @@ renderers:
     runtime_function: md_ipsec_configuration_info
     source_ids:
       - nokia.sros.26_7.ipsec.configuration
+
+  - id: pki
+    engines: [md, classic]
+    runtime_function: md_pki_configuration_info
+    source_ids:
+      - nokia.sros.26_7.pki.configuration

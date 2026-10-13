@@ -119,4 +119,37 @@ void secret_vault_tests() {
                        SecretKind::ipsec_static_authentication_key)
               .first != Result::wrong_kind)
     throw std::runtime_error("OSPF secret purpose binding was not enforced");
+
+  // Every purpose the CLI editors can seal must be accepted by the vault.
+  // The kind bound once lagged behind the enum, silently rejecting client
+  // database, RADIUS, EST and CMPv2 passwords at seal time.
+  auto full_vault = SecretVault::create(first_key, first_context, 16U);
+  if (!full_vault)
+    throw std::runtime_error("full-coverage vault fixture was rejected");
+  const std::array<SecretKind, 15U> all_kinds{
+      SecretKind::ipsec_ppk_ascii, SecretKind::ipsec_ppk_hexadecimal,
+      SecretKind::ike_pre_shared_key, SecretKind::pki_private_key,
+      SecretKind::dnssec_private_key, SecretKind::host_transport_entropy,
+      SecretKind::stable_ipv6_interface_identifier,
+      SecretKind::dhcpv6_transaction_entropy,
+      SecretKind::dhcpv6_allocation_entropy,
+      SecretKind::ipsec_static_authentication_key,
+      SecretKind::ospf_authentication_key,
+      SecretKind::ipsec_client_db_pre_shared_key,
+      SecretKind::ipsec_radius_auth_password,
+      SecretKind::pki_est_http_password,
+      SecretKind::pki_cmp_initial_auth_password};
+  for (std::size_t index{}; index < all_kinds.size(); ++index) {
+    const std::array<std::uint8_t, 2U> material{
+        static_cast<std::uint8_t>(index), static_cast<std::uint8_t>(index)};
+    const auto [seal_result, handle] =
+        full_vault->seal(all_kinds[index], material);
+    if (seal_result != Result::applied || !handle)
+      throw std::runtime_error("defined secret purpose was rejected at seal");
+    const auto [open_result, opened_material] =
+        full_vault->open(handle, all_kinds[index]);
+    if (open_result != Result::applied || !opened_material ||
+        !std::ranges::equal(opened_material->bytes(), material))
+      throw std::runtime_error("defined secret purpose did not round-trip");
+  }
 }

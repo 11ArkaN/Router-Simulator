@@ -79,8 +79,10 @@ struct PpkList {
 }
 
 [[nodiscard]] inline bool valid_pki_filename(std::string_view value) noexcept {
+  // Checkpoint images bypass grammar validation, so the model repeats the
+  // filename constraint: no URL or path separators of either flavor.
   return valid_named_key(value, 95U) &&
-         value.find_first_of(":/") == std::string_view::npos;
+         value.find_first_of(":/\\") == std::string_view::npos;
 }
 
 template <typename Item>

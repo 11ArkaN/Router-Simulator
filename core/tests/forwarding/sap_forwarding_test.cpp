@@ -138,4 +138,35 @@ void sap_forwarding_tests() {
   if (table.ingress(physical.ordinal + 1U, wire, restored).status !=
       SapIngressStatus::no_match)
     throw std::runtime_error("SAP classification ignored physical ingress");
+
+  // One attachment owns several address records keyed by address. A second
+  // address on the same logical interface is accepted and resolves
+  // per address, while a repeated address key is a duplicate.
+  const auto second_global = ip::parse_ipv6("2001:db8:7::2");
+  const auto second_network = ip::parse_ipv6("2001:db8:7::");
+  if (!second_global || !second_network)
+    throw std::runtime_error("second service address fixture is invalid");
+  std::array<ServiceIpv6Interface, 3U> multi_address{interfaces[0],
+                                                     interfaces[1],
+                                                     interfaces[0]};
+  multi_address[2].address = *second_global;
+  multi_address[2].network = *second_network;
+  if (table.replace(attachments, multi_address) != SapProgramStatus::accepted)
+    throw std::runtime_error("second address on one SAP was rejected");
+  const auto *first_record = table.find_address(
+      attachments[0].logical_interface_id, *global);
+  const auto *second_record = table.find_address(
+      attachments[0].logical_interface_id, *second_global);
+  if (!first_record || !second_record ||
+      first_record->address == second_record->address ||
+      table.find_address(attachments[0].logical_interface_id,
+                         *link_local) != nullptr)
+    throw std::runtime_error(
+        "multi-address SAP records did not resolve per address");
+  multi_address[2].address = *global;
+  if (table.replace(attachments, multi_address) !=
+          SapProgramStatus::invalid_interface ||
+      !table.find_address(attachments[0].logical_interface_id, *second_global))
+    throw std::runtime_error(
+        "duplicate service address changed the live generation");
 }

@@ -151,13 +151,21 @@ bool InstanceProcess::encode_output(
       const auto algorithm =
           send_authentication->algorithm ==
                   KeychainAlgorithm::hmac_sha1
-              ? authentication::V3CryptographicAlgorithm::hmac_sha1
-              : authentication::V3CryptographicAlgorithm::hmac_sha256;
+              ? std::optional{
+                    authentication::V3CryptographicAlgorithm::hmac_sha1}
+          : send_authentication->algorithm ==
+                    KeychainAlgorithm::hmac_sha256
+              ? std::optional{
+                    authentication::V3CryptographicAlgorithm::hmac_sha256}
+              : std::optional<
+                    authentication::V3CryptographicAlgorithm>{};
+      if (!algorithm)
+        return false;
       encoded = authentication::encode_v3_authentication_trailer(
           output.bytes, type, router_id_, area_id_, instance_id_,
           owner.configuration.ipv6_source,
           send_authentication->key_id,
-          ++owner.authentication_sequence, algorithm,
+          ++owner.authentication_sequence, *algorithm,
           std::span<const std::uint8_t>{
               send_authentication->key.data(),
               send_authentication->key_size},

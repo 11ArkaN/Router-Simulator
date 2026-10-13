@@ -7,12 +7,29 @@
 #include "router/device.hpp"
 #include "router/generated_cli_schema.hpp"
 
+#include <algorithm>
 #include <array>
 #include <optional>
 #include <string>
 #include <string_view>
 
 namespace router::cli_detail {
+
+// Removal operators are grammar literals in the release schema: MD-CLI delete
+// paths start with the delete literal and classic removal rows carry a no
+// literal. Deriving the classification from the generated row keeps editor
+// semantics aligned with the schema when the release profile adds removal
+// forms, instead of maintaining per-command identifier switches.
+[[nodiscard]] inline bool
+removal_command(const cli_schema::CommandSpec &spec) noexcept {
+  const auto end = spec.tokens.begin() + spec.token_count;
+  return std::any_of(spec.tokens.begin(), end,
+                     [](const auto &token) noexcept {
+                       return token.kind == cli_schema::TokenKind::literal &&
+                              (token.display == "delete" ||
+                               token.display == "no");
+                     });
+}
 
 struct ParsedCommand {
   const cli_schema::CommandSpec *spec{};
@@ -89,7 +106,16 @@ argument(const ParsedCommand &command, cli_schema::TokenKind kind) noexcept;
 // may be a parameter because this predicate also serves incomplete-command
 // help and default-key expansion.
 [[nodiscard]] bool command_prefix(const CliSession &session,
-                                  std::string_view input);
+                                 std::string_view input);
+
+// Returns true only when every supplied token matches the beginning of at
+// least one longer generated configuration command. Operational reports such
+// as show, tools or ping never own a working context: an incomplete
+// operational prefix must offer its continuations instead of parking the
+// prompt inside a report path where no command can run. Edit operators never
+// form a context.
+[[nodiscard]] bool prefix_extends_into_configuration(const CliSession &session,
+                                                     std::string_view input);
 
 // Expands abbreviated literals in a validated context prefix while preserving
 // user-supplied list keys. Empty means the input is not one unambiguous path.
@@ -100,5 +126,12 @@ argument(const ParsedCommand &command, cli_schema::TokenKind kind) noexcept;
 // token. List keys are part of one context and must be removed with their node.
 [[nodiscard]] std::string parent_command_prefix(const CliSession &session,
                                                 std::string_view input);
+
+// Builds the PWC stored after a successful create-and-enter command.
+// Trailing classic `create` is never a model node. context_token_count, when
+// set, drops create-time arguments such as IES customer or OSPF router-id.
+[[nodiscard]] std::string
+context_command_path(const cli_schema::CommandSpec &spec,
+                     std::string_view effective);
 
 } // namespace router::cli_detail

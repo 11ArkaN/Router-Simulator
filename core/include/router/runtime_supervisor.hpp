@@ -15,6 +15,7 @@
 #include "router/secret_vault.hpp"
 #include "router/session_workflows.hpp"
 #include "router/tls_profile.hpp"
+#include "router/pki_configuration.hpp"
 
 #include <array>
 #include <chrono>
@@ -145,12 +146,29 @@ struct MldGlobalIntent {
   bool operator==(const MldGlobalIntent &) const = default;
 };
 
+// YANG keys the policy-options prefix list by (ip-prefix, type). The match
+// type values mirror the nokia-conf enumeration exactly.
+enum class MldPrefixListType : std::uint8_t {
+  exact,
+  longer,
+  through,
+  range,
+  to,
+  address_mask
+};
+
+struct MldPolicyPrefixListEntryIntent {
+  ip::IpPrefix prefix{};
+  MldPrefixListType type{MldPrefixListType::exact};
+  bool operator==(const MldPolicyPrefixListEntryIntent &) const = default;
+};
+
 struct MldPolicyPrefixListIntent {
   std::string name;
   // policy-options is shared by IPv4 and IPv6 consumers. MLD compiles only
   // IPv6 rows from this canonical dual-stack list while preserving every row
   // for CLI editing, candidate comparison and checkpoint reconstruction.
-  std::vector<ip::IpPrefix> prefixes;
+  std::vector<MldPolicyPrefixListEntryIntent> prefixes;
   bool operator==(const MldPolicyPrefixListIntent &) const = default;
 };
 
@@ -466,6 +484,7 @@ struct PortableConfigurationCheckpoint {
   bool ipv6_nd_stale_time_configured{};
   tls_profile::Configuration tls;
   ipsec::configuration::Configuration ipsec;
+  pki::Configuration pki;
   // Service intent is portable control state. Forwarding checkpoints retain
   // only the compiled SAP and logical-interface generation, which is not
   // sufficient to reconstruct customer ownership or CLI presence semantics.
@@ -505,6 +524,7 @@ struct PortableRouterIntentCheckpoint {
   bool ipv6_nd_stale_time_configured{};
   tls_profile::Configuration tls;
   ipsec::configuration::Configuration ipsec;
+  pki::Configuration pki;
   service::Configuration ies;
   bof::AutoconfigureIntent bof_autoconfigure;
   dhcpv4::configuration::RouterConfiguration dhcpv4_servers;

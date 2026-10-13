@@ -16,6 +16,7 @@ namespace router::lab::routing {
 
 enum class PolicyDecision : std::uint8_t {
   next_entry,
+  next_policy,
   accept,
   reject
 };
@@ -100,5 +101,24 @@ private:
   std::vector<PolicyEntry> entries_;
   PolicyDecision default_decision_{PolicyDecision::reject};
 };
+
+// Chain evaluation for ordered leaf-list attachments (OSPF export-policy).
+// Policies apply in configured order and the first match wins: accept and
+// reject terminate the chain with the threaded candidate, while next-policy
+// carries mutations into the next program. An exhausted chain rejects,
+// preserving the no-export-policy redistribution default. The candidate is
+// passed by value so the originating RIB row stays unchanged.
+[[nodiscard]] inline PolicyResult
+evaluate_policy_chain(std::span<const RoutePolicyProgram> chain,
+                      PolicyCandidate candidate) noexcept {
+  PolicyResult result{.candidate = candidate};
+  for (const auto &program : chain) {
+    result = program.evaluate(result.candidate);
+    if (result.decision != PolicyDecision::next_policy)
+      return result;
+  }
+  result.decision = PolicyDecision::reject;
+  return result;
+}
 
 } // namespace router::lab::routing

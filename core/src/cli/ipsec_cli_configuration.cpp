@@ -375,8 +375,7 @@ bool referenced(const Configuration &state, std::uint16_t transform) {
                      });
 }
 
-bool ipsec_referenced(const Configuration &state, std::uint16_t transform) {
-  const auto contains = [transform](const auto &references) {
+bool ipsec_referenced(const Configuration &state, std::uint16_t transform) {  const auto contains = [transform](const auto &references) {
     return std::find(references.begin(), references.end(), transform) !=
            references.end();
   };
@@ -388,6 +387,16 @@ bool ipsec_referenced(const Configuration &state, std::uint16_t transform) {
          std::any_of(state.tunnel_templates.begin(),
                      state.tunnel_templates.end(), [&](const auto &item) {
                        return contains(item.ipsec_transforms);
+                     });
+}
+
+bool ike_policy_referenced(const Configuration &state, std::uint16_t policy) {
+  // The YANG ike-policy leafref lives under the transport profile dynamic
+  // keying context; tunnel templates reference transforms directly.
+  return std::any_of(state.transport_mode_profiles.begin(),
+                     state.transport_mode_profiles.end(),
+                     [policy](const auto &profile) {
+                       return profile.dynamic.ike_policy == policy;
                      });
 }
 
@@ -403,6 +412,51 @@ bool classic_tunnel_transform_command(CommandId id) noexcept {
   using enum CommandId;
   return id == classic_tunnel_transform || id == classic_tunnel_transform_2 ||
          id == classic_tunnel_transform_3 || id == classic_tunnel_transform_4;
+}
+
+// Both engines carry the Diffie-Hellman group number in the token following
+// the dh-group or pfs-dh-group literal: MD-CLI spells group-19 and the classic
+// CLI spells 19. The YANG value domain is 1, 2, 5, 14, 15, 19, 20 and 21.
+std::optional<ipsec::configuration::DiffieHellmanGroup>
+diffie_hellman_group_value(const cli_detail::ParsedCommand &command,
+                           std::string_view keyword) noexcept {
+  using ipsec::configuration::DiffieHellmanGroup;
+  const auto &tokens = command.spec->tokens;
+  for (std::uint8_t i = 0; i + 1 < command.spec->token_count; ++i) {
+    if (tokens[i].kind != TokenKind::literal || tokens[i].display != keyword)
+      continue;
+    const auto value = tokens[i + 1].display;
+    const auto digits = value.starts_with("group-") ? value.substr(6) : value;
+    unsigned group{};
+    for (const auto byte : digits) {
+      if (byte < '0' || byte > '9')
+        return std::nullopt;
+      group = group * 10U + static_cast<unsigned>(byte - '0');
+      if (group > 21U)
+        return std::nullopt;
+    }
+    switch (group) {
+    case 1U:
+      return DiffieHellmanGroup::modp768;
+    case 2U:
+      return DiffieHellmanGroup::modp1024;
+    case 5U:
+      return DiffieHellmanGroup::modp1536;
+    case 14U:
+      return DiffieHellmanGroup::modp2048;
+    case 15U:
+      return DiffieHellmanGroup::modp3072;
+    case 19U:
+      return DiffieHellmanGroup::ecp256;
+    case 20U:
+      return DiffieHellmanGroup::ecp384;
+    case 21U:
+      return DiffieHellmanGroup::ecp512;
+    default:
+      return std::nullopt;
+    }
+  }
+  return std::nullopt;
 }
 
 bool valid_ipsec_transform_list(const Configuration &state,
@@ -505,17 +559,958 @@ ipsec::configuration::TrafficSelectorEntry *materialize_selector(
   return &entries.back();
 }
 
+std::string_view indexed_name(const cli_detail::ParsedCommand &command,
+                              TokenKind kind,
+                              std::size_t occurrence) noexcept {
+  // Rows such as RADIUS server-policy selection carry two same-kind names:
+  // the list key first, the referenced value second. Walking the generated
+  // row keeps occurrence order authoritative instead of re-parsing text.
+  if (!command.spec)
+    return {};
+  std::size_t seen{};
+  for (std::size_t index{}; index < command.spec->token_count; ++index) {
+    if (command.spec->tokens[index].kind != kind)
+      continue;
+    if (seen++ == occurrence)
+      return cli_detail::unquote(command.tokens[index]);
+  }
+  return {};
+}
+
+std::optional<bool>
+boolean_flag(const cli_detail::ParsedCommand &command) noexcept {
+  const auto text = cli_detail::argument(command, TokenKind::boolean);
+  if (text == "true")
+    return true;
+  if (text == "false")
+    return false;
+  return std::nullopt;
+}
+
+bool edit_client_identification(ipsec::configuration::ClientEntry &entry,
+                                CommandId id,
+                                const cli_detail::ParsedCommand &command) {
+  // One criterion per container: setting an arm replaces the previous arm,
+  // matching the YANG choice. Boolean MD arms select on true and clear on
+  // false; classic presence arms always select.
+  using ClientIdiKind = ipsec::configuration::ClientIdiKind;
+  using ClientPeerKind = ipsec::configuration::ClientPeerKind;
+  using ClientStringKind = ipsec::configuration::ClientStringKind;
+  using enum CommandId;
+  const auto parse_prefix = [&](TokenKind kind) {
+    const auto text = cli_detail::argument(command, kind);
+    return text ? ip::parse_ip_prefix(*text) : std::optional<ip::IpPrefix>{};
+  };
+  const auto set_idi =
+      [&](ClientIdiKind kind, std::string prefix,
+          ClientStringKind string_kind, std::string value) {
+        if (entry.idi.kind == kind && entry.idi.prefix == prefix &&
+            entry.idi.string_kind == string_kind &&
+            entry.idi.string_value == value)
+          return false;
+        entry.idi = {.kind = kind,
+                     .prefix = std::move(prefix),
+                     .string_kind = string_kind,
+                     .string_value = std::move(value)};
+        return true;
+      };
+  const auto set_peer = [&](ClientPeerKind kind, std::string prefix) {
+    if (entry.peer.kind == kind && entry.peer.prefix == prefix)
+      return false;
+    entry.peer = {.kind = kind, .prefix = std::move(prefix)};
+    return true;
+  };
+  const auto boolean_arm = [&](ClientIdiKind kind) {
+    const auto flag = boolean_flag(command);
+    if (!flag)
+      return false;
+    return set_idi(*flag ? kind : ClientIdiKind::none, {}, ClientStringKind::none, {});
+  };
+  const auto boolean_peer = [&](ClientPeerKind kind) {
+    const auto flag = boolean_flag(command);
+    if (!flag)
+      return false;
+    return set_peer(*flag ? kind : ClientPeerKind::none, {});
+  };
+  const auto string_arm = [&](ClientIdiKind idi_kind, ClientStringKind kind) {
+    const auto text = cli_detail::argument(command, TokenKind::idi_string);
+    if (!text || text->size() > 255U)
+      return false;
+    return set_idi(idi_kind, {}, kind, std::string{*text});
+  };
+  if (id == md_delete_ipsec_client_idi ||
+      id == classic_ipsec_client_no_idi) {
+    if (entry.idi.kind == ClientIdiKind::none)
+      return false;
+    entry.idi = {};
+    return true;
+  }
+  if (id == md_delete_ipsec_client_peer ||
+      id == classic_ipsec_client_no_peer) {
+    if (entry.peer.kind == ClientPeerKind::none)
+      return false;
+    entry.peer = {};
+    return true;
+  }
+  if (id == md_ipsec_client_idi_any)
+    return boolean_arm(ClientIdiKind::any);
+  if (id == md_ipsec_client_idi_ipv4_prefix_any)
+    return boolean_arm(ClientIdiKind::ipv4_prefix_any);
+  if (id == md_ipsec_client_idi_ipv6_prefix_any)
+    return boolean_arm(ClientIdiKind::ipv6_prefix_any);
+  if (id == md_ipsec_client_peer_ipv4_only)
+    return boolean_peer(ClientPeerKind::ipv4_only);
+  if (id == md_ipsec_client_peer_ipv6_only)
+    return boolean_peer(ClientPeerKind::ipv6_only);
+  if (id == md_ipsec_client_idi_fqdn)
+    return string_arm(ClientIdiKind::fqdn, ClientStringKind::fqdn);
+  if (id == md_ipsec_client_idi_fqdn_suffix)
+    return string_arm(ClientIdiKind::fqdn_suffix, ClientStringKind::fqdn_suffix);
+  if (id == md_ipsec_client_idi_rfc822)
+    return string_arm(ClientIdiKind::rfc822, ClientStringKind::rfc822);
+  if (id == md_ipsec_client_idi_rfc822_suffix)
+    return string_arm(ClientIdiKind::rfc822_suffix,
+                      ClientStringKind::rfc822_suffix);
+  if (id == md_ipsec_client_idi_regexp)
+    return string_arm(ClientIdiKind::regexp, ClientStringKind::regexp);
+  if (id == md_ipsec_client_idi_ipv4_prefix ||
+      id == md_ipsec_client_peer_ipv4) {
+    const auto prefix = parse_prefix(TokenKind::ipv4_prefix);
+    if (!prefix || prefix->network.family != ip::AddressFamily::ipv4)
+      return false;
+    const auto text = ip::format_ip_prefix(*prefix);
+    return id == md_ipsec_client_idi_ipv4_prefix
+               ? set_idi(ClientIdiKind::ipv4_prefix, text,
+                         ClientStringKind::none, {})
+               : set_peer(ClientPeerKind::ip_prefix, text);
+  }
+  if (id == md_ipsec_client_idi_ipv6_prefix ||
+      id == md_ipsec_client_peer_ipv6) {
+    const auto prefix = parse_prefix(TokenKind::ipv6_prefix);
+    if (!prefix || prefix->network.family != ip::AddressFamily::ipv6)
+      return false;
+    const auto text = ip::format_ip_prefix(*prefix);
+    return id == md_ipsec_client_idi_ipv6_prefix
+               ? set_idi(ClientIdiKind::ipv6_prefix, text,
+                         ClientStringKind::none, {})
+               : set_peer(ClientPeerKind::ip_prefix, text);
+  }
+  if (id == classic_ipsec_client_idi_any)
+    return set_idi(ClientIdiKind::any, {}, ClientStringKind::none, {});
+  if (id == classic_ipsec_client_idi_ipv4_any)
+    return set_idi(ClientIdiKind::ipv4_prefix_any, {}, ClientStringKind::none,
+                   {});
+  if (id == classic_ipsec_client_idi_ipv6_any)
+    return set_idi(ClientIdiKind::ipv6_prefix_any, {}, ClientStringKind::none,
+                   {});
+  if (id == classic_ipsec_client_idi_ipv4_prefix ||
+      id == classic_ipsec_client_peer_ipv4) {
+    const auto prefix = parse_prefix(TokenKind::ipv4_prefix);
+    if (!prefix || prefix->network.family != ip::AddressFamily::ipv4)
+      return false;
+    const auto text = ip::format_ip_prefix(*prefix);
+    return id == classic_ipsec_client_idi_ipv4_prefix
+               ? set_idi(ClientIdiKind::ipv4_prefix, text,
+                         ClientStringKind::none, {})
+               : set_peer(ClientPeerKind::ip_prefix, text);
+  }
+  if (id == classic_ipsec_client_idi_ipv6_prefix ||
+      id == classic_ipsec_client_peer_ipv6) {
+    const auto prefix = parse_prefix(TokenKind::ipv6_prefix);
+    if (!prefix || prefix->network.family != ip::AddressFamily::ipv6)
+      return false;
+    const auto text = ip::format_ip_prefix(*prefix);
+    return id == classic_ipsec_client_idi_ipv6_prefix
+               ? set_idi(ClientIdiKind::ipv6_prefix, text,
+                         ClientStringKind::none, {})
+               : set_peer(ClientPeerKind::ip_prefix, text);
+  }
+  if (id == classic_ipsec_client_idi_string) {
+    // The classic string-type spelling maps onto the YANG string arms. Only
+    // documented arm names are accepted; anything else is an explicit error
+    // rather than a stored unknown discriminator.
+    const auto type = indexed_name(command, TokenKind::idi_string, 0U);
+    const auto value = indexed_name(command, TokenKind::idi_string, 1U);
+    const auto kind = type == "fqdn"         ? ClientStringKind::fqdn
+                      : type == "fqdn-suffix" ? ClientStringKind::fqdn_suffix
+                      : type == "rfc822"      ? ClientStringKind::rfc822
+                      : type == "rfc822-suffix"
+                          ? ClientStringKind::rfc822_suffix
+                      : type == "regexp" ? ClientStringKind::regexp
+                                         : ClientStringKind::none;
+    if (kind == ClientStringKind::none || value.size() > 255U)
+      return false;
+    return set_idi(ClientIdiKind::regexp, {}, kind, std::string{value});
+  }
+  if (id == classic_ipsec_client_peer_ipv4_any)
+    return set_peer(ClientPeerKind::ipv4_only, {});
+  if (id == classic_ipsec_client_peer_ipv6_any)
+    return set_peer(ClientPeerKind::ipv6_only, {});
+  return false;
+}
+
+bool edit_client_local(ipsec::configuration::ClientEntry &entry, CommandId id,
+                       const cli_detail::ParsedCommand &command) {
+  using enum CommandId;
+  auto &local = entry.local;
+  const auto named = [&](TokenKind kind) {
+    const auto text = cli_detail::argument(command, kind);
+    return text &&
+           ipsec::configuration::valid_named_key(*text, 32U)
+               ? std::optional<std::string>{std::string{*text}}
+               : std::nullopt;
+  };
+  const auto set_v4 = [&](std::string router, std::string server,
+                          std::string pool, std::string secondary) {
+    if (local.ipv4.router_instance == router &&
+        local.ipv4.dhcp_server == server && local.ipv4.pool == pool &&
+        local.ipv4.secondary_pool == secondary)
+      return false;
+    local.ipv4 = {.router_instance = std::move(router),
+                  .dhcp_server = std::move(server),
+                  .pool = std::move(pool),
+                  .secondary_pool = std::move(secondary)};
+    local.configured = true;
+    return true;
+  };
+  const auto set_v6 = [&](std::string router, std::string server,
+                          std::string pool) {
+    if (local.ipv6.router_instance == router &&
+        local.ipv6.dhcp_server == server && local.ipv6.pool == pool)
+      return false;
+    local.ipv6 = {.router_instance = std::move(router),
+                  .dhcp_server = std::move(server),
+                  .pool = std::move(pool)};
+    local.configured = true;
+    return true;
+  };
+  const auto single = [&](std::string &leaf, std::optional<std::string> value) {
+    if (!value || leaf == *value)
+      return false;
+    leaf = std::move(*value);
+    local.configured = true;
+    return true;
+  };
+  // MD leaves address one leaf; classic address-source replaces the family.
+  if (id == md_ipsec_client_local_v4_router)
+    return single(local.ipv4.router_instance, named(TokenKind::router_instance_name));
+  if (id == md_ipsec_client_local_v4_server)
+    return single(local.ipv4.dhcp_server, named(TokenKind::dhcp_server_name));
+  if (id == md_ipsec_client_local_v4_pool)
+    return single(local.ipv4.pool, named(TokenKind::dhcp_pool_name));
+  if (id == md_ipsec_client_local_v4_secondary)
+    return single(local.ipv4.secondary_pool, named(TokenKind::dhcp_pool_name));
+  if (id == md_ipsec_client_local_v6_router)
+    return single(local.ipv6.router_instance, named(TokenKind::router_instance_name));
+  if (id == md_ipsec_client_local_v6_server)
+    return single(local.ipv6.dhcp_server, named(TokenKind::dhcp_server_name));
+  if (id == md_ipsec_client_local_v6_pool)
+    return single(local.ipv6.pool, named(TokenKind::dhcp_pool_name));
+  if (id == md_delete_ipsec_client_local_v4_router)
+    return single(local.ipv4.router_instance, std::optional<std::string>{{}});
+  if (id == md_delete_ipsec_client_local_v4_server)
+    return single(local.ipv4.dhcp_server, std::optional<std::string>{{}});
+  if (id == md_delete_ipsec_client_local_v4_pool)
+    return single(local.ipv4.pool, std::optional<std::string>{{}});
+  if (id == md_delete_ipsec_client_local_v4_secondary)
+    return single(local.ipv4.secondary_pool, std::optional<std::string>{{}});
+  if (id == md_delete_ipsec_client_local_v6_router)
+    return single(local.ipv6.router_instance, std::optional<std::string>{{}});
+  if (id == md_delete_ipsec_client_local_v6_server)
+    return single(local.ipv6.dhcp_server, std::optional<std::string>{{}});
+  if (id == md_delete_ipsec_client_local_v6_pool)
+    return single(local.ipv6.pool, std::optional<std::string>{{}});
+  if (id == classic_ipsec_client_local_assignment) {
+    if (local.configured)
+      return false;
+    local.configured = true;
+    return true;
+  }
+  if (id == classic_ipsec_client_no_local_assignment) {
+    if (!local.configured &&
+        local.ipv4 == ipsec::configuration::ClientLocalV4{} &&
+        local.ipv6 == ipsec::configuration::ClientLocalV6{})
+      return false;
+    local = {};
+    return true;
+  }
+  if (id == classic_ipsec_client_local_v4_router ||
+      id == classic_ipsec_client_local_v4_router_secondary ||
+      id == classic_ipsec_client_local_v4_service ||
+      id == classic_ipsec_client_local_v4_service_secondary) {
+    const bool service =
+        id == classic_ipsec_client_local_v4_service ||
+        id == classic_ipsec_client_local_v4_service_secondary;
+    const bool secondary =
+        id == classic_ipsec_client_local_v4_router_secondary ||
+        id == classic_ipsec_client_local_v4_service_secondary;
+    const auto first = service
+                           ? named(TokenKind::private_service_name)
+                           : named(TokenKind::router_instance_name);
+    const auto server = named(TokenKind::dhcp_server_name);
+    const auto pool = named(TokenKind::dhcp_pool_name);
+    if (!first || !server || !pool)
+      return false;
+    // A service-scoped source stores the service selector where the router
+    // form stores the instance: the two spellings address one leaf-set.
+    if (!service && first->size() > 32U)
+      return false;
+    return set_v4(std::move(*first), std::move(*server), std::move(*pool),
+                  secondary ? named(TokenKind::dhcp_pool_name).value_or("") : "");
+  }
+  if (id == classic_ipsec_client_local_v6_router ||
+      id == classic_ipsec_client_local_v6_service) {
+    const bool service = id == classic_ipsec_client_local_v6_service;
+    const auto first = service
+                           ? named(TokenKind::private_service_name)
+                           : named(TokenKind::router_instance_name);
+    const auto server = named(TokenKind::dhcp_server_name);
+    const auto pool = named(TokenKind::dhcp_pool_name);
+    if (!first || !server || !pool)
+      return false;
+    return set_v6(std::move(*first), std::move(*server), std::move(*pool));
+  }
+  if (id == classic_ipsec_client_local_v4_no_source) {
+    if (local.ipv4 == ipsec::configuration::ClientLocalV4{})
+      return false;
+    local.ipv4 = {};
+    return true;
+  }
+  if (id == classic_ipsec_client_local_v6_no_source) {
+    if (local.ipv6 == ipsec::configuration::ClientLocalV6{})
+      return false;
+    local.ipv6 = {};
+    return true;
+  }
+  return false;
+}
+
+bool edit_client_certificate(ipsec::configuration::Configuration &state,
+                             ipsec::configuration::ClientEntry &entry,
+                             CommandId id,
+                             const cli_detail::ParsedCommand &command,
+                             SecretSink *secrets) {
+  static_cast<void>(secrets);
+  using enum CommandId;
+  auto &cert = entry.certificate;
+  if (id == md_ipsec_client_cert_profile ||
+      id == classic_ipsec_client_cert_profile) {
+    const auto value =
+        cli_detail::argument(command, TokenKind::ipsec_cert_profile_name);
+    const bool resolved =
+        value && ipsec::configuration::find_named(state.certificate_profiles,
+                                                 *value);
+    if (!resolved || cert.certificate_profile == *value)
+      return false;
+    cert.certificate_profile.assign(*value);
+    return true;
+  }
+  if (id == md_delete_ipsec_client_cert_profile ||
+      id == classic_ipsec_client_no_cert_profile) {
+    if (cert.certificate_profile.empty())
+      return false;
+    cert.certificate_profile.clear();
+    return true;
+  }
+  if (id == md_ipsec_client_trust_anchor ||
+      id == classic_ipsec_client_trust_anchor) {
+    const auto value = cli_detail::argument(
+        command, TokenKind::ipsec_trust_anchor_profile_name);
+    const bool resolved =
+        value && ipsec::configuration::find_named(state.trust_anchor_profiles,
+                                                 *value);
+    if (!resolved || cert.trust_anchor_profile == *value)
+      return false;
+    cert.trust_anchor_profile.assign(*value);
+    return true;
+  }
+  if (id == md_delete_ipsec_client_trust_anchor ||
+      id == classic_ipsec_client_no_trust_anchor) {
+    if (cert.trust_anchor_profile.empty())
+      return false;
+    cert.trust_anchor_profile.clear();
+    return true;
+  }
+  if (id == md_ipsec_client_cert_default_revoked ||
+      id == md_ipsec_client_cert_default_good ||
+      id == classic_ipsec_client_cert_default_revoked ||
+      id == classic_ipsec_client_cert_default_good) {
+    const auto good = id == md_ipsec_client_cert_default_good ||
+                      id == classic_ipsec_client_cert_default_good;
+    return configure(
+        cert.default_result, cert.default_result_configured,
+        good ? ipsec::configuration::RevocationResult::good
+             : ipsec::configuration::RevocationResult::revoked);
+  }
+  if (id == md_delete_ipsec_client_cert_default ||
+      id == classic_ipsec_client_cert_no_default) {
+    return remove(cert.default_result, cert.default_result_configured,
+                  ipsec::configuration::RevocationResult::revoked);
+  }
+  if (id == md_ipsec_client_cert_primary_crl ||
+      id == md_ipsec_client_cert_primary_ocsp) {
+    return configure(
+        cert.primary_method, cert.methods_configured,
+        id == md_ipsec_client_cert_primary_ocsp
+            ? ipsec::configuration::RevocationMethod::ocsp
+            : ipsec::configuration::RevocationMethod::crl);
+  }
+  if (id == md_delete_ipsec_client_cert_primary) {
+    return remove(cert.primary_method, cert.methods_configured,
+                  ipsec::configuration::RevocationMethod::crl);
+  }
+  if (id == md_delete_ipsec_client_cert_secondary) {
+    return remove(cert.secondary_method, cert.methods_configured,
+                  ipsec::configuration::RevocationMethod::none);
+  }
+  if (id == md_ipsec_client_cert_secondary_none ||
+      id == md_ipsec_client_cert_secondary_crl ||
+      id == md_ipsec_client_cert_secondary_ocsp) {
+    const auto method = id == md_ipsec_client_cert_secondary_crl
+                            ? ipsec::configuration::RevocationMethod::crl
+                        : id == md_ipsec_client_cert_secondary_ocsp
+                            ? ipsec::configuration::RevocationMethod::ocsp
+                            : ipsec::configuration::RevocationMethod::none;
+    return configure(cert.secondary_method, cert.methods_configured, method);
+  }
+  const auto classic_compound =
+      [&](ipsec::configuration::RevocationMethod primary,
+          ipsec::configuration::RevocationMethod secondary) {
+        if (cert.primary_method == primary &&
+            cert.secondary_method == secondary && cert.methods_configured)
+          return false;
+        cert.primary_method = primary;
+        cert.secondary_method = secondary;
+        cert.methods_configured = true;
+        return true;
+      };
+  using RevocationMethod = ipsec::configuration::RevocationMethod;
+  if (id == classic_ipsec_client_cert_crl_none)
+    return classic_compound(RevocationMethod::crl, RevocationMethod::none);
+  if (id == classic_ipsec_client_cert_crl_crl)
+    return classic_compound(RevocationMethod::crl, RevocationMethod::crl);
+  if (id == classic_ipsec_client_cert_crl_ocsp)
+    return classic_compound(RevocationMethod::crl, RevocationMethod::ocsp);
+  if (id == classic_ipsec_client_cert_ocsp_none)
+    return classic_compound(RevocationMethod::ocsp, RevocationMethod::none);
+  if (id == classic_ipsec_client_cert_ocsp_crl)
+    return classic_compound(RevocationMethod::ocsp, RevocationMethod::crl);
+  if (id == classic_ipsec_client_cert_ocsp_ocsp)
+    return classic_compound(RevocationMethod::ocsp, RevocationMethod::ocsp);
+  return false;
+}
+
+bool apply_radius_attr(CommandId id, CommandId md_set, CommandId md_delete,
+                       CommandId classic_set, CommandId classic_clear,
+                       bool &leaf, const cli_detail::ParsedCommand &command,
+                       bool &silent_absent) {
+  // One matrix for every include-radius-attribute member: MD sets an explicit
+  // boolean and deletes silently when already clear, classic sets and clears
+  // with rejected no-change results.
+  if (id == md_set) {
+    const auto on = boolean_flag(command);
+    if (!on || leaf == *on)
+      return false;
+    leaf = *on;
+    return true;
+  }
+  if (id == md_delete) {
+    if (!leaf) {
+      silent_absent = true;
+      return false;
+    }
+    leaf = false;
+    return true;
+  }
+  if (id == classic_set) {
+    if (leaf)
+      return false;
+    leaf = true;
+    return true;
+  }
+  if (id == classic_clear) {
+    if (!leaf)
+      return false;
+    leaf = false;
+    return true;
+  }
+  return false;
+}
+
+bool edit_radius_policies(ipsec::configuration::Configuration &state,
+                          std::string_view policy_name, CommandId id,
+                          const cli_detail::ParsedCommand &command,
+                          SecretSink *secrets, bool &silent_absent,
+                          std::string &instance) {
+  // Accounting and authentication policies are sibling lists keyed by name.
+  // The command ID selects the list; MD-CLI materializes on set and stays
+  // silent on deletes below missing policies, while classic create and
+  // removal keep their select and rejected semantics.
+  using enum CommandId;
+  const bool authentication =
+      id == classic_ipsec_radius_auth_create ||
+      id == classic_ipsec_radius_auth_remove ||
+      id == classic_ipsec_radius_auth_server_policy ||
+      id == classic_ipsec_radius_auth_no_server_policy ||
+      id == classic_ipsec_radius_auth_password ||
+      id == classic_ipsec_radius_auth_no_password ||
+      id == classic_ipsec_radius_auth_attr_called ||
+      id == classic_ipsec_radius_auth_attr_no_called ||
+      id == classic_ipsec_radius_auth_attr_calling ||
+      id == classic_ipsec_radius_auth_attr_no_calling ||
+      id == classic_ipsec_radius_auth_attr_cert_id ||
+      id == classic_ipsec_radius_auth_attr_no_cert_id ||
+      id == classic_ipsec_radius_auth_attr_nas_id ||
+      id == classic_ipsec_radius_auth_attr_no_nas_id ||
+      id == classic_ipsec_radius_auth_attr_nas_ip ||
+      id == classic_ipsec_radius_auth_attr_no_nas_ip ||
+      id == classic_ipsec_radius_auth_attr_nas_port ||
+      id == classic_ipsec_radius_auth_attr_no_nas_port ||
+      id == md_ipsec_radius_auth_server_policy ||
+      id == md_ipsec_radius_auth_password ||
+      id == md_ipsec_radius_auth_attr_called ||
+      id == md_ipsec_radius_auth_attr_calling ||
+      id == md_ipsec_radius_auth_attr_cert_id ||
+      id == md_ipsec_radius_auth_attr_nas_id ||
+      id == md_ipsec_radius_auth_attr_nas_ip ||
+      id == md_ipsec_radius_auth_attr_nas_port ||
+      id == md_delete_ipsec_radius_auth ||
+      id == md_delete_ipsec_radius_auth_server_policy ||
+      id == md_delete_ipsec_radius_auth_password ||
+      id == md_delete_ipsec_radius_auth_attr_called ||
+      id == md_delete_ipsec_radius_auth_attr_calling ||
+      id == md_delete_ipsec_radius_auth_attr_cert_id ||
+      id == md_delete_ipsec_radius_auth_attr_nas_id ||
+      id == md_delete_ipsec_radius_auth_attr_nas_ip ||
+      id == md_delete_ipsec_radius_auth_attr_nas_port;
+  const bool md = command.spec && (command.spec->engine_mask & 1U) != 0U;
+  const bool md_removal =
+      md && command.spec && cli_detail::removal_command(*command.spec);
+  // Attribute arms address one leaf in exactly one list. A table keeps the
+  // fourteen members reviewable without repeating the set, clear and silent
+  // matrix per attribute.
+  struct RadiusAttr {
+    CommandId md_set;
+    CommandId md_delete;
+    CommandId classic_set;
+    CommandId classic_clear;
+    bool ipsec::configuration::RadiusIncludeAccounting::*accounting;
+    bool ipsec::configuration::RadiusIncludeAuthentication::*authentication;
+  };
+  using Acct = ipsec::configuration::RadiusIncludeAccounting;
+  using Auth = ipsec::configuration::RadiusIncludeAuthentication;
+  static constexpr RadiusAttr radius_attrs[] = {
+      {md_ipsec_radius_acct_attr_acct_stats,
+       md_delete_ipsec_radius_acct_attr_acct_stats,
+       classic_ipsec_radius_acct_attr_acct_stats,
+       classic_ipsec_radius_acct_attr_no_acct_stats,
+       &Acct::acct_stats, nullptr},
+      {md_ipsec_radius_acct_attr_called,
+       md_delete_ipsec_radius_acct_attr_called,
+       classic_ipsec_radius_acct_attr_called,
+       classic_ipsec_radius_acct_attr_no_called,
+       &Acct::called_station_id, &Auth::called_station_id},
+      {md_ipsec_radius_acct_attr_calling,
+       md_delete_ipsec_radius_acct_attr_calling,
+       classic_ipsec_radius_acct_attr_calling,
+       classic_ipsec_radius_acct_attr_no_calling,
+       &Acct::calling_station_id, nullptr},
+      {md_ipsec_radius_auth_attr_calling,
+       md_delete_ipsec_radius_auth_attr_calling,
+       classic_ipsec_radius_auth_attr_calling,
+       classic_ipsec_radius_auth_attr_no_calling,
+       nullptr, &Auth::calling_station_id},
+      {md_ipsec_radius_auth_attr_cert_id,
+       md_delete_ipsec_radius_auth_attr_cert_id,
+       classic_ipsec_radius_auth_attr_cert_id,
+       classic_ipsec_radius_auth_attr_no_cert_id,
+       nullptr, &Auth::client_cert_subject_key_id},
+      {md_ipsec_radius_acct_attr_framed_ip,
+       md_delete_ipsec_radius_acct_attr_framed_ip,
+       classic_ipsec_radius_acct_attr_framed_ip,
+       classic_ipsec_radius_acct_attr_no_framed_ip,
+       &Acct::framed_ip_addr, nullptr},
+      {md_ipsec_radius_acct_attr_framed_v6,
+       md_delete_ipsec_radius_acct_attr_framed_v6,
+       classic_ipsec_radius_acct_attr_framed_v6,
+       classic_ipsec_radius_acct_attr_no_framed_v6,
+       &Acct::framed_ipv6_prefix, nullptr},
+      {md_ipsec_radius_acct_attr_nas_id,
+       md_delete_ipsec_radius_acct_attr_nas_id,
+       classic_ipsec_radius_acct_attr_nas_id,
+       classic_ipsec_radius_acct_attr_no_nas_id,
+       &Acct::nas_identifier, &Auth::nas_identifier},
+      {md_ipsec_radius_auth_attr_nas_id,
+       md_delete_ipsec_radius_auth_attr_nas_id,
+       classic_ipsec_radius_auth_attr_nas_id,
+       classic_ipsec_radius_auth_attr_no_nas_id,
+       nullptr, &Auth::nas_identifier},
+      {md_ipsec_radius_acct_attr_nas_ip,
+       md_delete_ipsec_radius_acct_attr_nas_ip,
+       classic_ipsec_radius_acct_attr_nas_ip,
+       classic_ipsec_radius_acct_attr_no_nas_ip,
+       &Acct::nas_ip_addr, &Auth::nas_ip_addr},
+      {md_ipsec_radius_auth_attr_nas_ip,
+       md_delete_ipsec_radius_auth_attr_nas_ip,
+       classic_ipsec_radius_auth_attr_nas_ip,
+       classic_ipsec_radius_auth_attr_no_nas_ip,
+       nullptr, &Auth::nas_ip_addr},
+      {md_ipsec_radius_acct_attr_nas_port,
+       md_delete_ipsec_radius_acct_attr_nas_port,
+       classic_ipsec_radius_acct_attr_nas_port,
+       classic_ipsec_radius_acct_attr_no_nas_port,
+       &Acct::nas_port_id, &Auth::nas_port_id},
+      {md_ipsec_radius_auth_attr_nas_port,
+       md_delete_ipsec_radius_auth_attr_nas_port,
+       classic_ipsec_radius_auth_attr_nas_port,
+       classic_ipsec_radius_auth_attr_no_nas_port,
+       nullptr, &Auth::nas_port_id},
+  };
+  // Shared attributes appear once per list: the list selected below decides
+  // which member the arm addresses, so nas-identifier needs two rows above.
+  // Attribute arms run after policy resolution inside each list branch.
+  if (authentication) {
+    instance += "authentication-policy/" + std::string{policy_name};
+    auto &policies = state.radius_authentication_policies;
+    if (id == md_delete_ipsec_radius_auth ||
+        id == classic_ipsec_radius_auth_remove) {
+      const auto found =
+          std::find_if(policies.begin(), policies.end(),
+                       [&](const auto &policy) {
+                         return policy.name == policy_name;
+                       });
+      if (found != policies.end()) {
+        policies.erase(found);
+        return true;
+      }
+      silent_absent = id == md_delete_ipsec_radius_auth;
+      return false;
+    }
+    const bool existed =
+        ipsec::configuration::find_named(policies, policy_name) != nullptr;
+    auto *policy =
+        md && !md_removal
+            ? materialize_named(
+                  policies, policy_name,
+                  ipsec::configuration::maximum_radius_authentication_policies)
+            : ipsec::configuration::find_named(policies, policy_name);
+    if (id == classic_ipsec_radius_auth_create) {
+      if (!policy)
+        policy = materialize_named(
+            policies, policy_name,
+            ipsec::configuration::maximum_radius_authentication_policies);
+      return policy && !existed;
+    }
+    if (!policy) {
+      // MD-CLI deletes below a missing policy stay silent without
+      // materializing it; every other null-policy path is rejected.
+      silent_absent = md_removal;
+      return false;
+    }
+    const auto server =
+        indexed_name(command, TokenKind::radius_policy_name, 1U);
+    if (id == md_ipsec_radius_auth_server_policy ||
+        id == classic_ipsec_radius_auth_server_policy) {
+      if (server.empty() || server.size() > 32U ||
+          policy->radius_server_policy == server)
+        return false;
+      policy->radius_server_policy.assign(server);
+      return true;
+    }
+    if (id == md_delete_ipsec_radius_auth_server_policy ||
+        id == classic_ipsec_radius_auth_no_server_policy) {
+      if (policy->radius_server_policy.empty()) {
+        silent_absent = id == md_delete_ipsec_radius_auth_server_policy;
+        return false;
+      }
+      policy->radius_server_policy.clear();
+      return true;
+    }
+    if (id == md_ipsec_radius_auth_password ||
+        id == classic_ipsec_radius_auth_password) {
+      const auto value =
+          cli_detail::argument(command, TokenKind::radius_password);
+      const auto handle =
+          value ? seal_secret(secrets, SecretKind::radius_auth_password,
+                              *value, false)
+                : std::nullopt;
+      if (!handle)
+        return false;
+      if (policy->password_handle == *handle && policy->password_configured)
+        return false;
+      policy->password_handle = *handle;
+      policy->password_configured = true;
+      return true;
+    }
+    if (id == md_delete_ipsec_radius_auth_password ||
+        id == classic_ipsec_radius_auth_no_password) {
+      if (!policy->password_configured) {
+        silent_absent = id == md_delete_ipsec_radius_auth_password;
+        return false;
+      }
+      policy->password_handle = 0U;
+      policy->password_configured = false;
+      return true;
+    }
+    for (const auto &arm : radius_attrs) {
+      if (!arm.authentication)
+        continue;
+      if (id != arm.md_set && id != arm.md_delete &&
+          id != arm.classic_set && id != arm.classic_clear)
+        continue;
+      bool &leaf = policy->include_.*(arm.authentication);
+      return apply_radius_attr(id, arm.md_set, arm.md_delete, arm.classic_set,
+                               arm.classic_clear, leaf, command, silent_absent);
+    }
+    return false;
+  }
+  instance += "accounting-policy/" + std::string{policy_name};
+  auto &policies = state.radius_accounting_policies;
+  if (id == md_delete_ipsec_radius_acct ||
+      id == classic_ipsec_radius_acct_remove) {
+    const auto found =
+        std::find_if(policies.begin(), policies.end(),
+                     [&](const auto &policy) { return policy.name == policy_name; });
+    if (found != policies.end()) {
+      policies.erase(found);
+      return true;
+    }
+    silent_absent = id == md_delete_ipsec_radius_acct;
+    return false;
+  }
+  const bool acct_existed =
+      ipsec::configuration::find_named(policies, policy_name) != nullptr;
+  auto *policy =
+      md && !md_removal
+          ? materialize_named(
+                policies, policy_name,
+                ipsec::configuration::maximum_radius_accounting_policies)
+          : ipsec::configuration::find_named(policies, policy_name);
+  if (id == classic_ipsec_radius_acct_create) {
+    if (!policy)
+      policy = materialize_named(
+          policies, policy_name,
+          ipsec::configuration::maximum_radius_accounting_policies);
+    return policy && !acct_existed;
+  }
+  if (!policy) {
+    silent_absent = md_removal;
+    return false;
+  }
+  const auto server =
+      indexed_name(command, TokenKind::radius_policy_name, 1U);
+  if (id == md_ipsec_radius_acct_server_policy ||
+      id == classic_ipsec_radius_acct_server_policy) {
+    if (server.empty() || server.size() > 32U ||
+        policy->radius_server_policy == server)
+      return false;
+    policy->radius_server_policy.assign(server);
+    return true;
+  }
+    if (id == md_delete_ipsec_radius_acct_server_policy ||
+        id == classic_ipsec_radius_acct_no_server_policy) {
+      if (policy->radius_server_policy.empty()) {
+        silent_absent = id == md_delete_ipsec_radius_acct_server_policy;
+        return false;
+      }
+      policy->radius_server_policy.clear();
+      return true;
+    }
+  if (id == md_ipsec_radius_acct_update_value ||
+      id == classic_ipsec_radius_acct_update_value) {
+    const auto value = number(command, TokenKind::radius_update_value);
+    if (!value || policy->update_value_minutes == *value)
+      return false;
+    policy->update_value_minutes = *value;
+    policy->update_value_configured = true;
+    return true;
+  }
+  if (id == md_ipsec_radius_acct_update_jitter ||
+      id == classic_ipsec_radius_acct_update_jitter) {
+    const auto value = number(command, TokenKind::radius_update_jitter);
+    if (!value || policy->update_jitter_seconds == *value)
+      return false;
+    policy->update_jitter_seconds = static_cast<std::uint16_t>(*value);
+    policy->update_jitter_configured = true;
+    return true;
+  }
+  if (id == md_delete_ipsec_radius_acct_update_value ||
+      id == classic_ipsec_radius_acct_no_update) {
+    // The classic no form restores both update leaves to their defaults;
+    // the MD deletes address one leaf each.
+    const bool was_value = policy->update_value_configured ||
+                           policy->update_value_minutes != 10U;
+    const bool was_jitter = policy->update_jitter_configured ||
+                            policy->update_jitter_seconds != 0U;
+    if (id == classic_ipsec_radius_acct_no_update) {
+      if (!was_value && !was_jitter)
+        return false;
+      policy->update_value_minutes = 10U;
+      policy->update_value_configured = false;
+      policy->update_jitter_seconds = 0U;
+      policy->update_jitter_configured = false;
+      return true;
+    }
+    if (!was_value) {
+      silent_absent = true;
+      return false;
+    }
+    policy->update_value_minutes = 10U;
+    policy->update_value_configured = false;
+    return true;
+  }
+  if (id == md_delete_ipsec_radius_acct_update_jitter) {
+    if (!policy->update_jitter_configured &&
+        policy->update_jitter_seconds == 0U) {
+      silent_absent = true;
+      return false;
+    }
+    policy->update_jitter_seconds = 0U;
+    policy->update_jitter_configured = false;
+    return true;
+  }
+  for (const auto &arm : radius_attrs) {
+    if (!arm.accounting)
+      continue;
+    if (id != arm.md_set && id != arm.md_delete && id != arm.classic_set &&
+        id != arm.classic_clear)
+      continue;
+    bool &leaf = policy->include_.*(arm.accounting);
+    return apply_radius_attr(id, arm.md_set, arm.md_delete, arm.classic_set,
+                             arm.classic_clear, leaf, command, silent_absent);
+  }
+  return false;
+}
+
+bool classic_create_selects_existing(CommandId id, const Configuration &state,
+                                     const cli_detail::ParsedCommand &command) {
+  using enum CommandId;
+  const auto named = [&](TokenKind kind, const auto &items) {
+    const auto text = cli_detail::argument(command, kind);
+    return text && ipsec::configuration::find_named(items, *text) != nullptr;
+  };
+  switch (id) {
+  case classic_static_sa_create:
+    return named(TokenKind::static_sa_name, state.static_sas);
+  case classic_ike_transform_create: {
+    const auto value = number(command, TokenKind::ike_transform_id);
+    return value && ipsec::configuration::find_ike(
+                        state, static_cast<std::uint16_t>(*value));
+  }
+  case classic_ipsec_transform_create: {
+    const auto value = number(command, TokenKind::ipsec_transform_id);
+    return value && ipsec::configuration::find_ipsec(
+                        state, static_cast<std::uint16_t>(*value));
+  }
+  case classic_ike_policy_create: {
+    const auto value = number(command, TokenKind::ike_policy_id);
+    return value && ipsec::configuration::find_policy(
+                        state, static_cast<std::uint16_t>(*value));
+  }
+  case classic_ts_list_create:
+    return named(TokenKind::ts_list_name, state.traffic_selector_lists);
+  case classic_ipsec_cert_profile_create:
+    return named(TokenKind::ipsec_cert_profile_name,
+                 state.certificate_profiles);
+  case classic_ipsec_trust_profile_create:
+    return named(TokenKind::ipsec_trust_anchor_profile_name,
+                 state.trust_anchor_profiles);
+  case classic_ipsec_ppk_list_create:
+    return named(TokenKind::ppk_list_name, state.ppk_lists);
+  case classic_transport_create:
+    return named(TokenKind::transport_profile_name,
+                 state.transport_mode_profiles);
+  case classic_tunnel_create: {
+    const auto value = number(command, TokenKind::tunnel_template_id);
+    return value &&
+           std::any_of(state.tunnel_templates.begin(),
+                       state.tunnel_templates.end(),
+                       [&](const auto &item) { return item.id == *value; });
+  }
+  case classic_ipsec_cert_entry_create: {
+    const auto profile_name =
+        cli_detail::argument(command, TokenKind::ipsec_cert_profile_name);
+    const auto entry_id =
+        number(command, TokenKind::ipsec_certificate_entry_id);
+    const auto *profile =
+        profile_name ? ipsec::configuration::find_named(
+                           state.certificate_profiles, *profile_name)
+                     : nullptr;
+    return profile && entry_id &&
+           std::any_of(profile->entries.begin(), profile->entries.end(),
+                       [&](const auto &entry) {
+                         return entry.id == *entry_id;
+                       });
+  }
+  case classic_ipsec_client_db_create:
+    return named(TokenKind::ipsec_client_db_name, state.client_databases);
+  case classic_ipsec_client_create: {
+    const auto db_name =
+        cli_detail::argument(command, TokenKind::ipsec_client_db_name);
+    const auto entry_id = number(command, TokenKind::ipsec_client_id);
+    const auto *database =
+        db_name ? ipsec::configuration::find_named(state.client_databases,
+                                                   *db_name)
+                : nullptr;
+    return database && entry_id &&
+           std::any_of(database->clients.begin(), database->clients.end(),
+                       [&](const auto &entry) {
+                         return entry.id == *entry_id;
+                       });
+  }
+  case classic_ipsec_radius_acct_create:
+    return named(TokenKind::radius_policy_name,
+                 state.radius_accounting_policies);
+  case classic_ipsec_radius_auth_create:
+    return named(TokenKind::radius_policy_name,
+                 state.radius_authentication_policies);
+  case classic_ts_local_entry_create:
+  case classic_ts_remote_entry_create: {
+    const auto list_name =
+        cli_detail::argument(command, TokenKind::ts_list_name);
+    const auto entry_id = number(command, TokenKind::ts_entry_id);
+    const auto *list =
+        list_name ? ipsec::configuration::find_named(
+                        state.traffic_selector_lists, *list_name)
+                  : nullptr;
+    if (!list || !entry_id)
+      return false;
+    const auto &entries = id == classic_ts_local_entry_create ? list->local
+                                                              : list->remote;
+    return std::any_of(entries.begin(), entries.end(), [&](const auto &entry) {
+      return entry.id == *entry_id;
+    });
+  }
+  default:
+    return false;
+  }
+}
+
 } // namespace
 
 bool is_md_command(CommandId id) noexcept {
-  using enum CommandId;
-  return id >= md_ike_transform_dh19 && id <= md_delete_static_sa_key;
+  // The generated schema owns command identity. A numeric range cannot be
+  // used here because PKI rows were inserted inside the historic IPsec span;
+  // range checks swallow PKI commands and the runtime never reaches the PKI
+  // editor. Source identity keeps every IPsec row and excludes PKI rows.
+  return std::any_of(
+      cli_schema::commands.begin(), cli_schema::commands.end(),
+      [id](const auto &command) {
+        const auto root = command.tokens[0].display;
+        return command.id == id && (command.engine_mask & 1U) != 0U &&
+               command.source_id == "nokia.sros.26_7.ipsec.configuration" &&
+               (root == "configure" || root == "delete");
+      });
 }
 
 bool is_classic_command(CommandId id) noexcept {
-  using enum CommandId;
-  return id >= classic_ike_transform_create &&
-         id <= classic_static_sa_no_authentication;
+  return std::any_of(
+      cli_schema::commands.begin(), cli_schema::commands.end(),
+      [id](const auto &command) {
+        return command.id == id && (command.engine_mask & 2U) != 0U &&
+               command.source_id == "nokia.sros.26_7.ipsec.configuration" &&
+               command.tokens[0].display == "configure";
+      });
 }
 
 bool is_show_command(CommandId id) noexcept {
@@ -535,6 +1530,11 @@ EditResult edit(Configuration &state,
 
   const auto before = state;
   bool changed{};
+  // Documented MD-CLI delete stays silent on absent elements while classic
+  // no forms and dependency-blocked removals keep the rejected result. Sites
+  // set silent_absent only when nothing was mutated and no cross-reference
+  // blocks the removal.
+  bool silent_absent{};
   std::string instance{"/ipsec"};
   const auto ike_id = number(command, TokenKind::ike_transform_id);
   const auto ipsec_id = number(command, TokenKind::ipsec_transform_id);
@@ -551,6 +1551,11 @@ EditResult edit(Configuration &state,
   const auto tunnel_id = number(command, TokenKind::tunnel_template_id);
   const auto static_sa_name =
       cli_detail::argument(command, TokenKind::static_sa_name);
+  const auto client_db_name =
+      cli_detail::argument(command, TokenKind::ipsec_client_db_name);
+  const auto client_id = number(command, TokenKind::ipsec_client_id);
+  const auto radius_policy_name =
+      cli_detail::argument(command, TokenKind::radius_policy_name);
   const bool md = engine == CliEngine::md;
   using enum CommandId;
 
@@ -565,6 +1570,8 @@ EditResult edit(Configuration &state,
       if (found != state.static_sas.end()) {
         state.static_sas.erase(found);
         changed = true;
+      } else {
+        silent_absent = id == md_delete_static_sa;
       }
     } else {
       auto *item = md ? materialize_named(state.static_sas, *static_sa_name,
@@ -585,10 +1592,12 @@ EditResult edit(Configuration &state,
         if (changed)
           item->description = *value;
       } else if (item && (id == md_delete_static_sa_description ||
-                          id == classic_static_sa_no_description)) {
+                           id == classic_static_sa_no_description)) {
         changed = !item->description.empty();
         if (changed)
           item->description.clear();
+        else
+          silent_absent = id == md_delete_static_sa_description;
       } else if (item && (id == md_static_sa_direction_inbound ||
                           id == md_static_sa_direction_outbound ||
                           id == md_static_sa_direction_bidirectional ||
@@ -607,11 +1616,12 @@ EditResult edit(Configuration &state,
         item->direction = direction;
         item->direction_configured = true;
       } else if (item && (id == md_delete_static_sa_direction ||
-                          id == classic_static_sa_no_direction)) {
+                           id == classic_static_sa_no_direction)) {
         changed = item->direction_configured;
         item->direction =
             ipsec::configuration::StaticSaDirection::bidirectional;
         item->direction_configured = false;
+        silent_absent = !changed && id == md_delete_static_sa_direction;
       } else if (item && (id == md_static_sa_protocol_ah ||
                           id == md_static_sa_protocol_esp ||
                           id == classic_static_sa_protocol_ah ||
@@ -625,10 +1635,11 @@ EditResult edit(Configuration &state,
         item->protocol = protocol;
         item->protocol_configured = true;
       } else if (item && (id == md_delete_static_sa_protocol ||
-                          id == classic_static_sa_no_protocol)) {
+                           id == classic_static_sa_no_protocol)) {
         changed = item->protocol_configured;
         item->protocol = ipsec::SecurityProtocol::esp;
         item->protocol_configured = false;
+        silent_absent = !changed && id == md_delete_static_sa_protocol;
       } else if (item &&
                  (id == md_static_sa_spi || id == classic_static_sa_spi)) {
         const auto value = number(command, TokenKind::static_sa_spi);
@@ -639,10 +1650,11 @@ EditResult edit(Configuration &state,
           item->spi_configured = true;
         }
       } else if (item && (id == md_delete_static_sa_spi ||
-                          id == classic_static_sa_no_spi)) {
+                           id == classic_static_sa_no_spi)) {
         changed = item->spi_configured;
         item->spi = 0U;
         item->spi_configured = false;
+        silent_absent = !changed && id == md_delete_static_sa_spi;
       } else if (item && (id == md_static_sa_auth_md5 ||
                           id == md_static_sa_auth_sha1)) {
         const auto algorithm = id == md_static_sa_auth_sha1
@@ -655,7 +1667,7 @@ EditResult edit(Configuration &state,
         item->authentication_configured = true;
         item->authentication = algorithm;
       } else if (item && (id == md_delete_static_sa_authentication ||
-                          id == classic_static_sa_no_authentication)) {
+                           id == classic_static_sa_no_authentication)) {
         changed = item->authentication_container_configured;
         item->authentication_container_configured = false;
         item->authentication_configured = false;
@@ -664,16 +1676,20 @@ EditResult edit(Configuration &state,
         item->authentication_key_handle = 0U;
         item->authentication_key_format =
             ipsec::configuration::StaticSaKeyFormat::encrypted_leaf;
+        silent_absent =
+            !changed && id == md_delete_static_sa_authentication;
       } else if (item && id == md_delete_static_sa_algorithm) {
         changed = item->authentication_configured;
         item->authentication_configured = false;
         item->authentication =
             ipsec::configuration::StaticSaAuthentication::sha1;
+        silent_absent = !changed;
       } else if (item && id == md_delete_static_sa_key) {
         changed = item->authentication_key_handle != 0U;
         item->authentication_key_handle = 0U;
         item->authentication_key_format =
             ipsec::configuration::StaticSaKeyFormat::encrypted_leaf;
+        silent_absent = !changed;
       } else if (item) {
         const auto key =
             cli_detail::argument(command, TokenKind::static_sa_key);
@@ -756,6 +1772,8 @@ EditResult edit(Configuration &state,
       if (!list_referenced && found != state.ppk_lists.end()) {
         state.ppk_lists.erase(found);
         changed = true;
+      } else if (!list_referenced) {
+        silent_absent = id == md_delete_ipsec_ppk_list;
       }
     } else {
       auto *list = md ? materialize_named(
@@ -784,6 +1802,8 @@ EditResult edit(Configuration &state,
           if (!entry_referenced && found != list->entries.end()) {
             list->entries.erase(found);
             changed = true;
+          } else if (!entry_referenced) {
+            silent_absent = id == md_delete_ipsec_ppk;
           }
         } else {
           const bool sets_value = id == md_ipsec_ppk_ascii ||
@@ -801,6 +1821,7 @@ EditResult edit(Configuration &state,
             if (id == md_delete_ipsec_ppk_value) {
               changed = found->secret_handle != 0U;
               found->secret_handle = 0U;
+              silent_absent = !changed;
             } else if (id == md_ipsec_ppk_ascii ||
                        id == classic_ipsec_ppk_ascii ||
                        id == md_ipsec_ppk_hex ||
@@ -832,11 +1853,13 @@ EditResult edit(Configuration &state,
                                           ascii;
               }
             }
+          } else {
+            silent_absent = id == md_delete_ipsec_ppk_value;
           }
         }
       }
     }
-  } else if (certificate_name && !transport_name) {
+  } else if (certificate_name && !transport_name && !client_db_name) {
     instance += "/cert-profile/" + std::string{*certificate_name};
     const bool referenced_by_transport = std::any_of(
         state.transport_mode_profiles.begin(),
@@ -850,9 +1873,17 @@ EditResult edit(Configuration &state,
           state.certificate_profiles.end(), [&](const auto &profile) {
             return profile.name == *certificate_name;
           });
-      if (!referenced_by_transport && found != state.certificate_profiles.end()) {
+      // Classic removal requires shutdown first, matching the TLS profile
+      // lifecycle. MD delete removes the list entry directly.
+      const bool shutdown =
+          id == md_delete_ipsec_cert_profile ||
+          (found != state.certificate_profiles.end() && !found->enabled);
+      if (shutdown && !referenced_by_transport &&
+          found != state.certificate_profiles.end()) {
         state.certificate_profiles.erase(found);
         changed = true;
+      } else if (!referenced_by_transport) {
+        silent_absent = id == md_delete_ipsec_cert_profile;
       }
     } else {
       auto *profile = md
@@ -885,6 +1916,7 @@ EditResult edit(Configuration &state,
       } else if (profile && id == md_delete_ipsec_cert_admin) {
         changed = remove(profile->enabled, profile->admin_state_configured,
                          false);
+        silent_absent = !changed;
       } else if (profile) {
         const auto entry_id =
             number(command, TokenKind::ipsec_certificate_entry_id);
@@ -898,9 +1930,15 @@ EditResult edit(Configuration &state,
                 [numeric_id](const auto &entry) {
                   return entry.id == numeric_id;
                 });
-            if (found != profile->entries.end()) {
+            // Classic entry removal requires a shut down profile, mirroring
+            // the profile-level gate above. MD delete needs no such cascade.
+            const bool shutdown = id == md_delete_ipsec_cert_entry ||
+                                  !profile->enabled;
+            if (shutdown && found != profile->entries.end()) {
               profile->entries.erase(found);
               changed = true;
+            } else if (id == md_delete_ipsec_cert_entry) {
+              silent_absent = true;
             }
           } else {
             auto *entry = md
@@ -985,18 +2023,25 @@ EditResult edit(Configuration &state,
                          id == classic_ipsec_cert_entry_no_cert) {
                 changed = !entry->certificate_file.empty();
                 entry->certificate_file.clear();
+                silent_absent =
+                    !changed && id == md_delete_ipsec_cert_entry_cert;
               } else if (id == md_delete_ipsec_cert_entry_key ||
                          id == classic_ipsec_cert_entry_no_key) {
                 changed = !entry->private_key_file.empty();
                 entry->private_key_file.clear();
+                silent_absent =
+                    !changed && id == md_delete_ipsec_cert_entry_key;
               } else if (id == md_delete_ipsec_cert_entry_compare_chain ||
                          id == classic_ipsec_cert_entry_no_compare) {
                 changed = !entry->compare_chain_include.empty();
                 entry->compare_chain_include.clear();
+                silent_absent =
+                    !changed && id == md_delete_ipsec_cert_entry_compare_chain;
               } else if (id == md_delete_ipsec_cert_entry_rsa) {
                 changed = remove(entry->rsa_signature,
                                  entry->rsa_signature_configured,
                                  ipsec::configuration::RsaSignature::pkcs1);
+                silent_absent = !changed;
               } else if ((id == md_delete_ipsec_cert_entry_send_chain ||
                           id == classic_ipsec_cert_entry_no_send_ca) &&
                          ca_profile) {
@@ -1006,6 +2051,8 @@ EditResult edit(Configuration &state,
                 if (found != entry->send_chain_ca_profiles.end()) {
                   entry->send_chain_ca_profiles.erase(found);
                   changed = true;
+                } else {
+                  silent_absent = id == md_delete_ipsec_cert_entry_send_chain;
                 }
               }
             }
@@ -1013,7 +2060,7 @@ EditResult edit(Configuration &state,
         }
       }
     }
-  } else if (trust_anchor_name && !transport_name) {
+  } else if (trust_anchor_name && !transport_name && !client_db_name) {
     instance += "/trust-anchor-profile/" + std::string{*trust_anchor_name};
     const bool referenced_by_transport = std::any_of(
         state.transport_mode_profiles.begin(),
@@ -1031,6 +2078,8 @@ EditResult edit(Configuration &state,
           found != state.trust_anchor_profiles.end()) {
         state.trust_anchor_profiles.erase(found);
         changed = true;
+      } else if (!referenced_by_transport) {
+        silent_absent = id == md_delete_ipsec_trust_anchor_profile;
       }
     } else {
       auto *profile = md
@@ -1070,6 +2119,8 @@ EditResult edit(Configuration &state,
         if (found != profile->ca_profiles.end()) {
           profile->ca_profiles.erase(found);
           changed = true;
+        } else {
+          silent_absent = id == md_delete_ipsec_trust_anchor;
         }
       }
     }
@@ -1078,9 +2129,14 @@ EditResult edit(Configuration &state,
     if (id == md_delete_ike_transform || id == classic_ike_transform_remove) {
       // A leafref in an IKE policy makes deletion invalid. Silently leaving a
       // dangling policy would defer an avoidable failure until negotiation.
-      changed = !referenced(state, static_cast<std::uint16_t>(*ike_id)) &&
+      // An unreferenced absent transform is the documented MD silent no-op.
+      const bool transform_blocked =
+          referenced(state, static_cast<std::uint16_t>(*ike_id));
+      changed = !transform_blocked &&
                 erase(state.ike_transforms,
                       static_cast<std::uint16_t>(*ike_id));
+      silent_absent = !transform_blocked && !changed &&
+                      id == md_delete_ike_transform;
     } else if (id == classic_ike_transform_create) {
       changed = !ipsec::configuration::find_ike(
                     state, static_cast<std::uint16_t>(*ike_id)) &&
@@ -1095,18 +2151,20 @@ EditResult edit(Configuration &state,
                       : ipsec::configuration::find_ike(
                             state, static_cast<std::uint16_t>(*ike_id));
       if (item) {
-        if (id == md_ike_transform_dh19 || id == classic_ike_transform_dh19)
-          changed = configure(item->dh_group, item->dh_group_configured,
-                              ipsec::configuration::DiffieHellmanGroup::ecp256);
+        if (const auto group = diffie_hellman_group_value(command, "dh-group")) {
+          changed = configure(item->dh_group, item->dh_group_configured, *group);
+        }
         else if (id == md_ike_transform_auth_encryption ||
                  id == classic_ike_transform_auth_encryption)
           changed = configure_flag(item->authentication_encryption_configured);
         else if (id == md_ike_transform_aes128_gcm16 ||
                  id == md_ike_transform_aes256_gcm16 ||
                  id == classic_ike_transform_aes128_gcm16 ||
-                 id == classic_ike_transform_aes256_gcm16)
-          changed = configure(item->encryption, item->encryption_configured,
-                              encryption(id));
+                 id == classic_ike_transform_aes256_gcm16) {
+          if (item->authentication_encryption_configured)
+            changed = configure(item->encryption, item->encryption_configured,
+                                encryption(id));
+        }
         else if (id == md_ike_transform_prf_sha256 ||
                  id == classic_ike_transform_prf_sha256)
           changed = configure_flag(item->prf_sha256_configured);
@@ -1116,33 +2174,40 @@ EditResult edit(Configuration &state,
           changed = value && *value >= 1'200U && *value <= 31'536'000U &&
                     configure(item->lifetime_seconds, item->lifetime_configured,
                               static_cast<std::uint32_t>(*value));
-        } else if (id == md_delete_ike_transform_dh ||
-                   id == classic_ike_transform_no_dh)
+        } else if (id == md_delete_ike_transform_dh) {
+          // The 26.7 default is group-14 for both engines. The classic CLI
+          // documents no no form, so only the MD delete restores it.
           changed = remove(item->dh_group, item->dh_group_configured,
-                           ipsec::configuration::DiffieHellmanGroup::ecp256);
-        else if (id == md_delete_ike_transform_auth ||
-                 id == classic_ike_transform_no_auth)
+                           ipsec::configuration::DiffieHellmanGroup::modp2048);
+          silent_absent = !changed;
+        } else if (id == md_delete_ike_transform_auth) {
           changed = remove_flag(item->authentication_encryption_configured);
-        else if (id == md_delete_ike_transform_encryption ||
-                 id == classic_ike_transform_no_encryption)
+          silent_absent = !changed;
+        } else if (id == md_delete_ike_transform_encryption) {
           changed = remove(item->encryption, item->encryption_configured,
                            AesGcmKeySize::aes128);
-        else if (id == md_delete_ike_transform_prf ||
-                 id == classic_ike_transform_no_prf)
+          silent_absent = !changed;
+        } else if (id == md_delete_ike_transform_prf) {
           changed = remove_flag(item->prf_sha256_configured);
-        else if (id == md_delete_ike_transform_lifetime ||
-                 id == classic_ike_transform_no_lifetime)
+          silent_absent = !changed;
+        } else if (id == md_delete_ike_transform_lifetime) {
           changed = remove(item->lifetime_seconds, item->lifetime_configured,
                            86'400U);
+          silent_absent = !changed;
+        }
       }
     }
   } else if (ipsec_id && !transport_name && !tunnel_id) {
     instance += "/ipsec-transform/" + std::to_string(*ipsec_id);
     if (id == md_delete_ipsec_transform ||
         id == classic_ipsec_transform_remove) {
-      changed = !ipsec_referenced(state, static_cast<std::uint16_t>(*ipsec_id)) &&
+      const bool ipsec_blocked = ipsec_referenced(
+          state, static_cast<std::uint16_t>(*ipsec_id));
+      changed = !ipsec_blocked &&
                 erase(state.ipsec_transforms,
                       static_cast<std::uint16_t>(*ipsec_id));
+      silent_absent = !ipsec_blocked && !changed &&
+                      id == md_delete_ipsec_transform;
     } else if (id == classic_ipsec_transform_create) {
       changed = !ipsec::configuration::find_ipsec(
                     state, static_cast<std::uint16_t>(*ipsec_id)) &&
@@ -1166,63 +2231,88 @@ EditResult edit(Configuration &state,
                  id == md_ipsec_transform_aes256_gcm16 ||
                  id == classic_ipsec_transform_aes128_gcm16 ||
                  id == classic_ipsec_transform_aes192_gcm16 ||
-                 id == classic_ipsec_transform_aes256_gcm16)
-          changed = configure(item->encryption, item->encryption_configured,
-                              encryption(id));
+                 id == classic_ipsec_transform_aes256_gcm16) {
+          if (item->authentication_encryption_configured)
+            changed = configure(item->encryption, item->encryption_configured,
+                                encryption(id));
+        }
         else if (id == md_ipsec_transform_esn_true ||
                  id == md_ipsec_transform_esn_false ||
-                 id == classic_ipsec_transform_esn_true ||
-                 id == classic_ipsec_transform_esn_false)
+                 id == classic_ipsec_transform_esn)
           changed = configure(item->extended_sequence_number,
                               item->extended_sequence_number_configured,
                               id == md_ipsec_transform_esn_true ||
-                                  id == classic_ipsec_transform_esn_true);
+                                  id == classic_ipsec_transform_esn);
         else if (id == md_ipsec_transform_lifetime ||
                  id == classic_ipsec_transform_lifetime) {
           const auto value = number(command, TokenKind::ipsec_lifetime);
           changed = value && *value >= 1'200U && *value <= 31'536'000U &&
                     configure(item->lifetime_seconds, item->lifetime_configured,
                               static_cast<std::uint32_t>(*value));
-        } else if (id == md_ipsec_transform_pfs19 ||
-                   id == classic_ipsec_transform_pfs19) {
-          changed = !item->pfs_group_configured || !item->pfs_enabled;
-          item->pfs_group = ipsec::configuration::DiffieHellmanGroup::ecp256;
+        } else if (const auto group =
+                       diffie_hellman_group_value(command, "pfs-dh-group")) {
+          changed = !item->pfs_group_configured || !item->pfs_enabled ||
+                    item->pfs_group != *group;
+          item->pfs_group = *group;
           item->pfs_enabled = true;
           item->pfs_group_configured = true;
         } else if (id == md_ipsec_transform_pfs_none ||
-                   id == classic_ipsec_transform_pfs_none) {
+                   id == classic_ipsec_transform_pfs_inherit) {
+          // The classic CLI spells the YANG none value inherit: the transform
+          // defers PFS to the referencing gateway or tunnel.
           changed = !item->pfs_group_configured || item->pfs_enabled;
           item->pfs_enabled = false;
           item->pfs_group_configured = true;
         } else if (id == md_delete_ipsec_transform_auth ||
-                   id == classic_ipsec_transform_no_auth)
+                   id == classic_ipsec_transform_no_auth) {
           changed = remove_flag(item->authentication_encryption_configured);
-        else if (id == md_delete_ipsec_transform_encryption ||
-                 id == classic_ipsec_transform_no_encryption)
+          silent_absent =
+              !changed && id == md_delete_ipsec_transform_auth;
+        } else if (id == md_delete_ipsec_transform_encryption ||
+                   id == classic_ipsec_transform_no_encryption) {
           changed = remove(item->encryption, item->encryption_configured,
                            AesGcmKeySize::aes128);
-        else if (id == md_delete_ipsec_transform_esn ||
-                 id == classic_ipsec_transform_no_esn)
+          silent_absent =
+              !changed && id == md_delete_ipsec_transform_encryption;
+        } else if (id == classic_ipsec_transform_no_esn) {
+          // The documented classic no form disables ESN and reverts to
+          // 32-bit sequence numbering; it does not restore the YANG default.
+          changed = configure(item->extended_sequence_number,
+                              item->extended_sequence_number_configured, false);
+        } else if (id == md_delete_ipsec_transform_esn) {
+          // YANG defaults the leaf to true; the classic no form instead
+          // explicitly disables ESN and reverts to 32-bit numbering.
           changed = remove(item->extended_sequence_number,
                            item->extended_sequence_number_configured, true);
-        else if (id == md_delete_ipsec_transform_lifetime ||
-                 id == classic_ipsec_transform_no_lifetime)
+          silent_absent = !changed;
+        } else if (id == md_delete_ipsec_transform_lifetime) {
           changed = remove(item->lifetime_seconds, item->lifetime_configured,
                            0U);
-        else if (id == md_delete_ipsec_transform_pfs ||
-                 id == classic_ipsec_transform_no_pfs) {
+          silent_absent = !changed;
+        } else if (id == md_delete_ipsec_transform_pfs ||
+                   id == classic_ipsec_transform_no_pfs) {
           changed = item->pfs_group_configured;
           item->pfs_group = ipsec::configuration::DiffieHellmanGroup::ecp256;
           item->pfs_enabled = false;
           item->pfs_group_configured = false;
+          silent_absent =
+              !changed && id == md_delete_ipsec_transform_pfs;
         }
       }
     }
   } else if (policy_id && !transport_name) {
     instance += "/ike-policy/" + std::to_string(*policy_id);
     if (id == md_delete_ike_policy || id == classic_ike_policy_remove) {
-      changed = erase(state.ike_policies,
+      // The YANG transport-profile and tunnel references to an IKE policy are
+      // leafrefs. Erasing a referenced policy would leave a dangling reference
+      // behind, so the removal is rejected exactly like a referenced transform.
+      // An unreferenced absent policy is the documented MD silent no-op.
+      const bool policy_blocked = ike_policy_referenced(state, *policy_id);
+      changed = !policy_blocked &&
+                erase(state.ike_policies,
                       static_cast<std::uint16_t>(*policy_id));
+      silent_absent =
+          !policy_blocked && !changed && id == md_delete_ike_policy;
     } else if (id == classic_ike_policy_create) {
       changed = !ipsec::configuration::find_policy(
                     state, static_cast<std::uint16_t>(*policy_id)) &&
@@ -1255,6 +2345,8 @@ EditResult edit(Configuration &state,
           if (found != item->ike_transforms.end()) {
             item->ike_transforms.erase(found);
             changed = true;
+          } else {
+            silent_absent = true;
           }
         }
       } else if (item &&
@@ -1286,9 +2378,10 @@ EditResult edit(Configuration &state,
         const auto value = cli_detail::argument(command, TokenKind::description);
         changed = value && assign_description(item->description, *value);
       } else if (item && (id == md_delete_ike_policy_description ||
-                          id == classic_ike_policy_no_description)) {
+                           id == classic_ike_policy_no_description)) {
         changed = !item->description.empty();
         item->description.clear();
+        silent_absent = !changed && id == md_delete_ike_policy_description;
       } else if (item && (id == md_ike_policy_auth_psk ||
                           id == classic_ike_policy_auth_psk))
         changed = configure(item->peer_authentication,
@@ -1341,9 +2434,10 @@ EditResult edit(Configuration &state,
           changed = *item != previous_item;
         }
       } else if (item && (id == md_delete_ike_policy_fragment ||
-                          id == classic_ike_policy_no_fragment)) {
+                           id == classic_ike_policy_no_fragment)) {
         changed = item->fragmentation_configured;
         clear_fragmentation(*item);
+        silent_absent = !changed && id == md_delete_ike_policy_fragment;
       } else if (item && id == md_ike_policy_dpd_interval) {
         const auto value = number(command, TokenKind::dpd_interval);
         if (value && *value >= 10U && *value <= 300U) {
@@ -1397,9 +2491,10 @@ EditResult edit(Configuration &state,
           changed = *item != previous_item;
         }
       } else if (item && (id == md_delete_ike_policy_dpd ||
-                          id == classic_ike_policy_no_dpd)) {
+                           id == classic_ike_policy_no_dpd)) {
         changed = item->dpd_configured;
         clear_dpd(*item);
+        silent_absent = !changed && id == md_delete_ike_policy_dpd;
       } else if (item && id == md_ike_policy_nat_force) {
         const auto value = cli_detail::argument(command, TokenKind::boolean);
         if (value) {
@@ -1440,31 +2535,41 @@ EditResult edit(Configuration &state,
                             id == classic_ike_policy_nat_force_interval ||
                             id == classic_ike_policy_nat_force_force_keepalive ||
                             id == classic_ike_policy_nat_all;
-          item->nat_force_keepalive =
+          // YANG defaults force-keep-alive to true and classic has no form
+          // that disables it; only explicit naming records presence.
+          const bool keepalive_named =
               id == classic_ike_policy_nat_force_keepalive ||
               id == classic_ike_policy_nat_force_force_keepalive ||
               id == classic_ike_policy_nat_interval_force_keepalive ||
               id == classic_ike_policy_nat_all;
+          item->nat_force_keepalive = true;
+          item->nat_force_keepalive_configured = keepalive_named;
           item->nat_keepalive_interval_seconds =
               static_cast<std::uint16_t>(interval.value_or(0U));
           item->nat_force_configured = item->nat_force;
-          item->nat_force_keepalive_configured = item->nat_force_keepalive;
           item->nat_keepalive_interval_configured = interval.has_value();
           changed = *item != previous_item;
         }
       } else if (item && (id == md_delete_ike_policy_nat ||
-                          id == classic_ike_policy_no_nat)) {
+                           id == classic_ike_policy_no_nat)) {
         changed = item->nat_traversal_configured;
         clear_nat_traversal(*item);
-      } else if (item && id == md_ike_policy_lifetime) {
+        silent_absent = !changed && id == md_delete_ike_policy_nat;
+      } else if (item && (id == md_ike_policy_lifetime ||
+                          id == classic_ike_policy_lifetime)) {
         const auto value = number(command, TokenKind::ipsec_lifetime);
         changed = value && *value >= 1'200U && *value <= 31'536'000U &&
                   configure(item->ipsec_lifetime_seconds,
                             item->ipsec_lifetime_configured,
                             static_cast<std::uint32_t>(*value));
+      } else if (item && (id == md_delete_ike_policy_lifetime ||
+                           id == classic_ike_policy_no_lifetime)) {
+        changed = remove(item->ipsec_lifetime_seconds,
+                         item->ipsec_lifetime_configured, 3'600U);
+        silent_absent = !changed && id == md_delete_ike_policy_lifetime;
       }
     }
-  } else if (ts_name) {
+  } else if (ts_name && !client_db_name) {
     instance += "/ts-list/" + std::string{*ts_name};
     const bool remove_list = id == md_delete_ts_list ||
                              id == classic_ts_list_remove;
@@ -1477,6 +2582,8 @@ EditResult edit(Configuration &state,
       if (found != state.traffic_selector_lists.end()) {
         state.traffic_selector_lists.erase(found);
         changed = true;
+      } else {
+        silent_absent = id == md_delete_ts_list;
       }
     } else {
       auto *list = md ? materialize_named(
@@ -1509,6 +2616,9 @@ EditResult edit(Configuration &state,
           if (found != entries.end()) {
             entries.erase(found);
             changed = true;
+          } else {
+            silent_absent = id == md_delete_ts_local_entry ||
+                            id == md_delete_ts_remote_entry;
           }
         } else if (entry_id && *entry_id <= 32U) {
           auto *entry = materialize_selector(
@@ -1539,6 +2649,8 @@ EditResult edit(Configuration &state,
             entry->prefix.reset();
             entry->range_begin.reset();
             entry->range_end.reset();
+            silent_absent = !changed && (id == md_delete_ts_local_address ||
+                                         id == md_delete_ts_remote_address);
           } else if (entry &&
                      cli_detail::argument(command, TokenKind::ip_prefix)) {
             const auto text =
@@ -1593,6 +2705,8 @@ EditResult edit(Configuration &state,
             entry->begin_icmp_code_configured = false;
             entry->end_icmp_type_configured = false;
             entry->end_icmp_code_configured = false;
+            silent_absent = !changed && (id == md_delete_ts_local_protocol ||
+                                         id == md_delete_ts_remote_protocol);
           } else if (entry && has_literal(command, "protocol") &&
                      has_literal(command, "any") &&
                      !has_literal(command, "port") &&
@@ -1636,7 +2750,14 @@ EditResult edit(Configuration &state,
                   entry->ports.first = 0U;
                   entry->selector_begin_configured = false;
                 } else if (has_literal(command, "end")) {
-                  entry->ports.last = 65'535U;
+                  // The mipv6 port-range bounds span 0 through 255 with no
+                  // YANG default, so only that protocol restores 0 instead of
+                  // the 65535 end sentinel used by the TCP/UDP range leaves.
+                  entry->ports.last =
+                      protocol == ipsec::configuration::SelectorProtocol::
+                                      ipv6_mobility
+                          ? 0U
+                          : 65'535U;
                   entry->selector_end_configured = false;
                 } else if (has_literal(command, "begin-icmp-type")) {
                   entry->ports.first &= 0x00ffU;
@@ -1654,6 +2775,10 @@ EditResult edit(Configuration &state,
                   entry->end_icmp_code_configured = false;
                 }
                 changed = *entry != before_entry;
+                // Granular MD port deletes restore schema defaults; an
+                // already-default leaf is the silent no-op.
+                silent_absent = !changed && md &&
+                                has_literal(command, "delete");
               } else {
               const auto classic_first = cli_detail::argument(
                   command, TokenKind::selector_port_begin);
@@ -1726,26 +2851,31 @@ EditResult edit(Configuration &state,
                   // Each MD leaf updates one byte of the packed IKE selector.
                   // The untouched byte and its presence flag remain candidate
                   // state so editing order does not change the final result.
+                  // YANG bounds every ICMP type and code leaf at 0 through 255.
                   if (const auto value =
-                          number(command, TokenKind::icmp_type_begin)) {
+                          number(command, TokenKind::icmp_type_begin);
+                      value && *value <= 255U) {
                     entry->ports.first = static_cast<std::uint16_t>(
                         (*value << 8U) | (entry->ports.first & 0x00ffU));
                     entry->begin_icmp_type_configured = true;
                   }
                   if (const auto value =
-                          number(command, TokenKind::icmp_code_begin)) {
+                          number(command, TokenKind::icmp_code_begin);
+                      value && *value <= 255U) {
                     entry->ports.first = static_cast<std::uint16_t>(
                         (entry->ports.first & 0xff00U) | *value);
                     entry->begin_icmp_code_configured = true;
                   }
                   if (const auto value =
-                          number(command, TokenKind::icmp_type_end)) {
+                          number(command, TokenKind::icmp_type_end);
+                      value && *value <= 255U) {
                     entry->ports.last = static_cast<std::uint16_t>(
                         (*value << 8U) | (entry->ports.last & 0x00ffU));
                     entry->end_icmp_type_configured = true;
                   }
                   if (const auto value =
-                          number(command, TokenKind::icmp_code_end)) {
+                          number(command, TokenKind::icmp_code_end);
+                      value && *value <= 255U) {
                     entry->ports.last = static_cast<std::uint16_t>(
                         (entry->ports.last & 0xff00U) | *value);
                     entry->end_icmp_code_configured = true;
@@ -1787,6 +2917,8 @@ EditResult edit(Configuration &state,
       if (found != state.transport_mode_profiles.end()) {
         state.transport_mode_profiles.erase(found);
         changed = true;
+      } else {
+        silent_absent = id == md_delete_transport_profile;
       }
     } else {
       auto *item = md ? materialize_named(
@@ -1807,10 +2939,12 @@ EditResult edit(Configuration &state,
             cli_detail::argument(command, TokenKind::description);
         changed = value && assign_description(item->description, *value);
       } else if (item && (id == md_delete_transport_description ||
-                          id == classic_transport_no_description)) {
+                           id == classic_transport_no_description)) {
         changed = !item->description.empty();
         if (changed)
           item->description.clear();
+        else
+          silent_absent = id == md_delete_transport_description;
       } else if (item && (id == md_transport_auto_establish ||
                           id == classic_transport_auto_establish)) {
         const auto value = id == classic_transport_auto_establish
@@ -1821,9 +2955,11 @@ EditResult edit(Configuration &state,
                                      item->dynamic.auto_establish_configured,
                                      *value == "true");
       } else if (item && (id == md_delete_transport_auto_establish ||
-                          id == classic_transport_no_auto_establish)) {
+                           id == classic_transport_no_auto_establish)) {
         changed = remove(item->dynamic.auto_establish,
                          item->dynamic.auto_establish_configured, false);
+        silent_absent =
+            !changed && id == md_delete_transport_auto_establish;
       } else if (item && (id == md_transport_cert_profile ||
                           id == classic_transport_cert_profile)) {
         const auto value = cli_detail::argument(
@@ -1834,9 +2970,11 @@ EditResult edit(Configuration &state,
         if (changed)
           item->dynamic.certificate_profile = *value;
       } else if (item && (id == md_delete_transport_cert_profile ||
-                          id == classic_transport_no_cert_profile)) {
+                           id == classic_transport_no_cert_profile)) {
         changed = !item->dynamic.certificate_profile.empty();
         item->dynamic.certificate_profile.clear();
+        silent_absent =
+            !changed && id == md_delete_transport_cert_profile;
       } else if (item && (id == md_transport_cert_default_revoked ||
                           id == md_transport_cert_default_good ||
                           id == classic_transport_cert_default_revoked ||
@@ -1849,11 +2987,13 @@ EditResult edit(Configuration &state,
                 ? ipsec::configuration::RevocationResult::good
                 : ipsec::configuration::RevocationResult::revoked);
       } else if (item && (id == md_delete_transport_cert_default ||
-                          id == classic_transport_cert_no_default)) {
+                           id == classic_transport_cert_no_default)) {
         changed = remove(
             item->dynamic.default_revocation_result,
             item->dynamic.default_revocation_result_configured,
             ipsec::configuration::RevocationResult::revoked);
+        silent_absent =
+            !changed && id == md_delete_transport_cert_default;
       } else if (item && (id == md_transport_cert_primary_crl ||
                           id == md_transport_cert_primary_ocsp)) {
         changed = configure(
@@ -1866,6 +3006,7 @@ EditResult edit(Configuration &state,
         changed = remove(item->dynamic.primary_revocation_method,
                          item->dynamic.primary_revocation_method_configured,
                          ipsec::configuration::RevocationMethod::crl);
+        silent_absent = !changed;
       } else if (item && (id == md_transport_cert_secondary_none ||
                           id == md_transport_cert_secondary_crl ||
                           id == md_transport_cert_secondary_ocsp)) {
@@ -1882,6 +3023,7 @@ EditResult edit(Configuration &state,
         changed = remove(item->dynamic.secondary_revocation_method,
                          item->dynamic.secondary_revocation_method_configured,
                          ipsec::configuration::RevocationMethod::none);
+        silent_absent = !changed;
       } else if (item &&
                  (id == classic_transport_cert_crl_none ||
                   id == classic_transport_cert_crl_crl ||
@@ -1921,9 +3063,11 @@ EditResult edit(Configuration &state,
         if (changed)
           item->dynamic.trust_anchor_profile = *value;
       } else if (item && (id == md_delete_transport_trust_anchor ||
-                          id == classic_transport_no_trust_anchor_profile)) {
+                           id == classic_transport_no_trust_anchor_profile)) {
         changed = !item->dynamic.trust_anchor_profile.empty();
         item->dynamic.trust_anchor_profile.clear();
+        silent_absent =
+            !changed && id == md_delete_transport_trust_anchor;
       } else if (item && (id == md_transport_id_fqdn ||
                           id == md_transport_id_ipv4 ||
                           id == md_transport_id_ipv6 ||
@@ -1951,13 +3095,14 @@ EditResult edit(Configuration &state,
           changed = item->dynamic != before_dynamic;
         }
       } else if (item && (id == md_delete_transport_identity ||
-                          id == classic_transport_no_local_id)) {
+                           id == classic_transport_no_local_id)) {
         changed = !item->dynamic.identity.empty() ||
                   item->dynamic.identity_type !=
                       ipsec::configuration::IdentityType::automatic;
         item->dynamic.identity.clear();
         item->dynamic.identity_type =
             ipsec::configuration::IdentityType::automatic;
+        silent_absent = !changed && id == md_delete_transport_identity;
       } else if (item && (id == md_transport_ike_policy ||
                           id == classic_transport_ike_policy)) {
         changed = policy_id && ipsec::configuration::find_policy(
@@ -1966,9 +3111,10 @@ EditResult edit(Configuration &state,
         if (changed)
           item->dynamic.ike_policy = static_cast<std::uint16_t>(*policy_id);
       } else if (item && (id == md_delete_transport_ike_policy ||
-                          id == classic_transport_no_ike_policy)) {
+                           id == classic_transport_no_ike_policy)) {
         changed = item->dynamic.ike_policy != 0U;
         item->dynamic.ike_policy = 0U;
+        silent_absent = !changed && id == md_delete_transport_ike_policy;
       } else if (item && id == md_transport_ppk_list) {
         const auto name =
             cli_detail::argument(command, TokenKind::ppk_list_name);
@@ -1982,6 +3128,8 @@ EditResult edit(Configuration &state,
         if (changed) {
           item->dynamic.ppk_list.clear();
           item->dynamic.ppk_id.clear();
+        } else {
+          silent_absent = true;
         }
       } else if (item && id == md_transport_ppk_id) {
         const auto value = cli_detail::argument(command, TokenKind::ppk_id);
@@ -1999,6 +3147,8 @@ EditResult edit(Configuration &state,
         changed = !item->dynamic.ppk_id.empty();
         if (changed)
           item->dynamic.ppk_id.clear();
+        else
+          silent_absent = true;
       } else if (item && id == classic_transport_ppk) {
         const auto list_name =
             cli_detail::argument(command, TokenKind::ppk_list_name);
@@ -2038,9 +3188,11 @@ EditResult edit(Configuration &state,
         if (changed)
           item->dynamic.pre_shared_key_handle = *handle;
       } else if (item && (id == md_delete_transport_pre_shared_key ||
-                          id == classic_transport_no_pre_shared_key)) {
+                           id == classic_transport_no_pre_shared_key)) {
         changed = item->dynamic.pre_shared_key_handle != 0U;
         item->dynamic.pre_shared_key_handle = 0U;
+        silent_absent =
+            !changed && id == md_delete_transport_pre_shared_key;
       } else if (item && id == md_transport_ipsec_transform) {
         changed = ipsec_id &&
                   ipsec::configuration::find_ipsec(
@@ -2073,6 +3225,8 @@ EditResult edit(Configuration &state,
           if (found != item->dynamic.ipsec_transforms.end()) {
             item->dynamic.ipsec_transforms.erase(found);
             changed = true;
+          } else {
+            silent_absent = true;
           }
         }
       } else if (item && (id == md_transport_history_esp ||
@@ -2083,10 +3237,12 @@ EditResult edit(Configuration &state,
                             item->maximum_esp_history_records_configured,
                             static_cast<std::uint8_t>(*value));
       } else if (item && (id == md_delete_transport_history_esp ||
-                          id == classic_transport_no_history_esp)) {
+                           id == classic_transport_no_history_esp)) {
         changed = remove(item->maximum_esp_history_records,
                          item->maximum_esp_history_records_configured,
                          static_cast<std::uint8_t>(0U));
+        silent_absent =
+            !changed && id == md_delete_transport_history_esp;
       } else if (item && (id == md_transport_history_ike ||
                           id == classic_transport_history_ike)) {
         const auto value = number(command, TokenKind::history_ike_records);
@@ -2095,10 +3251,12 @@ EditResult edit(Configuration &state,
                             item->maximum_ike_history_records_configured,
                             static_cast<std::uint8_t>(*value));
       } else if (item && (id == md_delete_transport_history_ike ||
-                          id == classic_transport_no_history_ike)) {
+                           id == classic_transport_no_history_ike)) {
         changed = remove(item->maximum_ike_history_records,
                          item->maximum_ike_history_records_configured,
                          static_cast<std::uint8_t>(0U));
+        silent_absent =
+            !changed && id == md_delete_transport_history_ike;
       } else if (item && (id == md_transport_replay_window ||
                           id == classic_transport_replay_window)) {
         const auto value = number(command, TokenKind::replay_window);
@@ -2108,17 +3266,20 @@ EditResult edit(Configuration &state,
                             item->replay_window_configured,
                             static_cast<std::uint16_t>(*value));
       } else if (item && (id == md_delete_transport_replay_window ||
-                          id == classic_transport_no_replay_window)) {
+                           id == classic_transport_no_replay_window)) {
         changed = remove(item->replay_window,
                          item->replay_window_configured,
                          static_cast<std::uint16_t>(0U));
+        silent_absent =
+            !changed && id == md_delete_transport_replay_window;
       }
     }
-  } else if (tunnel_id) {
+  } else if (tunnel_id && !client_db_name) {
     instance += "/tunnel-template/" + std::to_string(*tunnel_id);
     if (id == md_delete_tunnel_template || id == classic_tunnel_remove) {
       changed = erase(state.tunnel_templates,
                       static_cast<std::uint16_t>(*tunnel_id));
+      silent_absent = !changed && id == md_delete_tunnel_template;
     } else if (id == classic_tunnel_create) {
       changed = !ipsec::configuration::find_tunnel_template(
                     state.tunnel_templates,
@@ -2140,10 +3301,12 @@ EditResult edit(Configuration &state,
         const auto value = cli_detail::argument(command, TokenKind::description);
         changed = value && assign_description(item->description, *value);
       } else if (item && (id == md_delete_tunnel_description ||
-                          id == classic_tunnel_no_description)) {
+                           id == classic_tunnel_no_description)) {
         changed = !item->description.empty();
         if (changed)
           item->description.clear();
+        else
+          silent_absent = id == md_delete_tunnel_description;
       } else if (item && id == md_tunnel_transform) {
         changed = ipsec_id &&
                   ipsec::configuration::find_ipsec(
@@ -2174,6 +3337,8 @@ EditResult edit(Configuration &state,
         changed = found != item->ipsec_transforms.end();
         if (changed)
           item->ipsec_transforms.erase(found);
+        else
+          silent_absent = true;
       } else if (item && (id == md_tunnel_replay_window ||
                           id == classic_tunnel_replay_window)) {
         const auto value = number(command, TokenKind::replay_window);
@@ -2183,9 +3348,10 @@ EditResult edit(Configuration &state,
                             item->replay_window_configured,
                             static_cast<std::uint16_t>(*value));
       } else if (item && (id == md_delete_tunnel_replay_window ||
-                          id == classic_tunnel_no_replay_window)) {
+                           id == classic_tunnel_no_replay_window)) {
         changed = remove(item->replay_window, item->replay_window_configured,
                          static_cast<std::uint16_t>(0U));
+        silent_absent = !changed && id == md_delete_tunnel_replay_window;
       } else if (item && (id == md_tunnel_encapsulated_mtu ||
                           id == classic_tunnel_encapsulated_mtu)) {
         const auto value = number(command, TokenKind::mtu);
@@ -2194,10 +3360,12 @@ EditResult edit(Configuration &state,
                             item->encapsulated_ip_mtu_configured,
                             static_cast<std::uint16_t>(*value));
       } else if (item && (id == md_delete_tunnel_encapsulated_mtu ||
-                          id == classic_tunnel_no_encapsulated_mtu)) {
+                           id == classic_tunnel_no_encapsulated_mtu)) {
         changed = remove(item->encapsulated_ip_mtu,
                          item->encapsulated_ip_mtu_configured,
                          static_cast<std::uint16_t>(0U));
+        silent_absent =
+            !changed && id == md_delete_tunnel_encapsulated_mtu;
       } else if (item && (id == md_tunnel_ip_mtu ||
                           id == classic_tunnel_ip_mtu)) {
         const auto value = number(command, TokenKind::mtu);
@@ -2205,9 +3373,10 @@ EditResult edit(Configuration &state,
                   configure(item->ip_mtu, item->ip_mtu_configured,
                             static_cast<std::uint16_t>(*value));
       } else if (item && (id == md_delete_tunnel_ip_mtu ||
-                          id == classic_tunnel_no_ip_mtu)) {
+                           id == classic_tunnel_no_ip_mtu)) {
         changed = remove(item->ip_mtu, item->ip_mtu_configured,
                          static_cast<std::uint16_t>(0U));
+        silent_absent = !changed && id == md_delete_tunnel_ip_mtu;
       } else if (item && (id == md_tunnel_pmtu_aging ||
                           id == classic_tunnel_pmtu_aging)) {
         const auto value = number(command, TokenKind::pmtu_aging);
@@ -2216,10 +3385,11 @@ EditResult edit(Configuration &state,
                             item->pmtu_discovery_aging_configured,
                             static_cast<std::uint16_t>(*value));
       } else if (item && (id == md_delete_tunnel_pmtu_aging ||
-                          id == classic_tunnel_no_pmtu_aging)) {
+                           id == classic_tunnel_no_pmtu_aging)) {
         changed = remove(item->pmtu_discovery_aging_seconds,
                          item->pmtu_discovery_aging_configured,
                          static_cast<std::uint16_t>(900U));
+        silent_absent = !changed && id == md_delete_tunnel_pmtu_aging;
       } else if (item && (id == md_tunnel_ppk_list ||
                           id == classic_tunnel_ppk_list)) {
         const auto name = cli_detail::argument(command, TokenKind::ppk_list_name);
@@ -2228,10 +3398,12 @@ EditResult edit(Configuration &state,
         if (changed)
           item->ppk_list.assign(*name);
       } else if (item && (id == md_delete_tunnel_ppk_list ||
-                          id == classic_tunnel_no_ppk_list)) {
+                           id == classic_tunnel_no_ppk_list)) {
         changed = !item->ppk_list.empty();
         if (changed)
           item->ppk_list.clear();
+        else
+          silent_absent = id == md_delete_tunnel_ppk_list;
       } else if (item && (id == md_tunnel_private_mss ||
                           id == classic_tunnel_private_mss)) {
         const auto value = number(command, TokenKind::tunnel_mss);
@@ -2240,10 +3412,11 @@ EditResult edit(Configuration &state,
                             item->private_tcp_mss_adjust_configured,
                             static_cast<std::uint16_t>(*value));
       } else if (item && (id == md_delete_tunnel_private_mss ||
-                          id == classic_tunnel_no_private_mss)) {
+                           id == classic_tunnel_no_private_mss)) {
         changed = remove(item->private_tcp_mss_adjust,
                          item->private_tcp_mss_adjust_configured,
                          static_cast<std::uint16_t>(0U));
+        silent_absent = !changed && id == md_delete_tunnel_private_mss;
       } else if (item && (id == md_tunnel_public_mss ||
                           id == classic_tunnel_public_mss)) {
         const auto value = number(command, TokenKind::tunnel_mss);
@@ -2269,12 +3442,14 @@ EditResult edit(Configuration &state,
           item->public_tcp_mss_auto = true;
         }
       } else if (item && (id == md_delete_tunnel_public_mss ||
-                          id == classic_tunnel_no_public_mss)) {
+                           id == classic_tunnel_no_public_mss)) {
         changed = item->public_tcp_mss_adjust_configured;
         if (changed) {
           item->public_tcp_mss_adjust = 0U;
           item->public_tcp_mss_adjust_configured = false;
           item->public_tcp_mss_auto = false;
+        } else {
+          silent_absent = id == md_delete_tunnel_public_mss;
         }
       } else if (item && (id == md_tunnel_icmp_enable ||
                           id == md_tunnel_icmp_disable ||
@@ -2284,17 +3459,24 @@ EditResult edit(Configuration &state,
                             id != md_tunnel_icmp_disable);
       } else if (item && (id == md_delete_tunnel_icmp_admin ||
                           id == classic_tunnel_no_frag_required)) {
-        // In classic CLI the no form disables the containing mechanism; it
-        // does not remove the MD leaf's presence. Recording an explicit false
-        // preserves that observable difference when engines are switched.
-        if (id == classic_tunnel_no_frag_required)
+        // In classic CLI the no form disables the containing mechanism and
+        // reverts the interval and message-count children to their defaults;
+        // it does not remove the MD leaf's presence. Recording an explicit
+        // false preserves that observable difference across engines.
+        if (id == classic_tunnel_no_frag_required) {
           changed = configure(item->ipv4_fragmentation_required.enabled,
                               item->ipv4_fragmentation_required.enabled_configured,
                               false);
-        else
+          item->ipv4_fragmentation_required.interval_seconds = 10U;
+          item->ipv4_fragmentation_required.interval_configured = false;
+          item->ipv4_fragmentation_required.message_count = 100U;
+          item->ipv4_fragmentation_required.message_count_configured = false;
+        } else {
           changed = remove(item->ipv4_fragmentation_required.enabled,
                            item->ipv4_fragmentation_required.enabled_configured,
                            true);
+          silent_absent = !changed;
+        }
       } else if (item && (id == md_tunnel_icmp_interval ||
                           id == classic_tunnel_frag_interval)) {
         const auto value = number(command, TokenKind::tunnel_rate_interval);
@@ -2303,10 +3485,11 @@ EditResult edit(Configuration &state,
                             item->ipv4_fragmentation_required.interval_configured,
                             static_cast<std::uint8_t>(*value));
       } else if (item && (id == md_delete_tunnel_icmp_interval ||
-                          id == classic_tunnel_no_frag_interval)) {
+                           id == classic_tunnel_no_frag_interval)) {
         changed = remove(item->ipv4_fragmentation_required.interval_seconds,
                          item->ipv4_fragmentation_required.interval_configured,
                          static_cast<std::uint8_t>(10U));
+        silent_absent = !changed && id == md_delete_tunnel_icmp_interval;
       } else if (item && (id == md_tunnel_icmp_count ||
                           id == classic_tunnel_frag_count)) {
         const auto value = number(command, TokenKind::tunnel_message_count);
@@ -2314,11 +3497,11 @@ EditResult edit(Configuration &state,
                   configure(item->ipv4_fragmentation_required.message_count,
                             item->ipv4_fragmentation_required.message_count_configured,
                             static_cast<std::uint16_t>(*value));
-      } else if (item && (id == md_delete_tunnel_icmp_count ||
-                          id == classic_tunnel_no_frag_count)) {
+      } else if (item && id == md_delete_tunnel_icmp_count) {
         changed = remove(item->ipv4_fragmentation_required.message_count,
                          item->ipv4_fragmentation_required.message_count_configured,
                          static_cast<std::uint16_t>(100U));
+        silent_absent = !changed;
       } else if (item && (id == md_tunnel_icmp6_enable ||
                           id == md_tunnel_icmp6_disable ||
                           id == classic_tunnel_pkt_too_big)) {
@@ -2327,13 +3510,19 @@ EditResult edit(Configuration &state,
                             id != md_tunnel_icmp6_disable);
       } else if (item && (id == md_delete_tunnel_icmp6_admin ||
                           id == classic_tunnel_no_pkt_too_big)) {
-        if (id == classic_tunnel_no_pkt_too_big)
+        if (id == classic_tunnel_no_pkt_too_big) {
           changed = configure(item->ipv6_packet_too_big.enabled,
                               item->ipv6_packet_too_big.enabled_configured,
                               false);
-        else
+          item->ipv6_packet_too_big.interval_seconds = 10U;
+          item->ipv6_packet_too_big.interval_configured = false;
+          item->ipv6_packet_too_big.message_count = 100U;
+          item->ipv6_packet_too_big.message_count_configured = false;
+        } else {
           changed = remove(item->ipv6_packet_too_big.enabled,
                            item->ipv6_packet_too_big.enabled_configured, true);
+          silent_absent = !changed;
+        }
       } else if (item && (id == md_tunnel_icmp6_interval ||
                           id == classic_tunnel_pkt_interval)) {
         const auto value = number(command, TokenKind::tunnel_rate_interval);
@@ -2342,10 +3531,12 @@ EditResult edit(Configuration &state,
                             item->ipv6_packet_too_big.interval_configured,
                             static_cast<std::uint8_t>(*value));
       } else if (item && (id == md_delete_tunnel_icmp6_interval ||
-                          id == classic_tunnel_no_pkt_interval)) {
+                           id == classic_tunnel_no_pkt_interval)) {
         changed = remove(item->ipv6_packet_too_big.interval_seconds,
                          item->ipv6_packet_too_big.interval_configured,
                          static_cast<std::uint8_t>(10U));
+        silent_absent =
+            !changed && id == md_delete_tunnel_icmp6_interval;
       } else if (item && (id == md_tunnel_icmp6_count ||
                           id == classic_tunnel_pkt_count)) {
         const auto value = number(command, TokenKind::tunnel_message_count);
@@ -2353,11 +3544,11 @@ EditResult edit(Configuration &state,
                   configure(item->ipv6_packet_too_big.message_count,
                             item->ipv6_packet_too_big.message_count_configured,
                             static_cast<std::uint16_t>(*value));
-      } else if (item && (id == md_delete_tunnel_icmp6_count ||
-                          id == classic_tunnel_no_pkt_count)) {
+      } else if (item && id == md_delete_tunnel_icmp6_count) {
         changed = remove(item->ipv6_packet_too_big.message_count,
                          item->ipv6_packet_too_big.message_count_configured,
                          static_cast<std::uint16_t>(100U));
+        silent_absent = !changed;
       } else if (item && id == md_tunnel_reverse_metric) {
         const auto value = number(command, TokenKind::reverse_route_metric);
         changed = value && *value <= 65'535U &&
@@ -2368,6 +3559,7 @@ EditResult edit(Configuration &state,
         changed = remove(item->reverse_route_metric,
                          item->reverse_route_metric_configured,
                          static_cast<std::uint16_t>(0U));
+        silent_absent = !changed;
       } else if (item && id == md_tunnel_reverse_preference) {
         const auto value = number(command, TokenKind::reverse_route_preference);
         changed = value && *value <= 255U &&
@@ -2378,6 +3570,7 @@ EditResult edit(Configuration &state,
         changed = remove(item->reverse_route_preference,
                          item->reverse_route_preference_configured,
                          static_cast<std::uint8_t>(0U));
+        silent_absent = !changed;
       } else if (item && (id == classic_tunnel_sp_reverse ||
                           id == classic_tunnel_sp_reverse_ignore)) {
         const auto before_item = *item;
@@ -2407,6 +3600,7 @@ EditResult edit(Configuration &state,
         changed = remove(item->service_provider_reverse_route,
                          item->service_provider_reverse_route_configured,
                          ipsec::configuration::ServiceProviderReverseRoute::none);
+        silent_absent = !changed;
       } else if (item && (id == classic_tunnel_clear_df ||
                           id == classic_tunnel_no_clear_df)) {
         changed = configure(item->clear_df_bit, item->clear_df_bit_configured,
@@ -2449,23 +3643,323 @@ EditResult edit(Configuration &state,
           changed = value && configure(item->propagate_pmtu_v6,
                                        item->propagate_pmtu_v6_configured,
                                        *value == "true");
-        else if (id == md_delete_tunnel_clear_df)
+        else if (id == md_delete_tunnel_clear_df) {
           changed = remove(item->clear_df_bit, item->clear_df_bit_configured,
                            false);
-        else if (id == md_delete_tunnel_copy_traffic_class)
+          silent_absent = !changed;
+        } else if (id == md_delete_tunnel_copy_traffic_class) {
           changed = remove(item->copy_traffic_class_upon_decapsulation,
                            item->copy_traffic_class_configured, false);
-        else if (id == md_delete_tunnel_ignore_default)
+          silent_absent = !changed;
+        } else if (id == md_delete_tunnel_ignore_default) {
           changed = remove(item->ignore_default_route,
                            item->ignore_default_route_configured, false);
-        else if (id == md_delete_tunnel_propagate_pmtu_v4)
+          silent_absent = !changed;
+        } else if (id == md_delete_tunnel_propagate_pmtu_v4) {
           changed = remove(item->propagate_pmtu_v4,
                            item->propagate_pmtu_v4_configured, true);
-        else if (id == md_delete_tunnel_propagate_pmtu_v6)
+          silent_absent = !changed;
+        } else if (id == md_delete_tunnel_propagate_pmtu_v6) {
           changed = remove(item->propagate_pmtu_v6,
                            item->propagate_pmtu_v6_configured, true);
+          silent_absent = !changed;
+        }
       }
     }
+  } else if (client_db_name) {
+    // Client database edits resolve the database first, then the addressed
+    // client entry. MD-CLI materializes absent parents while configuring a
+    // leaf and stays silent on deletes below missing elements. Classic
+    // non-create commands require every ancestor and keep the rejected
+    // result. Referenced databases cannot be removed; no gateway or service
+    // owner references a client database in this slice, so only presence
+    // gates removal.
+    instance += "/client-db/" + std::string{*client_db_name};
+    using ClientEntry = ipsec::configuration::ClientEntry;
+    // MD-CLI removals never materialize their parents: resolving with find
+    // keeps the absent-database silent path free of phantom entries.
+    const bool md_removal =
+        md && command.spec && cli_detail::removal_command(*command.spec);
+    auto *database =
+        md && !md_removal
+            ? materialize_named(state.client_databases, *client_db_name,
+                                ipsec::configuration::maximum_client_databases)
+            : ipsec::configuration::find_named(state.client_databases,
+                                              *client_db_name);
+    if (id == md_delete_ipsec_client_db ||
+        id == classic_ipsec_client_db_remove) {
+      const auto found = std::find_if(
+          state.client_databases.begin(), state.client_databases.end(),
+          [&](const auto &database) { return database.name == *client_db_name; });
+      if (found != state.client_databases.end()) {
+        state.client_databases.erase(found);
+        database = nullptr;
+        changed = true;
+      } else {
+        silent_absent = id == md_delete_ipsec_client_db;
+      }
+    } else if (id == classic_ipsec_client_db_create) {
+      if (!database)
+        database = materialize_named(
+            state.client_databases, *client_db_name,
+            ipsec::configuration::maximum_client_databases);
+      changed = database && !ipsec::configuration::find_named(
+                                before.client_databases, *client_db_name);
+    } else if (database && !client_id) {
+      if (id == md_ipsec_client_db_admin_enable ||
+          id == classic_ipsec_client_db_no_shutdown)
+        changed = configure(database->admin_enabled,
+                            database->admin_state_configured, true);
+      else if (id == md_ipsec_client_db_admin_disable ||
+               id == classic_ipsec_client_db_shutdown)
+        changed = configure(database->admin_enabled,
+                            database->admin_state_configured, false);
+      else if (id == md_delete_ipsec_client_db_admin) {
+        changed = remove(database->admin_enabled,
+                         database->admin_state_configured, false);
+        silent_absent = !changed;
+      } else if (id == md_ipsec_client_db_description ||
+                 id == classic_ipsec_client_db_description) {
+        const auto text =
+            cli_detail::argument(command, TokenKind::description);
+        changed = text && assign_description(database->description, *text);
+      } else if (id == md_delete_ipsec_client_db_description ||
+                 id == classic_ipsec_client_db_no_description) {
+        changed = !database->description.empty();
+        database->description.clear();
+        silent_absent =
+            !changed && id == md_delete_ipsec_client_db_description;
+      } else if (id == md_ipsec_client_db_match_idi ||
+                 id == classic_ipsec_client_db_match_idi) {
+        const auto flag = id == classic_ipsec_client_db_match_idi
+                              ? std::optional<bool>{true}
+                              : boolean_flag(command);
+        changed = flag && configure(database->match_idi,
+                                    database->match_idi_configured, *flag);
+      } else if (id == md_delete_ipsec_client_db_match_idi ||
+                 id == classic_ipsec_client_db_match_no_idi) {
+        changed = remove(database->match_idi, database->match_idi_configured,
+                         false);
+        silent_absent =
+            !changed && id == md_delete_ipsec_client_db_match_idi;
+      } else if (id == md_ipsec_client_db_match_peer ||
+                 id == classic_ipsec_client_db_match_peer) {
+        const auto flag = id == classic_ipsec_client_db_match_peer
+                              ? std::optional<bool>{true}
+                              : boolean_flag(command);
+        changed = flag && configure(database->match_peer_ip_prefix,
+                                    database->match_peer_configured, *flag);
+      } else if (id == md_delete_ipsec_client_db_match_peer ||
+                 id == classic_ipsec_client_db_match_no_peer) {
+        changed = remove(database->match_peer_ip_prefix,
+                         database->match_peer_configured, false);
+        silent_absent =
+            !changed && id == md_delete_ipsec_client_db_match_peer;
+      }
+    } else if (database && client_id) {
+      instance += "/client/" + std::to_string(*client_id);
+      const auto numeric_id = static_cast<std::uint32_t>(*client_id);
+      const auto find_entry = [&](auto &entries) {
+        return std::find_if(entries.begin(), entries.end(),
+                            [&](const auto &item) {
+                              return item.id == numeric_id;
+                            });
+      };
+      auto *entry = [&]() -> ClientEntry * {
+        const auto found = find_entry(database->clients);
+        if (found != database->clients.end())
+          return &*found;
+        // MD-CLI materializes the addressed entry while configuring a leaf.
+        // Classic creation materializes in its own arm below so removal and
+        // leaf edits on missing entries keep the rejected result.
+        if (!md || md_removal || *client_id < 1U ||
+            *client_id > ipsec::configuration::maximum_client_id)
+          return nullptr;
+        database->clients.push_back(ClientEntry{.id = numeric_id});
+        return &database->clients.back();
+      }();
+      if (id == md_delete_ipsec_client ||
+          id == classic_ipsec_client_remove) {
+        const auto found = std::find_if(
+            database->clients.begin(), database->clients.end(),
+            [&](const auto &item) { return item.id == numeric_id; });
+        if (found != database->clients.end()) {
+          database->clients.erase(found);
+          changed = true;
+        } else {
+          silent_absent = id == md_delete_ipsec_client;
+        }
+      } else if (id == classic_ipsec_client_create) {
+        const auto *before_db = ipsec::configuration::find_named(
+            before.client_databases, *client_db_name);
+        const bool entry_existed =
+            before_db != nullptr &&
+            find_entry(before_db->clients) != before_db->clients.end();
+        if (!entry) {
+          database->clients.push_back(ClientEntry{.id = numeric_id});
+          entry = &database->clients.back();
+        }
+        changed = !entry_existed;
+      } else if (entry && (id == md_ipsec_client_admin_enable ||
+                           id == classic_ipsec_client_no_shutdown))
+        changed = configure(entry->admin_enabled,
+                            entry->admin_state_configured, true);
+      else if (entry && (id == md_ipsec_client_admin_disable ||
+                         id == classic_ipsec_client_shutdown))
+        changed = configure(entry->admin_enabled,
+                            entry->admin_state_configured, false);
+      else if (entry && id == md_delete_ipsec_client_admin) {
+        changed = remove(entry->admin_enabled, entry->admin_state_configured,
+                         false);
+        silent_absent = !changed;
+      } else if (entry && (id == md_ipsec_client_name ||
+                           id == classic_ipsec_client_name)) {
+        const auto text =
+            cli_detail::argument(command, TokenKind::ipsec_client_name);
+        changed = text &&
+                  ipsec::configuration::valid_named_key(*text, 32U) &&
+                  entry->client_name != *text;
+        if (changed)
+          entry->client_name.assign(*text);
+      } else if (entry && (id == md_delete_ipsec_client_name ||
+                           id == classic_ipsec_client_no_name)) {
+        changed = !entry->client_name.empty();
+        entry->client_name.clear();
+        silent_absent = !changed && id == md_delete_ipsec_client_name;
+      } else if (entry && (id == md_ipsec_client_action_accept ||
+                           id == md_ipsec_client_action_reject ||
+                           id == classic_ipsec_client_action_accept ||
+                           id == classic_ipsec_client_action_reject)) {
+        const auto accept = id == md_ipsec_client_action_accept ||
+                            id == classic_ipsec_client_action_accept;
+        changed = configure(
+            entry->action, entry->action_configured,
+            accept ? ipsec::configuration::ClientAction::accept
+                   : ipsec::configuration::ClientAction::reject);
+      } else if (entry && (id == md_delete_ipsec_client_action ||
+                           id == classic_ipsec_client_no_action)) {
+        changed = remove(entry->action, entry->action_configured,
+                         ipsec::configuration::ClientAction::accept);
+        silent_absent = !changed && id == md_delete_ipsec_client_action;
+      } else if (entry && (id == md_ipsec_client_private_interface ||
+                           id == classic_ipsec_client_private_interface)) {
+        const auto text =
+            cli_detail::argument(command, TokenKind::private_interface_name);
+        changed = text &&
+                  ipsec::configuration::valid_named_key(*text, 32U) &&
+                  entry->private_interface != *text;
+        if (changed)
+          entry->private_interface.assign(*text);
+      } else if (entry && (id == md_delete_ipsec_client_private_interface ||
+                           id == classic_ipsec_client_no_private_interface)) {
+        changed = !entry->private_interface.empty();
+        entry->private_interface.clear();
+        silent_absent =
+            !changed && id == md_delete_ipsec_client_private_interface;
+      } else if (entry && (id == md_ipsec_client_private_service ||
+                           id == classic_ipsec_client_private_service_name ||
+                           id == classic_ipsec_client_private_service_id)) {
+        const auto text =
+            id == classic_ipsec_client_private_service_id
+                ? cli_detail::argument(command, TokenKind::service_id)
+                : cli_detail::argument(command,
+                                       TokenKind::private_service_name);
+        changed = text && !text->empty() && text->size() <= 32U &&
+                  entry->private_service != *text;
+        if (changed)
+          entry->private_service.assign(*text);
+      } else if (entry && (id == md_delete_ipsec_client_private_service ||
+                           id == classic_ipsec_client_no_private_service)) {
+        changed = !entry->private_service.empty();
+        entry->private_service.clear();
+        silent_absent =
+            !changed && id == md_delete_ipsec_client_private_service;
+      } else if (entry && (id == md_ipsec_client_ts_list ||
+                           id == classic_ipsec_client_ts_negotiation)) {
+        const auto text =
+            cli_detail::argument(command, TokenKind::ts_list_name);
+        changed = text && ipsec::configuration::find_traffic_selector_list(
+                               state.traffic_selector_lists, *text) &&
+                  entry->ts_list != *text;
+        if (changed)
+          entry->ts_list.assign(*text);
+      } else if (entry && (id == md_delete_ipsec_client_ts_list ||
+                           id == classic_ipsec_client_no_ts_negotiation)) {
+        changed = !entry->ts_list.empty();
+        entry->ts_list.clear();
+        silent_absent = !changed && id == md_delete_ipsec_client_ts_list;
+      } else if (entry && (id == md_ipsec_client_tunnel_template ||
+                           id == classic_ipsec_client_tunnel_template)) {
+        const auto value =
+            number(command, TokenKind::tunnel_template_id);
+        changed = value && *value >= 1U && *value <= 2048U &&
+                  ipsec::configuration::find_tunnel_template(
+                      state.tunnel_templates,
+                      static_cast<std::uint16_t>(*value)) &&
+                  (!entry->tunnel_template_configured ||
+                   entry->tunnel_template != *value);
+        if (changed) {
+          entry->tunnel_template = static_cast<std::uint16_t>(*value);
+          entry->tunnel_template_configured = true;
+        }
+      } else if (entry && (id == md_delete_ipsec_client_tunnel_template ||
+                           id == classic_ipsec_client_no_tunnel_template)) {
+        changed = entry->tunnel_template_configured;
+        entry->tunnel_template = 0U;
+        entry->tunnel_template_configured = false;
+        silent_absent =
+            !changed && id == md_delete_ipsec_client_tunnel_template;
+      } else if (entry &&
+                 (id == md_ipsec_client_psk || id == classic_ipsec_client_psk ||
+                  id == classic_ipsec_client_psk_hash ||
+                  id == classic_ipsec_client_psk_hash2 ||
+                  id == classic_ipsec_client_psk_custom)) {
+        const auto value =
+            cli_detail::argument(command, TokenKind::client_db_psk);
+        const auto format =
+            id == classic_ipsec_client_psk_hash
+                ? ipsec::configuration::PskFormat::hash
+            : id == classic_ipsec_client_psk_hash2
+                ? ipsec::configuration::PskFormat::hash2
+            : id == classic_ipsec_client_psk_custom
+                ? ipsec::configuration::PskFormat::custom
+                : ipsec::configuration::PskFormat::hexadecimal;
+        const auto handle =
+            value ? seal_secret(secrets,
+                                SecretKind::client_db_pre_shared_key, *value,
+                                true)
+                  : std::nullopt;
+        if (handle) {
+          changed = entry->psk_handle != *handle ||
+                    !entry->psk_configured || entry->psk_format != format;
+          entry->psk_handle = *handle;
+          entry->psk_format = format;
+          entry->psk_configured = true;
+        }
+      } else if (entry && (id == md_delete_ipsec_client_psk ||
+                           id == classic_ipsec_client_no_psk)) {
+        changed = entry->psk_configured;
+        entry->psk_handle = 0U;
+        entry->psk_configured = false;
+        silent_absent = !changed && id == md_delete_ipsec_client_psk;
+      } else if (entry) {
+        changed = edit_client_identification(*entry, id, command) ||
+                  edit_client_local(*entry, id, command) ||
+                  edit_client_certificate(state, *entry, id, command, secrets);
+        if (!changed && md && command.spec &&
+            cli_detail::removal_command(*command.spec))
+          silent_absent = true;
+      }
+    } else if (md_removal) {
+      // MD-CLI deletes below a missing database or client entry stay silent
+      // without materializing them. Classic removals keep the rejected
+      // result.
+      silent_absent = true;
+    }
+  } else if (radius_policy_name) {
+    instance += "/radius/";
+    changed = edit_radius_policies(state, *radius_policy_name, id, command,
+                                   secrets, silent_absent, instance);
   }
 
   // Some operations materialize a parent before discovering an invalid child
@@ -2473,7 +3967,12 @@ EditResult edit(Configuration &state,
   // list entries from appearing after a rejected terminal command.
   if (!changed)
     state = before;
-  return {.recognized = true, .changed = changed, .instance = std::move(instance)};
+  return {.recognized = true,
+          .valid = changed ||
+                   classic_create_selects_existing(id, state, command) ||
+                   silent_absent,
+          .changed = changed,
+          .instance = std::move(instance)};
 }
 
 } // namespace router::lab::ipsec_cli

@@ -95,6 +95,10 @@ struct Server {
   bool rapid_commit_configured{};
   bool lease_query_configured{};
   bool admin_state_configured{};
+  // YANG marks auto-provisioned immutable with default false. The defaults
+  // container is allowed only when it is true, while pools require false.
+  bool auto_provisioned{};
+  bool auto_provisioned_configured{};
   bool operator==(const Server &) const = default;
 };
 
@@ -114,6 +118,7 @@ enum class Status : std::uint8_t {
   invalid_lifetime,
   missing_entropy,
   resource_exhausted,
+  invalid_auto_provisioned,
 };
 
 // allow_incomplete admits list keys in an MD candidate before their mandatory

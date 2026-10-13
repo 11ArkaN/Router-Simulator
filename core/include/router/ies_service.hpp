@@ -21,12 +21,20 @@ namespace router::service {
 
 inline constexpr std::uint32_t minimum_identifier = 1U;
 inline constexpr std::uint32_t maximum_identifier = 2'147'483'647U;
+// SR OS documents service identifiers 1 through 2147483648. The bound needs
+// the full unsigned 32-bit range; it is not INT32_MAX. Customer identifiers
+// keep the shared maximum above.
+inline constexpr std::uint32_t maximum_service_identifier = 2'147'483'647U;
 inline constexpr std::size_t maximum_service_name_octets = 64U;
 inline constexpr std::size_t maximum_interface_name_octets = 32U;
-inline constexpr std::size_t maximum_description_octets = 80U;
+inline constexpr std::size_t maximum_description_octets = 255U;
 inline constexpr std::size_t maximum_relay_interface_id_octets = 80U;
 inline constexpr std::uint16_t maximum_vlan_identifier = 4094U;
-inline constexpr std::uint16_t maximum_relay_leases = 8000U;
+inline constexpr std::uint16_t maximum_relay_leases = 32767U;
+// Classic nbr-of-leases spans 1 through 8000 while MD-CLI max-nbr-of-leases
+// spans 0 through 32767. The classic bound is intentionally narrower than the
+// forwarding resource above.
+inline constexpr std::uint16_t classic_maximum_relay_leases = 8000U;
 
 enum class EthernetPortMode : std::uint8_t { network, access, hybrid };
 enum class EthernetEncapsulation : std::uint8_t { null, dot1q, qinq };
@@ -109,6 +117,18 @@ struct Dhcpv6RelayConfiguration {
              const Dhcpv6RelayConfiguration &) noexcept = default;
 };
 
+struct IesInterfaceAddress {
+  // YANG keys the service interface address list by ipv6-address. The first
+  // configured entry is the primary source for relay link-address fallback,
+  // connected-route origination and link-local derivation order.
+  packet::Ipv6 address{};
+  std::uint8_t prefix_length{};
+
+  [[nodiscard]] friend bool
+  operator==(const IesInterfaceAddress &,
+             const IesInterfaceAddress &) noexcept = default;
+};
+
 struct IesInterfaceConfiguration {
   // logical_id is allocated by the service owner and never derived from vector
   // position or port ordinal. All FIB, ND, relay and checkpoint references use
@@ -118,12 +138,15 @@ struct IesInterfaceConfiguration {
   std::string description{};
   SapKey sap{};
   packet::Mac mac{};
-  packet::Ipv6 address{};
+  // Ordered address list, bounded by the documented per-interface ceiling
+  // shared with native router interfaces. An empty list means the interface
+  // carries no global address yet.
+  std::vector<IesInterfaceAddress> addresses{};
   packet::Ipv6 link_local{};
-  std::uint8_t prefix_length{};
   std::uint16_t ip_mtu{1500U};
-  bool address_configured{};
-  bool admin_enabled{};
+  // YANG defaults the interface admin-state leaf to enable, so a freshly
+  // created interface is administratively up until explicitly disabled.
+  bool admin_enabled{true};
   Dhcpv6RelayConfiguration dhcpv6_relay{};
 
   [[nodiscard]] friend bool

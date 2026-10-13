@@ -198,9 +198,15 @@ EditResult edit(bof::AutoconfigureIntent &configuration,
         id == md_bof_ipv6_client_type_enterprise
             ? bof::Dhcpv6ClientType::duid_enterprise
             : bof::Dhcpv6ClientType::duid_link_local;
+    staged.ipv6.client_type_configured = true;
     identity_changed = staged.ipv6.enabled;
   } else if (id == md_delete_bof_ipv6_client_type) {
+    // YANG carries no default for this leaf, so delete clears presence. The
+    // stored value returns to its inert default and info hides the leaf until
+    // it is configured again.
+    valid = staged.ipv6.client_type_configured;
     staged.ipv6.client_type = bof::Dhcpv6ClientType::duid_enterprise;
+    staged.ipv6.client_type_configured = false;
     identity_changed = staged.ipv6.enabled;
   } else if (id == md_bof_ipv6_include_user_class) {
     const auto value = argument_of(command, TokenKind::boolean);

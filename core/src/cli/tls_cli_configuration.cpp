@@ -7,6 +7,7 @@
 #include "cli_internal.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <optional>
 #include <string_view>
 
@@ -36,19 +37,6 @@ Item *named(std::vector<Item> &items, std::string_view name) {
 }
 
 template <typename Item>
-bool create_named(std::vector<Item> &items, std::string_view name) {
-  // Classic `create` must create a new list instance. Treating an existing
-  // instance as success would violate both SR OS intent and the project-wide
-  // prohibition on successful no-op compatibility commands.
-  if (named(items, name))
-    return false;
-  Item item{};
-  item.name.assign(name);
-  items.push_back(std::move(item));
-  return true;
-}
-
-template <typename Item>
 bool erase_named(std::vector<Item> &items, std::string_view name) {
   const auto found = std::find_if(items.begin(), items.end(),
                                   [name](const Item &item) {
@@ -58,6 +46,35 @@ bool erase_named(std::vector<Item> &items, std::string_view name) {
     return false;
   items.erase(found);
   return true;
+}
+
+template <typename Item>
+bool create_named(std::vector<Item> &items, std::string_view name,
+                  bool &created) {
+  // Classic `name [create]` of an existing keyed object is a select, not a
+  // rejected no-op. The caller reports valid && !changed so the runtime can
+  // still enter the object's present working context.
+  created = false;
+  if (name.empty())
+    return false;
+  if (named(items, name))
+    return true;
+  Item item{};
+  item.name.assign(name);
+  items.push_back(std::move(item));
+  created = true;
+  return true;
+}
+
+template <typename Item>
+bool remove_named(std::vector<Item> &items, std::string_view name,
+                  CliEngine engine, bool require_shutdown) {
+  auto *item = named(items, name);
+  if (!item)
+    return false;
+  if (engine == CliEngine::classic && require_shutdown && item->admin_enabled)
+    return false;
+  return erase_named(items, name);
 }
 
 template <typename Item>
@@ -228,15 +245,9 @@ RevocationMethod revocation(CommandId id) {
   case md_tls_client_secondary_ocsp:
   case md_tls_server_primary_ocsp:
   case md_tls_server_secondary_ocsp:
-  case classic_tls_client_primary_ocsp:
-  case classic_tls_client_secondary_ocsp:
-  case classic_tls_server_primary_ocsp:
-  case classic_tls_server_secondary_ocsp:
     return RevocationMethod::ocsp;
   case md_tls_client_secondary_none:
   case md_tls_server_secondary_none:
-  case classic_tls_client_secondary_none:
-  case classic_tls_server_secondary_none:
     return RevocationMethod::none;
   default:
     return RevocationMethod::crl;
@@ -313,27 +324,83 @@ bool edit_common_profile(Profile &profile, CommandId id,
         StatusResult::revoked);
   case md_delete_tls_client_status:
   case md_delete_tls_server_status:
-  case classic_tls_client_no_status:
-  case classic_tls_server_no_status:
     return delete_leaf(
         profile.status_verification.default_result,
         profile.status_verification.default_result_configured,
         StatusResult::revoked);
+  case classic_tls_client_no_status:
+  case classic_tls_server_no_status: {
+    // Classic `no status-verify` removes the whole verification context, so
+    // every child returns to its default instead of only the default-result.
+    // Each leaf is evaluated separately: short-circuiting would skip the
+    // remaining resets once one leaf reports a change.
+    const bool default_result = delete_leaf(
+        profile.status_verification.default_result,
+        profile.status_verification.default_result_configured,
+        StatusResult::revoked);
+    const bool primary = delete_leaf(
+        profile.status_verification.primary,
+        profile.status_verification.primary_configured,
+        RevocationMethod::crl);
+    const bool secondary = delete_leaf(
+        profile.status_verification.secondary,
+        profile.status_verification.secondary_configured,
+        RevocationMethod::none);
+    return default_result || primary || secondary;
+  }
   case md_tls_client_primary_crl:
   case md_tls_client_primary_ocsp:
   case md_tls_server_primary_crl:
   case md_tls_server_primary_ocsp:
-  case classic_tls_client_primary_crl:
-  case classic_tls_client_primary_ocsp:
-  case classic_tls_server_primary_crl:
-  case classic_tls_server_primary_ocsp:
     return configure_leaf(profile.status_verification.primary,
-                          profile.status_verification.primary_configured,
-                          revocation(id));
+                           profile.status_verification.primary_configured,
+                           revocation(id));
+  case classic_tls_client_ee_revocation_primary_crl_secondary_none:
+  case classic_tls_client_ee_revocation_primary_crl_secondary_crl:
+  case classic_tls_client_ee_revocation_primary_crl_secondary_ocsp:
+  case classic_tls_client_ee_revocation_primary_ocsp_secondary_none:
+  case classic_tls_client_ee_revocation_primary_ocsp_secondary_crl:
+  case classic_tls_client_ee_revocation_primary_ocsp_secondary_ocsp:
+  case classic_tls_server_ee_revocation_primary_crl_secondary_none:
+  case classic_tls_server_ee_revocation_primary_crl_secondary_crl:
+  case classic_tls_server_ee_revocation_primary_crl_secondary_ocsp:
+  case classic_tls_server_ee_revocation_primary_ocsp_secondary_none:
+  case classic_tls_server_ee_revocation_primary_ocsp_secondary_crl:
+  case classic_tls_server_ee_revocation_primary_ocsp_secondary_ocsp: {
+    // The documented classic form configures both methods in one command,
+    // mirroring the IPsec transport-cert pair rows.
+    const bool ocsp_primary =
+        id == classic_tls_client_ee_revocation_primary_ocsp_secondary_none ||
+        id == classic_tls_client_ee_revocation_primary_ocsp_secondary_crl ||
+        id == classic_tls_client_ee_revocation_primary_ocsp_secondary_ocsp ||
+        id == classic_tls_server_ee_revocation_primary_ocsp_secondary_none ||
+        id == classic_tls_server_ee_revocation_primary_ocsp_secondary_crl ||
+        id == classic_tls_server_ee_revocation_primary_ocsp_secondary_ocsp;
+    const auto secondary =
+        id == classic_tls_client_ee_revocation_primary_crl_secondary_none ||
+                id == classic_tls_client_ee_revocation_primary_ocsp_secondary_none ||
+                id == classic_tls_server_ee_revocation_primary_crl_secondary_none ||
+                id == classic_tls_server_ee_revocation_primary_ocsp_secondary_none
+            ? RevocationMethod::none
+        : id == classic_tls_client_ee_revocation_primary_crl_secondary_crl ||
+                id == classic_tls_client_ee_revocation_primary_ocsp_secondary_crl ||
+                id == classic_tls_server_ee_revocation_primary_crl_secondary_crl ||
+                id == classic_tls_server_ee_revocation_primary_ocsp_secondary_crl
+            ? RevocationMethod::crl
+            : RevocationMethod::ocsp;
+    // Each leaf is configured separately: short-circuiting the pair with
+    // || would skip the secondary method once the primary reports a change.
+    const bool primary_changed = configure_leaf(
+        profile.status_verification.primary,
+        profile.status_verification.primary_configured,
+        ocsp_primary ? RevocationMethod::ocsp : RevocationMethod::crl);
+    const bool secondary_changed = configure_leaf(
+        profile.status_verification.secondary,
+        profile.status_verification.secondary_configured, secondary);
+    return primary_changed || secondary_changed;
+  }
   case md_delete_tls_client_primary:
   case md_delete_tls_server_primary:
-  case classic_tls_client_no_primary:
-  case classic_tls_server_no_primary:
     return delete_leaf(profile.status_verification.primary,
                        profile.status_verification.primary_configured,
                        RevocationMethod::crl);
@@ -343,19 +410,11 @@ bool edit_common_profile(Profile &profile, CommandId id,
   case md_tls_server_secondary_none:
   case md_tls_server_secondary_crl:
   case md_tls_server_secondary_ocsp:
-  case classic_tls_client_secondary_none:
-  case classic_tls_client_secondary_crl:
-  case classic_tls_client_secondary_ocsp:
-  case classic_tls_server_secondary_none:
-  case classic_tls_server_secondary_crl:
-  case classic_tls_server_secondary_ocsp:
     return configure_leaf(profile.status_verification.secondary,
-                          profile.status_verification.secondary_configured,
-                          revocation(id));
+                           profile.status_verification.secondary_configured,
+                           revocation(id));
   case md_delete_tls_client_secondary:
   case md_delete_tls_server_secondary:
-  case classic_tls_client_no_secondary:
-  case classic_tls_server_no_secondary:
     return delete_leaf(profile.status_verification.secondary,
                        profile.status_verification.secondary_configured,
                        RevocationMethod::none);
@@ -368,15 +427,16 @@ bool edit_common_profile(Profile &profile, CommandId id,
 
 bool is_md_command(CommandId id) noexcept {
   using enum CommandId;
-  static_assert(md_tls_use_pqc_only < md_delete_tls_server_secondary);
-  return id >= md_tls_use_pqc_only && id <= md_delete_tls_server_secondary;
+  static_assert(md_tls_use_pqc_only < md_delete_tls_server_renegotiate_timer);
+  return id >= md_tls_use_pqc_only && id <= md_delete_tls_server_renegotiate_timer;
 }
 
 bool is_classic_command(CommandId id) noexcept {
   using enum CommandId;
-  static_assert(classic_tls_use_pqc_only < classic_tls_server_no_secondary);
+  static_assert(classic_tls_use_pqc_only <
+                classic_tls_server_no_renegotiate_timer);
   return id >= classic_tls_use_pqc_only &&
-         id <= classic_tls_server_no_secondary;
+         id <= classic_tls_server_no_renegotiate_timer;
 }
 
 EditResult edit(Configuration &configuration,
@@ -389,6 +449,7 @@ EditResult edit(Configuration &configuration,
 
   const auto before = configuration;
   bool changed{};
+  bool selected{};
   std::string instance{"/system/security/tls"};
   const auto key = [&](TokenKind kind) {
     const auto result = value(command, kind);
@@ -399,6 +460,10 @@ EditResult edit(Configuration &configuration,
     return result;
   };
   const bool md = engine == CliEngine::md;
+  const bool removal = cli_detail::removal_command(*command.spec);
+  // Entry and list index ranges are owned by the generated grammar, so every
+  // parsed removal here is either a real element deletion or an absent-element
+  // no-op. Cross-reference rules keep their separate rejected path above.
   using enum CommandId;
 
   if (id == md_tls_use_pqc_only || id == classic_tls_use_pqc_only) {
@@ -415,6 +480,7 @@ EditResult edit(Configuration &configuration,
                key(TokenKind::tls_cert_profile_name);
            !certificate_profile_name.empty() &&
            (id == classic_tls_cert_profile_create ||
+            id == classic_tls_cert_entry_create ||
             id == md_delete_tls_cert_profile ||
             id == classic_tls_cert_profile_remove ||
             id == md_tls_cert_profile_enable ||
@@ -435,12 +501,14 @@ EditResult edit(Configuration &configuration,
             id == md_delete_tls_cert_entry_ca ||
             id == classic_tls_cert_entry_no_ca)) {
     if (id == classic_tls_cert_profile_create)
-      changed = create_named(configuration.certificate_profiles,
-                             certificate_profile_name);
-    else if (id == md_delete_tls_cert_profile ||
-             id == classic_tls_cert_profile_remove)
+      selected = create_named(configuration.certificate_profiles,
+                              certificate_profile_name, changed);
+    else if (id == md_delete_tls_cert_profile)
       changed = erase_named(configuration.certificate_profiles,
                             certificate_profile_name);
+    else if (id == classic_tls_cert_profile_remove)
+      changed = remove_named(configuration.certificate_profiles,
+                             certificate_profile_name, engine, false);
     else {
       auto *profile =
           md ? md_named(configuration.certificate_profiles,
@@ -460,9 +528,20 @@ EditResult edit(Configuration &configuration,
                               profile->admin_configured, false);
       else if (profile) {
         const auto entry_id = index(command);
+        if (id == classic_tls_cert_entry_create) {
+          const bool existed =
+              entry_id &&
+              certificate_entry(*profile, *entry_id, false) != nullptr;
+          auto *entry =
+              entry_id ? certificate_entry(*profile, *entry_id, true) : nullptr;
+          changed = entry && !existed;
+          selected = entry != nullptr;
+        }
         auto *entry = entry_id ? certificate_entry(*profile, *entry_id, true)
                                : nullptr;
-        if (entry && (id == md_tls_cert_entry_certificate ||
+        if (id == classic_tls_cert_entry_create)
+          ;
+        else if (entry && (id == md_tls_cert_entry_certificate ||
                       id == classic_tls_cert_entry_certificate))
           changed = assign(&CertificateEntry::certificate_file, *entry,
                            value(command, TokenKind::tls_certificate_file));
@@ -485,7 +564,10 @@ EditResult edit(Configuration &configuration,
           changed = erase_value(
               entry->send_chain_ca_profiles,
               value(command, TokenKind::tls_ca_profile_name));
-      }
+        else if (entry && id == md_delete_tls_cert_entry_send_chain) {
+          changed = !entry->send_chain_ca_profiles.empty();
+          entry->send_chain_ca_profiles.clear();
+        }      }
     }
   } else if (const auto trust_anchor_profile_name =
                  key(TokenKind::tls_trust_anchor_profile_name);
@@ -498,8 +580,8 @@ EditResult edit(Configuration &configuration,
               id == classic_tls_trust_anchor ||
               id == classic_tls_no_trust_anchor)) {
     if (id == classic_tls_trust_anchor_profile_create)
-      changed = create_named(configuration.trust_anchor_profiles,
-                             trust_anchor_profile_name);
+      selected = create_named(configuration.trust_anchor_profiles,
+                              trust_anchor_profile_name, changed);
     else if (id == md_delete_tls_trust_anchor_profile ||
              id == classic_tls_trust_anchor_profile_remove)
       changed = erase_named(configuration.trust_anchor_profiles,
@@ -529,8 +611,10 @@ EditResult edit(Configuration &configuration,
       const auto name = key(list_kind);
       if (name.empty())
         return false;
-      if (id == create_id)
-        return create_named(lists, name);
+      if (id == create_id) {
+        selected = create_named(lists, name, changed);
+        return changed;
+      }
       if (id == remove_list_id)
         return erase_named(lists, name);
       auto *list = md ? md_named(lists, name) : named(lists, name);
@@ -615,12 +699,14 @@ EditResult edit(Configuration &configuration,
                  key(TokenKind::tls_client_profile_name);
              !client_profile_name.empty()) {
       if (id == classic_tls_client_profile_create)
-        changed = create_named(configuration.client_profiles,
-                               client_profile_name);
-      else if (id == md_delete_tls_client_profile ||
-               id == classic_tls_client_profile_remove)
+        selected = create_named(configuration.client_profiles,
+                                client_profile_name, changed);
+      else if (id == md_delete_tls_client_profile)
         changed = erase_named(configuration.client_profiles,
                               client_profile_name);
+      else if (id == classic_tls_client_profile_remove)
+        changed = remove_named(configuration.client_profiles,
+                               client_profile_name, engine, false);
       else {
         auto *profile =
             md ? md_named(configuration.client_profiles, client_profile_name)
@@ -665,12 +751,14 @@ EditResult edit(Configuration &configuration,
                    key(TokenKind::tls_server_profile_name);
                !server_profile_name.empty()) {
       if (id == classic_tls_server_profile_create)
-        changed = create_named(configuration.server_profiles,
-                               server_profile_name);
-      else if (id == md_delete_tls_server_profile ||
-               id == classic_tls_server_profile_remove)
+        selected = create_named(configuration.server_profiles,
+                                server_profile_name, changed);
+      else if (id == md_delete_tls_server_profile)
         changed = erase_named(configuration.server_profiles,
                               server_profile_name);
+      else if (id == classic_tls_server_profile_remove)
+        changed = remove_named(configuration.server_profiles,
+                               server_profile_name, engine, false);
       else {
         auto *profile =
             md ? md_named(configuration.server_profiles, server_profile_name)
@@ -717,6 +805,29 @@ EditResult edit(Configuration &configuration,
         else if (profile && (id == md_delete_tls_server_common_name ||
                              id == classic_tls_server_no_common_name))
           changed = clear(&ServerProfile::client_common_name_list, *profile);
+        else if (profile && (id == md_tls_server_renegotiate_timer ||
+                             id == classic_tls_server_renegotiate_timer)) {
+          // YANG tls-re-negotiate-timer spans 0 through 65000 seconds with a
+          // default of 0. Values outside the range are explicit errors.
+          const auto text = value(command, TokenKind::tls_timer_minutes);
+          unsigned timer{};
+          const auto parsed =
+              text.empty()
+                  ? std::from_chars(text.data(), text.data(), timer)
+                  : std::from_chars(text.data(), text.data() + text.size(),
+                                    timer);
+          if (!text.empty() && parsed.ec == std::errc{} &&
+              parsed.ptr == text.data() + text.size() && timer <= 65000U) {
+            changed = configure_leaf(profile->renegotiate_timer_minutes,
+                                     profile->renegotiate_timer_configured,
+                                     static_cast<std::uint16_t>(timer));
+          }
+        } else if (profile && (id == md_delete_tls_server_renegotiate_timer ||
+                               id ==
+                                   classic_tls_server_no_renegotiate_timer))
+          changed = delete_leaf(profile->renegotiate_timer_minutes,
+                                profile->renegotiate_timer_configured,
+                                std::uint16_t{});
         else if (profile)
           changed = edit_common_profile(*profile, id, command);
       }
@@ -725,11 +836,20 @@ EditResult edit(Configuration &configuration,
 
   // Cross-reference and PQC rules are validated after the complete atomic
   // edit. A rejected command cannot leave a half-created list entry behind.
-  if (!changed || tls_profile::validate(configuration)) {
+  if (changed && tls_profile::validate(configuration)) {
     configuration = before;
-    changed = false;
+    return {.recognized = true,
+            .valid = false,
+            .changed = false,
+            .instance = std::move(instance)};
   }
+  if (!changed)
+    configuration = before;
   return {.recognized = true,
+          // A no-change delete is the documented MD-CLI silent no-op: the
+          // element was absent or already at its default. Classic keeps the
+          // rejected result for the same input.
+          .valid = changed || selected || (md && removal),
           .changed = changed,
           .instance = std::move(instance)};
 }
