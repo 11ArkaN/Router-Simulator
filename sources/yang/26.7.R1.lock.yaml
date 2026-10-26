@@ -4,39 +4,1459 @@ repository: https://github.com/nokia/7x50_YangModels
 tag: sros_26.7.r1
 tag_object: 37b90279a2efcaf8ebbde11bf20367655641e158
 commit: 6656cbb0905c7b952afaa1d7c2b63aa4da6cc5f7
-scope: isis_roots_and_foundational_types
-dependency_closure: pending
+scope: isis_schema_and_management_dependency_closure
+dependency_closure: complete
 digest_encoding: unmodified_git_blob_bytes
 files:
-  - path: YANG/nokia-submodule/nokia-conf-router-isis.yang
-    revision: "2026-07-08"
-    bytes: 96388
-    sha256: f679767ababf0044835383f75d82670d64635a56941d850079dc5ed0c6a5f48c
-  - path: YANG/nokia-submodule/nokia-state-router-isis.yang
-    revision: "2026-07-08"
-    bytes: 193861
-    sha256: 0d54ab4b9fcdba1814d8379363f566b7c01a8d0575bde054803e1dae2023d560
-  - path: YANG/nokia-submodule/nokia-conf-router.yang
-    revision: "2026-07-08"
-    bytes: 288419
-    sha256: 2ab682f9b8cf1a667b41cedab0fc3c18851e7c2179f9575684b5ff0bb8c9d3d5
+  - path: YANG/ietf/ietf-inet-types.yang
+    revision: 2013-07-15
+    bytes: 16830
+    sha256: 12d98b0143a5ca5095b36420f9ebc1ffa61cfd2eaa850080244cadf01b86ddf9
+  - path: YANG/ietf/ietf-yang-types.yang
+    revision: 2013-07-15
+    bytes: 17933
+    sha256: a04cdcc875764a76e89b7a0200c6b9d800b10713978093acda7840c7c2907c3f
+  - path: YANG/nokia-debug-conf.yang
+    revision: 2026-07-08
+    bytes: 409279
+    sha256: 3f3f1948bb2c256828fb81c2eea13db870249cfa9c623be0f332716e01a3e719
+  - path: YANG/nokia-debug-state.yang
+    revision: 2026-03-11
+    bytes: 5543
+    sha256: 05fd8b4f5d5c8d1e4c21d95bee53f0e04c00792f80f02d8b8a0d2c58184b4d6d
+  - path: YANG/nokia-oper-global.yang
+    revision: 2026-07-08
+    bytes: 563112
+    sha256: 7de9ea64fcb5b51aa570364bb844b3fbd35ea95a233c357f068e57b23f4d7143
+  - path: YANG/nokia-oper-perform.yang
+    revision: 2026-07-08
+    bytes: 235918
+    sha256: 721778719915be077e539da37c489affdff421031bc6e027795d1063e91655fb
+  - path: YANG/nokia-oper-reset.yang
+    revision: 2026-07-08
+    bytes: 1033063
+    sha256: 56fe0933bdd4ceeb588deb9382e622864f4d020d8611fc8134978e9b30788243
   - path: YANG/nokia-sros-yang-extensions.yang
-    revision: "2026-07-08"
+    revision: 2026-07-08
     bytes: 6008
     sha256: e779788c49bb80658764eaf3c5845740f5492ad06f82d23fd7e510e4e0258ec7
-  - path: YANG/nokia-types-isis.yang
-    revision: "2026-07-08"
-    bytes: 17777
-    sha256: 11cfc2506697a0817263b01901603a05e7510d1f6c712aa86d2c8d5757a42878
+  - path: YANG/nokia-submodule/nokia-conf-aa-group.yang
+    revision: 2026-07-08
+    bytes: 400716
+    sha256: 44ceeafbbbe23cd10e5e1ebcf4b6ed2f9b17efc8b1dcf5b56b256ae353997d52
+  - path: YANG/nokia-submodule/nokia-conf-aaa.yang
+    revision: 2026-07-08
+    bytes: 88770
+    sha256: 9986c436271d4172881c3167cb2e3d4015f0c4fdb9b0bb28a03955e9161ffad5
+  - path: YANG/nokia-submodule/nokia-conf-anysec.yang
+    revision: 2026-07-08
+    bytes: 37294
+    sha256: 47d3c4114aa16926d2e08dce53f530d5e01e8d888b080824e639d94907b1fbe6
+  - path: YANG/nokia-submodule/nokia-conf-application-assurance.yang
+    revision: 2026-07-08
+    bytes: 26499
+    sha256: 3a4fa323f38de79aa987bedf9c1edda7226c7fbce314c096399b5862ebff7503
+  - path: YANG/nokia-submodule/nokia-conf-aps.yang
+    revision: 2026-07-08
+    bytes: 5736
+    sha256: c47d188b30ea28b1508a514b780de6b1d1d7c3b6982cac36e3937af32ee06fc1
+  - path: YANG/nokia-submodule/nokia-conf-bfd.yang
+    revision: 2026-07-08
+    bytes: 6961
+    sha256: 3a9efe03ee0d28ad332c801414342385c7fc2336b742ae2d485f3ceec6b7827a
+  - path: YANG/nokia-submodule/nokia-conf-bmp.yang
+    revision: 2026-07-08
+    bytes: 13605
+    sha256: 3e7b7729dab2d23170cfcd3494a53a6daf470396ef8c7596890bf8f5fc2030df
+  - path: YANG/nokia-submodule/nokia-conf-call-trace.yang
+    revision: 2026-07-08
+    bytes: 11941
+    sha256: 40c70dcafb1149f5c5fca6c525820c7c400d9fad9849060391da4fa946c50ace
+  - path: YANG/nokia-submodule/nokia-conf-card-fp.yang
+    revision: 2026-07-08
+    bytes: 36643
+    sha256: 8b6da8cbf052bc4d9bb07de12063e9ee62c5e986e81db9ba465d1ecc7bdb9e6f
+  - path: YANG/nokia-submodule/nokia-conf-card.yang
+    revision: 2026-07-08
+    bytes: 85997
+    sha256: acd8b2f8591db86739b2ba18d422d7f3740d14a5bf79abded076213a69cdbd5c
+  - path: YANG/nokia-submodule/nokia-conf-cflowd.yang
+    revision: 2026-07-08
+    bytes: 32886
+    sha256: 8170d8ac9ca22a310dfa0b43ec618257115781837e1f4d658567cb46fc678357
+  - path: YANG/nokia-submodule/nokia-conf-chassis.yang
+    revision: 2026-07-08
+    bytes: 13510
+    sha256: 7eb7d3f82aeeb035aa3b62005dfa281c2634c614d25a23671f5f8e8bb28a7a77
+  - path: YANG/nokia-submodule/nokia-conf-conn-prof.yang
+    revision: 2026-07-08
+    bytes: 4920
+    sha256: 48bffb77bd34edc3a81f3417e156395f8a79d4934894ea78c460a4696d90835c
+  - path: YANG/nokia-submodule/nokia-conf-dms.yang
+    revision: 2026-07-08
+    bytes: 111638
+    sha256: 74312e485b7a5bd9a3640eac9b383efa1ce6a1bc6b2723637cdfda66780404eb
+  - path: YANG/nokia-submodule/nokia-conf-esa.yang
+    revision: 2026-07-08
+    bytes: 8236
+    sha256: c44b78e4a7ce74a31655bc410f34e409fd77a31f34ff4574649b846efeefa6a6
+  - path: YANG/nokia-submodule/nokia-conf-eth-cfm.yang
+    revision: 2026-07-08
+    bytes: 19026
+    sha256: ef73fec7b3c6b02a05919198fd563e3797832c6348b263799fac73917c244ef8
+  - path: YANG/nokia-submodule/nokia-conf-eth-ring.yang
+    revision: 2026-07-08
+    bytes: 18441
+    sha256: 856e67f9cfe496ed8c47fa085b7177cb35fefb069bab79afcbe609e679303aac
+  - path: YANG/nokia-submodule/nokia-conf-filter-dhcp.yang
+    revision: 2026-07-08
+    bytes: 18384
+    sha256: 948d272015d829bccb62d1f325786bc7d61212b45f3c0506f3f30daad3c2985f
+  - path: YANG/nokia-submodule/nokia-conf-filter-ip-exception.yang
+    revision: 2026-07-08
+    bytes: 29788
+    sha256: 2208c0280deee7d37bf61d47fe02d4b6884b90b026a86e99e7c168d22aebe73f
+  - path: YANG/nokia-submodule/nokia-conf-filter.yang
+    revision: 2026-07-08
+    bytes: 311733
+    sha256: ed52c9c090f4f6d48affb1d924ee3c047528bc08a164eb22fc0b473d40e02ab6
+  - path: YANG/nokia-submodule/nokia-conf-group-encryption.yang
+    revision: 2026-07-08
+    bytes: 7076
+    sha256: 28c196a26b22a31fd1b936f5d71f88e3f230ab2729eb352617311bfa6d87635c
+  - path: YANG/nokia-submodule/nokia-conf-groups.yang
+    revision: 2026-07-08
+    bytes: 10657994
+    sha256: b653102709c6bebee2184e3bb1e02a2d9b7c9f8a199106bd955b7880ab432559
+  - path: YANG/nokia-submodule/nokia-conf-ipsec.yang
+    revision: 2026-07-08
+    bytes: 125443
+    sha256: 9614b1d314e9ad9caea2868772bfbae51c157ca182aa94bd52ec120f2058d3c7
+  - path: YANG/nokia-submodule/nokia-conf-isa-application-assurance-group.yang
+    revision: 2026-07-08
+    bytes: 17604
+    sha256: dfeb9078e7d62ad469d4ab19eb8ac74120fbecbe1f68071705a31fe6a99eb57a
+  - path: YANG/nokia-submodule/nokia-conf-isa-video-group.yang
+    revision: 2026-07-08
+    bytes: 7317
+    sha256: f3b3a7a05efbf04a8b02d6784fbe86f02c95592ec41974ae4eda69688736659e
+  - path: YANG/nokia-submodule/nokia-conf-isa.yang
+    revision: 2026-07-08
+    bytes: 56607
+    sha256: 7ae934596e4735a9bfe79faca14c9d6afc014dea07da8f2c8aac1dc57b21f592
+  - path: YANG/nokia-submodule/nokia-conf-lag.yang
+    revision: 2026-07-08
+    bytes: 61279
+    sha256: 83424a2260d835c2ef8e3e62f54d4c057aebfbbb25f115c651acf14d28d8961f
+  - path: YANG/nokia-submodule/nokia-conf-log.yang
+    revision: 2026-07-08
+    bytes: 786413
+    sha256: 9a667e90a5603224f314a500e9a1f2fbe7f56fa0218f45146d11636968b7fddb
+  - path: YANG/nokia-submodule/nokia-conf-macsec.yang
+    revision: 2026-07-08
+    bytes: 16420
+    sha256: 0c445f403b10d1c37f1f50b399ac44bb5d1cff3a5dbb1341a205175d72711cf1
+  - path: YANG/nokia-submodule/nokia-conf-mcast-cac.yang
+    revision: 2026-07-08
+    bytes: 15272
+    sha256: 424bd3beac144fd34aa0bdf6aeb68801e38980426523bd76b25d5cc60d478a3e
+  - path: YANG/nokia-submodule/nokia-conf-mcast-mgmt.yang
+    revision: 2026-07-08
+    bytes: 101591
+    sha256: 7bd1a67c9d216574f5c5f442d7c42db867d8716e7d5e3f77a91fd4f2965522a4
+  - path: YANG/nokia-submodule/nokia-conf-mirror.yang
+    revision: 2026-07-08
+    bytes: 43204
+    sha256: 244cb6f61d96402453a229388212489d0ddc0d24f5a283dfd6dd97cd85021a53
+  - path: YANG/nokia-submodule/nokia-conf-oam-pm.yang
+    revision: 2026-07-08
+    bytes: 126032
+    sha256: 48100ea005d06e178084703e51e2cd80ffd23e2d7951a8638140304929914588
+  - path: YANG/nokia-submodule/nokia-conf-openflow.yang
+    revision: 2026-07-08
+    bytes: 13233
+    sha256: b4e68941e2199151e6b8caa2bb37ba26b4f5878bec93d76a886a3f4059ef039f
+  - path: YANG/nokia-submodule/nokia-conf-policy-options.yang
+    revision: 2026-07-08
+    bytes: 192666
+    sha256: 950696ad57d058b706045e3564904ed038a425e62ee5f200aefbccf09cb662e1
+  - path: YANG/nokia-submodule/nokia-conf-port-access.yang
+    revision: 2026-07-08
+    bytes: 13616
+    sha256: 40b439afdd8045d0581d9b0d762a858033dc1111fbce7e6b54fb335ec1a3f2cd
+  - path: YANG/nokia-submodule/nokia-conf-port-connector.yang
+    revision: 2026-07-08
+    bytes: 4556
+    sha256: fd86d212788da9ef4640e62914386322f0f36c6dc543ee38683e0f3a54af2d83
+  - path: YANG/nokia-submodule/nokia-conf-port-dwdm-coherent.yang
+    revision: 2026-07-08
+    bytes: 6091
+    sha256: 52a9a2f574e65062f4d4e4718f5d5ab757b73eb6c55d440d09e13276f3b8f388
+  - path: YANG/nokia-submodule/nokia-conf-port-dwdm.yang
+    revision: 2026-07-08
+    bytes: 7386
+    sha256: 147d7281c2e7ae2e3ff64d29dfb98ab1b88aa3b34e8d461ba106a5a3687d596a
+  - path: YANG/nokia-submodule/nokia-conf-port-eth-access.yang
+    revision: 2026-07-08
+    bytes: 36210
+    sha256: 19a2ecc948bfb9e68e773195b63959439921dff4da76290978633c12df9abd0b
+  - path: YANG/nokia-submodule/nokia-conf-port-eth-dot1x.yang
+    revision: 2026-07-08
+    bytes: 15087
+    sha256: 48a4369d9f8faa2d82132581aaddabdc0b3717b037abf58f02bad3655c3789e9
+  - path: YANG/nokia-submodule/nokia-conf-port-eth-efm-oam.yang
+    revision: 2026-07-08
+    bytes: 15455
+    sha256: b27728ec2d2e6fed5891007905b8ef2326294c88c24c361fd96ef725242dfd3e
+  - path: YANG/nokia-submodule/nokia-conf-port-eth-egress.yang
+    revision: 2026-07-08
+    bytes: 18921
+    sha256: 1dd9a7c654a85b9967b9f5d3f24610e2821eb175df3d058b270cbf7d99de73af
+  - path: YANG/nokia-submodule/nokia-conf-port-eth-lldp.yang
+    revision: 2026-07-08
+    bytes: 8201
+    sha256: 4c59c4869561dd8532c22f5404666ac77c9eda04cf7c6b687100c4e8adaaaee8
+  - path: YANG/nokia-submodule/nokia-conf-port-eth-network.yang
+    revision: 2026-07-08
+    bytes: 17984
+    sha256: cc3c561233f9b44262ca4036740367ff1b2fd0d88261a6c1fd57730c6e86c742
+  - path: YANG/nokia-submodule/nokia-conf-port-ethernet.yang
+    revision: 2026-07-08
+    bytes: 42372
+    sha256: 097b1683bb026bb3707a4e6cd0a6f186e9768511b9cc1434a6d98bd79924fe37
+  - path: YANG/nokia-submodule/nokia-conf-port-gnss.yang
+    revision: 2026-07-08
+    bytes: 3703
+    sha256: 096f6ccebdf9d6051ca87191ef82820556ef70ddd20dd69ea382bb3cd1d063f3
+  - path: YANG/nokia-submodule/nokia-conf-port-network.yang
+    revision: 2026-07-08
+    bytes: 7909
+    sha256: 4b7c784f3aecb42d855da55ac07f79248a2984529ce79bf10a10d5f5ac2e5804
+  - path: YANG/nokia-submodule/nokia-conf-port-otu.yang
+    revision: 2026-07-08
+    bytes: 18528
+    sha256: 4b3e58a42467aca7fdea3bd3f38f5948d9328fb7164bca3665fbf5baeb2fd6ad
+  - path: YANG/nokia-submodule/nokia-conf-port-policy.yang
+    revision: 2026-07-08
+    bytes: 2787
+    sha256: c7bf8b6b48349894441b4907da4efa93955e176259a4284921641a2c04c5916e
+  - path: YANG/nokia-submodule/nokia-conf-port-serial.yang
+    revision: 2026-07-08
+    bytes: 16570
+    sha256: 0197fb01b8ed5a32cea8bef5e5ba9eec72e900b3cf844788fa4f83451a190429
+  - path: YANG/nokia-submodule/nokia-conf-port-sonet.yang
+    revision: 2026-07-08
+    bytes: 24493
+    sha256: 062815e0e034fe8171cc8be250b7e84ca68f5891780f810b650b7aa391808073
+  - path: YANG/nokia-submodule/nokia-conf-port-tdm.yang
+    revision: 2026-07-08
+    bytes: 89754
+    sha256: 928930b29812ae15798f49c2dda4c258f6d84f4fd5169224ab09e6d837a56dcf
+  - path: YANG/nokia-submodule/nokia-conf-port.yang
+    revision: 2026-07-08
+    bytes: 14667
+    sha256: 2310b1fcf6d5bb9c13aa31beea8b9c2f52a082203f7780fcb46bef33db61b324
+  - path: YANG/nokia-submodule/nokia-conf-pw-port.yang
+    revision: 2026-07-08
+    bytes: 12698
+    sha256: f779424f7faa17803457f9375f8bf4dc530a4653f06890b1673ef6fbc971932c
+  - path: YANG/nokia-submodule/nokia-conf-pxc.yang
+    revision: 2026-07-08
+    bytes: 18261
+    sha256: c564ff48f77a4f9ea2e39fd02029d9912668cbb0e6ec0be54c08020601a385e2
+  - path: YANG/nokia-submodule/nokia-conf-python.yang
+    revision: 2026-07-08
+    bytes: 38189
+    sha256: d0986442ded7f3765b13f8add9fb31d3a3df4c2568dbc8003c525bc8148c530e
+  - path: YANG/nokia-submodule/nokia-conf-qos.yang
+    revision: 2026-07-08
+    bytes: 545330
+    sha256: 52a856c5dd23607bdb9bee385ae9e0cadd9c51ad67896ee1c95999f6e5389c18
+  - path: YANG/nokia-submodule/nokia-conf-redundancy.yang
+    revision: 2026-07-08
+    bytes: 76409
+    sha256: 847f086e766d71a2802da16a028691a13850c2f64d03959575513b056cbc8deb
+  - path: YANG/nokia-submodule/nokia-conf-router-bgp.yang
+    revision: 2026-07-08
+    bytes: 243995
+    sha256: 15a410cb376c2a4f12f1ccd72fb3c537a267f7457066e83fbf98f3f69463c721
+  - path: YANG/nokia-submodule/nokia-conf-router-bier.yang
+    revision: 2026-07-08
+    bytes: 6884
+    sha256: 739ab0ac40265b24204bb6d7ee89fd14b7be3040a87c87057ff875c4131c4649
+  - path: YANG/nokia-submodule/nokia-conf-router-dhcp-server.yang
+    revision: 2026-07-08
+    bytes: 91945
+    sha256: 37298ea5b329bde78fcc561b0cb423477b934c9dd02ab2dbdd2c06c8d49de032
+  - path: YANG/nokia-submodule/nokia-conf-router-firewall.yang
+    revision: 2026-07-08
+    bytes: 6361
+    sha256: 214b8f4a25072d93054e9ee6dbc3bd418b44581a446db3128aafdd9aa3621449
+  - path: YANG/nokia-submodule/nokia-conf-router-gtm.yang
+    revision: 2026-07-08
+    bytes: 7751
+    sha256: 5f7e9138070535ab1c5a42c94225ec3eab277ede9c9cd550f481bf81c6615e30
+  - path: YANG/nokia-submodule/nokia-conf-router-igmp.yang
+    revision: 2026-07-08
+    bytes: 41647
+    sha256: c6ef8b2cf64cf842d1f9625bfa8254feddbdce9df6e52a9a53b4d5c4548c1bc5
+  - path: YANG/nokia-submodule/nokia-conf-router-isis.yang
+    revision: 2026-07-08
+    bytes: 96388
+    sha256: f679767ababf0044835383f75d82670d64635a56941d850079dc5ed0c6a5f48c
+  - path: YANG/nokia-submodule/nokia-conf-router-l2tp.yang
+    revision: 2026-07-08
+    bytes: 52664
+    sha256: 27fc040ac79e13f5ebb816909f604daf1af790e77f6d1111c49342747774e8bd
+  - path: YANG/nokia-submodule/nokia-conf-router-ldp.yang
+    revision: 2026-07-08
+    bytes: 66761
+    sha256: f38f0e518e09ea714d72d0e8e6bae11dcae1a231b16c6c154de5c3b2214d35a9
+  - path: YANG/nokia-submodule/nokia-conf-router-mld.yang
+    revision: 2026-07-08
+    bytes: 32510
+    sha256: e3b85d4248780ba2bed56755344ca26f40ae7983807024962e338468fb2e7ab2
+  - path: YANG/nokia-submodule/nokia-conf-router-mpls.yang
+    revision: 2026-07-08
+    bytes: 196462
+    sha256: 732d65588bbcb1264a42cc6f6e46c5dd43327727032d232242921df8060800cc
+  - path: YANG/nokia-submodule/nokia-conf-router-msdp.yang
+    revision: 2026-07-08
+    bytes: 18366
+    sha256: ffdb40e41bc4477e43a3bf646ccd1f2abb1e9dbd3cd8138e66636f915e438679
+  - path: YANG/nokia-submodule/nokia-conf-router-nat.yang
+    revision: 2026-07-08
+    bytes: 86412
+    sha256: 59e56e550c63e47340bab50acf026c6b7976fea50d403937fdba11531c6e3ed7
+  - path: YANG/nokia-submodule/nokia-conf-router-origin-validation.yang
+    revision: 2026-07-08
+    bytes: 7614
+    sha256: 0b2c8ffd859c0276c72fdc0bca208a91e680f68bf614e042679f26b82b327d5d
+  - path: YANG/nokia-submodule/nokia-conf-router-ospf.yang
+    revision: 2026-07-08
+    bytes: 74789
+    sha256: 44f7da8d1770dfe7363d32b9b446ee176e68d985109b23d77015d37445139baf
+  - path: YANG/nokia-submodule/nokia-conf-router-ospf3.yang
+    revision: 2026-07-08
+    bytes: 48744
+    sha256: 935af5cb12f7c4b2be62ac1e0e7af61cbb73e0aebf18333adb379dc73f3d04da
+  - path: YANG/nokia-submodule/nokia-conf-router-p2mp-sr-tree.yang
+    revision: 2026-07-08
+    bytes: 27347
+    sha256: c754909894c6ed83f8eb8ee50335bdccbb5d9122761cdb40f7450268de1210e6
+  - path: YANG/nokia-submodule/nokia-conf-router-pcep.yang
+    revision: 2026-07-08
+    bytes: 20687
+    sha256: f1904428a223ca52e2a9592874ce38be7a3e9f223dc8fa752ece649e4e32d95d
+  - path: YANG/nokia-submodule/nokia-conf-router-pim.yang
+    revision: 2026-07-08
+    bytes: 42964
+    sha256: c2c6f0f4713349b1f217a9e20b2f60e4619a519f1012e86ab2fea1cfcb178727
+  - path: YANG/nokia-submodule/nokia-conf-router-radius.yang
+    revision: 2026-07-08
+    bytes: 23336
+    sha256: 522703355c40649aab22310d9958d32053157109bd4c42913809e16e80a2e90a
+  - path: YANG/nokia-submodule/nokia-conf-router-rib-api.yang
+    revision: 2026-07-08
+    bytes: 3709
+    sha256: 592d8c9cf81d4bba67b98926f7fbc186ba7c8e5a51d8d8eaaf52c0776d249ec9
+  - path: YANG/nokia-submodule/nokia-conf-router-rip.yang
+    revision: 2026-07-08
+    bytes: 18627
+    sha256: 45483c6c182e5cba194fcedd0d4eb9d129c13ec681fc22921efc10dd35deecdc
+  - path: YANG/nokia-submodule/nokia-conf-router-ripng.yang
+    revision: 2026-07-08
+    bytes: 16901
+    sha256: be916286c63074ea2ae92cdae380d2b2ace69699faf859e3c449c5c3b325d180
+  - path: YANG/nokia-submodule/nokia-conf-router-rsvp.yang
+    revision: 2026-07-08
+    bytes: 28348
+    sha256: 473d98cc0b23c2233e838536fded96bf1e18a31a6f069909d2d306e8ed1e48f6
+  - path: YANG/nokia-submodule/nokia-conf-router-segment-routing.yang
+    revision: 2026-07-08
+    bytes: 67098
+    sha256: 41b31c7056b2dd76bc8d1ed37956109a4ae4d9423af0eb0e8ac17b69b5cc296f
+  - path: YANG/nokia-submodule/nokia-conf-router-static-route.yang
+    revision: 2026-07-08
+    bytes: 42473
+    sha256: dd1e944132fab7806d6f357df2ff59ecf182eaae0c042b00bc36a6dd777761c3
+  - path: YANG/nokia-submodule/nokia-conf-router-twamp-light.yang
+    revision: 2026-07-08
+    bytes: 6460
+    sha256: 07bfa2fd9ce9a52399208b144681f833486d3a907c87559a6935f5f5468c1f02
+  - path: YANG/nokia-submodule/nokia-conf-router-wpp.yang
+    revision: 2026-07-08
+    bytes: 5623
+    sha256: 6262ed70e9d8e032e18fba1cb97b1953fac89c4ddb66080d70266516e3e42932
+  - path: YANG/nokia-submodule/nokia-conf-router.yang
+    revision: 2026-07-08
+    bytes: 288419
+    sha256: 2ab682f9b8cf1a667b41cedab0fc3c18851e7c2179f9575684b5ff0bb8c9d3d5
+  - path: YANG/nokia-submodule/nokia-conf-routing-options.yang
+    revision: 2026-07-08
+    bytes: 31027
+    sha256: 19f200df268d95b1fdaf95464fc1847a5a2f2284c3f9e371ad047b282830a010
+  - path: YANG/nokia-submodule/nokia-conf-saa.yang
+    revision: 2026-07-08
+    bytes: 77153
+    sha256: 4af8d48a6ce16fe971d0cd5e91f97615388257acc7a44348cf0a0aa94f203805
+  - path: YANG/nokia-submodule/nokia-conf-satellite.yang
+    revision: 2026-07-08
+    bytes: 20345
+    sha256: 2587539c66d9a94fa313ce02bbcd11e67d6b76b025215bb47cec8765d5afcb32
+  - path: YANG/nokia-submodule/nokia-conf-service.yang
+    revision: 2026-07-08
+    bytes: 154398
+    sha256: dbdeaa42cc125db4b8d08b8e339dffdc59123325cb2ecbf32aeebaf8e770cde5
+  - path: YANG/nokia-submodule/nokia-conf-sfm.yang
+    revision: 2026-07-08
+    bytes: 2833
+    sha256: 900e2dc1c5960125d68f230a62b0d9e0165a9f98daee24688f6f1db5445db2c9
+  - path: YANG/nokia-submodule/nokia-conf-submgt-ancp.yang
+    revision: 2026-07-08
+    bytes: 12219
+    sha256: 84d711a5d2a14141897da793977fdb7065a17e79a90ccedbd6a334ebbcf8a554
+  - path: YANG/nokia-submodule/nokia-conf-submgt-gtp.yang
+    revision: 2026-07-08
+    bytes: 43146
+    sha256: 6e0305da50f653e88c0f85336b4a89d728f82da33a625b911b55628ec9fa14bb
+  - path: YANG/nokia-submodule/nokia-conf-submgt-isa-filter.yang
+    revision: 2026-07-08
+    bytes: 13448
+    sha256: f35ed4dac02bd9ee2073760e020b295e099a04aa97f068263adb398d714cf646
+  - path: YANG/nokia-submodule/nokia-conf-submgt-isa-policer.yang
+    revision: 2026-07-08
+    bytes: 5493
+    sha256: cde9d16512fdc23c0656644e1d8405f4fed0ed9e70f8cb7201a1f6acd56cf232
+  - path: YANG/nokia-submodule/nokia-conf-submgt-local-user-db.yang
+    revision: 2026-07-08
+    bytes: 129141
+    sha256: f6877c5739699c72e5f70a6c95e449c62de9c4203c7cac3e0406130731574579
+  - path: YANG/nokia-submodule/nokia-conf-submgt-service-chaining.yang
+    revision: 2026-07-08
+    bytes: 20079
+    sha256: 33ab8189052bcce2dbc80c8e498a39a2d13a2be9b84b1f9c9c884bd223a6f7be
+  - path: YANG/nokia-submodule/nokia-conf-submgt-up-resiliency.yang
+    revision: 2026-07-08
+    bytes: 5840
+    sha256: 3b598f14d1a8859a95c34827ded919fb61d5d31de143e79ee92600a4cbd8904d
+  - path: YANG/nokia-submodule/nokia-conf-submgt-vrgw.yang
+    revision: 2026-07-08
+    bytes: 18094
+    sha256: dbe9f02a12cb851b8854179f9fa7f60a2acc641742cb7bf09607c7f9d20f773b
+  - path: YANG/nokia-submodule/nokia-conf-submgt-wlangw.yang
+    revision: 2026-07-08
+    bytes: 19086
+    sha256: 6d9ad7edbf89e1f37a7aee6f3fe25a76420dd8e8fec7561fb85a0d57848a07a0
+  - path: YANG/nokia-submodule/nokia-conf-subscriber-mgmt.yang
+    revision: 2026-07-08
+    bytes: 475497
+    sha256: 21514a563e770e90420959320b616aec1ba7d95ba84c6de513b2828412364432
+  - path: YANG/nokia-submodule/nokia-conf-svc-cpipe.yang
+    revision: 2026-07-08
+    bytes: 82706
+    sha256: a0b2bf229d835df1355a54781f70af93c13d25c627b49502eefe70566bb99567
+  - path: YANG/nokia-submodule/nokia-conf-svc-epipe.yang
+    revision: 2026-07-08
+    bytes: 214035
+    sha256: fe0e18740e16ac247276900be704422c394025dbf6db300f4c26e771f1be0e0c
+  - path: YANG/nokia-submodule/nokia-conf-svc-ies-grp-if-wlangw.yang
+    revision: 2026-07-08
+    bytes: 50704
+    sha256: 3a0213b70b715d3eb95fc1efe603c9fc41ea986a2bb2f6da3afa59d874a45510
+  - path: YANG/nokia-submodule/nokia-conf-svc-ies-sub-if-wlangw.yang
+    revision: 2026-07-08
+    bytes: 9111
+    sha256: 996860e6ed91accce4a7730957b21407903e3d585a7a79ee26064098fd49ca4a
+  - path: YANG/nokia-submodule/nokia-conf-svc-ies-sub-if.yang
+    revision: 2026-07-08
+    bytes: 249842
+    sha256: 79e1b07bbd3f9a1441546d6a2a5a11ea7a309521744d212edcdd103ff729dc18
+  - path: YANG/nokia-submodule/nokia-conf-svc-ies-vdo-if.yang
+    revision: 2026-07-08
+    bytes: 16426
+    sha256: 998b69721e040f26edfbf40788035a9fe38f4c7655d7567ef43232cc8bcb8772
+  - path: YANG/nokia-submodule/nokia-conf-svc-ies.yang
+    revision: 2026-07-08
+    bytes: 404851
+    sha256: 7e4ba9b6e7b16917cf9eb8d6f1747a13d49a3bc3e841a0b19ff2828fd42fa360
+  - path: YANG/nokia-submodule/nokia-conf-svc-ipfix.yang
+    revision: 2026-07-08
+    bytes: 6388
+    sha256: 0079ccc4aecb9da8089dbfa778c8c6b4c09bab41af2883445f73a9fb17a71b8c
+  - path: YANG/nokia-submodule/nokia-conf-svc-ipipe.yang
+    revision: 2026-07-08
+    bytes: 90984
+    sha256: c16a2bea3e02521aecc01cb5e0d1ddd6c89a499138685ca4550a01b3317b6bfd
+  - path: YANG/nokia-submodule/nokia-conf-svc-nat.yang
+    revision: 2026-07-08
+    bytes: 92743
+    sha256: 1422b1dfcfb05ea24ac918ba9f04f19386dafec9972efa65ad4e7fdd4b42c017
+  - path: YANG/nokia-submodule/nokia-conf-svc-sdp.yang
+    revision: 2026-07-08
+    bytes: 15206
+    sha256: 498fbc9f6a2359ff1c1a9fa635af2b51483a7eca54a8e02cc24000e5b7614843
+  - path: YANG/nokia-submodule/nokia-conf-svc-vpls.yang
+    revision: 2026-07-08
+    bytes: 558188
+    sha256: e637a9bed86bd32bf5e818e9e5c670a9e5b39eef376908c9b0735cdd0b6cc8c0
+  - path: YANG/nokia-submodule/nokia-conf-svc-vprn-dhcp-server.yang
+    revision: 2026-07-08
+    bytes: 91479
+    sha256: 702be16181579ae2d1fa06dc0d16a676a05c969e2b28922d0cda3ea66095d66f
+  - path: YANG/nokia-submodule/nokia-conf-svc-vprn-grp-if-wlangw.yang
+    revision: 2026-07-08
+    bytes: 50709
+    sha256: 253d9617cf0eed8704e96343b4a054e73bc26d0d133a13a744b73b302729216c
+  - path: YANG/nokia-submodule/nokia-conf-svc-vprn-isis.yang
+    revision: 2026-07-08
+    bytes: 46635
+    sha256: 8bff7308cd33470c2514ee4c3a134c6c10b687791440c1f1ffba9cdc88c17364
+  - path: YANG/nokia-submodule/nokia-conf-svc-vprn-msdp.yang
+    revision: 2026-07-08
+    bytes: 18306
+    sha256: 6c5ed0916844ea3a79bf5c657d4a249d50c8a319a15a71fc7fbc8c28d9532203
+  - path: YANG/nokia-submodule/nokia-conf-svc-vprn-ospf.yang
+    revision: 2026-07-08
+    bytes: 46750
+    sha256: ec475ac83771995b5bc02e5213a5ebf9fe1b38262d7d63e4f9e699ade591e2e7
+  - path: YANG/nokia-submodule/nokia-conf-svc-vprn-ospf3.yang
+    revision: 2026-07-08
+    bytes: 36011
+    sha256: 121c129db15d9585b95401c6342bb0a0fc774ed83e8e82c7d234bb9879ccc8b9
+  - path: YANG/nokia-submodule/nokia-conf-svc-vprn-radius.yang
+    revision: 2026-07-08
+    bytes: 23247
+    sha256: 21fc18b987de9b5d42705271d2c19b9ec4fb982591591e627167b7a7efff8e36
+  - path: YANG/nokia-submodule/nokia-conf-svc-vprn-rib-api.yang
+    revision: 2026-03-11
+    bytes: 1517
+    sha256: a396ecb833df8c821391c99ec564ccf7e244843b166dc3d9f8444affd292fa5a
+  - path: YANG/nokia-submodule/nokia-conf-svc-vprn-rip.yang
+    revision: 2026-07-08
+    bytes: 18835
+    sha256: d67d2510f003e7c231bc002166ca5e4a3a24a8ab0e627bf5aee2d1f5801e6845
+  - path: YANG/nokia-submodule/nokia-conf-svc-vprn-ripng.yang
+    revision: 2026-07-08
+    bytes: 17057
+    sha256: bb4cb8d05b29953ecb57b54e252515793fd85480cdf75d98e02bc31af2f8c10f
+  - path: YANG/nokia-submodule/nokia-conf-svc-vprn-sub-if-wlangw.yang
+    revision: 2026-07-08
+    bytes: 9116
+    sha256: 30a9018a567441d174061fd1772522806ddb4835f9802371c0ce9cbc8b8c71c9
+  - path: YANG/nokia-submodule/nokia-conf-svc-vprn-sub-if.yang
+    revision: 2026-07-08
+    bytes: 270087
+    sha256: 0a16b6dc59d61ae8dd21059d713d02a80ddbf716e3f73a4071bb1698b9fbab4b
+  - path: YANG/nokia-submodule/nokia-conf-svc-vprn-twamp-light.yang
+    revision: 2026-07-08
+    bytes: 6150
+    sha256: 30a0678241120fbe3c5fd148a8ba8605e0b16997a2b98ee5efc071365287324c
+  - path: YANG/nokia-submodule/nokia-conf-svc-vprn-vdo-if.yang
+    revision: 2026-07-08
+    bytes: 16431
+    sha256: e344cdd14c8ffcd8b344bf0b8333901cbc08a45b1d78ebd07226f36e24849f5a
+  - path: YANG/nokia-submodule/nokia-conf-svc-vprn.yang
+    revision: 2026-07-08
+    bytes: 1235370
+    sha256: 140e1f16cd5b47f513c078a46628985cba264505181c7290083800af3aee3235
+  - path: YANG/nokia-submodule/nokia-conf-system-bluetooth.yang
+    revision: 2026-07-08
+    bytes: 7157
+    sha256: 2c705e0a7052d78fa248018eb6490cd9e37333737a724b45ec873670088f3448
+  - path: YANG/nokia-submodule/nokia-conf-system-central-frequency-clock.yang
+    revision: 2026-07-08
+    bytes: 11013
+    sha256: 6b3443225519b3d268bab747d469dfe8c4f9083d44211b9d5699bfa3f25b4b2e
+  - path: YANG/nokia-submodule/nokia-conf-system-cron.yang
+    revision: 2026-07-08
+    bytes: 9947
+    sha256: 260191b6e263b0c4e04b39494645ea58264dda5b8f32377ba097b8678dbdd702
+  - path: YANG/nokia-submodule/nokia-conf-system-login-control.yang
+    revision: 2026-07-08
+    bytes: 8487
+    sha256: 28857a30fcae504145c593e55ff520817e67b0c3ba43df29c5bab70fce7c7b35
+  - path: YANG/nokia-submodule/nokia-conf-system-ned.yang
+    revision: 2026-07-08
+    bytes: 6798
+    sha256: a76e20c53bbbb4afffdc160fa4b49c694329e6ea04d56c836c40cb19d2179a2f
+  - path: YANG/nokia-submodule/nokia-conf-system-persistence.yang
+    revision: 2026-07-08
+    bytes: 10335
+    sha256: c4bad1dc8a42d1f2c87f6f96b6e734ec1ea456b78b815350086693bad5bb13ca
+  - path: YANG/nokia-submodule/nokia-conf-system-ptp.yang
+    revision: 2026-07-08
+    bytes: 17161
+    sha256: bf5807467c07aaba27158fd802c87e163410a5a8f529cadf0838c9c0cb24d63b
+  - path: YANG/nokia-submodule/nokia-conf-system-script-control.yang
+    revision: 2026-07-08
+    bytes: 9162
+    sha256: b059386fa3b3510770883f01f3b53082b9ff1161d6154b34a2bf9e13b0e3222b
+  - path: YANG/nokia-submodule/nokia-conf-system-security-aaa.yang
+    revision: 2026-07-08
+    bytes: 59941
+    sha256: aa6c602b7c8d1283ab842e1dc7b9b35682b8739d5e33c40e6726ac5e6547cec0
+  - path: YANG/nokia-submodule/nokia-conf-system-security-cli-script.yang
+    revision: 2026-07-08
+    bytes: 3392
+    sha256: c1b0e8d8524344196a939bbbdaf388498c2671c116e74bd406960b8412c4ea5f
+  - path: YANG/nokia-submodule/nokia-conf-system-security-cpm.yang
+    revision: 2026-07-08
+    bytes: 56966
+    sha256: 9afe36336845515c36f67bd0f813fa6a0fddfb8ce4812afd812a41e21ef8c8d7
+  - path: YANG/nokia-submodule/nokia-conf-system-security-management-access-filter.yang
+    revision: 2026-07-08
+    bytes: 31803
+    sha256: 675144aa02c276a1e965391be49fd846184a1718ea010391a244c71601ebff88
+  - path: YANG/nokia-submodule/nokia-conf-system-security-pki.yang
+    revision: 2026-07-08
+    bytes: 37396
+    sha256: 4076bbc7aaf85006116f483c15f0ee2f9346a4db94726f3e530dc32b71b7f70c
+  - path: YANG/nokia-submodule/nokia-conf-system-security-python-script.yang
+    revision: 2026-07-08
+    bytes: 3878
+    sha256: b5281061cab08b0fa44fef8f140177356835b5cb24df937c0f9200ec972d81cb
+  - path: YANG/nokia-submodule/nokia-conf-system-security-snmp.yang
+    revision: 2026-07-08
+    bytes: 15264
+    sha256: af8fec2b64995e3793a9e4fcc9172ae84a730b9bd5c2c5bd4de97a97c04e90d9
+  - path: YANG/nokia-submodule/nokia-conf-system-security-ssh.yang
+    revision: 2026-07-08
+    bytes: 36365
+    sha256: 4aea1f9433635aa40e1b413142e3ee39fa70d6624d13bbc2ec01ad830511f2ec
+  - path: YANG/nokia-submodule/nokia-conf-system-security-tls.yang
+    revision: 2026-07-08
+    bytes: 45847
+    sha256: 4295388f8778d6b9d41e9d3cc4650c3ad91ab3f58eaa88ee7cf0522e1bf1a073
+  - path: YANG/nokia-submodule/nokia-conf-system-security-user-parameters.yang
+    revision: 2026-07-08
+    bytes: 30213
+    sha256: 9f5748dbb8cd19d2c97331dd9a12fc8e1d34cadc8a225fa287f1c34ef2c0d699
+  - path: YANG/nokia-submodule/nokia-conf-system-security.yang
+    revision: 2026-07-08
+    bytes: 86680
+    sha256: b4bba6694fe5c502622076513c0c7d4a47903393fb97cda3a17414c71d1458bd
+  - path: YANG/nokia-submodule/nokia-conf-system-telemetry.yang
+    revision: 2026-07-08
+    bytes: 15136
+    sha256: 6c84ec51de2d22bf417aff03dcbce274b97a28eb8d52ec33a035303139b2b910
+  - path: YANG/nokia-submodule/nokia-conf-system-time.yang
+    revision: 2026-07-08
+    bytes: 38464
+    sha256: 06600031f90d7da9449d03509d5f2f7124340727b3014d65265c99cf7b4a790c
+  - path: YANG/nokia-submodule/nokia-conf-system.yang
+    revision: 2026-07-08
+    bytes: 271382
+    sha256: 1900817df500a927c68a0374d259313d635e7cfa8e80e5e409b374d6222beee1
+  - path: YANG/nokia-submodule/nokia-conf-test-oam.yang
+    revision: 2026-07-08
+    bytes: 42287
+    sha256: c2f55078689126894d17cd2eba694225d9266bbc354cbb6a2e090a223dc7586d
+  - path: YANG/nokia-submodule/nokia-conf-testoam-service-activation-testhead.yang
+    revision: 2026-07-08
+    bytes: 24111
+    sha256: 0729c16ee4050a07ec743ecfbfe295a264f1c701d7b3e6e16551e0d4a647c15e
+  - path: YANG/nokia-submodule/nokia-conf-vrrp.yang
+    revision: 2026-07-08
+    bytes: 24363
+    sha256: 672325f730e169c5389b35f29456e3c7246a7e1822e66948c9a74cf0c158caea
+  - path: YANG/nokia-submodule/nokia-conf.yang
+    revision: 2026-07-08
+    bytes: 8856
+    sha256: 1f1dc870cedb1de1e79019d6346fde61a5f558cbe53b99e1f5e112bb765b68ad
+  - path: YANG/nokia-submodule/nokia-state-aa-group.yang
+    revision: 2026-03-11
+    bytes: 789295
+    sha256: 50076b1c4d838cc122212df095b1d346c3e3d510013afc886a0d1e990bbcfb02
+  - path: YANG/nokia-submodule/nokia-state-aaa.yang
+    revision: 2026-03-11
+    bytes: 88662
+    sha256: 9eeff78194595f42ad84bdfcdc13d04c7440b285253fb24480097e04433de85a
+  - path: YANG/nokia-submodule/nokia-state-anysec.yang
+    revision: 2026-07-08
+    bytes: 120179
+    sha256: 68851eb65f49cf4628990910a175510e8a355a3acec5780cc62c4d1c198f4380
+  - path: YANG/nokia-submodule/nokia-state-application-assurance.yang
+    revision: 2026-07-08
+    bytes: 28306
+    sha256: e4ec71042df1411a9e6f725242994350dbb98770ed687d8f0bb8eb6d12f4c437
+  - path: YANG/nokia-submodule/nokia-state-aps.yang
+    revision: 2026-07-08
+    bytes: 10177
+    sha256: ebbbe69b4a55a9cccc5b942947373ff42f217587bd67dfe4c37b8bf7807e21d1
+  - path: YANG/nokia-submodule/nokia-state-bfd.yang
+    revision: 2026-03-11
+    bytes: 187444
+    sha256: e6719a85f0aa29dea12a9e7627bfb10979eff70ec3a8bfdd7dc2b0411ab5140b
+  - path: YANG/nokia-submodule/nokia-state-call-trace.yang
+    revision: 2026-03-11
+    bytes: 12363
+    sha256: 0c4638aa2bdccc9568904a032a823f239e89572ff356f8c8d7a677cd2842d07a
+  - path: YANG/nokia-submodule/nokia-state-card-fp.yang
+    revision: 2026-07-08
+    bytes: 269229
+    sha256: bc0c5d892376ce02669a0bef266a19d841726db750eb7042402216f097ca39c0
+  - path: YANG/nokia-submodule/nokia-state-card.yang
+    revision: 2026-07-08
+    bytes: 294312
+    sha256: 307fdc023e635cf1a8b81ab6535140d0493001c9719b21a4cb5e524e944ad730
+  - path: YANG/nokia-submodule/nokia-state-cflowd.yang
+    revision: 2026-03-11
+    bytes: 10361
+    sha256: 2745438dec64755a9b9adef659b85f62f71d41a7be95c7063fd2297d0a2c7feb
+  - path: YANG/nokia-submodule/nokia-state-chassis.yang
+    revision: 2026-07-08
+    bytes: 100250
+    sha256: 99273cef0ec3073f4ff4addfee5e12e737cebd9f46ca6b47670022008e659efe
+  - path: YANG/nokia-submodule/nokia-state-cpm.yang
+    revision: 2026-03-11
+    bytes: 188353
+    sha256: 1921d676373e8d5ecb0dc660873d77955ae2c7252ce117b573a5a65df3c74230
+  - path: YANG/nokia-submodule/nokia-state-dms.yang
+    revision: 2026-07-08
+    bytes: 327351
+    sha256: c6984cd79555e3e7083641cefc79f745704dcaf02e0313fa9c59dcb640357e05
+  - path: YANG/nokia-submodule/nokia-state-esa.yang
+    revision: 2026-03-11
+    bytes: 156433
+    sha256: 03d44787cd32d17d754065431e02858bc66443bde2ec11010056d8b21bda2039
+  - path: YANG/nokia-submodule/nokia-state-eth-cfm.yang
+    revision: 2026-03-11
+    bytes: 70667
+    sha256: 1c314a761574da9bd61e37a8f4d863df3055bc8f76ecefd2ab91fd11b50f385f
+  - path: YANG/nokia-submodule/nokia-state-eth-ring.yang
+    revision: 2026-03-11
+    bytes: 18665
+    sha256: 14652aa5090ff6cfec46e331a17d04702f7732c68859366df86299e52a3bf7cf
+  - path: YANG/nokia-submodule/nokia-state-filter-ip-exception.yang
+    revision: 2026-03-11
+    bytes: 8091
+    sha256: 6e92782dfcfa5ac05c01691ff0db3d3a9c4af23975e2b253054ddfa3aa76ed29
+  - path: YANG/nokia-submodule/nokia-state-filter.yang
+    revision: 2026-03-11
+    bytes: 164281
+    sha256: d05504140c48f8cddbdae469cee534f64cdd38ab6036663929df89b179bf9250
+  - path: YANG/nokia-submodule/nokia-state-group-encryption.yang
+    revision: 2026-03-11
+    bytes: 14092
+    sha256: db8cbefdf6c7b93025a513cbe63845cfa869b541de828f9c99a104faff03af1b
+  - path: YANG/nokia-submodule/nokia-state-ipsec.yang
+    revision: 2026-07-08
+    bytes: 11490
+    sha256: 96ee375416c650b5d7c23e786c186bf07bba8a42008d2d4ae08bba10a2141917
+  - path: YANG/nokia-submodule/nokia-state-isa-application-assurance-group.yang
+    revision: 2026-03-11
+    bytes: 20698
+    sha256: cdff232bf566083e235ba106662094613f770e73ecf786d98bfe3fbfee1b7790
+  - path: YANG/nokia-submodule/nokia-state-isa-video-group.yang
+    revision: 2026-03-11
+    bytes: 70370
+    sha256: bda3747f0dfdf8402d6f6bb95afcbe0e5aacf012d8e5779f6d2e46ab1d7652a0
+  - path: YANG/nokia-submodule/nokia-state-isa.yang
+    revision: 2026-07-08
+    bytes: 587395
+    sha256: 3520cf60351f5a4203b95ba312b0fd252d9e3d0fde3ebf0c5bafce517683b0c4
+  - path: YANG/nokia-submodule/nokia-state-lag.yang
+    revision: 2026-07-08
+    bytes: 65621
+    sha256: 4c425d52d67a1dba5817d3ad0f023a79d42dd70c128cdebaa09f252537370d8b
+  - path: YANG/nokia-submodule/nokia-state-log.yang
+    revision: 2026-07-08
+    bytes: 902406
+    sha256: a06536f79848442194a3cb7b048851a6bf48547271fa0a4984bfff6d86187cba
+  - path: YANG/nokia-submodule/nokia-state-macsec.yang
+    revision: 2026-07-08
+    bytes: 6710
+    sha256: 94d64b64fcdcabb1c0bbf091a6837c4ebc51ee0772f7c2eecf3168f48b26cb3d
+  - path: YANG/nokia-submodule/nokia-state-mcast-cac.yang
+    revision: 2026-03-11
+    bytes: 31475
+    sha256: d272d23ebbe5cfc0084104413ae1a2b68638e73fbcc7936acaede43b73cfb656
+  - path: YANG/nokia-submodule/nokia-state-mcast-mgmt.yang
+    revision: 2026-03-11
+    bytes: 3636
+    sha256: 3d728b3172e11f5b86803cfe798b41e1e57191e13bfe2b80d47aa743f62c656e
+  - path: YANG/nokia-submodule/nokia-state-mirror.yang
+    revision: 2026-07-08
+    bytes: 109075
+    sha256: c58e0d72237a779834a9510a942a6e849daf1f32f4cfc69737862a628d174974
+  - path: YANG/nokia-submodule/nokia-state-oam-pm.yang
+    revision: 2026-03-11
+    bytes: 175197
+    sha256: ff072bcdf4cadb2236ab74c9b4094646be681bc94566fb0d71e498b80f855f6d
+  - path: YANG/nokia-submodule/nokia-state-openflow.yang
+    revision: 2026-03-11
+    bytes: 6321
+    sha256: 2a779d944ccc8f916cf6e0b9114ab61d86eec1aa24269f969bca32c87ff9c381
+  - path: YANG/nokia-submodule/nokia-state-policy-options.yang
+    revision: 2026-03-11
+    bytes: 1940
+    sha256: 84c7091beb171c6a05de3fca076d96c1934e0042e0d4ba76082b6e1b28456232
+  - path: YANG/nokia-submodule/nokia-state-port-access.yang
+    revision: 2026-03-11
+    bytes: 43409
+    sha256: abb02f3014f24c1822785430a7dac20d88f578ad9dc2710842779d38c9c94ec6
+  - path: YANG/nokia-submodule/nokia-state-port-dwdm-coherent.yang
+    revision: 2026-07-08
+    bytes: 35643
+    sha256: 7094ac500c845b83aab0f8ad3eabf03bf7c5fbaa2f6871cd1a7e0f812a0eab1e
+  - path: YANG/nokia-submodule/nokia-state-port-dwdm.yang
+    revision: 2026-07-08
+    bytes: 11826
+    sha256: f0af0776fba610dbd715015c64db09b10da4ee1909b8544c52012c238705e93b
+  - path: YANG/nokia-submodule/nokia-state-port-eth-access.yang
+    revision: 2026-07-08
+    bytes: 129439
+    sha256: ef4dad4e5be6dcb9e9373ffb78855138f70f64aa11ba624a79bb97eeae944407
+  - path: YANG/nokia-submodule/nokia-state-port-eth-dot1x.yang
+    revision: 2026-07-08
+    bytes: 57986
+    sha256: 728b98d3591129fc972fce39ff1fe97d90dd2d8082d3239fe25810a63133ef81
+  - path: YANG/nokia-submodule/nokia-state-port-eth-efm-oam.yang
+    revision: 2026-03-11
+    bytes: 34677
+    sha256: bca6e969ac5b670e5c1e890eb4bf06f68817ed80c7f5f6c9c86e3694089679b5
+  - path: YANG/nokia-submodule/nokia-state-port-eth-egress.yang
+    revision: 2026-07-08
+    bytes: 67319
+    sha256: 7e5d6ea7b7b5a8f03ead8227642849f20ffea0638f877ddcedbe9578758a73e0
+  - path: YANG/nokia-submodule/nokia-state-port-eth-lldp.yang
+    revision: 2026-03-11
+    bytes: 13445
+    sha256: bc0ad728c972a1266345932ff8398fc6c4f9abcf59b17fc7814e071136c31bf7
+  - path: YANG/nokia-submodule/nokia-state-port-eth-network.yang
+    revision: 2026-07-08
+    bytes: 77484
+    sha256: 55eaa404df96ddb0157d8613c45876a29d704f64b62913e737b3563b24ff4e1c
+  - path: YANG/nokia-submodule/nokia-state-port-ethernet.yang
+    revision: 2026-07-08
+    bytes: 64133
+    sha256: 7523b45ea42f4e97d7f7e7fe4f0ccf6e3a4e3664a3927e69972bf4016e8487f3
+  - path: YANG/nokia-submodule/nokia-state-port-gnss.yang
+    revision: 2026-03-11
+    bytes: 4504
+    sha256: 46c4366b63db40e5acdd3cdc1dfc782c604aabf189bb029a0875752bb1c1ed2b
+  - path: YANG/nokia-submodule/nokia-state-port-network.yang
+    revision: 2026-07-08
+    bytes: 36977
+    sha256: 4e7abe4afff609b033c5349ca1444b49d76f906e79260757dbd203678acf9c41
+  - path: YANG/nokia-submodule/nokia-state-port-otu.yang
+    revision: 2026-03-11
+    bytes: 10674
+    sha256: 9e42dde6ce08428b7e3dd450a8e465cf2be6747bda9c15fcfe0661f9bde6a1a0
+  - path: YANG/nokia-submodule/nokia-state-port-serial.yang
+    revision: 2026-03-11
+    bytes: 9134
+    sha256: 2b0f6d01b79b7f1cdf38b347a65371b337dfb24026af0575ae30f5d4f0941b59
+  - path: YANG/nokia-submodule/nokia-state-port-sonet.yang
+    revision: 2026-03-11
+    bytes: 15919
+    sha256: f2fd1f59e22a3f45de50c2aac8ef1eb5ec2f404962aa6837d7b8eed2ac02d878
+  - path: YANG/nokia-submodule/nokia-state-port-tdm.yang
+    revision: 2026-03-11
+    bytes: 38052
+    sha256: f491806d7181a361e3753cf0a5648130dfc982059bc27e6a5e70dce95b853789
+  - path: YANG/nokia-submodule/nokia-state-port.yang
+    revision: 2026-07-08
+    bytes: 139054
+    sha256: 70c66ea532741b552783720525c80e2240418a60f8bb2e2d241094a3e9295cc6
+  - path: YANG/nokia-submodule/nokia-state-pw-port.yang
+    revision: 2026-03-11
+    bytes: 10595
+    sha256: c56599a1b819d8e0f1cf7a2628985571fb4089090a35fc7ec57e99dfb4b72358
+  - path: YANG/nokia-submodule/nokia-state-pxc.yang
+    revision: 2026-03-11
+    bytes: 5431
+    sha256: 903fbb1680183faf2532ae513a1b4239a4e9b16071b16128ec53fe1b39b9e2da
+  - path: YANG/nokia-submodule/nokia-state-python.yang
+    revision: 2026-03-11
+    bytes: 11143
+    sha256: 54568f8c9c1ebbbb8e33f593a2e008540e9fd37846f8fda5e074c9a6815c668f
+  - path: YANG/nokia-submodule/nokia-state-qos.yang
+    revision: 2026-03-11
+    bytes: 16624
+    sha256: 4eb6142ebd2ad0d19fe61e7f7d1c5f3bef000eaa7348c002c6097d0419db2d9f
+  - path: YANG/nokia-submodule/nokia-state-redundancy.yang
+    revision: 2026-07-08
+    bytes: 83251
+    sha256: 896161609dc97b0a2c7e6a180a1f9928c1ca7d83daa5701ad88d1b18adde1966
+  - path: YANG/nokia-submodule/nokia-state-router-bgp.yang
+    revision: 2026-07-08
+    bytes: 268399
+    sha256: 34bd6e98bd83efbb43f86f991e1499842502609f17ad51bda1ee53c3c1eeaf15
+  - path: YANG/nokia-submodule/nokia-state-router-bier.yang
+    revision: 2026-03-11
+    bytes: 19789
+    sha256: 0876bed5aacd376062883fe9901cab0958cf0ac412d46ddbc2d36a13c1952d7c
+  - path: YANG/nokia-submodule/nokia-state-router-dhcp-server.yang
+    revision: 2026-07-08
+    bytes: 148561
+    sha256: e366439fc277ce2ddeaa7056e2c234cb169f77714c4e2c9fa893b712f1cdc82a
+  - path: YANG/nokia-submodule/nokia-state-router-fib-telemetry.yang
+    revision: 2026-03-11
+    bytes: 49872
+    sha256: 366fa1c8fd79d360a97108f37f112f2f93dfc2e038193a5a2b7afe61b9377a2c
+  - path: YANG/nokia-submodule/nokia-state-router-igmp.yang
+    revision: 2026-07-08
+    bytes: 110536
+    sha256: c5911b55f8d3a10b3294011a81308424ee90d896759fba92830bdf5244974bc2
+  - path: YANG/nokia-submodule/nokia-state-router-isis.yang
+    revision: 2026-07-08
+    bytes: 193861
+    sha256: 0d54ab4b9fcdba1814d8379363f566b7c01a8d0575bde054803e1dae2023d560
+  - path: YANG/nokia-submodule/nokia-state-router-l2tp.yang
+    revision: 2026-03-11
+    bytes: 65870
+    sha256: 1efaa44c168363a3de4f2d559a5ca3b5da82edf1c649f6dc2b5daaef02e92d35
+  - path: YANG/nokia-submodule/nokia-state-router-ldp.yang
+    revision: 2026-07-08
+    bytes: 207110
+    sha256: d831592ce3896ad136d6ce5ab3b718268a83a9bda8d4257336282e29b5d02c1c
+  - path: YANG/nokia-submodule/nokia-state-router-mld.yang
+    revision: 2026-07-08
+    bytes: 103285
+    sha256: fe997f53137a8029437bfd3f4558b529910382c7fd631a4c203f41915d8882df
+  - path: YANG/nokia-submodule/nokia-state-router-mpls.yang
+    revision: 2026-07-08
+    bytes: 182581
+    sha256: b0c1ef0ef30dc0a694fa99f45d50e433a5a3e1a134a07e11cf030f6499d2a930
+  - path: YANG/nokia-submodule/nokia-state-router-msdp.yang
+    revision: 2026-03-11
+    bytes: 23962
+    sha256: 8e65d1f68b5913b4ddec26535ee158ffd0196461451ca37101f55b3df55e0caa
+  - path: YANG/nokia-submodule/nokia-state-router-nat.yang
+    revision: 2026-07-08
+    bytes: 59384
+    sha256: 23b6db701ead5a6c269c2ab6656ddc34bc16a596f774534902dd17b4eec5f1da
+  - path: YANG/nokia-submodule/nokia-state-router-origin-validation.yang
+    revision: 2026-03-11
+    bytes: 3703
+    sha256: f6453479de71bf3af07d7c9c258f368c3eafd71dea38b4e291f079492e0dde54
+  - path: YANG/nokia-submodule/nokia-state-router-ospf.yang
+    revision: 2026-07-08
+    bytes: 150133
+    sha256: f4d034cb125b88058a61387eba06e24c8cf393287e57512d060bd7a49240a9eb
+  - path: YANG/nokia-submodule/nokia-state-router-ospf3.yang
+    revision: 2026-07-08
+    bytes: 134664
+    sha256: d99ca9fde964d13b47b70d77dcae8436f3e2e5e1626659c8f60bc3d2495e4cd9
+  - path: YANG/nokia-submodule/nokia-state-router-p2mp-sr-tree.yang
+    revision: 2026-03-11
+    bytes: 31914
+    sha256: 91d1896673afa9a1f0572b16f2747731470876d0743afa947744d1d2dcabdd52
+  - path: YANG/nokia-submodule/nokia-state-router-pcep.yang
+    revision: 2026-03-11
+    bytes: 49922
+    sha256: b420f2cf6b2845594af3ff93dc5dd4c140f2eaca90e0db851a34c6468a537b65
+  - path: YANG/nokia-submodule/nokia-state-router-pim.yang
+    revision: 2026-03-11
+    bytes: 201891
+    sha256: 0202f930c02266491b4660f30761b3eb61cf05b62e16e27fdd3c20792558d37e
+  - path: YANG/nokia-submodule/nokia-state-router-radius.yang
+    revision: 2026-03-11
+    bytes: 29128
+    sha256: fb53400c9019c4993833b268dcc00beb483799508477196d62dc37aaf12c7e7b
+  - path: YANG/nokia-submodule/nokia-state-router-rib-api.yang
+    revision: 2026-03-11
+    bytes: 38260
+    sha256: 083d935b5cc3f3da6ccb4ddf4cf7e708dff666c46daccdcdf626766d1517113d
+  - path: YANG/nokia-submodule/nokia-state-router-rip.yang
+    revision: 2026-03-11
+    bytes: 24470
+    sha256: 2cbef002f2267bd1273506332e888a72bf07a77a90bd7e640014cafeee8c27ce
+  - path: YANG/nokia-submodule/nokia-state-router-ripng.yang
+    revision: 2026-03-11
+    bytes: 17995
+    sha256: 022c5fbd35b39eade9e4746a1a216da857bedfbc4f6d0be4f51b47010347df72
+  - path: YANG/nokia-submodule/nokia-state-router-rsvp.yang
+    revision: 2026-07-08
+    bytes: 47223
+    sha256: 1a38ff78b59196337c6c81aae67ae7252eda4488430049af2f0165671de868d2
+  - path: YANG/nokia-submodule/nokia-state-router-segment-routing.yang
+    revision: 2026-07-08
+    bytes: 43590
+    sha256: e4d3db098af1afabf14dab112252deda6e4e0281eb537d5b28be66d378ee9779
+  - path: YANG/nokia-submodule/nokia-state-router-static-route.yang
+    revision: 2026-07-08
+    bytes: 26596
+    sha256: 7664a03db691682fddf27e50befe90fecdbb92f66c7445749145ed12f1c6eed2
+  - path: YANG/nokia-submodule/nokia-state-router-twamp-light.yang
+    revision: 2026-03-11
+    bytes: 2460
+    sha256: 63f69565dd78feff42cfa1845b18e31f53914f0e99e1801457a47ed1ba370439
+  - path: YANG/nokia-submodule/nokia-state-router-wpp.yang
+    revision: 2026-03-11
+    bytes: 13607
+    sha256: d5e8936c7c6a2fb5a1122938a26c6df6159d3722f8320aff185f102fed81c775
+  - path: YANG/nokia-submodule/nokia-state-router.yang
+    revision: 2026-07-08
+    bytes: 454448
+    sha256: cc5898381a00095e5d0662c38de78347808845d97a88a4068b3957621ec88247
+  - path: YANG/nokia-submodule/nokia-state-saa.yang
+    revision: 2026-03-11
+    bytes: 16912
+    sha256: ee7df4cdf3580c658ccd5327acdc5cc80d5d8b49949538ec0100f1ef0c696e47
+  - path: YANG/nokia-submodule/nokia-state-satellite.yang
+    revision: 2026-07-08
+    bytes: 9122
+    sha256: aba88254a89c773a8fa33f0f8c29bd03c59468cb6766b7089e6a4f0b22bdcc98
+  - path: YANG/nokia-submodule/nokia-state-service.yang
+    revision: 2026-07-08
+    bytes: 54835
+    sha256: c9fa2e1948867519f8a75578471d3fd91e1d4a1c68c7c10a240bfc501b419a39
+  - path: YANG/nokia-submodule/nokia-state-sfm.yang
+    revision: 2026-03-11
+    bytes: 15742
+    sha256: 1509182835954aac06aadea08189ff674ebb3f08bbe1d5f448ce8a8c1cfa483d
+  - path: YANG/nokia-submodule/nokia-state-submgt-gtp.yang
+    revision: 2026-03-11
+    bytes: 46218
+    sha256: 4ce3a73f226cdd2cec5d73466f2be9478b1404ecef027cd99f56c80bf47caa7a
+  - path: YANG/nokia-submodule/nokia-state-submgt-isa-filter.yang
+    revision: 2026-03-11
+    bytes: 3386
+    sha256: c0c539c8d53cd582565d6f62de73866e93fbe6c822f851e6da4c3dbb70b6cea1
+  - path: YANG/nokia-submodule/nokia-state-submgt-local-user-db.yang
+    revision: 2026-03-11
+    bytes: 5689
+    sha256: dfc965c1b0a4192152c3a782db36fc964ebb22b33ee1c1c178a2b06edae58fc7
+  - path: YANG/nokia-submodule/nokia-state-submgt-service-chaining.yang
+    revision: 2026-03-11
+    bytes: 4164
+    sha256: ea75089c7147d33ca80ce68b070b636de344cc4c1d65781064a5c919ab89f369
+  - path: YANG/nokia-submodule/nokia-state-submgt-subscriber.yang
+    revision: 2026-07-08
+    bytes: 488531
+    sha256: 079a435aa93b92595e9a66a5752f827491e190d0f1d3f99fd7fc2ea8b4d7cecf
+  - path: YANG/nokia-submodule/nokia-state-submgt-vrgw.yang
+    revision: 2026-03-11
+    bytes: 76765
+    sha256: f5111b218838ee2a8c40254c042cc7a5c4da9e0c73f307c98dec313b939030ee
+  - path: YANG/nokia-submodule/nokia-state-submgt-wlangw.yang
+    revision: 2026-03-11
+    bytes: 30916
+    sha256: bcdff9017e941e92b7b8d8168778f8072188f5677bbcf9f19d6acf7bb7779a8c
+  - path: YANG/nokia-submodule/nokia-state-subscriber-mgmt.yang
+    revision: 2026-07-08
+    bytes: 147495
+    sha256: 0304d8d149f5c98a80d9382b1ed44217d7c1137e22fed07a4fca4ecf326c0fd3
+  - path: YANG/nokia-submodule/nokia-state-svc-cpipe.yang
+    revision: 2026-07-08
+    bytes: 248878
+    sha256: 3700bc5f5b5af594fb9acd646972c50879d8f8b2c7a307ed5a3ecee401426042
+  - path: YANG/nokia-submodule/nokia-state-svc-epipe.yang
+    revision: 2026-07-08
+    bytes: 369053
+    sha256: 738e0821d4556d44beb1f6dab7ca2e0cfa5f60d92f5b1c3c4baa07d207aedb9b
+  - path: YANG/nokia-submodule/nokia-state-svc-ies-grp-if-wlangw.yang
+    revision: 2026-03-11
+    bytes: 2606
+    sha256: 96fb06b9788f0aab4e85564618b1a3cf3ea9d97b06c78e3d26e343bc95488420
+  - path: YANG/nokia-submodule/nokia-state-svc-ies-sub-if-wlangw.yang
+    revision: 2026-03-11
+    bytes: 4956
+    sha256: 294a9d1081067091698450d29a4166e09228870e48b8f98043d4a4c8b0ae2acd
+  - path: YANG/nokia-submodule/nokia-state-svc-ies-sub-if.yang
+    revision: 2026-07-08
+    bytes: 424500
+    sha256: b9a359d24e62548a69e0b78897243240b2aa812e1f2e0c2450b77a7f66d76555
+  - path: YANG/nokia-submodule/nokia-state-svc-ies-vdo-if.yang
+    revision: 2026-07-08
+    bytes: 113784
+    sha256: b020d5f9f13b19acad8f1be4ecd2489ab621e6f9992cc25236f7e3b64b4c623e
+  - path: YANG/nokia-submodule/nokia-state-svc-ies.yang
+    revision: 2026-07-08
+    bytes: 727511
+    sha256: cdd87961b543de6b569d3348ee3d7adeac426125ca339bd55afaa29182bab506
+  - path: YANG/nokia-submodule/nokia-state-svc-ipipe.yang
+    revision: 2026-07-08
+    bytes: 233333
+    sha256: 11894004d5fbb15ee3ec52a74fdea379be5cc85d0ca976cf17f24c627c10ec39
+  - path: YANG/nokia-submodule/nokia-state-svc-nat.yang
+    revision: 2026-04-22
+    bytes: 74325
+    sha256: 2142f0f723a085a33b3ba5f2c4475aca3d88e37f27509e35ced5bc3bf0c0f1ea
+  - path: YANG/nokia-submodule/nokia-state-svc-sdp.yang
+    revision: 2026-03-11
+    bytes: 8752
+    sha256: 5037a8e08193e6e36d01039cb40a923ff8cf89f593de3dd9cbcc7ec384d4d6e4
+  - path: YANG/nokia-submodule/nokia-state-svc-vpls.yang
+    revision: 2026-07-08
+    bytes: 1127418
+    sha256: e0d41fbf050dba9ced2d2c8aabb76c0bc76e61fabc9836eba8428eb25c88e5d9
+  - path: YANG/nokia-submodule/nokia-state-svc-vprn-dhcp-server.yang
+    revision: 2026-07-08
+    bytes: 148569
+    sha256: f8b5a45343f8d9f4e5e1eaf88fd149989500cff74efa5032c2ecba4d04ac6db0
+  - path: YANG/nokia-submodule/nokia-state-svc-vprn-grp-if-wlangw.yang
+    revision: 2026-03-11
+    bytes: 2611
+    sha256: e86a9753ce31cd767d35f5fb8f345725a2b9203e98fb475a4fff093e55ef87fc
+  - path: YANG/nokia-submodule/nokia-state-svc-vprn-isis.yang
+    revision: 2026-07-08
+    bytes: 88110
+    sha256: e2d52232aac1c97537257d7be83c92c672aee595297e0e3c192c38fa9129dc8c
+  - path: YANG/nokia-submodule/nokia-state-svc-vprn-msdp.yang
+    revision: 2026-03-11
+    bytes: 23970
+    sha256: 420d88e0ad0ebdf00135a1646c68938b93eab3d49f6708120d366be13a1f3643
+  - path: YANG/nokia-submodule/nokia-state-svc-vprn-ospf.yang
+    revision: 2026-07-08
+    bytes: 135330
+    sha256: e63434bb7001ea231eb2f14ea9aa4787b323f302e51701b4c3541865483eacdf
+  - path: YANG/nokia-submodule/nokia-state-svc-vprn-ospf3.yang
+    revision: 2026-07-08
+    bytes: 114524
+    sha256: 0c8b5cd9f0fd4dcff561b982d3239f7290710ca8ab4a327e749ed04773202520
+  - path: YANG/nokia-submodule/nokia-state-svc-vprn-radius.yang
+    revision: 2026-03-11
+    bytes: 29136
+    sha256: f8caf665aef5e097d82a607213686fba389d87132cb1ac90d91cd9d72cafd7f2
+  - path: YANG/nokia-submodule/nokia-state-svc-vprn-rib-api.yang
+    revision: 2026-03-11
+    bytes: 14027
+    sha256: 2479022ecc4a1543ecd5248fd6aeadf60517a20dfb0fb986f9c4e4b367fc2bbc
+  - path: YANG/nokia-submodule/nokia-state-svc-vprn-rip.yang
+    revision: 2026-03-11
+    bytes: 24471
+    sha256: 2ca671c5268b0494c174e72d8df24d5b90281a2edc021c5ad4fa67a597362480
+  - path: YANG/nokia-submodule/nokia-state-svc-vprn-ripng.yang
+    revision: 2026-07-08
+    bytes: 18146
+    sha256: f912229751ce899c5568e88551c216d6f921e1d4b00830d3ab5837fbf0469526
+  - path: YANG/nokia-submodule/nokia-state-svc-vprn-sub-if-wlangw.yang
+    revision: 2026-03-11
+    bytes: 4961
+    sha256: 6373ee9af522bd7a44f751cc3e8cdec3c48c3d03f6a2c2eb3f4f35adbe898fb8
+  - path: YANG/nokia-submodule/nokia-state-svc-vprn-sub-if.yang
+    revision: 2026-07-08
+    bytes: 425000
+    sha256: 8c98f4bf7fa534b6491cec5ef8fda6b1a2df83f0385639114b542b7b23035967
+  - path: YANG/nokia-submodule/nokia-state-svc-vprn-twamp-light.yang
+    revision: 2026-03-11
+    bytes: 2468
+    sha256: 9fc7bb0a62ab66d18a84248b86f45b0e47ad49efdbaa305b77d1950b2ba6da14
+  - path: YANG/nokia-submodule/nokia-state-svc-vprn-vdo-if.yang
+    revision: 2026-07-08
+    bytes: 113789
+    sha256: 4bc106885b19e40202c70987f0feb8d48dd5433b507330b8cd5abcf6061262ef
+  - path: YANG/nokia-submodule/nokia-state-svc-vprn.yang
+    revision: 2026-07-08
+    bytes: 1765241
+    sha256: 52ed5878e8b3eacf39d47abbefeaab4f1182418a06402ac418d8c21caab1bcfc
+  - path: YANG/nokia-submodule/nokia-state-system-bluetooth.yang
+    revision: 2026-03-11
+    bytes: 3029
+    sha256: 8a4a2bf378b31944503c330287afa4eef071816015e4d30cea2b737283182cdf
+  - path: YANG/nokia-submodule/nokia-state-system-bootup.yang
+    revision: 2026-03-11
+    bytes: 6376
+    sha256: 51b0b51060bad3130c3912f9eb02cc0dec132ecae94e76c9e792f6b0511418d2
+  - path: YANG/nokia-submodule/nokia-state-system-central-frequency-clock.yang
+    revision: 2026-03-11
+    bytes: 15285
+    sha256: 4da5c986064d71cf3a67084bb2397744fed60417e324835a1a6174846049e8b9
+  - path: YANG/nokia-submodule/nokia-state-system-cron.yang
+    revision: 2026-03-11
+    bytes: 3851
+    sha256: 6074d3a01ccb1a203a9013b229df6dd4e7de7195758dba772db2e809cda94cc5
+  - path: YANG/nokia-submodule/nokia-state-system-licensing.yang
+    revision: 2026-03-11
+    bytes: 10170
+    sha256: 7cb10105656b62b8ac6396f237fdbebba2af6420d80bdbeb60373fbe836b3805
+  - path: YANG/nokia-submodule/nokia-state-system-ptp.yang
+    revision: 2026-07-08
+    bytes: 142940
+    sha256: f4ca862ba90e8a97f283a99252016694a55d8b903b207bbc31201e6c42b3c8be
+  - path: YANG/nokia-submodule/nokia-state-system-script-control.yang
+    revision: 2026-03-11
+    bytes: 17574
+    sha256: 8c5f2c8e2e7135b1a7784de2450e7062e2c6d1a2bdb94a1269f377ce1a1007a7
+  - path: YANG/nokia-submodule/nokia-state-system-security-aaa.yang
+    revision: 2026-03-11
+    bytes: 31021
+    sha256: 5c801086bbd293e8a760f0c918a41719c7fa2634485c955c38381f8e6ac9973b
+  - path: YANG/nokia-submodule/nokia-state-system-security-cpm.yang
+    revision: 2026-03-11
+    bytes: 12434
+    sha256: df8c45fe9189574f4ec8e63d6bc2d8c2af1ad5e353f87909c971130aca716969
+  - path: YANG/nokia-submodule/nokia-state-system-security-management-access-filter.yang
+    revision: 2026-03-11
+    bytes: 4863
+    sha256: 0e764cac27ec6ab992b167deb1d7997632fbd5f83969393c75891957e56ee321
+  - path: YANG/nokia-submodule/nokia-state-system-security-pki.yang
+    revision: 2026-03-11
+    bytes: 15889
+    sha256: 6ab71c23b48e1da37f565c599762a4a9ac039f4fdb892f38a934a14291303381
+  - path: YANG/nokia-submodule/nokia-state-system-security-ssh.yang
+    revision: 2026-07-08
+    bytes: 27601
+    sha256: 12c911c8f96c303ed12b44add9b2368c351a249f95e771e22a598f2f70123e1a
+  - path: YANG/nokia-submodule/nokia-state-system-security-tls.yang
+    revision: 2026-07-08
+    bytes: 7334
+    sha256: 9efcd75c6421b828c607cca8c6522a8d1f9194d6f08a7184df14c134fc181f2a
+  - path: YANG/nokia-submodule/nokia-state-system-security-user-parameters.yang
+    revision: 2026-03-11
+    bytes: 4434
+    sha256: 4bc270a69a9efbe040a3fdbdea119f27f925d2ae78044bb5344c7c9262c24873
+  - path: YANG/nokia-submodule/nokia-state-system-security.yang
+    revision: 2026-07-08
+    bytes: 54064
+    sha256: a6868753622fb2d867102be2317e019c9ad3b32fb293534b0d6a861b26a72601
+  - path: YANG/nokia-submodule/nokia-state-system-telemetry.yang
+    revision: 2026-03-11
+    bytes: 28100
+    sha256: 03f97226bde1e50c6218cd417bd84041b581b5e44c987c4ca61a27ed55028fa3
+  - path: YANG/nokia-submodule/nokia-state-system-time.yang
+    revision: 2026-07-08
+    bytes: 73610
+    sha256: 2830a9a9d0fb419e2cb8e45f68f68587519dcdce6726ba876276fdeb3ef3ab7a
+  - path: YANG/nokia-submodule/nokia-state-system.yang
+    revision: 2026-07-08
+    bytes: 549533
+    sha256: ab3c81a62a4a86940bf1ad6f1a2727b986c5e159cd1a74054674ec4ac1fc7cf7
+  - path: YANG/nokia-submodule/nokia-state-test-oam.yang
+    revision: 2026-07-08
+    bytes: 70868
+    sha256: cd7003c8341f4437f89a222bf9cf974b0194287fb851905188a564f3c8d9c546
+  - path: YANG/nokia-submodule/nokia-state-testoam-service-activation-testhead.yang
+    revision: 2026-03-11
+    bytes: 29016
+    sha256: 5c652718d22941595b1bdd8bd11edea91b14684781b8bb0008782c1b111d1628
+  - path: YANG/nokia-submodule/nokia-state-users.yang
+    revision: 2026-03-11
+    bytes: 3624
+    sha256: d876db42c005b7aa9130fca728bf0b2e7cd87a29192d180e7de4c6f63883989e
+  - path: YANG/nokia-submodule/nokia-state-video.yang
+    revision: 2026-07-08
+    bytes: 7559
+    sha256: 6bed307c18441706f328e809659112cb0cd994cf978e179447eed519a836d0ff
+  - path: YANG/nokia-submodule/nokia-state-vrrp.yang
+    revision: 2026-03-11
+    bytes: 21064
+    sha256: 17bf68732370f47c3c385a8218b8eaeefe9e935df50e713122f6f7da8afea892
+  - path: YANG/nokia-submodule/nokia-state.yang
+    revision: 2026-07-08
+    bytes: 8267
+    sha256: f1c7be66337ffea32774effa2756ed7a5436f6c457a8c7d60d9dc89a3ff9162d
+  - path: YANG/nokia-types-application-assurance.yang
+    revision: 2026-07-08
+    bytes: 60959
+    sha256: bfa8b52dec4c0b4ad0a1932b89f393ab19d1632e7eefcaec768cc44f70389f68
+  - path: YANG/nokia-types-bfd.yang
+    revision: 2026-03-11
+    bytes: 4771
+    sha256: bcddecdce0b09bd53d5b86f1b9e0a5047354d516b5f8739cc2b8645a398dce24
+  - path: YANG/nokia-types-bgp.yang
+    revision: 2026-03-11
+    bytes: 13935
+    sha256: ea4cd9096e3afc2e9d1a66c7f585dbe6d59c42b0c64840392834b532d5b7b3d8
+  - path: YANG/nokia-types-card.yang
+    revision: 2026-07-08
+    bytes: 68921
+    sha256: b849a59e9b9ec8723528b4d45efb343b367169f9646e12b26d58aecfb8b72bb0
+  - path: YANG/nokia-types-cellular.yang
+    revision: 2026-03-11
+    bytes: 1698
+    sha256: 3af56e06ba61fde0f1794f14dbc8ecbb0a021ae664f3881470d5428334fc53e8
+  - path: YANG/nokia-types-cflowd.yang
+    revision: 2026-03-11
+    bytes: 2089
+    sha256: f7f90f004d8edab6c8fe8a8bdc1410ed322c602ea2a7bd921bd86d10fed6b07f
+  - path: YANG/nokia-types-chassis.yang
+    revision: 2026-03-11
+    bytes: 8565
+    sha256: 4bd1e162735a26b237e36f16ffa434c59c339fa7f50c448f16fe045a807c86f3
+  - path: YANG/nokia-types-dhcp.yang
+    revision: 2026-03-11
+    bytes: 5635
+    sha256: 880b2b7e26b6938eee63e77583be083f5e1179de7f8642c78860c2cbd159e529
+  - path: YANG/nokia-types-diameter.yang
+    revision: 2026-07-08
+    bytes: 3644
+    sha256: aa5f9ad886a6ef651ba5e808d538bada264bbb96eb5b55ed787493e270964103
+  - path: YANG/nokia-types-dms.yang
+    revision: 2026-07-08
+    bytes: 50055
+    sha256: 19f23c8008e817e7cd91a41731e7b77285999d369138a07a9ff128c0fe1a1c6c
+  - path: YANG/nokia-types-esa.yang
+    revision: 2026-03-11
+    bytes: 4117
+    sha256: 8bbb0d9e99c03eb60b8fb7efa557f32bfc1d72f0b139c8d4bd70b8648673ee69
+  - path: YANG/nokia-types-eth-cfm.yang
+    revision: 2026-03-11
+    bytes: 32166
+    sha256: 9d9ce0b7ea9105257123e311768e9aac7175c52bdb53d287b25051570d1178c1
+  - path: YANG/nokia-types-filter.yang
+    revision: 2026-07-08
+    bytes: 18869
+    sha256: 8d0855841000aff67c27003ed8ed29fd56cbf3bab5d3863b15f0c9ba5b75d12d
+  - path: YANG/nokia-types-igmp.yang
+    revision: 2026-03-11
+    bytes: 5108
+    sha256: 6ffbcc62b0473e5ed872e43a375671feca14345d54560ee0e90a3e0ab2c0a5c0
   - path: YANG/nokia-types-igp.yang
-    revision: "2026-07-08"
+    revision: 2026-07-08
     bytes: 4532
     sha256: fdd104a9ad8e985b47a73653ee166ca7ad64817f2030259da208ede358f8f361
+  - path: YANG/nokia-types-ipsec.yang
+    revision: 2026-03-11
+    bytes: 9238
+    sha256: f0b0b762eda1c31d5d5e3218490a11655b31da8f7ccdcd49c0e180a457317f56
+  - path: YANG/nokia-types-isa.yang
+    revision: 2026-03-11
+    bytes: 3360
+    sha256: 760617ed98f67c6a0cc4a5b12b55eb2384b09ea59fd4ddd2136e43b683b2208e
+  - path: YANG/nokia-types-isis.yang
+    revision: 2026-07-08
+    bytes: 17777
+    sha256: 11cfc2506697a0817263b01901603a05e7510d1f6c712aa86d2c8d5757a42878
+  - path: YANG/nokia-types-l2tp.yang
+    revision: 2026-03-11
+    bytes: 29943
+    sha256: 8d16b40eacd0c4b66c1aef737a4619497bdc138460d13ed8c6a7e8708cfc881a
+  - path: YANG/nokia-types-ldp.yang
+    revision: 2026-07-08
+    bytes: 17813
+    sha256: 89228bdf76fdc4fcda51e204496ab428e34b45744b984e2049d3eef3daa30405
+  - path: YANG/nokia-types-lldp.yang
+    revision: 2026-03-11
+    bytes: 7171
+    sha256: 17933ddf1bc4f8683824f9c7157969030b97089d89fdcfad5ea6fdad90469115
+  - path: YANG/nokia-types-log.yang
+    revision: 2026-07-08
+    bytes: 175789
+    sha256: 75133e90aebf2f2d7a84abdf42b6e7f3f43a9464a0437a11db85cef1ff226a4e
+  - path: YANG/nokia-types-mcast-cac.yang
+    revision: 2026-03-11
+    bytes: 2730
+    sha256: 8ce2936e7134b15f2eafe5dc9660f21601909587d2411dad7c2cd9057ee887c4
+  - path: YANG/nokia-types-mcast-mgmt.yang
+    revision: 2026-03-11
+    bytes: 3367
+    sha256: 2bd3df738327d3b68fb7899447e3cde0794c6c34bfce039c1ce088bfe52b75bd
+  - path: YANG/nokia-types-mcr.yang
+    revision: 2026-03-11
+    bytes: 2647
+    sha256: c591a41a0a6af7010e04ced30318099f39181f74f78ac1579487c9ab6f5f2522
+  - path: YANG/nokia-types-mpls.yang
+    revision: 2026-03-11
+    bytes: 16510
+    sha256: c6c08551ba7cde2e2a0db0106cb6ffd93b7385f1e6390c6aa020637fa88c072e
+  - path: YANG/nokia-types-nat.yang
+    revision: 2026-04-22
+    bytes: 10423
+    sha256: 597a833edc11f4269af90e71c44e57f0ad61a8aef9dc4e182d800fbf7a41a976
+  - path: YANG/nokia-types-oam.yang
+    revision: 2026-07-08
+    bytes: 65061
+    sha256: 3b3d683b48807339a286618c2e280a99027b8dab3403497371ff1bfecb090401
+  - path: YANG/nokia-types-operation.yang
+    revision: 2026-03-11
+    bytes: 3009
+    sha256: e8afc9e5c050636c50e6719268d23f1f40f0f295dddc206de77d9cbcc9e660e5
+  - path: YANG/nokia-types-ospf.yang
+    revision: 2026-03-11
+    bytes: 13317
+    sha256: f70921d2ab71e30880e38239521670ee6f17be642d17d14fc85fd28cb9b90dac
+  - path: YANG/nokia-types-pcc-rule.yang
+    revision: 2026-03-11
+    bytes: 1492
+    sha256: c5cabf7ccfd91efb455d49c184b9a9b1775001d73f11ca62e505fa51cc2fa2fc
+  - path: YANG/nokia-types-pim.yang
+    revision: 2026-03-11
+    bytes: 5092
+    sha256: 103ce086628301eda65af3a9b75f2e1658dc37dcecc259104dabbe7f691bf6ef
+  - path: YANG/nokia-types-policy.yang
+    revision: 2026-07-08
+    bytes: 8814
+    sha256: 273ef742fc93a7774710d2246fdb050cdeefeb37a3aee0800b8beb52fe28890e
+  - path: YANG/nokia-types-port.yang
+    revision: 2026-07-08
+    bytes: 66326
+    sha256: 6d06826abd22e735678d0b6ccf7fad10760b792164e4c16ac988c2de878b9021
+  - path: YANG/nokia-types-ppp.yang
+    revision: 2026-03-11
+    bytes: 3950
+    sha256: cc5608d382f9d7123a7d2d491283969ed64fafc7bbd12a984784ed3e00f44e6a
+  - path: YANG/nokia-types-ptp.yang
+    revision: 2026-07-08
+    bytes: 12427
+    sha256: f8fc2d6be68ba8bbb1f032518ea3d90ff0f3446828f7a3f6052b4504417e7ec2
+  - path: YANG/nokia-types-qos.yang
+    revision: 2026-07-08
+    bytes: 60747
+    sha256: 8df0f5dfbec31de534eb6db1406e9260af49b62ce8da4995c8fa7d7f25c5af93
+  - path: YANG/nokia-types-radius.yang
+    revision: 2026-03-11
+    bytes: 2867
+    sha256: 1b82845ff0bfdcbe155935f2a4d277e1f30e38cc36e185ff5cfedd56feabd2df
+  - path: YANG/nokia-types-redundancy.yang
+    revision: 2026-03-11
+    bytes: 6188
+    sha256: fe87bb0dcf8fe191f33672c2739fd53c67db19730c8fd786890b130e034a28a5
+  - path: YANG/nokia-types-rip.yang
+    revision: 2026-03-11
+    bytes: 3325
+    sha256: ff3f77aa1809aac1f4d31b7dec48a864205d83f57edab5028f583b784f6d31c7
+  - path: YANG/nokia-types-ripng.yang
+    revision: 2026-03-11
+    bytes: 2811
+    sha256: 5fe2d8d36799ec4ba1ddd3f649304f38ebd0f5229235e202386dabe24bfab45a
   - path: YANG/nokia-types-router.yang
-    revision: "2026-07-08"
+    revision: 2026-07-08
     bytes: 34965
     sha256: 9808f5aeaa765d8fd07b9cec989f66bb6cedd89e323476ecbaa5f31c23786f0c
+  - path: YANG/nokia-types-rsvp.yang
+    revision: 2026-03-11
+    bytes: 1583
+    sha256: f3b387c4975b60004b9d0dac214dfd312e9752ae6298f7a41b038f1c934d498f
+  - path: YANG/nokia-types-security.yang
+    revision: 2026-07-08
+    bytes: 18530
+    sha256: 670e5aff567b9b9abd304e254034364e9ba3fe6203aab1a19c2e474d0d4697ea
+  - path: YANG/nokia-types-services.yang
+    revision: 2026-07-08
+    bytes: 100893
+    sha256: d1f65b42e8d129e18d1aa9a631fd1bf931491623d7b0d83c0a595dd7b99920f0
+  - path: YANG/nokia-types-sfm.yang
+    revision: 2026-03-11
+    bytes: 3604
+    sha256: 0a5f05700de15fb91bb2368758f1eda36fd74e323a065021a35796a3984f75e8
+  - path: YANG/nokia-types-sr-mpls.yang
+    revision: 2026-03-11
+    bytes: 2626
+    sha256: a092b6bd58c309ebb9dc526a848ad6bacbfd31781bbc9e091999a135fabd9fba
   - path: YANG/nokia-types-sros.yang
-    revision: "2026-07-08"
+    revision: 2026-07-08
     bytes: 91242
     sha256: 440d4851517242e943c00b50a33af592d4124de44df0d40c1a388dcbf3d872e4
+  - path: YANG/nokia-types-subscriber-mgmt.yang
+    revision: 2026-07-08
+    bytes: 46382
+    sha256: 1c51d9d6230ff5e88b1b3d9d3b9a9c3b536cd0b0477f3dccd8b649127e4a8eb3
+  - path: YANG/nokia-types-system.yang
+    revision: 2026-07-08
+    bytes: 52034
+    sha256: 0245978a09c2e14a15c7c17c88f44938df5d8d722ed87f8fd50abf5f977b0546
+  - path: YANG/nokia-types-vrrp.yang
+    revision: 2026-03-11
+    bytes: 5301
+    sha256: 146572e3fa370fbe831b64e403abc29085c240af0a04fa290fd1db2765a98170
+  - path: YANG/nokia-types-wlan.yang
+    revision: 2026-03-11
+    bytes: 1483
+    sha256: 4f961a774a2bb459508cca7059208f43dcb20e6b106b30d6e43abd1f20b7cb30
+  - path: YANG/nokia-types-wlangw.yang
+    revision: 2026-03-11
+    bytes: 6093
+    sha256: decefe1790e91bb7658c85fef9e20667b4c9129ff22e81b5acbe671c96f496eb
+roots:
+  - nokia-conf-router-isis
+  - nokia-state-router-isis
+  - nokia-oper-reset
+  - nokia-oper-perform
+  - nokia-oper-global
+  - nokia-debug-conf
+  - nokia-debug-state

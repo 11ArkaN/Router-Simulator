@@ -5,6 +5,18 @@
 #include <iostream>
 #include <stdexcept>
 
+void isis_packet_tests();
+void isis_three_way_tests();
+void isis_reachability_tests();
+void isis_basic_tlvs_tests();
+void isis_narrow_reachability_tests();
+void isis_authentication_tests();
+void isis_instance_tlv_tests();
+void isis_lsdb_tests();
+void isis_adjacency_tests();
+void isis_flooding_tests();
+void digest_tests();
+
 void capture_store_tests();
 void dhcpv4_client_tests();
 void dhcpv4_configuration_tests();
@@ -338,6 +350,17 @@ int main() {
     tcp_sequence_tests();
     udp_packet_tests();
     udp_transport_tests();
+    isis_packet_tests();
+    isis_three_way_tests();
+    isis_reachability_tests();
+    isis_basic_tlvs_tests();
+    isis_narrow_reachability_tests();
+    isis_authentication_tests();
+    isis_instance_tlv_tests();
+    isis_lsdb_tests();
+    isis_adjacency_tests();
+    isis_flooding_tests();
+    digest_tests();
     std::cout << "module tests passed\n";
     return 0;
   } catch (const std::exception &error) {

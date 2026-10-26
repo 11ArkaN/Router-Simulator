@@ -6,12 +6,12 @@
 
 #include "router/packet.hpp"
 #include "router/sha256.hpp"
+#include "router/digest.hpp"
 
 #include <algorithm>
 #include <array>
 #include <limits>
 #include <openssl/crypto.h>
-#include <openssl/evp.h>
 
 namespace router::ospf::authentication {
 namespace {
@@ -25,7 +25,6 @@ constexpr std::size_t sequence_offset = 20U;
 constexpr std::size_t sha256_digest_octets = crypto::sha256_digest_octets;
 constexpr std::size_t sha1_digest_octets = 20U;
 constexpr std::size_t md5_digest_octets = 16U;
-constexpr std::size_t maximum_digest_octets = sha256_digest_octets;
 constexpr std::size_t ipv6_header_octets = 40U;
 constexpr std::size_t ah_fixed_header_octets = 12U;
 constexpr std::size_t ah_icv_octets = 12U;
@@ -72,108 +71,24 @@ std::uint32_t read32(std::span<const std::uint8_t> bytes,
          bytes[offset + 3U];
 }
 
-std::array<std::uint8_t, sha256_digest_octets>
-normalized_sha256_key(std::span<const std::uint8_t> key) noexcept {
-  // RFC 5709 section 3.3 defines Ko as exactly L octets, unlike generic
-  // RFC 2104 normalization which hashes only keys longer than the compression
-  // block. The distinction matters for keys between 33 and 64 octets.
-  std::array<std::uint8_t, sha256_digest_octets> normalized{};
-  if (key.size() > normalized.size()) {
-    const auto digest = crypto::sha256(key);
-    std::copy(digest.begin(), digest.end(), normalized.begin());
-  } else {
-    std::copy(key.begin(), key.end(), normalized.begin());
-  }
-  return normalized;
-}
-
 std::size_t digest_size(V2CryptographicAlgorithm algorithm) noexcept {
   switch (algorithm) {
-  case V2CryptographicAlgorithm::message_digest_md5:
-    return md5_digest_octets;
-  case V2CryptographicAlgorithm::hmac_sha1:
-    return sha1_digest_octets;
-  case V2CryptographicAlgorithm::hmac_sha256:
-    return sha256_digest_octets;
+  case V2CryptographicAlgorithm::message_digest_md5: return md5_digest_octets;
+  case V2CryptographicAlgorithm::hmac_sha1: return sha1_digest_octets;
+  case V2CryptographicAlgorithm::hmac_sha256: return sha256_digest_octets;
   }
   return 0U;
 }
 
-const EVP_MD *digest_provider(V2CryptographicAlgorithm algorithm) noexcept {
-  return algorithm == V2CryptographicAlgorithm::message_digest_md5
-             ? EVP_md5()
-         : algorithm == V2CryptographicAlgorithm::hmac_sha1
-             ? EVP_sha1()
-             : EVP_sha256();
-}
-
-bool provider_digest(
-    const EVP_MD *algorithm,
-    std::span<const std::span<const std::uint8_t>> segments,
+bool hmac_rfc5709(V2CryptographicAlgorithm algorithm,
+    std::span<const std::uint8_t> key, std::span<const std::uint8_t> message,
     std::span<std::uint8_t> output) noexcept {
-  // OSPF control packets are paced and never form the forwarding hot path.
-  // EVP keeps MD5 and SHA-1 provider policy in OpenSSL instead of duplicating
-  // legacy digest implementations. The context exists only for one bounded
-  // packet and is released before this owner turn can process another packet.
-  auto *context = EVP_MD_CTX_new();
-  if (!context)
-    return false;
-  bool valid = EVP_DigestInit_ex(context, algorithm, nullptr) == 1;
-  for (const auto segment : segments)
-    valid = valid &&
-            EVP_DigestUpdate(context, segment.data(), segment.size()) == 1;
-  unsigned written{};
-  valid = valid &&
-          EVP_DigestFinal_ex(context, output.data(), &written) == 1 &&
-          written == output.size();
-  EVP_MD_CTX_free(context);
-  return valid;
-}
-
-bool hmac_rfc5709(
-    V2CryptographicAlgorithm algorithm, std::span<const std::uint8_t> key,
-    std::span<const std::uint8_t> message,
-    std::span<std::uint8_t> output) noexcept {
-  constexpr std::size_t compression_block_octets = 64U;
-  const auto length = digest_size(algorithm);
-  if (!length || length > maximum_digest_octets || output.size() != length)
-    return false;
-  if (algorithm == V2CryptographicAlgorithm::hmac_sha256) {
-    const auto normalized = normalized_sha256_key(key);
-    const std::array segments{message};
-    const auto digest = crypto::hmac_sha256(normalized, segments);
-    std::copy(digest.begin(), digest.end(), output.begin());
-    return true;
-  }
-
-  std::array<std::uint8_t, maximum_digest_octets> normalized{};
-  if (key.size() > length) {
-    const std::array segments{key};
-    if (!provider_digest(digest_provider(algorithm), segments,
-                         std::span<std::uint8_t>{normalized}.first(length)))
-      return false;
-  } else {
-    std::copy(key.begin(), key.end(), normalized.begin());
-  }
-  std::array<std::uint8_t, compression_block_octets> inner_pad{};
-  std::array<std::uint8_t, compression_block_octets> outer_pad{};
-  for (std::size_t index{}; index < compression_block_octets; ++index) {
-    const auto value =
-        index < length ? normalized[index] : std::uint8_t{0U};
-    inner_pad[index] = static_cast<std::uint8_t>(value ^ 0x36U);
-    outer_pad[index] = static_cast<std::uint8_t>(value ^ 0x5cU);
-  }
-  std::array<std::uint8_t, maximum_digest_octets> inner_digest{};
-  const std::array inner_segments{
-      std::span<const std::uint8_t>{inner_pad}, message};
-  if (!provider_digest(
-          digest_provider(algorithm), inner_segments,
-          std::span<std::uint8_t>{inner_digest}.first(length)))
-    return false;
-  const std::array outer_segments{
-      std::span<const std::uint8_t>{outer_pad},
-      std::span<const std::uint8_t>{inner_digest}.first(length)};
-  return provider_digest(digest_provider(algorithm), outer_segments, output);
+  const auto selected = algorithm == V2CryptographicAlgorithm::hmac_sha1
+      ? crypto::DigestAlgorithm::sha1 : crypto::DigestAlgorithm::sha256;
+  if (algorithm != V2CryptographicAlgorithm::hmac_sha1 &&
+      algorithm != V2CryptographicAlgorithm::hmac_sha256) return false;
+  const std::array segments{message};
+  return crypto::hmac(selected, crypto::KeyNormalization::digest_length, key, segments, output);
 }
 
 bool calculate_digest(
@@ -193,7 +108,7 @@ bool calculate_digest(
         std::span<const std::uint8_t>{wire.data(),
                                      protocol_octets + output.size()}};
     std::array<std::uint8_t, md5_digest_octets> digest{};
-    if (!provider_digest(EVP_md5(), segments, digest))
+    if (!crypto::digest(crypto::DigestAlgorithm::md5, segments, digest))
       return false;
     std::copy(digest.begin(), digest.end(), output.begin());
     OPENSSL_cleanse(digest.data(), digest.size());
@@ -267,14 +182,15 @@ encode_ipv6_ipsec_ah(
   std::array<std::uint8_t, sha1_digest_octets> digest{};
   const auto hmac_algorithm =
       algorithm == IpsecAhAlgorithm::hmac_md5_96
-          ? V2CryptographicAlgorithm::message_digest_md5
-          : V2CryptographicAlgorithm::hmac_sha1;
+          ? crypto::DigestAlgorithm::md5
+          : crypto::DigestAlgorithm::sha1;
   const auto digest_octets =
       algorithm == IpsecAhAlgorithm::hmac_md5_96
           ? md5_digest_octets
           : sha1_digest_octets;
-  const bool valid = hmac_rfc5709(
-      hmac_algorithm, key, wire,
+  const std::array segments{std::span<const std::uint8_t>{wire}};
+  const bool valid = crypto::hmac(
+      hmac_algorithm, crypto::KeyNormalization::rfc2104, key, segments,
       std::span<std::uint8_t>{digest}.first(digest_octets));
   wire[7U] = retained_hop_limit;
   if (!valid) {
@@ -327,15 +243,16 @@ verify_ipv6_ipsec_ah(std::span<const std::uint8_t> ipv6_packet,
   std::array<std::uint8_t, sha1_digest_octets> digest{};
   const auto hmac_algorithm =
       algorithm == IpsecAhAlgorithm::hmac_md5_96
-          ? V2CryptographicAlgorithm::message_digest_md5
-          : V2CryptographicAlgorithm::hmac_sha1;
+          ? crypto::DigestAlgorithm::md5
+          : crypto::DigestAlgorithm::sha1;
   const auto digest_octets =
       algorithm == IpsecAhAlgorithm::hmac_md5_96
           ? md5_digest_octets
           : sha1_digest_octets;
-  const bool calculated = hmac_rfc5709(
-      hmac_algorithm, key,
-      std::span<const std::uint8_t>{canonical}.first(ipv6_packet.size()),
+  const std::array segments{
+      std::span<const std::uint8_t>{canonical}.first(ipv6_packet.size())};
+  const bool calculated = crypto::hmac(
+      hmac_algorithm, crypto::KeyNormalization::rfc2104, key, segments,
       std::span<std::uint8_t>{digest}.first(digest_octets));
   const bool authentic =
       calculated &&

@@ -778,6 +778,10 @@ void network_plane_tests() {
                   ospf::NeighborState::full,
           "restored forwarding owners did not sustain OSPF adjacency through "
           "post-restore Hello packets");
+  // Independent fixtures must release their full-capacity owners after their
+  // final assertion. The Wasm memory ceiling models one lab, not the sum of
+  // every completed lab retained by this aggregate test function.
+  ospf_plane.reset();
 
   const HostHandle host_a{0, 1};
   const HostHandle host_b{1, 1};
@@ -1203,6 +1207,7 @@ void network_plane_tests() {
   require(plane->restore(dhcp_checkpoint, NetworkPlane::Clock::now()) &&
               plane->host_dhcpv6_client_lease_count(host_a).value_or(0U) == 1U,
           "DHCPv6 client/server owners or UDP sockets were lost on restore");
+  plane.reset();
 
   // A separate dual-stack fixture proves the public NetworkPlane contract,
   // not only RouterForwarder internals. Resolution, Echo and Echo Reply cross
@@ -1362,6 +1367,7 @@ void network_plane_tests() {
       "network-plane checkpoint omitted forwarding-owned IPv6 or relay state");
   require(ipv6_plane->remove_dhcpv6_relay(ipv6_first, 7'002U),
           "network-plane owner chain rejected relay removal");
+  ipv6_plane.reset();
 
   // A router-to-host fixture verifies the complete Router Discovery path. The
   // host has no preinstalled IPv6 prefix, default router or DNS server. Every
@@ -1507,6 +1513,7 @@ void network_plane_tests() {
     slaac_plane->pump(slaac_restore + std::chrono::microseconds{turn * 10U});
   require(slaac_plane->router_ipv6_ping_reply(slaac_router, 43),
           "restored SLAAC host lost its operational IPv6 packet path");
+  slaac_plane.reset();
 
   // Two hosts deliberately receive the same RFC 7217 tuple. Their different
   // MAC addresses cannot hide the collision because stable opaque generation
@@ -1616,6 +1623,7 @@ void network_plane_tests() {
           restored_collision.hosts[1].endpoint.ipv6.link_local_dad_counter ==
               router::device_catalog::ipv6_stable_iid_dad_retries,
       "checkpoint restore reset the stable link-local DAD counter");
+  collision_plane.reset();
 
   // DNS configuration crosses the same value-only SPSC command path used by
   // other host services. The query then traverses ARP, IPv4, UDP and Ethernet;
@@ -1777,6 +1785,7 @@ void network_plane_tests() {
       dns_plane->initialize_signing_vault(dnssec_vault_key, dnssec_context) &&
           dns_plane->restore(dns_checkpoint, NetworkPlane::Clock::now()),
       "network-plane restore rejected DNS service checkpoint");
+  dns_plane.reset();
 
   // Three independent host links meet only inside the bridge. Successful ARP
   // resolution proves broadcast replication crossed encoded Ethernet frames

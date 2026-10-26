@@ -72,7 +72,7 @@ Każda komenda otrzymuje dokładny odnośnik do swojej sekcji referencji. Ogóln
 
 ### 2.3. Normy protokołu
 
-Przed implementacją bazowych FSM, floodingu i starzenia trzeba pozyskać oraz sprawdzić pełny tekst [ISO/IEC 10589:2002](https://www.iso.org/standard/30932.html), właściwe poprawki i normatywne zależności Ethernet/LLC. Podczas planowania potwierdzono oficjalną publikację, ale nie pozyskano pełnego tekstu. RFC 1195 uzupełnia ISO 10589 i nie zastępuje całej normy bazowej.
+Podstawą bazowych FSM, floodingu i starzenia jest pełny tekst [ISO/IEC 10589:2002](https://www.iso.org/standard/30932.html), właściwe poprawki i normatywne zależności Ethernet/LLC. Zweryfikowana kopia wydania drugiego z 2002-11-15 zawiera 210 stron PDF, w tym numerowane strony od 1 do 201 i załączniki od A do J. Jej SHA-256 i pochodzenie zapisuje `sources/normative/iso10589-2002.lock.yaml`. Pełny tekst pozostaje poza repozytorium. RFC 1195 uzupełnia ISO 10589 i nie zastępuje całej normy bazowej.
 
 Początkowy katalog norm:
 

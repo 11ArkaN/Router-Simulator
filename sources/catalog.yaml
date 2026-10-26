@@ -1,19 +1,285 @@
 schema_version: 1
 records:
+  - id: iso.10589.2002.flooding
+    kind: routing-protocol-state-table
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 7.3.15 and 7.3.16, SRM and SSN transitions for LSP and SNP reception and transmission
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/isis_flooding.hpp, core/src/isis/isis_flooding.cpp]
+    tests: [core/tests/isis/isis_flooding_test.cpp]
+    status: experimental
+    notes: Allocation-free transitions preserve P2P retransmission until acknowledgement, clear LAN SRM only after successful egress and never acknowledge failed LSDB admission. Unknown purges require transient acknowledgement and unknown nonzero SNP entries require reserved requests. Circuit timers, packet batching, authenticated purge construction and outbound queue integration remain process-owner work.
+  - id: iso.10589.2002.adjacency_decisions
+    kind: routing-protocol-state-table
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clause 8.2.5.2 tables 5 through 8, circuit ID negotiation, clauses 8.4.1 and 8.4.5 DIS election
+    rfc_refs: [RFC5303]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/isis_adjacency.hpp, core/src/isis/isis_adjacency.cpp]
+    tests: [core/tests/isis/isis_adjacency_test.cpp]
+    status: experimental
+    notes: Pure P2P actions preserve the ISO table distinction between rejection, Down, Up and Accept and their area/system reasons. DIS selection requires the startup delay and an Up adjacency, includes priority zero, uses MAC priority ties and preserves a remote winner's advertised LAN ID. Neighbor mutation, timers, three-way integration and pseudonode origination remain process-owner work.
+  - id: iso.10589.2002.lsdb
+    kind: routing-protocol-state
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 7.3.14 through 7.3.16, recency, confusion, memory admission and purge retention
+    rfc_refs: [RFC6232, RFC6233]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/isis_lsdb.hpp, core/src/isis/isis_lsdb.cpp]
+    tests: [core/tests/isis/isis_lsdb_test.cpp]
+    status: experimental
+    notes: One level of one instance owns bounded sorted LSP storage. Duplicate receipt does not refresh lifetime, checksum confusion is explicit and received unknown purges are not retained. Allocation failures preserve existing generations, and smaller replacements reuse their allocation at a full budget. Expired active bodies require finalized purge replacement before retirement. Authentication, self-originated fight-back, flood flags and checkpoint integration remain process-owner work.
+  - id: ietf.isis.domain_wide.rfc5302
+    kind: routing-protocol-wire-format
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: rfc-editor
+    source_url: https://www.rfc-editor.org/rfc/rfc5302.html
+    section: Section 2, default-metric high bit redefined for TLVs 128 and 130
+    rfc_refs: [RFC5302, RFC1195]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/isis_narrow_reachability.hpp, core/src/isis/isis_narrow_reachability.cpp]
+    tests: [core/tests/isis/isis_narrow_reachability_test.cpp]
+    status: experimental
+    notes: Narrow IPv4 entries preserve and originate the up/down bit independently from the six-bit cost and metric type. IS neighbor default-metric high bits remain reserved. Route preference, L2 receive normalization and inter-level leakage rules remain protocol-owner work.
+  - id: ietf.isis.multi_instance.legacy_2009
+    kind: routing-protocol-compatibility-profile
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-internet-draft
+    source_url: https://www.ietf.org/archive/id/draft-ietf-isis-mi-02.txt
+    section: Sections 2.1 and 2.2, fixed two-octet IID and single-option rule
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/isis_instance_tlv.hpp, core/src/isis/isis_instance_tlv.cpp]
+    tests: [core/tests/isis/isis_instance_tlv_test.cpp]
+    status: experimental
+    notes: Legacy wire helpers require exactly two value octets, allow explicit instance zero and reject duplicate IID options. This expired draft is a compatibility format documented by SR OS, not the current IETF standard. Product configuration and runtime selection remain pending.
+  - id: ietf.isis.multi_instance.standard_2016
+    kind: routing-protocol-compatibility-profile
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: rfc-editor
+    source_url: https://www.rfc-editor.org/rfc/rfc8202.html
+    section: Sections 3.1 and 5, IID and ITID framing, placement and reserved zero topology
+    rfc_refs: [RFC8202, RFC6822, RFC5120]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/isis_instance_tlv.hpp, core/src/isis/isis_instance_tlv.cpp]
+    tests: [core/tests/isis/isis_instance_tlv_test.cpp]
+    status: experimental
+    notes: The standard-multi-instance command reference names draft-ginsberg-isis-mi-bis-01 from 2016. Its wire rules were standardized by RFC 8202, which obsoletes RFC 6822 and permits RFC 5120 operation in a nonzero instance using sole ITID zero. No RFC 8202 errata were listed on verification. Wire helpers validate all IID options together and keep ITIDs separate from MT-IDs. MAC isolation, authentication selection and runtime instance ownership remain pending.
+  - id: ietf.crypto.hmac.rfc2104
+    kind: cryptographic-primitive
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: rfc-editor
+    source_url: https://www.rfc-editor.org/rfc/rfc2104.html
+    section: Sections 2 and 3, segmented HMAC and key normalization
+    rfc_refs: [RFC2104, RFC2202, RFC4231, RFC5709, RFC5310]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/digest.hpp, core/src/security/digest.cpp, core/src/ospf/ospf_authentication.cpp]
+    tests: [core/tests/security/digest_test.cpp, core/tests/ospf/ospf_authentication_test.cpp, core/tests/isis/isis_authentication_test.cpp]
+    status: implemented
+    notes: Shared segmented MD5, SHA-1 and SHA-256 hashing distinguishes RFC 2104 block-length key normalization from RFC 5709 and RFC 5310 digest-length normalization. Output is committed only after successful calculation. Explicit key-derived buffers are cleansed. OSPF retains its existing wire formats through this common helper.
+  - id: ietf.isis.authentication.rfc5304
+    kind: routing-protocol-authentication
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: rfc-editor
+    source_url: https://www.rfc-editor.org/rfc/rfc5304.html
+    section: Section 2, authentication type 54 and canonical PDU computation; ISO 10589 clause 9 for type 1
+    rfc_refs: [RFC5304, RFC2104, RFC6232, RFC6233]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/isis_authentication.hpp, core/src/isis/isis_authentication.cpp, sources/normative/isis-authentication.lock.yaml]
+    tests: [core/tests/isis/isis_authentication_test.cpp]
+    status: experimental
+    notes: Cleartext and HMAC-MD5 helpers validate exactly one authentication TLV and protect the complete padded PDU. LSP lifetime and checksum are excluded from HMAC, then checksum is recomputed with the configured source seed. Keychain selection, purge acceptance and runtime integration remain separate.
+  - id: ietf.isis.authentication.rfc5310
+    kind: routing-protocol-authentication
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: rfc-editor
+    source_url: https://www.rfc-editor.org/rfc/rfc5310.html
+    section: Sections 3.1 through 3.5, type 3, two-octet Key ID, Apad and digest-length key normalization
+    rfc_refs: [RFC5310, RFC6232, RFC6233]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/isis_authentication.hpp, core/src/isis/isis_authentication.cpp, sources/normative/isis-authentication.lock.yaml]
+    tests: [core/tests/isis/isis_authentication_test.cpp]
+    status: experimental
+    notes: HMAC-SHA-1 and HMAC-SHA-256 wire helpers use security-association IDs, exact digest lengths and independent complete-packet fixtures. Rejected errata 2461 and 2462 do not replace the later RFC 6232 and RFC 6233 purge requirements, which remain protocol-owner work.
+  - id: iso.10589.2002.narrow_reachability
+    kind: routing-protocol-wire-format
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clause 9.8, IS neighbor TLV 2, virtual flag and four metric fields
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/isis_narrow_reachability.hpp, core/src/isis/isis_narrow_reachability.cpp]
+    tests: [core/tests/isis/isis_narrow_reachability_test.cpp]
+    status: experimental
+    notes: Six-octet-profile neighbor entries retain virtual-link identity and optional metric support independently from the default metric. Protocol acceptance and SPF remain separate.
+  - id: ietf.isis.narrow_ipv4.rfc1195
+    kind: routing-protocol-wire-format
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: rfc-editor
+    source_url: https://www.rfc-editor.org/rfc/rfc1195.html
+    section: Sections 5.3.4 and 5.3.5, internal and external IPv4 reachability TLVs 128 and 130
+    rfc_refs: [RFC1195]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/isis_narrow_reachability.hpp, core/src/isis/isis_narrow_reachability.cpp]
+    tests: [core/tests/isis/isis_narrow_reachability_test.cpp]
+    status: experimental
+    notes: Codecs distinguish external reachability from external metric type, preserve masks and addresses and normalize reserved transmit bits. Route selection and prefix eligibility remain separate.
+  - id: iso.10589.2002.basic_tlvs
+    kind: routing-protocol-wire-format
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 9.5 and 9.6, area address and six-octet LAN neighbor lists
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/isis_basic_tlvs.hpp, core/src/isis/isis_basic_tlvs.cpp]
+    tests: [core/tests/isis/isis_basic_tlvs_test.cpp]
+    status: experimental
+    notes: Bounded area-list and fixed-width address codecs use caller-owned storage. Adjacency acceptance, area-count policy and packet placement remain process-owner responsibilities.
+  - id: ietf.isis.integrated.rfc1195
+    kind: routing-protocol-wire-format
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: rfc-editor
+    source_url: https://www.rfc-editor.org/rfc/rfc1195.html
+    section: Section 5.3, supported protocols TLV 129 and IPv4 interface addresses TLV 132
+    rfc_refs: [RFC1195]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/isis_basic_tlvs.hpp, core/src/isis/isis_basic_tlvs.cpp]
+    tests: [core/tests/isis/isis_basic_tlvs_test.cpp]
+    status: experimental
+    notes: Wire list helpers preserve unknown NLPIDs and fixed-width IPv4 values. No routing reachability is inferred from interface address advertisements.
+  - id: ietf.isis.reachability.rfc5305
+    kind: routing-protocol-wire-format
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: rfc-editor
+    source_url: https://www.rfc-editor.org/rfc/rfc5305.html
+    section: Sections 3 and 4, extended IS reachability, extended IPv4 reachability and metric arithmetic
+    rfc_refs: [RFC5305]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/isis_reachability.hpp, core/src/isis/isis_reachability.cpp]
+    tests: [core/tests/isis/isis_reachability_test.cpp]
+    status: experimental
+    notes: Bounded TLV 22 and 135 entry codecs preserve unknown sub-TLVs, mask unused received prefix bits and saturate path sums. Link eligibility, prefix eligibility, leakage and SPF integration remain protocol-owner work.
+  - id: ietf.isis.ipv6.rfc5308
+    kind: routing-protocol-wire-format
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: rfc-editor
+    source_url: https://www.rfc-editor.org/rfc/rfc5308.html
+    section: Sections 2 and 3, IPv6 reachability TLV 236 and interface addresses TLV 232
+    rfc_refs: [RFC5308]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/isis_reachability.hpp, core/src/isis/isis_reachability.cpp, core/include/router/isis_basic_tlvs.hpp, core/src/isis/isis_basic_tlvs.cpp]
+    tests: [core/tests/isis/isis_reachability_test.cpp, core/tests/isis/isis_basic_tlvs_test.cpp]
+    status: experimental
+    notes: Bounded IPv6 prefix entries preserve external and down flags, ignore reserved receive bits and reject link-local origination. Interface-address placement distinguishes Hello link-local values from LSP non-link-local values. Route preference and runtime integration remain pending.
+  - id: ietf.isis.three_way.rfc5303
+    kind: routing-protocol-wire-and-state-table
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: rfc-editor
+    source_url: https://www.rfc-editor.org/rfc/rfc5303.html
+    section: Sections 3.1 and 3.2, option 240 and adjacency three-way state table, verified errata 2587 and 2588
+    rfc_refs: [RFC5303]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/isis_three_way.hpp, core/src/isis/isis_three_way.cpp, sources/normative/rfc5303.lock.yaml]
+    tests: [core/tests/isis/isis_three_way_test.cpp]
+    status: experimental
+    notes: Six-octet-profile option framing and the complete pure transition table are tested independently of the ISO adjacency owner. Legacy fallback, optional fields, invalid states and neighbor identity mismatch have explicit results. Runtime adjacency integration remains pending.
+  - id: iso.10589.2002.pdu_envelopes
+    kind: routing-protocol-wire-format
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 7.3.11 and 9.1 through 9.13, PDU framing and checksum
+    rfc_refs: [RFC905]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/isis_packet.hpp, core/include/router/iso_checksum.hpp, core/src/isis/isis_packet.cpp]
+    tests: [core/tests/isis/isis_packet_test.cpp]
+    status: experimental
+    notes: Bounded six-octet-profile PDU envelopes, Hello/LSP/CSNP/PSNP writers, original unknown TLV preservation and source-ID-seeded LSP checksum are under conformance testing. Reserved receive bits are ignored. Protocol FSM, individual TLV semantics and production CLI exposure remain separate work.
+  - id: iso.10589.2002.protocol
+    kind: routing-protocol-standard
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Second edition, clauses 7 to 10 and normative annexes A, E, G, H, I and J
+    rfc_refs: [RFC1195]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [sources/normative/iso10589-2002.lock.yaml]
+    tests: []
+    status: researched
+    notes: The user-provided complete English PDF has 210 PDF pages including numbered pages 1 through 201. Its identity, contents, normative annexes and final index were inspected. Only the document fingerprint is redistributed.
+  - id: ietf.yang.rfc7950.source_inventory
+    kind: development-source-inventory
+    release: 26.7.R1
+    platforms: [development]
+    source_type: rfc-editor
+    source_url: https://www.rfc-editor.org/rfc/rfc7950.html
+    section: Sections 6.1 through 6.3, statement syntax, quoting and source structure
+    rfc_refs: [RFC7950]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [tools/yang/statements.mjs, tools/yang/inventory.mjs, tools/yang/types.mjs, tools/generate-isis-source-inventory.mjs, schemas/cli/isis-26.7.R1-inventory.json]
+    tests: [tools/yang/statements.test.mjs, tools/yang/inventory.test.mjs, tools/yang/types.test.mjs]
+    status: implemented
+    notes: Offline statement parsing preserves comments, quoted strings, concatenation, source locations and schema alternatives. Dependency traversal includes imports, includes and parent modules and validates revision-date. Type resolution preserves lexical scope, imported and included typedef chains, union members, restriction layers and inherited defaults. The IS-IS grouping inventory rejects unexpanded constructs, unresolved types, cycles and duplicate schema identities. This is source evidence rather than an executable command schema or a general YANG semantic compiler.
   - id: nokia.sros.26_7.isis.yang_roots
     kind: routing-protocol-source-profile
     release: 26.7.R1
     platforms: [all-supported]
     source_type: nokia-official-yang
     source_url: https://github.com/nokia/7x50_YangModels/tree/6656cbb0905c7b952afaa1d7c2b63aa4da6cc5f7/YANG
-    section: IS-IS configuration and state roots, router interfaces, extensions and foundational types
+    section: IS-IS configuration, state and management roots with their complete module dependency closure
     rfc_refs: []
     yang_path: /configure/router/isis
     last_verified_at: 2026-10-26
-    implementation: [sources/yang/26.7.R1.lock.yaml, docs/isis-implementation-plan.md]
-    tests: []
+    implementation: [sources/yang/26.7.R1.lock.yaml, docs/isis-implementation-plan.md, tools/generate-isis-source-inventory.mjs]
+    tests: [tools/yang/statements.test.mjs, tools/yang/inventory.test.mjs]
     status: researched
-    notes: The exact sros_26.7.r1 tag and immutable commit pin eight source files with revision, byte size and SHA-256 of unmodified Git blob bytes. The transitive dependency closure and command coverage remain pending. This record establishes source provenance and does not claim runtime or CLI implementation. Classic command spellings require engine-specific reference mapping in addition to the YANG model.
+    notes: The exact sros_26.7.r1 tag and immutable commit pin the complete dependency closure of the selected IS-IS and management roots. Every source has its revision, byte size and SHA-256 of unmodified Git blob bytes. The inventory contains all declared IS-IS configuration and state nodes, preserving alternatives separately from data paths. Command mapping and runtime behavior remain pending. Classic spellings require engine-specific reference mapping in addition to the YANG model.
   - id: project.router_lab.demo_catalog
     kind: browser-ui-feature
     release: 26.7.R1
@@ -276,7 +542,7 @@ records:
     rfc_refs: [RFC2328, RFC5340, RFC905]
     yang_path: null
     last_verified_at: 2026-07-23
-    implementation: [core/include/router/ospf_lsdb.hpp, core/src/ospf/ospf_lsdb.cpp]
+    implementation: [core/include/router/iso_checksum.hpp, core/include/router/ospf_lsdb.hpp, core/src/ospf/ospf_lsdb.cpp]
     tests: [core/tests/ospf/ospf_lsdb_test.cpp, core/tests/ospf/ospf_lsa_builder_test.cpp]
     status: implemented
     notes: LSA generation and verification apply signed modulo-255 arithmetic to the contents after LS age. Tests cover a linked OSPFv3 Router-LSA whose negative intermediate detects accidental unsigned promotion.

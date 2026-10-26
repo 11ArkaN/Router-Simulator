@@ -1,0 +1,144 @@
+// Owner-local LSDB storage, recency and lifetime projection. Sorted metadata
+// has one reserved allocation; PDU vectors preserve exact accepted bytes.
+// A growing replacement stages one PDU before swapping, so peak allocation
+// includes one additional maximum PDU beyond the retained-byte budget.
+// Source: iso.10589.2002.lsdb
+
+#include "router/isis_lsdb.hpp"
+
+#include <algorithm>
+#include <cstring>
+#include <limits>
+#include <new>
+#include <stdexcept>
+#include <type_traits>
+
+namespace router::isis {
+namespace {
+[[nodiscard]] std::uint16_t remaining(const packet::isis::LspView &header,
+    RuntimeClock::time_point installed, RuntimeClock::time_point now) noexcept {
+  if (now <= installed) return header.remaining_seconds;
+  const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - installed).count();
+  return elapsed >= header.remaining_seconds ? 0U :
+      static_cast<std::uint16_t>(header.remaining_seconds - elapsed);
+}
+}
+
+LspRecency compare_lsp_headers(const packet::isis::LspView &candidate,
+                               const packet::isis::LspView &current) noexcept {
+  if (candidate.sequence != current.sequence)
+    return candidate.sequence > current.sequence ? LspRecency::newer : LspRecency::older;
+  if ((candidate.remaining_seconds == 0U) != (current.remaining_seconds == 0U))
+    return candidate.remaining_seconds == 0U ? LspRecency::newer : LspRecency::older;
+  if (!candidate.remaining_seconds) return LspRecency::identical;
+  return candidate.checksum == current.checksum ? LspRecency::identical : LspRecency::confusion;
+}
+
+LinkStateDatabase::LinkStateDatabase(packet::isis::PduType type, LsdbLimits limits)
+    : type_(type), limits_(limits) {
+  if (type != packet::isis::PduType::lsp_l1 && type != packet::isis::PduType::lsp_l2)
+    throw std::invalid_argument("IS-IS LSDB requires an LSP level");
+  if (limits.records > records_.max_size())
+    throw std::invalid_argument("IS-IS LSDB metadata limit exceeds the container bound");
+  records_.reserve(limits.records);
+  static_assert(std::is_nothrow_move_constructible_v<Record> && std::is_nothrow_move_assignable_v<Record>);
+}
+
+StoredLspView LinkStateDatabase::view(const Record &record, RuntimeClock::time_point now) const noexcept {
+  auto header = record.header;
+  header.remaining_seconds = remaining(header, record.installed_at, now);
+  const std::span<const std::uint8_t> bytes(record.bytes);
+  return {{type_, static_cast<std::uint8_t>(bytes[7U] ? bytes[7U] : 3U), bytes,
+           bytes.subspan(packet::isis::lsp_header_octets)}, header, record.purge_installed};
+}
+
+std::optional<StoredLspView> LinkStateDatabase::find(const packet::isis::LspId &id,
+    RuntimeClock::time_point now) const noexcept {
+  const auto entry = std::lower_bound(records_.begin(), records_.end(), id,
+      [](const Record &record, const auto &key) { return record.header.id < key; });
+  return entry == records_.end() || entry->header.id != id ? std::nullopt : std::optional(view(*entry, now));
+}
+
+std::optional<StoredLspView> LinkStateDatabase::at(std::size_t index,
+    RuntimeClock::time_point now) const noexcept {
+  return index < records_.size() ? std::optional(view(records_[index], now)) : std::nullopt;
+}
+
+LspInstallResult LinkStateDatabase::install(std::span<const std::uint8_t> wire,
+    RuntimeClock::time_point now, std::uint16_t maximum_age, std::chrono::seconds purge_retention) noexcept {
+  using Result = LspInstallResult;
+  packet::isis::DecodeError error{};
+  const auto pdu = packet::isis::parse(wire, error);
+  if (!pdu || pdu->type != type_ || purge_retention.count() < 0 ||
+      purge_retention.count() > std::numeric_limits<std::uint16_t>::max()) return Result::malformed;
+  auto header = packet::isis::lsp(*pdu);
+  if (!header || !header->sequence) return Result::malformed;
+  if (!header->checksum) header->remaining_seconds = 0U;
+  if (header->remaining_seconds > maximum_age) return Result::excessive_lifetime;
+  if (header->remaining_seconds && !packet::isis::valid_lsp_checksum(*pdu)) return Result::invalid_checksum;
+  auto entry = std::lower_bound(records_.begin(), records_.end(), header->id,
+      [](const Record &record, const auto &key) { return record.header.id < key; });
+  const bool exists = entry != records_.end() && entry->header.id == header->id;
+  auto purge_became_zero = now;
+  if (exists) {
+    const auto effective = view(*entry, now).header;
+    const auto comparison = compare_lsp_headers(*header, effective);
+    if (comparison == LspRecency::older) return Result::older;
+    // Aging changes effective lifetime without rewriting authenticated bytes.
+    // A same-sequence purge must still replace an aged active body so the
+    // process can flood its finalized purge and eventually retire the record.
+    const bool aged_body = !effective.remaining_seconds && !entry->purge_installed &&
+                           header->sequence == effective.sequence && !header->remaining_seconds;
+    if (comparison == LspRecency::identical && !aged_body) return Result::identical;
+    if (comparison == LspRecency::confusion) return Result::confusion;
+    if (aged_body)
+      purge_became_zero = entry->installed_at + std::chrono::seconds(entry->header.remaining_seconds);
+  } else {
+    if (!header->remaining_seconds) return Result::unknown_purge;
+    if (records_.size() == limits_.records) return Result::capacity_exhausted;
+  }
+  const auto old_allocation = exists ? entry->bytes.capacity() : 0U;
+  const auto retained_other = allocated_octets_ - old_allocation;
+  const bool reuse = exists && pdu->bytes.size() <= entry->bytes.capacity();
+  if (!reuse && pdu->bytes.size() > limits_.allocated_pdu_octets - retained_other)
+    return Result::capacity_exhausted;
+  std::vector<std::uint8_t> staged;
+  if (!reuse) {
+    try { staged.assign(pdu->bytes.begin(), pdu->bytes.end()); }
+    catch (const std::bad_alloc &) { return Result::capacity_exhausted; }
+    if (staged.capacity() > limits_.allocated_pdu_octets - retained_other) return Result::capacity_exhausted;
+  }
+  if (!exists) entry = records_.insert(entry, Record{});
+  if (reuse) {
+    // Growing within retained capacity initializes the new elements before
+    // copying, otherwise resize would overwrite the accepted suffix. Aliased
+    // input cannot extend beyond the old size. Shrinking follows the copy so
+    // a borrowed input slice remains alive throughout the move.
+    if (pdu->bytes.size() > entry->bytes.size()) entry->bytes.resize(pdu->bytes.size());
+    std::memmove(entry->bytes.data(), pdu->bytes.data(), pdu->bytes.size());
+    entry->bytes.resize(pdu->bytes.size());
+  } else entry->bytes.swap(staged);
+  if (!header->remaining_seconds) {
+    entry->bytes[10U] = 0U;
+    entry->bytes[11U] = 0U;
+  }
+  entry->header = *header;
+  entry->installed_at = now;
+  entry->purge_installed = header->remaining_seconds == 0U;
+  entry->retire_at = purge_became_zero + purge_retention;
+  allocated_octets_ = retained_other + entry->bytes.capacity();
+  return Result::installed;
+}
+
+bool LinkStateDatabase::retire_purge(const packet::isis::LspId &id,
+    RuntimeClock::time_point now) noexcept {
+  const auto entry = std::lower_bound(records_.begin(), records_.end(), id,
+      [](const Record &record, const auto &key) { return record.header.id < key; });
+  if (entry == records_.end() || entry->header.id != id || !entry->purge_installed || now < entry->retire_at)
+    return false;
+  allocated_octets_ -= entry->bytes.capacity();
+  records_.erase(entry);
+  return true;
+}
+
+} // namespace router::isis

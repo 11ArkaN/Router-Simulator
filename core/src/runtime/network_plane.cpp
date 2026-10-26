@@ -2534,7 +2534,7 @@ ForwardResult NetworkPlane::Impl::apply_forward_command(
           owner.routers[command.device.index].dhcpv6_server_staging;
       if (const auto *pool = std::get_if<dhcpv6::LeasePool>(&command.fib);
           staged.active && pool) {
-        auto &target =
+        auto &target_pools =
             command.kind ==
                     ForwardCommandKind::add_router_dhcpv6_server_address_pool
                 ? staged.address_pools
@@ -2544,9 +2544,9 @@ ForwardResult NetworkPlane::Impl::apply_forward_command(
                     ForwardCommandKind::add_router_dhcpv6_server_address_pool
                 ? staged.expected_address_pools
                 : staged.expected_prefix_pools;
-        if (target.size() < expected)
+        if (target_pools.size() < expected)
           try {
-            target.push_back(*pool);
+            target_pools.push_back(*pool);
             result.success = true;
           } catch (const std::bad_alloc &) {
           }

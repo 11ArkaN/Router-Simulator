@@ -46,6 +46,17 @@ target_include_directories(router_build_options INTERFACE include)
 # units alone is insufficient because a lower layer could otherwise include a
 # management header and keep compiling inside one archive.
 add_library(router_primitives STATIC
+  src/isis/isis_packet.cpp
+  src/isis/isis_three_way.cpp
+  src/isis/isis_reachability.cpp
+  src/isis/isis_basic_tlvs.cpp
+  src/isis/isis_narrow_reachability.cpp
+  src/security/digest.cpp
+  src/isis/isis_authentication.cpp
+  src/isis/isis_instance_tlv.cpp
+  src/isis/isis_lsdb.cpp
+  src/isis/isis_adjacency.cpp
+  src/isis/isis_flooding.cpp
     src/dns/dns_packet.cpp
     src/dns/dns_svcb.cpp
     src/dns/ddr_discovery.cpp
@@ -63,6 +74,17 @@ add_library(router_primitives STATIC
   src/dns/dnssec_authoritative_response.cpp
   src/dns/dnssec_nsec3_chain.cpp
   src/dns/dnssec_response_validation.cpp
+  # DNS endpoints and NetworkPlane call managed-zone signing in both native
+  # and Wasm builds. Keep its implementation in the common graph; only the
+  # OpenSSL library target differs between those platforms.
+  src/dns/dnssec_openssl.cpp
+  src/dns/dnssec_signer.cpp
+  src/dns/dnssec_zone_signer.cpp
+  src/dns/dnssec_key_lifecycle.cpp
+  src/dns/dnssec_nsec_chain.cpp
+  src/dns/dnssec_zone_keys.cpp
+  src/dns/dnssec_signed_zone.cpp
+  src/dns/dnssec_signed_zone_owner.cpp
   src/dhcpv4/dhcpv4_client.cpp
   src/dhcpv4/dhcpv4_configuration.cpp
   src/dhcpv4/dhcpv4_failover.cpp
@@ -235,19 +257,11 @@ if(EMSCRIPTEN)
     INTERFACE_INCLUDE_DIRECTORIES "${ROUTER_NGTCP2_ROOT}/include")
   target_link_libraries(router_ngtcp2_crypto_ossl INTERFACE
                         router_ngtcp2 router_openssl_ssl router_openssl_crypto)
-  target_sources(router_primitives PRIVATE src/dns/dnssec_openssl.cpp
-                                            src/security/secret_vault.cpp
+  target_sources(router_primitives PRIVATE src/security/secret_vault.cpp
                                             src/security/ikev2_aes_gcm.cpp
                                             src/security/ikev2_encrypted_payload.cpp
                                             src/security/ikev2_dh.cpp
                                             src/security/ikev2_nat_detection.cpp
-                                            src/dns/dnssec_signer.cpp
-                                            src/dns/dnssec_zone_signer.cpp
-                                            src/dns/dnssec_key_lifecycle.cpp
-                                            src/dns/dnssec_nsec_chain.cpp
-                                            src/dns/dnssec_zone_keys.cpp
-                                            src/dns/dnssec_signed_zone.cpp
-                                            src/dns/dnssec_signed_zone_owner.cpp
                                             src/security/pki_store.cpp
                                             src/security/tls_engine.cpp
                                             src/transport/http2_session.cpp
@@ -509,6 +523,17 @@ if(ROUTER_BUILD_TESTS)
   # grows an orchestration dependency fails here even if the integration target
   # would otherwise provide the missing symbol transitively.
   add_executable(module_tests
+    tests/isis/isis_packet_test.cpp
+    tests/isis/isis_three_way_test.cpp
+    tests/isis/isis_reachability_test.cpp
+    tests/isis/isis_basic_tlvs_test.cpp
+    tests/isis/isis_narrow_reachability_test.cpp
+    tests/isis/isis_authentication_test.cpp
+    tests/isis/isis_instance_tlv_test.cpp
+    tests/isis/isis_lsdb_test.cpp
+    tests/isis/isis_adjacency_test.cpp
+    tests/isis/isis_flooding_test.cpp
+    tests/security/digest_test.cpp
     tests/runtime/capture_store_test.cpp
     tests/dhcpv4/dhcpv4_client_test.cpp
     tests/dhcpv4/dhcpv4_configuration_test.cpp
