@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: nokia.sros.26_7.isis.yang_roots
+    kind: routing-protocol-source-profile
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-yang
+    source_url: https://github.com/nokia/7x50_YangModels/tree/6656cbb0905c7b952afaa1d7c2b63aa4da6cc5f7/YANG
+    section: IS-IS configuration and state roots, router interfaces, extensions and foundational types
+    rfc_refs: []
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-10-26
+    implementation: [sources/yang/26.7.R1.lock.yaml, docs/isis-implementation-plan.md]
+    tests: []
+    status: researched
+    notes: The exact sros_26.7.r1 tag and immutable commit pin eight source files with revision, byte size and SHA-256 of unmodified Git blob bytes. The transitive dependency closure and command coverage remain pending. This record establishes source provenance and does not claim runtime or CLI implementation. Classic command spellings require engine-specific reference mapping in addition to the YANG model.
   - id: project.router_lab.demo_catalog
     kind: browser-ui-feature
     release: 26.7.R1

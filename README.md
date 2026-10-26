@@ -148,6 +148,10 @@ An incompatible checkpoint is rejected before runtime replacement. The user can 
 
 [`sources/catalog.yaml`](sources/catalog.yaml) records the normative source, release, implementation files, tests and verification status for each implemented behavior. [`sources/capabilities.yaml`](sources/capabilities.yaml) marks features as implemented, partially implemented, experimental or unsupported.
 
+The agreed [IS-IS implementation plan](docs/isis-implementation-plan.md) covers the Base-router scope, pinned SR OS 26.7.R1 YANG models, both CLI engines, packet processing, routing, checkpoint continuity and acceptance gates.
+
+[`sources/yang/26.7.R1.lock.yaml`](sources/yang/26.7.R1.lock.yaml) pins the initial IS-IS configuration, state, router and type sources to the exact release commit, with byte sizes and SHA-256 digests of the original Git blobs. Transitive dependency coverage and the IS-IS runtime remain planned.
+
 ```powershell
 pnpm sources:validate
 ```

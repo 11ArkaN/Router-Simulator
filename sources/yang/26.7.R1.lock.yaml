@@ -1,0 +1,42 @@
+schema_version: 1
+release: 26.7.R1
+repository: https://github.com/nokia/7x50_YangModels
+tag: sros_26.7.r1
+tag_object: 37b90279a2efcaf8ebbde11bf20367655641e158
+commit: 6656cbb0905c7b952afaa1d7c2b63aa4da6cc5f7
+scope: isis_roots_and_foundational_types
+dependency_closure: pending
+digest_encoding: unmodified_git_blob_bytes
+files:
+  - path: YANG/nokia-submodule/nokia-conf-router-isis.yang
+    revision: "2026-07-08"
+    bytes: 96388
+    sha256: f679767ababf0044835383f75d82670d64635a56941d850079dc5ed0c6a5f48c
+  - path: YANG/nokia-submodule/nokia-state-router-isis.yang
+    revision: "2026-07-08"
+    bytes: 193861
+    sha256: 0d54ab4b9fcdba1814d8379363f566b7c01a8d0575bde054803e1dae2023d560
+  - path: YANG/nokia-submodule/nokia-conf-router.yang
+    revision: "2026-07-08"
+    bytes: 288419
+    sha256: 2ab682f9b8cf1a667b41cedab0fc3c18851e7c2179f9575684b5ff0bb8c9d3d5
+  - path: YANG/nokia-sros-yang-extensions.yang
+    revision: "2026-07-08"
+    bytes: 6008
+    sha256: e779788c49bb80658764eaf3c5845740f5492ad06f82d23fd7e510e4e0258ec7
+  - path: YANG/nokia-types-isis.yang
+    revision: "2026-07-08"
+    bytes: 17777
+    sha256: 11cfc2506697a0817263b01901603a05e7510d1f6c712aa86d2c8d5757a42878
+  - path: YANG/nokia-types-igp.yang
+    revision: "2026-07-08"
+    bytes: 4532
+    sha256: fdd104a9ad8e985b47a73653ee166ca7ad64817f2030259da208ede358f8f361
+  - path: YANG/nokia-types-router.yang
+    revision: "2026-07-08"
+    bytes: 34965
+    sha256: 9808f5aeaa765d8fd07b9cec989f66bb6cedd89e323476ecbaa5f31c23786f0c
+  - path: YANG/nokia-types-sros.yang
+    revision: "2026-07-08"
+    bytes: 91242
+    sha256: 440d4851517242e943c00b50a33af592d4124de44df0d40c1a388dcbf3d872e4
