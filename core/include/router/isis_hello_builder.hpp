@@ -8,15 +8,12 @@
 #include "router/isis_basic_tlvs.hpp"
 #include "router/isis_ethernet.hpp"
 #include "router/isis_instance_tlv.hpp"
+#include "router/isis_pdu_composition.hpp"
 #include "router/isis_three_way.hpp"
 
 namespace router::isis {
 
-struct HelloInstanceOption {
-  packet::isis::InstanceFormat format{};
-  std::uint16_t instance{};
-  std::span<const std::uint16_t> topologies;
-};
+using HelloInstanceOption = PduInstanceOption;
 
 struct HelloContents {
   packet::isis::HelloInput header;
@@ -35,12 +32,7 @@ struct HelloContents {
   bool physical_point_to_point{};
 };
 
-struct HelloScratch {
-  // One owner reuses this allocation across its circuits. No key or borrowed
-  // pointer is retained here; buffers contain only the encoded wire image.
-  std::array<std::uint8_t, packet::maximum_frame_octets> options;
-  std::array<std::uint8_t, packet::maximum_frame_octets> pdu;
-};
+using HelloScratch = PduScratch;
 
 enum class HelloBuildResult : std::uint8_t {
   encoded, invalid_header, capacity, areas, addresses, instance, three_way, authentication

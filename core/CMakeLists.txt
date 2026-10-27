@@ -49,6 +49,7 @@ add_library(router_primitives STATIC
   src/isis/isis_packet.cpp
   src/isis/isis_ethernet.cpp
   src/isis/isis_hello_builder.cpp
+  src/isis/isis_snp_builder.cpp
   src/forwarding/llc_packet.cpp
   src/isis/isis_three_way.cpp
   src/isis/isis_reachability.cpp
@@ -533,6 +534,7 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_packet_test.cpp
     tests/isis/isis_ethernet_test.cpp
     tests/isis/isis_hello_builder_test.cpp
+    tests/isis/isis_snp_builder_test.cpp
     tests/isis/isis_ethernet_fabric_test.cpp
     tests/forwarding/llc_packet_test.cpp
     tests/forwarding/router_forwarder_isis_test.cpp

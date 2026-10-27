@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: iso.10589.2002.snp_composition
+    kind: routing-protocol-wire-composition
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard-and-rfc
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 9.10 through 9.13, ordered LSP entries and complete or partial sequence-number PDU composition
+    rfc_refs: [RFC5304, RFC5310, RFC8202]
+    yang_path: /configure/router/isis/interface
+    last_verified_at: 2026-10-27
+    implementation: [core/include/router/isis_pdu_composition.hpp, core/include/router/isis_snp_builder.hpp, core/src/isis/isis_snp_builder.cpp]
+    tests: [core/tests/isis/isis_snp_builder_test.cpp]
+    status: experimental
+    notes: The builder splits a complete caller-selected batch into whole TLV 9 lists, preserves strict LSP-ID order across options and checks inclusive CSNP range bounds. IID precedes other options and authentication covers the complete PDU. Empty CSNP ranges are valid, and capacity failure never emits a partial batch. Range partitioning, timer scheduling, flood-flag acknowledgement and actual egress remain instance-owner work.
   - id: iso.10589.2002.hello_composition
     kind: routing-protocol-wire-composition
     release: 26.7.R1

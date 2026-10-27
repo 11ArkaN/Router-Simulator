@@ -8,6 +8,7 @@
 void isis_packet_tests();
 void isis_ethernet_tests();
 void isis_hello_builder_tests();
+void isis_snp_builder_tests();
 void isis_ethernet_fabric_tests();
 void llc_packet_tests();
 void protocol_packet_channel_tests();
@@ -363,6 +364,7 @@ int main() {
     isis_packet_tests();
     isis_ethernet_tests();
     isis_hello_builder_tests();
+    isis_snp_builder_tests();
     isis_ethernet_fabric_tests();
     llc_packet_tests();
     protocol_packet_channel_tests();

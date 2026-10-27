@@ -53,6 +53,7 @@ const cppLayers = new Map([
   ["llc_packet.hpp", 0], ["llc_packet.cpp", 0],
   ["isis_ethernet.hpp", 0], ["isis_ethernet.cpp", 0],
   ["isis_hello_builder.hpp", 0], ["isis_hello_builder.cpp", 0],
+  ["isis_pdu_composition.hpp", 0], ["isis_snp_builder.hpp", 0], ["isis_snp_builder.cpp", 0],
   ["protocol_packet_channel.hpp", 1],
   ["isis_three_way.hpp", 0], ["isis_three_way.cpp", 0],
   ["isis_reachability.hpp", 0], ["isis_reachability.cpp", 0],
