@@ -6,6 +6,12 @@
 #include <stdexcept>
 
 void isis_packet_tests();
+void isis_ethernet_tests();
+void isis_hello_builder_tests();
+void isis_ethernet_fabric_tests();
+void llc_packet_tests();
+void protocol_packet_channel_tests();
+void router_forwarder_isis_tests();
 void isis_three_way_tests();
 void isis_reachability_tests();
 void isis_basic_tlvs_tests();
@@ -14,6 +20,10 @@ void isis_authentication_tests();
 void isis_instance_tlv_tests();
 void isis_lsdb_tests();
 void isis_adjacency_tests();
+void isis_p2p_adjacency_tests();
+void isis_lan_adjacency_tests();
+void isis_p2p_wire_tests();
+void isis_jitter_tests();
 void isis_flooding_tests();
 void digest_tests();
 
@@ -351,6 +361,12 @@ int main() {
     udp_packet_tests();
     udp_transport_tests();
     isis_packet_tests();
+    isis_ethernet_tests();
+    isis_hello_builder_tests();
+    isis_ethernet_fabric_tests();
+    llc_packet_tests();
+    protocol_packet_channel_tests();
+    router_forwarder_isis_tests();
     isis_three_way_tests();
     isis_reachability_tests();
     isis_basic_tlvs_tests();
@@ -359,6 +375,10 @@ int main() {
     isis_instance_tlv_tests();
     isis_lsdb_tests();
     isis_adjacency_tests();
+    isis_p2p_adjacency_tests();
+    isis_lan_adjacency_tests();
+    isis_p2p_wire_tests();
+    isis_jitter_tests();
     isis_flooding_tests();
     digest_tests();
     std::cout << "module tests passed\n";

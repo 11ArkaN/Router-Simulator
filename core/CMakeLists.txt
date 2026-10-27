@@ -47,6 +47,9 @@ target_include_directories(router_build_options INTERFACE include)
 # management header and keep compiling inside one archive.
 add_library(router_primitives STATIC
   src/isis/isis_packet.cpp
+  src/isis/isis_ethernet.cpp
+  src/isis/isis_hello_builder.cpp
+  src/forwarding/llc_packet.cpp
   src/isis/isis_three_way.cpp
   src/isis/isis_reachability.cpp
   src/isis/isis_basic_tlvs.cpp
@@ -56,6 +59,9 @@ add_library(router_primitives STATIC
   src/isis/isis_instance_tlv.cpp
   src/isis/isis_lsdb.cpp
   src/isis/isis_adjacency.cpp
+  src/isis/isis_p2p_adjacency.cpp
+  src/isis/isis_lan_adjacency.cpp
+  src/isis/isis_jitter.cpp
   src/isis/isis_flooding.cpp
     src/dns/dns_packet.cpp
     src/dns/dns_svcb.cpp
@@ -312,6 +318,7 @@ add_library(router_network STATIC
   src/ospf/ospf_control_worker.cpp
   src/forwarding/network_endpoint.cpp
   src/forwarding/router_forwarder.cpp
+  src/forwarding/isis_forwarding.cpp
   src/forwarding/sap_forwarding.cpp
 )
 target_include_directories(router_network PRIVATE src)
@@ -524,6 +531,12 @@ if(ROUTER_BUILD_TESTS)
   # would otherwise provide the missing symbol transitively.
   add_executable(module_tests
     tests/isis/isis_packet_test.cpp
+    tests/isis/isis_ethernet_test.cpp
+    tests/isis/isis_hello_builder_test.cpp
+    tests/isis/isis_ethernet_fabric_test.cpp
+    tests/forwarding/llc_packet_test.cpp
+    tests/forwarding/router_forwarder_isis_test.cpp
+    tests/runtime/protocol_packet_channel_test.cpp
     tests/isis/isis_three_way_test.cpp
     tests/isis/isis_reachability_test.cpp
     tests/isis/isis_basic_tlvs_test.cpp
@@ -532,6 +545,10 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_instance_tlv_test.cpp
     tests/isis/isis_lsdb_test.cpp
     tests/isis/isis_adjacency_test.cpp
+    tests/isis/isis_p2p_adjacency_test.cpp
+    tests/isis/isis_lan_adjacency_test.cpp
+    tests/isis/isis_p2p_wire_test.cpp
+    tests/isis/isis_jitter_test.cpp
     tests/isis/isis_flooding_test.cpp
     tests/security/digest_test.cpp
     tests/runtime/capture_store_test.cpp

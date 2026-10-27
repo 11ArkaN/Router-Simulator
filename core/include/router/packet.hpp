@@ -218,6 +218,8 @@ struct EthernetView {
     bool operator==(const VlanTag &) const = default;
   };
   std::array<VlanTag, maximum_service_vlan_tags> vlan_tags{};
+  // Final wire Length/Type field after VLAN tags. LLC clients interpret a
+  // Length or the LLC encapsulation EtherType through parse_llc_ui.
   std::uint16_t ether_type{};
   std::uint16_t payload_offset{ethernet_header_octets};
   std::uint8_t vlan_tag_count{};

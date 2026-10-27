@@ -1,4 +1,4 @@
-// IID fixtures distinguish legacy two-octet values from the 2016 ITID format.
+// IID fixtures distinguish legacy two-octet values from the RFC 8202 ITID format.
 // Test-owned PDU buffers exercise cross-option consistency and placement rules.
 
 #include "router/isis_instance_tlv.hpp"
@@ -15,7 +15,7 @@ void require(bool condition, const char *message) {
 void isis_instance_tlv_tests() {
   using namespace router::packet::isis;
   constexpr auto legacy = InstanceFormat::legacy_2009;
-  constexpr auto standard = InstanceFormat::standard_2016;
+  constexpr auto standard = InstanceFormat::standard;
   const std::array<std::uint8_t, 4U> fixture{0x12U, 0x34U, 0U, 0U};
   const auto decoded = decode_instance_tlv({7U, fixture}, standard);
   require(decoded && decoded->instance == 0x1234U && decoded->topology_count() == 1U &&

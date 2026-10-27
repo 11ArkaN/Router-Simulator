@@ -1,5 +1,75 @@
 schema_version: 1
 records:
+  - id: iso.10589.2002.hello_composition
+    kind: routing-protocol-wire-composition
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard-and-rfc
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 9.5 through 9.7, complete IIH options and padding with authentication and instance extensions
+    rfc_refs: [RFC1195, RFC5303, RFC5304, RFC5308, RFC5310, RFC8202]
+    yang_path: /configure/router/isis/interface
+    last_verified_at: 2026-10-27
+    implementation: [core/include/router/isis_hello_builder.hpp, core/src/isis/isis_hello_builder.cpp]
+    tests: [core/tests/isis/isis_hello_builder_test.cpp]
+    status: experimental
+    notes: The builder composes effective caller-owned Hello values into one Ethernet frame, splits fixed-width lists across complete TLVs, emits IID first and authenticates only after padding. It preserves prior output on failure and leaves a one-octet padding gap rather than exceeding the selected maximum. Configuration inheritance, mandatory protocol content and runtime scheduling remain with the instance owner.
+  - id: iso.10589.2002.periodic_jitter
+    kind: routing-protocol-timing
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clause 10.1 and table 2, architectural Jitter 25 percent and per-expiration uniform draws
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-10-27
+    implementation: [core/include/router/isis_jitter.hpp, core/src/isis/isis_jitter.cpp]
+    tests: [core/tests/isis/isis_jitter_test.cpp]
+    status: experimental
+    notes: The stateless helper consumes a caller-owned nonzero PRNG state, uses rejection sampling and returns periods within 75 through 100 percent of the supplied base at microsecond resolution. The owning circuit must preserve PRNG continuation, set deadlines before expiration work and enforce protocol-specific minimum spacing and the DIS Hello exception. Runtime scheduling remains in progress.
+  - id: iso.10589.2002.ethernet_dispatch
+    kind: routing-protocol-forwarding-boundary
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard-and-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc5309.html
+    section: Section 4 and ISO 10589 clauses 8.4 and 9, port-scoped protocol multicast and LLC PDU delivery
+    rfc_refs: [RFC5309, RFC9542]
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-10-27
+    implementation: [core/include/router/router_forwarder.hpp, core/src/forwarding/router_forwarder.cpp, core/src/forwarding/isis_forwarding.cpp]
+    tests: [core/tests/forwarding/router_forwarder_isis_test.cpp, core/tests/isis/isis_ethernet_fabric_test.cpp]
+    status: experimental
+    notes: A complete port-local multicast projection admits native LLC FE FE 03 NLPID 83 to the protocol observer even without IP addressing. Malformed IS-IS headers remain available for protocol error accounting. Egress enforces the physical MTU, replaces the source MAC with the port-owned value and never bypasses queue refusal. Group selection, runtime programming, instance isolation and protocol processing remain control-owner integration work.
+  - id: ieee.802_1ac.llc_encapsulation
+    kind: ethernet-wire-format
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ieee-standard-and-ietf-bcp
+    source_url: https://www.rfc-editor.org/rfc/rfc9542.html
+    section: Section 3, Ethernet Length/Type, LLC UI and IEEE 802.1AC LLC encapsulation EtherType 0x8870
+    rfc_refs: [RFC9542]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/llc_packet.hpp, core/src/forwarding/llc_packet.cpp, core/include/router/isis_ethernet.hpp, core/src/isis/isis_ethernet.cpp]
+    tests: [core/tests/forwarding/llc_packet_test.cpp, core/tests/isis/isis_ethernet_test.cpp, core/tests/isis/isis_ethernet_fabric_test.cpp]
+    status: experimental
+    notes: Ordinary Length is at most 1500 and includes the LLC header while excluding Ethernet padding. Extended LLC uses EtherType 0x8870 followed directly by DSAP, SSAP and UI control. IEEE 802.1AC-2016 Cor 1 corrects the deployed value, also confirmed by the 2017 IETF liaison and RFC 9542. The generic codec preserves up to two VLAN tags and leaves physical MTU admission to the port owner.
+  - id: ietf.llc.nlpid.rfc2684
+    kind: ethernet-wire-format
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: rfc-editor
+    source_url: https://www.rfc-editor.org/rfc/rfc2684.html
+    section: Section 5.1, IEEE 802.2 UI control 0x03 and FE FE 03 identification of ISO NLPID PDUs
+    rfc_refs: [RFC2684]
+    yang_path: null
+    last_verified_at: 2026-10-26
+    implementation: [core/include/router/llc_packet.hpp, core/src/forwarding/llc_packet.cpp, core/include/router/isis_ethernet.hpp, core/src/isis/isis_ethernet.cpp]
+    tests: [core/tests/forwarding/llc_packet_test.cpp, core/tests/isis/isis_ethernet_test.cpp, core/tests/isis/isis_ethernet_fabric_test.cpp]
+    status: experimental
+    notes: The shared LLC UI header contract is used independently of the ATM adaptation layer described by this RFC. No ATM transport is implemented. The carried protocol decoder remains responsible for its NLPID and PDU length.
   - id: iso.10589.2002.flooding
     kind: routing-protocol-state-table
     release: 26.7.R1
@@ -20,14 +90,14 @@ records:
     platforms: [all-supported]
     source_type: iso-iec-standard
     source_url: https://www.iso.org/standard/30932.html
-    section: Clause 8.2.5.2 tables 5 through 8, circuit ID negotiation, clauses 8.4.1 and 8.4.5 DIS election
+    section: Clause 8.2.5.2 tables 5 through 8, circuit ID negotiation, clauses 8.4.1 through 8.4.5 LAN adjacencies, capacity and DIS election
     rfc_refs: [RFC5303]
     yang_path: null
     last_verified_at: 2026-10-26
-    implementation: [core/include/router/isis_adjacency.hpp, core/src/isis/isis_adjacency.cpp]
-    tests: [core/tests/isis/isis_adjacency_test.cpp]
+    implementation: [core/include/router/isis_adjacency.hpp, core/src/isis/isis_adjacency.cpp, core/include/router/isis_p2p_adjacency.hpp, core/src/isis/isis_p2p_adjacency.cpp, core/include/router/isis_lan_adjacency.hpp, core/src/isis/isis_lan_adjacency.cpp]
+    tests: [core/tests/isis/isis_adjacency_test.cpp, core/tests/isis/isis_p2p_adjacency_test.cpp, core/tests/isis/isis_p2p_wire_test.cpp, core/tests/isis/isis_lan_adjacency_test.cpp]
     status: experimental
-    notes: Pure P2P actions preserve the ISO table distinction between rejection, Down, Up and Accept and their area/system reasons. DIS selection requires the startup delay and an Up adjacency, includes priority zero, uses MAC priority ties and preserves a remote winner's advertised LAN ID. Neighbor mutation, timers, three-way integration and pseudonode origination remain process-owner work.
+    notes: Pure P2P actions preserve the ISO table distinction between rejection, Down, Up and Accept and their area/system reasons. A control-owned P2P adjacency retains negotiated identity, distinct ISO and three-way states and its holding deadline. Discarded options cannot refresh that deadline, and a changed P2P-over-LAN peer is ignored until the existing adjacency expires. Per-level LAN records derive two-way state from received neighbor MAC lists and retain Initializing state after one-way loss. Capacity decisions evict the lowest priority then lowest MAC and require Down completion before insertion. DIS selection requires the startup delay and an Up adjacency, includes priority zero, uses MAC priority ties and preserves a remote winner's advertised LAN ID. Instance processing, neighbor area retention, packet scheduling and pseudonode origination remain in progress.
   - id: iso.10589.2002.lsdb
     kind: routing-protocol-state
     release: 26.7.R1
@@ -70,7 +140,7 @@ records:
     tests: [core/tests/isis/isis_instance_tlv_test.cpp]
     status: experimental
     notes: Legacy wire helpers require exactly two value octets, allow explicit instance zero and reject duplicate IID options. This expired draft is a compatibility format documented by SR OS, not the current IETF standard. Product configuration and runtime selection remain pending.
-  - id: ietf.isis.multi_instance.standard_2016
+  - id: ietf.isis.multi_instance.rfc8202
     kind: routing-protocol-compatibility-profile
     release: 26.7.R1
     platforms: [all-supported]
@@ -612,8 +682,8 @@ records:
     rfc_refs: [RFC2328, RFC5340]
     yang_path: null
     last_verified_at: 2026-07-23
-    implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, core/include/router/shard_policy.hpp, core/include/router/telemetry.hpp, core/include/router/ospf_packet_channel.hpp, core/include/router/ospf_route_channel.hpp, core/include/router/ospf_control_worker.hpp, core/include/router/spsc_ring.hpp, core/src/ospf/ospf_control_worker.cpp, core/src/runtime/network_plane.cpp, core/src/runtime/lab_runtime.cpp]
-    tests: [core/tests/runtime/shard_policy_test.cpp, core/tests/ospf/ospf_packet_channel_test.cpp, core/tests/ospf/ospf_route_channel_test.cpp, core/tests/runtime/network_plane_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
+    implementation: [profiles/catalog/26.7.R1.yaml, tools/generate-device-catalog.mjs, core/include/router/shard_policy.hpp, core/include/router/telemetry.hpp, core/include/router/ospf_packet_channel.hpp, core/include/router/protocol_packet_channel.hpp, core/include/router/ospf_route_channel.hpp, core/include/router/ospf_control_worker.hpp, core/include/router/spsc_ring.hpp, core/src/ospf/ospf_control_worker.cpp, core/src/runtime/network_plane.cpp, core/src/runtime/lab_runtime.cpp]
+    tests: [core/tests/runtime/shard_policy_test.cpp, core/tests/runtime/protocol_packet_channel_test.cpp, core/tests/ospf/ospf_packet_channel_test.cpp, core/tests/ospf/ospf_route_channel_test.cpp, core/tests/runtime/network_plane_test.cpp, core/tests/runtime/lab_runtime_test.cpp]
     status: implemented
     notes: The dedicated OSPF owner is created during runtime construction and consumes one generated Emscripten pthread-pool entry at every CPU tier, so the first protocol command never attempts late thread creation. Telemetry reports its distinct owner identity as part of the startup gate. Each forwarding and OSPF control shard pair exchanges fixed shared packet-buffer handles through one ready and one return SPSC ring. A separate two-slot SPSC ownership channel publishes complete per-router route generations from the protocol pthread to the sole RIB owner. Producers retain unpublished state under backpressure, consumers explicitly release borrowed slots and no partial generation reaches FIB.
   - id: nokia.sros.26_7.route_policy.ospf_export

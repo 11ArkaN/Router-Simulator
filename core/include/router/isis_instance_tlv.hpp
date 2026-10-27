@@ -8,9 +8,9 @@
 
 namespace router::packet::isis {
 
-// standard_2016 names the SR OS standard-multi-instance compatibility profile,
-// sourced from draft-ginsberg-isis-mi-bis-01, not a new published RFC revision.
-enum class InstanceFormat : std::uint8_t { legacy_2009, standard_2016 };
+// The standard format follows RFC 8202. SR OS standard-multi-instance cites
+// its 2016 predecessor draft; legacy_2009 remains a separate wire format.
+enum class InstanceFormat : std::uint8_t { legacy_2009, standard };
 enum class InstanceError : std::uint8_t {
   none, invalid_format, malformed_tlv, duplicate, conflicting_instance,
   topology_count, mixed_zero_topology, zero_instance_placement
@@ -29,7 +29,7 @@ struct InstanceSelection {
   bool topology_zero{};
 };
 
-// Decode one complete TLV 7. Legacy has exactly two octets. The 2016 format
+// Decode one complete TLV 7. Legacy has exactly two octets. RFC 8202
 // adds even-sized ITID lists and reserves ITID zero for sole use by an instance.
 // Wrong code, lengths, zero-IID topology lists and mixed zero ITIDs fail.
 [[nodiscard]] std::optional<InstanceTlvView>

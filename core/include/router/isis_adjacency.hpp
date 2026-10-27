@@ -66,4 +66,23 @@ struct DisSelection {
     std::span<const DisNeighbor> neighbors, bool initial_delay_elapsed,
     bool any_up_adjacency) noexcept;
 
+struct LanCandidate {
+  packet::Mac mac{};
+  std::uint8_t priority{};
+};
+enum class LanAdmission : std::uint8_t { invalid, reject_new, evict_existing };
+struct LanEviction {
+  LanAdmission action{LanAdmission::invalid};
+  std::size_t victim{};
+};
+
+// ISO 10589 8.4.3. Caller has exhausted adjacency capacity and supplies only
+// neighbors of this circuit, instance and level, including Initializing peers.
+// Lowest priority then lowest MAC loses. A new lowest candidate is rejected;
+// otherwise the owner must purge the victim, emit Down and wait for adjacency
+// down complete before inserting the new peer. No input spans are retained.
+// A duplicate MAC or invalid priority returns invalid without a victim.
+[[nodiscard]] LanEviction select_lan_eviction(std::span<const LanCandidate> existing,
+                                              const LanCandidate &incoming) noexcept;
+
 } // namespace router::isis

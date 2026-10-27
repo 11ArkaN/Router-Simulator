@@ -1,8 +1,8 @@
 // Instance TLV framing and PDU-level consistency rules. State belongs to each
-// call, while packet bytes remain with their caller. Legacy and 2016 profiles
+// call, while packet bytes remain with their caller. Legacy and standard formats
 // are never inferred from length or silently substituted for one another.
 // Source: ietf.isis.multi_instance.legacy_2009
-// Source: ietf.isis.multi_instance.standard_2016
+// Source: ietf.isis.multi_instance.rfc8202
 
 #include "router/isis_instance_tlv.hpp"
 
@@ -27,7 +27,7 @@ std::optional<std::uint16_t> InstanceTlvView::topology(std::size_t index) const 
 
 std::optional<InstanceTlvView> decode_instance_tlv(TlvView tlv, InstanceFormat format) noexcept {
   const auto size = tlv.value.size();
-  if (format > InstanceFormat::standard_2016 || tlv.code != 7U || size < 2U || size > 254U || size % 2U)
+  if (format > InstanceFormat::standard || tlv.code != 7U || size < 2U || size > 254U || size % 2U)
     return std::nullopt;
   InstanceTlvView result{read16(tlv.value, 0U), tlv.value.subspan(2U)};
   if (format == InstanceFormat::legacy_2009)
@@ -45,9 +45,9 @@ std::optional<InstanceTlvView> decode_instance_tlv(TlvView tlv, InstanceFormat f
 
 bool encode_instance_tlv(TlvWriter &writer, InstanceFormat format,
     std::uint16_t instance, std::span<const std::uint16_t> topologies) noexcept {
-  if (format > InstanceFormat::standard_2016 || topologies.size() > 126U ||
+  if (format > InstanceFormat::standard || topologies.size() > 126U ||
       (format == InstanceFormat::legacy_2009 && !topologies.empty()) ||
-      (format == InstanceFormat::standard_2016 &&
+      (format == InstanceFormat::standard &&
        ((!instance && !topologies.empty()) || (instance && topologies.empty()))))
     return false;
   bool zero{};
@@ -66,7 +66,7 @@ bool encode_instance_tlv(TlvWriter &writer, InstanceFormat format,
 std::optional<InstanceSelection> select_instance(const PduView &pdu,
     InstanceFormat format, bool physical_point_to_point, InstanceError &error) noexcept {
   error = InstanceError::none;
-  if (format > InstanceFormat::standard_2016) {
+  if (format > InstanceFormat::standard) {
     error = InstanceError::invalid_format;
     return std::nullopt;
   }

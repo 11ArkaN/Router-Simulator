@@ -151,6 +151,14 @@ An incompatible checkpoint is rejected before runtime replacement. The user can 
 
 The agreed [IS-IS implementation plan](docs/isis-implementation-plan.md) covers the Base-router scope, pinned SR OS 26.7.R1 YANG models, both CLI engines, packet processing, routing, checkpoint continuity and acceptance gates.
 
+The Ethernet LLC UI codec supports ordinary Length framing and the IEEE 802.1AC `0x8870` encapsulation, including QinQ and bounded jumbo frames. Ordinary receive views exclude Ethernet padding. A protocol-neutral SPSC frame channel supplies the shared ownership mechanism for control protocols; OSPF uses the same implementation through its existing API. LLC runtime dispatch and the IS-IS worker remain in progress.
+
+Core tests send all nine IS-IS PDU types through physical link queues and a learning bridge. The forwarding boundary admits configured protocol multicast without requiring an IP address and enforces the egress port MTU. The P2P adjacency owner keeps ISO state, three-way state and holding expiry separate; the instance worker and runtime configuration still need to connect these components.
+
+LAN adjacency records track two-way neighbor MAC reporting and independent holding deadlines at each level. Capacity decisions follow the ISO priority and MAC order, with insertion waiting for the victim's Down completion. Periodic jitter uses the ISO 25 percent range and a caller-owned PRNG continuation.
+
+Hello composition splits neighbor and interface-address lists across complete TLVs, places IID first and authenticates the final padding. A one-octet padding gap remains below the selected PDU maximum. Shared frame channels reject duplicate slot returns and invalid frame lengths before either can corrupt ownership.
+
 [`sources/yang/26.7.R1.lock.yaml`](sources/yang/26.7.R1.lock.yaml) pins 361 source modules in the dependency closure of the selected IS-IS configuration, state and management roots to the exact release commit. Byte sizes and SHA-256 digests use the original Git blobs, preserving identity across Windows line-ending conversion. [`schemas/cli/isis-26.7.R1-inventory.json`](schemas/cli/isis-26.7.R1-inventory.json) records 405 configuration nodes, 592 state nodes and 454 management nodes with their source locations, resolved typedef chains, inherited defaults, union members, restriction layers and choice/case structure. Runtime support and command mapping remain planned.
 
 `pnpm yang:bootstrap` acquires the exact-release source cache under `.tools`. `pnpm yang:check` verifies source hashes and generated inventory drift, and `pnpm yang:generate` regenerates the project-authored metadata. Source validation also runs the statement-reader and dependency-inventory tests. Vendor YANG source files remain outside the distributed repository and application.

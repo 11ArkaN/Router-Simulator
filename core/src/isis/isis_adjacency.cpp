@@ -75,4 +75,21 @@ std::optional<DisSelection> select_dis(const DisLocal &local,
   return winner;
 }
 
+LanEviction select_lan_eviction(std::span<const LanCandidate> existing,
+    const LanCandidate &incoming) noexcept {
+  if (incoming.priority > 127U) return {};
+  if (existing.empty()) return {LanAdmission::reject_new, 0U};
+  std::size_t victim{};
+  for (std::size_t index = 0U; index < existing.size(); ++index) {
+    const auto &candidate = existing[index];
+    if (candidate.priority > 127U || candidate.mac == incoming.mac) return {};
+    if (candidate.priority < existing[victim].priority ||
+        (candidate.priority == existing[victim].priority && candidate.mac < existing[victim].mac)) victim = index;
+  }
+  const auto &lowest = existing[victim];
+  return incoming.priority < lowest.priority ||
+      (incoming.priority == lowest.priority && incoming.mac < lowest.mac) ?
+      LanEviction{LanAdmission::reject_new, 0U} : LanEviction{LanAdmission::evict_existing, victim};
+}
+
 } // namespace router::isis
