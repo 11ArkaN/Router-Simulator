@@ -53,6 +53,7 @@ add_library(router_primitives STATIC
   src/forwarding/llc_packet.cpp
   src/isis/isis_three_way.cpp
   src/isis/isis_reachability.cpp
+  src/isis/isis_multi_topology.cpp
   src/isis/isis_basic_tlvs.cpp
   src/isis/isis_narrow_reachability.cpp
   src/security/digest.cpp
@@ -62,6 +63,7 @@ add_library(router_primitives STATIC
   src/isis/isis_adjacency.cpp
   src/isis/isis_p2p_adjacency.cpp
   src/isis/isis_lan_adjacency.cpp
+  src/isis/isis_lan_adjacency_set.cpp
   src/isis/isis_jitter.cpp
   src/isis/isis_flooding.cpp
     src/dns/dns_packet.cpp
@@ -541,6 +543,7 @@ if(ROUTER_BUILD_TESTS)
     tests/runtime/protocol_packet_channel_test.cpp
     tests/isis/isis_three_way_test.cpp
     tests/isis/isis_reachability_test.cpp
+    tests/isis/isis_multi_topology_test.cpp
     tests/isis/isis_basic_tlvs_test.cpp
     tests/isis/isis_narrow_reachability_test.cpp
     tests/isis/isis_authentication_test.cpp
@@ -549,6 +552,7 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_adjacency_test.cpp
     tests/isis/isis_p2p_adjacency_test.cpp
     tests/isis/isis_lan_adjacency_test.cpp
+    tests/isis/isis_lan_adjacency_set_test.cpp
     tests/isis/isis_p2p_wire_test.cpp
     tests/isis/isis_jitter_test.cpp
     tests/isis/isis_flooding_test.cpp

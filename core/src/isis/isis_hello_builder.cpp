@@ -39,6 +39,12 @@ HelloBuildResult build_hello_frame(packet::Frame &output, const HelloContents &c
       contents.instance->instance, contents.instance->topologies)) return Result::instance;
   if (!contents.areas.empty() && !encode_area_addresses(writer, contents.areas)) return Result::areas;
   if (!contents.protocols.empty() && !writer.append(129U, contents.protocols)) return Result::capacity;
+  auto topologies = contents.topologies;
+  while (!topologies.empty()) {
+    const auto count = std::min<std::size_t>(127U, topologies.size());
+    if (!encode_topologies(writer, topologies.first(count), false)) return Result::topologies;
+    topologies = topologies.subspan(count);
+  }
   for (const auto &address : contents.ipv6_addresses)
     if (!ip::is_link_local(address)) return Result::addresses;
   if (!append_addresses<4U>(writer, 132U, contents.ipv4_addresses) ||

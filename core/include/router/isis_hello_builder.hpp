@@ -9,6 +9,7 @@
 #include "router/isis_ethernet.hpp"
 #include "router/isis_instance_tlv.hpp"
 #include "router/isis_pdu_composition.hpp"
+#include "router/isis_multi_topology.hpp"
 #include "router/isis_three_way.hpp"
 
 namespace router::isis {
@@ -21,6 +22,7 @@ struct HelloContents {
   packet::Mac destination{};
   std::span<const std::span<const std::uint8_t>> areas;
   std::span<const std::uint8_t> protocols;
+  std::span<const packet::isis::TopologyComponent> topologies;
   std::span<const packet::Ipv4> ipv4_addresses;
   std::span<const packet::Ipv6> ipv6_addresses;
   std::span<const packet::Mac> neighbors;
@@ -35,7 +37,7 @@ struct HelloContents {
 using HelloScratch = PduScratch;
 
 enum class HelloBuildResult : std::uint8_t {
-  encoded, invalid_header, capacity, areas, addresses, instance, three_way, authentication
+  encoded, invalid_header, capacity, areas, addresses, instance, topologies, three_way, authentication
 };
 
 // Requires effective configuration already accepted by its source-backed
@@ -43,6 +45,7 @@ enum class HelloBuildResult : std::uint8_t {
 // complete TLVs, advertises IID first and finalizes authentication after all
 // padding. P2P Hellos require this implementation's three-way option; LAN
 // Hellos must not carry it. IPv6 Hello address lists must be link-local.
+// MT membership lists split across TLV 229 options and must carry no O/A flags.
 // The caller selects mandatory area/NLPID/address content and multicast policy.
 // Failure preserves output. Input spans borrow only for this call. The caller
 // owns the resulting frame until publishing it through its egress SPSC channel.

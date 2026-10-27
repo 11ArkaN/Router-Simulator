@@ -31,6 +31,7 @@ void isis_hello_builder_tests() {
     ipv6[index].back() = static_cast<std::uint8_t>(index + 1U);
   }
   const std::array<std::uint16_t, 1U> topologies{0U};
+  const std::array<TopologyComponent, 2U> mt_components{{{0U}, {2U}}};
   std::array<std::uint8_t, 40U> key{};
   key.fill(0x4bU);
   HelloContents contents;
@@ -39,6 +40,7 @@ void isis_hello_builder_tests() {
   contents.destination = {1U, 0U, 0x5eU, 0x90U, 0U, 2U};
   contents.areas = areas;
   contents.protocols = protocols;
+  contents.topologies = mt_components;
   contents.ipv4_addresses = ipv4;
   contents.ipv6_addresses = ipv6;
   contents.three_way = ThreeWayOption{ThreeWayState::down, 1001U, std::nullopt, std::nullopt};
@@ -53,6 +55,8 @@ void isis_hello_builder_tests() {
   require(decoded && decoded->pdu.bytes.size() >= 1491U && decoded->pdu.bytes.size() <= 1492U &&
             verify_authentication(decoded->pdu.bytes, *contents.authentication) == AuthenticationError::none,
           "IS-IS Hello authentication did not cover final padding");
+  require(supports_topology(decoded->pdu, 0U) == true && supports_topology(decoded->pdu, 2U) == true,
+          "IS-IS Hello confused MT membership with instance-specific topology zero");
   TlvCursor cursor(decoded->pdu.tlvs);
   const auto first = cursor.next();
   require(first && first->code == 7U, "IS-IS Hello did not place IID before other options");
@@ -116,6 +120,32 @@ void isis_hello_builder_tests() {
     require(addresses.valid(), "IS-IS split LAN neighbor TLV was malformed");
   }
   require(neighbor_options == 2U && count == neighbors.size(), "IS-IS Hello lost neighbors at the TLV boundary");
+  std::array<TopologyComponent, 128U> many_topologies{};
+  for (std::size_t index = 0U; index < many_topologies.size(); ++index)
+    many_topologies[index].id = static_cast<std::uint16_t>(index);
+  contents.topologies = many_topologies;
+  require(build_hello_frame(frame, contents, *scratch) == HelloBuildResult::encoded,
+          "IS-IS Hello could not split a full topology membership list");
+  const auto many = parse_ethernet_pdu(frame.view(), error);
+  TlvCursor many_options(many->pdu.tlvs);
+  unsigned topology_options{};
+  std::size_t topology_count{};
+  while (const auto option = many_options.next()) {
+    if (option->code != 229U) continue;
+    ++topology_options;
+    TopologyCursor components(*option);
+    while (components.next()) ++topology_count;
+    require(components.valid(), "IS-IS split topology option was malformed");
+  }
+  require(topology_options == 2U && topology_count == many_topologies.size() &&
+            supports_topology(many->pdu, 127U) == true,
+          "IS-IS Hello lost membership across the topology TLV boundary");
+  const auto many_saved = frame;
+  many_topologies.back().overloaded = true;
+  require(build_hello_frame(frame, contents, *scratch) == HelloBuildResult::topologies &&
+            frame.length == many_saved.length && frame.bytes == many_saved.bytes,
+          "IS-IS invalid Hello topology flags changed the prior output frame");
+  contents.topologies = mt_components;
   contents.instance = HelloInstanceOption{InstanceFormat::standard, 0U, {}};
   require(build_hello_frame(frame, contents, *scratch) == HelloBuildResult::instance,
           "IS-IS LAN Hello emitted an explicit standard IID zero");

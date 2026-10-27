@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: ietf.isis.multi_topology.rfc5120
+    kind: routing-protocol-wire-format
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: rfc-editor
+    source_url: https://www.rfc-editor.org/rfc/rfc5120.html
+    section: Sections 2 through 7, topology membership and MT reachability TLVs 222, 229, 235 and 237
+    rfc_refs: [RFC5120, RFC5305, RFC5308]
+    yang_path: /configure/router/isis/multi-topology
+    last_verified_at: 2026-10-27
+    implementation: [core/include/router/isis_multi_topology.hpp, core/src/isis/isis_multi_topology.cpp, core/include/router/isis_hello_builder.hpp, core/src/isis/isis_hello_builder.cpp]
+    tests: [core/tests/isis/isis_multi_topology_test.cpp, core/tests/isis/isis_hello_builder_test.cpp]
+    status: experimental
+    notes: Membership unions repeated TLV 229 options, absence implies MT0 only and O/A flags apply only to nonzero topologies in fragment-zero LSPs. Other PDU contexts do not supply membership. MT reachability exposes borrowed standard-codec bodies and preserves the required whole-option ignore for topology zero. Hello composition splits complete membership lists and authenticates their final wire image. LAN adjacency formation, per-topology reverse connectivity, SPF, RIB and forwarding remain instance integration work. The RFC Editor errata search returned no matching records on the verification date.
   - id: iso.10589.2002.snp_composition
     kind: routing-protocol-wire-composition
     release: 26.7.R1
@@ -108,10 +122,10 @@ records:
     rfc_refs: [RFC5303]
     yang_path: null
     last_verified_at: 2026-10-26
-    implementation: [core/include/router/isis_adjacency.hpp, core/src/isis/isis_adjacency.cpp, core/include/router/isis_p2p_adjacency.hpp, core/src/isis/isis_p2p_adjacency.cpp, core/include/router/isis_lan_adjacency.hpp, core/src/isis/isis_lan_adjacency.cpp]
-    tests: [core/tests/isis/isis_adjacency_test.cpp, core/tests/isis/isis_p2p_adjacency_test.cpp, core/tests/isis/isis_p2p_wire_test.cpp, core/tests/isis/isis_lan_adjacency_test.cpp]
+    implementation: [core/include/router/isis_adjacency.hpp, core/src/isis/isis_adjacency.cpp, core/include/router/isis_p2p_adjacency.hpp, core/src/isis/isis_p2p_adjacency.cpp, core/include/router/isis_lan_adjacency.hpp, core/src/isis/isis_lan_adjacency.cpp, core/include/router/isis_lan_adjacency_set.hpp, core/src/isis/isis_lan_adjacency_set.cpp]
+    tests: [core/tests/isis/isis_adjacency_test.cpp, core/tests/isis/isis_p2p_adjacency_test.cpp, core/tests/isis/isis_p2p_wire_test.cpp, core/tests/isis/isis_lan_adjacency_test.cpp, core/tests/isis/isis_lan_adjacency_set_test.cpp]
     status: experimental
-    notes: Pure P2P actions preserve the ISO table distinction between rejection, Down, Up and Accept and their area/system reasons. A control-owned P2P adjacency retains negotiated identity, distinct ISO and three-way states and its holding deadline. Discarded options cannot refresh that deadline, and a changed P2P-over-LAN peer is ignored until the existing adjacency expires. Per-level LAN records derive two-way state from received neighbor MAC lists and retain Initializing state after one-way loss. Capacity decisions evict the lowest priority then lowest MAC and require Down completion before insertion. DIS selection requires the startup delay and an Up adjacency, includes priority zero, uses MAC priority ties and preserves a remote winner's advertised LAN ID. Instance processing, neighbor area retention, packet scheduling and pseudonode origination remain in progress.
+    notes: Pure P2P actions preserve the ISO table distinction between rejection, Down, Up and Accept and their area/system reasons. A control-owned P2P adjacency retains negotiated identity, distinct ISO and three-way states and its holding deadline. Discarded options cannot refresh that deadline, and a changed P2P-over-LAN peer is ignored until the existing adjacency expires. Per-level LAN records derive two-way state from received neighbor MAC lists and retain Initializing state after one-way loss. The bounded LAN collection retains received areas before refreshing a timer, includes Initializing peers in capacity selection and synchronously completes the lowest-priority/lowest-MAC victim's Down processing before inserting its replacement. DIS selection requires the startup delay and an Up adjacency, includes priority zero, uses MAC priority ties and preserves a remote winner's advertised LAN ID. Instance area aggregation, packet scheduling and pseudonode origination remain in progress.
   - id: iso.10589.2002.lsdb
     kind: routing-protocol-state
     release: 26.7.R1
