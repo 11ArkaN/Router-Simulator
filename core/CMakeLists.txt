@@ -538,9 +538,11 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_hello_builder_test.cpp
     tests/isis/isis_snp_builder_test.cpp
     tests/isis/isis_ethernet_fabric_test.cpp
+    tests/isis/isis_egress_completion_test.cpp
     tests/forwarding/llc_packet_test.cpp
     tests/forwarding/router_forwarder_isis_test.cpp
     tests/runtime/protocol_packet_channel_test.cpp
+    tests/runtime/protocol_packet_completion_test.cpp
     tests/isis/isis_three_way_test.cpp
     tests/isis/isis_reachability_test.cpp
     tests/isis/isis_multi_topology_test.cpp

@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: iso.10589.2002.egress_commit
+    kind: routing-protocol-concurrency-boundary
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clause 7.3.15, SRM and SSN commitment after successful transmission
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-10-27
+    implementation: [core/include/router/protocol_packet_channel.hpp, core/include/router/isis_flooding.hpp, core/src/isis/isis_flooding.cpp]
+    tests: [core/tests/runtime/protocol_packet_completion_test.cpp, core/tests/isis/isis_egress_completion_test.cpp]
+    status: experimental
+    notes: The optional completion mode returns the forwarding owner's port-queue admission result through the existing reverse SPSC ownership ring. A returned frame slot cannot be reused until its producer consumes that result. The producer can inspect the original immutable wire image before its next send, without placing a pointer or another frame copy into a ring. The default channel keeps automatic handle reclamation. A physical-link saturation fixture preserves LAN SRM and PSNP SSN after queue refusal and commits each only after actual queue admission. The IS-IS worker still needs to connect this mechanism to its pending transmissions.
   - id: ietf.isis.multi_topology.rfc5120
     kind: routing-protocol-wire-format
     release: 26.7.R1

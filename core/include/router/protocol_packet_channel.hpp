@@ -14,10 +14,11 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <type_traits>
 
 namespace router::protocol {
 
-template <std::size_t Capacity> class PacketChannel final {
+template <std::size_t Capacity, bool WithCompletions = false> class PacketChannel final {
   static_assert(Capacity > 0U);
   static_assert(Capacity <= std::numeric_limits<std::uint32_t>::max());
 
@@ -34,6 +35,12 @@ public:
     Handle handle{};
     Metadata metadata{};
     const packet::Frame *frame{};
+  };
+
+  struct Completion {
+    Metadata metadata{};
+    const packet::Frame *frame{};
+    bool enqueued{};
   };
 
   PacketChannel() noexcept : available_count_(Capacity) {
@@ -80,27 +87,59 @@ public:
   // Consumer returns exactly one handle after processing. A failure indicates
   // an ownership bug because the return ring has one slot for every possible
   // borrowed packet plus the SpscRing sentinel slot.
-  [[nodiscard]] bool release(Handle handle) noexcept {
-    if (handle >= Capacity || !borrowed_[handle] || !returned_.try_push(handle)) return false;
-    borrowed_[handle] = false;
-    return true;
+  [[nodiscard]] bool release(Handle handle) noexcept requires (!WithCompletions) {
+    return release_slot(handle, handle);
   }
 
+  // Completion-enabled egress requires the consumer's actual port-queue
+  // enqueue result. Publishing into this channel is not physical transmission.
+  // The returned handle and result share one release/acquire SPSC operation.
+  [[nodiscard]] bool release(Handle handle, bool enqueued) noexcept requires WithCompletions {
+    return release_slot(handle, Returned{handle, enqueued});
+  }
+
+  // Producer consumes each egress result before its slot can be reused. The
+  // borrowed wire view remains valid until the next try_send on this channel;
+  // process it before sending again. This call reclaims the slot and needs no
+  // further release. No pointer crosses a ring: the producer derives this view
+  // from its own fixed storage after acquiring the returned handle.
+  [[nodiscard]] std::optional<Completion> try_completion() noexcept requires WithCompletions {
+    Returned result{};
+    if (!returned_.try_pop(result)) return std::nullopt;
+    const auto &slot = slots_[result.handle];
+    available_[available_count_++] = result.handle;
+    return Completion{slot.metadata, &slot.frame, result.enqueued};
+  }
+
+  // Completion-enabled channels apply backpressure until the producer has
+  // consumed the corresponding result, even when the consumer returned a slot.
   [[nodiscard]] std::size_t producer_available() noexcept {
     reclaim();
     return available_count_;
   }
 
 private:
+  struct Returned {
+    Handle handle{};
+    bool enqueued{};
+  };
+  using ReturnValue = std::conditional_t<WithCompletions, Returned, Handle>;
   struct Slot {
     Metadata metadata{};
     packet::Frame frame{};
   };
 
+  [[nodiscard]] bool release_slot(Handle handle, ReturnValue value) noexcept {
+    if (handle >= Capacity || !borrowed_[handle] || !returned_.try_push(value)) return false;
+    borrowed_[handle] = false;
+    return true;
+  }
+
   void reclaim() noexcept {
-    Handle returned{};
-    while (returned_.try_pop(returned))
-      available_[available_count_++] = returned;
+    if constexpr (!WithCompletions) {
+      Handle returned{};
+      while (returned_.try_pop(returned)) available_[available_count_++] = returned;
+    }
   }
 
   std::array<Slot, Capacity> slots_{};
@@ -110,7 +149,7 @@ private:
   // Each direction has Capacity usable entries and preserves FIFO order.
   // SpscRing reserves one element to distinguish full from empty.
   SpscRing<Handle, Capacity + 1U> ready_;
-  SpscRing<Handle, Capacity + 1U> returned_;
+  SpscRing<ReturnValue, Capacity + 1U> returned_;
   std::array<Handle, Capacity> available_{};
   std::size_t available_count_{};
   // Consumer alone tracks borrowed slots. Rejecting an unknown or duplicate
