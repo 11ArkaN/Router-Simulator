@@ -71,6 +71,8 @@ const cppLayers = new Map([
   ["isis_jitter.hpp", 0], ["isis_jitter.cpp", 0],
   ["isis_forwarding.cpp", 2],
   ["isis_flooding.hpp", 1], ["isis_flooding.cpp", 1],
+  ["shortest_paths.hpp", 0], ["shortest_paths.cpp", 0],
+  ["isis_spf.hpp", 0], ["ospf_spf.hpp", 0],
   ["device.hpp", 1], ["device_routing.hpp", 1], ["hardware.hpp", 1], ["routing.hpp", 1],
   ["device_routing.cpp", 1], ["hardware.cpp", 1], ["routing.cpp", 1],
   ["network.hpp", 2], ["network.cpp", 2], ["network_adjacency.hpp", 2],

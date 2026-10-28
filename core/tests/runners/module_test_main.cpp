@@ -150,6 +150,7 @@ void ospf_route_calculator_tests();
 void ospf_packet_channel_tests();
 void ospf_route_channel_tests();
 void ospf_spf_tests();
+void isis_spf_tests();
 void ospf_topology_tests();
 void route_policy_tests();
 void network_endpoint_ipv4_tests();
@@ -332,6 +333,7 @@ int main() {
     ospf_packet_channel_tests();
     ospf_route_channel_tests();
     ospf_spf_tests();
+    isis_spf_tests();
     ospf_topology_tests();
     route_policy_tests();
     network_endpoint_ipv4_tests();

@@ -1,20 +1,23 @@
-// Dijkstra SPF implementation for RFC 2328 section 16 and RFC 5340 section
-// 4.8. It computes topology distance and equal-cost first-hop sets only.
-// Inter-area and external route preference remain separate route-calculation
-// phases because mixing their rules into graph relaxation would be incorrect.
+// Bounded Dijkstra relaxation with explicit metric limits. Its control owner
+// alone mutates scratch and publishes a complete generation. Protocol-specific
+// eligibility, overload, reverse connectivity and route preference stay with
+// the LSDB translator and route owner.
 
-#include "router/ospf_spf.hpp"
+#include "router/shortest_paths.hpp"
 
 #include <algorithm>
 #include <bit>
-#include <limits>
+#include <stdexcept>
 
-namespace router::ospf {
+namespace router::routing {
 
-SpfCalculator::SpfCalculator(std::size_t maximum_vertices,
-                             std::size_t maximum_pending_candidates)
-    : maximum_vertices_(maximum_vertices),
+ShortestPaths::ShortestPaths(std::size_t maximum_vertices,
+                             std::size_t maximum_pending_candidates, DistancePolicy policy)
+    : policy_(policy), maximum_vertices_(maximum_vertices),
       maximum_pending_candidates_(maximum_pending_candidates) {
+  if (policy.maximum_distance == unreachable_distance ||
+      policy.maximum_edge > policy.maximum_distance)
+    throw std::invalid_argument("Invalid shortest-path distance policy");
   // Allocation belongs to construction and therefore to the protocol-instance
   // owner. The real-time calculate path reuses these capacities.
   published_.reserve(maximum_vertices_);
@@ -22,7 +25,7 @@ SpfCalculator::SpfCalculator(std::size_t maximum_vertices,
   candidates_.reserve(maximum_pending_candidates_);
 }
 
-bool SpfCalculator::calculate(
+bool ShortestPaths::calculate(
     std::uint32_t root_vertex, std::span<const SpfVertex> vertices,
     std::span<const SpfEdge> edges,
     std::uint16_t first_hop_count_value) noexcept {
@@ -42,7 +45,7 @@ bool SpfCalculator::calculate(
       return false;
     for (const auto &edge : edges.subspan(first, count)) {
       if (edge.target_vertex >= vertices.size() ||
-          edge.cost >= ls_infinity ||
+          edge.cost > policy_.maximum_edge ||
           (edge.first_hop != no_first_hop &&
            edge.first_hop >= first_hop_count_value))
         return false;
@@ -56,13 +59,16 @@ bool SpfCalculator::calculate(
   candidates_.push_back(
       {.distance = 0U, .vertex = root_vertex, .revision = 1U});
 
-  // std::push_heap is a max-heap by default. Reverse distance and vertex order
-  // to obtain a stable min-heap. Vertex order is not a route tie-break; it
-  // makes processing reproducible while equal-cost first hops are merged.
-  const auto candidate_later = [](const Candidate &left,
+  // std::push_heap is a max-heap by default. Reverse distance, caller priority
+  // and stable vertex index to obtain a min-heap. Protocol node priority is
+  // applied before the index; route preference belongs to the route owner.
+  const auto candidate_later = [vertices](const Candidate &left,
                                   const Candidate &right) noexcept {
-    return left.distance > right.distance ||
-           (left.distance == right.distance && left.vertex > right.vertex);
+    if (left.distance != right.distance) return left.distance > right.distance;
+    const auto left_priority = vertices[left.vertex].tie_priority;
+    const auto right_priority = vertices[right.vertex].tie_priority;
+    if (left_priority != right_priority) return left_priority > right_priority;
+    return left.vertex > right.vertex;
   };
   const auto push_candidate = [this, candidate_later](
                                   Candidate value) noexcept {
@@ -77,17 +83,25 @@ bool SpfCalculator::calculate(
     std::pop_heap(candidates_.begin(), candidates_.end(), candidate_later);
     const auto candidate = candidates_.back();
     candidates_.pop_back();
-    const auto &current = scratch_[candidate.vertex];
+    auto &current = scratch_[candidate.vertex];
     if (candidate.distance != current.distance ||
-        candidate.revision != current.revision)
+        candidate.revision != current.revision ||
+        (policy_.settle_once && current.settled))
       continue;
+    current.settled = policy_.settle_once;
 
     const auto &vertex = vertices[candidate.vertex];
     const auto outgoing = edges.subspan(vertex.first_edge, vertex.edge_count);
     for (const auto &edge : outgoing) {
-      if (current.distance >= ls_infinity - edge.cost)
-        continue;
-      const auto proposed_distance = current.distance + edge.cost;
+      // ISO PATHS is closed. In particular, zero-cost arcs and saturated
+      // distances must not carry a newly learned first hop back into SELF or
+      // another already selected vertex. The OSPF policy keeps its existing
+      // revision-based equal-cost propagation instead.
+      if (policy_.settle_once && scratch_[edge.target_vertex].settled) continue;
+      const bool overflow = edge.cost > policy_.maximum_distance - current.distance;
+      if (overflow && !policy_.saturate) continue;
+      const auto proposed_distance = overflow ? policy_.maximum_distance
+                                             : current.distance + edge.cost;
       auto proposed_hops = current.first_hops;
       if (edge.first_hop != no_first_hop) {
         const auto word = static_cast<std::size_t>(edge.first_hop / 64U);
@@ -132,20 +146,20 @@ bool SpfCalculator::calculate(
   return true;
 }
 
-bool SpfCalculator::reachable(std::size_t vertex) const noexcept {
+bool ShortestPaths::reachable(std::size_t vertex) const noexcept {
   return vertex < published_count_ &&
-         published_[vertex].distance < ls_infinity;
+         published_[vertex].distance != unreachable_distance;
 }
 
 std::optional<std::uint32_t>
-SpfCalculator::cost(std::size_t vertex) const noexcept {
+ShortestPaths::cost(std::size_t vertex) const noexcept {
   return reachable(vertex)
              ? std::optional<std::uint32_t>{published_[vertex].distance}
              : std::nullopt;
 }
 
 std::size_t
-SpfCalculator::first_hop_count(std::size_t vertex) const noexcept {
+ShortestPaths::first_hop_count(std::size_t vertex) const noexcept {
   if (!reachable(vertex))
     return 0U;
   std::size_t result{};
@@ -155,7 +169,7 @@ SpfCalculator::first_hop_count(std::size_t vertex) const noexcept {
 }
 
 std::optional<std::uint16_t>
-SpfCalculator::first_hop(std::size_t vertex,
+ShortestPaths::first_hop(std::size_t vertex,
                          std::size_t ordinal) const noexcept {
   if (!reachable(vertex))
     return std::nullopt;
@@ -172,4 +186,4 @@ SpfCalculator::first_hop(std::size_t vertex,
   return std::nullopt;
 }
 
-} // namespace router::ospf
+} // namespace router::routing

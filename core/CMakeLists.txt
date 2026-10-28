@@ -173,7 +173,7 @@ add_library(router_primitives STATIC
   src/ospf/ospf_process_origination.cpp
   src/ospf/ospf_process_output.cpp
   src/ospf/ospf_route_calculator.cpp
-  src/ospf/ospf_spf.cpp
+  src/forwarding/shortest_paths.cpp
   src/ospf/ospf_topology.cpp
   src/forwarding/route_policy.cpp
   src/forwarding/packet.cpp
@@ -398,7 +398,12 @@ if(EMSCRIPTEN)
   # executable leaves parsers, checksums and forwarding at Clang's -O0 default.
   # Keep the optimization contract on the archive itself to make every Wasm
   # consumer, including the browser runtime, use the same production code.
-  target_compile_options(router_build_options INTERFACE -pthread -O3)
+  # Emscripten requires exception support while compiling each catching frame
+  # and while linking its runtime. Link-only NO_DISABLE_EXCEPTION_CATCHING
+  # cannot restore handlers already omitted from object code. Core owners use
+  # these handlers to preserve state after rejected construction or allocation.
+  target_compile_options(router_build_options INTERFACE -pthread -O3 -fexceptions)
+  target_link_options(router_build_options INTERFACE -fexceptions)
   # Source: Emscripten pthreads documentation. The JavaScript expression is
   # evaluated before C++ startup and reserves exactly the pthread count needed
   # by the generated host-CPU shard policy. The browser Worker itself owns the
@@ -658,6 +663,7 @@ if(ROUTER_BUILD_TESTS)
     tests/ospf/ospf_packet_channel_test.cpp
     tests/ospf/ospf_route_channel_test.cpp
     tests/ospf/ospf_spf_test.cpp
+    tests/isis/isis_spf_test.cpp
     tests/ospf/ospf_topology_test.cpp
     tests/forwarding/route_policy_test.cpp
     tests/forwarding/multi_device_fabric_test.cpp

@@ -1,5 +1,33 @@
 schema_version: 1
 records:
+  - id: emscripten.cpp.exception_catching
+    kind: build-runtime-error-contract
+    release: 26.7.R1
+    platforms: [browser-wasm, wasm-node-test]
+    source_type: official-toolchain-documentation
+    source_url: https://emscripten.org/docs/porting/exceptions.html
+    section: Emscripten JavaScript-based Exception Support, compile and link requirements
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-10-27
+    implementation: [core/CMakeLists.txt]
+    tests: [core/tests/isis/isis_spf_test.cpp]
+    status: implemented
+    notes: The common build interface enables exception handling at compilation and linking. A rejected shortest-path policy throws from the core library and is caught in a separate test translation unit. The regression fails when only the link setting is present, preserving the same constructor error contract in native and WebAssembly builds. Runtime owners also rely on compiled handlers to reject allocation failures before publishing state.
+  - id: ietf.isis.spf_metric_boundaries
+    kind: routing-protocol-distance-calculation
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard-and-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc5305.html
+    section: Sections 3 and 4, ISO 10589 Annex C and RFC 2328 section 16
+    rfc_refs: [RFC5305, RFC2328]
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-10-27
+    implementation: [core/include/router/shortest_paths.hpp, core/src/forwarding/shortest_paths.cpp, core/include/router/isis_spf.hpp, core/include/router/ospf_spf.hpp]
+    tests: [core/tests/isis/isis_spf_test.cpp, core/tests/ospf/ospf_spf_test.cpp]
+    status: experimental
+    notes: The shared indexed Dijkstra mechanism owns reusable scratch and publishes only complete generations. A separate unreachable sentinel preserves finite IS-IS maximum distances. Narrow paths admit 1023 and discard larger sums; wide paths admit 0xFE000000 and saturate larger sums, with 0x00FFFFFF link metrics excluded by the owner. ISO equal-distance selection prioritizes pseudonodes and never reopens closed PATHS entries. The OSPF policy retains LSInfinity exclusion and revision-based equal-cost propagation. Protocol-specific local-LSDB graph translation, reverse-connectivity checks, overload, pseudonodes, route preference and runtime integration remain with their protocol owners. These tests do not claim a completed IS-IS route calculator.
   - id: iso.10589.2002.egress_commit
     kind: routing-protocol-concurrency-boundary
     release: 26.7.R1
@@ -612,7 +640,7 @@ records:
     rfc_refs: [RFC2328, RFC5340]
     yang_path: null
     last_verified_at: 2026-07-23
-    implementation: [core/include/router/ospf_spf.hpp, core/include/router/ospf_topology.hpp, core/include/router/ospf_route_calculator.hpp, core/src/ospf/ospf_spf.cpp, core/src/ospf/ospf_topology.cpp, core/src/ospf/ospf_route_calculator.cpp]
+    implementation: [core/include/router/ospf_spf.hpp, core/include/router/ospf_topology.hpp, core/include/router/ospf_route_calculator.hpp, core/src/forwarding/shortest_paths.cpp, core/src/ospf/ospf_topology.cpp, core/src/ospf/ospf_route_calculator.cpp]
     tests: [core/tests/ospf/ospf_spf_test.cpp, core/tests/ospf/ospf_topology_test.cpp, core/tests/ospf/ospf_route_calculator_test.cpp]
     status: implemented
     notes: The translator derives router and transit-network vertices, reciprocal arcs and local first-hop tokens only from one area LSDB, rejecting one-way descriptions. A persistent allocation-free calculation workspace runs Dijkstra over that graph, propagates deterministic equal-cost first-hop sets and atomically publishes only a complete generation. Inter-area and external route phases remain separately sourced work and are not claimed by this record.

@@ -1,6 +1,9 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  runtime.cpp_exception_handlers:
+    status: implemented
+    source_ids: [emscripten.cpp.exception_catching]
   crypto.segmented_routing_hmac:
     status: implemented
     source_ids: [ietf.crypto.hmac.rfc2104]
