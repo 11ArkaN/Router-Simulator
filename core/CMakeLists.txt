@@ -559,6 +559,7 @@ if(ROUTER_BUILD_TESTS)
     tests/forwarding/router_forwarder_isis_test.cpp
     tests/runtime/protocol_packet_channel_test.cpp
     tests/runtime/protocol_packet_completion_test.cpp
+    tests/runtime/protocol_owner_lifecycle_test.cpp
     tests/runtime/protocol_transmission_test.cpp
     tests/runtime/owned_spsc_channel_test.cpp
     tests/isis/isis_three_way_test.cpp
@@ -764,8 +765,12 @@ if(ROUTER_BUILD_TESTS)
     # the production worker path, so reserve a separate 2 MiB test stack rather
     # than inflating every live pthread in the browser runtime.
     set(ROUTER_MODULE_TEST_STACK_OPTION "-sSTACK_SIZE=2097152")
+    # Module fixtures explicitly select every generated placement, including
+    # separate forwarding owners on a low-CPU test host. Reserve the highest
+    # generated pool for this runner; production still selects its host policy.
+    set(ROUTER_MODULE_TEST_PTHREAD_POOL_OPTION "-sPTHREAD_POOL_SIZE=${ROUTER_PTHREAD_POOL_HIGH}")
     target_link_options(module_tests PRIVATE -pthread
-      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}" "${ROUTER_MODULE_TEST_STACK_OPTION}"
+      "${ROUTER_MODULE_TEST_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}" "${ROUTER_MODULE_TEST_STACK_OPTION}"
       # NetworkPlane module tests construct several independent full-capacity
       # owners in one process. Use the same generated growth ceiling as the
       # browser runtime so additional protocol state cannot make the test

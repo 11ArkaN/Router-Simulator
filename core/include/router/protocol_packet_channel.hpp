@@ -42,6 +42,11 @@ public:
     // IS-IS uses its wire PDU type; zero preserves unspecified legacy users.
     // Delayed link-owner receipts compare this as part of the complete identity.
     std::uint8_t transmission_class{};
+    // Local protocol instance, distinct from the wire IID. Circuits on one
+    // interface may share an epoch, PDU class and ticket number. Including this
+    // discriminator prevents a delayed receipt from releasing another instance's
+    // replacement slot. Zero preserves legacy single-instance users.
+    std::uint8_t instance_id{};
     bool operator==(const Metadata &) const = default;
   };
 

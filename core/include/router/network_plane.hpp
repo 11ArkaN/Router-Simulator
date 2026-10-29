@@ -17,6 +17,7 @@
 #include "router/multi_device_fabric.hpp"
 #include "router/multi_device_routing.hpp"
 #include "router/ospf_control_worker.hpp"
+#include "router/isis_control_worker.hpp"
 #include "router/ospf_process.hpp"
 #include "router/packet.hpp"
 #include "router/router_forwarder.hpp"
@@ -46,6 +47,15 @@ struct NetworkLinkProgram {
   std::uint64_t bits_per_second{};
   std::chrono::nanoseconds propagation{};
   bool carrier{};
+};
+
+struct IsisP2pCircuitProgram {
+  // Serialized control owns source-resolved effective configuration. The
+  // physical generation accompanies logical circuit identity so replacement
+  // hardware cannot inherit a queued frame. This experimental P2P transport
+  // program does not provide instance-level flooding, routing or checkpointing.
+  isis::CircuitDefinition circuit;
+  PortHandle port{};
 };
 
 struct HostNetworkProgram {
@@ -634,6 +644,17 @@ public:
                                     const ForwardPort &port) noexcept;
   [[nodiscard]] bool remove_port(DeviceHandle device,
                                  std::uint16_t ordinal) noexcept;
+  // Serialized network owner. Programs are sorted by logical interface/local
+  // instance. Prepare allocates all protocol and multicast values before the
+  // forwarding barrier. Caller never reuses an epoch for a logical circuit
+  // within a device generation, including after removal and reactivation.
+  // Failure preserves the live generation; unchanged epochs
+  // preserve adjacency, timers and pending tickets. Active experimental P2P
+  // transport explicitly blocks structural checkpoint/restore until supported.
+  [[nodiscard]] bool replace_isis_p2p_generation(DeviceHandle device,
+      std::span<const IsisP2pCircuitProgram> circuits) noexcept;
+  [[nodiscard]] std::optional<isis::ControlResult> query_isis_circuit(
+      const isis::CircuitIdentity &identity) noexcept;
   [[nodiscard]] bool
   add_ospf_process(const OspfProcessProgram &program) noexcept;
   [[nodiscard]] bool

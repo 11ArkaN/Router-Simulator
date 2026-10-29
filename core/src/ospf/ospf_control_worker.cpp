@@ -43,7 +43,9 @@ ControlWorker::ControlWorker(ControlChannels &channels,
   thread_ = std::thread([this] { run(); });
 }
 
-ControlWorker::~ControlWorker() {
+ControlWorker::~ControlWorker() { stop(); }
+
+void ControlWorker::stop() noexcept {
   stop_requested_.store(true, std::memory_order_release);
   notify();
   if (thread_.joinable())
@@ -51,6 +53,7 @@ ControlWorker::~ControlWorker() {
 }
 
 bool ControlWorker::submit(const ControlCommand &command) noexcept {
+  if (stop_requested_.load(std::memory_order_acquire)) return false;
   if (!commands_.try_push(command))
     return false;
   notify();

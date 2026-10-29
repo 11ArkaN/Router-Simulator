@@ -14,6 +14,7 @@ namespace router::isis {
 struct P2pCircuitConfiguration : CircuitHelloConfiguration {
   P2pLocal local;
   bool physical_point_to_point{};
+  bool operator==(const P2pCircuitConfiguration &) const = default;
 };
 
 struct P2pCircuitEvent {
@@ -70,6 +71,9 @@ public:
   [[nodiscard]] Clock::time_point deadline() const noexcept;
   [[nodiscard]] P2pSnapshot adjacency() const noexcept { return adjacency_.snapshot(); }
   [[nodiscard]] std::span<const std::uint8_t> peer_attributes() const noexcept { return peer_; }
+  // Same-owner immutable construction value. Borrow only until circuit removal
+  // or generation replacement; no forwarding or UI owner may retain the view.
+  [[nodiscard]] const P2pCircuitConfiguration &configuration() const noexcept { return configuration_; }
 
 private:
   void event(const P2pSnapshot &before, P2pUpdate update,

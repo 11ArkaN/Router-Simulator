@@ -103,4 +103,21 @@ void protocol_packet_completion_tests() {
   const auto final = reused->try_completion();
   if (!final || final->metadata != lsp || final->enqueued || reused->producer_available() != 1U)
     throw std::runtime_error("Protocol guarded receipt lost actual admission or its PDU class");
+  auto first_instance = hello;
+  first_instance.instance_id = 1U;
+  auto second_instance = first_instance;
+  second_instance.instance_id = 2U;
+  if (!reused->try_send(first_instance, frame)) throw std::runtime_error("Protocol instance fixture admission failed");
+  const auto old_instance = reused->try_receive();
+  if (!old_instance || !reused->release(old_instance->handle, first_instance, true) ||
+      !reused->try_completion() || !reused->try_send(second_instance, frame))
+    throw std::runtime_error("Protocol instance fixture did not reuse its frame handle");
+  const auto current_instance = reused->try_receive();
+  if (!current_instance || current_instance->handle != old_instance->handle ||
+      reused->release(current_instance->handle, first_instance, true) ||
+      !reused->release(current_instance->handle, second_instance, true))
+    throw std::runtime_error("Delayed receipt released another instance with the same epoch, PDU class and ticket");
+  const auto instance_result = reused->try_completion();
+  if (!instance_result || instance_result->metadata != second_instance || !instance_result->enqueued)
+    throw std::runtime_error("Protocol instance receipt lost its full identity");
 }

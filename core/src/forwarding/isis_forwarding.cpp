@@ -21,9 +21,19 @@ bool RouterForwarder::configure_isis_punt(std::uint16_t port_ordinal,
     std::vector<packet::Mac> staged(groups.begin(), groups.end());
     std::sort(staged.begin(), staged.end());
     staged.erase(std::unique(staged.begin(), staged.end()), staged.end());
-    isis_groups_[port_ordinal].swap(staged);
-    return true;
+    return exchange_isis_punt(port_ordinal, staged);
   } catch (const std::bad_alloc &) { return false; }
+}
+
+bool RouterForwarder::exchange_isis_punt(std::uint16_t port_ordinal,
+    std::vector<packet::Mac> &groups) noexcept {
+  if (port_ordinal >= ports_.size() || !ports_[port_ordinal].configured ||
+      !std::is_sorted(groups.begin(), groups.end()) ||
+      std::adjacent_find(groups.begin(), groups.end()) != groups.end() ||
+      std::any_of(groups.begin(), groups.end(), [](const auto &group) { return (group[0U] & 1U) == 0U; }))
+    return false;
+  isis_groups_[port_ordinal].swap(groups);
+  return true;
 }
 
 bool RouterForwarder::originate_isis(std::uint16_t port_ordinal,

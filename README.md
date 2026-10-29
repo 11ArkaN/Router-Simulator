@@ -38,6 +38,8 @@ Each IS-IS forwarding/control direction has 16 maximum-frame credits per forward
 
 Protocol frame publication wakes the selected forwarding owner directly, including when the network is idle. Route publications wake their link-owner consumer. Bounded frame drainers continue while ready work and output credits remain, and returned credits wake blocked forwarding work.
 
+Forwarding starts after protocol callback targets are fully constructed. Shutdown joins the protocol threads while retaining their notification storage, joins forwarding producers, then destroys protocol objects and shared channels. A stopped protocol owner rejects new control commands.
+
 The runtime uses the host monotonic clock. It has no simulation timeline, global future-event heap, pause control, step control or speed multiplier. Protocol and hardware deadlines pass in real time.
 
 Main components:
@@ -245,7 +247,7 @@ CSNP sequences partition the complete LSP-ID space into contiguous packet-sized 
 
 Protocol egress metadata carries a transmission ticket as well as a circuit configuration generation. The IS-IS Hello worker checks both before accepting a receipt. Operational cancellation preserves ticket progression, preventing an old receipt from completing replacement output in the same configuration.
 
-Transmission classes distinguish independent Hello, LSP and SNP ticket sequences. Delayed physical-admission receipts validate the complete metadata before returning a borrowed frame handle, so slot reuse across PDU classes cannot release replacement output.
+Transmission classes and local instance IDs distinguish independent Hello, LSP and SNP ticket sequences. Delayed physical-admission receipts validate the complete metadata before returning a borrowed frame handle, so slot reuse across PDU classes or instances cannot release replacement output.
 
 The circuit-level SNP exchange composes complete ranges, partial acknowledgements and transient purge acknowledgements under one pending transmission reservation. Real port-queue refusal preserves obligations and scan positions. A matching successful receipt advances only the transmitted range or version; cancellation and configuration replacement reject delayed receipts. Instance scheduling and runtime dispatch remain in progress.
 
@@ -255,4 +257,8 @@ The level process joins database admission, circuit epochs and LSP/SNP reservati
 
 The LSDB exposes the earliest owner-local expiration or purge-retirement deadline as an immutable value. Expired active bodies remain pending until finalized purge construction, and delayed construction preserves the original expiration time for retention. Deadline arithmetic saturates at the monotonic clock limit.
 
-Control generations with dynamic containers can transfer ownership through fixed shared slots and SPSC handle rings. Packet metadata also retains the circuit configuration generation. The ownership and stale-generation rules are recorded in [ADR 0006](docs/adr/0006-control-generation-handoff.md); worker integration remains in progress.
+Experimental P2P generations connect the IS-IS owner to both runtime placements. Forwarding validates logical circuit epochs and the encoded instance selector; the link owner independently checks the same epoch and physical port generation. A separate SPSC receipt path returns actual fabric-queue admission before releasing protocol frame credits. Replacing hardware requires a newer circuit epoch.
+
+Generation preparation stages changed circuits and multicast groups before the forwarding barrier. Unchanged epochs preserve adjacency, timer and pending-transmission state. Commit and multicast rollback exchange preallocated values without allocation. Active experimental IS-IS transport rejects structural checkpoint and restore until protocol-state persistence is implemented. Product CLI admission, LAN integration, origination, flooding and routing remain in progress.
+
+Control generations with dynamic containers transfer ownership through fixed shared slots and SPSC handle rings. Packet metadata retains the circuit configuration generation. The ownership and stale-generation rules are recorded in [ADR 0006](docs/adr/0006-control-generation-handoff.md).

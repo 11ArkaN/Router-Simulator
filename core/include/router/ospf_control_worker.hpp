@@ -210,6 +210,10 @@ public:
   explicit ControlWorker(ControlChannels &channels,
                          std::size_t forwarding_shards);
   ~ControlWorker();
+  // Serialized control owner joins once before forwarding producers stop.
+  // Notification storage stays alive until those producers have joined.
+  // Later submit rejects; notify remains safe until object destruction.
+  void stop() noexcept;
   ControlWorker(const ControlWorker &) = delete;
   ControlWorker &operator=(const ControlWorker &) = delete;
 

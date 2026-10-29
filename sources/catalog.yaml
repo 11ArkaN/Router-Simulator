@@ -1,5 +1,33 @@
 schema_version: 1
 records:
+  - id: project.runtime.isis_p2p_transport
+    kind: concurrency-ownership-contract
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-architecture-decision
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0006-control-generation-handoff.md
+    section: Circuit generations, independent owner projections and physical-admission receipts
+    rfc_refs: [RFC5303, RFC5309, RFC8202]
+    yang_path: null
+    last_verified_at: 2026-10-29
+    implementation: [core/include/router/network_plane.hpp, core/src/runtime/network_plane.cpp, core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp, core/include/router/router_forwarder.hpp, core/src/forwarding/isis_forwarding.cpp]
+    tests: [core/tests/isis/isis_control_worker_test.cpp, core/tests/forwarding/router_forwarder_isis_test.cpp]
+    status: experimental
+    notes: Complete P2P generations prepare changed circuits and retain unchanged epochs before non-allocating commit. Multicast ownership exchange permits allocation-free rollback under forwarding quiescence. Forwarding and link owners keep independent circuit and physical-port projections. Separate SPSC receipts return actual fabric admission rather than transfer-ring acceptance. Hardware replacement requires a new circuit epoch; active experimental transport rejects structural checkpoint and restore. Product CLI, LAN admission, instance origination, flooding, routing, authentication selection and protocol persistence remain incomplete.
+  - id: project.runtime.protocol_owner_shutdown
+    kind: concurrency-ownership-contract
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-architecture-decision
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0006-control-generation-handoff.md
+    section: Lifecycle and verification, callback target lifetime through forwarding join
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-10-29
+    implementation: [core/src/runtime/network_plane.cpp, core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp, core/include/router/ospf_control_worker.hpp, core/src/ospf/ospf_control_worker.cpp]
+    tests: [core/tests/runtime/protocol_owner_lifecycle_test.cpp]
+    status: implemented
+    notes: Forwarding starts after protocol objects and callbacks are initialized. Serialized stop joins a protocol without destroying its notification storage, rejects later control submissions and clears its published thread identity. Forwarding producers join before protocol object destruction. Real notification threads exercise stop concurrently and continue returning notifications afterward; repeated network startup covers both forwarding owners.
   - id: project.runtime.protocol_consumer_wakeup
     kind: concurrency-ownership-contract
     release: 26.7.R1
@@ -83,7 +111,7 @@ records:
     implementation: [core/include/router/protocol_transmission.hpp, core/include/router/protocol_packet_channel.hpp, core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp]
     tests: [core/tests/runtime/protocol_transmission_test.cpp, core/tests/runtime/protocol_packet_completion_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
     status: experimental
-    notes: Each circuit and PDU transmission class reserves a monotonic ticket. Egress consumers return the full identity unchanged through the release-acquire completion ring. Guarded release compares device, interface, port, circuit epoch, ticket and wire PDU class before releasing a borrowed slot, including handle reuse across independent class sequences. The IS-IS Hello owner requires the circuit epoch, PDU class and pending ticket before applying an enqueue result. Operational cancellation preserves progression within the same epoch, replacement epochs increase strictly and ticket exhaustion stops the affected class. Checkpoint integration must preserve high-water marks and pending reservations.
+    notes: Each circuit and PDU transmission class reserves a monotonic ticket. Egress consumers return the full identity unchanged through the release-acquire completion ring. Guarded release compares device, logical interface, local instance, port, circuit epoch, ticket and wire PDU class before releasing a borrowed slot, including handle reuse across independent class and instance sequences. The IS-IS Hello owner requires the local instance, circuit epoch, PDU class and pending ticket before applying an enqueue result. Operational cancellation preserves progression within the same epoch, replacement epochs increase strictly and ticket exhaustion stops the affected class. Checkpoint integration must preserve high-water marks and pending reservations.
   - id: iso.10589.2002.csnp_sequence
     kind: routing-protocol-synchronization-owner
     release: 26.7.R1
@@ -153,7 +181,7 @@ records:
     implementation: [core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp, profiles/catalog/26.7.R1.yaml]
     tests: [core/tests/isis/isis_control_worker_test.cpp]
     status: experimental
-    notes: A dedicated pthread owns admitted P2P circuits. Owned command slots and immutable result rings connect serialized control; per-forwarding-shard frame channels carry encoded PDUs and actual egress receipts. Device and circuit generations reject obsolete input before adjacency mutation. Bounded owner turns rotate devices and circuits; holding expiry remains independent of transmit credits. Runtime startup integration, instance-level flooding, key-vault selection and measured active-instance limits remain incomplete.
+    notes: A dedicated pthread owns admitted P2P circuits. Owned command slots and immutable result rings connect serialized control; per-forwarding-shard frame channels carry encoded PDUs and actual egress receipts. Complete generations prepare changed circuits, retain immutable unchanged epochs and commit without allocation; abort preserves the live generation. Local instance, device and circuit generations reject obsolete input before adjacency mutation. Bounded turns rotate devices and circuits; holding expiry remains independent of transmit credits. Runtime P2P transport is experimental; instance-level flooding, key-vault selection, persistence and measured active-instance limits remain incomplete.
   - id: project.runtime.control_generation_handoff
     kind: concurrency-ownership-contract
     release: 26.7.R1
@@ -321,7 +349,7 @@ records:
     implementation: [core/include/router/router_forwarder.hpp, core/src/forwarding/router_forwarder.cpp, core/src/forwarding/isis_forwarding.cpp]
     tests: [core/tests/forwarding/router_forwarder_isis_test.cpp, core/tests/isis/isis_ethernet_fabric_test.cpp]
     status: experimental
-    notes: A complete port-local multicast projection admits native LLC FE FE 03 NLPID 83 to the protocol observer even without IP addressing. Malformed IS-IS headers remain available for protocol error accounting. Egress enforces the physical MTU, requires the already encoded source MAC to match the current port-owned value and transfers the unchanged frame through the actual queue. Group selection, runtime programming, instance isolation and protocol processing remain control-owner integration work.
+    notes: A complete port-local multicast projection admits native LLC FE FE 03 NLPID 83 to the protocol observer even without IP addressing. Malformed IS-IS headers remain available for protocol error accounting. Egress enforces the physical MTU, requires the already encoded source MAC to match the current port-owned value and transfers the unchanged frame through the actual queue. Canonical preallocated multicast vectors exchange ownership without allocation under the forwarding barrier, retaining previous values for rollback. Runtime P2P admission and standard multi-instance dispatch are experimental; full instance processing and product configuration remain incomplete.
   - id: ieee.802_1ac.llc_encapsulation
     kind: ethernet-wire-format
     release: 26.7.R1

@@ -40,7 +40,13 @@ struct CircuitIdentity {
 
 enum class ControlCommandKind : std::uint8_t {
   query_worker, register_device, remove_device, add_p2p_circuit,
-  remove_circuit, query_circuit, shutdown
+  remove_circuit, query_circuit, prepare_generation, commit_generation,
+  abort_generation, shutdown
+};
+struct CircuitDefinition {
+  CircuitIdentity identity;
+  P2pCircuitConfiguration configuration;
+  std::uint64_t random_state{};
 };
 struct ControlCommand {
   std::uint64_t id{};
@@ -48,10 +54,16 @@ struct ControlCommand {
   CircuitIdentity identity;
   P2pCircuitConfiguration configuration;
   std::uint64_t random_state{};
+  // Complete router generation, sorted by interface ID then local instance.
+  // OwnedSpscChannel transfers these values without copying containers into a
+  // ring. Prepare allocates before publication; commit preserves unchanged
+  // epochs and consumes no heap storage. Abort leaves every live circuit intact.
+  std::vector<CircuitDefinition> circuits;
 };
 enum class ControlError : std::uint8_t {
   none, invalid_argument, stale_device, stale_configuration, not_found,
-  already_exists, capacity, unsupported_authentication, construction_failed
+  already_exists, capacity, unsupported_authentication, construction_failed,
+  generation_pending
 };
 struct CircuitCounters {
   std::uint64_t received{};
@@ -67,8 +79,8 @@ struct CircuitCounters {
 struct ControlResult {
   std::uint64_t id{};
   ControlError error{ControlError::none};
-  P2pSnapshot adjacency;
-  CircuitCounters counters;
+  P2pSnapshot adjacency{};
+  CircuitCounters counters{};
   std::uint64_t thread_identity{};
   std::int64_t holding_deadline_nanoseconds{};
   std::uint32_t active_circuits{};
@@ -83,6 +95,10 @@ public:
   ControlWorker(ControlChannels &channels, std::size_t forwarding_shards,
                 std::size_t maximum_circuits);
   ~ControlWorker();
+  // Serialized control-owner shutdown, never called from this worker. Joins
+  // idempotently but retains notification storage until forwarding producers
+  // have joined. Later submit rejects without consuming the command value.
+  void stop() noexcept;
   ControlWorker(const ControlWorker &) = delete;
   ControlWorker &operator=(const ControlWorker &) = delete;
   // Exactly one serialized control producer. False preserves command values
@@ -121,6 +137,16 @@ private:
     std::vector<OwnedCircuit> circuits;
     std::size_t first_circuit{};
   };
+  struct PreparedGeneration {
+    lab::DeviceHandle device{};
+    struct Selection { std::size_t index{}; bool retained{}; };
+    std::vector<OwnedCircuit> replacements;
+    std::vector<OwnedCircuit> output;
+    std::vector<Selection> plan;
+    std::vector<std::uint8_t> keep;
+  };
+  [[nodiscard]] ControlError prepare_generation(ControlCommand &command, DeviceState &device) noexcept;
+  void commit_generation(DeviceState &device) noexcept;
   static void event(void *context, const P2pCircuitEvent &event) noexcept;
   [[nodiscard]] ControlResult apply(ControlCommand &command) noexcept;
   void receive(const protocol::PacketChannel<device_catalog::isis_packet_ring_frames>::Borrowed &packet,
@@ -132,6 +158,7 @@ private:
   std::size_t active_circuits_{};
   std::size_t first_device_{};
   std::array<DeviceState, device_catalog::maximum_routers> devices_;
+  std::optional<PreparedGeneration> prepared_;
   protocol::OwnedSpscChannel<ControlCommand, device_catalog::isis_control_generation_slots> commands_;
   // Producer is this pthread, consumer is serialized control. Full retains one
   // pending result and stops command admission on this owner; packet work and

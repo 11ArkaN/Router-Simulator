@@ -9,7 +9,7 @@ features:
     source_ids: [ietf.crypto.hmac.rfc2104]
   routing.isis:
     status: planned
-    source_ids: [nokia.sros.26_7.isis.yang_roots]
+    source_ids: [nokia.sros.26_7.isis.yang_roots, project.runtime.isis_p2p_transport]
   cli.edit_operators:
     status: implemented
     source_ids: [nokia.sros.26_7.md_cli.delete_path, nokia.sros.26_7.classic_cli.no_forms]
@@ -195,7 +195,7 @@ features:
     source_ids: [ieee.802_3.ethernet_frame_timing]
   runtime.dynamic_shards:
     status: implemented
-    source_ids: [emscripten.pthreads.shared_memory, project.runtime.protocol_consumer_wakeup]
+    source_ids: [emscripten.pthreads.shared_memory, project.runtime.protocol_consumer_wakeup, project.runtime.protocol_owner_shutdown]
   runtime.shared_memory_growth:
     status: implemented
     source_ids: [emscripten.shared_memory.growth, emscripten.pthreads.shared_memory]

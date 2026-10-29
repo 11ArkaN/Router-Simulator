@@ -30,6 +30,7 @@ struct P2pLocal {
   std::uint8_t local_circuit{};
   Levels levels{Levels::none};
   bool over_lan{};
+  bool operator==(const P2pLocal &) const = default;
 };
 
 struct P2pSnapshot {

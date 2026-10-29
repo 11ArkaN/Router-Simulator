@@ -450,6 +450,13 @@ public:
   // failure returns false and preserves the previous projection.
   [[nodiscard]] bool configure_isis_punt(std::uint16_t port_ordinal,
       std::span<const packet::Mac> groups) noexcept;
+  // Same shard, or the exclusive forwarding-quiescence barrier. Input owns
+  // sorted unique multicast groups, completely allocated before commit.
+  // Success exchanges ownership with the previous projection without allocation;
+  // the returned vector permits allocation-free rollback while ports stay
+  // quiesced. Invalid port or noncanonical groups preserve both owners' values.
+  [[nodiscard]] bool exchange_isis_punt(std::uint16_t port_ordinal,
+      std::vector<packet::Mac> &groups) noexcept;
   // Forwarding-shard-only egress of a validated IS-IS Ethernet/LLC image.
   // Requires an operational programmed physical port and joined destination.
   // Source MAC must equal that port's owned MAC; bytes are not rewritten.

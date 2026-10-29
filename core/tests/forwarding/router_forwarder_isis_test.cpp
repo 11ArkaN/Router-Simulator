@@ -113,4 +113,27 @@ void router_forwarder_isis_tests() {
   receive(frame);
   require(observed.punts == 3U && !forwarder->originate_isis(0U, frame, &observed, collect),
           "IS-IS bypassed a nonoperational physical interface");
+  port.operational = true;
+  require(forwarder->configure_port(port), "IS-IS exchange fixture port recovery failed");
+  std::vector<packet::Mac> empty;
+  require(forwarder->exchange_isis_punt(0U, empty) && empty == std::vector<packet::Mac>{group},
+      "IS-IS projection exchange did not return previous ownership");
+  receive(frame);
+  require(observed.punts == 3U && forwarder->exchange_isis_punt(0U, empty) && empty.empty(),
+      "IS-IS projection rollback lost ownership or retained disabled membership");
+  receive(frame);
+  require(observed.punts == 4U, "IS-IS projection rollback did not restore packet acceptance");
+  std::vector<packet::Mac> duplicate{group, group};
+  auto unicast = std::vector<packet::Mac>{peer};
+  auto other_group = group;
+  ++other_group.back();
+  std::vector<packet::Mac> unsorted{other_group, group};
+  auto invalid_port = std::vector<packet::Mac>{group};
+  require(!forwarder->exchange_isis_punt(0U, duplicate) && duplicate.size() == 2U &&
+      !forwarder->exchange_isis_punt(0U, unicast) && unicast.front() == peer &&
+      !forwarder->exchange_isis_punt(0U, unsorted) && unsorted.front() == other_group &&
+      !forwarder->exchange_isis_punt(1U, invalid_port) && invalid_port.front() == group,
+      "IS-IS rejected projection exchange consumed the caller's staged values");
+  receive(frame);
+  require(observed.punts == 5U, "IS-IS rejected exchange changed the active projection");
 }

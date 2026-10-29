@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <new>
 #include <stdexcept>
+#include <utility>
+#include <type_traits>
 
 namespace router::isis {
 namespace {
@@ -23,13 +25,16 @@ ControlWorker::ControlWorker(ControlChannels &channels, std::size_t forwarding_s
   thread_ = std::thread([this] { run(); });
 }
 
-ControlWorker::~ControlWorker() {
+ControlWorker::~ControlWorker() { stop(); }
+
+void ControlWorker::stop() noexcept {
   stop_.store(true, std::memory_order_release);
   notify();
   if (thread_.joinable()) thread_.join();
 }
 
 bool ControlWorker::submit(ControlCommand &&command) noexcept {
+  if (stop_.load(std::memory_order_acquire)) return false;
   const auto lease = commands_.acquire();
   if (!lease) return false;
   *lease->value = std::move(command);
@@ -60,6 +65,91 @@ void ControlWorker::event(void *context, const P2pCircuitEvent &value) noexcept 
   if (value.transition.outcome == P2pOutcome::down) ++owned.counters.adjacency_down;
 }
 
+ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceState &device) noexcept {
+  const auto &definitions = command.circuits;
+  if (definitions.size() > maximum_circuits_ ||
+      active_circuits_ - device.circuits.size() > maximum_circuits_ - definitions.size()) return ControlError::capacity;
+  const auto key = [](const CircuitIdentity &value) { return std::pair{value.interface_id, value.instance}; };
+  for (std::size_t index{}; index < definitions.size(); ++index) {
+    const auto &entry = definitions[index];
+    const auto &identity = entry.identity;
+    if (identity.device != device.handle || !identity.interface_id || !identity.configuration_generation ||
+        identity.instance > device_catalog::isis_instance_last ||
+        identity.physical_port_ordinal >= device_catalog::maximum_ports_per_router ||
+        (index && key(definitions[index - 1U].identity) >= key(identity))) return ControlError::invalid_argument;
+    if (entry.configuration.receive_authentication || entry.configuration.transmit_authentication)
+      return ControlError::unsupported_authentication;
+    for (std::size_t previous = index; previous && definitions[previous - 1U].identity.interface_id == identity.interface_id;) {
+      const auto &other = definitions[--previous];
+      if (other.identity.physical_port_ordinal != identity.physical_port_ordinal ||
+          (other.configuration.wire_instance == entry.configuration.wire_instance &&
+           other.configuration.hello_destination == entry.configuration.hello_destination)) return ControlError::already_exists;
+    }
+  }
+  try {
+    PreparedGeneration staged;
+    staged.device = device.handle;
+    staged.output.reserve(definitions.size());
+    staged.plan.reserve(definitions.size());
+    staged.keep.resize(device.circuits.size());
+    std::vector<std::size_t> lookup;
+    lookup.reserve(device.circuits.size());
+    for (std::size_t index{}; index < device.circuits.size(); ++index) lookup.push_back(index);
+    std::sort(lookup.begin(), lookup.end(), [&](auto left, auto right) {
+      return key(device.circuits[left].identity) < key(device.circuits[right].identity);
+    });
+    const auto now = PointToPointCircuit::Clock::now();
+    std::size_t replacement_count{};
+    for (auto &entry : command.circuits) {
+      const auto old = std::lower_bound(lookup.begin(), lookup.end(), key(entry.identity), [&](auto index, auto target) {
+        return key(device.circuits[index].identity) < target;
+      });
+      if (old != lookup.end() && key(device.circuits[*old].identity) == key(entry.identity)) {
+        const auto &current = device.circuits[*old];
+        if (entry.identity.configuration_generation < current.identity.configuration_generation)
+          return ControlError::stale_configuration;
+        if (entry.identity.configuration_generation == current.identity.configuration_generation) {
+          if (entry.identity != current.identity || entry.configuration != current.circuit.configuration())
+            return ControlError::stale_configuration;
+          staged.keep[*old] = 1U;
+          staged.plan.push_back({*old, true});
+          continue;
+        }
+      }
+      staged.plan.push_back({replacement_count++, false});
+    }
+    // Retained circuits move only at commit. Reserve replacement storage for
+    // changed epochs alone, so an unchanged large generation does not allocate
+    // a second full array of circuit objects merely to preserve its live state.
+    staged.replacements.reserve(replacement_count);
+    for (std::size_t index{}; index < command.circuits.size(); ++index) {
+      if (staged.plan[index].retained) continue;
+      auto &entry = command.circuits[index];
+      ControlCommand replacement;
+      replacement.identity = entry.identity;
+      replacement.configuration = std::move(entry.configuration);
+      replacement.random_state = entry.random_state;
+      staged.replacements.emplace_back(replacement, now);
+    }
+    prepared_.emplace(std::move(staged));
+    return ControlError::none;
+  } catch (const std::bad_alloc &) { return ControlError::capacity; }
+    catch (const std::exception &) { return ControlError::construction_failed; }
+}
+
+void ControlWorker::commit_generation(DeviceState &device) noexcept {
+  static_assert(std::is_nothrow_move_constructible_v<OwnedCircuit>);
+  auto &staged = *prepared_;
+  for (std::size_t index{}; index < device.circuits.size(); ++index)
+    if (!staged.keep[index]) static_cast<void>(device.circuits[index].circuit.down(&device.circuits[index], event));
+  for (const auto &selection : staged.plan)
+    staged.output.push_back(std::move(selection.retained ? device.circuits[selection.index] : staged.replacements[selection.index]));
+  active_circuits_ = active_circuits_ - device.circuits.size() + staged.output.size();
+  device.circuits.swap(staged.output);
+  if (device.first_circuit >= device.circuits.size()) device.first_circuit = 0U;
+  prepared_.reset();
+}
+
 ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
   ControlResult result;
   result.id = command.id;
@@ -73,12 +163,30 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
   const auto handle = command.identity.device;
   if (!handle.generation || handle.index >= devices_.size()) { result.error = ControlError::invalid_argument; return result; }
   auto &device = devices_[handle.index];
+  if (command.kind == ControlCommandKind::commit_generation || command.kind == ControlCommandKind::abort_generation) {
+    if (!prepared_) result.error = ControlError::not_found;
+    else if (prepared_->device != handle) result.error = ControlError::stale_device;
+    else if (command.kind == ControlCommandKind::abort_generation) prepared_.reset();
+    else {
+      commit_generation(device);
+      result.active_circuits = static_cast<std::uint32_t>(active_circuits_);
+    }
+    return result;
+  }
+  if (prepared_ && command.kind != ControlCommandKind::query_circuit) {
+    result.error = ControlError::generation_pending;
+    return result;
+  }
   if (command.kind == ControlCommandKind::register_device) {
     if (device.active) result.error = device.handle == handle ? ControlError::already_exists : ControlError::stale_device;
     else { device.handle = handle; device.active = true; }
     return result;
   }
   if (!device.active || device.handle != handle) { result.error = ControlError::stale_device; return result; }
+  if (command.kind == ControlCommandKind::prepare_generation) {
+    result.error = prepare_generation(command, device);
+    return result;
+  }
   if (command.kind == ControlCommandKind::remove_device) {
     for (auto &owned : device.circuits) static_cast<void>(owned.circuit.down(&owned, event));
     active_circuits_ -= device.circuits.size();
@@ -99,7 +207,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
       result.error = ControlError::unsupported_authentication;
     else if (std::any_of(device.circuits.begin(), device.circuits.end(), [&](const auto &other) {
       return other.identity.interface_id == command.identity.interface_id &&
-          (other.identity.configuration_generation != command.identity.configuration_generation ||
+          (other.identity.physical_port_ordinal != command.identity.physical_port_ordinal ||
            (other.wire_instance == command.configuration.wire_instance &&
             other.destination == command.configuration.hello_destination));
     })) result.error = ControlError::already_exists;
@@ -146,7 +254,8 @@ void ControlWorker::receive(
   if (!wire) return;
   for (auto &owned : device.circuits) {
     if (owned.identity.interface_id != packet.metadata.interface_id ||
-        owned.identity.physical_port_ordinal != packet.metadata.physical_port_ordinal) continue;
+        owned.identity.physical_port_ordinal != packet.metadata.physical_port_ordinal ||
+        owned.identity.instance != packet.metadata.instance_id) continue;
     packet::isis::InstanceError error{};
     const auto selection = packet::isis::select_instance(wire->pdu, owned.format, owned.physical_point_to_point, error);
     if (wire->ethernet.destination != owned.destination || !selection || selection->instance != owned.wire_instance) continue;
@@ -192,7 +301,8 @@ void ControlWorker::run() noexcept {
         const auto wire = packet::isis::parse_ethernet_pdu(completion->frame->view(), decode);
         if (!wire || wire->pdu.type != packet::isis::PduType::point_to_point_hello) continue;
         for (auto &owned : device.circuits) if (owned.identity.interface_id == completion->metadata.interface_id &&
-            owned.identity.physical_port_ordinal == completion->metadata.physical_port_ordinal) {
+            owned.identity.physical_port_ordinal == completion->metadata.physical_port_ordinal &&
+            owned.identity.instance == completion->metadata.instance_id) {
           packet::isis::InstanceError error{};
           const auto selection = packet::isis::select_instance(wire->pdu, owned.format, owned.physical_point_to_point, error);
           if (wire->ethernet.destination != owned.destination || !selection || selection->instance != owned.wire_instance) continue;
@@ -241,7 +351,7 @@ void ControlWorker::run() noexcept {
             }
             const bool published = channel.try_send({owned.identity.device, owned.identity.interface_id,
                 owned.identity.physical_port_ordinal, owned.identity.configuration_generation, *ticket,
-                static_cast<std::uint8_t>(packet::isis::PduType::point_to_point_hello)}, output_);
+                static_cast<std::uint8_t>(packet::isis::PduType::point_to_point_hello), owned.identity.instance}, output_);
             if (!published) {
               owned.transmission.cancel();
               static_cast<void>(owned.circuit.complete_hello(false, now));
@@ -266,6 +376,7 @@ void ControlWorker::run() noexcept {
     if (deadline == PointToPointCircuit::Clock::time_point::max()) wait_condition_.wait(lock, ready);
     else static_cast<void>(wait_condition_.wait_until(lock, deadline, ready));
   }
+  identity_.store(0U, std::memory_order_release);
 }
 
 } // namespace router::isis

@@ -33,6 +33,7 @@ struct CircuitHelloConfiguration {
   std::chrono::microseconds hello_interval{};
   std::size_t maximum_pdu_octets{};
   std::size_t peer_attribute_octets{};
+  bool operator==(const CircuitHelloConfiguration &) const = default;
 };
 
 // Effective configuration already passed circuit admission; transmit-auth
