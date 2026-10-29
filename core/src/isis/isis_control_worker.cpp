@@ -115,7 +115,8 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
           staged.plan.push_back({*old, true});
           continue;
         }
-      }
+      } else if (entry.identity.configuration_generation <= device.retired_epoch_floor)
+        return ControlError::stale_configuration;
       staged.plan.push_back({replacement_count++, false});
     }
     // Retained circuits move only at commit. Reserve replacement storage for
@@ -141,13 +142,18 @@ void ControlWorker::commit_generation(DeviceState &device) noexcept {
   static_assert(std::is_nothrow_move_constructible_v<OwnedCircuit>);
   auto &staged = *prepared_;
   for (std::size_t index{}; index < device.circuits.size(); ++index)
-    if (!staged.keep[index]) static_cast<void>(device.circuits[index].circuit.down(&device.circuits[index], event));
+    if (!staged.keep[index]) retire_circuit(device, device.circuits[index]);
   for (const auto &selection : staged.plan)
     staged.output.push_back(std::move(selection.retained ? device.circuits[selection.index] : staged.replacements[selection.index]));
   active_circuits_ = active_circuits_ - device.circuits.size() + staged.output.size();
   device.circuits.swap(staged.output);
   if (device.first_circuit >= device.circuits.size()) device.first_circuit = 0U;
   prepared_.reset();
+}
+
+void ControlWorker::retire_circuit(DeviceState &device, OwnedCircuit &circuit) noexcept {
+  device.retired_epoch_floor = std::max(device.retired_epoch_floor, circuit.identity.configuration_generation);
+  static_cast<void>(circuit.circuit.down(&circuit, event));
 }
 
 ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
@@ -179,7 +185,11 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
   }
   if (command.kind == ControlCommandKind::register_device) {
     if (device.active) result.error = device.handle == handle ? ControlError::already_exists : ControlError::stale_device;
-    else { device.handle = handle; device.active = true; }
+    else {
+      if (device.handle != handle) device.retired_epoch_floor = 0U;
+      device.handle = handle;
+      device.active = true;
+    }
     return result;
   }
   if (!device.active || device.handle != handle) { result.error = ControlError::stale_device; return result; }
@@ -188,7 +198,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     return result;
   }
   if (command.kind == ControlCommandKind::remove_device) {
-    for (auto &owned : device.circuits) static_cast<void>(owned.circuit.down(&owned, event));
+    for (auto &owned : device.circuits) retire_circuit(device, owned);
     active_circuits_ -= device.circuits.size();
     device.circuits.clear();
     device.active = false;
@@ -203,6 +213,8 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
         command.identity.instance > device_catalog::isis_instance_last ||
         command.identity.physical_port_ordinal >= device_catalog::maximum_ports_per_router)
       result.error = ControlError::invalid_argument;
+    else if (command.identity.configuration_generation <= device.retired_epoch_floor)
+      result.error = ControlError::stale_configuration;
     else if (command.configuration.receive_authentication || command.configuration.transmit_authentication)
       result.error = ControlError::unsupported_authentication;
     else if (std::any_of(device.circuits.begin(), device.circuits.end(), [&](const auto &other) {
@@ -226,7 +238,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     return result;
   }
   if (command.kind == ControlCommandKind::remove_circuit) {
-    static_cast<void>(found->circuit.down(&*found, event));
+    retire_circuit(device, *found);
     device.circuits.erase(found);
     --active_circuits_;
     result.active_circuits = static_cast<std::uint32_t>(active_circuits_);

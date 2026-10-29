@@ -196,6 +196,11 @@ void isis_instance_update_tests() {
   require(candidate().status == UpdateStatus::maximum_areas);
   contents.header.type = PduType::lsp_l2;
   require(candidate().status == UpdateStatus::applied);
+  // ISO 7.3.15 requires a same-level adjacency on a logical P2P circuit. Its
+  // broadcast-only SNPA lookup is not added to P2P-over-LAN acceptance.
+  frame->bytes[11U] = 9U;
+  transmit(0U);
+  require(b.received.status == UpdateStatus::applied);
   contents.header.type = PduType::lsp_l1;
   contents.header.maximum_area_addresses = 3U;
   const std::array<std::uint16_t, 1U> topology{0U};

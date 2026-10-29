@@ -133,8 +133,7 @@ UpdateReceiveResult InstanceUpdateProcess::receive(std::size_t index,
   if (!selected) return {};
   const auto level = *selected;
   if (!includes(circuit.active, level) || !levels_[level]) return {UpdateStatus::inactive, level};
-  if (wire->ethernet.destination != circuit.configuration.destinations[level] ||
-      (!circuit.configuration.physical_point_to_point && wire->ethernet.source != circuit.peer))
+  if (wire->ethernet.destination != circuit.configuration.destinations[level])
     return {UpdateStatus::destination, level};
   const auto &effective = *configuration_[level];
   if (wire->pdu.bytes.size() > effective.receive_pdu_octets) return {UpdateStatus::receive_capacity, level};

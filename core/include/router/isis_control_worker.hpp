@@ -134,6 +134,10 @@ private:
   struct DeviceState {
     lab::DeviceHandle handle{};
     bool active{};
+    // Sole control-owner high-water mark, retained while the same router
+    // handle is unregistered. New logical circuits must exceed every retired
+    // epoch; unchanged live circuits retain their independent older epochs.
+    std::uint64_t retired_epoch_floor{};
     std::vector<OwnedCircuit> circuits;
     std::size_t first_circuit{};
   };
@@ -147,6 +151,7 @@ private:
   };
   [[nodiscard]] ControlError prepare_generation(ControlCommand &command, DeviceState &device) noexcept;
   void commit_generation(DeviceState &device) noexcept;
+  static void retire_circuit(DeviceState &device, OwnedCircuit &circuit) noexcept;
   static void event(void *context, const P2pCircuitEvent &event) noexcept;
   [[nodiscard]] ControlResult apply(ControlCommand &command) noexcept;
   void receive(const protocol::PacketChannel<device_catalog::isis_packet_ring_frames>::Borrowed &packet,

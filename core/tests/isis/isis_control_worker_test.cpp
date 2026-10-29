@@ -162,6 +162,12 @@ void isis_control_worker_tests() {
   const auto removed = command(std::move(remove));
   require(removed.error == ControlError::none && removed.active_circuits == 1U &&
       query(0U).error == ControlError::not_found);
+  ControlCommand reused;
+  reused.kind = ControlCommandKind::add_p2p_circuit;
+  reused.identity = identities[0U];
+  reused.configuration = configuration(1U);
+  reused.random_state = 444U;
+  require(command(std::move(reused)).error == ControlError::stale_configuration);
   identities[0U].configuration_generation = 8U;
   ControlCommand replacement;
   replacement.kind = ControlCommandKind::add_p2p_circuit;
@@ -285,6 +291,17 @@ void isis_control_generation_tests() {
   const auto after = query(first);
   require(after.error == ControlError::none && after.hello_pending &&
       after.counters.hello_enqueued == before.counters.hello_enqueued && query(second).error == ControlError::none);
+  auto proposed = retained;
+  proposed.identity.configuration_generation = 8U;
+  require(prepare({proposed, added}).error == ControlError::none &&
+      operation(ControlCommandKind::abort_generation, first).error == ControlError::none);
+  auto third = added;
+  third.identity.interface_id = 3U;
+  third.identity.physical_port_ordinal = 2U;
+  third.identity.configuration_generation = 1U;
+  third.configuration = configuration(3U);
+  require(prepare({retained, added, third}).error == ControlError::none &&
+      operation(ControlCommandKind::abort_generation, first).error == ControlError::none);
   using Egress = protocol::PacketChannel<device_catalog::isis_packet_ring_frames, true>;
   std::optional<Egress::Borrowed> delayed;
   // Keep a real borrowed slot through replacement. It remains the old epoch's
@@ -314,6 +331,34 @@ void isis_control_generation_tests() {
   require(prepare({}).error == ControlError::none &&
       operation(ControlCommandKind::commit_generation, first).active_circuits == 0U &&
       query(changed.identity).error == ControlError::not_found && query(second).error == ControlError::not_found);
+  require(prepare({changed}).error == ControlError::stale_configuration);
+  third.identity.configuration_generation = 9U;
+  require(prepare({third}).error == ControlError::none &&
+      operation(ControlCommandKind::abort_generation, first).error == ControlError::none &&
+      prepare({third}).error == ControlError::none &&
+      operation(ControlCommandKind::commit_generation, first).error == ControlError::none);
+  require(operation(ControlCommandKind::remove_device, first).error == ControlError::none &&
+      operation(ControlCommandKind::register_device, first).error == ControlError::none &&
+      prepare({third}).error == ControlError::stale_configuration);
+  third.identity.configuration_generation = 10U;
+  require(prepare({third}).error == ControlError::none &&
+      operation(ControlCommandKind::commit_generation, first).error == ControlError::none &&
+      prepare({}).error == ControlError::none &&
+      operation(ControlCommandKind::commit_generation, first).error == ControlError::none &&
+      operation(ControlCommandKind::remove_device, first).error == ControlError::none &&
+      operation(ControlCommandKind::register_device, first).error == ControlError::none &&
+      prepare({third}).error == ControlError::stale_configuration);
+  require(operation(ControlCommandKind::remove_device, first).error == ControlError::none);
+  auto fresh = retained;
+  fresh.identity.device.generation = 2U;
+  require(operation(ControlCommandKind::register_device, fresh.identity).error == ControlError::none);
+  ControlCommand fresh_generation;
+  fresh_generation.kind = ControlCommandKind::prepare_generation;
+  fresh_generation.identity = fresh.identity;
+  fresh_generation.circuits.push_back(fresh);
+  require(command(std::move(fresh_generation)).error == ControlError::none &&
+      operation(ControlCommandKind::commit_generation, fresh.identity).error == ControlError::none &&
+      query(fresh.identity).error == ControlError::none && query(first).error == ControlError::stale_device);
 }
 
 void isis_network_plane_tests() {
@@ -429,6 +474,9 @@ void isis_network_plane_tests() {
     }
     converge();
     require(plane->replace_isis_p2p_generation(devices[0U], {}) && !plane->query_isis_circuit(programs[0U].circuit.identity));
+    require(!publish(0U) && !plane->query_isis_circuit(programs[0U].circuit.identity));
+    programs[0U].circuit.identity.configuration_generation = 9U;
+    require(publish(0U) && plane->replace_isis_p2p_generation(devices[0U], {}));
     require(plane->remove_router(devices[1U]) && plane->checkpoint() && plane->restore(*initial));
   }
 }

@@ -648,6 +648,8 @@ public:
   // instance. Prepare allocates all protocol and multicast values before the
   // forwarding barrier. Caller never reuses an epoch for a logical circuit
   // within a device generation, including after removal and reactivation.
+  // Admission of a new logical circuit must exceed the device's maximum retired
+  // epoch. This bound survives protocol withdrawal on the same router handle.
   // Failure preserves the live generation; unchanged epochs
   // preserve adjacency, timers and pending tickets. Active experimental P2P
   // transport explicitly blocks structural checkpoint/restore until supported.
