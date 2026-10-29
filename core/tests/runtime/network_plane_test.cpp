@@ -1,5 +1,5 @@
-// Network-plane tests prove that forwarding and fabric state can run under one
-// owner without registry, hardware, CLI or project access.
+// Network-plane tests exercise combined and separate forwarding/link owners
+// without registry, hardware, CLI or project access.
 
 #include "router/network_plane.hpp"
 
@@ -422,7 +422,7 @@ void network_plane_tests() {
   // single-shard test mode. Checkpoint restore must wake OSPF, drain its SPSC
   // packet channels through physical forwarding shards and reconverge without
   // a management-plane configuration touch.
-  auto ospf_plane = std::make_unique<NetworkPlane>(4);
+  auto ospf_plane = std::make_unique<NetworkPlane>(8);
   std::atomic_size_t ospf_network_wakeups{};
   ospf_plane->set_link_wakeup(&ospf_network_wakeups,
                               count_network_wakeup);
@@ -577,6 +577,20 @@ void network_plane_tests() {
               ospf_second, std::span{&ospf_second_process, 1U},
               ospf_second_interfaces, {}, {}, {}, {}),
       "OSPF integration fixture rejected complete process generations");
+
+  // No forwarding command or packet arrival may be needed to discover a
+  // protocol timer's output. Let both physical owners become idle, then pump
+  // only the link owner until encoded Hello output reaches its wire capture.
+  // Querying router checkpoints here would wake forwarding and mask a callback
+  // accidentally routed to the link owner instead of the selected consumer.
+  const auto idle_hello_deadline = NetworkPlane::Clock::now() +
+      std::chrono::seconds{integration_hello_seconds + 2U};
+  while (!ospf_plane->captured_frames() && NetworkPlane::Clock::now() < idle_hello_deadline) {
+    ospf_plane->pump(NetworkPlane::Clock::now());
+    std::this_thread::sleep_for(std::chrono::milliseconds{1U});
+  }
+  require(ospf_plane->captured_frames() != 0U,
+      "Idle protocol output did not wake its physical forwarding consumer");
 
   bool learned{};
   const auto convergence_deadline =

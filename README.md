@@ -36,6 +36,8 @@ At startup, the generated CPU policy creates three, five or seven pthreads in ad
 
 Each IS-IS forwarding/control direction has 16 maximum-frame credits per forwarding shard. Full egress retains unsent protocol work and completed frame credits return only after receipt consumption. The six channel rings fit within 1 MiB and share the unchanged 24 MiB network metadata reserve with OSPF and forwarding. These transport capacities are emulator budgets; active-instance scale remains subject to the IS-IS acceptance measurements.
 
+Protocol frame publication wakes the selected forwarding owner directly, including when the network is idle. Route publications wake their link-owner consumer. Bounded frame drainers continue while ready work and output credits remain, and returned credits wake blocked forwarding work.
+
 The runtime uses the host monotonic clock. It has no simulation timeline, global future-event heap, pause control, step control or speed multiplier. Protocol and hardware deadlines pass in real time.
 
 Main components:
@@ -243,8 +245,14 @@ CSNP sequences partition the complete LSP-ID space into contiguous packet-sized 
 
 Protocol egress metadata carries a transmission ticket as well as a circuit configuration generation. The IS-IS Hello worker checks both before accepting a receipt. Operational cancellation preserves ticket progression, preventing an old receipt from completing replacement output in the same configuration.
 
+Transmission classes distinguish independent Hello, LSP and SNP ticket sequences. Delayed physical-admission receipts validate the complete metadata before returning a borrowed frame handle, so slot reuse across PDU classes cannot release replacement output.
+
 The circuit-level SNP exchange composes complete ranges, partial acknowledgements and transient purge acknowledgements under one pending transmission reservation. Real port-queue refusal preserves obligations and scan positions. A matching successful receipt advances only the transmitted range or version; cancellation and configuration replacement reject delayed receipts. Instance scheduling and runtime dispatch remain in progress.
 
 LSP output uses the same exact receipt identity. Its encoded lifetime includes elapsed holding time and at least one second for transit, without rewriting retained LSDB bytes. Entries reaching zero require finalized purge construction before dispatch. Successful LAN egress clears only the unchanged version's SRM; P2P retains SRM until peer acknowledgement. Instance pacing and purge construction remain in progress.
+
+The level process joins database admission, circuit epochs and LSP/SNP reservations. Circuit Down clears obsolete obligations before reactivation, and delayed receipts cannot affect replacement output. Separate L1 and L2 Waiting states preserve flooding during resource recovery. Expiration purges retain for ZeroAgeLifetime; initiated purges retain for MaxAge. Parent-instance origination, dispatch and the LAN unknown-purge acknowledgement form remain in progress.
+
+The LSDB exposes the earliest owner-local expiration or purge-retirement deadline as an immutable value. Expired active bodies remain pending until finalized purge construction, and delayed construction preserves the original expiration time for retention. Deadline arithmetic saturates at the monotonic clock limit.
 
 Control generations with dynamic containers can transfer ownership through fixed shared slots and SPSC handle rings. Packet metadata also retains the circuit configuration generation. The ownership and stale-generation rules are recorded in [ADR 0006](docs/adr/0006-control-generation-handoff.md); worker integration remains in progress.

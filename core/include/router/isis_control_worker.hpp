@@ -26,7 +26,7 @@ struct ControlChannels {
              device_catalog::high_forwarding_shards> egress;
   // Installed before startup. Notification carries no network information.
   void *egress_context{};
-  void (*egress_wakeup)(void *){};
+  void (*egress_wakeup)(void *, std::size_t forwarding_shard){};
 };
 
 struct CircuitIdentity {

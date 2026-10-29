@@ -46,7 +46,7 @@ struct ControlChannels {
   // only closes the condition-variable notify-before-wait race so a periodic
   // Hello or retransmission is drained at its real monotonic deadline.
   void *egress_wakeup_context{};
-  void (*egress_wakeup)(void *){};
+  void (*egress_wakeup)(void *, std::size_t forwarding_shard){};
   // Producer: sole OSPF control pthread. Consumer: sole network/link owner.
   // A generation contains every OSPF and OSPF3 route candidate for one router;
   // the route manager never observes a partially copied SPF result.

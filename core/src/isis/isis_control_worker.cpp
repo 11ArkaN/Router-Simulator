@@ -196,7 +196,8 @@ void ControlWorker::run() noexcept {
           packet::isis::InstanceError error{};
           const auto selection = packet::isis::select_instance(wire->pdu, owned.format, owned.physical_point_to_point, error);
           if (wire->ethernet.destination != owned.destination || !selection || selection->instance != owned.wire_instance) continue;
-          if (owned.identity.configuration_generation != completion->metadata.configuration_generation) {
+          if (owned.identity.configuration_generation != completion->metadata.configuration_generation ||
+              completion->metadata.transmission_class != static_cast<std::uint8_t>(packet::isis::PduType::point_to_point_hello)) {
             ++owned.counters.stale_completion;
             continue;
           }
@@ -239,12 +240,13 @@ void ControlWorker::run() noexcept {
               continue;
             }
             const bool published = channel.try_send({owned.identity.device, owned.identity.interface_id,
-                owned.identity.physical_port_ordinal, owned.identity.configuration_generation, *ticket}, output_);
+                owned.identity.physical_port_ordinal, owned.identity.configuration_generation, *ticket,
+                static_cast<std::uint8_t>(packet::isis::PduType::point_to_point_hello)}, output_);
             if (!published) {
               owned.transmission.cancel();
               static_cast<void>(owned.circuit.complete_hello(false, now));
             }
-            else if (channels_.egress_wakeup) channels_.egress_wakeup(channels_.egress_context);
+            else if (channels_.egress_wakeup) channels_.egress_wakeup(channels_.egress_context, shard);
           }
         }
         const auto next = owned.circuit.deadline();

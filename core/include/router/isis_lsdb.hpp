@@ -36,6 +36,13 @@ struct StoredLspView {
   bool purge_installed{};
 };
 
+enum class LspDeadlineKind : std::uint8_t { finalize_expiration, retire_purge };
+struct LspDeadline {
+  packet::isis::LspId id{};
+  RuntimeClock::time_point at{};
+  LspDeadlineKind kind{};
+};
+
 class LinkStateDatabase final {
 public:
   // Reserves metadata once. type must be LSP L1 or L2, otherwise throws
@@ -64,6 +71,11 @@ public:
                                                 RuntimeClock::time_point now) const noexcept;
   [[nodiscard]] std::optional<StoredLspView> at(std::size_t index,
                                               RuntimeClock::time_point now) const noexcept;
+  // Same-owner value projection, without allocation or a borrowed record.
+  // Active expiration requires finalized purge construction before removal;
+  // installed purges retain their selected retention deadline. Equal times
+  // select the lowest LSP ID. A due item remains due until the owner handles it.
+  [[nodiscard]] std::optional<LspDeadline> next_deadline() const noexcept;
 
   // Only an installed purge whose retention deadline passed can be removed.
   // An active LSP that merely aged to zero must first pass the process owner's

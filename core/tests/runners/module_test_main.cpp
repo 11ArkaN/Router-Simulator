@@ -43,6 +43,7 @@ void isis_transient_acknowledgements_tests();
 void isis_csnp_sequence_tests();
 void isis_snp_exchange_tests();
 void isis_lsp_exchange_tests();
+void isis_level_process_tests();
 void digest_tests();
 
 void capture_store_tests();
@@ -418,6 +419,7 @@ int main() {
     isis_csnp_sequence_tests();
     isis_snp_exchange_tests();
     isis_lsp_exchange_tests();
+    isis_level_process_tests();
     digest_tests();
     std::cout << "module tests passed\n";
     return 0;

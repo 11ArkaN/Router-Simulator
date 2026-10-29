@@ -1,5 +1,33 @@
 schema_version: 1
 records:
+  - id: project.runtime.protocol_consumer_wakeup
+    kind: concurrency-ownership-contract
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-architecture-decision
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0006-control-generation-handoff.md
+    section: Lifecycle and verification, selected packet consumers and bounded drain continuation
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-10-29
+    implementation: [core/src/runtime/network_plane.cpp, core/include/router/protocol_packet_channel.hpp, core/include/router/ospf_control_worker.hpp, core/src/ospf/ospf_control_worker.cpp, core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp]
+    tests: [core/tests/runtime/network_plane_test.cpp, core/tests/runtime/protocol_packet_completion_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
+    status: implemented
+    notes: Protocol packet publication wakes the selected forwarding consumer. Route publication wakes its link-owner consumer. Returning transfer credits sets a durable atomic work predicate, and bounded drainers continue immediately only while pending input and output credits coexist. The combined placement wakes its colocated link owner. Tests cover idle encoded protocol output through physical forwarding and link queues, consumer readiness and selected-shard notifications. This contract does not claim completed IS-IS circuit integration.
+  - id: iso.10589.2002.level_process
+    kind: routing-protocol-level-owner
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 7.3.15 through 7.3.19, circuit synchronization, purge retention and per-level Waiting
+    rfc_refs: []
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-10-29
+    implementation: [core/include/router/isis_level_process.hpp, core/src/isis/isis_level_process.cpp]
+    tests: [core/tests/isis/isis_level_process_test.cpp]
+    status: experimental
+    notes: One level owns its database, transient acknowledgements and stable circuit output coordinators. Down cancels pending receipts and obligations, reactivation requires a newer epoch, P2P synchronization requests a complete SNP set and DIS changes cancel obsolete complete sequences. LSP admission failure restarts an owner-local Waiting timer without stopping normal reception and flooding. Recovery requires elapsed Waiting Time and decision resources. Expiration purges use ZeroAgeLifetime, while initiated live-LSP purges use MaxAge. The parent must materialize overload changes in its own zero-fragment LSP and connect source acceptance, origination, timers and routing. LAN unknown-purge acknowledgement returns an explicit unsupported result.
   - id: project.runtime.permanent_isis_owner
     kind: concurrency-ownership-contract
     release: 26.7.R1
@@ -55,7 +83,7 @@ records:
     implementation: [core/include/router/protocol_transmission.hpp, core/include/router/protocol_packet_channel.hpp, core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp]
     tests: [core/tests/runtime/protocol_transmission_test.cpp, core/tests/runtime/protocol_packet_completion_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
     status: experimental
-    notes: Each circuit and PDU transmission class reserves a monotonic ticket. Egress consumers return it unchanged through the existing release-acquire completion ring. The IS-IS Hello owner requires both the circuit epoch and pending ticket before applying an enqueue result. Operational cancellation preserves progression within the same epoch, replacement epochs increase strictly and ticket exhaustion stops the affected class. Checkpoint integration must preserve high-water marks and pending reservations.
+    notes: Each circuit and PDU transmission class reserves a monotonic ticket. Egress consumers return the full identity unchanged through the release-acquire completion ring. Guarded release compares device, interface, port, circuit epoch, ticket and wire PDU class before releasing a borrowed slot, including handle reuse across independent class sequences. The IS-IS Hello owner requires the circuit epoch, PDU class and pending ticket before applying an enqueue result. Operational cancellation preserves progression within the same epoch, replacement epochs increase strictly and ticket exhaustion stops the affected class. Checkpoint integration must preserve high-water marks and pending reservations.
   - id: iso.10589.2002.csnp_sequence
     kind: routing-protocol-synchronization-owner
     release: 26.7.R1
@@ -363,7 +391,7 @@ records:
     implementation: [core/include/router/isis_lsdb.hpp, core/src/isis/isis_lsdb.cpp]
     tests: [core/tests/isis/isis_lsdb_test.cpp]
     status: experimental
-    notes: One level of one instance owns bounded sorted LSP storage. Duplicate receipt does not refresh lifetime, checksum confusion is explicit and received unknown purges are not retained. Allocation failures preserve existing generations, and smaller replacements reuse their allocation at a full budget. Expired active bodies require finalized purge replacement before retirement. Authentication, self-originated fight-back, flood flags and checkpoint integration remain process-owner work.
+    notes: One level of one instance owns bounded sorted LSP storage. Duplicate receipt does not refresh lifetime, checksum confusion is explicit and received unknown purges are not retained. Allocation failures preserve existing generations, and smaller replacements reuse their allocation at a full budget. The earliest owner-local lifecycle deadline distinguishes expiration finalization from installed-purge retirement, with deterministic LSP-ID ordering for equal times. Expired active bodies require finalized purge replacement before retirement, delayed finalization preserves the original expiration time and deadline arithmetic saturates without wrapping. Authentication, self-originated fight-back, flood flags and checkpoint integration remain process-owner work.
   - id: ietf.isis.domain_wide.rfc5302
     kind: routing-protocol-wire-format
     release: 26.7.R1

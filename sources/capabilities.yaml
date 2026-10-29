@@ -195,7 +195,7 @@ features:
     source_ids: [ieee.802_3.ethernet_frame_timing]
   runtime.dynamic_shards:
     status: implemented
-    source_ids: [emscripten.pthreads.shared_memory]
+    source_ids: [emscripten.pthreads.shared_memory, project.runtime.protocol_consumer_wakeup]
   runtime.shared_memory_growth:
     status: implemented
     source_ids: [emscripten.shared_memory.growth, emscripten.pthreads.shared_memory]

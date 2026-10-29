@@ -51,6 +51,13 @@ void delivered(void *opaque, const lab::MultiDeviceFabric::Delivery &value) {
 
 void isis_control_worker_tests() {
   auto channels = std::make_unique<ControlChannels>();
+  struct Wakeups { std::atomic_uint64_t count{}; std::atomic_bool invalid{}; } wakeups;
+  channels->egress_context = &wakeups;
+  channels->egress_wakeup = +[](void *opaque, std::size_t shard) {
+    auto &state = *static_cast<Wakeups *>(opaque);
+    if (shard != 0U) state.invalid.store(true, std::memory_order_relaxed);
+    state.count.fetch_add(1U, std::memory_order_release);
+  };
   auto worker = std::make_unique<ControlWorker>(*channels, 1U, 2U);
   std::uint64_t next_id{};
   const auto command = [&](ControlCommand value) {
@@ -97,6 +104,7 @@ void isis_control_worker_tests() {
   for (;;) {
     while (const auto frame = channels->egress[0U].try_receive()) {
       const auto index = frame->metadata.device.index;
+      require(frame->metadata.transmission_class == static_cast<std::uint8_t>(packet::isis::PduType::point_to_point_hello));
       const bool accepted = fabric->enqueue(cable, static_cast<std::uint8_t>(index),
           *frame->frame) == lab::MultiDeviceFabric::DropReason::none;
       require(channels->egress[0U].release(frame->handle, accepted) && accepted);
@@ -110,6 +118,7 @@ void isis_control_worker_tests() {
   }
   const auto before = query(0U);
   require(before.counters.adjacency_up == 1U && before.counters.hello_enqueued >= 2U);
+  require(wakeups.count.load(std::memory_order_acquire) >= 4U && !wakeups.invalid.load(std::memory_order_relaxed));
   // Build a valid peer Hello with an old epoch. It must never reach the FSM.
   PointToPointCircuit peer(configuration(2U), 777U, PointToPointCircuit::Clock::now());
   auto scratch = std::make_unique<PduScratch>();

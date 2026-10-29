@@ -881,7 +881,7 @@ bool ControlWorker::publish(OwnedProcess &owner,
        .physical_port_ordinal = output.physical_port_ordinal},
       frame);
   if (published && channels_.egress_wakeup)
-    channels_.egress_wakeup(channels_.egress_wakeup_context);
+    channels_.egress_wakeup(channels_.egress_wakeup_context, shard);
   return published;
 }
 

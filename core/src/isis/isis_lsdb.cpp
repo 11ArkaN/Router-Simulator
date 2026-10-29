@@ -15,6 +15,12 @@
 
 namespace router::isis {
 namespace {
+[[nodiscard]] RuntimeClock::time_point after(RuntimeClock::time_point now,
+    std::chrono::seconds seconds) noexcept {
+  const auto duration = std::chrono::duration_cast<RuntimeClock::duration>(seconds);
+  return now > RuntimeClock::time_point::max() - duration
+      ? RuntimeClock::time_point::max() : now + duration;
+}
 [[nodiscard]] std::uint16_t remaining(const packet::isis::LspView &header,
     RuntimeClock::time_point installed, RuntimeClock::time_point now) noexcept {
   if (now <= installed) return header.remaining_seconds;
@@ -64,6 +70,17 @@ std::optional<StoredLspView> LinkStateDatabase::at(std::size_t index,
   return index < records_.size() ? std::optional(view(records_[index], now)) : std::nullopt;
 }
 
+std::optional<LspDeadline> LinkStateDatabase::next_deadline() const noexcept {
+  std::optional<LspDeadline> result;
+  for (const auto &record : records_) {
+    const LspDeadline candidate{record.header.id,
+        record.purge_installed ? record.retire_at : after(record.installed_at, std::chrono::seconds{record.header.remaining_seconds}),
+        record.purge_installed ? LspDeadlineKind::retire_purge : LspDeadlineKind::finalize_expiration};
+    if (!result || candidate.at < result->at) result = candidate;
+  }
+  return result;
+}
+
 LspInstallResult LinkStateDatabase::install(std::span<const std::uint8_t> wire,
     RuntimeClock::time_point now, std::uint16_t maximum_age, std::chrono::seconds purge_retention) noexcept {
   using Result = LspInstallResult;
@@ -92,7 +109,7 @@ LspInstallResult LinkStateDatabase::install(std::span<const std::uint8_t> wire,
     if (comparison == LspRecency::identical && !aged_body) return Result::identical;
     if (comparison == LspRecency::confusion) return Result::confusion;
     if (aged_body)
-      purge_became_zero = entry->installed_at + std::chrono::seconds(entry->header.remaining_seconds);
+      purge_became_zero = after(entry->installed_at, std::chrono::seconds(entry->header.remaining_seconds));
   } else {
     if (!header->remaining_seconds) return Result::unknown_purge;
     if (records_.size() == limits_.records) return Result::capacity_exhausted;
@@ -125,7 +142,7 @@ LspInstallResult LinkStateDatabase::install(std::span<const std::uint8_t> wire,
   entry->header = *header;
   entry->installed_at = now;
   entry->purge_installed = header->remaining_seconds == 0U;
-  entry->retire_at = purge_became_zero + purge_retention;
+  entry->retire_at = after(purge_became_zero, purge_retention);
   allocated_octets_ = retained_other + entry->bytes.capacity();
   return Result::installed;
 }

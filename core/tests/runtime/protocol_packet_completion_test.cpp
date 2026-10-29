@@ -13,6 +13,8 @@
 void protocol_packet_completion_tests() {
   using Channel = router::protocol::PacketChannel<4U, true>;
   auto channel = std::make_unique<Channel>();
+  if (channel->consumer_pending())
+    throw std::runtime_error("Empty protocol channel reported pending consumer work");
   router::packet::Frame frame{};
   frame.length = 60U;
   for (std::uint64_t index = 0U; index < 4U; ++index) {
@@ -22,6 +24,8 @@ void protocol_packet_completion_tests() {
   }
   if (channel->try_send({}, frame) || channel->producer_available() != 0U)
     throw std::runtime_error("Protocol completion channel exceeded its frame capacity");
+  if (!channel->consumer_pending())
+    throw std::runtime_error("Published protocol frames did not wake a bounded consumer");
   for (std::uint64_t index = 0U; index < 4U; ++index) {
     const auto packet = channel->try_receive();
     if (!packet || !channel->release(packet->handle, index % 2U != 0U) || channel->release(packet->handle, true))
@@ -29,6 +33,8 @@ void protocol_packet_completion_tests() {
   }
   if (channel->producer_available() != 0U || channel->try_send({}, frame))
     throw std::runtime_error("Protocol completion channel reclaimed unconsumed results");
+  if (channel->consumer_pending())
+    throw std::runtime_error("Borrowed frames were confused with pending consumer work");
   for (std::uint64_t index = 0U; index < 4U; ++index) {
     const auto result = channel->try_completion();
     if (!result || result->metadata.interface_id != index || result->metadata.configuration_generation != index + 100U ||
@@ -73,4 +79,28 @@ void protocol_packet_completion_tests() {
   consumer.join();
   if (!valid.load(std::memory_order_relaxed) || channel->producer_available() != 4U)
     throw std::runtime_error("Protocol completion SPSC publication violated frame/result ownership");
+
+  using Reused = router::protocol::PacketChannel<1U, true>;
+  auto reused = std::make_unique<Reused>();
+  const Reused::Metadata hello{{0U, 7U}, 11U, 0U, 9U, 1U, 17U};
+  auto lsp = hello;
+  lsp.transmission_class = 18U;
+  if (!reused->try_send(hello, frame)) throw std::runtime_error("Protocol receipt fixture admission failed");
+  const auto first = reused->try_receive();
+  if (!first || !reused->release(first->handle, hello, true) || !reused->try_completion() || !reused->try_send(lsp, frame))
+    throw std::runtime_error("Protocol receipt fixture did not reuse one frame handle");
+  const auto replacement = reused->try_receive();
+  if (!replacement || replacement->handle != first->handle || reused->release(replacement->handle, hello, true) ||
+      reused->producer_available() != 0U)
+    throw std::runtime_error("Delayed receipt released a replacement PDU class with the same epoch and ticket");
+  auto wrong_ticket = lsp;
+  ++wrong_ticket.transmission_id;
+  auto wrong_epoch = lsp;
+  ++wrong_epoch.configuration_generation;
+  if (reused->release(replacement->handle, wrong_ticket, true) || reused->release(replacement->handle, wrong_epoch, true) ||
+      !reused->release(replacement->handle, lsp, false))
+    throw std::runtime_error("Protocol physical receipt accepted a different pending identity");
+  const auto final = reused->try_completion();
+  if (!final || final->metadata != lsp || final->enqueued || reused->producer_available() != 1U)
+    throw std::runtime_error("Protocol guarded receipt lost actual admission or its PDU class");
 }

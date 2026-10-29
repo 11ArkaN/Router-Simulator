@@ -578,9 +578,15 @@ public:
 
   [[nodiscard]] bool take_egress(ForwardEgress &value) noexcept {
     const bool consumed = egress_.try_pop(value);
-    if (consumed)
-      notify();
+    if (consumed) wake_protocol();
     return consumed;
+  }
+
+  // Protocol owners and the link owner coalesce notifications into one atomic
+  // predicate. This bit carries no packet data and has no queue producer role.
+  void wake_protocol() noexcept {
+    protocol_work_.store(true, std::memory_order_release);
+    notify();
   }
 
   [[nodiscard]] bool emit(const ForwardEgress &value) noexcept {
@@ -632,6 +638,7 @@ private:
     thread_id_.store(identity ? identity : 1U, std::memory_order_release);
     std::optional<ForwardCommand> pending_command;
     while (!stop_requested_.load(std::memory_order_acquire)) {
+      protocol_work_.store(false, std::memory_order_release);
       turns_.fetch_add(1U, std::memory_order_relaxed);
 
       // A pending pause is ordered after every already delivered ingress
@@ -699,7 +706,7 @@ private:
       const auto ready = [&] {
         return stop_requested_.load(std::memory_order_acquire) ||
                pending_command.has_value() || !commands_.empty() ||
-               !ingress_.empty();
+               !ingress_.empty() || protocol_work_.load(std::memory_order_acquire);
       };
       if (!ready()) {
         if (maintenance_deadline)
@@ -727,6 +734,7 @@ private:
   std::condition_variable wait_condition_;
   std::atomic_bool stop_requested_{};
   std::atomic_bool resume_requested_{};
+  std::atomic_bool protocol_work_{};
   std::atomic_uint64_t thread_id_{};
   std::atomic_uint64_t turns_{};
   void *link_context_{};
@@ -1108,6 +1116,10 @@ struct NetworkPlane::Impl {
     // CLI command can block forever once generated pool entries already own
     // forwarding work. Startup allocation also makes admission atomic: the
     // lab either owns a usable protocol shard or fails before opening.
+    ospf_channels.egress_wakeup_context = this;
+    ospf_channels.egress_wakeup = protocol_egress_wakeup;
+    isis_channels.egress_context = this;
+    isis_channels.egress_wakeup = protocol_egress_wakeup;
     ospf_worker = std::make_unique<ospf::ControlWorker>(
         ospf_channels,
         std::max<std::size_t>(1U, separate_forwarding_shards));
@@ -1132,6 +1144,13 @@ struct NetworkPlane::Impl {
 
   [[nodiscard]] bool parallel() const noexcept {
     return separate_forwarding_shards != 0;
+  }
+
+  static void protocol_egress_wakeup(void *opaque, std::size_t shard) noexcept {
+    auto &owner = *static_cast<Impl *>(opaque);
+    if (owner.parallel()) {
+      if (shard < owner.separate_forwarding_shards) owner.forwarding_shards[shard]->wake_protocol();
+    } else if (owner.link_wakeup) owner.link_wakeup(owner.link_wakeup_context);
   }
 
   [[nodiscard]] bool install_ipv4_fib(
@@ -3877,6 +3896,7 @@ NetworkPlane::Impl::service_forwarding(void *context, std::size_t shard_index,
     if (deadline && (!next || *deadline < *next))
       next = deadline;
   }
+  if (worker.can_emit(1U) && owner.ospf_channels.egress[shard_index].consumer_pending()) next = now;
   return next;
 }
 
@@ -8358,12 +8378,9 @@ void NetworkPlane::set_link_wakeup(void *context,
                                    void (*wakeup)(void *)) noexcept {
   impl_->link_wakeup_context = context;
   impl_->link_wakeup = wakeup;
-  // These callbacks are installed before any OSPF process can create the
-  // dedicated protocol pthread, so the worker reads immutable pointers. Route
-  // generations and encoded egress frames use distinct SPSC rings but wake
-  // the same network owner after release-publication.
-  impl_->ospf_channels.egress_wakeup_context = context;
-  impl_->ospf_channels.egress_wakeup = wakeup;
+  // Installed before protocol configuration is accepted. Route generations
+  // wake their link-owner consumer; encoded frames wake their selected
+  // forwarding consumer through the immutable per-shard adapter above.
   impl_->ospf_channels.route_wakeup_context = context;
   impl_->ospf_channels.route_wakeup = wakeup;
   for (std::size_t index = 0; index < impl_->separate_forwarding_shards;

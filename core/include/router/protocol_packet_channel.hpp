@@ -38,6 +38,11 @@ public:
     // interpreting it. IS-IS requires an exact pending-ticket match, including
     // operational cancellations that leave the configuration epoch unchanged.
     std::uint64_t transmission_id{};
+    // Protocol-defined class disambiguates independent ticket sequences.
+    // IS-IS uses its wire PDU type; zero preserves unspecified legacy users.
+    // Delayed link-owner receipts compare this as part of the complete identity.
+    std::uint8_t transmission_class{};
+    bool operator==(const Metadata &) const = default;
   };
 
   struct Borrowed {
@@ -107,6 +112,16 @@ public:
     return release_slot(handle, Returned{handle, enqueued});
   }
 
+  // The same consumer may delegate physical admission to a separate link owner.
+  // Its immutable receipt returns full identity, not only a reusable slot index.
+  // A delayed receipt for an earlier epoch, ticket or PDU class rejects without
+  // releasing a currently borrowed replacement. No third owner reads slot state.
+  [[nodiscard]] bool release(Handle handle, const Metadata &expected,
+      bool enqueued) noexcept requires WithCompletions {
+    if (handle >= Capacity || !borrowed_[handle] || slots_[handle].metadata != expected) return false;
+    return release(handle, enqueued);
+  }
+
   // Producer consumes each egress result before its slot can be reused. The
   // borrowed wire view remains valid until the next try_send on this channel;
   // process it before sending again. This call reclaims the slot and needs no
@@ -126,6 +141,10 @@ public:
     reclaim();
     return available_count_;
   }
+  // Consumer-only readiness projection. It acquires the producer's published
+  // head without borrowing or returning a slot. Bounded drainers use it to
+  // continue work after a coalesced notification exceeds one service quantum.
+  [[nodiscard]] bool consumer_pending() const noexcept { return !ready_.empty(); }
 
 private:
   struct Returned {

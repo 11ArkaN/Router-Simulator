@@ -43,9 +43,13 @@ void isis_lsdb_tests() {
   const auto first_wire = encode_lsp(first, input, option);
   require(first_wire.has_value(), "IS-IS LSDB fixture encoding failed");
   LinkStateDatabase database(PduType::lsp_l1, {1U, first_wire->size()});
+  require(!database.next_deadline(), "Empty IS-IS database exposed a lifecycle deadline");
   require(database.install(*first_wire, now, 1200U, 60s) == LspInstallResult::installed &&
             database.size() == 1U, "IS-IS LSDB initial installation failed");
   const auto allocation = database.allocated_octets();
+  require(database.next_deadline()->at == now + 30s &&
+      database.next_deadline()->id == input.id && database.next_deadline()->kind == LspDeadlineKind::finalize_expiration,
+      "IS-IS active LSP deadline did not require expiration finalization");
   auto retained = database.find(input.id, now + 1900ms);
   require(retained && retained->header.remaining_seconds == 29U &&
             retained->pdu.bytes.size() == first_wire->size(), "IS-IS LSDB lifetime projection failed");
@@ -92,11 +96,17 @@ void isis_lsdb_tests() {
   require(!database.retire_purge(input.id, now + 100s) &&
             database.find(input.id, now + 100s)->header.remaining_seconds == 0U,
           "IS-IS aged active LSP retired before purge construction");
+  require(database.next_deadline()->at == now + 34s &&
+      database.next_deadline()->kind == LspDeadlineKind::finalize_expiration,
+      "IS-IS expired body lost its pending purge obligation");
   other.remaining_seconds = 0U;
   wire = encode_lsp(second, other, {});
   require(wire && database.install(*wire, now + 40s, 1200U, 60s) == LspInstallResult::installed &&
             database.find(input.id, now + 40s)->purge_installed,
           "IS-IS expired active body did not transition to an installed purge");
+  require(database.next_deadline()->at == now + 94s &&
+      database.next_deadline()->kind == LspDeadlineKind::retire_purge,
+      "IS-IS retention deadline was measured from delayed purge construction");
   require(!database.retire_purge(input.id, now + 93s) &&
             database.retire_purge(input.id, now + 94s) && database.size() == 0U &&
             database.allocated_octets() == 0U,
@@ -125,4 +135,26 @@ void isis_lsdb_tests() {
   }
   require(ordered.at(0U, now)->header.id[7U] == 1U && ordered.at(2U, now)->header.id[7U] == 3U &&
             !ordered.at(3U, now), "IS-IS LSDB iteration is not LSP-ID ordered");
+  require(ordered.next_deadline()->id[7U] == 1U && ordered.next_deadline()->at == now + 30s,
+      "IS-IS equal lifecycle deadlines were not ordered by LSP ID");
+  other.id[7U] = 3U;
+  ++other.sequence;
+  other.remaining_seconds = 1U;
+  wire = encode_lsp(second, other, {});
+  require(wire && ordered.install(*wire, now, 1200U, 60s) == LspInstallResult::installed &&
+      ordered.next_deadline()->id == other.id && ordered.next_deadline()->at == now + 1s,
+      "IS-IS earliest expiration was hidden by LSP ID ordering");
+  LinkStateDatabase boundary(PduType::lsp_l1, {1U, 256U});
+  const auto near_end = RuntimeClock::time_point::max() - 500ms;
+  require(boundary.install(*wire, near_end, 1200U, 60s) == LspInstallResult::installed &&
+      boundary.next_deadline()->at == RuntimeClock::time_point::max(),
+      "IS-IS expiration deadline overflowed the monotonic clock");
+  other.remaining_seconds = 0U;
+  wire = encode_lsp(second, other, {});
+  require(wire && boundary.install(*wire, near_end, 1200U, 60s) == LspInstallResult::installed &&
+      boundary.next_deadline()->kind == LspDeadlineKind::retire_purge &&
+      boundary.next_deadline()->at == RuntimeClock::time_point::max() &&
+      !boundary.retire_purge(other.id, near_end) &&
+      boundary.retire_purge(other.id, RuntimeClock::time_point::max()) && !boundary.next_deadline(),
+      "IS-IS saturated purge retention wrapped or retained an empty deadline");
 }

@@ -71,6 +71,7 @@ const cppLayers = new Map([
   ["isis_csnp_sequence.hpp", 1], ["isis_csnp_sequence.cpp", 1],
   ["isis_snp_exchange.hpp", 1], ["isis_snp_exchange.cpp", 1],
   ["isis_lsp_exchange.hpp", 1], ["isis_lsp_exchange.cpp", 1],
+  ["isis_level_process.hpp", 1], ["isis_level_process.cpp", 1],
   ["isis_adjacency.hpp", 0], ["isis_adjacency.cpp", 0],
   ["isis_p2p_adjacency.hpp", 1], ["isis_p2p_adjacency.cpp", 1],
   ["isis_neighbor_attributes.hpp", 0],
