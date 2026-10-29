@@ -66,6 +66,7 @@ struct Context {
   std::array<Endpoint *, 2U> endpoints;
   AuthenticationKey key;
   RuntimeClock::time_point now;
+  bool accept_local_copies{};
 };
 void delivered(void *opaque, const lab::MultiDeviceFabric::Delivery &delivery) {
   auto &context = *static_cast<Context *>(opaque);
@@ -77,8 +78,13 @@ void delivered(void *opaque, const lab::MultiDeviceFabric::Delivery &delivery) {
     require(endpoint.circuit.receive(delivery.frame, std::nullopt, context.now, &endpoint, event) ==
         CircuitReceive::accepted);
     require(endpoint.event_status == UpdateStatus::applied);
-  } else endpoint.received = endpoint.update.receive(0U, 7U, delivery.frame, context.key,
-      context.now, endpoint.observer);
+  } else {
+    endpoint.received = endpoint.update.receive(0U, 7U, delivery.frame, context.key,
+        context.now, endpoint.observer);
+    if (context.accept_local_copies && endpoint.received.status == UpdateStatus::self_originated)
+      endpoint.received = endpoint.update.receive_local_copy(0U, 7U, delivery.frame, context.key,
+          context.now, endpoint.observer);
+  }
 }
 }
 
@@ -491,5 +497,52 @@ void isis_instance_update_tests() {
   require(retire && retire->deadline.kind == LspDeadlineKind::retire_purge && retire->deadline.at == expires_at + 60s);
   require(!d.update.retire_purge(0U, owned.header.id, expires_at + 59s, d.observer) &&
       d.update.retire_purge(0U, owned.header.id, expires_at + 60s, d.observer) && !d.update.next_database_deadline());
+
+  Endpoint e(5U, context.now), f(6U, context.now);
+  context.endpoints = {&e, &f};
+  context.accept_local_copies = true;
+  for (unsigned index{}; index < 6U; ++index) round();
+  owned.header = {PduType::lsp_l1, {1U, 2U, 3U, 4U, 5U, 5U, 0U, 0U}, 1200U, 5U, 3U};
+  owned.options = writer.bytes();
+  built = build_lsp_pdu(owned, scratch->options, scratch->pdu);
+  require(built.status == LspBuildStatus::encoded && e.update.originate(0U, built.bytes,
+      context.now, OriginPurgeReason::none, e.observer).install == LspInstallResult::installed);
+  const auto copy = [&] {
+    const auto pdu = build_lsp_pdu(owned, scratch->options, scratch->pdu);
+    require(pdu.status == LspBuildStatus::encoded && ethernet_pdu_into(*frame,
+        f.circuit.configuration().mac, destination, pdu.bytes));
+    transmit(1U);
+  };
+  copy();
+  const auto flags = [&] { return e.update.level(0U)->database().flags(owned.header.id, 0U); };
+  require(e.received.status == UpdateStatus::applied && flags()->ssn && !flags()->srm);
+  owned.header.sequence = 4U;
+  copy();
+  require(e.received.status == UpdateStatus::applied && flags()->srm && !flags()->ssn);
+  owned.header.sequence = 6U;
+  copy();
+  require(e.received.status == UpdateStatus::self_originated &&
+      e.update.level(0U)->database().database().find(owned.header.id, context.now)->header.sequence == 5U);
+  owned.header.sequence = 5U;
+  owned.header.flags = 7U;
+  copy();
+  require(e.received.status == UpdateStatus::self_originated);
+  owned.header.flags = 3U;
+  owned.header.remaining_seconds = 0U;
+  owned.options = {};
+  copy();
+  require(e.received.status == UpdateStatus::self_originated &&
+      !e.update.level(0U)->database().database().find(owned.header.id, context.now)->purge_installed);
+  owned.header.id.back() = 1U;
+  copy();
+  require(e.received.status == UpdateStatus::applied && e.update.level(0U)->transient_acknowledgements() == 1U &&
+      !e.update.level(0U)->database().database().find(owned.header.id, context.now));
+  const auto zero_sequence = parse_ethernet_pdu(frame->view(), envelope);
+  require(zero_sequence.has_value());
+  std::fill_n(frame->bytes.begin() + prefix + 20U, 4U, std::uint8_t{});
+  require(finalize_authentication(std::span(frame->bytes).subspan(prefix, zero_sequence->pdu.bytes.size()),
+      key, e.circuit.configuration().local.system) == AuthenticationError::none);
+  transmit(1U);
+  require(e.received.status == UpdateStatus::malformed && e.update.level(0U)->transient_acknowledgements() == 1U);
 
 }

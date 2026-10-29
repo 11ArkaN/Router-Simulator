@@ -173,4 +173,31 @@ void isis_lsdb_tests() {
   require(wire && guarded.install(*wire, now, 1200U, 60s, refusing) == LspInstallResult::installed &&
       admission_calls == 1U && guarded.find(other.id, now)->header.sequence == other.sequence,
       "IS-IS reusable replacement depended on new metadata capacity");
+  LinkStateDatabase local_storage(PduType::lsp_l1, {2U, 155U});
+  other = input;
+  wire = encode_lsp(second, other, {});
+  require(wire && local_storage.install(*wire, now, 1200U, 60s,
+      {LspAdmissionOrigin::originated, nullptr, nullptr, 128U}) == LspInstallResult::installed &&
+      local_storage.allocated_octets() == 128U,
+      "IS-IS local root storage was not reserved before foreign admission");
+  const auto root_id = other.id;
+  const auto *root_buffer = local_storage.find(root_id, now)->pdu.bytes.data();
+  other.id.back() = static_cast<std::uint8_t>(other.id.back() + 1U);
+  wire = encode_lsp(second, other, {});
+  require(wire && local_storage.install(*wire, now, 1200U, 60s) == LspInstallResult::installed &&
+      local_storage.allocated_octets() == 155U,
+      "IS-IS full-budget local reserve fixture did not admit foreign content");
+  other.id = root_id;
+  ++other.sequence;
+  const std::array<std::uint8_t, 101U> padding{8U, 99U};
+  wire = encode_lsp(second, other, padding);
+  require(wire && wire->size() == 128U && local_storage.install(*wire, now, 1200U, 60s,
+      {LspAdmissionOrigin::originated}) == LspInstallResult::installed &&
+      local_storage.find(root_id, now)->pdu.bytes.data() == root_buffer && local_storage.allocated_octets() == 155U,
+      "IS-IS local root growth lost its reservation at a full database budget");
+  require(local_storage.install(*wire, now, 1200U, 60s,
+      {LspAdmissionOrigin::received, nullptr, nullptr, 128U}) == LspInstallResult::malformed &&
+      local_storage.install(*wire, now, 1200U, 60s,
+      {LspAdmissionOrigin::originated, nullptr, nullptr, 65536U}) == LspInstallResult::malformed,
+      "IS-IS local storage reservation accepted a foreign or out-of-wire request");
 }

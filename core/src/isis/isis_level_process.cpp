@@ -176,7 +176,8 @@ LevelSnpResult LevelProcess::receive_snp(std::size_t circuit, std::uint64_t epoc
 }
 
 LevelOriginResult LevelProcess::originate(std::span<const std::uint8_t> wire,
-    RuntimeClock::time_point now, OriginPurgeReason purge, LevelObserver observer) noexcept {
+    RuntimeClock::time_point now, OriginPurgeReason purge, LevelObserver observer,
+    std::size_t minimum_allocation) noexcept {
   if (!observer.event) return {LevelStatus::missing_observer, LspInstallResult::malformed};
   packet::isis::DecodeError error;
   const auto pdu = packet::isis::parse(wire, error);
@@ -196,7 +197,7 @@ LevelOriginResult LevelProcess::originate(std::span<const std::uint8_t> wire,
   }
   const auto retention = purge == OriginPurgeReason::initiated
       ? std::chrono::seconds{maximum_age_} : purge_retention_;
-  const auto result = database_.originate(wire, now, maximum_age_, retention);
+  const auto result = database_.originate(wire, now, maximum_age_, retention, minimum_allocation);
   if (result == LspInstallResult::capacity_exhausted) {
     wait(now, true, observer);
     return {LevelStatus::capacity, result};

@@ -57,9 +57,11 @@ public:
   // construction. An installed generation floods to every eligible circuit.
   // Local purges may retain an identity from a previous incarnation absent from this LSDB;
   // received unknown purges instead remain transient acknowledgements.
+  // Optional local allocation reserves future content within the byte budget;
+  // the parent uses it to guarantee its own non-pseudonode zeroth LSP storage.
   [[nodiscard]] LspInstallResult originate(std::span<const std::uint8_t> wire,
       RuntimeClock::time_point now, std::uint16_t maximum_age,
-      std::chrono::seconds purge_retention) noexcept;
+      std::chrono::seconds purge_retention, std::size_t minimum_allocation = 0U) noexcept;
   // Stable slot programming runs after the instance finishes its Down work.
   // Media cannot change while eligible. flood_all is the owner's explicit
   // adjacency-Up or synchronization decision, never inferred from topology.
@@ -128,7 +130,8 @@ public:
 private:
   [[nodiscard]] LevelReceiveResult admit(std::span<const std::uint8_t> wire,
       std::optional<std::size_t> ingress, RuntimeClock::time_point now,
-      std::uint16_t maximum_age, std::chrono::seconds purge_retention) noexcept;
+      std::uint16_t maximum_age, std::chrono::seconds purge_retention,
+      std::size_t minimum_allocation = 0U) noexcept;
   struct Record {
     packet::isis::LspId id{};
     std::vector<FloodCircuit> circuits;

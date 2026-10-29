@@ -19,6 +19,13 @@ struct AuthenticationKey {
   std::uint16_t id{}; // RFC 5310 only; password and RFC 5304 do not carry an ID.
   std::span<const std::uint8_t> bytes;
 };
+// Configuration owner resolves transmit policy independently of receive checks.
+// A required missing lease must block transmission, never select unsigned output.
+// Key bytes remain borrowed for the synchronous composition/publication call.
+struct TransmitAuthentication {
+  bool required{};
+  std::optional<AuthenticationKey> key;
+};
 
 // Appends cleartext or a digest placeholder with its exact type/length/key-ID.
 // Caller completes all other TLVs and Hello padding before finalization.

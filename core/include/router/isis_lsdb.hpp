@@ -43,6 +43,9 @@ struct LspAdmission {
   // for the LSP. Context and staging stay caller-owned; this callback is never
   // retained. The caller commits or discards its staging after install returns.
   bool (*reserve_metadata)(void *, const packet::isis::LspView &) noexcept{};
+  // Originated admission only: reserve this record's future local content
+  // inside the existing total byte budget. Received input cannot request it.
+  std::size_t minimum_allocation{};
 };
 
 struct StoredLspView {

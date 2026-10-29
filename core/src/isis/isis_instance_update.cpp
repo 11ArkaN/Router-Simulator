@@ -207,6 +207,18 @@ UpdateReceiveResult InstanceUpdateProcess::receive(std::size_t index,
     std::uint64_t configuration_epoch, const packet::Frame &frame,
     std::optional<AuthenticationKey> key, RuntimeClock::time_point now,
     LevelObserver observer) noexcept {
+  return receive_impl(index, configuration_epoch, frame, key, now, observer, false);
+}
+UpdateReceiveResult InstanceUpdateProcess::receive_local_copy(std::size_t index,
+    std::uint64_t configuration_epoch, const packet::Frame &frame,
+    std::optional<AuthenticationKey> key, RuntimeClock::time_point now,
+    LevelObserver observer) noexcept {
+  return receive_impl(index, configuration_epoch, frame, key, now, observer, true);
+}
+UpdateReceiveResult InstanceUpdateProcess::receive_impl(std::size_t index,
+    std::uint64_t configuration_epoch, const packet::Frame &frame,
+    std::optional<AuthenticationKey> key, RuntimeClock::time_point now,
+    LevelObserver observer, bool local_copy) noexcept {
   if (!observer.event) return {UpdateStatus::missing_observer};
   if (index >= circuits_.size() || !circuits_[index].configured) return {UpdateStatus::invalid_circuit};
   auto &circuit = circuits_[index];
@@ -237,7 +249,7 @@ UpdateReceiveResult InstanceUpdateProcess::receive(std::size_t index,
     return {UpdateStatus::authentication, level};
   if (lsp) {
     auto header = packet::isis::lsp(wire->pdu);
-    if (!header) return {};
+    if (!header || !header->sequence) return {};
     if ((!header->remaining_seconds || !header->checksum) &&
         validate_purge_options(wire->pdu.tlvs, effective.purge_rules) != PurgeValidation::accepted)
       return {UpdateStatus::purge_options, level};
@@ -247,7 +259,13 @@ UpdateReceiveResult InstanceUpdateProcess::receive(std::size_t index,
       if (header->remaining_seconds && header->checksum && !packet::isis::valid_lsp_checksum(wire->pdu)) return {};
       if (!header->checksum) header->remaining_seconds = 0U;
       if (header->remaining_seconds > effective.maximum_age) return {};
-      return {UpdateStatus::self_originated, level, {}, {}, header};
+      const auto current = levels_[level]->database().database().find(header->id, now);
+      const bool acknowledge_purge = !header->remaining_seconds && (!current || current->purge_installed);
+      const auto comparison = current ? compare_lsp_headers(*header, current->header) : LspRecency::newer;
+      const bool ordinary_copy = header->remaining_seconds && current &&
+          (comparison == LspRecency::older || comparison == LspRecency::identical);
+      if (!local_copy || (!acknowledge_purge && !ordinary_copy))
+        return {UpdateStatus::self_originated, level, {}, {}, header};
     }
     const auto result = levels_[level]->receive_lsp(index, circuit.synchronization_epochs[level],
         wire->pdu.bytes, now, observer);
@@ -272,7 +290,7 @@ std::optional<UpdateDatabaseDeadline> InstanceUpdateProcess::next_database_deadl
 }
 
 UpdateExpirationResult InstanceUpdateProcess::finalize_expiration(std::size_t level,
-    const packet::isis::LspId &id, PurgeAuthentication authentication,
+    const packet::isis::LspId &id, TransmitAuthentication authentication,
     RuntimeClock::time_point now, std::span<std::uint8_t> option_scratch,
     std::span<std::uint8_t> pdu_scratch, LevelObserver observer) noexcept {
   if (!observer.event) return {UpdateStatus::missing_observer, {}, LspBuildStatus::invalid_header};
@@ -329,7 +347,7 @@ std::uint64_t InstanceUpdateProcess::maximum_synchronization_epoch() const noexc
 
 LevelOriginResult InstanceUpdateProcess::originate(std::size_t level,
     std::span<const std::uint8_t> wire, RuntimeClock::time_point now,
-    OriginPurgeReason purge, LevelObserver observer) noexcept {
+    OriginPurgeReason purge, LevelObserver observer, std::size_t minimum_allocation) noexcept {
   if (level >= levels_.size() || !levels_[level])
     return {LevelStatus::invalid_configuration, LspInstallResult::malformed};
   packet::isis::DecodeError error{};
@@ -342,6 +360,6 @@ LevelOriginResult InstanceUpdateProcess::originate(std::size_t level,
   if (!instance || instance->instance != selector_.wire_instance ||
       (selector_.format == packet::isis::InstanceFormat::standard && selector_.wire_instance && !instance->topology_zero))
     return {LevelStatus::invalid_configuration, LspInstallResult::malformed};
-  return levels_[level]->originate(wire, now, purge, observer);
+  return levels_[level]->originate(wire, now, purge, observer, minimum_allocation);
 }
 } // namespace router::isis

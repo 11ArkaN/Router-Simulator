@@ -92,13 +92,13 @@ LevelReceiveResult LevelDatabase::receive(std::span<const std::uint8_t> wire,
 
 LspInstallResult LevelDatabase::originate(std::span<const std::uint8_t> wire,
     RuntimeClock::time_point now, std::uint16_t maximum_age,
-    std::chrono::seconds purge_retention) noexcept {
-  return admit(wire, std::nullopt, now, maximum_age, purge_retention).install;
+    std::chrono::seconds purge_retention, std::size_t minimum_allocation) noexcept {
+  return admit(wire, std::nullopt, now, maximum_age, purge_retention, minimum_allocation).install;
 }
 
 LevelReceiveResult LevelDatabase::admit(std::span<const std::uint8_t> wire,
     std::optional<std::size_t> ingress, RuntimeClock::time_point now,
-    std::uint16_t maximum_age, std::chrono::seconds purge_retention) noexcept {
+    std::uint16_t maximum_age, std::chrono::seconds purge_retention, std::size_t minimum_allocation) noexcept {
   packet::isis::DecodeError error{};
   const auto pdu = packet::isis::parse(wire, error);
   const auto header = pdu ? packet::isis::lsp(*pdu) : std::nullopt;
@@ -116,7 +116,7 @@ LevelReceiveResult LevelDatabase::admit(std::span<const std::uint8_t> wire,
         try { pending.staged = {candidate.id, pending.owner.circuits_}; }
         catch (const std::bad_alloc &) { return false; }
         return true;
-      }});
+      }, minimum_allocation});
   if (!exists && installed == LspInstallResult::installed)
     records_.insert(records_.begin() + index, std::move(staged));
   if (installed == LspInstallResult::installed) records_[index].placeholder = false;

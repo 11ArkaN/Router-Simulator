@@ -100,8 +100,10 @@ public:
   // retain for MaxAge, including unknown identities from a previous incarnation. Expiration
   // requires a retained expired record and uses the selected ZeroAgeLifetime.
   // Installed generations notify the same owner's SPF/origination scheduler.
+  // Optional local allocation guarantees future content within the byte budget.
   [[nodiscard]] LevelOriginResult originate(std::span<const std::uint8_t> wire,
-      RuntimeClock::time_point now, OriginPurgeReason purge, LevelObserver observer) noexcept;
+      RuntimeClock::time_point now, OriginPurgeReason purge, LevelObserver observer,
+      std::size_t minimum_allocation = 0U) noexcept;
   // Borrowed coordinators stay on this shard and must not survive a circuit
   // transition. The parent supplies source-backed deadlines and dispatches
   // only encoded frames; actual receipts return to these exact reservations.

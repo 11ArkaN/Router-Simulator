@@ -94,7 +94,8 @@ LspInstallResult LinkStateDatabase::install(std::span<const std::uint8_t> wire,
   packet::isis::DecodeError error{};
   const auto pdu = packet::isis::parse(wire, error);
   if (!pdu || pdu->type != type_ || admission.origin > LspAdmissionOrigin::originated || purge_retention.count() < 0 ||
-      purge_retention.count() > std::numeric_limits<std::uint16_t>::max()) return Result::malformed;
+      purge_retention.count() > std::numeric_limits<std::uint16_t>::max() || admission.minimum_allocation > 65535U ||
+      (admission.minimum_allocation && admission.origin != LspAdmissionOrigin::originated)) return Result::malformed;
   auto header = packet::isis::lsp(*pdu);
   if (!header || !header->sequence) return Result::malformed;
   if (!header->checksum) header->remaining_seconds = 0U;
@@ -123,7 +124,7 @@ LspInstallResult LinkStateDatabase::install(std::span<const std::uint8_t> wire,
   }
   const auto old_allocation = exists ? entry->bytes.capacity() : 0U;
   const auto retained_other = allocated_octets_ - old_allocation;
-  const auto allocation = std::max(pdu->bytes.size(), limits_.minimum_pdu_allocation);
+  const auto allocation = std::max({pdu->bytes.size(), limits_.minimum_pdu_allocation, admission.minimum_allocation});
   const bool reuse = exists && allocation <= entry->bytes.capacity();
   if (!reuse && allocation > limits_.allocated_pdu_octets - retained_other)
     return Result::capacity_exhausted;
