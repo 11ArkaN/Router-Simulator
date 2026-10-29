@@ -18,7 +18,7 @@ features:
     source_ids: [iso.10589.2002.instance_update]
   routing.isis.level_synchronization:
     status: partially-implemented
-    source_ids: [iso.10589.2002.level_process]
+    source_ids: [iso.10589.2002.level_process, iso.10589.2002.level_database_owner, iso.10589.2002.lsdb]
   cli.edit_operators:
     status: implemented
     source_ids: [nokia.sros.26_7.md_cli.delete_path, nokia.sros.26_7.classic_cli.no_forms]

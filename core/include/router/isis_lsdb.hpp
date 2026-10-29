@@ -30,6 +30,18 @@ enum class LspInstallResult : std::uint8_t {
   invalid_checksum, excessive_lifetime, capacity_exhausted
 };
 
+enum class LspAdmissionOrigin : std::uint8_t { received, originated };
+struct LspAdmission {
+  LspAdmissionOrigin origin{LspAdmissionOrigin::received};
+  void *context{};
+  // Same-owner synchronous reservation for a new retained identity only, after
+  // validation and before LSDB mutation. Never reenter this database or retain
+  // the header reference. False refuses admission without taking responsibility
+  // for the LSP. Context and staging stay caller-owned; this callback is never
+  // retained. The caller commits or discards its staging after install returns.
+  bool (*reserve_metadata)(void *, const packet::isis::LspView &) noexcept{};
+};
+
 struct StoredLspView {
   packet::isis::PduView pdu;
   packet::isis::LspView header;
@@ -53,16 +65,20 @@ public:
   // Preconditions: wire passed instance, circuit, adjacency, authentication,
   // purge-policy and self-originated fight-back checks in the process owner.
   // Validates envelope and active-LSP checksum before mutation. A zero checksum
-  // has effective lifetime zero per ISO 10589 7.3.14. Unknown purges are not
+  // has effective lifetime zero per ISO 10589 7.3.14. Received unknown purges are not
   // retained; their acknowledgement remains the process owner's obligation.
   // Capacity failure preserves every record and must not be acknowledged.
   // A shorter replacement reuses its allocation even when the budget is full.
   // purge_retention is ZeroAgeLifetime for received/expired purges, or MaxAge
   // for an initiated non-expiration purge. It is a source-selected wire-sized
   // duration, not a global simulation timer. Runs only on the owning shard.
+  // Originated admission additionally permits retaining an unknown local purge;
+  // the caller already established local identity and its purge reason. Received
+  // unknown purges remain transient. Metadata reservation cannot reject an
+  // existing identity, preserving atomic reusable replacement under pressure.
   [[nodiscard]] LspInstallResult install(std::span<const std::uint8_t> wire,
       RuntimeClock::time_point now, std::uint16_t maximum_age,
-      std::chrono::seconds purge_retention) noexcept;
+      std::chrono::seconds purge_retention, LspAdmission admission = {}) noexcept;
 
   // Views borrow repository bytes until the next mutation. Effective lifetime
   // is a value projection using owner-local steady time; encoded bytes remain

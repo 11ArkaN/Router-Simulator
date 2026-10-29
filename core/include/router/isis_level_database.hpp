@@ -55,7 +55,8 @@ public:
       std::uint16_t maximum_age, std::chrono::seconds purge_retention) noexcept;
   // The local originator has completed identity, sequence and authentication
   // construction. An installed generation floods to every eligible circuit.
-  // An unknown local purge is returned explicitly for the originator to handle.
+  // Local purges may retain an identity from a previous incarnation absent from this LSDB;
+  // received unknown purges instead remain transient acknowledgements.
   [[nodiscard]] LspInstallResult originate(std::span<const std::uint8_t> wire,
       RuntimeClock::time_point now, std::uint16_t maximum_age,
       std::chrono::seconds purge_retention) noexcept;

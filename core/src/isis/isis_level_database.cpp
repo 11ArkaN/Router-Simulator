@@ -106,15 +106,17 @@ LevelReceiveResult LevelDatabase::admit(std::span<const std::uint8_t> wire,
   const auto index = position(header->id);
   const bool exists = index < records_.size() && records_[index].id == header->id;
   Record staged;
-  if (!exists && header->remaining_seconds && header->checksum) {
-    if (records_.size() == maximum_records_)
-      return {LspInstallResult::capacity_exhausted, {false, false, true}, std::nullopt};
-    try { staged = {header->id, circuits_}; }
-    catch (const std::bad_alloc &) {
-      return {LspInstallResult::capacity_exhausted, {false, false, true}, std::nullopt};
-    }
-  }
-  const auto installed = database_.install(wire, now, maximum_age, purge_retention);
+  struct Metadata { LevelDatabase &owner; Record &staged; bool exists; } metadata{*this, staged, exists};
+  const auto installed = database_.install(wire, now, maximum_age, purge_retention,
+      {ingress ? LspAdmissionOrigin::received : LspAdmissionOrigin::originated, &metadata,
+      +[](void *opaque, const packet::isis::LspView &candidate) noexcept {
+        auto &pending = *static_cast<Metadata *>(opaque);
+        if (pending.exists) return true; // A zero-sequence request already owns its flags.
+        if (pending.owner.records_.size() == pending.owner.maximum_records_) return false;
+        try { pending.staged = {candidate.id, pending.owner.circuits_}; }
+        catch (const std::bad_alloc &) { return false; }
+        return true;
+      }});
   if (!exists && installed == LspInstallResult::installed)
     records_.insert(records_.begin() + index, std::move(staged));
   if (installed == LspInstallResult::installed) records_[index].placeholder = false;

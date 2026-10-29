@@ -177,6 +177,34 @@ void isis_instance_update_tests() {
         contents.header.id, 0U)->srm);
     require(acknowledgement->reservations.snp.complete(acknowledgement->synchronization_epoch,
         ack.ticket, true, context.now).accepted);
+    const auto live_options = contents.options;
+    contents.header.id.back() = 7U;
+    contents.header.remaining_seconds = 0U;
+    contents.header.sequence = 29U;
+    contents.options = {};
+    const auto purge = build_lsp_pdu(contents, scratch->options, scratch->pdu);
+    require(purge.status == LspBuildStatus::encoded && a.update.originate(level, purge.bytes,
+        context.now, OriginPurgeReason::initiated, a.observer).install == LspInstallResult::installed);
+    const auto purged = output->reservations.lsp.prepare(contents.header.id, source, destination,
+        1492U, 1U, *frame, *scratch, context.now);
+    require(purged.status == LspEmissionStatus::encoded);
+    transmit(0U);
+    require(b.received.status == UpdateStatus::applied && b.update.level(level)->database().size() == 1U &&
+        b.update.level(level)->transient_acknowledgements() == 1U);
+    require(output->reservations.lsp.complete(output->synchronization_epoch, purged.ticket,
+        true, context.now).accepted);
+    const auto purge_ack = acknowledgement->reservations.snp.prepare(SnpEmission::transient_acknowledgement,
+        snp, false, *frame, *scratch, context.now);
+    require(purge_ack.status == SnpExchangeStatus::encoded);
+    transmit(1U);
+    require(a.received.status == UpdateStatus::applied &&
+        !a.update.level(level)->database().flags(contents.header.id, 0U)->srm);
+    require(acknowledgement->reservations.snp.complete(acknowledgement->synchronization_epoch,
+        purge_ack.ticket, true, context.now).accepted && !b.update.level(level)->transient_acknowledgements());
+    contents.header.id.back() = 0U;
+    contents.header.remaining_seconds = 1200U;
+    contents.header.sequence = 1U;
+    contents.options = live_options;
   }
   const auto candidate = [&] {
     const auto built = build_lsp_pdu(contents, scratch->options, scratch->pdu);
@@ -251,7 +279,7 @@ void isis_instance_update_tests() {
   const auto output = a.update.outputs(0U, 0U);
   require(output && output->synchronization_epoch == old_epoch + 1U &&
       !output->reservations.snp.complete(old_epoch, old.ticket, true, context.now).accepted);
-  require(a.update.level(0U)->database().size() == 1U && a.update.level(1U)->database().size() == 1U);
+  require(a.update.level(0U)->database().size() == 2U && a.update.level(1U)->database().size() == 2U);
   require(a.update.receive(0U, 6U, *frame, key, context.now, a.observer).status ==
       UpdateStatus::stale_configuration);
   const auto changes = a.circuit_changes;

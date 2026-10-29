@@ -97,7 +97,8 @@ public:
       LevelObserver observer) noexcept;
   // The originator supplied finalized identity, sequence, options and digest.
   // A purge reason must match retained effective lifetime. Initiated purges
-  // retain for MaxAge; expiration purges use the selected ZeroAgeLifetime.
+  // retain for MaxAge, including unknown identities from a previous incarnation. Expiration
+  // requires a retained expired record and uses the selected ZeroAgeLifetime.
   // Installed generations notify the same owner's SPF/origination scheduler.
   [[nodiscard]] LevelOriginResult originate(std::span<const std::uint8_t> wire,
       RuntimeClock::time_point now, OriginPurgeReason purge, LevelObserver observer) noexcept;

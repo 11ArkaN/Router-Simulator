@@ -157,4 +157,20 @@ void isis_lsdb_tests() {
       !boundary.retire_purge(other.id, near_end) &&
       boundary.retire_purge(other.id, RuntimeClock::time_point::max()) && !boundary.next_deadline(),
       "IS-IS saturated purge retention wrapped or retained an empty deadline");
+  unsigned admission_calls{};
+  const LspAdmission refusing{LspAdmissionOrigin::received, &admission_calls,
+      +[](void *opaque, const LspView &) noexcept { ++*static_cast<unsigned *>(opaque); return false; }};
+  LinkStateDatabase guarded(PduType::lsp_l1, {2U, 256U});
+  other = input;
+  wire = encode_lsp(second, other, option);
+  require(wire && guarded.install(*wire, now, 1200U, 60s, refusing) == LspInstallResult::capacity_exhausted &&
+      admission_calls == 1U && guarded.size() == 0U && !guarded.allocated_octets(),
+      "IS-IS metadata reservation failure published retained bytes");
+  require(guarded.install(*wire, now, 1200U, 60s) == LspInstallResult::installed,
+      "IS-IS admission callback fixture could not establish its retained identity");
+  ++other.sequence;
+  wire = encode_lsp(second, other, {});
+  require(wire && guarded.install(*wire, now, 1200U, 60s, refusing) == LspInstallResult::installed &&
+      admission_calls == 1U && guarded.find(other.id, now)->header.sequence == other.sequence,
+      "IS-IS reusable replacement depended on new metadata capacity");
 }

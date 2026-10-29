@@ -136,6 +136,16 @@ void isis_level_process_tests() {
     require(receipt.enqueued && output->snp.complete(receipt.epoch, receipt.ticket, receipt.enqueued, now).accepted);
   }
   const auto missing = wire(1U, 1U, 1200U);
+  auto corrupted = missing;
+  corrupted[26U] ^= 4U;
+  const auto rejected_checksum = level.receive_lsp(0U, 8U, corrupted, now, observer);
+  require(rejected_checksum.status == LevelStatus::discarded &&
+      rejected_checksum.database.install == LspInstallResult::invalid_checksum && !level.waiting());
+  require(level.receive_lsp(0U, 8U, wire(1U, 1U, 1201U), now, observer).status ==
+      LevelStatus::discarded && !level.waiting());
+  auto wrong_level = missing;
+  wrong_level[4U] = static_cast<std::uint8_t>(PduType::lsp_l2);
+  require(level.receive_lsp(0U, 8U, wrong_level, now, observer).status == LevelStatus::malformed && !level.waiting());
   require(level.receive_lsp(0U, 8U, missing, now, observer).status == LevelStatus::capacity && level.waiting());
   require(level.waiting_deadline() == now + 60s && !other.waiting());
   require(level.receive_lsp(0U, 8U, missing, now + 20s, observer).status == LevelStatus::capacity &&
@@ -185,4 +195,18 @@ void isis_level_process_tests() {
   require(other.decision_unavailable(near_end, observer) && other.waiting_deadline() == RuntimeClock::time_point::max());
   require(!other.service_waiting(near_end, true, observer) &&
       other.service_waiting(RuntimeClock::time_point::max(), true, observer));
+  LevelProcess previous_incarnation(PduType::lsp_l1, {1U, 1024U}, circuits, 1U, 128U,
+      1200U, 60s, 60s);
+  const auto old_purge = wire(7U, 29U, 0U);
+  auto old_id = id;
+  old_id.back() = 7U;
+  require(previous_incarnation.circuit(0U, 7U, false, true, false, false, observer) == LevelStatus::applied &&
+      previous_incarnation.circuit(1U, 7U, true, true, false, false, observer) == LevelStatus::applied);
+  require(previous_incarnation.originate(old_purge, now, OriginPurgeReason::lifetime_expired, observer).status ==
+      LevelStatus::invalid_configuration && !previous_incarnation.database().size());
+  require(previous_incarnation.originate(old_purge, now, OriginPurgeReason::initiated, observer).install ==
+      LspInstallResult::installed && previous_incarnation.database().size() == 1U &&
+      previous_incarnation.database().flags(old_id, 0U)->srm && previous_incarnation.database().flags(old_id, 1U)->srm);
+  require(!previous_incarnation.retire_purge(old_id, now + 1199s, observer) &&
+      previous_incarnation.retire_purge(old_id, now + 1200s, observer));
 }

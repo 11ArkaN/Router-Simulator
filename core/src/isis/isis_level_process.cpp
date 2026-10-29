@@ -189,6 +189,8 @@ LevelOriginResult LevelProcess::originate(std::span<const std::uint8_t> wire,
     return {LevelStatus::discarded, LspInstallResult::invalid_checksum};
   if (purge != OriginPurgeReason::none) {
     const auto current = database_.database().find(header->id, now);
+    if (!current && purge == OriginPurgeReason::lifetime_expired)
+      return {LevelStatus::invalid_configuration, LspInstallResult::malformed};
     if (current && ((purge == OriginPurgeReason::initiated) != (current->header.remaining_seconds != 0U)))
       return {LevelStatus::invalid_configuration, LspInstallResult::malformed};
   }

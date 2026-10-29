@@ -82,11 +82,12 @@ std::optional<LspDeadline> LinkStateDatabase::next_deadline() const noexcept {
 }
 
 LspInstallResult LinkStateDatabase::install(std::span<const std::uint8_t> wire,
-    RuntimeClock::time_point now, std::uint16_t maximum_age, std::chrono::seconds purge_retention) noexcept {
+    RuntimeClock::time_point now, std::uint16_t maximum_age, std::chrono::seconds purge_retention,
+    LspAdmission admission) noexcept {
   using Result = LspInstallResult;
   packet::isis::DecodeError error{};
   const auto pdu = packet::isis::parse(wire, error);
-  if (!pdu || pdu->type != type_ || purge_retention.count() < 0 ||
+  if (!pdu || pdu->type != type_ || admission.origin > LspAdmissionOrigin::originated || purge_retention.count() < 0 ||
       purge_retention.count() > std::numeric_limits<std::uint16_t>::max()) return Result::malformed;
   auto header = packet::isis::lsp(*pdu);
   if (!header || !header->sequence) return Result::malformed;
@@ -111,13 +112,15 @@ LspInstallResult LinkStateDatabase::install(std::span<const std::uint8_t> wire,
     if (aged_body)
       purge_became_zero = after(entry->installed_at, std::chrono::seconds(entry->header.remaining_seconds));
   } else {
-    if (!header->remaining_seconds) return Result::unknown_purge;
+    if (!header->remaining_seconds && admission.origin == LspAdmissionOrigin::received) return Result::unknown_purge;
     if (records_.size() == limits_.records) return Result::capacity_exhausted;
   }
   const auto old_allocation = exists ? entry->bytes.capacity() : 0U;
   const auto retained_other = allocated_octets_ - old_allocation;
   const bool reuse = exists && pdu->bytes.size() <= entry->bytes.capacity();
   if (!reuse && pdu->bytes.size() > limits_.allocated_pdu_octets - retained_other)
+    return Result::capacity_exhausted;
+  if (!exists && admission.reserve_metadata && !admission.reserve_metadata(admission.context, *header))
     return Result::capacity_exhausted;
   std::vector<std::uint8_t> staged;
   if (!reuse) {
