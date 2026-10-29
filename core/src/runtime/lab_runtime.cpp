@@ -867,23 +867,23 @@ std::optional<std::vector<routing::RoutePolicyProgram>> compile_route_policy(
             .set_metric_type = entry.set_metric_type,
             .set_tag = entry.set_route_tag};
         if (destinations) {
-          const auto &entry = destinations->prefixes[term];
+          const auto &prefix_entry = destinations->prefixes[term];
           output.destination =
               routing::PolicyPrefix{.ipv6 =
-                                        entry.prefix.network.family ==
+                                        prefix_entry.prefix.network.family ==
                                         ip::AddressFamily::ipv6,
-                                    .length = entry.prefix.length};
+                                    .length = prefix_entry.prefix.length};
           if (output.destination->ipv6) {
-            output.destination->ipv6_network = entry.prefix.network.bytes;
+            output.destination->ipv6_network = prefix_entry.prefix.network.bytes;
           } else {
             output.destination->ipv4_network =
-                static_cast<std::uint32_t>(entry.prefix.network.bytes[0U])
+                static_cast<std::uint32_t>(prefix_entry.prefix.network.bytes[0U])
                     << 24U |
-                static_cast<std::uint32_t>(entry.prefix.network.bytes[1U])
+                static_cast<std::uint32_t>(prefix_entry.prefix.network.bytes[1U])
                     << 16U |
-                static_cast<std::uint32_t>(entry.prefix.network.bytes[2U])
+                static_cast<std::uint32_t>(prefix_entry.prefix.network.bytes[2U])
                     << 8U |
-                entry.prefix.network.bytes[3U];
+                prefix_entry.prefix.network.bytes[3U];
           }
         }
         compiled.push_back(std::move(output));
@@ -10214,7 +10214,7 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
   // is reprogrammed only when its owner was actually removed by hardware.
   const auto operational =
       applied ? supervisor_.router_operational_state(router_intent.handle)
-              : std::nullopt;
+              : nullptr;
   const auto live_port = [&](std::string_view id) -> const ForwardPort * {
     if (!operational || !inventory)
       return nullptr;
@@ -11142,7 +11142,7 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
             const auto calculated_metric =
                 ospf_interface.cost != 0U
                     ? ospf_interface.cost
-                    : std::clamp<std::uint32_t>(
+                    : std::clamp<std::uint64_t>(
                           instance.reference_bandwidth_kbps /
                               (static_cast<std::uint64_t>(port->speed_mbps) *
                                1000U),
@@ -25079,8 +25079,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           }
         }
       } else {
-        using enum cli_schema::CommandId;
-        const auto id = parsed->spec->id;
         const bool static_report = id == show_router_static_arp ||
                                    id == show_router_static_arp_interface ||
                                    id == show_router_static_arp_address ||
@@ -25247,9 +25245,9 @@ std::string LabRuntime::poll_session(std::string_view session_id) {
       const auto variance = std::max(0.0L, mean_square - mean * mean);
       statistics +=
           "round-trip min = " +
-          ping_milliseconds(ping.rtt_min_microseconds) +
+          ping_milliseconds(static_cast<long double>(ping.rtt_min_microseconds)) +
           "ms, avg = " + ping_milliseconds(mean) +
-          "ms, max = " + ping_milliseconds(ping.rtt_max_microseconds) +
+          "ms, max = " + ping_milliseconds(static_cast<long double>(ping.rtt_max_microseconds)) +
           "ms, stddev = " + ping_milliseconds(std::sqrt(variance)) + "ms\n";
     }
     return statistics;
@@ -25302,7 +25300,7 @@ std::string LabRuntime::poll_session(std::string_view session_id) {
         " bytes from " + destination +
         ": icmp_seq=" + std::to_string(ping.sequence) +
         " ttl=" + std::to_string(received_ttl) +
-        " time=" + ping_milliseconds(elapsed_microseconds) + "ms.\n";
+        " time=" + ping_milliseconds(static_cast<long double>(elapsed_microseconds)) + "ms.\n";
     if (ping.sent == ping.requested)
       output += finish();
     else {
@@ -26639,12 +26637,9 @@ void LabRuntime::publish_telemetry() noexcept {
   telemetry_.abi_version = telemetry_page_v6_abi;
   telemetry_.status = 1;
   // The browser Worker owns primary control, NetworkPlaneWorker owns the link
-  // domain, OSPF owns protocol state, and larger hosts add generated control
+  // domain, OSPF and IS-IS own protocol state, and larger hosts add control
   // and forwarding pthreads. Telemetry reports only owners that actually
   // exist, never unused Emscripten pool capacity.
-  telemetry_.worker_count =
-      static_cast<std::uint32_t>(3U + (secondary_control_ ? 1U : 0U) +
-                                 supervisor_.forwarding_owner_count());
   auto control = static_cast<std::uint64_t>(
       std::hash<std::thread::id>{}(std::this_thread::get_id()));
   for (auto &worker : telemetry_.workers)
@@ -26689,6 +26684,13 @@ void LabRuntime::publish_telemetry() noexcept {
       .running = static_cast<std::uint8_t>(ospf_owner_id != 0),
       .thread_id = ospf_owner_id,
   };
+  const auto isis_owner_id = supervisor_.isis_owner_thread_id();
+  telemetry_.workers[directory++] = {
+      .role = static_cast<std::uint8_t>(WorkerRoleV6::isis),
+      .shard_index = 0,
+      .running = static_cast<std::uint8_t>(isis_owner_id != 0),
+      .thread_id = isis_owner_id,
+  };
   for (std::size_t index = 0; index < supervisor_.forwarding_owner_count();
        ++index) {
     const auto owner_id = supervisor_.forwarding_owner_thread_id(index);
@@ -26700,6 +26702,7 @@ void LabRuntime::publish_telemetry() noexcept {
         .turns = supervisor_.forwarding_owner_turns(index),
     };
   }
+  telemetry_.worker_count = static_cast<std::uint32_t>(directory);
   telemetry_.device_count = static_cast<std::uint32_t>(routers_.size());
   telemetry_.session_count = static_cast<std::uint32_t>(sessions_.size());
   telemetry_.captured_frames = supervisor_.captured_frames();

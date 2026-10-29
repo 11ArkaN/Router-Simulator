@@ -1040,7 +1040,10 @@ public:
   [[nodiscard]] std::size_t captured_frames() noexcept;
   [[nodiscard]] std::uint64_t capture_dropped() noexcept;
   [[nodiscard]] std::uint64_t dropped_packets() noexcept;
-  [[nodiscard]] std::optional<RouterForwarderCheckpoint>
+  // Serialized control obtains an immutable owned copy after the network
+  // result's acquire publication. Null means stale device, preparation failure
+  // or allocation refusal. No forwarding-owned address escapes this API.
+  [[nodiscard]] std::unique_ptr<const RouterForwarderCheckpoint>
   router_operational_state(DeviceHandle device) noexcept;
   [[nodiscard]] std::uint64_t network_thread_id() const noexcept {
     return network_worker_ ? network_worker_->owner_thread_id() : 0U;
@@ -1060,6 +1063,9 @@ public:
   }
   [[nodiscard]] std::uint64_t ospf_owner_thread_id() const noexcept {
     return network_worker_ ? network_worker_->ospf_owner_thread_id() : 0U;
+  }
+  [[nodiscard]] std::uint64_t isis_owner_thread_id() const noexcept {
+    return network_worker_ ? network_worker_->isis_owner_thread_id() : 0U;
   }
   [[nodiscard]] std::unique_ptr<RuntimeSupervisorCheckpoint> checkpoint();
   [[nodiscard]] bool restore(RuntimeSupervisorCheckpoint state);

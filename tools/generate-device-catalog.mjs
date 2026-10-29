@@ -200,17 +200,17 @@ if (catalog.runtime.low_cpu_max >= catalog.runtime.medium_cpu_max ||
     catalog.runtime.medium_link_shards !== 1 ||
     catalog.runtime.high_link_shards !== 1 ||
     catalog.runtime.pthread_pool_low !==
-      catalog.runtime.low_control_shards + catalog.runtime.low_forwarding_shards ||
+      catalog.runtime.low_control_shards + catalog.runtime.low_forwarding_shards + 1 ||
     catalog.runtime.pthread_pool_medium !==
       catalog.runtime.medium_control_shards + catalog.runtime.medium_forwarding_shards +
-      catalog.runtime.medium_link_shards ||
+      catalog.runtime.medium_link_shards + 1 ||
     catalog.runtime.pthread_pool_high !==
       catalog.runtime.high_control_shards + catalog.runtime.high_forwarding_shards +
-      catalog.runtime.high_link_shards ||
+      catalog.runtime.high_link_shards + 1 ||
     catalog.runtime.maximum_worker_domains <
       catalog.runtime.high_control_shards + catalog.runtime.high_forwarding_shards +
-      catalog.runtime.high_link_shards + 1) {
-  // Every pool expression includes one dedicated OSPF owner. The browser
+      catalog.runtime.high_link_shards + 2) {
+  // Every pool expression includes dedicated OSPF and IS-IS owners. The browser
   // Worker remains the primary control owner and does not consume a pool slot.
   fail("runtime shard counts and pthread pools are inconsistent");
 }

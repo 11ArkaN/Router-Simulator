@@ -452,8 +452,9 @@ public:
       std::span<const packet::Mac> groups) noexcept;
   // Forwarding-shard-only egress of a validated IS-IS Ethernet/LLC image.
   // Requires an operational programmed physical port and joined destination.
-  // Source MAC is replaced by that port's owned MAC. Oversized LSPs are
-  // rejected without IP fragmentation; queue refusal returns false. The
+  // Source MAC must equal that port's owned MAC; bytes are not rewritten.
+  // Oversized LSPs are rejected without IP fragmentation; queue refusal
+  // returns false. The
   // caller retains input ownership and may retry through its protocol timer.
   [[nodiscard]] bool originate_isis(std::uint16_t port_ordinal,
       const packet::Frame &frame, void *context, EgressSink sink) noexcept;

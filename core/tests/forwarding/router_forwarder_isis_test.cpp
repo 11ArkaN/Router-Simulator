@@ -4,6 +4,7 @@
 #include "router/isis_ethernet.hpp"
 #include "router/router_forwarder.hpp"
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <stdexcept>
@@ -80,18 +81,22 @@ void router_forwarder_isis_tests() {
   require(observed.punts == 3U, "IS-IS malformed PDU could not reach protocol error accounting");
   require(!forwarder->originate_isis(0U, malformed, &observed, collect),
           "IS-IS transmitted a malformed locally generated PDU");
-  require(forwarder->originate_isis(0U, frame, &observed, collect) && observed.emitted.size() == 1U &&
-            packet::parse_ethernet(observed.emitted.front())->source == local &&
-            packet::parse_ethernet(frame)->source == peer,
-          "IS-IS egress failed to own its source MAC or mutated caller bytes");
+  require(!forwarder->originate_isis(0U, frame, &observed, collect) && observed.emitted.empty(),
+          "IS-IS forwarding repaired an obsolete or incorrect local MAC projection");
+  packet::Frame outbound;
+  require(ethernet_pdu_into(outbound, local, group, *hello) &&
+            forwarder->originate_isis(0U, outbound, &observed, collect) && observed.emitted.size() == 1U &&
+            std::equal(outbound.view().begin(), outbound.view().end(), observed.emitted.front().view().begin(),
+                observed.emitted.front().view().end()),
+          "IS-IS forwarding changed the protocol owner's encoded frame");
   const auto refuse = +[](void *, std::uint16_t, const packet::Frame &) { return false; };
-  require(!forwarder->originate_isis(0U, frame, nullptr, refuse), "IS-IS bypassed outbound queue refusal");
+  require(!forwarder->originate_isis(0U, outbound, nullptr, refuse), "IS-IS bypassed outbound queue refusal");
   std::array<std::uint8_t, 1600U> padding{};
   TlvWriter writer(padding);
   require(writer.pad_to(padding.size()), "IS-IS oversized fixture padding failed");
   const auto large = encode_hello(bytes, input, writer.bytes());
   packet::Frame jumbo{};
-  require(large && ethernet_pdu_into(jumbo, peer, group, *large) &&
+  require(large && ethernet_pdu_into(jumbo, local, group, *large) &&
             !forwarder->originate_isis(0U, jumbo, &observed, collect) && observed.emitted.size() == 1U,
           "IS-IS oversized PDU bypassed the physical port MTU");
   require(forwarder->configure_isis_punt(0U, {}), "IS-IS membership removal failed");

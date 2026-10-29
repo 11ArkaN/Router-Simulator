@@ -894,6 +894,7 @@ public:
   // The OSPF owner exists at NetworkPlane construction, before any router or
   // CLI command. Zero means its run loop has not published startup yet.
   [[nodiscard]] std::uint64_t ospf_owner_thread_id() const noexcept;
+  [[nodiscard]] std::uint64_t isis_owner_thread_id() const noexcept;
 
 private:
   // PIMPL keeps the large fixed arenas and internal endpoint stack out of every

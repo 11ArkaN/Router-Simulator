@@ -35,7 +35,7 @@ bool RouterForwarder::originate_isis(std::uint16_t port_ordinal,
   }
   packet::isis::EthernetDecodeError error;
   const auto pdu = packet::isis::parse_ethernet_pdu(frame.view(), error);
-  if (!pdu || pdu->ethernet.vlan_tag_count ||
+  if (!pdu || pdu->ethernet.vlan_tag_count || pdu->ethernet.source != egress_port->mac ||
       !std::binary_search(isis_groups_[port_ordinal].begin(), isis_groups_[port_ordinal].end(),
                           pdu->ethernet.destination)) {
     drop(ForwardDrop::malformed);
@@ -45,10 +45,7 @@ bool RouterForwarder::originate_isis(std::uint16_t port_ordinal,
     drop(ForwardDrop::mtu_exceeded);
     return false;
   }
-  packet::Frame wire;
-  packet::copy_frame(wire, frame);
-  packet::rewrite_ethernet(wire, egress_port->mac, pdu->ethernet.destination);
-  return emit(port_ordinal, wire, context, sink);
+  return emit(port_ordinal, frame, context, sink);
 }
 
 } // namespace router::lab

@@ -204,6 +204,7 @@ add_library(router_primitives STATIC
   src/transport/tcp_timers.cpp
   src/transport/tcp_transmission_history.cpp
   src/security/tls_profile.cpp
+  src/security/secret_vault.cpp
   src/transport/udp_packet.cpp
   src/transport/udp_transport.cpp
 )
@@ -274,8 +275,7 @@ if(EMSCRIPTEN)
     INTERFACE_INCLUDE_DIRECTORIES "${ROUTER_NGTCP2_ROOT}/include")
   target_link_libraries(router_ngtcp2_crypto_ossl INTERFACE
                         router_ngtcp2 router_openssl_ssl router_openssl_crypto)
-  target_sources(router_primitives PRIVATE src/security/secret_vault.cpp
-                                            src/security/ikev2_aes_gcm.cpp
+  target_sources(router_primitives PRIVATE src/security/ikev2_aes_gcm.cpp
                                             src/security/ikev2_encrypted_payload.cpp
                                             src/security/ikev2_dh.cpp
                                             src/security/ikev2_nat_detection.cpp
@@ -526,11 +526,12 @@ if(ROUTER_BUILD_TESTS)
     # needs two production budgets without changing the simulator contract.
     set(ROUTER_TEST_MEMORY_OPTION "-sINITIAL_MEMORY=671088640")
     # The checkpoint replacement test intentionally overlaps two complete
-    # high-CPU runtimes. Each runtime owns five pthreads in addition to its
-    # calling Worker, so the test pool must contain ten actual workers. Using
+    # high-CPU runtimes. Each needs its complete generated pthread placement
+    # in addition to the calling Worker. Using
     # the production expression here makes Emscripten recycle a terminated
     # owner and print late-command diagnostics after otherwise passing tests.
-    set(ROUTER_TEST_PTHREAD_POOL_OPTION "-sPTHREAD_POOL_SIZE=10")
+    math(EXPR ROUTER_TEST_PTHREADS "2 * ${ROUTER_PTHREAD_POOL_HIGH}")
+    set(ROUTER_TEST_PTHREAD_POOL_OPTION "-sPTHREAD_POOL_SIZE=${ROUTER_TEST_PTHREADS}")
     target_link_options(core_tests PRIVATE -pthread
       "${ROUTER_TEST_PTHREAD_POOL_OPTION}" "${ROUTER_TEST_MEMORY_OPTION}" "${ROUTER_STACK_OPTION}"
       ${ROUTER_MEMORY_GROWTH_OPTIONS}

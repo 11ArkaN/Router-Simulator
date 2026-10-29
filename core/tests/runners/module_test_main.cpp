@@ -32,6 +32,7 @@ void isis_lan_adjacency_set_tests();
 void isis_p2p_wire_tests();
 void isis_p2p_circuit_tests();
 void isis_control_worker_tests();
+void isis_control_worker_scale_tests();
 void isis_lan_circuit_tests();
 void isis_jitter_tests();
 void isis_hello_schedule_tests();
@@ -406,6 +407,7 @@ int main() {
     isis_p2p_wire_tests();
     isis_p2p_circuit_tests();
     isis_control_worker_tests();
+    isis_control_worker_scale_tests();
     isis_lan_circuit_tests();
     isis_jitter_tests();
     isis_hello_schedule_tests();

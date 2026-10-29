@@ -29,4 +29,6 @@ Each outstanding transmission class also owns a nonzero monotonic ticket. Forwar
 
 The protocol pthread starts only after its queues, condition variable, mutex, atomics and owned registries are initialized. Destruction requests shutdown, wakes the worker and joins it before shared slots are destroyed.
 
+Runtime startup creates separate permanent OSPF and IS-IS protocol owners before any router configuration. The generated CPU policy reserves three, five or seven Emscripten pthreads in addition to the browser control Worker. Telemetry publishes each protocol owner's distinct startup identity through its acquire-loaded publication. Protocol consumers join before forwarding producers, and both join before their SPSC channel storage is released.
+
 Two-thread tests transfer variable-length values and verify complete publication, move ownership, cancellation, full backpressure and duplicate-return rejection. Configuration admission, runtime fairness and active-process limits are verified separately from this transport contract. No MPSC or MPMC queue is introduced.

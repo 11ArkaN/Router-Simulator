@@ -1434,7 +1434,7 @@ void runtime_supervisor_tests() {
       0U, 3U, 0U, 1U, 0xdcU, 2U, 1U};
   std::copy(supervisor_server_duid.begin(), supervisor_server_duid.end(),
             server_program.configuration.duid.begin());
-  server_program.configuration.duid_octets = supervisor_server_duid.size();
+  server_program.configuration.duid_octets = static_cast<std::uint16_t>(supervisor_server_duid.size());
   const auto supervisor_pool =
       router::ip::parse_ipv6_prefix("2001:db8:dc::/64");
   require(supervisor_pool.has_value(),
@@ -1461,7 +1461,7 @@ void runtime_supervisor_tests() {
       0U, 3U, 0U, 1U, 0xdcU, 1U, 1U};
   std::copy(supervisor_client_duid.begin(), supervisor_client_duid.end(),
             client_program.configuration.duid.begin());
-  client_program.configuration.duid_octets = supervisor_client_duid.size();
+  client_program.configuration.duid_octets = static_cast<std::uint16_t>(supervisor_client_duid.size());
   client_program.configuration.identity_associations.push_back(
       {.iaid = 0xdc010001U, .kind = router::dhcpv6::LeaseKind::non_temporary});
   for (std::size_t index = 0;

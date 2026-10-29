@@ -392,12 +392,13 @@ private:
       commands_;
   SpscRing<ControlResult, device_catalog::network_result_ring_entries>
       results_;
-  std::thread thread_;
   std::mutex wait_mutex_;
   std::condition_variable wait_condition_;
   std::atomic_bool stop_requested_{};
   std::atomic_bool work_pending_{};
   std::atomic_uint64_t thread_id_{};
+  // Construct every synchronization object before the run loop may enter.
+  std::thread thread_;
 };
 
 } // namespace router::ospf

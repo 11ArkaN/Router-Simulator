@@ -32,10 +32,10 @@ export const PROFILE_CATALOG = {
     "low_link_shards": 0,
     "medium_link_shards": 1,
     "high_link_shards": 1,
-    "pthread_pool_low": 2,
-    "pthread_pool_medium": 4,
-    "pthread_pool_high": 6,
-    "maximum_worker_domains": 7,
+    "pthread_pool_low": 3,
+    "pthread_pool_medium": 5,
+    "pthread_pool_high": 7,
+    "maximum_worker_domains": 8,
     "worker_startup_attempts": 1000,
     "worker_startup_poll_milliseconds": 10,
     "telemetry_publish_interval_milliseconds": 250,
@@ -146,9 +146,9 @@ export const PROFILE_CATALOG = {
     "network_command_work_budget": 64,
     "forwarding_ring_frames": 64,
     "ospf_packet_ring_frames": 256,
-    "isis_packet_ring_frames": 256,
+    "isis_packet_ring_frames": 16,
     "isis_control_generation_slots": 8,
-    "isis_work_budget_packets": 64,
+    "isis_work_budget_packets": 16,
     "isis_instance_last": 127,
     "ospf_lsas_per_instance": 4096,
     "ospf_vertices_per_area": 2048,
@@ -1173,5 +1173,5 @@ export const PROFILE_CATALOG_COMPILED = {
   "maximumMdaSlotsPerCard": 2,
   "maximumPortsPerMda": 40
 } as const;
-export const PROFILE_CATALOG_HASH = "07c26ec58ab23cfb" as const;
-export const LAB_BUILD_HASH = "d91c23d5cceac6e0" as const;
+export const PROFILE_CATALOG_HASH = "8f1db920cd7f8542" as const;
+export const LAB_BUILD_HASH = "730809738ace6580" as const;

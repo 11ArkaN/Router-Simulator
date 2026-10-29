@@ -250,7 +250,8 @@ void dedicated_dhcp_pool_transaction_test(router::lab::LabRuntime &runtime) {
 void lab_runtime_tests() {
   using namespace router;
   using namespace router::lab;
-  LabRuntime runtime;
+  auto runtime_owner = std::make_unique<LabRuntime>();
+  auto &runtime = *runtime_owner;
   const std::array<std::uint8_t, 32U> project_key{
       0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b,
       0x3c, 0x3d, 0x3e, 0x3f, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46,
@@ -293,6 +294,14 @@ void lab_runtime_tests() {
   }
   require(owners_ready,
           "telemetry did not publish every distinct generated shard owner");
+  std::size_t isis_owners{}, ospf_owners{};
+  for (std::size_t index{}; index < expected_workers; ++index) {
+    const auto role = runtime.telemetry_page().workers[index].role;
+    isis_owners += role == static_cast<std::uint8_t>(WorkerRoleV6::isis);
+    ospf_owners += role == static_cast<std::uint8_t>(WorkerRoleV6::ospf);
+  }
+  require(isis_owners == 1U && ospf_owners == 1U,
+          "runtime startup omitted or duplicated a permanent protocol owner");
 
   output = runtime.command(
       message(lab_runtime_protocol::router_create, {"r1", "7750-sr-1", "R1"}));
@@ -3689,12 +3698,12 @@ void lab_runtime_tests() {
   const std::string static_arp_report{runtime.command(
       message(lab_runtime_protocol::session_execute,
               {"r1-console-1", "show router static-arp 192.0.2.2"}))};
-  const auto arp_report = runtime.command(
+  const std::string arp_report{runtime.command(
       message(lab_runtime_protocol::session_execute,
-              {"r1-console-1", "show router arp 192.0.2.0/30"}));
-  const auto arp_mac_report = runtime.command(
+              {"r1-console-1", "show router arp 192.0.2.0/30"}))};
+  const std::string arp_mac_report{runtime.command(
       message(lab_runtime_protocol::session_execute,
-              {"r1-console-1", "show router arp mac 02:00:00:00:00:02"}));
+              {"r1-console-1", "show router arp mac 02:00:00:00:00:02"}))};
   require(
       static_arp_report.find("192.0.2.2") != std::string_view::npos &&
           static_arp_report.find("Sta") != std::string_view::npos &&
@@ -5345,7 +5354,8 @@ void lab_runtime_tests() {
           "checkpoint serialized an IPsec or OSPF credential in plaintext");
 
   {
-    LabRuntime wrong_key_runtime;
+    auto wrong_key_runtime_owner = std::make_unique<LabRuntime>();
+    auto &wrong_key_runtime = *wrong_key_runtime_owner;
     auto wrong_key = project_key;
     wrong_key.front() ^= 0xffU;
     require(
@@ -5368,7 +5378,8 @@ void lab_runtime_tests() {
             "checkpoint fixture did not retain configured IPsec credentials");
     tampered_state->secret_vault.records.front().sealed.back() ^= 0x01U;
     const auto tampered = checkpoint_v7::encode(*tampered_state);
-    LabRuntime tampered_runtime;
+    auto tampered_runtime_owner = std::make_unique<LabRuntime>();
+    auto &tampered_runtime = *tampered_runtime_owner;
     require(
         tampered_runtime.initialize_secret_vault(project_key, project_context),
         "tamper fixture rejected valid project vault material");
@@ -5379,7 +5390,9 @@ void lab_runtime_tests() {
             "tampered checkpoint partially replaced runtime state");
   }
 
-  LabRuntime restored;
+  auto restored_owner = std::make_unique<LabRuntime>();
+
+  auto &restored = *restored_owner;
   require(restored.initialize_secret_vault(project_key, project_context),
           "restored runtime rejected the matching project vault material");
   require(restored.import_checkpoint(owned),
@@ -5511,7 +5524,8 @@ void lab_runtime_tests() {
 void ospf_flap_recovery_tests() {
   using namespace router;
   using namespace router::lab;
-  LabRuntime runtime;
+  auto runtime_owner = std::make_unique<LabRuntime>();
+  auto &runtime = *runtime_owner;
   const std::array<std::uint8_t, 32U> project_key{
       0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b,
       0x3c, 0x3d, 0x3e, 0x3f, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46,

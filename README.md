@@ -32,7 +32,9 @@ Routers and hosts are dragged onto the canvas, and a link picks its physical por
 
 The packet runtime is written in C++20 and compiled with Emscripten to WebAssembly. It runs outside the React thread and requires pthreads with shared WebAssembly memory.
 
-At startup, the generated CPU policy creates one, three or five pthreads in addition to the browser control Worker. Hosts with up to four logical CPUs use one control owner and one combined forwarding and link owner. Hosts with five to eight logical CPUs use one control, two forwarding and one link owner. Larger hosts use two control, three forwarding and one link owner. Stable device handles select owner shards and live devices do not migrate. Shared packet state does not cross the browser boundary through per-packet `postMessage` calls.
+At startup, the generated CPU policy creates three, five or seven pthreads in addition to the browser control Worker. Hosts with up to four logical CPUs use one control owner and one combined forwarding and link owner. Hosts with five to eight logical CPUs use one control, two forwarding and one link owner. Larger hosts use two control, three forwarding and one link owner. Every policy also starts separate permanent OSPF and IS-IS owners. Stable device handles select owner shards and live devices do not migrate. Shared packet state does not cross the browser boundary through per-packet `postMessage` calls.
+
+Each IS-IS forwarding/control direction has 16 maximum-frame credits per forwarding shard. Full egress retains unsent protocol work and completed frame credits return only after receipt consumption. The six channel rings fit within 1 MiB and share the unchanged 24 MiB network metadata reserve with OSPF and forwarding. These transport capacities are emulator budgets; active-instance scale remains subject to the IS-IS acceptance measurements.
 
 The runtime uses the host monotonic clock. It has no simulation timeline, global future-event heap, pause control, step control or speed multiplier. Protocol and hardware deadlines pass in real time.
 
@@ -157,6 +159,8 @@ The Ethernet LLC UI codec supports ordinary Length framing and the IEEE 802.1AC 
 
 Core tests send all nine IS-IS PDU types through physical link queues and a learning bridge. The forwarding boundary admits configured protocol multicast without requiring an IP address and enforces the egress port MTU. The P2P adjacency owner keeps ISO state, three-way state and holding expiry separate; the instance worker and runtime configuration still need to connect these components.
 
+IS-IS egress requires the protocol owner's encoded source MAC to match the current physical port and passes the complete frame unchanged into its queue. An obsolete local MAC projection is rejected for the protocol owner to reconcile.
+
 LAN adjacency records track two-way neighbor MAC reporting and independent holding deadlines at each level. Capacity decisions follow the ISO priority and MAC order, with insertion waiting for the victim's Down completion. Periodic jitter uses the ISO 25 percent range and a caller-owned PRNG continuation.
 
 Hello composition splits neighbor and interface-address lists across complete TLVs, places IID first and authenticates the final padding. A one-octet padding gap remains below the selected PDU maximum. Shared frame channels reject duplicate slot returns and invalid frame lengths before either can corrupt ownership.
@@ -227,7 +231,7 @@ Each IS-IS Hello class has an independent monotonic schedule. Content changes pr
 
 The P2P circuit owner connects scheduled authenticated Hello frames, received peer attributes, three-way negotiation and holding expiry. Its tests converge two owners over physical queues and verify rejection without timer refresh, Down attribute lifetime, shutdown and reactivation. Runtime configuration, epoch filtering and instance-level routing remain in progress.
 
-A dedicated IS-IS control pthread now admits P2P circuit owners through an owned SPSC command channel. Encoded frame channels return actual egress admission receipts, and circuit generations reject stale input before adjacency processing. Tests connect this thread through physical link queues and inspect immutable results. Product startup integration, instance flooding, key-vault selection and route publication remain in progress.
+A dedicated IS-IS control pthread admits P2P circuit owners through an owned SPSC command channel. Runtime startup creates it before any router configuration and publishes its distinct identity in the worker directory. Encoded frame channels return actual egress admission receipts, and circuit generations reject stale input before adjacency processing. Tests connect this thread through physical link queues and inspect immutable results. Product circuit dispatch, instance flooding, key-vault selection and route publication remain in progress.
 
 P2P Hello acceptance checks IPv4 and IPv6 family declarations before holding refresh. Strict adjacency policy requires identical family sets, while the default policy requires a common family. A mismatched established peer is removed through the circuit's Down event.
 

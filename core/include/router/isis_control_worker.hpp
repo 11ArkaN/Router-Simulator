@@ -91,6 +91,11 @@ public:
   // Exactly one control consumer. Results are immutable value projections.
   [[nodiscard]] bool read(ControlResult &result) noexcept;
   void notify() noexcept;
+  // Startup telemetry reads only this release/acquire publication, never the
+  // owned circuit registry. Zero means the run loop has not entered yet.
+  [[nodiscard]] std::uint64_t thread_id() const noexcept {
+    return identity_.load(std::memory_order_acquire);
+  }
 private:
   struct OwnedCircuit {
     CircuitIdentity identity;

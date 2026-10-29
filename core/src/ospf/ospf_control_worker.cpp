@@ -39,8 +39,9 @@ ControlWorker::ControlWorker(ControlChannels &channels,
       forwarding_shards_(std::clamp<std::size_t>(
           forwarding_shards, 1U,
           device_catalog::high_forwarding_shards)),
-      output_scratch_(device_catalog::ospf_work_budget_packets),
-      thread_([this] { run(); }) {}
+      output_scratch_(device_catalog::ospf_work_budget_packets) {
+  thread_ = std::thread([this] { run(); });
+}
 
 ControlWorker::~ControlWorker() {
   stop_requested_.store(true, std::memory_order_release);

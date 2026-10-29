@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: project.runtime.permanent_isis_owner
+    kind: concurrency-ownership-contract
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-architecture-decision
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0006-control-generation-handoff.md
+    section: Lifecycle and verification, permanent protocol owners at startup
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-10-29
+    implementation: [core/include/router/shard_policy.hpp, core/include/router/telemetry.hpp, core/src/runtime/network_plane.cpp, core/src/runtime/lab_runtime.cpp, profiles/catalog/26.7.R1.yaml]
+    tests: [core/tests/runtime/shard_policy_test.cpp, core/tests/runtime/lab_runtime_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
+    status: experimental
+    notes: Each generated runtime placement starts one IS-IS pthread before router or CLI configuration, separately from OSPF and forwarding. Fixed Emscripten pools reserve three, five or seven pthreads and the telemetry directory publishes every distinct owner. Shutdown joins protocol consumers before forwarding producers and channel storage destruction. Circuit dispatch, route publication and measured active-instance admission remain in progress.
   - id: iso.10589.2002.lsp_exchange
     kind: routing-protocol-flooding-owner
     release: 26.7.R1
@@ -279,7 +293,7 @@ records:
     implementation: [core/include/router/router_forwarder.hpp, core/src/forwarding/router_forwarder.cpp, core/src/forwarding/isis_forwarding.cpp]
     tests: [core/tests/forwarding/router_forwarder_isis_test.cpp, core/tests/isis/isis_ethernet_fabric_test.cpp]
     status: experimental
-    notes: A complete port-local multicast projection admits native LLC FE FE 03 NLPID 83 to the protocol observer even without IP addressing. Malformed IS-IS headers remain available for protocol error accounting. Egress enforces the physical MTU, replaces the source MAC with the port-owned value and never bypasses queue refusal. Group selection, runtime programming, instance isolation and protocol processing remain control-owner integration work.
+    notes: A complete port-local multicast projection admits native LLC FE FE 03 NLPID 83 to the protocol observer even without IP addressing. Malformed IS-IS headers remain available for protocol error accounting. Egress enforces the physical MTU, requires the already encoded source MAC to match the current port-owned value and transfers the unchanged frame through the actual queue. Group selection, runtime programming, instance isolation and protocol processing remain control-owner integration work.
   - id: ieee.802_1ac.llc_encapsulation
     kind: ethernet-wire-format
     release: 26.7.R1

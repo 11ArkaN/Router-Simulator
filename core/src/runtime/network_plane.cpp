@@ -9,6 +9,7 @@
 #include "forwarding/network_endpoint.hpp"
 #include "router/multi_device_fabric.hpp"
 #include "router/ospf_control_worker.hpp"
+#include "router/isis_control_worker.hpp"
 #include "router/shard_policy.hpp"
 #include "router/spsc_ring.hpp"
 
@@ -1013,7 +1014,16 @@ struct NetworkPlane::Impl {
   // storage.
   ospf::ControlChannels ospf_channels{};
   std::unique_ptr<ospf::ControlWorker> ospf_worker;
+  // Each forwarding shard retains a separate SPSC pair. The IS-IS consumer
+  // joins before forwarding producers and shared channel storage are released.
+  isis::ControlChannels isis_channels{};
+  std::unique_ptr<isis::ControlWorker> isis_worker;
   std::uint64_t next_forward_command_id{1};
+  // Serialized link owner exclusively reuses this staging value while waiting
+  // for the matching forwarding result. Queue publication copies its value;
+  // no forwarding owner borrows this pointer. Avoid another maximum FIB-sized
+  // command on an already nested control programming stack.
+  std::unique_ptr<ForwardCommand> forward_command_scratch{std::make_unique<ForwardCommand>()};
   std::uint64_t next_ospf_command_id{1};
   struct RouteManagerState {
     // This network-owner state is the sole place where connected, static and
@@ -1081,7 +1091,7 @@ struct NetworkPlane::Impl {
          packet::Ipv4ReassemblyTable::payload_arena_allocation_bytes +
          packet::Ipv6ReassemblyTable::payload_arena_allocation_bytes +
          network_detail::EndpointStack::outbound_scratch_allocation_bytes);
-    static_assert(sizeof(Impl) + endpoint_heap_arenas <=
+    static_assert(sizeof(Impl) + sizeof(ForwardCommand) + endpoint_heap_arenas <=
                       device_catalog::runtime_control_reserve_bytes,
                   "network plane and host protocol arenas exceed the generated "
                   "control reserve");
@@ -1101,9 +1111,15 @@ struct NetworkPlane::Impl {
     ospf_worker = std::make_unique<ospf::ControlWorker>(
         ospf_channels,
         std::max<std::size_t>(1U, separate_forwarding_shards));
+    // This initial admission budget is bounded by the existing lab port
+    // capacity. Production multi-instance scale requires its measured profile.
+    isis_worker = std::make_unique<isis::ControlWorker>(isis_channels,
+        std::max<std::size_t>(1U, separate_forwarding_shards),
+        device_catalog::maximum_routers * device_catalog::maximum_ports_per_router);
   }
 
   ~Impl() {
+    isis_worker.reset();
     ospf_worker.reset();
     // Joining forwarding owners before fabric and capture destruction prevents
     // a late egress callback from observing released link-owner state.
@@ -3893,7 +3909,8 @@ void NetworkPlane::Impl::drain_ospf_egress(
 
 ForwardResult
 NetworkPlane::Impl::execute_forward(const ForwardCommand &source) noexcept {
-  ForwardCommand command = source;
+  auto &command = *forward_command_scratch;
+  command = source;
   command.id = next_forward_command_id++;
   const NodeHandle target =
       command.device ? node(command.device) : node(command.host);
@@ -4262,7 +4279,7 @@ NetworkPlane::NetworkPlane(std::size_t logical_cpus)
   // prove concrete metadata and maximum forwarding transfer rings fit their
   // 24 MiB share of runtime_control_reserve_bytes. The remaining 8 MiB covers
   // registries, workflow vectors and standard-library allocation headers.
-  static_assert(sizeof(Impl) + device_catalog::high_forwarding_shards *
+  static_assert(sizeof(Impl) + sizeof(ForwardCommand) + device_catalog::high_forwarding_shards *
                                    sizeof(ForwardingShardWorker) <=
                     24U * 1024U * 1024U,
                 "network shard metadata exceeds its fixed Wasm reserve");
@@ -8376,6 +8393,10 @@ NetworkPlane::forwarding_owner_turns(std::size_t index) const noexcept {
 
 std::uint64_t NetworkPlane::ospf_owner_thread_id() const noexcept {
   return impl_->ospf_worker ? impl_->ospf_worker->thread_id() : 0U;
+}
+
+std::uint64_t NetworkPlane::isis_owner_thread_id() const noexcept {
+  return impl_->isis_worker ? impl_->isis_worker->thread_id() : 0U;
 }
 
 } // namespace router::lab
