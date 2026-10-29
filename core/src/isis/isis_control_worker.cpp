@@ -332,8 +332,12 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
       result.update_status = instance.status;
       result.update_epoch = instance.process.maximum_synchronization_epoch();
       for (std::size_t level{}; level < result.retained_lsps.size(); ++level)
-        if (const auto *owner = instance.process.level(level))
-          result.retained_lsps[level] = owner->database().database().size();
+        if (const auto *owner = instance.process.level(level)) {
+          const auto &database = owner->database().database();
+          result.retained_lsps[level] = database.size();
+          for (std::size_t record_index{}; record_index < database.size(); ++record_index)
+            if (database.at(record_index, RuntimeClock::now())->purge_installed) ++result.retained_purges[level];
+        }
     }
     return result;
   }
@@ -519,8 +523,14 @@ void ControlWorker::run() noexcept {
     }
     auto deadline = PointToPointCircuit::Clock::time_point::max();
     auto transmit_budget = device_catalog::isis_work_budget_packets;
+    auto lifetime_budget = device_catalog::isis_work_budget_packets;
     for (std::size_t offset{}; offset < devices_.size(); ++offset) {
       auto &device = devices_[(first_device_ + offset) % devices_.size()];
+      for (std::size_t ordinal{}; ordinal < device.instance_count; ++ordinal) {
+        const auto index = device.instance_order[(device.first_instance + ordinal) % device.instance_count];
+        deadline = std::min(deadline, service_update_lifetimes(*device.instances[index], now, lifetime_budget));
+      }
+      if (device.instance_count) device.first_instance = (device.first_instance + 1U) % device.instance_count;
       for (std::size_t ordinal{}; ordinal < device.circuits.size(); ++ordinal) {
         auto &owned = device.circuits[(device.first_circuit + ordinal) % device.circuits.size()];
         if (owned.update && owned.update->status != UpdateStatus::applied) {

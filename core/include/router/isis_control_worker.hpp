@@ -114,7 +114,7 @@ struct ControlResult {
   std::int64_t holding_deadline_nanoseconds{};
   std::uint32_t active_circuits{};
   bool hello_pending{};
-  std::array<std::size_t, 2U> retained_lsps{};
+  std::array<std::size_t, 2U> retained_lsps{}, retained_purges{};
   UpdateStatus update_status{UpdateStatus::inactive};
   LevelOriginResult origin{};
   std::uint64_t update_epoch{};
@@ -151,11 +151,16 @@ private:
     UpdateInstanceProgram configuration;
     InstanceUpdateProcess process;
     UpdateStatus status{UpdateStatus::applied};
-    std::array<std::uint64_t, 2U> revision{};
+    std::array<std::uint64_t, 2U> revision{}, expiration_revision{};
+    std::array<std::vector<packet::isis::LspId>, 2U> expiration_blocked;
     OwnedInstance(UpdateInstanceProgram program, std::span<const UpdateCircuitConfiguration> circuits,
         std::uint64_t epoch)
         : configuration(std::move(program)), process(configuration.local, configuration.maximum_areas,
-            configuration.levels, circuits, configuration.maximum_circuits, epoch) {}
+            configuration.levels, circuits, {configuration.format, configuration.wire_instance},
+            configuration.maximum_circuits, epoch) {
+      for (std::size_t level{}; level < 2U; ++level)
+        if (configuration.levels[level]) expiration_blocked[level].reserve(configuration.levels[level]->database.records);
+    }
     [[nodiscard]] LevelObserver observer() noexcept { return {this, level_event}; }
     static void level_event(void *context, const LevelEvent &event) noexcept;
   };
@@ -216,6 +221,10 @@ private:
     // to the device scope and survive protocol removal for this same handle.
     std::array<std::unique_ptr<OwnedInstance>, device_catalog::isis_instance_last + 1U> instances;
     std::array<std::uint64_t, device_catalog::isis_instance_last + 1U> update_fences{};
+    // Same control owner maintains this dense iteration projection. Every live
+    // key appears once; capacity is the configuration ID range, not admission.
+    std::array<std::uint8_t, device_catalog::isis_instance_last + 1U> instance_order{};
+    std::size_t instance_count{}, first_instance{};
     std::size_t first_circuit{};
   };
   struct PreparedGeneration {
@@ -242,6 +251,8 @@ private:
   static UpdateCircuitConfiguration update_configuration(const OwnedCircuit &circuit) noexcept;
   [[nodiscard]] static bool matches_update_instance(const UpdateInstanceProgram &instance,
       const P2pCircuitConfiguration &circuit) noexcept;
+  [[nodiscard]] RuntimeClock::time_point service_update_lifetimes(OwnedInstance &instance,
+      RuntimeClock::time_point now, std::size_t &budget) noexcept;
   [[nodiscard]] RuntimeClock::time_point emit_updates(OwnedCircuit &circuit,
       RuntimeClock::time_point now, std::size_t &budget) noexcept;
   [[nodiscard]] bool complete_update(OwnedCircuit &circuit,

@@ -44,6 +44,9 @@ LinkStateDatabase::LinkStateDatabase(packet::isis::PduType type, LsdbLimits limi
     : type_(type), limits_(limits) {
   if (type != packet::isis::PduType::lsp_l1 && type != packet::isis::PduType::lsp_l2)
     throw std::invalid_argument("IS-IS LSDB requires an LSP level");
+  if (limits.minimum_pdu_allocation > 65535U ||
+      (limits.minimum_pdu_allocation && limits.minimum_pdu_allocation < packet::isis::lsp_header_octets))
+    throw std::invalid_argument("Invalid IS-IS purge buffer reservation");
   if (limits.records > records_.max_size())
     throw std::invalid_argument("IS-IS LSDB metadata limit exceeds the container bound");
   records_.reserve(limits.records);
@@ -70,13 +73,16 @@ std::optional<StoredLspView> LinkStateDatabase::at(std::size_t index,
   return index < records_.size() ? std::optional(view(records_[index], now)) : std::nullopt;
 }
 
-std::optional<LspDeadline> LinkStateDatabase::next_deadline() const noexcept {
+std::optional<LspDeadline> LinkStateDatabase::next_deadline(std::optional<LspDeadlineKind> kind,
+    std::span<const packet::isis::LspId> blocked_expirations) const noexcept {
   std::optional<LspDeadline> result;
   for (const auto &record : records_) {
     const LspDeadline candidate{record.header.id,
         record.purge_installed ? record.retire_at : after(record.installed_at, std::chrono::seconds{record.header.remaining_seconds}),
         record.purge_installed ? LspDeadlineKind::retire_purge : LspDeadlineKind::finalize_expiration};
-    if (!result || candidate.at < result->at) result = candidate;
+    if (candidate.kind == LspDeadlineKind::finalize_expiration &&
+        std::binary_search(blocked_expirations.begin(), blocked_expirations.end(), candidate.id)) continue;
+    if ((!kind || candidate.kind == *kind) && (!result || candidate.at < result->at)) result = candidate;
   }
   return result;
 }
@@ -117,14 +123,18 @@ LspInstallResult LinkStateDatabase::install(std::span<const std::uint8_t> wire,
   }
   const auto old_allocation = exists ? entry->bytes.capacity() : 0U;
   const auto retained_other = allocated_octets_ - old_allocation;
-  const bool reuse = exists && pdu->bytes.size() <= entry->bytes.capacity();
-  if (!reuse && pdu->bytes.size() > limits_.allocated_pdu_octets - retained_other)
+  const auto allocation = std::max(pdu->bytes.size(), limits_.minimum_pdu_allocation);
+  const bool reuse = exists && allocation <= entry->bytes.capacity();
+  if (!reuse && allocation > limits_.allocated_pdu_octets - retained_other)
     return Result::capacity_exhausted;
   if (!exists && admission.reserve_metadata && !admission.reserve_metadata(admission.context, *header))
     return Result::capacity_exhausted;
   std::vector<std::uint8_t> staged;
   if (!reuse) {
-    try { staged.assign(pdu->bytes.begin(), pdu->bytes.end()); }
+    try {
+      staged.reserve(allocation);
+      staged.assign(pdu->bytes.begin(), pdu->bytes.end());
+    }
     catch (const std::bad_alloc &) { return Result::capacity_exhausted; }
     if (staged.capacity() > limits_.allocated_pdu_octets - retained_other) return Result::capacity_exhausted;
   }

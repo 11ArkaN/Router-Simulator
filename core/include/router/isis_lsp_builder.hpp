@@ -27,7 +27,8 @@ struct LspBuild {
 // exceed a port's Frame capacity, but never the 16-bit PDU length. Input options
 // must be framed TLVs without IID or authentication, which this builder owns.
 // Success borrows PDU scratch until reuse. Failure returns no bytes and may
-// modify scratch. No allocation, network admission or sequence advancement.
+// modify scratch. No packet-buffer allocation, network admission or sequence
+// advancement. Cryptographic provider failures are reported separately.
 [[nodiscard]] LspBuild build_lsp_pdu(const LspContents &contents,
     std::span<std::uint8_t> option_scratch, std::span<std::uint8_t> pdu_scratch) noexcept;
 } // namespace router::isis

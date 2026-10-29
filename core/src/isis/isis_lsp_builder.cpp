@@ -18,7 +18,8 @@ LspBuild build_lsp_pdu(const LspContents &contents, std::span<std::uint8_t> opti
     return {Status::invalid_header, {}};
   TlvCursor validation(contents.options);
   while (const auto option = validation.next())
-    if (option->code == 7U || option->code == 10U) return {Status::options, {}};
+    if (option->code == 7U || option->code == 10U ||
+        (option->code == 13U && contents.header.remaining_seconds)) return {Status::options, {}};
   if (!validation.valid()) return {Status::options, {}};
   TlvWriter writer(option_scratch.first(std::min(option_scratch.size(), maximum - lsp_header_octets)));
   if (contents.instance && !encode_instance_tlv(writer, contents.instance->format,

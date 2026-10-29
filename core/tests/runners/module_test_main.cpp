@@ -10,6 +10,8 @@ void isis_ethernet_tests();
 void isis_hello_builder_tests();
 void isis_snp_builder_tests();
 void isis_lsp_builder_tests();
+void isis_purge_options_tests();
+void isis_purge_builder_tests();
 void isis_ethernet_fabric_tests();
 void isis_egress_completion_tests();
 void llc_packet_tests();
@@ -395,6 +397,8 @@ int main() {
     isis_hello_builder_tests();
     isis_snp_builder_tests();
     isis_lsp_builder_tests();
+    isis_purge_options_tests();
+    isis_purge_builder_tests();
     isis_ethernet_fabric_tests();
     isis_egress_completion_tests();
     llc_packet_tests();

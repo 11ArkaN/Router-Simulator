@@ -23,9 +23,11 @@ std::optional<std::size_t> pdu_level(packet::isis::PduType type) noexcept {
   return std::nullopt;
 }
 bool valid_circuit(const UpdateCircuitConfiguration &circuit,
-    const std::array<std::optional<UpdateLevelConfiguration>, 2U> &levels) noexcept {
+    const std::array<std::optional<UpdateLevelConfiguration>, 2U> &levels,
+    UpdateInstanceSelector selector) noexcept {
   const auto mask = static_cast<std::uint8_t>(circuit.levels);
   if (!circuit.configuration_epoch || !mask || mask > 3U ||
+      circuit.format != selector.format || circuit.wire_instance != selector.wire_instance ||
       (circuit.format != packet::isis::InstanceFormat::standard &&
        circuit.format != packet::isis::InstanceFormat::legacy_2009)) return false;
   for (std::size_t index{}; index < levels.size(); ++index)
@@ -37,12 +39,14 @@ bool valid_circuit(const UpdateCircuitConfiguration &circuit,
 InstanceUpdateProcess::InstanceUpdateProcess(packet::isis::SystemId local,
     std::uint8_t maximum_areas,
     std::array<std::optional<UpdateLevelConfiguration>, 2U> levels,
-    std::span<const UpdateCircuitConfiguration> circuits, std::size_t maximum_circuits,
+    std::span<const UpdateCircuitConfiguration> circuits, UpdateInstanceSelector selector,
+    std::size_t maximum_circuits,
     std::uint64_t initial_synchronization_epoch)
-    : local_(local), maximum_areas_(maximum_areas), configuration_(std::move(levels)),
+    : local_(local), selector_(selector), maximum_areas_(maximum_areas), configuration_(std::move(levels)),
       maximum_circuits_(maximum_circuits ? maximum_circuits : circuits.size()),
       initial_synchronization_epoch_(initial_synchronization_epoch) {
-  if (!initial_synchronization_epoch || !maximum_areas || maximum_areas == 255U ||
+  if (!initial_synchronization_epoch || selector.format > packet::isis::InstanceFormat::standard ||
+      !maximum_areas || maximum_areas == 255U ||
       (!configuration_[0U] && !configuration_[1U]))
     throw std::invalid_argument("IS-IS update owner requires effective levels and maximum areas");
   if (maximum_circuits_ < circuits.size() || maximum_circuits_ > circuits_.max_size())
@@ -50,24 +54,37 @@ InstanceUpdateProcess::InstanceUpdateProcess(packet::isis::SystemId local,
   circuits_.reserve(circuits.size());
   std::vector<LevelCircuitConfiguration> slots(circuits.size(), {false, initial_synchronization_epoch});
   for (const auto &circuit : circuits) {
-    if (!valid_circuit(circuit, configuration_))
+    if (!valid_circuit(circuit, configuration_, selector_))
       throw std::invalid_argument("Invalid IS-IS update circuit generation");
     circuits_.push_back({circuit, {initial_synchronization_epoch, initial_synchronization_epoch}});
   }
   for (std::size_t index{}; index < levels_.size(); ++index) {
     if (!configuration_[index]) continue;
     const auto &value = *configuration_[index];
-    if (value.receive_pdu_octets < packet::isis::lsp_header_octets || value.receive_pdu_octets > 65535U ||
+    if (value.purge_rules > PurgeRules::registry_6233 ||
+        value.receive_pdu_octets < packet::isis::lsp_header_octets || value.receive_pdu_octets > 65535U ||
         (maximum_circuits_ && !value.snp_entry_capacity))
       throw std::invalid_argument("Invalid IS-IS receive PDU budget");
+    auto limits = value.database;
+    const auto iid = selector_.wire_instance ? 6U : selector_.format == packet::isis::InstanceFormat::legacy_2009 ? 4U : 0U;
+    // A full LSDB must still finalize every admitted expired LSP. Reserve the
+    // mandatory purge envelope up front, including the maximum TLV-width key
+    // when authentication is enabled. Key leases remain caller-owned.
+    const auto mandatory = packet::isis::lsp_header_octets + iid +
+        (value.purge_rules == PurgeRules::registry_6233 ? 9U : 0U);
+    if (value.receive_pdu_octets < mandatory ||
+        (selector_.wire_instance && value.purge_rules == PurgeRules::authentication_only))
+      throw std::invalid_argument("IS-IS purge policy does not fit the instance envelope");
+    const auto purge_reserve = mandatory + (value.authenticate_lsp ? 257U : 0U);
+    limits.minimum_pdu_allocation = std::max(limits.minimum_pdu_allocation, purge_reserve);
     levels_[index] = std::make_unique<LevelProcess>(index ? packet::isis::PduType::lsp_l2 :
-        packet::isis::PduType::lsp_l1, value.database, slots, value.acknowledgement_capacity,
+        packet::isis::PduType::lsp_l1, limits, slots, value.acknowledgement_capacity,
         value.snp_entry_capacity, value.maximum_age, value.purge_retention, value.waiting_time, maximum_circuits_);
   }
 }
 
 UpdateCircuitAdmission InstanceUpdateProcess::admit_circuit(UpdateCircuitConfiguration configuration) noexcept {
-  if (!valid_circuit(configuration, configuration_)) return {};
+  if (!valid_circuit(configuration, configuration_, selector_)) return {};
   if (admission_ticket_ == std::numeric_limits<std::uint64_t>::max())
     return {UpdateStatus::epoch_exhausted, LevelStatus::capacity, {}};
   for (std::size_t index{}; index < circuits_.size(); ++index) {
@@ -141,7 +158,7 @@ UpdateStatus InstanceUpdateProcess::rebind_circuit(std::size_t index,
     UpdateCircuitConfiguration configuration) noexcept {
   if (index >= circuits_.size() || circuits_[index].configured) return UpdateStatus::invalid_circuit;
   auto &slot = circuits_[index];
-  if (!valid_circuit(configuration, configuration_)) return UpdateStatus::invalid_configuration;
+  if (!valid_circuit(configuration, configuration_, selector_)) return UpdateStatus::invalid_configuration;
   if (configuration.configuration_epoch <= slot.configuration.configuration_epoch)
     return UpdateStatus::stale_configuration;
   slot.configuration = configuration;
@@ -207,7 +224,9 @@ UpdateReceiveResult InstanceUpdateProcess::receive(std::size_t index,
   packet::isis::InstanceError instance_error{};
   const auto instance = packet::isis::select_instance(wire->pdu, circuit.configuration.format,
       circuit.configuration.physical_point_to_point, instance_error);
-  if (!instance || instance->instance != circuit.configuration.wire_instance) return {UpdateStatus::instance, level};
+  if (!instance || instance->instance != selector_.wire_instance ||
+      (selector_.format == packet::isis::InstanceFormat::standard && selector_.wire_instance && !instance->topology_zero))
+    return {UpdateStatus::instance, level};
   if (!level && wire->pdu.maximum_area_addresses != maximum_areas_) return {UpdateStatus::maximum_areas, level};
   using packet::isis::PduType;
   const bool lsp = wire->pdu.type == PduType::lsp_l1 || wire->pdu.type == PduType::lsp_l2;
@@ -219,9 +238,15 @@ UpdateReceiveResult InstanceUpdateProcess::receive(std::size_t index,
   if (lsp) {
     auto header = packet::isis::lsp(wire->pdu);
     if (!header) return {};
+    if ((!header->remaining_seconds || !header->checksum) &&
+        validate_purge_options(wire->pdu.tlvs, effective.purge_rules) != PurgeValidation::accepted)
+      return {UpdateStatus::purge_options, level};
     if (std::equal(local_.begin(), local_.end(), header->id.begin())) {
-      if (header->checksum && !packet::isis::valid_lsp_checksum(wire->pdu)) return {};
+      // Zero-lifetime headers may have discarded their body while preserving
+      // the source checksum. ISO 7.3.16.4 makes their checksum check succeed.
+      if (header->remaining_seconds && header->checksum && !packet::isis::valid_lsp_checksum(wire->pdu)) return {};
       if (!header->checksum) header->remaining_seconds = 0U;
+      if (header->remaining_seconds > effective.maximum_age) return {};
       return {UpdateStatus::self_originated, level, {}, {}, header};
     }
     const auto result = levels_[level]->receive_lsp(index, circuit.synchronization_epochs[level],
@@ -233,6 +258,56 @@ UpdateReceiveResult InstanceUpdateProcess::receive(std::size_t index,
       wire->pdu, now, observer);
   return {result.status == LevelStatus::applied ? UpdateStatus::applied : UpdateStatus::level_refused,
       level, {}, result};
+}
+
+std::optional<UpdateDatabaseDeadline> InstanceUpdateProcess::next_database_deadline(
+    std::array<std::span<const packet::isis::LspId>, 2U> blocked_expirations) const noexcept {
+  std::optional<UpdateDatabaseDeadline> result;
+  for (std::size_t level{}; level < levels_.size(); ++level) if (levels_[level]) {
+    const auto deadline = levels_[level]->database().database().next_deadline(
+        std::nullopt, blocked_expirations[level]);
+    if (deadline && (!result || deadline->at < result->deadline.at)) result = UpdateDatabaseDeadline{level, *deadline};
+  }
+  return result;
+}
+
+UpdateExpirationResult InstanceUpdateProcess::finalize_expiration(std::size_t level,
+    const packet::isis::LspId &id, PurgeAuthentication authentication,
+    RuntimeClock::time_point now, std::span<std::uint8_t> option_scratch,
+    std::span<std::uint8_t> pdu_scratch, LevelObserver observer) noexcept {
+  if (!observer.event) return {UpdateStatus::missing_observer, {}, LspBuildStatus::invalid_header};
+  if (level >= levels_.size() || !levels_[level]) return {UpdateStatus::invalid_configuration, {}, LspBuildStatus::invalid_header};
+  const auto stored = levels_[level]->database().database().find(id, now);
+  if (!stored || stored->purge_installed || stored->header.remaining_seconds) return {};
+  if (authentication.required && !authentication.key) return {UpdateStatus::authentication, {}, LspBuildStatus::invalid_header};
+  packet::isis::InstanceError error{};
+  const auto selected = packet::isis::select_instance(stored->pdu, selector_.format, false, error);
+  if (!selected || selected->instance != selector_.wire_instance) return {UpdateStatus::instance, {}, LspBuildStatus::invalid_header};
+  PurgeContents contents;
+  contents.type = stored->pdu.type;
+  contents.original = stored->header;
+  contents.maximum_areas = stored->pdu.maximum_area_addresses;
+  contents.generator = local_;
+  contents.rules = configuration_[level]->purge_rules;
+  contents.authentication = authentication.key;
+  contents.maximum_pdu_octets = std::min(configuration_[level]->receive_pdu_octets, pdu_scratch.size());
+  const std::array<std::uint16_t, 1U> topology{0U};
+  if (selected->present && !(contents.rules == PurgeRules::authentication_only && !selected->instance)) contents.instance = PduInstanceOption{selector_.format, selector_.wire_instance,
+      selector_.format == packet::isis::InstanceFormat::standard ? std::span<const std::uint16_t>(topology) :
+          std::span<const std::uint16_t>{}};
+  const auto built = build_purge_pdu(contents, option_scratch, pdu_scratch);
+  if (built.status != LspBuildStatus::encoded) {
+    const auto status = built.status == LspBuildStatus::capacity ? UpdateStatus::capacity :
+        built.status == LspBuildStatus::authentication ? UpdateStatus::authentication : UpdateStatus::invalid_configuration;
+    return {status, {}, built.status};
+  }
+  const auto origin = levels_[level]->originate(built.bytes, now, OriginPurgeReason::lifetime_expired, observer);
+  return {origin.status == LevelStatus::applied ? UpdateStatus::applied : UpdateStatus::level_refused, origin, built.status};
+}
+
+bool InstanceUpdateProcess::retire_purge(std::size_t level, const packet::isis::LspId &id,
+    RuntimeClock::time_point now, LevelObserver observer) noexcept {
+  return level < levels_.size() && levels_[level] && levels_[level]->retire_purge(id, now, observer);
 }
 
 std::optional<UpdateOutputs> InstanceUpdateProcess::outputs(std::size_t circuit, std::size_t level) noexcept {
@@ -261,6 +336,11 @@ LevelOriginResult InstanceUpdateProcess::originate(std::size_t level,
   const auto pdu = packet::isis::parse(wire, error);
   const auto header = pdu ? packet::isis::lsp(*pdu) : std::nullopt;
   if (!header || !std::equal(local_.begin(), local_.end(), header->id.begin()))
+    return {LevelStatus::invalid_configuration, LspInstallResult::malformed};
+  packet::isis::InstanceError instance_error{};
+  const auto instance = packet::isis::select_instance(*pdu, selector_.format, false, instance_error);
+  if (!instance || instance->instance != selector_.wire_instance ||
+      (selector_.format == packet::isis::InstanceFormat::standard && selector_.wire_instance && !instance->topology_zero))
     return {LevelStatus::invalid_configuration, LspInstallResult::malformed};
   return levels_[level]->originate(wire, now, purge, observer);
 }

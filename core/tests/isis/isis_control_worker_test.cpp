@@ -765,7 +765,7 @@ void isis_control_update_tests() {
   std::array<CircuitIdentity, 2U> identities{{
       {{0U, 1U}, 1U, 7U, 0U, 0U}, {{1U, 1U}, 2U, 7U, 0U, 0U}}};
   const UpdateLevelConfiguration level{{8U, 8192U}, 8U, 128U, 1492U,
-      1200U, 60s, 60s, false, false, false};
+      1200U, 60s, 60s, false, false, false, PurgeRules::iso_10589};
   const auto add_instance = [&](std::size_t index) {
     ControlCommand value;
     value.kind = ControlCommandKind::add_update_instance;
@@ -921,7 +921,7 @@ void isis_network_plane_update_tests() {
     const std::array devices{lab::DeviceHandle{0U, 1U}, lab::DeviceHandle{1U, 1U}};
     std::array<lab::IsisP2pCircuitProgram, 2U> circuits;
     const UpdateLevelConfiguration level{{8U, 8192U}, 8U, 128U, 1492U,
-        1200U, 60s, 60s, false, false, false};
+        1200U, 60s, 60s, false, false, false, PurgeRules::iso_10589};
     std::array<UpdateInstanceProgram, 2U> instances;
     for (std::uint8_t index{}; index < devices.size(); ++index) {
       crypto::Sha256Digest secret{};
@@ -993,6 +993,24 @@ void isis_network_plane_update_tests() {
       require(RuntimeClock::now() < deadline);
     }
     require(query(0U).counters.lsp_enqueued >= 2U && query(1U).counters.snp_enqueued >= 2U);
+    // Remaining Lifetime is an aged wire value, not a reduced configured
+    // MaxAge. Both owner-loop placements must finalize this near-expiry copy.
+    contents.header.type = packet::isis::PduType::lsp_l1;
+    contents.header.sequence = 2U;
+    contents.header.remaining_seconds = 2U;
+    const auto near_expiry = build_lsp_pdu(contents, scratch->options, scratch->pdu);
+    require(near_expiry.status == LspBuildStatus::encoded);
+    const auto installed = plane->originate_isis_lsp(devices[0U], 0U, 0U, near_expiry.bytes);
+    require(installed && installed->error == ControlError::none);
+    const auto expiration_deadline = RuntimeClock::now() + 5s;
+    for (;;) {
+      const auto local = plane->query_isis_update_instance(devices[0U], 0U);
+      const auto peer = plane->query_isis_update_instance(devices[1U], 0U);
+      require(local && peer && local->update_status == UpdateStatus::applied && peer->update_status == UpdateStatus::applied);
+      if (local->retained_purges[0U] == 1U && peer->retained_purges[0U] == 1U) break;
+      plane->pump();
+      require(RuntimeClock::now() < expiration_deadline);
+    }
     const auto epoch = plane->query_isis_update_instance(devices[0U], 0U)->update_epoch;
     for (std::size_t index{}; index < devices.size(); ++index) {
       require(plane->replace_isis_p2p_generation(devices[index], {}));

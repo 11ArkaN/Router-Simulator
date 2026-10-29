@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <string>
 #include <limits>
+#include <vector>
 
 namespace {
 using namespace router;
@@ -38,7 +39,7 @@ P2pCircuitConfiguration hello_configuration(std::uint8_t id) {
   return result;
 }
 std::array<std::optional<UpdateLevelConfiguration>, 2U> level_configuration() {
-  const UpdateLevelConfiguration value{{8U, 8192U}, 8U, 128U, 1492U, 1200U, 60s, 60s, true, true, true};
+  const UpdateLevelConfiguration value{{8U, 8192U}, 8U, 128U, 1492U, 1200U, 60s, 60s, true, true, true, PurgeRules::registry_6233};
   return {value, value};
 }
 struct Endpoint {
@@ -52,7 +53,7 @@ struct Endpoint {
       : circuit(hello_configuration(id), id, now),
         update(circuit.configuration().local.system, 3U, level_configuration(),
             std::array{UpdateCircuitConfiguration{7U, Levels::both, false, InstanceFormat::standard, 0U,
-                {circuit.configuration().hello_destination, circuit.configuration().hello_destination}}}, 2U, initial_epoch),
+                {circuit.configuration().hello_destination, circuit.configuration().hello_destination}}}, {InstanceFormat::standard, 0U}, 2U, initial_epoch),
         observer{this, +[](void *opaque, const LevelEvent &value) noexcept {
           if (value.kind == LevelEventKind::circuit_changed) ++static_cast<Endpoint *>(opaque)->circuit_changes;
         }} {}
@@ -90,7 +91,7 @@ void isis_instance_update_tests() {
       InstanceFormat::standard, 0U, {destination_for_admission, destination_for_admission}};
   auto failing_levels = level_configuration();
   failing_levels[1U]->snp_entry_capacity = std::numeric_limits<std::size_t>::max();
-  InstanceUpdateProcess failing(a.circuit.configuration().local.system, 3U, failing_levels, {}, 1U);
+  InstanceUpdateProcess failing(a.circuit.configuration().local.system, 3U, failing_levels, {}, {InstanceFormat::standard, 0U}, 1U);
   for (unsigned attempt{}; attempt < 2U; ++attempt) {
     const auto refused = failing.admit_circuit(admission_configuration);
     require(refused.status == UpdateStatus::level_refused &&
@@ -98,7 +99,7 @@ void isis_instance_update_tests() {
     require(!failing.level(0U)->database().circuit_state(0U) &&
         !failing.level(1U)->database().circuit_state(0U));
   }
-  InstanceUpdateProcess rollback(a.circuit.configuration().local.system, 3U, level_configuration(), {}, 1U);
+  InstanceUpdateProcess rollback(a.circuit.configuration().local.system, 3U, level_configuration(), {}, {InstanceFormat::standard, 0U}, 1U);
   auto first_admission = rollback.admit_circuit(admission_configuration);
   auto delayed_admission = first_admission;
   require(first_admission.appended && rollback.cancel_circuit_admission(first_admission));
@@ -117,6 +118,17 @@ void isis_instance_update_tests() {
   auto retried = rollback.admit_circuit(next_configuration);
   require(retried.status == UpdateStatus::applied && !rollback.cancel_circuit_admission(delayed_temporary));
   require(rollback.cancel_circuit_admission(retried));
+  auto unresolved_levels = level_configuration();
+  unresolved_levels[0U]->purge_rules = PurgeRules::unspecified;
+  bool unresolved_rejected{};
+  try {
+    InstanceUpdateProcess unresolved(a.circuit.configuration().local.system, 3U, unresolved_levels,
+        {}, {InstanceFormat::standard, 0U}, 1U);
+  } catch (const std::invalid_argument &) { unresolved_rejected = true; }
+  require(unresolved_rejected);
+  auto wrong_selector = admission_configuration;
+  wrong_selector.wire_instance = 1U;
+  require(a.update.admit_circuit(wrong_selector).status == UpdateStatus::invalid_configuration);
   auto invalid = admission_configuration;
   invalid.format = static_cast<InstanceFormat>(255U);
   require(a.update.admit_circuit(invalid).status == UpdateStatus::invalid_configuration);
@@ -254,8 +266,13 @@ void isis_instance_update_tests() {
   const std::array<std::uint16_t, 1U> topology{0U};
   contents.instance = PduInstanceOption{InstanceFormat::standard, 7U, topology};
   require(candidate().status == UpdateStatus::instance);
+  EthernetDecodeError wrong_envelope{};
+  const auto wrong_instance_pdu = parse_ethernet_pdu(frame->view(), wrong_envelope);
+  require(wrong_instance_pdu && a.update.originate(0U, wrong_instance_pdu->pdu.bytes, context.now,
+      OriginPurgeReason::none, a.observer).status == LevelStatus::invalid_configuration);
   contents.instance.reset();
   contents.header.id[5U] = 2U;
+  contents.options = {};
   const auto local = candidate();
   require(local.status == UpdateStatus::self_originated && local.local_lsp &&
       local.local_lsp->id == contents.header.id && b.update.level(0U)->database().size() == 1U);
@@ -361,4 +378,118 @@ void isis_instance_update_tests() {
   transmit(0U);
   require(successor_output->reservations.snp.complete(successor_output->synchronization_epoch,
       first_after_restart.ticket, true, context.now).accepted);
+  Endpoint c(3U, context.now), d(4U, context.now);
+  context.endpoints = {&c, &d};
+  for (unsigned index{}; index < 6U; ++index) round();
+  LspContents owned;
+  owned.header = {PduType::lsp_l1, {1U, 2U, 3U, 4U, 5U, 3U, 0U, 0U}, 1200U, 1U, 3U};
+  owned.authentication = key;
+  owned.maximum_pdu_octets = 1492U;
+  owned.options = writer.bytes();
+  auto built = build_lsp_pdu(owned, scratch->options, scratch->pdu);
+  require(built.status == LspBuildStatus::encoded && c.update.originate(0U, built.bytes,
+      context.now, OriginPurgeReason::none, c.observer).install == LspInstallResult::installed);
+  auto c_output = c.update.outputs(0U, 0U);
+  auto sent = c_output->reservations.lsp.prepare(owned.header.id, c.circuit.configuration().mac,
+      destination, 1492U, 1U, *frame, *scratch, context.now);
+  require(sent.status == LspEmissionStatus::encoded);
+  transmit(0U);
+  require(c_output->reservations.lsp.complete(c_output->synchronization_epoch, sent.ticket, true, context.now).accepted);
+  require(d.received.status == UpdateStatus::applied);
+  owned.header.remaining_seconds = 0U;
+  built = build_lsp_pdu(owned, scratch->options, scratch->pdu);
+  require(built.status == LspBuildStatus::encoded && ethernet_pdu_into(*frame,
+      c.circuit.configuration().mac, destination, built.bytes));
+  transmit(0U);
+  require(d.received.status == UpdateStatus::purge_options &&
+      d.update.level(0U)->database().database().find(owned.header.id, context.now)->header.remaining_seconds != 0U);
+  const std::array<std::uint8_t, 3U> extension{201U, 1U, 0xa5U};
+  owned.options = extension;
+  built = build_lsp_pdu(owned, scratch->options, scratch->pdu);
+  require(built.status == LspBuildStatus::encoded && ethernet_pdu_into(*frame,
+      c.circuit.configuration().mac, destination, built.bytes));
+  transmit(0U);
+  require(d.received.status == UpdateStatus::purge_options);
+  std::array<std::uint8_t, 64U> purge_options{};
+  TlvWriter purge_writer(purge_options);
+  require(purge_writer.append(201U, std::span(extension).subspan(2U)) &&
+      encode_purge_originator(purge_writer, {c.circuit.configuration().local.system, std::nullopt}));
+  owned.options = purge_writer.bytes();
+  built = build_lsp_pdu(owned, scratch->options, scratch->pdu);
+  require(built.status == LspBuildStatus::encoded);
+  const std::vector<std::uint8_t> retained_purge(built.bytes.begin(), built.bytes.end());
+  require(c.update.originate(0U, built.bytes, context.now, OriginPurgeReason::initiated,
+      c.observer).install == LspInstallResult::installed);
+  sent = c_output->reservations.lsp.prepare(owned.header.id, c.circuit.configuration().mac,
+      destination, 1492U, 1U, *frame, *scratch, context.now);
+  require(sent.status == LspEmissionStatus::encoded);
+  transmit(0U);
+  require(c_output->reservations.lsp.complete(c_output->synchronization_epoch, sent.ticket, true, context.now).accepted);
+  const auto received_purge = d.update.level(0U)->database().database().find(owned.header.id, context.now);
+  require(d.received.status == UpdateStatus::applied && received_purge && received_purge->purge_installed &&
+      std::equal(received_purge->pdu.bytes.begin(), received_purge->pdu.bytes.end(), retained_purge.begin(), retained_purge.end()));
+  require(d.circuit.down(&d, event) && d.circuit.up(context.now));
+  for (unsigned index{}; index < 6U; ++index) round();
+  auto d_output = d.update.outputs(0U, 0U);
+  sent = d_output->reservations.lsp.prepare(owned.header.id, d.circuit.configuration().mac,
+      destination, 1492U, 1U, *frame, *scratch, context.now);
+  EthernetDecodeError envelope{};
+  const auto forwarded = parse_ethernet_pdu(frame->view(), envelope);
+  require(sent.status == LspEmissionStatus::encoded && forwarded &&
+      std::equal(forwarded->pdu.bytes.begin(), forwarded->pdu.bytes.end(), retained_purge.begin(), retained_purge.end()));
+  transmit(1U);
+  require(d_output->reservations.lsp.complete(d_output->synchronization_epoch, sent.ticket, true, context.now).accepted);
+  // A sender must not generate live POI. A receiver still retains and floods
+  // the LSP, ignoring the misplaced TLV under RFC 8918 rather than rejecting it.
+  owned.header.remaining_seconds = 1200U;
+  owned.header.sequence = 2U;
+  require(build_lsp_pdu(owned, scratch->options, scratch->pdu).status == LspBuildStatus::options);
+  TlvWriter raw_options(scratch->options);
+  TlvCursor raw_cursor(owned.options);
+  while (const auto option = raw_cursor.next()) require(raw_options.append(option->code, option->value));
+  require(append_authentication(raw_options, key));
+  const auto raw_live = encode_lsp(scratch->pdu, owned.header, raw_options.bytes());
+  require(raw_live && finalize_authentication(std::span(scratch->pdu).first(raw_live->size()), key,
+      c.circuit.configuration().local.system) == AuthenticationError::none);
+  require(ethernet_pdu_into(*frame, c.circuit.configuration().mac, destination, *raw_live));
+  transmit(0U);
+  require(d.received.status == UpdateStatus::applied &&
+      d.update.level(0U)->database().database().find(owned.header.id, context.now)->header.sequence == 2U);
+
+  const auto expires_at = context.now + 1200s;
+  const auto before_expiration = d.update.level(0U)->database().database().find(owned.header.id, context.now);
+  const auto foreign_checksum = before_expiration->header.checksum;
+  const auto allocation = d.update.level(0U)->database().database().allocated_octets();
+  const auto retained_address = before_expiration->pdu.bytes.data();
+  const auto expiry = d.update.next_database_deadline();
+  require(expiry && expiry->level == 0U && expiry->deadline.kind == LspDeadlineKind::finalize_expiration &&
+      expiry->deadline.at == expires_at);
+  require(d.update.finalize_expiration(0U, owned.header.id, {true, key}, expires_at - 1s,
+      scratch->options, scratch->pdu, d.observer).status == UpdateStatus::inactive);
+  require(d.circuit.expire(expires_at, &d, event));
+  require(d.update.finalize_expiration(0U, owned.header.id, {true, std::nullopt}, expires_at + 10s,
+      scratch->options, scratch->pdu, d.observer).status == UpdateStatus::authentication);
+  require(!d.update.level(0U)->database().database().find(owned.header.id, expires_at + 10s)->purge_installed);
+  const auto finalized = d.update.finalize_expiration(0U, owned.header.id, {true, key}, expires_at + 10s,
+      scratch->options, scratch->pdu, d.observer);
+  require(finalized.status == UpdateStatus::applied && finalized.origin.install == LspInstallResult::installed);
+  const auto expired = d.update.level(0U)->database().database().find(owned.header.id, expires_at + 10s);
+  require(expired && expired->purge_installed && expired->header.checksum == foreign_checksum &&
+      expired->pdu.bytes.data() == retained_address &&
+      d.update.level(0U)->database().database().allocated_octets() == allocation &&
+      verify_authentication(expired->pdu.bytes, key) == AuthenticationError::none);
+  TlvCursor expired_options(expired->pdu.tlvs);
+  const auto expired_poi = expired_options.next();
+  require(expired_poi && decode_purge_originator(*expired_poi)->originator == d.circuit.configuration().local.system &&
+      expired_options.next()->code == 10U && !expired_options.next() && expired_options.valid());
+  require(!valid_lsp_checksum(expired->pdu) && ethernet_pdu_into(*frame,
+      d.circuit.configuration().mac, destination, expired->pdu.bytes));
+  transmit(1U);
+  require(c.received.status == UpdateStatus::self_originated &&
+      c.received.local_lsp->remaining_seconds == 0U && c.received.local_lsp->checksum == foreign_checksum);
+  const auto retire = d.update.next_database_deadline();
+  require(retire && retire->deadline.kind == LspDeadlineKind::retire_purge && retire->deadline.at == expires_at + 60s);
+  require(!d.update.retire_purge(0U, owned.header.id, expires_at + 59s, d.observer) &&
+      d.update.retire_purge(0U, owned.header.id, expires_at + 60s, d.observer) && !d.update.next_database_deadline());
+
 }

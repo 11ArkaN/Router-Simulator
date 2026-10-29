@@ -1,5 +1,47 @@
 schema_version: 1
 records:
+  - id: iso.10589.2002.expiration_purge
+    kind: routing-protocol-lifetime-owner
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: iso-iec-standard-and-rfc
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 7.3.11 and 7.3.16.4, checksum preservation and expired LSP retention; RFC 6232 section 3 and RFC 6233 section 3, generated purge options
+    rfc_refs: [RFC5304, RFC5310, RFC6232, RFC6233, RFC8918]
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-10-29
+    implementation: [core/include/router/isis_purge_builder.hpp, core/src/isis/isis_purge_builder.cpp, core/src/isis/isis_instance_update.cpp, core/src/isis/isis_control_update_lifetime.cpp, core/src/isis/isis_lsdb.cpp]
+    tests: [core/tests/isis/isis_purge_builder_test.cpp, core/tests/isis/isis_instance_update_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
+    status: experimental
+    notes: Instance-local deadlines finalize only actually expired retained active records. Generated foreign purges preserve the original checksum, remove reachability and select POI, IID and authentication through explicit policy. HMAC remains valid because lifetime and checksum are excluded. Delayed construction retains the original ZeroAgeLifetime anchor. Per-record resource waits leave other expirations and all purge retirements eligible. Admission reserves mandatory purge envelope capacity inside the existing byte budget before accepting a live record. Tests cover full-budget replacement without buffer relocation, all authentication helpers, missing transmit keys, selector mismatch, filtered deadlines and actual runtime expiration on both NetworkPlane placements. Runtime authentication selection and production CLI policy resolution remain incomplete.
+  - id: ietf.isis.purge_options
+    kind: routing-protocol-purge-option-policy
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc6233.html#section-3
+    section: Section 3, purge acceptance; RFC 8918 sections 3.2, 3.4 and 4, compatibility and TLV semantics
+    rfc_refs: [RFC5304, RFC5310, RFC6232, RFC6233, RFC8918]
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-10-29
+    implementation: [core/include/router/isis_purge_options.hpp, core/src/isis/isis_purge_options.cpp, core/src/isis/isis_instance_update.cpp, core/src/isis/isis_lsp_builder.cpp]
+    tests: [core/tests/isis/isis_purge_options_test.cpp, core/tests/isis/isis_instance_update_test.cpp]
+    status: experimental
+    notes: The configuration owner must explicitly resolve ISO compatibility, authentication-only compatibility or registry-based purge acceptance; construction rejects an unresolved policy. Registered forbidden options cannot be admitted under registry policy. Unknown options require POI presence. POI payload parsing is independent of LSP acceptance and follows RFC 8918 rather than rejecting a live LSP for a misplaced or malformed POI. Local construction rejects POI in live LSPs. Authenticated physical-queue tests reject prohibited and unknown-without-POI purges, retain accepted unknown-with-POI purge bytes unchanged and propagate them after adjacency recovery. Purge generation follows the separately cataloged expiration owner; SR OS policy resolution remains incomplete.
+  - id: iana.isis.tlv_purge_registry
+    kind: protocol-registry-facts
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iana-registry
+    source_url: https://www.iana.org/assignments/isis-tlv-codepoints/tlv-codepoints.csv
+    section: IS-IS Top-Level TLV Codepoints, normal octet codepoints and Purge column, updated 2026-05-20
+    rfc_refs: [RFC6233, RFC8918]
+    yang_path: null
+    last_verified_at: 2026-10-29
+    implementation: [sources/normative/isis-tlv-codepoints.lock.yaml, tools/isis/tlv-registry.mjs, tools/generate-isis-tlv-registry.mjs, core/include/router/generated_isis_tlv_registry.hpp]
+    tests: [tools/isis/tlv-registry.test.mjs, core/tests/isis/isis_purge_options_test.cpp]
+    status: implemented
+    notes: The source lock records the fetched CSV SHA-256 and immutable normal-TLV registration and purge-permission facts. Development generation emits four-word membership maps before the profile build identity is generated. Mandatory profile checks reject drift. Production performs no registry or documentation download. Tests cover word boundaries, numeric precision, invalid source metadata, invalid assignments and permissions outside the registered set.
   - id: nokia.sros.26_7.isis.csnp_effective_period
     kind: command-behavior
     release: 26.7.R1
@@ -24,10 +66,10 @@ records:
     rfc_refs: [RFC5303, RFC5309, RFC8202]
     yang_path: /configure/router/isis
     last_verified_at: 2026-10-29
-    implementation: [core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp, core/src/isis/isis_control_update.cpp, core/src/isis/isis_control_update_egress.cpp, core/include/router/network_plane.hpp, core/src/runtime/network_plane.cpp]
+    implementation: [core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp, core/src/isis/isis_control_update.cpp, core/src/isis/isis_control_update_egress.cpp, core/src/isis/isis_control_update_lifetime.cpp, core/include/router/network_plane.hpp, core/src/runtime/network_plane.cpp]
     tests: [core/tests/isis/isis_control_worker_test.cpp]
     status: experimental
-    notes: The dedicated pthread owns stable heap instances, independent level databases and circuit-local encoded update scheduling. Effective program values select periodic SNPs, retransmission and a shared interface burst budget without assigning SR OS defaults. Packet metadata preserves the exact synchronization epoch and ticket through actual physical admission. Failed queue admission retains obligations; P2P SRM retires through peer SNP acceptance. Cold generation preparation reserves new slots and aborts in reverse order; changed bindings reuse released Down slots without allocation at commit. Instance identity, wire selector, level subsets, unique extended circuit IDs and resource budgets are checked before publication. Removing interfaces preserves the instance; removing the entity retains its maximum fence outside the LSDB. Both actual NetworkPlane placements exchange L1 and L2 LSPs and PSNPs, preserve databases after interface withdrawal and reject unsupported structural checkpointing. Nonzero update IIDs reject explicitly until per-level multicast projection is connected. Authentication selection, automatic origination and expiration, production CLI admission, LAN, routing, protocol persistence and measured active-instance limits remain incomplete.
+    notes: The dedicated pthread owns stable heap instances, independent level databases and circuit-local encoded update scheduling. Effective program values select periodic SNPs, retransmission and a shared interface burst budget without assigning SR OS defaults. Packet metadata preserves the exact synchronization epoch and ticket through actual physical admission. Failed queue admission retains obligations; P2P SRM retires through peer SNP acceptance. Cold generation preparation reserves new slots and aborts in reverse order; changed bindings reuse released Down slots without allocation at commit. Instance identity, wire selector, level subsets, unique extended circuit IDs and resource budgets are checked before publication. Removing interfaces preserves the instance; removing the entity retains its maximum fence outside the LSDB. Both actual NetworkPlane placements exchange L1 and L2 LSPs and PSNPs, preserve databases after interface withdrawal and reject unsupported structural checkpointing. Nonzero update IIDs reject explicitly until per-level multicast projection is connected. Authentication selection, automatic origination, production CLI admission, LAN, routing, protocol persistence and measured active-instance limits remain incomplete.
   - id: project.runtime.protocol_reservation_epochs
     kind: concurrency-ownership-contract
     release: 26.7.R1

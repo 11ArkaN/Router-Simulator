@@ -6,6 +6,7 @@
 
 #include "router/isis_level_process.hpp"
 #include "router/isis_p2p_circuit.hpp"
+#include "router/isis_purge_builder.hpp"
 
 #include <memory>
 
@@ -16,6 +17,12 @@ struct UpdateLevelConfiguration {
   std::uint16_t maximum_age{};
   std::chrono::seconds purge_retention{}, waiting_time{};
   bool authenticate_lsp{}, authenticate_csnp{}, authenticate_psnp{};
+  // No implicit compatibility choice: construction rejects an unresolved policy.
+  PurgeRules purge_rules{PurgeRules::unspecified};
+};
+struct UpdateInstanceSelector {
+  packet::isis::InstanceFormat format{static_cast<packet::isis::InstanceFormat>(255U)};
+  std::uint16_t wire_instance{};
 };
 struct UpdateCircuitConfiguration {
   std::uint64_t configuration_epoch{};
@@ -28,7 +35,7 @@ struct UpdateCircuitConfiguration {
 enum class UpdateStatus : std::uint8_t {
   applied, invalid_circuit, stale_configuration, invalid_event, epoch_exhausted,
   missing_observer, malformed, inactive, destination, instance, authentication,
-  maximum_areas, receive_capacity, self_originated, level_refused, capacity, invalid_configuration
+  maximum_areas, receive_capacity, self_originated, level_refused, capacity, invalid_configuration, purge_options
 };
 struct UpdateReceiveResult {
   UpdateStatus status{UpdateStatus::malformed};
@@ -36,6 +43,16 @@ struct UpdateReceiveResult {
   LevelLspResult lsp{};
   LevelSnpResult snp{};
   std::optional<packet::isis::LspView> local_lsp{};
+};
+struct UpdateDatabaseDeadline { std::size_t level{}; LspDeadline deadline; };
+struct PurgeAuthentication {
+  bool required{};
+  std::optional<AuthenticationKey> key;
+};
+struct UpdateExpirationResult {
+  UpdateStatus status{UpdateStatus::inactive};
+  LevelOriginResult origin;
+  LspBuildStatus composition{LspBuildStatus::invalid_header};
 };
 struct UpdateOutputs {
   std::uint64_t synchronization_epoch{};
@@ -55,12 +72,15 @@ public:
   // Every effective value is supplied by the configuration owner. Array index
   // zero selects L1, one L2. At least one level, nonzero configuration epochs,
   // legal level subsets and multicast destinations are mandatory. Construction
-  // allocates before publication. The initial synchronization epoch must be
+  // allocates before publication. One explicit wire selector belongs to the
+  // entire instance; circuit admission cannot mix selectors. Standard nonzero
+  // IIDs support ITID 0 here. The initial synchronization epoch must be
   // nonzero and exceed the parent-retained fence of any previous entity.
   // This contract currently admits P2P only.
   InstanceUpdateProcess(packet::isis::SystemId local, std::uint8_t maximum_areas,
       std::array<std::optional<UpdateLevelConfiguration>, 2U> levels,
-      std::span<const UpdateCircuitConfiguration> circuits, std::size_t maximum_circuits = 0U,
+      std::span<const UpdateCircuitConfiguration> circuits, UpdateInstanceSelector selector,
+      std::size_t maximum_circuits = 0U,
       std::uint64_t initial_synchronization_epoch = 1U);
   InstanceUpdateProcess(const InstanceUpdateProcess &) = delete;
   InstanceUpdateProcess &operator=(const InstanceUpdateProcess &) = delete;
@@ -104,6 +124,23 @@ public:
   [[nodiscard]] LevelOriginResult originate(std::size_t level,
       std::span<const std::uint8_t> wire, RuntimeClock::time_point now,
       OriginPurgeReason purge, LevelObserver observer) noexcept;
+  // Same-owner value projection of the earliest retained database deadline.
+  // Local lifetimes remain independent of other instances and of the UI.
+  // Borrowed blocked-ID spans are sorted unique and expire on return.
+  [[nodiscard]] std::optional<UpdateDatabaseDeadline> next_database_deadline(
+      std::array<std::span<const packet::isis::LspId>, 2U> blocked_expirations = {}) const noexcept;
+  // Only an expired retained active body may become an expiration purge here.
+  // The parent explicitly selects outbound authentication and supplies its lease;
+  // missing required keys reject before mutation. Foreign checksum and namespace
+  // survive generation. Scratch is exclusive and no key/view survives return.
+  [[nodiscard]] UpdateExpirationResult finalize_expiration(std::size_t level,
+      const packet::isis::LspId &id, PurgeAuthentication authentication,
+      RuntimeClock::time_point now, std::span<std::uint8_t> option_scratch,
+      std::span<std::uint8_t> pdu_scratch, LevelObserver observer) noexcept;
+  // A matching installed purge is removed only after its retained deadline.
+  // False preserves the record and flags; notifications stay on this owner.
+  [[nodiscard]] bool retire_purge(std::size_t level, const packet::isis::LspId &id,
+      RuntimeClock::time_point now, LevelObserver observer) noexcept;
   // Borrowed output references expire on a circuit event or owner destruction.
   // Queue receipts use this synchronization epoch and the exact reservation
   // ticket. Configuration epoch still guards the outer transport metadata.
@@ -127,6 +164,7 @@ private:
     packet::Mac peer{};
   };
   packet::isis::SystemId local_{};
+  UpdateInstanceSelector selector_;
   std::uint8_t maximum_areas_{};
   std::array<std::optional<UpdateLevelConfiguration>, 2U> configuration_;
   std::array<std::unique_ptr<LevelProcess>, 2U> levels_;

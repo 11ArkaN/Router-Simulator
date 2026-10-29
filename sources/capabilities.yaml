@@ -16,6 +16,12 @@ features:
   routing.isis.local_lsp_composition:
     status: partially-implemented
     source_ids: [iso.10589.2002.lsp_composition]
+  routing.isis.purge_option_policy:
+    status: partially-implemented
+    source_ids: [ietf.isis.purge_options, iana.isis.tlv_purge_registry]
+  routing.isis.expiration_purge:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.expiration_purge]
   routing.isis.runtime_update:
     status: partially-implemented
     source_ids: [iso.10589.2002.runtime_update, nokia.sros.26_7.isis.csnp_effective_period]

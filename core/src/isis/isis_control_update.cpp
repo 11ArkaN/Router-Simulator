@@ -117,6 +117,7 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
       if (!owned.circuit.operational()) static_cast<void>(owned.circuit.up(RuntimeClock::now()));
     }
     device.instances[index] = std::move(instance);
+    device.instance_order[device.instance_count++] = index;
     return ControlError::none;
   } catch (const std::bad_alloc &) { return ControlError::capacity; }
     catch (const std::exception &) { return ControlError::construction_failed; }
@@ -158,5 +159,10 @@ void ControlWorker::remove_update_instance(DeviceState &device, std::size_t inde
   device.update_fences[index] = std::max(device.update_fences[index],
       instance->process.maximum_synchronization_epoch());
   instance.reset();
+  const auto end = device.instance_order.begin() + device.instance_count;
+  const auto position = std::find(device.instance_order.begin(), end, static_cast<std::uint8_t>(index));
+  if (position == end) std::terminate();
+  *position = device.instance_order[--device.instance_count];
+  if (device.first_instance >= device.instance_count) device.first_instance = 0U;
 }
 } // namespace router::isis

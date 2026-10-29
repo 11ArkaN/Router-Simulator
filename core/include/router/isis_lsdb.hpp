@@ -23,6 +23,9 @@ enum class LspRecency : std::uint8_t { older, identical, newer, confusion };
 struct LsdbLimits {
   std::size_t records{};
   std::size_t allocated_pdu_octets{};
+  // Caller-selected per-record reservation for mandatory future purge options.
+  // This is emulator storage, not a protocol MTU or a platform default.
+  std::size_t minimum_pdu_allocation{};
 };
 
 enum class LspInstallResult : std::uint8_t {
@@ -59,7 +62,9 @@ class LinkStateDatabase final {
 public:
   // Reserves metadata once. type must be LSP L1 or L2, otherwise throws
   // invalid_argument; allocation failure throws bad_alloc before publication.
-  // PDU storage grows only when accepting a new or larger advertisement.
+  // PDU storage grows only when accepting a new or larger advertisement. The
+  // optional allocation floor reserves mandatory future purge options within
+  // the unchanged byte budget before accepting a record.
   explicit LinkStateDatabase(packet::isis::PduType type, LsdbLimits limits);
 
   // Preconditions: wire passed instance, circuit, adjacency, authentication,
@@ -91,7 +96,11 @@ public:
   // Active expiration requires finalized purge construction before removal;
   // installed purges retain their selected retention deadline. Equal times
   // select the lowest LSP ID. A due item remains due until the owner handles it.
-  [[nodiscard]] std::optional<LspDeadline> next_deadline() const noexcept;
+  // Sorted unique blocked IDs defer only their expiration work; other expirations
+  // and purge retirements remain eligible to release resources.
+  [[nodiscard]] std::optional<LspDeadline> next_deadline(
+      std::optional<LspDeadlineKind> kind = std::nullopt,
+      std::span<const packet::isis::LspId> blocked_expirations = {}) const noexcept;
 
   // Only an installed purge whose retention deadline passed can be removed.
   // An active LSP that merely aged to zero must first pass the process owner's
