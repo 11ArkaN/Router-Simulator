@@ -17,7 +17,7 @@ void protocol_packet_completion_tests() {
   frame.length = 60U;
   for (std::uint64_t index = 0U; index < 4U; ++index) {
     std::fill(frame.bytes.begin(), frame.bytes.begin() + frame.length, static_cast<std::uint8_t>(index));
-    if (!channel->try_send({{0U, 7U}, index, 0U, index + 100U}, frame))
+    if (!channel->try_send({{0U, 7U}, index, 0U, index + 100U, index + 1000U}, frame))
       throw std::runtime_error("Protocol completion channel refused a reserved slot");
   }
   if (channel->try_send({}, frame) || channel->producer_available() != 0U)
@@ -32,7 +32,7 @@ void protocol_packet_completion_tests() {
   for (std::uint64_t index = 0U; index < 4U; ++index) {
     const auto result = channel->try_completion();
     if (!result || result->metadata.interface_id != index || result->metadata.configuration_generation != index + 100U ||
-        result->enqueued != (index % 2U != 0U) ||
+        result->metadata.transmission_id != index + 1000U || result->enqueued != (index % 2U != 0U) ||
         result->frame->view().front() != static_cast<std::uint8_t>(index))
       throw std::runtime_error("Protocol completion did not preserve its immutable frame and result");
   }
@@ -46,6 +46,7 @@ void protocol_packet_completion_tests() {
       std::optional<Channel::Borrowed> packet;
       while (!(packet = channel->try_receive())) std::this_thread::yield();
       if (packet->metadata.interface_id != index || packet->metadata.configuration_generation != index + 100U ||
+          packet->metadata.transmission_id != index + 1000U ||
           packet->frame->view().front() != static_cast<std::uint8_t>(index))
         valid.store(false, std::memory_order_relaxed);
       if (!channel->release(packet->handle, index % 3U != 0U)) valid.store(false, std::memory_order_relaxed);
@@ -55,7 +56,7 @@ void protocol_packet_completion_tests() {
   const auto drain = [&] {
     while (const auto result = channel->try_completion()) {
       if (result->metadata.interface_id != completed || result->metadata.configuration_generation != completed + 100U ||
-          result->enqueued != (completed % 3U != 0U) ||
+          result->metadata.transmission_id != completed + 1000U || result->enqueued != (completed % 3U != 0U) ||
           result->frame->size() != 60U || !std::all_of(result->frame->view().begin(), result->frame->view().end(),
               [completed](auto byte) { return byte == static_cast<std::uint8_t>(completed); }))
         valid.store(false, std::memory_order_relaxed);
@@ -64,7 +65,7 @@ void protocol_packet_completion_tests() {
   };
   for (std::uint64_t index = 0U; index < count; ++index) {
     std::fill(frame.bytes.begin(), frame.bytes.begin() + frame.length, static_cast<std::uint8_t>(index));
-    while (!channel->try_send({{0U, 7U}, index, 0U, index + 100U}, frame)) { drain(); std::this_thread::yield(); }
+    while (!channel->try_send({{0U, 7U}, index, 0U, index + 100U, index + 1000U}, frame)) { drain(); std::this_thread::yield(); }
     std::fill(frame.bytes.begin(), frame.bytes.begin() + frame.length, std::uint8_t{});
     drain();
   }

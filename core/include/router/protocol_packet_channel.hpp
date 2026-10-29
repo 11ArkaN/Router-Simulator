@@ -34,6 +34,10 @@ public:
     // using interface state; device generation alone cannot distinguish two
     // configurations of the same live router. Zero preserves legacy users.
     std::uint64_t configuration_generation{};
+    // Scoped to the circuit's PDU class. Forwarding returns this value without
+    // interpreting it. IS-IS requires an exact pending-ticket match, including
+    // operational cancellations that leave the configuration epoch unchanged.
+    std::uint64_t transmission_id{};
   };
 
   struct Borrowed {

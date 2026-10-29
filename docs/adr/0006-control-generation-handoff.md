@@ -23,6 +23,8 @@ Packet metadata carries device generation, logical interface ID, physical port a
 
 An egress receipt identifies the original encoded PDU. The level owner additionally compares LSP sequence, checksum and purge state before clearing a flood obligation. An old receipt cannot clear a newer LSP's obligation.
 
+Each outstanding transmission class also owns a nonzero monotonic ticket. Forwarding returns this ticket unchanged. Operational cancellation, including loss of DIS role, clears the pending reservation without rewinding the ticket high-water mark. A delayed receipt cannot complete replacement output within the same configuration epoch. Ticket exhaustion stops the affected class explicitly. Checkpoint continuity must preserve both the high-water mark and any pending reservation.
+
 ## Lifecycle and verification
 
 The protocol pthread starts only after its queues, condition variable, mutex, atomics and owned registries are initialized. Destruction requests shutdown, wakes the worker and joins it before shared slots are destroyed.

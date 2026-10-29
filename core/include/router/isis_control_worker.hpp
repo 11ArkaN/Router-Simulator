@@ -7,6 +7,7 @@
 #include "router/isis_p2p_circuit.hpp"
 #include "router/owned_spsc_channel.hpp"
 #include "router/protocol_packet_channel.hpp"
+#include "router/protocol_transmission.hpp"
 
 #include <atomic>
 #include <condition_variable>
@@ -61,6 +62,7 @@ struct CircuitCounters {
   std::uint64_t hello_refused{};
   std::uint64_t adjacency_up{};
   std::uint64_t adjacency_down{};
+  std::uint64_t transmission_exhausted{};
 };
 struct ControlResult {
   std::uint64_t id{};
@@ -97,6 +99,7 @@ private:
     packet::isis::InstanceFormat format{};
     bool physical_point_to_point{};
     PointToPointCircuit circuit;
+    protocol::TransmissionWindow transmission;
     CircuitCounters counters;
     OwnedCircuit(ControlCommand &command, PointToPointCircuit::Clock::time_point now)
         : identity(command.identity),
@@ -104,7 +107,8 @@ private:
           destination(command.configuration.hello_destination),
           format(command.configuration.instance_format.value_or(packet::isis::InstanceFormat::standard)),
           physical_point_to_point(command.configuration.physical_point_to_point),
-          circuit(std::move(command.configuration), command.random_state, now) {}
+          circuit(std::move(command.configuration), command.random_state, now),
+          transmission(command.identity.configuration_generation) {}
   };
   struct DeviceState {
     lab::DeviceHandle handle{};

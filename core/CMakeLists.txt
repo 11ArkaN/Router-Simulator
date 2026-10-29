@@ -63,6 +63,8 @@ add_library(router_primitives STATIC
   src/isis/isis_level_database.cpp
   src/isis/isis_transient_acknowledgements.cpp
   src/isis/isis_csnp_sequence.cpp
+  src/isis/isis_snp_exchange.cpp
+  src/isis/isis_lsp_exchange.cpp
   src/isis/isis_adjacency.cpp
   src/isis/isis_p2p_adjacency.cpp
   src/isis/isis_p2p_circuit.cpp
@@ -555,6 +557,7 @@ if(ROUTER_BUILD_TESTS)
     tests/forwarding/router_forwarder_isis_test.cpp
     tests/runtime/protocol_packet_channel_test.cpp
     tests/runtime/protocol_packet_completion_test.cpp
+    tests/runtime/protocol_transmission_test.cpp
     tests/runtime/owned_spsc_channel_test.cpp
     tests/isis/isis_three_way_test.cpp
     tests/isis/isis_reachability_test.cpp
@@ -579,6 +582,8 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_snp_receive_test.cpp
     tests/isis/isis_transient_acknowledgements_test.cpp
     tests/isis/isis_csnp_sequence_test.cpp
+    tests/isis/isis_snp_exchange_test.cpp
+    tests/isis/isis_lsp_exchange_test.cpp
     tests/security/digest_test.cpp
     tests/runtime/capture_store_test.cpp
     tests/dhcpv4/dhcpv4_client_test.cpp

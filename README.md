@@ -237,4 +237,10 @@ Unknown-purge acknowledgement metadata has a separate bounded owner outside the 
 
 CSNP sequences partition the complete LSP-ID space into contiguous packet-sized ranges, including an empty database. Queue refusal retries the same range, and another timer request cannot restart an unfinished sequence ahead of higher IDs.
 
+Protocol egress metadata carries a transmission ticket as well as a circuit configuration generation. The IS-IS Hello worker checks both before accepting a receipt. Operational cancellation preserves ticket progression, preventing an old receipt from completing replacement output in the same configuration.
+
+The circuit-level SNP exchange composes complete ranges, partial acknowledgements and transient purge acknowledgements under one pending transmission reservation. Real port-queue refusal preserves obligations and scan positions. A matching successful receipt advances only the transmitted range or version; cancellation and configuration replacement reject delayed receipts. Instance scheduling and runtime dispatch remain in progress.
+
+LSP output uses the same exact receipt identity. Its encoded lifetime includes elapsed holding time and at least one second for transit, without rewriting retained LSDB bytes. Entries reaching zero require finalized purge construction before dispatch. Successful LAN egress clears only the unchanged version's SRM; P2P retains SRM until peer acknowledgement. Instance pacing and purge construction remain in progress.
+
 Control generations with dynamic containers can transfer ownership through fixed shared slots and SPSC handle rings. Packet metadata also retains the circuit configuration generation. The ownership and stale-generation rules are recorded in [ADR 0006](docs/adr/0006-control-generation-handoff.md); worker integration remains in progress.

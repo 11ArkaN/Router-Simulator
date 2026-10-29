@@ -1,5 +1,47 @@
 schema_version: 1
 records:
+  - id: iso.10589.2002.lsp_exchange
+    kind: routing-protocol-flooding-owner
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 7.3.16.3, 7.3.16.4 and 7.3.17, lifetime reduction and LSP output
+    rfc_refs: []
+    yang_path: /configure/router/isis/interface
+    last_verified_at: 2026-10-29
+    implementation: [core/include/router/isis_lsp_exchange.hpp, core/src/isis/isis_lsp_exchange.cpp]
+    tests: [core/tests/isis/isis_lsp_exchange_test.cpp]
+    status: experimental
+    notes: Circuit-local output copies the retained encoded LSP and applies its effective holding-time lifetime plus a caller-selected transit decrement of at least one second. Unfinalized expiration requires the instance purge owner. A matching actual egress receipt clears LAN SRM only for the unchanged retained version; P2P keeps SRM until peer SNP reception. Refusal, operational cancellation and stale epochs preserve obligations. The instance owner must provide source-backed pacing, transit estimation and finalized authenticated purges.
+  - id: iso.10589.2002.snp_exchange
+    kind: routing-protocol-synchronization-owner
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 7.3.15 through 7.3.17, SNP output and flood-flag completion
+    rfc_refs: []
+    yang_path: /configure/router/isis/interface
+    last_verified_at: 2026-10-29
+    implementation: [core/include/router/isis_snp_exchange.hpp, core/src/isis/isis_snp_exchange.cpp]
+    tests: [core/tests/isis/isis_snp_exchange_test.cpp]
+    status: experimental
+    notes: One circuit-level owner composes bounded complete ranges, partial acknowledgements and transient acknowledgement batches. A transmission ticket and configuration epoch protect pending output from delayed receipts. Physical queue refusal preserves obligations and cursors, superseded LSP versions retain their new SSN and successful matching receipts commit only the selected batch. Media scheduling, accepted source adjacency and authentication selection remain the instance owner's responsibility. The transient LAN acknowledgement form is not integrated.
+  - id: project.runtime.transmission_receipt_identity
+    kind: concurrency-ownership-contract
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-architecture-decision
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0006-control-generation-handoff.md
+    section: Circuit generations and per-transmission receipt tickets
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-10-29
+    implementation: [core/include/router/protocol_transmission.hpp, core/include/router/protocol_packet_channel.hpp, core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp]
+    tests: [core/tests/runtime/protocol_transmission_test.cpp, core/tests/runtime/protocol_packet_completion_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
+    status: experimental
+    notes: Each circuit and PDU transmission class reserves a monotonic ticket. Egress consumers return it unchanged through the existing release-acquire completion ring. The IS-IS Hello owner requires both the circuit epoch and pending ticket before applying an enqueue result. Operational cancellation preserves progression within the same epoch, replacement epochs increase strictly and ticket exhaustion stops the affected class. Checkpoint integration must preserve high-water marks and pending reservations.
   - id: iso.10589.2002.csnp_sequence
     kind: routing-protocol-synchronization-owner
     release: 26.7.R1

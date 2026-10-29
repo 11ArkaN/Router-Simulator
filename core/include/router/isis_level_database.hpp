@@ -92,6 +92,12 @@ public:
   [[nodiscard]] std::optional<packet::isis::SnpEntry> snp_entry_at(
       std::size_t index, RuntimeClock::time_point now) const noexcept;
   [[nodiscard]] std::size_t size() const noexcept { return records_.size(); }
+  [[nodiscard]] packet::isis::PduType type() const noexcept { return type_; }
+  // Same-owner circuit-wide media/eligibility projection. Per-LSP SRM/SSN
+  // remain available only through flags(id, circuit).
+  [[nodiscard]] std::optional<FloodCircuit> circuit_state(std::size_t index) const noexcept {
+    return index < circuits_.size() ? std::optional(circuits_[index]) : std::nullopt;
+  }
   // Caller retains a separate scan cursor per circuit and advances it to the
   // returned cursor after selecting this batch. Selection never clears SSN.
   // The cyclic scan prevents low-ID churn from starving higher IDs; output

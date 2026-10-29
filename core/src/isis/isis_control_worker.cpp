@@ -200,6 +200,11 @@ void ControlWorker::run() noexcept {
             ++owned.counters.stale_completion;
             continue;
           }
+          if (!owned.transmission.complete(completion->metadata.configuration_generation,
+              completion->metadata.transmission_id)) {
+            ++owned.counters.stale_completion;
+            continue;
+          }
           if (owned.circuit.complete_hello(completion->enqueued, now)) {
             if (completion->enqueued) ++owned.counters.hello_enqueued;
             else ++owned.counters.hello_refused;
@@ -227,9 +232,18 @@ void ControlWorker::run() noexcept {
           const auto built = owned.circuit.hello(output_, std::nullopt, scratch_, now);
           if (built) --transmit_budget;
           if (built && *built == HelloBuildResult::encoded) {
+            const auto ticket = owned.transmission.begin();
+            if (!ticket) {
+              ++owned.counters.transmission_exhausted;
+              static_cast<void>(owned.circuit.down(&owned, event));
+              continue;
+            }
             const bool published = channel.try_send({owned.identity.device, owned.identity.interface_id,
-                owned.identity.physical_port_ordinal, owned.identity.configuration_generation}, output_);
-            if (!published) static_cast<void>(owned.circuit.complete_hello(false, now));
+                owned.identity.physical_port_ordinal, owned.identity.configuration_generation, *ticket}, output_);
+            if (!published) {
+              owned.transmission.cancel();
+              static_cast<void>(owned.circuit.complete_hello(false, now));
+            }
             else if (channels_.egress_wakeup) channels_.egress_wakeup(channels_.egress_context);
           }
         }
