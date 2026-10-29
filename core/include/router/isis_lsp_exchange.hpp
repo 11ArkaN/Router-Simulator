@@ -38,6 +38,7 @@ public:
   // until peer SNP acceptance. No caller may apply effects after false.
   [[nodiscard]] LspReceipt complete(std::uint64_t epoch, std::uint64_t ticket,
       bool enqueued, RuntimeClock::time_point now) noexcept;
+  [[nodiscard]] bool pending() const noexcept { return transmission_.pending(); }
   void cancel() noexcept;
   [[nodiscard]] bool replace_epoch(std::uint64_t epoch) noexcept;
 private:

@@ -3,6 +3,7 @@
 // Generation rejection and removal are observed through immutable results.
 
 #include "router/isis_control_worker.hpp"
+#include "router/isis_lsp_builder.hpp"
 #include "router/multi_device_fabric.hpp"
 #include "router/network_plane.hpp"
 
@@ -42,12 +43,13 @@ struct DeliveryContext {
   ControlChannels &channels;
   ControlWorker &worker;
   packet::Frame last;
+  std::array<std::uint64_t, 2U> epochs{7U, 7U};
 };
 void delivered(void *opaque, const lab::MultiDeviceFabric::Delivery &value) {
   auto &context = *static_cast<DeliveryContext *>(opaque);
   const auto index = value.destination.node.index;
   require(context.channels.ingress[0U].try_send(
-      {{index, 1U}, index + 1U, 0U, 7U}, value.frame));
+      {{index, 1U}, index + 1U, 0U, context.epochs[index]}, value.frame));
   packet::copy_frame(context.last, value.frame);
   context.worker.notify();
 }
@@ -738,5 +740,270 @@ void isis_control_worker_scale_tests() {
     if (all_up) break;
     require(PointToPointCircuit::Clock::now() < deadline);
     std::this_thread::yield();
+  }
+}
+
+void isis_control_update_tests() {
+  auto channels = std::make_unique<ControlChannels>();
+  auto worker = std::make_unique<ControlWorker>(*channels, 1U, 4U);
+  std::uint64_t next_id{};
+  const auto command = [&](ControlCommand value) {
+    value.id = ++next_id;
+    const auto deadline = RuntimeClock::now() + 4s;
+    while (!worker->submit(std::move(value))) {
+      require(RuntimeClock::now() < deadline);
+      std::this_thread::yield();
+    }
+    ControlResult result;
+    while (!worker->read(result)) {
+      require(RuntimeClock::now() < deadline);
+      std::this_thread::yield();
+    }
+    require(result.id == next_id);
+    return result;
+  };
+  std::array<CircuitIdentity, 2U> identities{{
+      {{0U, 1U}, 1U, 7U, 0U, 0U}, {{1U, 1U}, 2U, 7U, 0U, 0U}}};
+  const UpdateLevelConfiguration level{{8U, 8192U}, 8U, 128U, 1492U,
+      1200U, 60s, 60s, false, false, false};
+  const auto add_instance = [&](std::size_t index) {
+    ControlCommand value;
+    value.kind = ControlCommandKind::add_update_instance;
+    value.identity = identities[index];
+    value.update = UpdateInstanceProgram{configuration(static_cast<std::uint8_t>(index + 1U)).local.system,
+        3U, {level, level}, 2U, {1U, 5U, 5U, 1s, 10U, 1492U, 1U}};
+    return command(std::move(value));
+  };
+  const auto query = [&](std::size_t index, bool instance) {
+    ControlCommand value;
+    value.kind = instance ? ControlCommandKind::query_update_instance : ControlCommandKind::query_circuit;
+    value.identity = identities[index];
+    return command(std::move(value));
+  };
+  for (std::uint8_t index{}; index < 2U; ++index) {
+    ControlCommand value;
+    value.kind = ControlCommandKind::register_device;
+    value.identity = identities[index];
+    require(command(std::move(value)).error == ControlError::none);
+    require(add_instance(index).error == ControlError::none);
+    value = {};
+    value.kind = ControlCommandKind::add_p2p_circuit;
+    value.identity = identities[index];
+    value.configuration = configuration(static_cast<std::uint8_t>(index + 1U));
+    value.random_state = index + 1U;
+    require(command(std::move(value)).error == ControlError::none);
+  }
+  auto fabric = std::make_unique<lab::MultiDeviceFabric>();
+  const lab::LinkHandle link{0U, 1U};
+  require(fabric->configure(link, {lab::node(identities[0U].device), 0U, 1U},
+      {lab::node(identities[1U].device), 0U, 1U}, 1'000'000'000U, 100ns, true));
+  DeliveryContext context{*channels, *worker, {}};
+  bool refused_lsp{};
+  const auto pump = [&] {
+    while (const auto frame = channels->egress[0U].try_receive()) {
+      const bool lsp = frame->metadata.transmission_class == static_cast<std::uint8_t>(packet::isis::PduType::lsp_l1) ||
+          frame->metadata.transmission_class == static_cast<std::uint8_t>(packet::isis::PduType::lsp_l2);
+      const bool refuse = lsp && frame->metadata.device.index == 1U && !refused_lsp;
+      if (refuse) refused_lsp = true;
+      if (frame->metadata.transmission_class != static_cast<std::uint8_t>(packet::isis::PduType::point_to_point_hello))
+        require(frame->metadata.protocol_epoch != 0U);
+      const bool accepted = !refuse && frame->metadata.physical_port_ordinal == 0U && fabric->enqueue(link, static_cast<std::uint8_t>(frame->metadata.device.index),
+          *frame->frame) == lab::MultiDeviceFabric::DropReason::none;
+      require(channels->egress[0U].release(frame->handle, frame->metadata, accepted));
+      worker->notify();
+    }
+    fabric->pump_transmit();
+    fabric->pump_delivery(&context, delivered);
+  };
+  const auto deadline = RuntimeClock::now() + 4s;
+  while (!query(0U, false).adjacency.iso_up || !query(1U, false).adjacency.iso_up) {
+    pump();
+    require(RuntimeClock::now() < deadline);
+  }
+  require(query(0U, true).update_status == UpdateStatus::applied);
+  auto scratch = std::make_unique<PduScratch>();
+  LspContents contents;
+  contents.header = {packet::isis::PduType::lsp_l1,
+      {1U, 2U, 3U, 4U, 5U, 2U, 0U, 0U}, 1200U, 1U, 3U};
+  const std::array<std::uint8_t, 9U> semantic{1U, 4U, 3U, 0x49U, 0U, 1U, 129U, 1U, packet::isis::ipv4_nlpid};
+  contents.options = semantic;
+  contents.maximum_pdu_octets = 1492U;
+  for (std::uint8_t selected{}; selected < 2U; ++selected) {
+    contents.header.type = selected ? packet::isis::PduType::lsp_l2 : packet::isis::PduType::lsp_l1;
+    const auto built = build_lsp_pdu(contents, scratch->options, scratch->pdu);
+    require(built.status == LspBuildStatus::encoded);
+    ControlCommand originate;
+    originate.kind = ControlCommandKind::originate_lsp;
+    originate.identity = identities[1U];
+    originate.level = selected;
+    originate.local_lsp.assign(built.bytes.begin(), built.bytes.end());
+    const auto originated = command(std::move(originate));
+    require(originated.error == ControlError::none && originated.origin.install == LspInstallResult::installed);
+    while (query(0U, true).retained_lsps[selected] != 1U) {
+      pump();
+      require(RuntimeClock::now() < deadline);
+    }
+  }
+  while (query(1U, false).flood_requests != std::array<std::size_t, 2U>{} ||
+      query(0U, false).snp_requests != std::array<std::size_t, 2U>{}) {
+    pump();
+    require(RuntimeClock::now() < deadline);
+  }
+  require(refused_lsp && query(1U, false).counters.lsp_refused >= 1U &&
+      query(1U, false).counters.lsp_enqueued >= 2U && query(0U, false).counters.snp_enqueued >= 2U);
+  require(query(0U, false).counters.update_received >= 2U &&
+      query(0U, false).counters.last_update == UpdateStatus::applied);
+  for (const bool wrong_system : {true, false}) {
+    ControlCommand invalid;
+    invalid.kind = ControlCommandKind::add_p2p_circuit;
+    invalid.identity = {identities[0U].device, 3U, 8U, 1U, 0U};
+    invalid.configuration = configuration(wrong_system ? 2U : 1U);
+    invalid.random_state = 17U;
+    require(command(std::move(invalid)).error == (wrong_system ? ControlError::invalid_argument : ControlError::already_exists));
+    require(query(0U, true).retained_lsps == std::array<std::size_t, 2U>{1U, 1U});
+  }
+  CircuitDefinition original{identities[0U], configuration(1U), 1U};
+  CircuitDefinition added = original;
+  added.identity.interface_id = 3U;
+  added.identity.configuration_generation = 8U;
+  added.identity.physical_port_ordinal = 1U;
+  added.configuration.local.extended_circuit = 2U;
+  added.configuration.local.local_circuit = 2U;
+  added.configuration.mac[5U] = 3U;
+  const auto generation = [&](ControlCommandKind kind, bool second) {
+    ControlCommand value;
+    value.kind = kind;
+    value.identity.device = identities[0U].device;
+    if (kind == ControlCommandKind::prepare_generation) {
+      value.circuits.push_back(original);
+      if (second) value.circuits.push_back(added);
+    }
+    return command(std::move(value));
+  };
+  const auto before_generation = query(0U, false);
+  require(generation(ControlCommandKind::prepare_generation, true).error == ControlError::none);
+  require(query(0U, true).retained_lsps == std::array<std::size_t, 2U>{1U, 1U});
+  require(generation(ControlCommandKind::abort_generation, false).error == ControlError::none);
+  require(generation(ControlCommandKind::prepare_generation, true).error == ControlError::none);
+  require(generation(ControlCommandKind::commit_generation, false).error == ControlError::none);
+  require(query(0U, false).adjacency.iso_up &&
+      query(0U, false).counters.adjacency_up == before_generation.counters.adjacency_up &&
+      query(0U, true).retained_lsps == std::array<std::size_t, 2U>{1U, 1U});
+  ControlCommand retire_added;
+  retire_added.kind = ControlCommandKind::remove_circuit;
+  retire_added.identity = added.identity;
+  require(command(std::move(retire_added)).error == ControlError::none);
+  original.identity.configuration_generation = 9U;
+  original.configuration.holding_seconds = 4U;
+  require(generation(ControlCommandKind::prepare_generation, false).error == ControlError::none);
+  require(generation(ControlCommandKind::commit_generation, false).error == ControlError::none);
+  identities[0U] = original.identity;
+  context.epochs[0U] = original.identity.configuration_generation;
+  require(query(0U, true).retained_lsps == std::array<std::size_t, 2U>{1U, 1U});
+  const auto recovery_deadline = RuntimeClock::now() + 4s;
+  while (!query(0U, false).adjacency.iso_up || !query(1U, false).adjacency.iso_up) {
+    pump();
+    require(RuntimeClock::now() < recovery_deadline);
+  }
+  ControlCommand remove;
+  remove.kind = ControlCommandKind::remove_update_instance;
+  remove.identity = identities[0U];
+  const auto epoch = query(0U, true).update_epoch;
+  require(command(std::move(remove)).error == ControlError::none &&
+      query(0U, true).error == ControlError::not_found && !query(0U, false).adjacency.iso_up);
+  require(add_instance(0U).error == ControlError::none && query(0U, true).update_epoch > epoch &&
+      query(0U, true).retained_lsps == std::array<std::size_t, 2U>{});
+}
+
+void isis_network_plane_update_tests() {
+  for (const auto logical_cpus : {4U, 8U}) {
+    auto plane = std::make_unique<lab::NetworkPlane>(logical_cpus);
+    const std::array devices{lab::DeviceHandle{0U, 1U}, lab::DeviceHandle{1U, 1U}};
+    std::array<lab::IsisP2pCircuitProgram, 2U> circuits;
+    const UpdateLevelConfiguration level{{8U, 8192U}, 8U, 128U, 1492U,
+        1200U, 60s, 60s, false, false, false};
+    std::array<UpdateInstanceProgram, 2U> instances;
+    for (std::uint8_t index{}; index < devices.size(); ++index) {
+      crypto::Sha256Digest secret{};
+      secret.fill(static_cast<std::uint8_t>(index + 1U));
+      require(plane->add_router(devices[index], secret));
+      auto &circuit = circuits[index];
+      circuit.circuit = {{devices[index], 1U, 7U, 0U, 0U}, configuration(static_cast<std::uint8_t>(index + 1U)), index + 1U};
+      circuit.port = {lab::node(devices[index]), 0U, 1U};
+      lab::ForwardPort port;
+      port.configured = port.operational = true;
+      port.ordinal = 0U;
+      port.mtu = 1514U;
+      port.speed_mbps = 1000U;
+      port.mac = circuit.circuit.configuration.mac;
+      require(plane->configure_port(devices[index], port));
+      instances[index] = {circuit.circuit.configuration.local.system, 3U, {level, level},
+          1U, {1U, 5U, 5U, 1s, 10U, 1492U, 1U}};
+    }
+    const lab::NetworkLinkProgram link{{0U, 1U}, circuits[0U].port, circuits[1U].port,
+        1'000'000'000U, 100ns, true};
+    require(plane->configure_link(link));
+    auto initial = plane->checkpoint();
+    require(initial.has_value());
+    auto unsupported = instances[0U];
+    unsupported.levels[0U]->authenticate_lsp = true;
+    require(!plane->add_isis_update_instance(devices[0U], 0U, unsupported) && plane->checkpoint());
+    unsupported = instances[0U];
+    unsupported.transmission.partial_seconds = 0U;
+    require(!plane->add_isis_update_instance(devices[0U], 0U, unsupported) && plane->checkpoint());
+    unsupported = instances[0U];
+    unsupported.wire_instance = 1U;
+    require(!plane->add_isis_update_instance(devices[0U], 1U, unsupported) && plane->checkpoint());
+    for (std::size_t index{}; index < devices.size(); ++index) {
+      require(plane->add_isis_update_instance(devices[index], 0U, instances[index]));
+      require(!plane->checkpoint());
+      require(plane->replace_isis_p2p_generation(devices[index], std::span{&circuits[index], 1U}));
+    }
+    const auto query = [&](std::size_t index) {
+      const auto result = plane->query_isis_circuit(circuits[index].circuit.identity);
+      require(result && result->error == ControlError::none);
+      return *result;
+    };
+    const auto deadline = RuntimeClock::now() + 6s;
+    while (!query(0U).adjacency.iso_up || !query(1U).adjacency.iso_up) {
+      plane->pump();
+      require(RuntimeClock::now() < deadline);
+    }
+    auto scratch = std::make_unique<PduScratch>();
+    LspContents contents;
+    contents.header = {packet::isis::PduType::lsp_l1,
+        {1U, 2U, 3U, 4U, 5U, 1U, 0U, 0U}, 1200U, 1U, 3U};
+    const std::array<std::uint8_t, 9U> semantic{1U, 4U, 3U, 0x49U, 0U, 1U, 129U, 1U, packet::isis::ipv4_nlpid};
+    contents.options = semantic;
+    contents.maximum_pdu_octets = 1492U;
+    for (std::uint8_t selected{}; selected < 2U; ++selected) {
+      contents.header.type = selected ? packet::isis::PduType::lsp_l2 : packet::isis::PduType::lsp_l1;
+      const auto pdu = build_lsp_pdu(contents, scratch->options, scratch->pdu);
+      require(pdu.status == LspBuildStatus::encoded);
+      const auto result = plane->originate_isis_lsp(devices[0U], 0U, selected, pdu.bytes);
+      require(result && result->error == ControlError::none && result->origin.install == LspInstallResult::installed);
+    }
+    for (;;) {
+      const auto peer = plane->query_isis_update_instance(devices[1U], 0U);
+      require(peer && peer->error == ControlError::none && peer->update_status == UpdateStatus::applied);
+      if (peer->retained_lsps == std::array<std::size_t, 2U>{1U, 1U} &&
+          query(0U).flood_requests == std::array<std::size_t, 2U>{} &&
+          query(1U).snp_requests == std::array<std::size_t, 2U>{}) break;
+      plane->pump();
+      require(RuntimeClock::now() < deadline);
+    }
+    require(query(0U).counters.lsp_enqueued >= 2U && query(1U).counters.snp_enqueued >= 2U);
+    const auto epoch = plane->query_isis_update_instance(devices[0U], 0U)->update_epoch;
+    for (std::size_t index{}; index < devices.size(); ++index) {
+      require(plane->replace_isis_p2p_generation(devices[index], {}));
+      const auto retained = plane->query_isis_update_instance(devices[index], 0U);
+      require(retained && retained->retained_lsps == std::array<std::size_t, 2U>{1U, 1U});
+    }
+    require(!plane->checkpoint() && !plane->restore(*initial));
+    for (const auto device : devices) require(plane->remove_isis_update_instance(device, 0U));
+    require(plane->checkpoint().has_value());
+    require(plane->add_isis_update_instance(devices[0U], 0U, instances[0U]));
+    require(plane->query_isis_update_instance(devices[0U], 0U)->update_epoch > epoch);
+    require(plane->remove_router(devices[0U]) && plane->checkpoint() && plane->restore(*initial));
   }
 }

@@ -16,6 +16,9 @@ features:
   routing.isis.local_lsp_composition:
     status: partially-implemented
     source_ids: [iso.10589.2002.lsp_composition]
+  routing.isis.runtime_update:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.runtime_update, nokia.sros.26_7.isis.csnp_effective_period]
   routing.isis.instance_update:
     status: partially-implemented
     source_ids: [iso.10589.2002.instance_update]

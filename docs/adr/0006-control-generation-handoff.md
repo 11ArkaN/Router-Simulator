@@ -35,6 +35,16 @@ The forwarding barrier excludes packet observers while multicast membership and 
 
 Parallel forwarding keeps each IS-IS slot borrowed after its transfer-ring enqueue. A separate link-producer, forwarding-consumer SPSC ring has one usable receipt entry per protocol frame credit. The link owner publishes the result of its actual fabric-queue attempt. Forwarding alone performs guarded slot release and wakes the protocol producer. A refused receipt publication is retained without repeating physical enqueue; returned reverse-ring credits wake the link owner. The combined placement applies the same physical-port check and returns actual admission directly.
 
+## Instance update bindings
+
+The protocol pthread owns each instance at a stable heap address. Circuit-vector moves preserve that address and the stable level slot. Preparing a generation reserves new Down bindings before publication. A unique owner-local admission ticket guards reverse-order abort, including reuse of a previously active slot. Abort restores the prior free binding configuration. Commit first emits old adjacency Down and releases removed bindings, then rebinds changed slots without replacing their level coordinators or databases.
+
+The instance parent preserves a per-instance maximum synchronization fence outside the entity. Removing every interface leaves the instance and its databases alive. Removing the instance cancels Hello reservations, emits local Down and retains that fence before destroying the entity. Recreating it starts strictly above the fence. Router removal unregisters both circuits and instances; a fresh device handle starts a fresh scope.
+
+Local update scheduling reserves its bounded retry metadata before binding publication. Circuit pacing credits cover L1 and L2 together. LSP retry deadlines are anchored only by actual successful physical admission of the current version. A failed physical attempt preserves SRM. Per-level SNP timers use owner-local jitter, and CSNP ranges advance only after matching physical receipts. Pending output waits for completion credits rather than polling a past deadline. The prototype takes explicit effective timer and burst values; production default resolution remains with the configuration owner.
+
+Registered update instances reject structural checkpoints even when they have no interfaces. Until their integrations exist, authentication selection and nonzero update IIDs reject admission. Product CLI and protocol persistence remain separate required work.
+
 ## Lifecycle and verification
 
 The protocol pthread starts only after its queues, condition variable, mutex, atomics and owned registries are initialized. Destruction requests shutdown, wakes the worker and joins it before shared slots are destroyed.

@@ -53,7 +53,8 @@ struct IsisP2pCircuitProgram {
   // Serialized control owns source-resolved effective configuration. The
   // physical generation accompanies logical circuit identity so replacement
   // hardware cannot inherit a queued frame. This experimental P2P transport
-  // program does not provide instance-level flooding, routing or checkpointing.
+  // program selects transport only. Update owners are admitted separately;
+  // routing and protocol checkpointing remain outside this experimental API.
   isis::CircuitDefinition circuit;
   PortHandle port{};
 };
@@ -657,6 +658,21 @@ public:
       std::span<const IsisP2pCircuitProgram> circuits) noexcept;
   [[nodiscard]] std::optional<isis::ControlResult> query_isis_circuit(
       const isis::CircuitIdentity &identity) noexcept;
+  // Serialized network owner copies effective values into an owned command.
+  // Source identity, per-level budgets and transmission policy are explicit;
+  // failure leaves existing circuits and databases intact. A process without
+  // interfaces remains registered and blocks unsupported structural checkpoints.
+  [[nodiscard]] bool add_isis_update_instance(DeviceHandle device, std::uint8_t instance,
+      const isis::UpdateInstanceProgram &program) noexcept;
+  [[nodiscard]] bool remove_isis_update_instance(DeviceHandle device, std::uint8_t instance) noexcept;
+  [[nodiscard]] std::optional<isis::ControlResult> query_isis_update_instance(
+      DeviceHandle device, std::uint8_t instance) noexcept;
+  // Already composed local PDU bytes are copied before publication; no span or
+  // key lease is retained. The originator supplied sequence, options and purge
+  // reason. Result reports validation or admission failure explicitly.
+  [[nodiscard]] std::optional<isis::ControlResult> originate_isis_lsp(DeviceHandle device,
+      std::uint8_t instance, std::uint8_t level, std::span<const std::uint8_t> pdu,
+      isis::OriginPurgeReason purge = isis::OriginPurgeReason::none) noexcept;
   [[nodiscard]] bool
   add_ospf_process(const OspfProcessProgram &program) noexcept;
   [[nodiscard]] bool

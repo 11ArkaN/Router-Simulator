@@ -1093,6 +1093,7 @@ struct NetworkPlane::Impl {
   std::unique_ptr<isis::ControlWorker> isis_worker;
   std::array<std::vector<IsisTransportBinding>, device_catalog::maximum_routers> isis_transports;
   std::array<bool, device_catalog::maximum_routers> isis_registered{};
+  std::array<std::size_t, device_catalog::maximum_routers> isis_instance_count{};
   std::uint64_t next_isis_command_id{1U};
   std::uint64_t next_forward_command_id{1};
   // Serialized link owner exclusively reuses this staging value while waiting
@@ -4557,6 +4558,14 @@ bool NetworkPlane::remove_router(DeviceHandle device) noexcept {
   if (!impl_->live(device))
     return false;
   if (impl_->isis_registered[device.index] && !replace_isis_p2p_generation(device, {})) return false;
+  if (impl_->isis_registered[device.index]) {
+    isis::ControlCommand removal;
+    removal.kind = isis::ControlCommandKind::remove_device;
+    removal.identity.device = device;
+    if (impl_->execute_isis(std::move(removal)).error != isis::ControlError::none) return false;
+    impl_->isis_registered[device.index] = false;
+    impl_->isis_instance_count[device.index] = 0U;
+  }
   // Withdraw the protocol generation while physical ports still exist. This
   // lets the transaction clear every derived punt bit and prevents a reused
   // router slot from inheriting an old daemon generation.
@@ -4857,7 +4866,7 @@ bool NetworkPlane::replace_isis_p2p_generation(DeviceHandle device,
   // ownership swaps after the protocol owner has accepted commit.
   impl_->routers[device.index].isis_transports.swap(forwarding_projection);
   impl_->isis_transports[device.index].swap(link_projection);
-  if (circuits.empty()) {
+  if (circuits.empty() && !impl_->isis_instance_count[device.index]) {
     isis::ControlCommand removal;
     removal.kind = isis::ControlCommandKind::remove_device;
     removal.identity.device = device;
@@ -4875,6 +4884,81 @@ std::optional<isis::ControlResult> NetworkPlane::query_isis_circuit(const isis::
   isis::ControlCommand command;
   command.kind = isis::ControlCommandKind::query_circuit;
   command.identity = identity;
+  return impl_->execute_isis(std::move(command));
+}
+
+bool NetworkPlane::add_isis_update_instance(DeviceHandle device, std::uint8_t instance,
+    const isis::UpdateInstanceProgram &program) noexcept {
+  if (!impl_->live(device) || instance > device_catalog::isis_instance_last) return false;
+  const bool registered_here = !impl_->isis_registered[device.index];
+  if (registered_here) {
+    isis::ControlCommand registration;
+    registration.kind = isis::ControlCommandKind::register_device;
+    registration.identity.device = device;
+    if (impl_->execute_isis(std::move(registration)).error != isis::ControlError::none) return false;
+    impl_->isis_registered[device.index] = true;
+  }
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::add_update_instance;
+  command.identity.device = device;
+  command.identity.instance = instance;
+  command.update = program;
+  if (impl_->execute_isis(std::move(command)).error == isis::ControlError::none) {
+    ++impl_->isis_instance_count[device.index];
+    return true;
+  }
+  if (registered_here) {
+    isis::ControlCommand removal;
+    removal.kind = isis::ControlCommandKind::remove_device;
+    removal.identity.device = device;
+    static_cast<void>(impl_->execute_isis(std::move(removal)));
+    impl_->isis_registered[device.index] = false;
+  }
+  return false;
+}
+
+bool NetworkPlane::remove_isis_update_instance(DeviceHandle device, std::uint8_t instance) noexcept {
+  if (!impl_->live(device) || !impl_->isis_registered[device.index] || instance > device_catalog::isis_instance_last)
+    return false;
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::remove_update_instance;
+  command.identity.device = device;
+  command.identity.instance = instance;
+  if (impl_->execute_isis(std::move(command)).error != isis::ControlError::none) return false;
+  --impl_->isis_instance_count[device.index];
+  if (!impl_->isis_instance_count[device.index] && impl_->isis_transports[device.index].empty()) {
+    isis::ControlCommand removal;
+    removal.kind = isis::ControlCommandKind::remove_device;
+    removal.identity.device = device;
+    static_cast<void>(impl_->execute_isis(std::move(removal)));
+    impl_->isis_registered[device.index] = false;
+  }
+  return true;
+}
+
+std::optional<isis::ControlResult> NetworkPlane::query_isis_update_instance(DeviceHandle device,
+    std::uint8_t instance) noexcept {
+  if (!impl_->live(device) || !impl_->isis_registered[device.index]) return std::nullopt;
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::query_update_instance;
+  command.identity.device = device;
+  command.identity.instance = instance;
+  return impl_->execute_isis(std::move(command));
+}
+
+std::optional<isis::ControlResult> NetworkPlane::originate_isis_lsp(DeviceHandle device,
+    std::uint8_t instance, std::uint8_t level, std::span<const std::uint8_t> pdu,
+    isis::OriginPurgeReason purge) noexcept {
+  if (!impl_->live(device) || !impl_->isis_registered[device.index]) return std::nullopt;
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::originate_lsp;
+  command.identity.device = device;
+  command.identity.instance = instance;
+  command.level = level;
+  command.purge = purge;
+  try { command.local_lsp.assign(pdu.begin(), pdu.end()); }
+  catch (const std::bad_alloc &) { return isis::ControlResult{.error = isis::ControlError::capacity}; }
+  catch (const std::length_error &) { return isis::ControlResult{.error = isis::ControlError::invalid_argument}; }
   return impl_->execute_isis(std::move(command));
 }
 
@@ -7655,8 +7739,8 @@ std::uint64_t NetworkPlane::capture_dropped() const noexcept {
 
 std::optional<NetworkPlaneCheckpoint>
 NetworkPlane::checkpoint(Clock::time_point now) {
-  if (std::any_of(impl_->isis_transports.begin(), impl_->isis_transports.end(),
-      [](const auto &bindings) { return !bindings.empty(); })) return std::nullopt;
+  if (std::any_of(impl_->isis_registered.begin(), impl_->isis_registered.end(),
+      [](bool active) { return active; })) return std::nullopt;
   if (!impl_->pause_forwarding())
     return std::nullopt;
   struct Resume final {

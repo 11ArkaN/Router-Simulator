@@ -137,6 +137,19 @@ UpdateStatus InstanceUpdateProcess::release_circuit(std::size_t index,
   return UpdateStatus::applied;
 }
 
+UpdateStatus InstanceUpdateProcess::rebind_circuit(std::size_t index,
+    UpdateCircuitConfiguration configuration) noexcept {
+  if (index >= circuits_.size() || circuits_[index].configured) return UpdateStatus::invalid_circuit;
+  auto &slot = circuits_[index];
+  if (!valid_circuit(configuration, configuration_)) return UpdateStatus::invalid_configuration;
+  if (configuration.configuration_epoch <= slot.configuration.configuration_epoch)
+    return UpdateStatus::stale_configuration;
+  slot.configuration = configuration;
+  slot.configured = true;
+  slot.admission_pending = false;
+  return UpdateStatus::applied;
+}
+
 UpdateStatus InstanceUpdateProcess::p2p(std::size_t index, std::uint64_t configuration_epoch,
     const P2pCircuitEvent &event, LevelObserver observer) noexcept {
   if (!observer.event) return UpdateStatus::missing_observer;

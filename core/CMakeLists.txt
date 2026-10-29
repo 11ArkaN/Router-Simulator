@@ -313,6 +313,8 @@ target_link_libraries(router_device PUBLIC router_primitives router_build_option
 
 add_library(router_network STATIC
   src/isis/isis_control_worker.cpp
+  src/isis/isis_control_update.cpp
+  src/isis/isis_control_update_egress.cpp
   src/runtime/capture_store.cpp
   src/dhcpv4/dhcpv4_endpoint_service.cpp
   src/dhcpv6/dhcpv6_endpoint_service.cpp

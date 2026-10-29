@@ -77,6 +77,11 @@ public:
   // slots, ticket counters and synchronization fences for bounded safe reuse.
   [[nodiscard]] UpdateStatus release_circuit(std::size_t circuit,
       std::uint64_t configuration_epoch) noexcept;
+  // Commit-only binding replacement after release_circuit completed Down.
+  // Requires a strictly newer transport epoch and prevalidated configuration.
+  // No allocation or coordinator replacement; refuses before any mutation.
+  [[nodiscard]] UpdateStatus rebind_circuit(std::size_t circuit,
+      UpdateCircuitConfiguration configuration) noexcept;
   // Same-owner callback from PointToPointCircuit, before borrowed attributes
   // expire. The before state must match the previous event. Down cancels level
   // reservations; subsequent Up advances an independent synchronization epoch

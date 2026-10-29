@@ -1,5 +1,33 @@
 schema_version: 1
 records:
+  - id: nokia.sros.26_7.isis.csnp_effective_period
+    kind: command-behavior
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-classic-cli-reference
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-c-commands-clie-2.html#ai9j785fkf
+    section: csnp-interval, Description and Parameters
+    rfc_refs: []
+    yang_path: /configure/router/isis/interface/csnp-interval
+    last_verified_at: 2026-10-29
+    implementation: [core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_update_egress.cpp]
+    tests: [core/tests/isis/isis_control_worker_test.cpp]
+    status: experimental
+    notes: A positive effective CSNP period drives periodic P2P CSNP sequences as documented by SR OS. The internal zero-period form selects ISO startup-only operation and is not a supported CLI input. The runtime program supplies its period explicitly. No CLI default is selected while the classic P2P default and pinned YANG default remain unresolved.
+  - id: iso.10589.2002.runtime_update
+    kind: routing-protocol-runtime-update-owner
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: iso-iec-standard-and-rfc
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 7.3.15.3 through 7.3.15.5, 7.3.17 and 10.1, real update dispatch and receipts
+    rfc_refs: [RFC5303, RFC5309, RFC8202]
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-10-29
+    implementation: [core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp, core/src/isis/isis_control_update.cpp, core/src/isis/isis_control_update_egress.cpp, core/include/router/network_plane.hpp, core/src/runtime/network_plane.cpp]
+    tests: [core/tests/isis/isis_control_worker_test.cpp]
+    status: experimental
+    notes: The dedicated pthread owns stable heap instances, independent level databases and circuit-local encoded update scheduling. Effective program values select periodic SNPs, retransmission and a shared interface burst budget without assigning SR OS defaults. Packet metadata preserves the exact synchronization epoch and ticket through actual physical admission. Failed queue admission retains obligations; P2P SRM retires through peer SNP acceptance. Cold generation preparation reserves new slots and aborts in reverse order; changed bindings reuse released Down slots without allocation at commit. Instance identity, wire selector, level subsets, unique extended circuit IDs and resource budgets are checked before publication. Removing interfaces preserves the instance; removing the entity retains its maximum fence outside the LSDB. Both actual NetworkPlane placements exchange L1 and L2 LSPs and PSNPs, preserve databases after interface withdrawal and reject unsupported structural checkpointing. Nonzero update IIDs reject explicitly until per-level multicast projection is connected. Authentication selection, automatic origination and expiration, production CLI admission, LAN, routing, protocol persistence and measured active-instance limits remain incomplete.
   - id: project.runtime.protocol_reservation_epochs
     kind: concurrency-ownership-contract
     release: 26.7.R1
@@ -13,7 +41,7 @@ records:
     implementation: [core/include/router/protocol_packet_channel.hpp]
     tests: [core/tests/runtime/protocol_packet_completion_test.cpp]
     status: implemented
-    notes: A producer-owned protocol reservation epoch is independent of the transport configuration generation. Forwarding and link owners echo the complete metadata through release/acquire receipts. Guarded release rejects an old reservation epoch even when a slot reuses its device, interface, configuration, transmission class, local instance and ticket. Existing protocol producers may use zero. The fixed six-channel IS-IS set remains within its unchanged one MiB admission budget. Runtime LSP and SNP scheduling remains incomplete.
+    notes: A producer-owned protocol reservation epoch is independent of the transport configuration generation. Forwarding and link owners echo the complete metadata through release/acquire receipts. Guarded release rejects an old reservation epoch even when a slot reuses its device, interface, configuration, transmission class, local instance and ticket. Existing protocol producers may use zero. The fixed six-channel IS-IS set remains within its unchanged one MiB admission budget. Production CLI admission and LAN scheduling remain incomplete.
   - id: project.runtime.isis_p2p_transport
     kind: concurrency-ownership-contract
     release: 26.7.R1
@@ -69,7 +97,7 @@ records:
     implementation: [core/include/router/isis_instance_update.hpp, core/src/isis/isis_instance_update.cpp]
     tests: [core/tests/isis/isis_instance_update_test.cpp]
     status: experimental
-    notes: One instance joins local authenticated P2P circuit events to independent L1 and L2 update owners. Transport configuration epochs remain distinct from synchronization epochs advanced on adjacency reactivation. Receive validates level, adjacency, destination, instance, MRU, maximum-area and configured authentication before mutation. Locally sourced LSPs return an explicit unresolved self-originated result for fight-back or purge rather than entering the foreign LSDB path. Tests exchange Hello, LSP and PSNP through actual physical queues, retire only matching reservations and retain databases through same-configuration Down and Up. Initiated local purges absent from the sender database cross the same queues and receive transient peer acknowledgements without being retained by the receiver. Bounded cold admission adds a Down circuit to both levels atomically and rolls back earlier levels if a later reservation fails. Down bindings can be released and reused with strictly newer transport epochs while retaining level slots, ticket counters and synchronization fences. Cold admission rollback uses unique owner-local tickets and cannot cancel a newer admission in a reused slot. Entity construction accepts a nonzero initial synchronization epoch and exposes its maximum fence for parent-owned restart protection. An explicit RFC 5303 Up restarts synchronization even when the preceding Initialize retained ISO Up state. Runtime worker scheduling, local sequence and purge ownership, LAN admission and route publication remain in progress.
+    notes: One instance joins local authenticated P2P circuit events to independent L1 and L2 update owners. Transport configuration epochs remain distinct from synchronization epochs advanced on adjacency reactivation. Receive validates level, adjacency, destination, instance, MRU, maximum-area and configured authentication before mutation. Locally sourced LSPs return an explicit unresolved self-originated result for fight-back or purge rather than entering the foreign LSDB path. Tests exchange Hello, LSP and PSNP through actual physical queues, retire only matching reservations and retain databases through same-configuration Down and Up. Initiated local purges absent from the sender database cross the same queues and receive transient peer acknowledgements without being retained by the receiver. Bounded cold admission adds a Down circuit to both levels atomically and rolls back earlier levels if a later reservation fails. Down bindings can be released and reused with strictly newer transport epochs while retaining level slots, ticket counters and synchronization fences. Cold admission rollback uses unique owner-local tickets and cannot cancel a newer admission in a reused slot. Entity construction accepts a nonzero initial synchronization epoch and exposes its maximum fence for parent-owned restart protection. An explicit RFC 5303 Up restarts synchronization even when the preceding Initialize retained ISO Up state. Production configuration, local sequence and purge ownership, LAN admission and route publication remain in progress.
   - id: iso.10589.2002.level_process
     kind: routing-protocol-level-owner
     release: 26.7.R1
@@ -307,7 +335,7 @@ records:
     implementation: [core/include/router/protocol_packet_channel.hpp, core/include/router/isis_flooding.hpp, core/src/isis/isis_flooding.cpp]
     tests: [core/tests/runtime/protocol_packet_completion_test.cpp, core/tests/isis/isis_egress_completion_test.cpp]
     status: experimental
-    notes: The optional completion mode returns the forwarding owner's port-queue admission result through the existing reverse SPSC ownership ring. A returned frame slot cannot be reused until its producer consumes that result. The producer can inspect the original immutable wire image before its next send, without placing a pointer or another frame copy into a ring. The default channel keeps automatic handle reclamation. A physical-link saturation fixture preserves LAN SRM and PSNP SSN after queue refusal and commits each only after actual queue admission. The IS-IS worker still needs to connect this mechanism to its pending transmissions.
+    notes: The optional completion mode returns the forwarding owner's port-queue admission result through the existing reverse SPSC ownership ring. A returned frame slot cannot be reused until its producer consumes that result. The producer can inspect the original immutable wire image before its next send, without placing a pointer or another frame copy into a ring. The default channel keeps automatic handle reclamation. A physical-link saturation fixture preserves LAN SRM and PSNP SSN after queue refusal and commits each only after actual queue admission. The experimental IS-IS worker connects P2P update reservations to these physical receipts; production configuration and LAN remain incomplete.
   - id: ietf.isis.multi_topology.rfc5120
     kind: routing-protocol-wire-format
     release: 26.7.R1
