@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <new>
 #include <utility>
+#include <stdexcept>
 
 namespace router::isis {
 namespace {
@@ -41,10 +42,40 @@ private:
 }
 
 LevelDatabase::LevelDatabase(packet::isis::PduType type, LsdbLimits limits,
-    std::span<const FloodCircuit> circuits)
-    : type_(type), database_(type, limits), circuits_(circuits.begin(), circuits.end()), maximum_records_(limits.records) {
+    std::span<const FloodCircuit> circuits, std::size_t maximum_circuits)
+    : type_(type), database_(type, limits), circuits_(circuits.begin(), circuits.end()), maximum_records_(limits.records),
+      maximum_circuits_(maximum_circuits ? maximum_circuits : circuits.size()) {
+  if (maximum_circuits_ < circuits.size() || maximum_circuits_ > circuits_.max_size())
+    throw std::invalid_argument("IS-IS circuit slot budget cannot contain its initial generation");
   records_.reserve(limits.records);
   for (auto &circuit : circuits_) circuit.srm = circuit.ssn = false;
+}
+
+std::optional<std::size_t> LevelDatabase::admit_circuit(bool broadcast) noexcept {
+  if (circuits_.size() == maximum_circuits_) return std::nullopt;
+  const auto index = circuits_.size();
+  try {
+    // Complete every possible allocation before changing a vector length.
+    // Retained LSP bytes and existing SRM/SSN are never part of this mutation.
+    circuits_.reserve(index + 1U);
+    for (auto &record : records_) record.circuits.reserve(index + 1U);
+  } catch (const std::bad_alloc &) { return std::nullopt; }
+    catch (const std::length_error &) { return std::nullopt; }
+  const FloodCircuit value{broadcast, false, false, false};
+  circuits_.push_back(value);
+  for (auto &record : records_) record.circuits.push_back(value);
+  return index;
+}
+
+bool LevelDatabase::cancel_circuit_admission(std::size_t index) noexcept {
+  if (index >= circuits_.size() || index + 1U != circuits_.size() || circuits_[index].eligible ||
+      std::any_of(records_.begin(), records_.end(), [&](const auto &record) {
+        const auto &flags = record.circuits[index];
+        return flags.eligible || flags.srm || flags.ssn;
+      })) return false;
+  for (auto &record : records_) record.circuits.pop_back();
+  circuits_.pop_back();
+  return true;
 }
 
 std::size_t LevelDatabase::position(const packet::isis::LspId &id) const noexcept {

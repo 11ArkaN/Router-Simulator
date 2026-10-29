@@ -5,6 +5,7 @@
 #include "router/isis_level_process.hpp"
 
 #include <stdexcept>
+#include <new>
 #include <type_traits>
 #include <limits>
 
@@ -24,19 +25,41 @@ LevelProcess::LevelProcess(packet::isis::PduType level, LsdbLimits limits,
     std::span<const LevelCircuitConfiguration> circuits,
     std::size_t acknowledgement_capacity, std::size_t snp_entry_capacity,
     std::uint16_t maximum_age, std::chrono::seconds purge_retention,
-    std::chrono::seconds waiting_time)
-    : database_(level, limits, initial_circuits(circuits)),
+    std::chrono::seconds waiting_time, std::size_t maximum_circuits)
+    : database_(level, limits, initial_circuits(circuits), maximum_circuits),
       acknowledgements_(acknowledgement_capacity), maximum_age_(maximum_age),
       purge_retention_(purge_retention), waiting_time_(waiting_time) {
   if (!maximum_age || purge_retention.count() <= 0 || waiting_time.count() <= 0 ||
       waiting_time > std::chrono::duration_cast<std::chrono::seconds>(RuntimeClock::duration::max()) ||
       purge_retention.count() > std::numeric_limits<std::uint16_t>::max() ||
-      (!circuits.empty() && (!acknowledgement_capacity || !snp_entry_capacity)))
+      ((!circuits.empty() || maximum_circuits) && !acknowledgement_capacity) ||
+      (!circuits.empty() && !snp_entry_capacity))
     throw std::invalid_argument("IS-IS level lifetime and Waiting Time must be positive and representable");
   static_assert(std::is_nothrow_move_constructible_v<Circuit>);
   circuits_.reserve(circuits.size());
   for (std::size_t index{}; index < circuits.size(); ++index)
     circuits_.emplace_back(database_, acknowledgements_, index, circuits[index], snp_entry_capacity);
+}
+
+LevelCircuitAdmission LevelProcess::admit_circuit(LevelCircuitConfiguration configuration,
+    std::size_t snp_entry_capacity) noexcept {
+  if (!configuration.epoch || !snp_entry_capacity) return {};
+  if (!database_.circuit_capacity_available()) return {LevelStatus::capacity, std::nullopt};
+  try { circuits_.reserve(circuits_.size() + 1U); }
+  catch (const std::bad_alloc &) { return {LevelStatus::capacity, std::nullopt}; }
+  catch (const std::length_error &) { return {LevelStatus::capacity, std::nullopt}; }
+  const auto index = database_.admit_circuit(configuration.broadcast);
+  if (!index) return {LevelStatus::capacity, std::nullopt};
+  try {
+    circuits_.emplace_back(database_, acknowledgements_, *index, configuration, snp_entry_capacity);
+    return {LevelStatus::applied, index};
+  } catch (const std::bad_alloc &) {
+    static_cast<void>(database_.cancel_circuit_admission(*index));
+    return {LevelStatus::capacity, std::nullopt};
+  } catch (const std::length_error &) {
+    static_cast<void>(database_.cancel_circuit_admission(*index));
+    return {};
+  }
 }
 
 void LevelProcess::emit(LevelEventKind event, LevelObserver observer,

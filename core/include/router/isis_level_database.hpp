@@ -33,7 +33,19 @@ public:
   // Limits are emulator budgets. Construction reserves record metadata and
   // copies circuit eligibility; allocation failure precedes publication.
   LevelDatabase(packet::isis::PduType type, LsdbLimits limits,
-                std::span<const FloodCircuit> circuits);
+                std::span<const FloodCircuit> circuits, std::size_t maximum_circuits = 0U);
+  // Same-owner cold-path admission. Zero constructor budget fixes the initial
+  // slot count; otherwise the explicit emulator budget bounds future slots.
+  // New slots start Down with no flood obligations. Allocation failure preserves
+  // lengths and contents, although already reserved capacity may remain.
+  [[nodiscard]] std::optional<std::size_t> admit_circuit(bool broadcast) noexcept;
+  [[nodiscard]] bool circuit_capacity_available() const noexcept {
+    return circuits_.size() < maximum_circuits_;
+  }
+  // Construction rollback only: index is the last admitted, unpublished Down
+  // slot, with no outstanding coordinator or receipt. Active slots never move
+  // or disappear. A failed precondition preserves every slot and flag.
+  [[nodiscard]] bool cancel_circuit_admission(std::size_t index) noexcept;
 
   // Same acceptance preconditions as LinkStateDatabase::install. Retained flag
   // storage is admitted before the LSDB changes. Allocation refusal cannot
@@ -121,6 +133,7 @@ private:
   std::vector<FloodCircuit> circuits_;
   std::vector<Record> records_;
   std::size_t maximum_records_{};
+  std::size_t maximum_circuits_{};
 };
 
 } // namespace router::isis

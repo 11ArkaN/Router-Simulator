@@ -10,6 +10,9 @@ features:
   routing.isis:
     status: planned
     source_ids: [nokia.sros.26_7.isis.yang_roots, project.runtime.isis_p2p_transport]
+  routing.isis.level_synchronization:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.level_process]
   cli.edit_operators:
     status: implemented
     source_ids: [nokia.sros.26_7.md_cli.delete_path, nokia.sros.26_7.classic_cli.no_forms]

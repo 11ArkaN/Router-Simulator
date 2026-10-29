@@ -7,7 +7,9 @@
 #include "router/protocol_packet_channel.hpp"
 
 #include <array>
+#include <algorithm>
 #include <memory>
+#include <limits>
 #include <source_location>
 #include <stdexcept>
 #include <string>
@@ -30,7 +32,17 @@ void isis_level_process_tests() {
     LevelProcess invalid(PduType::lsp_l1, {1U, 1024U}, circuits, 1U, 128U, 1200U, 65536s, 60s);
   } catch (const std::invalid_argument &) { invalid_retention_rejected = true; }
   require(invalid_retention_rejected);
-  LevelProcess level(PduType::lsp_l1, {1U, 1024U}, circuits, 1U, 128U, 1200U, 60s, 60s);
+  bool invalid_dynamic_budget_rejected{};
+  try {
+    LevelProcess invalid(PduType::lsp_l1, {1U, 1024U}, {}, 0U, 0U,
+        1200U, 60s, 60s, 1U);
+  } catch (const std::invalid_argument &) { invalid_dynamic_budget_rejected = true; }
+  require(invalid_dynamic_budget_rejected);
+  LevelProcess initially_empty(PduType::lsp_l1, {1U, 1024U}, {}, 1U, 0U,
+      1200U, 60s, 60s, 1U);
+  require(initially_empty.admit_circuit({false, 1U}, 128U).index == 0U);
+
+  LevelProcess level(PduType::lsp_l1, {1U, 1024U}, circuits, 1U, 128U, 1200U, 60s, 60s, 3U);
   LevelProcess other(PduType::lsp_l2, {1U, 1024U}, circuits, 1U, 128U, 1200U, 60s, 60s);
   auto now = RuntimeClock::time_point{100s};
   const LspId id{1U, 2U, 3U, 4U, 5U, 6U, 0U, 0U};
@@ -65,6 +77,23 @@ void isis_level_process_tests() {
     old = output->snp.prepare(SnpEmission::complete, contents, output->designated, frame, *scratch, now);
     require(old.status == SnpExchangeStatus::encoded);
   }
+  // Cold admission must preserve a pending encoded CSNP and its exact ticket.
+  require(level.admit_circuit({false, 0U}, 128U).status == LevelStatus::invalid_configuration);
+  require(level.admit_circuit({false, 9U}, 0U).status == LevelStatus::invalid_configuration);
+  require(level.admit_circuit({false, 9U}, std::numeric_limits<std::size_t>::max()).status ==
+      LevelStatus::invalid_configuration);
+  require(!level.database().circuit_state(2U) && level.database().flags(id, 0U)->srm);
+  const auto admitted = level.admit_circuit({false, 9U}, 128U);
+  require(admitted.status == LevelStatus::applied && admitted.index == 2U);
+  require(std::ranges::equal(level.database().database().find(id, now)->pdu.bytes, retained));
+  require(!level.outputs(2U, 9U) && !level.database().flags(id, 2U)->eligible &&
+      !level.database().flags(id, 2U)->srm && !level.database().flags(id, 2U)->ssn);
+  require(level.admit_circuit({false, 10U}, 128U).status == LevelStatus::capacity);
+  require(other.admit_circuit({false, 9U}, 128U).status == LevelStatus::capacity);
+  require(level.circuit(2U, 9U, false, true, false, true, observer) == LevelStatus::applied &&
+      level.database().flags(id, 2U)->srm);
+  require(level.outputs(0U, 7U)->snp.prepare(SnpEmission::complete, contents, false,
+      frame, *scratch, now).status == SnpExchangeStatus::pending);
   auto fabric = std::make_unique<lab::MultiDeviceFabric>();
   const lab::LinkHandle link{0U, 1U};
   require(fabric->configure(link, {lab::node(lab::DeviceHandle{0U, 1U}), 0U, 1U},
@@ -81,6 +110,14 @@ void isis_level_process_tests() {
     require(result.has_value());
     return Receipt{result->metadata.configuration_generation, result->metadata.transmission_id, result->enqueued};
   };
+  const auto admitted_receipt = queue(old, 7U);
+  require(admitted_receipt.enqueued && level.outputs(0U, 7U)->snp.complete(
+      admitted_receipt.epoch, admitted_receipt.ticket, true, now).accepted);
+  // A later reservation still follows the ordinary cancellation/epoch path.
+  level.outputs(0U, 7U)->snp.request_complete();
+  old = level.outputs(0U, 7U)->snp.prepare(SnpEmission::complete, contents, false,
+      frame, *scratch, now);
+  require(old.status == SnpExchangeStatus::encoded);
   const auto delayed = queue(old, 7U);
   require(delayed.enqueued);
   require(level.circuit(0U, 7U, false, false, false, false, observer) == LevelStatus::applied &&

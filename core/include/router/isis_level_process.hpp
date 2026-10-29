@@ -1,6 +1,7 @@
 // One instance-level control owner joins its LSDB, flood obligations and egress
-// reservations. Circuit slots and borrowed references remain stable until this
-// owner is destroyed. Peer information enters only as accepted encoded PDUs.
+// reservations. Circuit slot identities remain stable until destruction; cold
+// admission invalidates borrowed coordinator references. Peer information enters
+// only as accepted encoded PDUs.
 
 #pragma once
 
@@ -46,6 +47,10 @@ struct LevelOutputs {
   LspExchange &lsp;
   bool designated{};
 };
+struct LevelCircuitAdmission {
+  LevelStatus status{LevelStatus::invalid_configuration};
+  std::optional<std::size_t> index{};
+};
 class LevelProcess final {
 public:
   // All limits are emulator admission budgets. Effective lifetime/retention
@@ -53,16 +58,23 @@ public:
   // Construction allocates all circuit reservations before publication and
   // rejects zero epochs, nonpositive durations or purge retention exceeding
   // the LSDB's unsigned 16-bit seconds contract. Nonempty circuit sets need
-  // nonzero acknowledgement and SNP storage budgets. Initial circuits are Down.
+  // nonzero acknowledgement and SNP storage budgets. Future circuit capacity
+  // also requires acknowledgement storage. Initial circuits are Down.
   LevelProcess(packet::isis::PduType level, LsdbLimits limits,
       std::span<const LevelCircuitConfiguration> circuits,
       std::size_t acknowledgement_capacity, std::size_t snp_entry_capacity,
       std::uint16_t maximum_age, std::chrono::seconds purge_retention,
-      std::chrono::seconds waiting_time);
+      std::chrono::seconds waiting_time, std::size_t maximum_circuits = 0U);
   LevelProcess(const LevelProcess &) = delete;
   LevelProcess &operator=(const LevelProcess &) = delete;
   LevelProcess(LevelProcess &&) = delete;
   LevelProcess &operator=(LevelProcess &&) = delete;
+  // Same owner, with no borrowed outputs outstanding. Adds an initially Down
+  // slot within the construction budget, preserving the LSDB and every existing
+  // output reservation. Failure publishes no slot or event. A nonzero epoch and
+  // SNP entry budget are mandatory; no default or platform limit is selected.
+  [[nodiscard]] LevelCircuitAdmission admit_circuit(LevelCircuitConfiguration configuration,
+      std::size_t snp_entry_capacity) noexcept;
   // The parent completed old adjacency Down before replacing its epoch.
   // First activation may use the reserved epoch; reactivation needs a newer
   // epoch. Active media changes require Down. Synchronization floods retained
