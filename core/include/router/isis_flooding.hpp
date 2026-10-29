@@ -33,6 +33,7 @@ struct LspFloodResult {
 struct SnpFloodResult {
   bool request_missing{};
   bool confusion{};
+  bool waiting_state{};
 };
 
 // Caller has accepted the SNP and uses effective lifetimes for local entries.

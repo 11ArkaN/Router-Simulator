@@ -146,6 +146,10 @@ export const PROFILE_CATALOG = {
     "network_command_work_budget": 64,
     "forwarding_ring_frames": 64,
     "ospf_packet_ring_frames": 256,
+    "isis_packet_ring_frames": 256,
+    "isis_control_generation_slots": 8,
+    "isis_work_budget_packets": 64,
+    "isis_instance_last": 127,
     "ospf_lsas_per_instance": 4096,
     "ospf_vertices_per_area": 2048,
     "ospf_edges_per_area": 8192,
@@ -1169,5 +1173,5 @@ export const PROFILE_CATALOG_COMPILED = {
   "maximumMdaSlotsPerCard": 2,
   "maximumPortsPerMda": 40
 } as const;
-export const PROFILE_CATALOG_HASH = "bffa3ca9012399f2" as const;
-export const LAB_BUILD_HASH = "17ac32bdc9f34ae6" as const;
+export const PROFILE_CATALOG_HASH = "07c26ec58ab23cfb" as const;
+export const LAB_BUILD_HASH = "d91c23d5cceac6e0" as const;

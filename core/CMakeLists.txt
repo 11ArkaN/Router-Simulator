@@ -60,11 +60,17 @@ add_library(router_primitives STATIC
   src/isis/isis_authentication.cpp
   src/isis/isis_instance_tlv.cpp
   src/isis/isis_lsdb.cpp
+  src/isis/isis_level_database.cpp
+  src/isis/isis_transient_acknowledgements.cpp
+  src/isis/isis_csnp_sequence.cpp
   src/isis/isis_adjacency.cpp
   src/isis/isis_p2p_adjacency.cpp
+  src/isis/isis_p2p_circuit.cpp
+  src/isis/isis_lan_circuit.cpp
   src/isis/isis_lan_adjacency.cpp
   src/isis/isis_lan_adjacency_set.cpp
   src/isis/isis_jitter.cpp
+  src/isis/isis_hello_schedule.cpp
   src/isis/isis_flooding.cpp
     src/dns/dns_packet.cpp
     src/dns/dns_svcb.cpp
@@ -301,6 +307,7 @@ add_library(router_device STATIC
 target_link_libraries(router_device PUBLIC router_primitives router_build_options)
 
 add_library(router_network STATIC
+  src/isis/isis_control_worker.cpp
   src/runtime/capture_store.cpp
   src/dhcpv4/dhcpv4_endpoint_service.cpp
   src/dhcpv6/dhcpv6_endpoint_service.cpp
@@ -548,6 +555,7 @@ if(ROUTER_BUILD_TESTS)
     tests/forwarding/router_forwarder_isis_test.cpp
     tests/runtime/protocol_packet_channel_test.cpp
     tests/runtime/protocol_packet_completion_test.cpp
+    tests/runtime/owned_spsc_channel_test.cpp
     tests/isis/isis_three_way_test.cpp
     tests/isis/isis_reachability_test.cpp
     tests/isis/isis_multi_topology_test.cpp
@@ -561,8 +569,16 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_lan_adjacency_test.cpp
     tests/isis/isis_lan_adjacency_set_test.cpp
     tests/isis/isis_p2p_wire_test.cpp
+    tests/isis/isis_p2p_circuit_test.cpp
+    tests/isis/isis_control_worker_test.cpp
+    tests/isis/isis_lan_circuit_test.cpp
     tests/isis/isis_jitter_test.cpp
+    tests/isis/isis_hello_schedule_test.cpp
     tests/isis/isis_flooding_test.cpp
+    tests/isis/isis_level_database_test.cpp
+    tests/isis/isis_snp_receive_test.cpp
+    tests/isis/isis_transient_acknowledgements_test.cpp
+    tests/isis/isis_csnp_sequence_test.cpp
     tests/security/digest_test.cpp
     tests/runtime/capture_store_test.cpp
     tests/dhcpv4/dhcpv4_client_test.cpp

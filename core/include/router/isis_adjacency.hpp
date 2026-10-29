@@ -54,6 +54,7 @@ struct DisSelection {
   packet::Mac mac{};
   packet::isis::LanId lan{};
   bool local{};
+  bool operator==(const DisSelection &) const = default;
 };
 
 // ISO 10589 8.4.1 and 8.4.5. Caller supplies neighbors for exactly one level

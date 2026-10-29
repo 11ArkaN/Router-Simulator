@@ -177,6 +177,7 @@ for (const name of ["wasm_initial_memory_bytes", "wasm_maximum_memory_bytes",
   "network_result_ring_entries", "network_command_work_budget",
   "immediate_link_deadline_nanoseconds",
   "forwarding_ring_frames", "ospf_packet_ring_frames",
+  "isis_packet_ring_frames", "isis_control_generation_slots", "isis_work_budget_packets", "isis_instance_last",
   "ospf_lsas_per_instance", "ospf_vertices_per_area",
   "ospf_edges_per_area", "ospf_neighbors_per_interface",
   "ospf_work_budget_packets", "ospf_v2_instances_per_router",
@@ -212,6 +213,13 @@ if (catalog.runtime.low_cpu_max >= catalog.runtime.medium_cpu_max ||
   // Every pool expression includes one dedicated OSPF owner. The browser
   // Worker remains the primary control owner and does not consume a pool slot.
   fail("runtime shard counts and pthread pools are inconsistent");
+}
+if (catalog.runtime.isis_instance_last !== 127 ||
+    catalog.runtime.isis_packet_ring_frames < 1 ||
+    catalog.runtime.isis_control_generation_slots < 1 ||
+    catalog.runtime.isis_work_budget_packets < 1 ||
+    catalog.runtime.isis_work_budget_packets > catalog.runtime.isis_packet_ring_frames) {
+  fail("IS-IS instance range or bounded owner capacities are inconsistent");
 }
 if (catalog.runtime.ospf_v2_instances_per_router !== 32 ||
     catalog.runtime.ospf_v3_instances_per_router !== 64 ||
@@ -821,6 +829,10 @@ inline constexpr std::size_t network_result_ring_entries = ${catalog.runtime.net
 inline constexpr std::size_t network_command_work_budget = ${catalog.runtime.network_command_work_budget};
 inline constexpr std::size_t forwarding_ring_frames = ${catalog.runtime.forwarding_ring_frames};
 inline constexpr std::size_t ospf_packet_ring_frames = ${catalog.runtime.ospf_packet_ring_frames};
+inline constexpr std::size_t isis_packet_ring_frames = ${catalog.runtime.isis_packet_ring_frames};
+inline constexpr std::size_t isis_control_generation_slots = ${catalog.runtime.isis_control_generation_slots};
+inline constexpr std::size_t isis_work_budget_packets = ${catalog.runtime.isis_work_budget_packets};
+inline constexpr std::uint8_t isis_instance_last = ${catalog.runtime.isis_instance_last};
 inline constexpr std::size_t ospf_lsas_per_instance = ${catalog.runtime.ospf_lsas_per_instance};
 inline constexpr std::size_t ospf_vertices_per_area = ${catalog.runtime.ospf_vertices_per_area};
 inline constexpr std::size_t ospf_edges_per_area = ${catalog.runtime.ospf_edges_per_area};

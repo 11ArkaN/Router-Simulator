@@ -38,10 +38,10 @@ struct EthernetSwitchProfile {
 // One release owns this entire generated catalog. Runtime capability output
 // consumes this value instead of repeating the release pin in hand-written C++.
 inline constexpr std::string_view release{"26.7.R1"};
-inline constexpr std::uint64_t catalog_hash = 0xbffa3ca9012399f2ULL;
+inline constexpr std::uint64_t catalog_hash = 0x07c26ec58ab23cfbULL;
 inline constexpr std::uint64_t checkpoint_schema_hash = 0x23b42724ffac6c04ULL;
 inline constexpr std::uint64_t runtime_protocol_hash = 0x0bc477cf9500a83bULL;
-inline constexpr std::uint64_t build_hash = 0x17ac32bdc9f34ae6ULL;
+inline constexpr std::uint64_t build_hash = 0xd91c23d5cceac6e0ULL;
 
 inline constexpr std::size_t maximum_routers = 16;
 inline constexpr std::size_t maximum_sr_routers = 16;
@@ -196,6 +196,10 @@ inline constexpr std::size_t network_result_ring_entries = 32;
 inline constexpr std::size_t network_command_work_budget = 64;
 inline constexpr std::size_t forwarding_ring_frames = 64;
 inline constexpr std::size_t ospf_packet_ring_frames = 256;
+inline constexpr std::size_t isis_packet_ring_frames = 256;
+inline constexpr std::size_t isis_control_generation_slots = 8;
+inline constexpr std::size_t isis_work_budget_packets = 64;
+inline constexpr std::uint8_t isis_instance_last = 127;
 inline constexpr std::size_t ospf_lsas_per_instance = 4096;
 inline constexpr std::size_t ospf_vertices_per_area = 2048;
 inline constexpr std::size_t ospf_edges_per_area = 8192;

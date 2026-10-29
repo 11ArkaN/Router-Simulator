@@ -8,6 +8,34 @@
 #include <algorithm>
 
 namespace router::isis {
+namespace {
+std::optional<std::size_t> header_octets(packet::isis::PduType type) noexcept {
+  using namespace packet::isis;
+  if (type == PduType::csnp_l1 || type == PduType::csnp_l2) return csnp_header_octets;
+  if (type == PduType::psnp_l1 || type == PduType::psnp_l2) return psnp_header_octets;
+  return std::nullopt;
+}
+}
+
+std::optional<std::size_t> maximum_snp_entries(const SnpContents &contents, PduScratch &scratch) noexcept {
+  using namespace packet::isis;
+  const auto fixed = header_octets(contents.header.type);
+  const bool complete = contents.header.type == PduType::csnp_l1 || contents.header.type == PduType::csnp_l2;
+  if (complete && contents.header.last < contents.header.first) return std::nullopt;
+  if (!fixed || contents.maximum_pdu_octets < *fixed || contents.maximum_pdu_octets >
+      packet::maximum_frame_octets - packet::ethernet_header_octets - packet::llc_ui_header_octets)
+    return std::nullopt;
+  TlvWriter writer(std::span(scratch.options).first(contents.maximum_pdu_octets - *fixed));
+  if (contents.instance && !encode_instance_tlv(writer, contents.instance->format,
+      contents.instance->instance, contents.instance->topologies)) return std::nullopt;
+  if (contents.authentication && !append_authentication(writer, *contents.authentication)) return std::nullopt;
+  const auto available = contents.maximum_pdu_octets - *fixed - writer.bytes().size();
+  constexpr auto per_option = 255U / snp_entry_octets;
+  constexpr auto option_octets = 2U + per_option * snp_entry_octets;
+  const auto remainder = available % option_octets;
+  return available / option_octets * per_option +
+      (remainder < 2U ? 0U : (remainder - 2U) / snp_entry_octets);
+}
 
 SnpBuildResult build_snp_frame(packet::Frame &output, const SnpContents &contents,
     PduScratch &scratch) noexcept {
@@ -15,9 +43,10 @@ SnpBuildResult build_snp_frame(packet::Frame &output, const SnpContents &content
   using Result = SnpBuildResult;
   const auto type = contents.header.type;
   const bool complete = type == PduType::csnp_l1 || type == PduType::csnp_l2;
-  if (!complete && type != PduType::psnp_l1 && type != PduType::psnp_l2) return Result::invalid_header;
+  const auto fixed_header = header_octets(type);
+  if (!fixed_header) return Result::invalid_header;
   if (complete && contents.header.last < contents.header.first) return Result::invalid_header;
-  const auto fixed = complete ? csnp_header_octets : psnp_header_octets;
+  const auto fixed = *fixed_header;
   if (contents.maximum_pdu_octets < fixed || contents.maximum_pdu_octets >
       packet::maximum_frame_octets - packet::ethernet_header_octets - packet::llc_ui_header_octets)
     return Result::capacity;

@@ -1,5 +1,131 @@
 schema_version: 1
 records:
+  - id: iso.10589.2002.csnp_sequence
+    kind: routing-protocol-synchronization-owner
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 7.3.15.3 and 7.3.17, complete CSNP sets and inclusive identifier ranges
+    rfc_refs: []
+    yang_path: /configure/router/isis/interface/csnp-interval
+    last_verified_at: 2026-10-28
+    implementation: [core/include/router/isis_csnp_sequence.hpp, core/src/isis/isis_csnp_sequence.cpp]
+    tests: [core/tests/isis/isis_csnp_sequence_test.cpp]
+    status: experimental
+    notes: One circuit-level owner partitions the current ordered level database into contiguous inclusive CSNP ranges covering the entire LSP-ID space. It retains its range after queue refusal, advances only on actual egress success and coalesces later complete-sequence requests without restarting an unfinished scan. Empty databases produce one full-range CSNP. The caller supplies an exact encoded-entry budget, circuit epochs, media-specific scheduling, authentication and actual packet dispatch.
+  - id: iso.10589.2002.transient_purge_acknowledgements
+    kind: routing-protocol-acknowledgement-owner
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 7.3.16.4(a), 7.3.17 and SNP ordering in 9.10 through 9.13
+    rfc_refs: []
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-10-28
+    implementation: [core/include/router/isis_transient_acknowledgements.hpp, core/src/isis/isis_transient_acknowledgements.cpp]
+    tests: [core/tests/isis/isis_transient_acknowledgements_test.cpp]
+    status: experimental
+    notes: Unknown-purge acknowledgement entries remain outside the retained LSP database and never acquire SRM. Bounded admission preserves independent tickets for distinct versions, coalesces exact duplicates and refuses without acknowledgement when resources are exhausted. Selection emits one version per LSP ID in ascending order, rotating across IDs. Actual egress success retires only the matching circuit and ticket; failure preserves the obligation. Circuit Down clears obsolete obligations. The enclosing circuit owner must choose its medium-specific acknowledgement form, merge batches with ordinary SSN entries and reject stale configuration epochs.
+  - id: iso.10589.2002.lan_circuit_owner
+    kind: routing-protocol-circuit-owner
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard-and-rfc
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 8.4.1 through 8.4.5, LAN Hello, adjacency and designated-system election
+    rfc_refs: [RFC1195, RFC5308, RFC5120, RFC8202]
+    yang_path: /configure/router/isis/interface
+    last_verified_at: 2026-10-28
+    implementation: [core/include/router/isis_circuit_configuration.hpp, core/include/router/isis_lan_circuit.hpp, core/src/isis/isis_lan_circuit.cpp, core/include/router/isis_lan_adjacency_set.hpp, core/src/isis/isis_lan_adjacency_set.cpp]
+    tests: [core/tests/isis/isis_lan_circuit_test.cpp]
+    status: experimental
+    notes: A circuit-level owner composes encoded Hellos from its received Initializing and Up neighbor set, delays DIS election by two ordinary Hello intervals, considers only Up competitors and changes its effective Hello interval and holding value with local DIS role. Authentication, instance selection, L1 area and maximum-area checks precede neighbor admission. LAN adjacency does not require a common MT component. Three circuit owners discover each other through physical queues and a learning bridge, then replace the DIS after carrier loss and holding expiry. Pseudonode origination, runtime configuration and control-worker LAN admission remain instance integration work.
+  - id: nokia.sros.26_7.isis.address_family_adjacency
+    kind: routing-protocol-adjacency-policy
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-s-commands-stat-5.html#ai9j785or8
+    section: strict-adjacency-check
+    rfc_refs: [RFC1195, RFC5308]
+    yang_path: /configure/router/isis/strict-adjacency-check
+    last_verified_at: 2026-10-28
+    implementation: [core/include/router/isis_p2p_circuit.hpp, core/src/isis/isis_p2p_circuit.cpp]
+    tests: [core/tests/isis/isis_p2p_circuit_test.cpp]
+    status: experimental
+    notes: P2P Hello acceptance compares IPv4 and IPv6 NLPIDs before refreshing holding state. Strict policy requires identical family sets; disabled policy requires a nonempty intersection. A mismatch removes existing peer state through its synchronous Down callback while preserving previous attributes for that callback. Configuration commands and LAN policy remain integration work.
+  - id: project.runtime.isis_control_owner
+    kind: concurrency-ownership-contract
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-architecture-decision
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0006-control-generation-handoff.md
+    section: Circuit generations and worker lifecycle
+    rfc_refs: [RFC5303]
+    yang_path: null
+    last_verified_at: 2026-10-28
+    implementation: [core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp, profiles/catalog/26.7.R1.yaml]
+    tests: [core/tests/isis/isis_control_worker_test.cpp]
+    status: experimental
+    notes: A dedicated pthread owns admitted P2P circuits. Owned command slots and immutable result rings connect serialized control; per-forwarding-shard frame channels carry encoded PDUs and actual egress receipts. Device and circuit generations reject obsolete input before adjacency mutation. Bounded owner turns rotate devices and circuits; holding expiry remains independent of transmit credits. Runtime startup integration, instance-level flooding, key-vault selection and measured active-instance limits remain incomplete.
+  - id: project.runtime.control_generation_handoff
+    kind: concurrency-ownership-contract
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-architecture-decision
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0006-control-generation-handoff.md
+    section: Ownership and ordering, circuit generations and worker lifecycle
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-10-28
+    implementation: [core/include/router/owned_spsc_channel.hpp, core/include/router/protocol_packet_channel.hpp]
+    tests: [core/tests/runtime/owned_spsc_channel_test.cpp, core/tests/runtime/protocol_packet_completion_test.cpp]
+    status: experimental
+    notes: Shared slots transfer exclusively owned dynamic control values through handle-only ready and return rings. One producer and one consumer use release/acquire ownership handoff. The independent circuit configuration generation in frame metadata supports rejection after live interface reconfiguration. Worker integration and its measured active-process limit remain separate work.
+  - id: iso.10589.2002.p2p_circuit_owner
+    kind: routing-protocol-circuit-owner
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard-and-rfc
+    source_url: https://www.iso.org/standard/30932.html
+    section: P2P circuit acceptance and lifecycle, clauses 8.2 and 8.3
+    rfc_refs: [RFC1195, RFC5303, RFC5308, RFC5309, RFC5120, RFC8202]
+    yang_path: /configure/router/isis/interface
+    last_verified_at: 2026-10-28
+    implementation: [core/include/router/isis_p2p_circuit.hpp, core/src/isis/isis_p2p_circuit.cpp, core/include/router/isis_neighbor_attributes.hpp]
+    tests: [core/tests/isis/isis_p2p_circuit_test.cpp]
+    status: experimental
+    notes: The circuit combines encoded Hello acceptance, instance and synchronous authentication checks, peer attribute admission, ISO and three-way adjacency state, holding expiry and local Hello scheduling. Vault key views are consumed synchronously and never retained. Peer attributes come only from accepted wire options and are staged before holding refresh. Down callbacks retain previous attributes until completion. Two authenticated circuit owners converge through physical queues; invalid keys, instance mismatch and attribute-budget refusal cannot create or refresh an adjacency. The instance must supply effective configuration, circuit epochs, keychain selection, AF policy and runtime channels.
+  - id: iso.10589.2002.hello_schedule
+    kind: routing-protocol-local-timers
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 8.4.4 and 10.1, Hello triggers, periodic continuation and DIS timer exception
+    rfc_refs: [RFC5303]
+    yang_path: /configure/router/isis/interface
+    last_verified_at: 2026-10-28
+    implementation: [core/include/router/isis_hello_schedule.hpp, core/src/isis/isis_hello_schedule.cpp]
+    tests: [core/tests/isis/isis_hello_schedule_test.cpp]
+    status: experimental
+    notes: Each circuit Hello class owns its deadlines and PRNG continuation. Content changes do not restart the periodic timer. LAN emissions use one-second same-level spacing, DIS periods are unjittered, and other periods use fresh ISO jitter. One pending send reserves the class until its actual egress receipt. A refused periodic Hello is retried by the next periodic expiration instead of spinning on a full queue; content updates requested while pending survive completion. Effective intervals, circuit role selection, checkpoint transfer and runtime wakeups remain circuit-owner integration work.
+  - id: iso.10589.2002.level_database_owner
+    kind: routing-protocol-state-owner
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 7.3.15, 7.3.16 and 9.10 through 9.13, retained LSPs and SNP flood obligations
+    rfc_refs: []
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-10-28
+    implementation: [core/include/router/isis_level_database.hpp, core/src/isis/isis_level_database.cpp]
+    tests: [core/tests/isis/isis_level_database_test.cpp, core/tests/isis/isis_snp_receive_test.cpp]
+    status: experimental
+    notes: One level owner combines encoded LSDB admission and per-circuit flood flags. New flag storage is staged before database mutation. Missing live SNP advertisements reserve zero-sequence placeholders with SSN and never SRM, sharing the level record budget. Successful LSP admission replaces the placeholder without another record allocation. PSNP selection scans cyclically and sorts the selected batch, preventing low-ID churn from starving later entries. SNP reception validates the complete ordered entry list across repeated options before applying flags, ignores unknown options, gates broadcast PSNP processing on local DIS role and applies CSNP omissions only inside its range. Capacity refusal preserves the retained generation and does not acknowledge. Completion receipts identify sequence, checksum and purge state so an old queued LSP cannot clear a replacement's flood obligation. The enclosing instance must reject stale circuit epochs, retain transient acknowledgements and integrate source-adjacency and authentication acceptance, timers and actual packet dispatch.
   - id: emscripten.cpp.exception_catching
     kind: build-runtime-error-contract
     release: 26.7.R1

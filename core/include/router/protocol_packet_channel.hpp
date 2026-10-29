@@ -29,6 +29,11 @@ public:
     lab::DeviceHandle device{};
     std::uint64_t interface_id{};
     std::uint16_t physical_port_ordinal{};
+    // Producer supplies the immutable circuit configuration generation. IS-IS
+    // receivers and egress consumers require a nonzero current match before
+    // using interface state; device generation alone cannot distinguish two
+    // configurations of the same live router. Zero preserves legacy users.
+    std::uint64_t configuration_generation{};
   };
 
   struct Borrowed {

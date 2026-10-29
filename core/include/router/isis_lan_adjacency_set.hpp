@@ -6,20 +6,12 @@
 
 #include "router/isis_adjacency.hpp"
 #include "router/isis_lan_adjacency.hpp"
+#include "router/isis_neighbor_attributes.hpp"
 
 #include <vector>
 
 namespace router::isis {
 
-struct NeighborArea {
-  std::array<std::uint8_t, packet::isis::maximum_area_octets> bytes{};
-  std::uint8_t length{};
-  // Set-owned projections guarantee 1 <= length <= bytes.size(). A caller
-  // constructing a value independently must preserve that extent invariant.
-  [[nodiscard]] std::span<const std::uint8_t> view() const noexcept {
-    return std::span(bytes).first(length);
-  }
-};
 struct LanSetLimits {
   std::size_t neighbors{};
   std::size_t areas_per_neighbor{};
@@ -28,7 +20,7 @@ struct LanPeerView {
   LanSnapshot adjacency;
   std::span<const NeighborArea> areas;
 };
-enum class LanEventCause : std::uint8_t { received, expired, capacity_evicted, circuit_down };
+enum class LanEventCause : std::uint8_t { received, expired, capacity_evicted, circuit_down, policy_mismatch };
 struct LanPeerEvent {
   LanPeerView before;
   LanPeerView after;
@@ -74,6 +66,10 @@ public:
   // retained area projection. Returns false without mutation if the observer
   // is missing. No events are emitted by the destructor.
   [[nodiscard]] bool circuit_down(void *context, LanPeerObserver observer) noexcept;
+  // An authenticated, structurally valid Hello failed the enclosing circuit's
+  // adjacency policy. Complete Down before removing retained peer attributes.
+  [[nodiscard]] bool policy_down(const packet::Mac &mac,
+      void *context, LanPeerObserver observer) noexcept;
   // Views borrow until the next mutation. Queries run on the same owner only.
   [[nodiscard]] std::optional<LanPeerView> find(const packet::Mac &mac) const noexcept;
   [[nodiscard]] std::optional<LanPeerView> at(std::size_t index) const noexcept;

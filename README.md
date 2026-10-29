@@ -220,3 +220,21 @@ The C++ implementation and tests use the same domain directories: `cli`, `device
 `pnpm verify` builds the complete C++ graph once during the test gate. The following benchmark and publication gates reuse those exact artifacts. Standalone benchmark and publication commands still perform their own incremental build. Core build processes are serialized around the shared Ninja dependency database, while each build uses all logical processors.
 
 IS-IS distance calculation uses the same bounded indexed Dijkstra mechanism as OSPF with protocol-specific metric limits. Narrow IS-IS keeps distance 1023 finite, wide IS-IS saturates at 0xFE000000, and OSPF continues to exclude LSInfinity. IS-IS gives pseudonodes precedence at equal cost and keeps selected PATHS entries closed. Complete LSDB graph translation and IS-IS route installation remain in progress.
+
+The IS-IS level database owner combines accepted encoded LSP storage with per-circuit flood obligations. It reserves flag storage before LSDB mutation and rejects completion receipts for superseded LSP versions. Missing LSP advertisements reserve bounded zero-sequence PSNP requests that never acquire SRM. Partial-SNP selection rotates through pending entries and sorts each batch for wire composition. Complete SNP reception validates every entry before mutation, applies CSNP omissions only inside the advertised range and rejects LAN PSNPs when the local circuit is not DIS. Instance dispatch, transient acknowledgements, circuit epochs and timers remain integration work.
+
+Each IS-IS Hello class has an independent monotonic schedule. Content changes preserve its periodic deadline, LAN transmissions respect same-level spacing, and egress receipts commit successful emission times. Circuit dispatch and checkpoint continuation still need to connect this schedule to the runtime.
+
+The P2P circuit owner connects scheduled authenticated Hello frames, received peer attributes, three-way negotiation and holding expiry. Its tests converge two owners over physical queues and verify rejection without timer refresh, Down attribute lifetime, shutdown and reactivation. Runtime configuration, epoch filtering and instance-level routing remain in progress.
+
+A dedicated IS-IS control pthread now admits P2P circuit owners through an owned SPSC command channel. Encoded frame channels return actual egress admission receipts, and circuit generations reject stale input before adjacency processing. Tests connect this thread through physical link queues and inspect immutable results. Product startup integration, instance flooding, key-vault selection and route publication remain in progress.
+
+P2P Hello acceptance checks IPv4 and IPv6 family declarations before holding refresh. Strict adjacency policy requires identical family sets, while the default policy requires a common family. A mismatched established peer is removed through the circuit's Down event.
+
+The LAN circuit owner schedules per-level Hello frames, retains received neighbors and drives delayed DIS election. Its test discovers three routers through physical queues and a learning bridge, then verifies replacement after the selected DIS loses carrier. Pseudonode generation and runtime LAN admission remain in progress.
+
+Unknown-purge acknowledgement metadata has a separate bounded owner outside the LSDB. Distinct received versions keep independent tickets, queue refusal retains them, and old receipts cannot remove later obligations. SNP batches contain at most one version per LSP ID and retire entries only after actual egress admission.
+
+CSNP sequences partition the complete LSP-ID space into contiguous packet-sized ranges, including an empty database. Queue refusal retries the same range, and another timer request cannot restart an unfinished sequence ahead of higher IDs.
+
+Control generations with dynamic containers can transfer ownership through fixed shared slots and SPSC handle rings. Packet metadata also retains the circuit configuration generation. The ownership and stale-generation rules are recorded in [ADR 0006](docs/adr/0006-control-generation-handoff.md); worker integration remains in progress.

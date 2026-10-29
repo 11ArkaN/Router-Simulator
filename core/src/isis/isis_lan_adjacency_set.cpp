@@ -146,4 +146,12 @@ bool LanAdjacencySet::circuit_down(void *context, LanPeerObserver observer) noex
   return true;
 }
 
+bool LanAdjacencySet::policy_down(const packet::Mac &mac, void *context, LanPeerObserver observer) noexcept {
+  if (!observer) return false;
+  const auto index = position(mac);
+  if (index == peers_.size() || peers_[index].adjacency.snapshot().mac != mac) return false;
+  static_cast<void>(remove(index, LanEventCause::policy_mismatch, {}, context, observer));
+  return true;
+}
+
 } // namespace router::isis

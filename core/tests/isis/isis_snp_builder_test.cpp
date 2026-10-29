@@ -7,6 +7,7 @@
 #include <array>
 #include <memory>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 void require(bool condition, const char *message) {
@@ -119,4 +120,40 @@ void isis_snp_builder_tests() {
   const auto empty = parse_ethernet_pdu(frame.view(), error);
   require(empty && empty->pdu.bytes.size() == csnp_header_octets && empty->pdu.tlvs.empty(),
           "IS-IS empty CSNP contained synthetic entries or protocol padding");
+  for (const auto type : {PduType::csnp_l1, PduType::csnp_l2, PduType::psnp_l1, PduType::psnp_l2})
+    for (const bool with_instance : {false, true})
+      for (const bool with_authentication : {false, true})
+        for (const std::size_t mtu : {51U, 100U, 1492U}) {
+          contents.header.type = type;
+          contents.header.first = {};
+          contents.header.last.fill(0xffU);
+          contents.maximum_pdu_octets = mtu;
+          contents.entries = {};
+          contents.instance = with_instance
+              ? std::optional(PduInstanceOption{InstanceFormat::standard, 7U, topologies}) : std::nullopt;
+          contents.authentication = with_authentication
+              ? std::optional(AuthenticationKey{AuthenticationMethod::hmac_sha256, 5U, key}) : std::nullopt;
+          const auto budget = maximum_snp_entries(contents, *scratch);
+          if (!budget) {
+            require(build_snp_frame(frame, contents, *scratch) != SnpBuildResult::encoded,
+                "IS-IS SNP budget rejected a viable fixed header and options");
+            continue;
+          }
+          std::vector<SnpEntry> selected(*budget + 1U);
+          for (std::size_t index{}; index < selected.size(); ++index) {
+            selected[index].id[0U] = 1U;
+            selected[index].id[6U] = static_cast<std::uint8_t>(index >> 8U);
+            selected[index].id[7U] = static_cast<std::uint8_t>(index & 0xffU);
+            selected[index].sequence = selected[index].checksum = 1U;
+          }
+          contents.entries = std::span(selected).first(*budget);
+          require(build_snp_frame(frame, contents, *scratch) == SnpBuildResult::encoded,
+              "IS-IS exact SNP budget did not fit its encoded packet");
+          const auto before = frame;
+          contents.entries = selected;
+          const auto oversized = build_snp_frame(frame, contents, *scratch);
+          require((oversized == SnpBuildResult::capacity || oversized == SnpBuildResult::authentication) &&
+              frame.bytes == before.bytes && frame.length == before.length,
+              "IS-IS SNP budget admitted one excess entry or changed output on refusal");
+        }
 }
