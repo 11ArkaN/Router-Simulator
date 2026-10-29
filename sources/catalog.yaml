@@ -42,6 +42,20 @@ records:
     tests: [core/tests/runtime/network_plane_test.cpp, core/tests/runtime/protocol_packet_completion_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
     status: implemented
     notes: Protocol packet publication wakes the selected forwarding consumer. Route publication wakes its link-owner consumer. Returning transfer credits sets a durable atomic work predicate, and bounded drainers continue immediately only while pending input and output credits coexist. The combined placement wakes its colocated link owner. Tests cover idle encoded protocol output through physical forwarding and link queues, consumer readiness and selected-shard notifications. This contract does not claim completed IS-IS circuit integration.
+  - id: iso.10589.2002.instance_update
+    kind: routing-protocol-instance-update-owner
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard-and-rfc
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 7.3.14, 7.3.15.1, 7.3.15.2 and 7.3.17, accepted P2P adjacencies and per-level update dispatch
+    rfc_refs: [RFC5303, RFC5304, RFC5309, RFC5310, RFC8202]
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-10-29
+    implementation: [core/include/router/isis_instance_update.hpp, core/src/isis/isis_instance_update.cpp]
+    tests: [core/tests/isis/isis_instance_update_test.cpp]
+    status: experimental
+    notes: One instance joins local authenticated P2P circuit events to independent L1 and L2 update owners. Transport configuration epochs remain distinct from synchronization epochs advanced on adjacency reactivation. Receive validates level, adjacency, destination, instance, MRU, maximum-area and configured authentication before mutation. Locally sourced LSPs return an explicit unresolved self-originated result for fight-back or purge rather than entering the foreign LSDB path. Tests exchange Hello, LSP and PSNP through actual physical queues, retire only matching reservations and retain databases through same-configuration Down and Up. Bounded cold admission adds a Down circuit to both levels atomically and rolls back earlier levels if a later reservation fails. An explicit RFC 5303 Up restarts synchronization even when the preceding Initialize retained ISO Up state. Runtime worker scheduling, local sequence and purge ownership, LAN admission and route publication remain in progress.
   - id: iso.10589.2002.level_process
     kind: routing-protocol-level-owner
     release: 26.7.R1
@@ -76,14 +90,14 @@ records:
     platforms: [all-supported]
     source_type: iso-iec-standard
     source_url: https://www.iso.org/standard/30932.html
-    section: Clauses 7.3.16.3, 7.3.16.4 and 7.3.17, lifetime reduction and LSP output
+    section: Clauses 7.3.15, 7.3.16.3, 7.3.16.4 and 7.3.17, circuit-size suppression, lifetime reduction and LSP output
     rfc_refs: []
     yang_path: /configure/router/isis/interface
     last_verified_at: 2026-10-29
     implementation: [core/include/router/isis_lsp_exchange.hpp, core/src/isis/isis_lsp_exchange.cpp]
-    tests: [core/tests/isis/isis_lsp_exchange_test.cpp]
+    tests: [core/tests/isis/isis_lsp_exchange_test.cpp, core/tests/isis/isis_lsp_builder_test.cpp]
     status: experimental
-    notes: Circuit-local output copies the retained encoded LSP and applies its effective holding-time lifetime plus a caller-selected transit decrement of at least one second. Unfinalized expiration requires the instance purge owner. A matching actual egress receipt clears LAN SRM only for the unchanged retained version; P2P keeps SRM until peer SNP reception. Refusal, operational cancellation and stale epochs preserve obligations. The instance owner must provide source-backed pacing, transit estimation and finalized authenticated purges.
+    notes: Circuit-local output copies the retained encoded LSP and applies its effective holding-time lifetime plus a caller-selected transit decrement of at least one second. Unfinalized expiration requires the instance purge owner. A matching actual egress receipt clears LAN SRM only for the unchanged retained version; P2P keeps SRM until peer SNP reception. Physical enqueue refusal, operational cancellation and stale epochs preserve obligations. An LSP exceeding the effective circuit dataLinkBlockSize clears only that circuit SRM and returns an explicit too-large result for the parent alarm; temporary scratch capacity refusal preserves SRM and SSN. The instance owner must provide source-backed pacing, transit estimation and finalized authenticated purges.
   - id: iso.10589.2002.snp_exchange
     kind: routing-protocol-synchronization-owner
     release: 26.7.R1
@@ -294,6 +308,20 @@ records:
     tests: [core/tests/isis/isis_multi_topology_test.cpp, core/tests/isis/isis_hello_builder_test.cpp]
     status: experimental
     notes: Membership unions repeated TLV 229 options, absence implies MT0 only and O/A flags apply only to nonzero topologies in fragment-zero LSPs. Other PDU contexts do not supply membership. MT reachability exposes borrowed standard-codec bodies and preserves the required whole-option ignore for topology zero. Hello composition splits complete membership lists and authenticates their final wire image. LAN adjacency formation, per-topology reverse connectivity, SPF, RIB and forwarding remain instance integration work. The RFC Editor errata search returned no matching records on the verification date.
+  - id: iso.10589.2002.lsp_composition
+    kind: routing-protocol-wire-composition
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: iso-iec-standard-and-rfc
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 9.8 and 9.9 LSP encoding, 7.3.15 circuit dataLinkBlockSize, authenticated composition
+    rfc_refs: [RFC5304, RFC5310, RFC8202]
+    yang_path: /configure/router/isis/lsp-mtu-size
+    last_verified_at: 2026-10-29
+    implementation: [core/include/router/isis_lsp_builder.hpp, core/src/isis/isis_lsp_builder.cpp]
+    tests: [core/tests/isis/isis_lsp_builder_test.cpp]
+    status: experimental
+    notes: The owner supplies finalized header and framed semantic options. Composition inserts IID before other options, prevents injected IID or authentication duplicates, finalizes authentication and checksum, and returns only complete encoded raw PDUs. Raw caller-owned capacity is independent of circuit frame capacity and bounded by the wire length. Tests cover both levels, all implemented authentication methods, zero and nonzero lifetime encoding, malformed options and retained LSPs exceeding physical frame capacity. Fragmentation, purge option policy, sequence scheduling and the oversized-circuit alarm remain instance-owner responsibilities.
   - id: iso.10589.2002.snp_composition
     kind: routing-protocol-wire-composition
     release: 26.7.R1

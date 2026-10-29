@@ -174,6 +174,16 @@ std::optional<FloodCircuit> LevelDatabase::flags(const packet::isis::LspId &id,
       ? std::optional(records_[index].circuits[circuit]) : std::nullopt;
 }
 
+bool LevelDatabase::suppress_oversized(const packet::isis::LspId &id, std::size_t circuit) noexcept {
+  const auto index = position(id);
+  if (index == records_.size() || records_[index].id != id ||
+      circuit >= records_[index].circuits.size()) return false;
+  auto &flags = records_[index].circuits[circuit];
+  const bool requested = flags.srm;
+  flags.srm = false;
+  return requested;
+}
+
 SnpFloodResult LevelDatabase::receive_snp_entry(const packet::isis::SnpEntry &entry,
     std::size_t circuit, RuntimeClock::time_point now) noexcept {
   if (circuit >= circuits_.size() || !circuits_[circuit].eligible) return {};

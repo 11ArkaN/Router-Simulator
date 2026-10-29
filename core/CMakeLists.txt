@@ -50,6 +50,7 @@ add_library(router_primitives STATIC
   src/isis/isis_ethernet.cpp
   src/isis/isis_hello_builder.cpp
   src/isis/isis_snp_builder.cpp
+  src/isis/isis_lsp_builder.cpp
   src/forwarding/llc_packet.cpp
   src/isis/isis_three_way.cpp
   src/isis/isis_reachability.cpp
@@ -66,6 +67,7 @@ add_library(router_primitives STATIC
   src/isis/isis_snp_exchange.cpp
   src/isis/isis_lsp_exchange.cpp
   src/isis/isis_level_process.cpp
+  src/isis/isis_instance_update.cpp
   src/isis/isis_adjacency.cpp
   src/isis/isis_p2p_adjacency.cpp
   src/isis/isis_p2p_circuit.cpp
@@ -553,6 +555,7 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_ethernet_test.cpp
     tests/isis/isis_hello_builder_test.cpp
     tests/isis/isis_snp_builder_test.cpp
+    tests/isis/isis_lsp_builder_test.cpp
     tests/isis/isis_ethernet_fabric_test.cpp
     tests/isis/isis_egress_completion_test.cpp
     tests/forwarding/llc_packet_test.cpp
@@ -588,6 +591,7 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_snp_exchange_test.cpp
     tests/isis/isis_lsp_exchange_test.cpp
     tests/isis/isis_level_process_test.cpp
+    tests/isis/isis_instance_update_test.cpp
     tests/security/digest_test.cpp
     tests/runtime/capture_store_test.cpp
     tests/dhcpv4/dhcpv4_client_test.cpp

@@ -41,6 +41,8 @@ void isis_level_process_tests() {
   LevelProcess initially_empty(PduType::lsp_l1, {1U, 1024U}, {}, 1U, 0U,
       1200U, 60s, 60s, 1U);
   require(initially_empty.admit_circuit({false, 1U}, 128U).index == 0U);
+  require(initially_empty.cancel_circuit_admission(0U) && !initially_empty.database().circuit_state(0U));
+  require(initially_empty.admit_circuit({false, 1U}, 128U).index == 0U);
 
   LevelProcess level(PduType::lsp_l1, {1U, 1024U}, circuits, 1U, 128U, 1200U, 60s, 60s, 3U);
   LevelProcess other(PduType::lsp_l2, {1U, 1024U}, circuits, 1U, 128U, 1200U, 60s, 60s);
@@ -60,6 +62,7 @@ void isis_level_process_tests() {
   require(level.circuit(0U, 7U, false, true, false, false, observer) == LevelStatus::applied &&
       level.circuit(1U, 7U, true, true, false, false, observer) == LevelStatus::applied);
   require(level.database().flags(id, 0U)->srm && level.database().flags(id, 1U)->srm);
+  require(!level.cancel_circuit_admission(1U));
   require(level.circuit(0U, 7U, true, true, false, false, observer) == LevelStatus::needs_down);
   require(level.receive_lsp(0U, 6U, retained, now, observer).status == LevelStatus::stale_epoch);
   SnpContents contents;

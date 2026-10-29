@@ -75,6 +75,10 @@ public:
   // SNP entry budget are mandatory; no default or platform limit is selected.
   [[nodiscard]] LevelCircuitAdmission admit_circuit(LevelCircuitConfiguration configuration,
       std::size_t snp_entry_capacity) noexcept;
+  // Same-owner construction rollback for the last unpublished admission only.
+  // The slot must never have activated; no borrowed coordinator may survive.
+  // Refusal preserves every slot, reservation and database record.
+  [[nodiscard]] bool cancel_circuit_admission(std::size_t index) noexcept;
   // The parent completed old adjacency Down before replacing its epoch.
   // First activation may use the reserved epoch; reactivation needs a newer
   // epoch. Active media changes require Down. Synchronization floods retained

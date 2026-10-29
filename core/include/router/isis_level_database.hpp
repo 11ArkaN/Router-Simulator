@@ -71,6 +71,12 @@ public:
   [[nodiscard]] bool complete(const packet::isis::LspView &sent,
       std::size_t circuit, bool partial_snp, bool enqueued,
       RuntimeClock::time_point now) noexcept;
+  // Same-owner ISO 10589 7.3.15 emission-size refusal. Caller just compared
+  // this retained LSP with the effective circuit dataLinkBlockSize, has no
+  // pending output for it, and must report lSPTooLargeToPropagate. Clear only
+  // this circuit's SRM; retain the LSP, SSN and all other circuit obligations.
+  [[nodiscard]] bool suppress_oversized(const packet::isis::LspId &id,
+      std::size_t circuit) noexcept;
   // The instance accepted the containing SNP's source, level, authentication
   // and DIS rules. Missing live entries reserve bounded zero-sequence
   // placeholders with SSN on this circuit and no SRM. Refusal reports Waiting

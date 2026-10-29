@@ -10,7 +10,7 @@
 
 namespace router::isis {
 enum class LspEmissionStatus : std::uint8_t {
-  encoded, pending, ineligible, not_requested, purge_required, capacity, ticket_exhausted
+  encoded, pending, ineligible, not_requested, purge_required, capacity, ticket_exhausted, too_large
 };
 struct LspTransmission {
   LspEmissionStatus status{LspEmissionStatus::not_requested};
@@ -27,6 +27,8 @@ public:
   // the instance's finalized purge first. Existing authenticated options and
   // checksum survive lifetime rewriting. Scratch/output must not alias LSDB.
   // Only encoded permits dispatch. No LSDB bytes or key lease are retained.
+  // too_large clears only the oversized circuit's SRM under ISO 7.3.15; the
+  // parent must emit lSPTooLargeToPropagate. capacity preserves obligations.
   [[nodiscard]] LspTransmission prepare(const packet::isis::LspId &id,
       const packet::Mac &source, const packet::Mac &destination,
       std::size_t maximum_pdu_octets, std::uint16_t transit_seconds,

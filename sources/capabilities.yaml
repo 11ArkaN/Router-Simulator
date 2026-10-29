@@ -10,6 +10,12 @@ features:
   routing.isis:
     status: planned
     source_ids: [nokia.sros.26_7.isis.yang_roots, project.runtime.isis_p2p_transport]
+  routing.isis.local_lsp_composition:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.lsp_composition]
+  routing.isis.instance_update:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.instance_update]
   routing.isis.level_synchronization:
     status: partially-implemented
     source_ids: [iso.10589.2002.level_process]

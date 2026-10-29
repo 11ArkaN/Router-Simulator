@@ -27,8 +27,13 @@ LspTransmission LspExchange::prepare(const packet::isis::LspId &id,
   if (!stored->purge_installed && stored->header.remaining_seconds <= decrement)
     return {LspEmissionStatus::purge_required};
   const auto bytes = stored->pdu.bytes;
-  if (bytes.size() > maximum_pdu_octets || bytes.size() > scratch.pdu.size())
+  if (maximum_pdu_octets < packet::isis::lsp_header_octets)
     return {LspEmissionStatus::capacity};
+  if (bytes.size() > maximum_pdu_octets) {
+    static_cast<void>(database_.suppress_oversized(id, circuit_));
+    return {LspEmissionStatus::too_large};
+  }
+  if (bytes.size() > scratch.pdu.size()) return {LspEmissionStatus::capacity};
   std::copy(bytes.begin(), bytes.end(), scratch.pdu.begin());
   const auto lifetime = stored->purge_installed ? std::uint16_t{} :
       static_cast<std::uint16_t>(stored->header.remaining_seconds - decrement);

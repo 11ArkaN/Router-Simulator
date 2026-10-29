@@ -67,6 +67,14 @@ void LevelProcess::emit(LevelEventKind event, LevelObserver observer,
   observer.event(observer.context, {event, database_.type(), id});
 }
 
+bool LevelProcess::cancel_circuit_admission(std::size_t index) noexcept {
+  if (index >= circuits_.size() || index + 1U != circuits_.size() ||
+      circuits_[index].activated || circuits_[index].eligible || circuits_[index].snp.pending() ||
+      !database_.cancel_circuit_admission(index)) return false;
+  circuits_.pop_back();
+  return true;
+}
+
 LevelStatus LevelProcess::accept(std::size_t circuit, std::uint64_t epoch,
     LevelObserver observer) const noexcept {
   if (!observer.event) return LevelStatus::missing_observer;

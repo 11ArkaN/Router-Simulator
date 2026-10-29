@@ -9,6 +9,7 @@ void isis_packet_tests();
 void isis_ethernet_tests();
 void isis_hello_builder_tests();
 void isis_snp_builder_tests();
+void isis_lsp_builder_tests();
 void isis_ethernet_fabric_tests();
 void isis_egress_completion_tests();
 void llc_packet_tests();
@@ -49,6 +50,7 @@ void isis_csnp_sequence_tests();
 void isis_snp_exchange_tests();
 void isis_lsp_exchange_tests();
 void isis_level_process_tests();
+void isis_instance_update_tests();
 void digest_tests();
 
 void capture_store_tests();
@@ -390,6 +392,7 @@ int main() {
     isis_ethernet_tests();
     isis_hello_builder_tests();
     isis_snp_builder_tests();
+    isis_lsp_builder_tests();
     isis_ethernet_fabric_tests();
     isis_egress_completion_tests();
     llc_packet_tests();
@@ -430,6 +433,7 @@ int main() {
     isis_snp_exchange_tests();
     isis_lsp_exchange_tests();
     isis_level_process_tests();
+    isis_instance_update_tests();
     digest_tests();
     std::cout << "module tests passed\n";
     return 0;
