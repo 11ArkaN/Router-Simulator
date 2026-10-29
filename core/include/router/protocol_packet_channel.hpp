@@ -47,6 +47,12 @@ public:
     // discriminator prevents a delayed receipt from releasing another instance's
     // replacement slot. Zero preserves legacy single-instance users.
     std::uint8_t instance_id{};
+    // Producer-owned reservation generation inside the protocol instance,
+    // independent of transport configuration. Forwarding and link owners echo
+    // this value unchanged through the same release/acquire receipt path.
+    // Guarded release compares it before returning a reused slot. Zero is valid
+    // for producers without an additional synchronization scope.
+    std::uint64_t protocol_epoch{};
     bool operator==(const Metadata &) const = default;
   };
 

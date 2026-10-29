@@ -37,19 +37,22 @@ bool valid_circuit(const UpdateCircuitConfiguration &circuit,
 InstanceUpdateProcess::InstanceUpdateProcess(packet::isis::SystemId local,
     std::uint8_t maximum_areas,
     std::array<std::optional<UpdateLevelConfiguration>, 2U> levels,
-    std::span<const UpdateCircuitConfiguration> circuits, std::size_t maximum_circuits)
+    std::span<const UpdateCircuitConfiguration> circuits, std::size_t maximum_circuits,
+    std::uint64_t initial_synchronization_epoch)
     : local_(local), maximum_areas_(maximum_areas), configuration_(std::move(levels)),
-      maximum_circuits_(maximum_circuits ? maximum_circuits : circuits.size()) {
-  if (!maximum_areas || maximum_areas == 255U || (!configuration_[0U] && !configuration_[1U]))
+      maximum_circuits_(maximum_circuits ? maximum_circuits : circuits.size()),
+      initial_synchronization_epoch_(initial_synchronization_epoch) {
+  if (!initial_synchronization_epoch || !maximum_areas || maximum_areas == 255U ||
+      (!configuration_[0U] && !configuration_[1U]))
     throw std::invalid_argument("IS-IS update owner requires effective levels and maximum areas");
   if (maximum_circuits_ < circuits.size() || maximum_circuits_ > circuits_.max_size())
     throw std::invalid_argument("Invalid IS-IS update circuit capacity");
   circuits_.reserve(circuits.size());
-  std::vector<LevelCircuitConfiguration> slots(circuits.size(), {false, 1U});
+  std::vector<LevelCircuitConfiguration> slots(circuits.size(), {false, initial_synchronization_epoch});
   for (const auto &circuit : circuits) {
     if (!valid_circuit(circuit, configuration_))
       throw std::invalid_argument("Invalid IS-IS update circuit generation");
-    circuits_.push_back({circuit});
+    circuits_.push_back({circuit, {initial_synchronization_epoch, initial_synchronization_epoch}});
   }
   for (std::size_t index{}; index < levels_.size(); ++index) {
     if (!configuration_[index]) continue;
@@ -65,6 +68,20 @@ InstanceUpdateProcess::InstanceUpdateProcess(packet::isis::SystemId local,
 
 UpdateCircuitAdmission InstanceUpdateProcess::admit_circuit(UpdateCircuitConfiguration configuration) noexcept {
   if (!valid_circuit(configuration, configuration_)) return {};
+  if (admission_ticket_ == std::numeric_limits<std::uint64_t>::max())
+    return {UpdateStatus::epoch_exhausted, LevelStatus::capacity, {}};
+  for (std::size_t index{}; index < circuits_.size(); ++index) {
+    auto &slot = circuits_[index];
+    if (slot.configured) continue;
+    if (configuration.configuration_epoch <= slot.configuration.configuration_epoch)
+      return {UpdateStatus::stale_configuration, LevelStatus::stale_epoch, {}};
+    const auto previous_configuration = slot.configuration;
+    slot.configuration = configuration;
+    slot.configured = true;
+    slot.admission_pending = true;
+    slot.admission_ticket = ++admission_ticket_;
+    return {UpdateStatus::applied, LevelStatus::applied, index, false, configuration.configuration_epoch, slot.admission_ticket, previous_configuration};
+  }
   if (circuits_.size() == maximum_circuits_) return {UpdateStatus::capacity, LevelStatus::capacity, {}};
   const auto index = circuits_.size();
   try { circuits_.reserve(index + 1U); }
@@ -72,7 +89,8 @@ UpdateCircuitAdmission InstanceUpdateProcess::admit_circuit(UpdateCircuitConfigu
   catch (const std::length_error &) { return {UpdateStatus::capacity, LevelStatus::capacity, {}}; }
   for (std::size_t level{}; level < levels_.size(); ++level) {
     if (!levels_[level]) continue;
-    const auto admitted = levels_[level]->admit_circuit({false, 1U}, configuration_[level]->snp_entry_capacity);
+    const auto admitted = levels_[level]->admit_circuit({false, initial_synchronization_epoch_},
+        configuration_[level]->snp_entry_capacity);
     if (admitted.status != LevelStatus::applied) {
       for (std::size_t previous{}; previous < level; ++previous)
         if (levels_[previous] && !levels_[previous]->cancel_circuit_admission(index)) std::terminate();
@@ -80,14 +98,49 @@ UpdateCircuitAdmission InstanceUpdateProcess::admit_circuit(UpdateCircuitConfigu
     }
     if (admitted.index != index) std::terminate();
   }
-  circuits_.push_back({configuration});
-  return {UpdateStatus::applied, LevelStatus::applied, index};
+  circuits_.push_back({configuration, {initial_synchronization_epoch_, initial_synchronization_epoch_}});
+  circuits_.back().admission_pending = true;
+  circuits_.back().admission_ticket = ++admission_ticket_;
+  return {UpdateStatus::applied, LevelStatus::applied, index, true, configuration.configuration_epoch, circuits_.back().admission_ticket};
+}
+
+bool InstanceUpdateProcess::cancel_circuit_admission(UpdateCircuitAdmission &admission) noexcept {
+  if (admission.status != UpdateStatus::applied || !admission.index ||
+      *admission.index >= circuits_.size()) return false;
+  const auto index = *admission.index;
+  auto &slot = circuits_[index];
+  if (!slot.configured || !slot.admission_pending || slot.active != Levels::none ||
+      slot.configuration.configuration_epoch != admission.configuration_epoch ||
+      slot.admission_ticket != admission.ticket) return false;
+  if (admission.appended) {
+    if (index + 1U != circuits_.size() || slot.activated[0U] || slot.activated[1U]) return false;
+    for (auto &level : levels_)
+      if (level && !level->cancel_circuit_admission(index)) std::terminate();
+    circuits_.pop_back();
+  } else {
+    if (!admission.previous_configuration) return false;
+    slot.configuration = *admission.previous_configuration;
+    slot.configured = false;
+  }
+  admission = {};
+  return true;
+}
+
+UpdateStatus InstanceUpdateProcess::release_circuit(std::size_t index,
+    std::uint64_t configuration_epoch) noexcept {
+  if (index >= circuits_.size() || !circuits_[index].configured) return UpdateStatus::invalid_circuit;
+  auto &slot = circuits_[index];
+  if (configuration_epoch != slot.configuration.configuration_epoch) return UpdateStatus::stale_configuration;
+  if (slot.active != Levels::none) return UpdateStatus::invalid_event;
+  slot.configured = false;
+  slot.peer = {};
+  return UpdateStatus::applied;
 }
 
 UpdateStatus InstanceUpdateProcess::p2p(std::size_t index, std::uint64_t configuration_epoch,
     const P2pCircuitEvent &event, LevelObserver observer) noexcept {
   if (!observer.event) return UpdateStatus::missing_observer;
-  if (index >= circuits_.size()) return UpdateStatus::invalid_circuit;
+  if (index >= circuits_.size() || !circuits_[index].configured) return UpdateStatus::invalid_circuit;
   auto &circuit = circuits_[index];
   if (configuration_epoch != circuit.configuration.configuration_epoch) return UpdateStatus::stale_configuration;
   const auto before = event.before.iso_up ? event.before.usage : Levels::none;
@@ -114,6 +167,7 @@ UpdateStatus InstanceUpdateProcess::p2p(std::size_t index, std::uint64_t configu
         up, false, up, observer) != LevelStatus::applied) std::terminate();
     circuit.activated[level] = circuit.activated[level] || up;
   }
+  circuit.admission_pending = false;
   circuit.active = after;
   circuit.peer = event.after.neighbor_mac;
   return UpdateStatus::applied;
@@ -124,7 +178,7 @@ UpdateReceiveResult InstanceUpdateProcess::receive(std::size_t index,
     std::optional<AuthenticationKey> key, RuntimeClock::time_point now,
     LevelObserver observer) noexcept {
   if (!observer.event) return {UpdateStatus::missing_observer};
-  if (index >= circuits_.size()) return {UpdateStatus::invalid_circuit};
+  if (index >= circuits_.size() || !circuits_[index].configured) return {UpdateStatus::invalid_circuit};
   auto &circuit = circuits_[index];
   if (configuration_epoch != circuit.configuration.configuration_epoch) return {UpdateStatus::stale_configuration};
   packet::isis::EthernetDecodeError error{};
@@ -169,13 +223,20 @@ UpdateReceiveResult InstanceUpdateProcess::receive(std::size_t index,
 }
 
 std::optional<UpdateOutputs> InstanceUpdateProcess::outputs(std::size_t circuit, std::size_t level) noexcept {
-  if (circuit >= circuits_.size() || level >= levels_.size() || !levels_[level]) return std::nullopt;
+  if (circuit >= circuits_.size() || !circuits_[circuit].configured || level >= levels_.size() || !levels_[level]) return std::nullopt;
   const auto epoch = circuits_[circuit].synchronization_epochs[level];
   const auto output = levels_[level]->outputs(circuit, epoch);
   return output ? std::optional(UpdateOutputs{epoch, *output}) : std::nullopt;
 }
 const LevelProcess *InstanceUpdateProcess::level(std::size_t index) const noexcept {
   return index < levels_.size() ? levels_[index].get() : nullptr;
+}
+
+std::uint64_t InstanceUpdateProcess::maximum_synchronization_epoch() const noexcept {
+  auto result = initial_synchronization_epoch_;
+  for (const auto &circuit : circuits_)
+    for (const auto epoch : circuit.synchronization_epochs) result = std::max(result, epoch);
+  return result;
 }
 
 LevelOriginResult InstanceUpdateProcess::originate(std::size_t level,

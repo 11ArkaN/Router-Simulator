@@ -45,22 +45,38 @@ struct UpdateCircuitAdmission {
   UpdateStatus status{UpdateStatus::invalid_configuration};
   LevelStatus level_status{LevelStatus::invalid_configuration};
   std::optional<std::size_t> index{};
+  bool appended{};
+  std::uint64_t configuration_epoch{};
+  std::uint64_t ticket{};
+  std::optional<UpdateCircuitConfiguration> previous_configuration{};
 };
 class InstanceUpdateProcess final {
 public:
   // Every effective value is supplied by the configuration owner. Array index
   // zero selects L1, one L2. At least one level, nonzero configuration epochs,
   // legal level subsets and multicast destinations are mandatory. Construction
-  // allocates before publication. This contract currently admits P2P only.
+  // allocates before publication. The initial synchronization epoch must be
+  // nonzero and exceed the parent-retained fence of any previous entity.
+  // This contract currently admits P2P only.
   InstanceUpdateProcess(packet::isis::SystemId local, std::uint8_t maximum_areas,
       std::array<std::optional<UpdateLevelConfiguration>, 2U> levels,
-      std::span<const UpdateCircuitConfiguration> circuits, std::size_t maximum_circuits = 0U);
+      std::span<const UpdateCircuitConfiguration> circuits, std::size_t maximum_circuits = 0U,
+      std::uint64_t initial_synchronization_epoch = 1U);
   InstanceUpdateProcess(const InstanceUpdateProcess &) = delete;
   InstanceUpdateProcess &operator=(const InstanceUpdateProcess &) = delete;
   // Same-owner cold admission, with no borrowed outputs outstanding. Zero
   // constructor budget fixes the initial count. Failure rolls back every level
   // and publishes no circuit; existing LSDBs and pending reservations survive.
   [[nodiscard]] UpdateCircuitAdmission admit_circuit(UpdateCircuitConfiguration configuration) noexcept;
+  // Undo a successful cold admission in reverse admission order, before any
+  // activation. Appended slots are removed from both levels; reused slots keep
+  // their existing coordinators and fences. The token is consumed only once.
+  [[nodiscard]] bool cancel_circuit_admission(UpdateCircuitAdmission &admission) noexcept;
+  // Same-owner binding retirement after the authenticated circuit emitted Down.
+  // Refuses live slots and stale epochs without mutation. Retains both level
+  // slots, ticket counters and synchronization fences for bounded safe reuse.
+  [[nodiscard]] UpdateStatus release_circuit(std::size_t circuit,
+      std::uint64_t configuration_epoch) noexcept;
   // Same-owner callback from PointToPointCircuit, before borrowed attributes
   // expire. The before state must match the previous event. Down cancels level
   // reservations; subsequent Up advances an independent synchronization epoch
@@ -90,11 +106,18 @@ public:
   [[nodiscard]] std::optional<UpdateOutputs> outputs(std::size_t circuit,
       std::size_t level) noexcept;
   [[nodiscard]] const LevelProcess *level(std::size_t index) const noexcept;
+  // Same-owner value projection for entity replacement. The parent preserves
+  // this fence outside the entity and starts its successor strictly above it;
+  // no old reservation may match a reconstructed output owner's first ticket.
+  [[nodiscard]] std::uint64_t maximum_synchronization_epoch() const noexcept;
 private:
   struct Circuit {
     UpdateCircuitConfiguration configuration;
-    std::array<std::uint64_t, 2U> synchronization_epochs{1U, 1U};
+    std::array<std::uint64_t, 2U> synchronization_epochs{};
     std::array<bool, 2U> activated{};
+    bool configured{true};
+    bool admission_pending{};
+    std::uint64_t admission_ticket{};
     Levels active{Levels::none};
     packet::Mac peer{};
   };
@@ -104,5 +127,7 @@ private:
   std::array<std::unique_ptr<LevelProcess>, 2U> levels_;
   std::vector<Circuit> circuits_;
   std::size_t maximum_circuits_{};
+  std::uint64_t initial_synchronization_epoch_{};
+  std::uint64_t admission_ticket_{};
 };
 } // namespace router::isis

@@ -1,6 +1,9 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  runtime.protocol_reservation_epochs:
+    status: implemented
+    source_ids: [project.runtime.protocol_reservation_epochs]
   runtime.cpp_exception_handlers:
     status: implemented
     source_ids: [emscripten.cpp.exception_catching]

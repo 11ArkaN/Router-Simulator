@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: project.runtime.protocol_reservation_epochs
+    kind: concurrency-ownership-contract
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-architecture-decision
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0006-control-generation-handoff.md
+    section: Circuit generations, protocol reservation epoch and physical-admission receipts
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-10-29
+    implementation: [core/include/router/protocol_packet_channel.hpp]
+    tests: [core/tests/runtime/protocol_packet_completion_test.cpp]
+    status: implemented
+    notes: A producer-owned protocol reservation epoch is independent of the transport configuration generation. Forwarding and link owners echo the complete metadata through release/acquire receipts. Guarded release rejects an old reservation epoch even when a slot reuses its device, interface, configuration, transmission class, local instance and ticket. Existing protocol producers may use zero. The fixed six-channel IS-IS set remains within its unchanged one MiB admission budget. Runtime LSP and SNP scheduling remains incomplete.
   - id: project.runtime.isis_p2p_transport
     kind: concurrency-ownership-contract
     release: 26.7.R1
@@ -55,7 +69,7 @@ records:
     implementation: [core/include/router/isis_instance_update.hpp, core/src/isis/isis_instance_update.cpp]
     tests: [core/tests/isis/isis_instance_update_test.cpp]
     status: experimental
-    notes: One instance joins local authenticated P2P circuit events to independent L1 and L2 update owners. Transport configuration epochs remain distinct from synchronization epochs advanced on adjacency reactivation. Receive validates level, adjacency, destination, instance, MRU, maximum-area and configured authentication before mutation. Locally sourced LSPs return an explicit unresolved self-originated result for fight-back or purge rather than entering the foreign LSDB path. Tests exchange Hello, LSP and PSNP through actual physical queues, retire only matching reservations and retain databases through same-configuration Down and Up. Initiated local purges absent from the sender database cross the same queues and receive transient peer acknowledgements without being retained by the receiver. Bounded cold admission adds a Down circuit to both levels atomically and rolls back earlier levels if a later reservation fails. An explicit RFC 5303 Up restarts synchronization even when the preceding Initialize retained ISO Up state. Runtime worker scheduling, local sequence and purge ownership, LAN admission and route publication remain in progress.
+    notes: One instance joins local authenticated P2P circuit events to independent L1 and L2 update owners. Transport configuration epochs remain distinct from synchronization epochs advanced on adjacency reactivation. Receive validates level, adjacency, destination, instance, MRU, maximum-area and configured authentication before mutation. Locally sourced LSPs return an explicit unresolved self-originated result for fight-back or purge rather than entering the foreign LSDB path. Tests exchange Hello, LSP and PSNP through actual physical queues, retire only matching reservations and retain databases through same-configuration Down and Up. Initiated local purges absent from the sender database cross the same queues and receive transient peer acknowledgements without being retained by the receiver. Bounded cold admission adds a Down circuit to both levels atomically and rolls back earlier levels if a later reservation fails. Down bindings can be released and reused with strictly newer transport epochs while retaining level slots, ticket counters and synchronization fences. Cold admission rollback uses unique owner-local tickets and cannot cancel a newer admission in a reused slot. Entity construction accepts a nonzero initial synchronization epoch and exposes its maximum fence for parent-owned restart protection. An explicit RFC 5303 Up restarts synchronization even when the preceding Initialize retained ISO Up state. Runtime worker scheduling, local sequence and purge ownership, LAN admission and route publication remain in progress.
   - id: iso.10589.2002.level_process
     kind: routing-protocol-level-owner
     release: 26.7.R1

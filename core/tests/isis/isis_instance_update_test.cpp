@@ -48,11 +48,11 @@ struct Endpoint {
   UpdateStatus event_status{UpdateStatus::applied};
   UpdateReceiveResult received{};
   unsigned circuit_changes{};
-  Endpoint(std::uint8_t id, RuntimeClock::time_point now)
+  Endpoint(std::uint8_t id, RuntimeClock::time_point now, std::uint64_t initial_epoch = 41U)
       : circuit(hello_configuration(id), id, now),
         update(circuit.configuration().local.system, 3U, level_configuration(),
             std::array{UpdateCircuitConfiguration{7U, Levels::both, false, InstanceFormat::standard, 0U,
-                {circuit.configuration().hello_destination, circuit.configuration().hello_destination}}}, 2U),
+                {circuit.configuration().hello_destination, circuit.configuration().hello_destination}}}, 2U, initial_epoch),
         observer{this, +[](void *opaque, const LevelEvent &value) noexcept {
           if (value.kind == LevelEventKind::circuit_changed) ++static_cast<Endpoint *>(opaque)->circuit_changes;
         }} {}
@@ -84,6 +84,7 @@ void delivered(void *opaque, const lab::MultiDeviceFabric::Delivery &delivery) {
 void isis_instance_update_tests() {
   auto now = RuntimeClock::time_point{100s};
   Endpoint a(1U, now), b(2U, now);
+  require(a.update.maximum_synchronization_epoch() == 41U && b.update.maximum_synchronization_epoch() == 41U);
   const auto destination_for_admission = a.circuit.configuration().hello_destination;
   const UpdateCircuitConfiguration admission_configuration{7U, Levels::both, false,
       InstanceFormat::standard, 0U, {destination_for_admission, destination_for_admission}};
@@ -97,6 +98,25 @@ void isis_instance_update_tests() {
     require(!failing.level(0U)->database().circuit_state(0U) &&
         !failing.level(1U)->database().circuit_state(0U));
   }
+  InstanceUpdateProcess rollback(a.circuit.configuration().local.system, 3U, level_configuration(), {}, 1U);
+  auto first_admission = rollback.admit_circuit(admission_configuration);
+  auto delayed_admission = first_admission;
+  require(first_admission.appended && rollback.cancel_circuit_admission(first_admission));
+  require(!rollback.cancel_circuit_admission(first_admission));
+  auto second_admission = rollback.admit_circuit(admission_configuration);
+  require(second_admission.appended && !rollback.cancel_circuit_admission(delayed_admission));
+  require(rollback.cancel_circuit_admission(second_admission));
+  auto reusable = rollback.admit_circuit(admission_configuration);
+  require(rollback.release_circuit(0U, 7U) == UpdateStatus::applied);
+  auto next_configuration = admission_configuration;
+  next_configuration.configuration_epoch = 8U;
+  auto temporary = rollback.admit_circuit(next_configuration);
+  require(!temporary.appended && !rollback.cancel_circuit_admission(reusable));
+  auto delayed_temporary = temporary;
+  require(rollback.cancel_circuit_admission(temporary));
+  auto retried = rollback.admit_circuit(next_configuration);
+  require(retried.status == UpdateStatus::applied && !rollback.cancel_circuit_admission(delayed_temporary));
+  require(rollback.cancel_circuit_admission(retried));
   auto invalid = admission_configuration;
   invalid.format = static_cast<InstanceFormat>(255U);
   require(a.update.admit_circuit(invalid).status == UpdateStatus::invalid_configuration);
@@ -129,8 +149,8 @@ void isis_instance_update_tests() {
   require(!a.update.outputs(0U, 0U) && !b.update.outputs(0U, 1U));
   for (unsigned index{}; index < 6U; ++index) round();
   require(a.circuit.adjacency().iso_up && b.circuit.adjacency().iso_up);
-  require(a.update.outputs(0U, 0U)->synchronization_epoch == 1U &&
-      a.update.outputs(0U, 1U)->synchronization_epoch == 1U);
+  require(a.update.outputs(0U, 0U)->synchronization_epoch == 41U &&
+      a.update.outputs(0U, 1U)->synchronization_epoch == 41U);
   const auto source = a.circuit.configuration().mac;
   const auto destination = a.circuit.configuration().hello_destination;
   std::array<std::uint8_t, 128U> semantic{};
@@ -294,6 +314,7 @@ void isis_instance_update_tests() {
   for (unsigned index{}; index < 6U; ++index) round();
   require(a.circuit.adjacency().three_way == ThreeWayState::up && a.circuit_changes == changes + 2U &&
       a.update.outputs(0U, 0U)->synchronization_epoch == synchronization_epoch);
+  require(a.update.maximum_synchronization_epoch() == synchronization_epoch);
   // An accepted same-system Hello may update its SNPA without inventing an
   // ISO Down. The update owner must follow the circuit's accepted projection.
   context.now += 1s;
@@ -303,4 +324,41 @@ void isis_instance_update_tests() {
   transmit(1U);
   require(b.circuit.complete_hello(true, context.now) && a.event_status == UpdateStatus::applied &&
       a.circuit.adjacency().neighbor_mac[5U] == 9U && a.update.outputs(0U, 0U));
+  require(a.update.release_circuit(0U, 7U) == UpdateStatus::invalid_event);
+  require(a.update.release_circuit(1U, 6U) == UpdateStatus::stale_configuration);
+  require(a.update.release_circuit(1U, 7U) == UpdateStatus::applied);
+  require(a.update.release_circuit(1U, 7U) == UpdateStatus::invalid_circuit);
+  require(a.update.admit_circuit(admission_configuration).status == UpdateStatus::stale_configuration);
+  auto replacement_configuration = admission_configuration;
+  replacement_configuration.configuration_epoch = 8U;
+  const auto reused = a.update.admit_circuit(replacement_configuration);
+  require(reused.status == UpdateStatus::applied && reused.index == 1U &&
+      a.update.level(0U)->database().size() == 2U && !a.update.outputs(1U, 0U));
+  const auto retired_epoch = a.update.maximum_synchronization_epoch();
+  require(a.circuit.down(&a, event));
+  require(a.update.release_circuit(0U, 7U) == UpdateStatus::applied);
+  require(a.update.p2p(0U, 7U, {}, a.observer) == UpdateStatus::invalid_circuit);
+  require(a.update.receive(0U, 7U, *frame, key, context.now, a.observer).status == UpdateStatus::invalid_circuit);
+  const auto rebound = a.update.admit_circuit(replacement_configuration);
+  require(rebound.status == UpdateStatus::applied && rebound.index == 0U);
+  P2pCircuitEvent rebound_up{};
+  rebound_up.after = b.circuit.adjacency();
+  rebound_up.transition.outcome = P2pOutcome::up;
+  require(a.update.p2p(0U, 7U, rebound_up, a.observer) == UpdateStatus::stale_configuration);
+  require(a.update.p2p(0U, 8U, rebound_up, a.observer) == UpdateStatus::applied);
+  require(a.update.outputs(0U, 0U)->synchronization_epoch == retired_epoch + 1U &&
+      a.update.level(0U)->database().size() == 2U);
+  Endpoint successor(1U, context.now, retired_epoch + 1U);
+  context.endpoints[0U] = &successor;
+  for (unsigned index{}; index < 6U; ++index) round();
+  auto successor_output = successor.update.outputs(0U, 0U);
+  require(successor_output && successor_output->synchronization_epoch == retired_epoch + 1U &&
+      successor.update.maximum_synchronization_epoch() == retired_epoch + 1U);
+  const auto first_after_restart = successor_output->reservations.snp.prepare(SnpEmission::complete,
+      complete, false, *frame, *scratch, context.now);
+  require(first_after_restart.status == SnpExchangeStatus::encoded && first_after_restart.ticket == 1U &&
+      !successor_output->reservations.snp.complete(retired_epoch, first_after_restart.ticket, true, context.now).accepted);
+  transmit(0U);
+  require(successor_output->reservations.snp.complete(successor_output->synchronization_epoch,
+      first_after_restart.ticket, true, context.now).accepted);
 }
