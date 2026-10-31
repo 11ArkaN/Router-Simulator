@@ -8852,7 +8852,6 @@ bool pki_configuration(Reader &in, pki::Configuration &state) {
     return false;
   state.common_name_lists.resize(size);
   for (auto &list : state.common_name_lists) {
-    std::uint32_t entry_count{};
     if (!in.string(list.name, 32U) ||
         !count(in, entry_count, pki::maximum_common_names_per_list))
       return false;

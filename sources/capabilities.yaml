@@ -1,6 +1,54 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  runtime.protocol_reservation_epochs:
+    status: implemented
+    source_ids: [project.runtime.protocol_reservation_epochs]
+  runtime.cpp_exception_handlers:
+    status: implemented
+    source_ids: [emscripten.cpp.exception_catching]
+  crypto.segmented_routing_hmac:
+    status: implemented
+    source_ids: [ietf.crypto.hmac.rfc2104]
+  routing.isis:
+    status: planned
+    source_ids: [nokia.sros.26_7.isis.yang_roots, project.runtime.isis_p2p_transport]
+  routing.isis.p2p_neighbor_origination:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.p2p_neighbor_origination, nokia.sros.26_7.isis.yang_roots]
+  routing.isis.lsdb_link_graph:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.lsdb_link_graph]
+  routing.isis.local_lsp_composition:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.lsp_composition]
+  routing.isis.database_validation:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.database_validation]
+  routing.isis.local_lsp_withdrawal:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.local_lsp_generation]
+  routing.isis.local_lsp_generation:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.local_lsp_generation]
+  routing.isis.purge_option_policy:
+    status: partially-implemented
+    source_ids: [ietf.isis.purge_options, iana.isis.tlv_purge_registry]
+  routing.isis.expiration_purge:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.expiration_purge]
+  routing.isis.runtime_update:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.runtime_update, nokia.sros.26_7.isis.csnp_effective_period]
+  routing.isis.instance_update:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.instance_update]
+  routing.isis.decision_notifications:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.level_process, iso.10589.2002.database_validation]
+  routing.isis.level_synchronization:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.level_process, iso.10589.2002.level_database_owner, iso.10589.2002.lsdb]
   cli.edit_operators:
     status: implemented
     source_ids: [nokia.sros.26_7.md_cli.delete_path, nokia.sros.26_7.classic_cli.no_forms]
@@ -186,7 +234,7 @@ features:
     source_ids: [ieee.802_3.ethernet_frame_timing]
   runtime.dynamic_shards:
     status: implemented
-    source_ids: [emscripten.pthreads.shared_memory]
+    source_ids: [emscripten.pthreads.shared_memory, project.runtime.protocol_consumer_wakeup, project.runtime.protocol_owner_shutdown]
   runtime.shared_memory_growth:
     status: implemented
     source_ids: [emscripten.shared_memory.growth, emscripten.pthreads.shared_memory]

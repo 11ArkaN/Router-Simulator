@@ -46,6 +46,45 @@ target_include_directories(router_build_options INTERFACE include)
 # units alone is insufficient because a lower layer could otherwise include a
 # management header and keep compiling inside one archive.
 add_library(router_primitives STATIC
+  src/isis/isis_packet.cpp
+  src/isis/isis_ethernet.cpp
+  src/isis/isis_hello_builder.cpp
+  src/isis/isis_snp_builder.cpp
+  src/isis/isis_lsp_builder.cpp
+  src/isis/isis_database_validation.cpp
+  src/isis/isis_lsp_generation.cpp
+  src/isis/isis_local_lsp_set.cpp
+  src/isis/isis_neighbor_origination.cpp
+  src/isis/isis_sequence_recovery.cpp
+  src/isis/isis_purge_options.cpp
+  src/isis/isis_purge_builder.cpp
+  src/forwarding/llc_packet.cpp
+  src/isis/isis_three_way.cpp
+  src/isis/isis_reachability.cpp
+  src/isis/isis_link_graph.cpp
+  src/isis/isis_multi_topology.cpp
+  src/isis/isis_basic_tlvs.cpp
+  src/isis/isis_narrow_reachability.cpp
+  src/security/digest.cpp
+  src/isis/isis_authentication.cpp
+  src/isis/isis_instance_tlv.cpp
+  src/isis/isis_lsdb.cpp
+  src/isis/isis_level_database.cpp
+  src/isis/isis_transient_acknowledgements.cpp
+  src/isis/isis_csnp_sequence.cpp
+  src/isis/isis_snp_exchange.cpp
+  src/isis/isis_lsp_exchange.cpp
+  src/isis/isis_level_process.cpp
+  src/isis/isis_instance_update.cpp
+  src/isis/isis_adjacency.cpp
+  src/isis/isis_p2p_adjacency.cpp
+  src/isis/isis_p2p_circuit.cpp
+  src/isis/isis_lan_circuit.cpp
+  src/isis/isis_lan_adjacency.cpp
+  src/isis/isis_lan_adjacency_set.cpp
+  src/isis/isis_jitter.cpp
+  src/isis/isis_hello_schedule.cpp
+  src/isis/isis_flooding.cpp
     src/dns/dns_packet.cpp
     src/dns/dns_svcb.cpp
     src/dns/ddr_discovery.cpp
@@ -63,6 +102,17 @@ add_library(router_primitives STATIC
   src/dns/dnssec_authoritative_response.cpp
   src/dns/dnssec_nsec3_chain.cpp
   src/dns/dnssec_response_validation.cpp
+  # DNS endpoints and NetworkPlane call managed-zone signing in both native
+  # and Wasm builds. Keep its implementation in the common graph; only the
+  # OpenSSL library target differs between those platforms.
+  src/dns/dnssec_openssl.cpp
+  src/dns/dnssec_signer.cpp
+  src/dns/dnssec_zone_signer.cpp
+  src/dns/dnssec_key_lifecycle.cpp
+  src/dns/dnssec_nsec_chain.cpp
+  src/dns/dnssec_zone_keys.cpp
+  src/dns/dnssec_signed_zone.cpp
+  src/dns/dnssec_signed_zone_owner.cpp
   src/dhcpv4/dhcpv4_client.cpp
   src/dhcpv4/dhcpv4_configuration.cpp
   src/dhcpv4/dhcpv4_failover.cpp
@@ -142,7 +192,7 @@ add_library(router_primitives STATIC
   src/ospf/ospf_process_origination.cpp
   src/ospf/ospf_process_output.cpp
   src/ospf/ospf_route_calculator.cpp
-  src/ospf/ospf_spf.cpp
+  src/forwarding/shortest_paths.cpp
   src/ospf/ospf_topology.cpp
   src/forwarding/route_policy.cpp
   src/forwarding/packet.cpp
@@ -165,6 +215,7 @@ add_library(router_primitives STATIC
   src/transport/tcp_timers.cpp
   src/transport/tcp_transmission_history.cpp
   src/security/tls_profile.cpp
+  src/security/secret_vault.cpp
   src/transport/udp_packet.cpp
   src/transport/udp_transport.cpp
 )
@@ -235,19 +286,10 @@ if(EMSCRIPTEN)
     INTERFACE_INCLUDE_DIRECTORIES "${ROUTER_NGTCP2_ROOT}/include")
   target_link_libraries(router_ngtcp2_crypto_ossl INTERFACE
                         router_ngtcp2 router_openssl_ssl router_openssl_crypto)
-  target_sources(router_primitives PRIVATE src/dns/dnssec_openssl.cpp
-                                            src/security/secret_vault.cpp
-                                            src/security/ikev2_aes_gcm.cpp
+  target_sources(router_primitives PRIVATE src/security/ikev2_aes_gcm.cpp
                                             src/security/ikev2_encrypted_payload.cpp
                                             src/security/ikev2_dh.cpp
                                             src/security/ikev2_nat_detection.cpp
-                                            src/dns/dnssec_signer.cpp
-                                            src/dns/dnssec_zone_signer.cpp
-                                            src/dns/dnssec_key_lifecycle.cpp
-                                            src/dns/dnssec_nsec_chain.cpp
-                                            src/dns/dnssec_zone_keys.cpp
-                                            src/dns/dnssec_signed_zone.cpp
-                                            src/dns/dnssec_signed_zone_owner.cpp
                                             src/security/pki_store.cpp
                                             src/security/tls_engine.cpp
                                             src/transport/http2_session.cpp
@@ -278,6 +320,13 @@ add_library(router_device STATIC
 target_link_libraries(router_device PUBLIC router_primitives router_build_options)
 
 add_library(router_network STATIC
+  src/isis/isis_control_worker.cpp
+  src/isis/isis_control_update.cpp
+  src/isis/isis_control_update_egress.cpp
+  src/isis/isis_control_update_lifetime.cpp
+  src/isis/isis_control_origin.cpp
+  src/isis/isis_control_neighbors.cpp
+  src/isis/isis_control_self.cpp
   src/runtime/capture_store.cpp
   src/dhcpv4/dhcpv4_endpoint_service.cpp
   src/dhcpv6/dhcpv6_endpoint_service.cpp
@@ -298,6 +347,7 @@ add_library(router_network STATIC
   src/ospf/ospf_control_worker.cpp
   src/forwarding/network_endpoint.cpp
   src/forwarding/router_forwarder.cpp
+  src/forwarding/isis_forwarding.cpp
   src/forwarding/sap_forwarding.cpp
 )
 target_include_directories(router_network PRIVATE src)
@@ -374,7 +424,12 @@ if(EMSCRIPTEN)
   # executable leaves parsers, checksums and forwarding at Clang's -O0 default.
   # Keep the optimization contract on the archive itself to make every Wasm
   # consumer, including the browser runtime, use the same production code.
-  target_compile_options(router_build_options INTERFACE -pthread -O3)
+  # Emscripten requires exception support while compiling each catching frame
+  # and while linking its runtime. Link-only NO_DISABLE_EXCEPTION_CATCHING
+  # cannot restore handlers already omitted from object code. Core owners use
+  # these handlers to preserve state after rejected construction or allocation.
+  target_compile_options(router_build_options INTERFACE -pthread -O3 -fexceptions)
+  target_link_options(router_build_options INTERFACE -fexceptions)
   # Source: Emscripten pthreads documentation. The JavaScript expression is
   # evaluated before C++ startup and reserves exactly the pthread count needed
   # by the generated host-CPU shard policy. The browser Worker itself owns the
@@ -488,11 +543,12 @@ if(ROUTER_BUILD_TESTS)
     # needs two production budgets without changing the simulator contract.
     set(ROUTER_TEST_MEMORY_OPTION "-sINITIAL_MEMORY=671088640")
     # The checkpoint replacement test intentionally overlaps two complete
-    # high-CPU runtimes. Each runtime owns five pthreads in addition to its
-    # calling Worker, so the test pool must contain ten actual workers. Using
+    # high-CPU runtimes. Each needs its complete generated pthread placement
+    # in addition to the calling Worker. Using
     # the production expression here makes Emscripten recycle a terminated
     # owner and print late-command diagnostics after otherwise passing tests.
-    set(ROUTER_TEST_PTHREAD_POOL_OPTION "-sPTHREAD_POOL_SIZE=10")
+    math(EXPR ROUTER_TEST_PTHREADS "2 * ${ROUTER_PTHREAD_POOL_HIGH}")
+    set(ROUTER_TEST_PTHREAD_POOL_OPTION "-sPTHREAD_POOL_SIZE=${ROUTER_TEST_PTHREADS}")
     target_link_options(core_tests PRIVATE -pthread
       "${ROUTER_TEST_PTHREAD_POOL_OPTION}" "${ROUTER_TEST_MEMORY_OPTION}" "${ROUTER_STACK_OPTION}"
       ${ROUTER_MEMORY_GROWTH_OPTIONS}
@@ -509,6 +565,54 @@ if(ROUTER_BUILD_TESTS)
   # grows an orchestration dependency fails here even if the integration target
   # would otherwise provide the missing symbol transitively.
   add_executable(module_tests
+    tests/isis/isis_packet_test.cpp
+    tests/isis/isis_ethernet_test.cpp
+    tests/isis/isis_hello_builder_test.cpp
+    tests/isis/isis_snp_builder_test.cpp
+    tests/isis/isis_lsp_builder_test.cpp
+    tests/isis/isis_database_validation_test.cpp
+    tests/isis/isis_lsp_generation_test.cpp
+    tests/isis/isis_local_lsp_set_test.cpp
+    tests/isis/isis_sequence_recovery_test.cpp
+    tests/isis/isis_purge_options_test.cpp
+    tests/isis/isis_purge_builder_test.cpp
+    tests/isis/isis_ethernet_fabric_test.cpp
+    tests/isis/isis_egress_completion_test.cpp
+    tests/forwarding/llc_packet_test.cpp
+    tests/forwarding/router_forwarder_isis_test.cpp
+    tests/runtime/protocol_packet_channel_test.cpp
+    tests/runtime/protocol_packet_completion_test.cpp
+    tests/runtime/protocol_owner_lifecycle_test.cpp
+    tests/runtime/protocol_transmission_test.cpp
+    tests/runtime/owned_spsc_channel_test.cpp
+    tests/isis/isis_three_way_test.cpp
+    tests/isis/isis_reachability_test.cpp
+    tests/isis/isis_multi_topology_test.cpp
+    tests/isis/isis_basic_tlvs_test.cpp
+    tests/isis/isis_narrow_reachability_test.cpp
+    tests/isis/isis_authentication_test.cpp
+    tests/isis/isis_instance_tlv_test.cpp
+    tests/isis/isis_lsdb_test.cpp
+    tests/isis/isis_adjacency_test.cpp
+    tests/isis/isis_p2p_adjacency_test.cpp
+    tests/isis/isis_lan_adjacency_test.cpp
+    tests/isis/isis_lan_adjacency_set_test.cpp
+    tests/isis/isis_p2p_wire_test.cpp
+    tests/isis/isis_p2p_circuit_test.cpp
+    tests/isis/isis_control_worker_test.cpp
+    tests/isis/isis_lan_circuit_test.cpp
+    tests/isis/isis_jitter_test.cpp
+    tests/isis/isis_hello_schedule_test.cpp
+    tests/isis/isis_flooding_test.cpp
+    tests/isis/isis_level_database_test.cpp
+    tests/isis/isis_snp_receive_test.cpp
+    tests/isis/isis_transient_acknowledgements_test.cpp
+    tests/isis/isis_csnp_sequence_test.cpp
+    tests/isis/isis_snp_exchange_test.cpp
+    tests/isis/isis_lsp_exchange_test.cpp
+    tests/isis/isis_level_process_test.cpp
+    tests/isis/isis_instance_update_test.cpp
+    tests/security/digest_test.cpp
     tests/runtime/capture_store_test.cpp
     tests/dhcpv4/dhcpv4_client_test.cpp
     tests/dhcpv4/dhcpv4_configuration_test.cpp
@@ -608,6 +712,8 @@ if(ROUTER_BUILD_TESTS)
     tests/ospf/ospf_packet_channel_test.cpp
     tests/ospf/ospf_route_channel_test.cpp
     tests/ospf/ospf_spf_test.cpp
+    tests/isis/isis_spf_test.cpp
+    tests/isis/isis_link_graph_test.cpp
     tests/ospf/ospf_topology_test.cpp
     tests/forwarding/route_policy_test.cpp
     tests/forwarding/multi_device_fabric_test.cpp
@@ -684,8 +790,12 @@ if(ROUTER_BUILD_TESTS)
     # the production worker path, so reserve a separate 2 MiB test stack rather
     # than inflating every live pthread in the browser runtime.
     set(ROUTER_MODULE_TEST_STACK_OPTION "-sSTACK_SIZE=2097152")
+    # Module fixtures explicitly select every generated placement, including
+    # separate forwarding owners on a low-CPU test host. Reserve the highest
+    # generated pool for this runner; production still selects its host policy.
+    set(ROUTER_MODULE_TEST_PTHREAD_POOL_OPTION "-sPTHREAD_POOL_SIZE=${ROUTER_PTHREAD_POOL_HIGH}")
     target_link_options(module_tests PRIVATE -pthread
-      "${ROUTER_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}" "${ROUTER_MODULE_TEST_STACK_OPTION}"
+      "${ROUTER_MODULE_TEST_PTHREAD_POOL_OPTION}" "${ROUTER_MEMORY_OPTION}" "${ROUTER_MODULE_TEST_STACK_OPTION}"
       # NetworkPlane module tests construct several independent full-capacity
       # owners in one process. Use the same generated growth ceiling as the
       # browser runtime so additional protocol state cannot make the test

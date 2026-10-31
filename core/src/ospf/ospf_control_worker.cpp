@@ -39,10 +39,13 @@ ControlWorker::ControlWorker(ControlChannels &channels,
       forwarding_shards_(std::clamp<std::size_t>(
           forwarding_shards, 1U,
           device_catalog::high_forwarding_shards)),
-      output_scratch_(device_catalog::ospf_work_budget_packets),
-      thread_([this] { run(); }) {}
+      output_scratch_(device_catalog::ospf_work_budget_packets) {
+  thread_ = std::thread([this] { run(); });
+}
 
-ControlWorker::~ControlWorker() {
+ControlWorker::~ControlWorker() { stop(); }
+
+void ControlWorker::stop() noexcept {
   stop_requested_.store(true, std::memory_order_release);
   notify();
   if (thread_.joinable())
@@ -50,6 +53,7 @@ ControlWorker::~ControlWorker() {
 }
 
 bool ControlWorker::submit(const ControlCommand &command) noexcept {
+  if (stop_requested_.load(std::memory_order_acquire)) return false;
   if (!commands_.try_push(command))
     return false;
   notify();
@@ -880,7 +884,7 @@ bool ControlWorker::publish(OwnedProcess &owner,
        .physical_port_ordinal = output.physical_port_ordinal},
       frame);
   if (published && channels_.egress_wakeup)
-    channels_.egress_wakeup(channels_.egress_wakeup_context);
+    channels_.egress_wakeup(channels_.egress_wakeup_context, shard);
   return published;
 }
 

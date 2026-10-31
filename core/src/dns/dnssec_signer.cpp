@@ -17,6 +17,7 @@
 #include <openssl/rand.h>
 #include <openssl/rsa.h>
 
+#include <algorithm>
 #include <array>
 #include <limits>
 #include <memory>

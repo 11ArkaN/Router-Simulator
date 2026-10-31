@@ -5,6 +5,7 @@
 #include "router/ospf_lsdb.hpp"
 #include "router/generated_device_catalog.hpp"
 #include "router/ospf_lsa.hpp"
+#include "router/iso_checksum.hpp"
 
 #include <algorithm>
 #include <new>
@@ -133,44 +134,14 @@ std::uint16_t LsaRecord::age(RuntimeClock::time_point now) const noexcept {
 bool verify_lsa_checksum(std::span<const std::uint8_t> lsa) noexcept {
   if (lsa.size() < packet::ospf::lsa_header_octets)
     return false;
-  std::uint32_t c0{};
-  std::uint32_t c1{};
-  for (std::size_t index = 2U; index < lsa.size(); ++index) {
-    c0 = (c0 + lsa[index]) % 255U;
-    c1 = (c1 + c0) % 255U;
-  }
-  return c0 == 0U && c1 == 0U;
+  return packet::iso::valid(lsa.subspan(2U));
 }
 
 bool update_lsa_checksum(std::span<std::uint8_t> lsa) noexcept {
   constexpr std::size_t checksum_offset = 16U;
   if (lsa.size() < packet::ospf::lsa_header_octets)
     return false;
-  lsa[checksum_offset] = 0U;
-  lsa[checksum_offset + 1U] = 0U;
-  std::int32_t c0{};
-  std::int32_t c1{};
-  for (std::size_t index = 2U; index < lsa.size(); ++index) {
-    c0 = (c0 + lsa[index]) % 255;
-    c1 = (c1 + c0) % 255;
-  }
-  // RFC 905 section 3 applies signed modular arithmetic here. `size()` is an
-  // unsigned type, so allowing it to participate directly converts a
-  // negative intermediate to size_t before `% 255`. That changed X by one for
-  // valid LSAs whose C1 exceeded the length-weighted C0, including an OSPFv3
-  // Router-LSA as soon as it gained its first point-to-point link.
-  const auto checksum_distance = static_cast<std::int32_t>(
-      lsa.size() - checksum_offset - 1U);
-  auto x =
-      (checksum_distance * c0 - c1) % static_cast<std::int32_t>(255);
-  if (x <= 0)
-    x += 255;
-  auto y = 510 - c0 - x;
-  if (y > 255)
-    y -= 255;
-  lsa[checksum_offset] = static_cast<std::uint8_t>(x);
-  lsa[checksum_offset + 1U] = static_cast<std::uint8_t>(y);
-  return verify_lsa_checksum(lsa);
+  return packet::iso::insert(lsa.subspan(2U), checksum_offset - 2U);
 }
 
 LinkStateDatabase::LinkStateDatabase(std::size_t maximum_records)

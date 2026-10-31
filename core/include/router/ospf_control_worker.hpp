@@ -46,7 +46,7 @@ struct ControlChannels {
   // only closes the condition-variable notify-before-wait race so a periodic
   // Hello or retransmission is drained at its real monotonic deadline.
   void *egress_wakeup_context{};
-  void (*egress_wakeup)(void *){};
+  void (*egress_wakeup)(void *, std::size_t forwarding_shard){};
   // Producer: sole OSPF control pthread. Consumer: sole network/link owner.
   // A generation contains every OSPF and OSPF3 route candidate for one router;
   // the route manager never observes a partially copied SPF result.
@@ -210,6 +210,10 @@ public:
   explicit ControlWorker(ControlChannels &channels,
                          std::size_t forwarding_shards);
   ~ControlWorker();
+  // Serialized control owner joins once before forwarding producers stop.
+  // Notification storage stays alive until those producers have joined.
+  // Later submit rejects; notify remains safe until object destruction.
+  void stop() noexcept;
   ControlWorker(const ControlWorker &) = delete;
   ControlWorker &operator=(const ControlWorker &) = delete;
 
@@ -392,12 +396,13 @@ private:
       commands_;
   SpscRing<ControlResult, device_catalog::network_result_ring_entries>
       results_;
-  std::thread thread_;
   std::mutex wait_mutex_;
   std::condition_variable wait_condition_;
   std::atomic_bool stop_requested_{};
   std::atomic_bool work_pending_{};
   std::atomic_uint64_t thread_id_{};
+  // Construct every synchronization object before the run loop may enter.
+  std::thread thread_;
 };
 
 } // namespace router::ospf

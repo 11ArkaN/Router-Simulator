@@ -9,6 +9,7 @@
 #include "forwarding/network_endpoint.hpp"
 #include "router/multi_device_fabric.hpp"
 #include "router/ospf_control_worker.hpp"
+#include "router/isis_control_worker.hpp"
 #include "router/shard_policy.hpp"
 #include "router/spsc_ring.hpp"
 
@@ -23,6 +24,7 @@
 #include <new>
 #include <string_view>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <variant>
 
@@ -483,7 +485,38 @@ struct ForwardIngress {
   packet::Frame frame{};
 };
 
-enum class ForwardEgressKind : std::uint8_t { transmit, cpm_punt };
+using IsisEgressChannel = protocol::PacketChannel<device_catalog::isis_packet_ring_frames, true>;
+struct IsisTransportBinding {
+  isis::CircuitIdentity identity;
+  PortHandle port{};
+  packet::Mac destination{};
+  packet::isis::InstanceFormat format{};
+  std::uint16_t wire_instance{};
+  bool physical_point_to_point{};
+};
+
+// Borrowed same-owner projections only. Both forwarding and link owners retain
+// independent generation values and validate the complete encoded selector.
+[[nodiscard]] bool matches_isis(const IsisTransportBinding &binding,
+    const IsisEgressChannel::Metadata &metadata,
+    const packet::isis::EthernetPduView &wire) noexcept {
+  if (binding.identity.device != metadata.device || binding.identity.interface_id != metadata.interface_id ||
+      binding.identity.configuration_generation != metadata.configuration_generation ||
+      binding.identity.instance != metadata.instance_id ||
+      binding.identity.physical_port_ordinal != metadata.physical_port_ordinal ||
+      binding.destination != wire.ethernet.destination) return false;
+  packet::isis::InstanceError error{};
+  const auto selected = packet::isis::select_instance(wire.pdu, binding.format, binding.physical_point_to_point, error);
+  return selected && selected->instance == binding.wire_instance;
+}
+
+struct IsisEgressReceipt {
+  IsisEgressChannel::Handle handle{};
+  IsisEgressChannel::Metadata metadata{};
+  bool enqueued{};
+};
+
+enum class ForwardEgressKind : std::uint8_t { transmit, cpm_punt, isis_transmit };
 
 struct ForwardEgress {
   // Producer: one forwarding shard. Consumer: link owner. CPM observations use
@@ -491,6 +524,10 @@ struct ForwardEgress {
   ForwardEgressKind kind{};
   NodeHandle source{};
   std::uint16_t ordinal{};
+  // IS-IS keeps the protocol slot borrowed until the link owner returns actual
+  // physical queue admission. A forwarding-transfer enqueue is insufficient.
+  IsisEgressReceipt isis_receipt{};
+  PortHandle expected_port{};
   packet::Frame frame{};
 };
 
@@ -505,6 +542,8 @@ void spsc_copy(ForwardEgress &destination,
   destination.kind = source.kind;
   destination.source = source.source;
   destination.ordinal = source.ordinal;
+  destination.isis_receipt = source.isis_receipt;
+  destination.expected_port = source.expected_port;
   packet::copy_frame(destination.frame, source.frame);
 }
 
@@ -577,9 +616,32 @@ public:
 
   [[nodiscard]] bool take_egress(ForwardEgress &value) noexcept {
     const bool consumed = egress_.try_pop(value);
-    if (consumed)
-      notify();
+    if (consumed) wake_protocol();
     return consumed;
+  }
+
+  // Protocol owners and the link owner coalesce notifications into one atomic
+  // predicate. This bit carries no packet data and has no queue producer role.
+  void wake_protocol() noexcept {
+    protocol_work_.store(true, std::memory_order_release);
+    notify();
+  }
+
+  // Producer: link owner after exactly one physical enqueue attempt. Consumer:
+  // this forwarding shard, which alone may release its borrowed protocol slots.
+  // One usable receipt entry per protocol frame credit bounds all outstanding
+  // results. False retains the caller's immutable result for retry, never a
+  // second physical enqueue. Release/acquire publication preserves full identity.
+  [[nodiscard]] bool return_isis(const IsisEgressReceipt &receipt) noexcept {
+    if (!isis_receipts_.try_push(receipt)) return false;
+    wake_protocol();
+    return true;
+  }
+
+  [[nodiscard]] bool take_isis_receipt(IsisEgressReceipt &receipt) noexcept {
+    if (!isis_receipts_.try_pop(receipt)) return false;
+    if (link_wakeup_) link_wakeup_(link_context_);
+    return true;
   }
 
   [[nodiscard]] bool emit(const ForwardEgress &value) noexcept {
@@ -631,6 +693,7 @@ private:
     thread_id_.store(identity ? identity : 1U, std::memory_order_release);
     std::optional<ForwardCommand> pending_command;
     while (!stop_requested_.load(std::memory_order_acquire)) {
+      protocol_work_.store(false, std::memory_order_release);
       turns_.fetch_add(1U, std::memory_order_relaxed);
 
       // A pending pause is ordered after every already delivered ingress
@@ -698,7 +761,7 @@ private:
       const auto ready = [&] {
         return stop_requested_.load(std::memory_order_acquire) ||
                pending_command.has_value() || !commands_.empty() ||
-               !ingress_.empty();
+               !ingress_.empty() || protocol_work_.load(std::memory_order_acquire);
       };
       if (!ready()) {
         if (maintenance_deadline)
@@ -721,11 +784,13 @@ private:
   SpscRing<ForwardResult, device_catalog::network_result_ring_entries> results_;
   SpscRing<ForwardIngress, device_catalog::forwarding_ring_frames> ingress_;
   SpscRing<ForwardEgress, device_catalog::forwarding_ring_frames> egress_;
+  SpscRing<IsisEgressReceipt, device_catalog::isis_packet_ring_frames + 1U> isis_receipts_;
   std::thread thread_;
   std::mutex wait_mutex_;
   std::condition_variable wait_condition_;
   std::atomic_bool stop_requested_{};
   std::atomic_bool resume_requested_{};
+  std::atomic_bool protocol_work_{};
   std::atomic_uint64_t thread_id_{};
   std::atomic_uint64_t turns_{};
   void *link_context_{};
@@ -738,6 +803,9 @@ struct NetworkPlane::Impl {
   struct RouterSlot {
     std::uint16_t generation{};
     std::unique_ptr<RouterForwarder> forwarder;
+    // Forwarding owner only, except while its explicit quiescence barrier is
+    // held. The link owner maintains a separate value projection below.
+    std::vector<IsisTransportBinding> isis_transports;
     // The management endpoint is a separate protocol host attached to the
     // chassis OOB port. It never enters RouterForwarder's Base FIB and cannot
     // forward transit packets between management and data-plane interfaces.
@@ -1008,12 +1076,31 @@ struct NetworkPlane::Impl {
   std::array<std::unique_ptr<ForwardingShardWorker>,
              device_catalog::high_forwarding_shards>
       forwarding_shards{};
+  // Link-owner-only overflow retention. The return ring has one entry per
+  // protocol frame credit, so valid traffic cannot exhaust it while another
+  // frame is borrowed. Retaining a refused publication still prevents duplicate
+  // physical enqueue if a future producer violates that capacity invariant.
+  std::array<std::optional<IsisEgressReceipt>, device_catalog::high_forwarding_shards>
+      pending_isis_receipts{};
   // Channels outlive the worker and every forwarding owner. Destruction first
   // joins the OSPF consumer, then forwarding producers, before releasing slot
   // storage.
   ospf::ControlChannels ospf_channels{};
   std::unique_ptr<ospf::ControlWorker> ospf_worker;
+  // Each forwarding shard retains a separate SPSC pair. The IS-IS consumer
+  // joins before forwarding producers and shared channel storage are released.
+  isis::ControlChannels isis_channels{};
+  std::unique_ptr<isis::ControlWorker> isis_worker;
+  std::array<std::vector<IsisTransportBinding>, device_catalog::maximum_routers> isis_transports;
+  std::array<bool, device_catalog::maximum_routers> isis_registered{};
+  std::array<std::size_t, device_catalog::maximum_routers> isis_instance_count{};
+  std::uint64_t next_isis_command_id{1U};
   std::uint64_t next_forward_command_id{1};
+  // Serialized link owner exclusively reuses this staging value while waiting
+  // for the matching forwarding result. Queue publication copies its value;
+  // no forwarding owner borrows this pointer. Avoid another maximum FIB-sized
+  // command on an already nested control programming stack.
+  std::unique_ptr<ForwardCommand> forward_command_scratch{std::make_unique<ForwardCommand>()};
   std::uint64_t next_ospf_command_id{1};
   struct RouteManagerState {
     // This network-owner state is the sole place where connected, static and
@@ -1081,7 +1168,7 @@ struct NetworkPlane::Impl {
          packet::Ipv4ReassemblyTable::payload_arena_allocation_bytes +
          packet::Ipv6ReassemblyTable::payload_arena_allocation_bytes +
          network_detail::EndpointStack::outbound_scratch_allocation_bytes);
-    static_assert(sizeof(Impl) + endpoint_heap_arenas <=
+    static_assert(sizeof(Impl) + sizeof(ForwardCommand) + endpoint_heap_arenas <=
                       device_catalog::runtime_control_reserve_bytes,
                   "network plane and host protocol arenas exceed the generated "
                   "control reserve");
@@ -1091,24 +1178,42 @@ struct NetworkPlane::Impl {
       forwarding_shards[index] = std::make_unique<ForwardingShardWorker>(
           index, this, apply_forward_command, apply_forward_ingress,
           service_forwarding);
-      forwarding_shards[index]->start();
     }
     // Protocol state has a permanent owner from runtime startup. Emscripten
     // uses a fixed pthread pool, so constructing this actor on the first OSPF
     // CLI command can block forever once generated pool entries already own
     // forwarding work. Startup allocation also makes admission atomic: the
     // lab either owns a usable protocol shard or fails before opening.
+    ospf_channels.egress_wakeup_context = this;
+    ospf_channels.egress_wakeup = protocol_egress_wakeup;
+    isis_channels.egress_context = this;
+    isis_channels.egress_wakeup = protocol_egress_wakeup;
     ospf_worker = std::make_unique<ospf::ControlWorker>(
         ospf_channels,
         std::max<std::size_t>(1U, separate_forwarding_shards));
+    // This initial admission budget is bounded by the existing lab port
+    // capacity. Production multi-instance scale requires its measured profile.
+    isis_worker = std::make_unique<isis::ControlWorker>(isis_channels,
+        std::max<std::size_t>(1U, separate_forwarding_shards),
+        device_catalog::maximum_routers * device_catalog::maximum_ports_per_router);
+    // Publish every protocol object and immutable callback before forwarding
+    // enters maintenance and reads those pointers. Construction order alone
+    // cannot protect a thread that was already started inside the loop above.
+    for (std::size_t index = 0; index < separate_forwarding_shards; ++index)
+      forwarding_shards[index]->start();
   }
 
   ~Impl() {
-    ospf_worker.reset();
+    isis_worker->stop();
+    ospf_worker->stop();
     // Joining forwarding owners before fabric and capture destruction prevents
     // a late egress callback from observing released link-owner state.
     for (std::size_t index = 0; index < separate_forwarding_shards; ++index)
       forwarding_shards[index]->stop();
+    // Forwarding may notify a stopped protocol after returning frame credits.
+    // Keep both callback targets alive until every forwarding thread joined.
+    isis_worker.reset();
+    ospf_worker.reset();
     volatile std::uint8_t *key = signing_wrapping_key.data();
     for (std::size_t index{}; index < signing_wrapping_key.size(); ++index)
       key[index] = 0U;
@@ -1116,6 +1221,13 @@ struct NetworkPlane::Impl {
 
   [[nodiscard]] bool parallel() const noexcept {
     return separate_forwarding_shards != 0;
+  }
+
+  static void protocol_egress_wakeup(void *opaque, std::size_t shard) noexcept {
+    auto &owner = *static_cast<Impl *>(opaque);
+    if (owner.parallel()) {
+      if (shard < owner.separate_forwarding_shards) owner.forwarding_shards[shard]->wake_protocol();
+    } else if (owner.link_wakeup) owner.link_wakeup(owner.link_wakeup_context);
   }
 
   [[nodiscard]] bool install_ipv4_fib(
@@ -1163,6 +1275,11 @@ struct NetworkPlane::Impl {
   execute_forward(const ForwardCommand &command) noexcept;
   [[nodiscard]] ospf::ControlResult
   execute_ospf(ospf::ControlCommand command) noexcept;
+  [[nodiscard]] isis::ControlResult execute_isis(isis::ControlCommand command) noexcept;
+  // Serialized link owner asks the IS-IS owner about its own cooldown clock.
+  // Idle registration stays alive until that owner permits structural recovery.
+  void retire_idle_isis_registration(DeviceHandle device) noexcept;
+  [[nodiscard]] bool isis_checkpoint_blocked() noexcept;
   [[nodiscard]] bool queue_egress(ForwardingShardWorker *shard,
                                   NodeHandle source, std::uint16_t ordinal,
                                   const packet::Frame &frame) noexcept;
@@ -1170,6 +1287,7 @@ struct NetworkPlane::Impl {
   void drain_ospf_egress(std::size_t shard_index,
                          ForwardingShardWorker *worker,
                          Clock::time_point current) noexcept;
+  void drain_isis_egress(std::size_t shard_index, ForwardingShardWorker *worker) noexcept;
   [[nodiscard]] bool pause_forwarding() noexcept;
   void resume_forwarding() noexcept;
 
@@ -1586,6 +1704,25 @@ struct NetworkPlane::Impl {
                                              std::memory_order_relaxed);
       else
         owner.ospf_worker->notify();
+    }
+    if (egress_context.source.kind == NodeKind::router &&
+        egress_context.source.index < owner.routers.size() &&
+        !owner.routers[egress_context.source.index].isis_transports.empty()) {
+      packet::isis::EthernetDecodeError error{};
+      const auto wire = packet::isis::parse_ethernet_pdu(frame.view(), error);
+      if (wire) {
+        const auto shard = egress_context.source.index % std::max<std::size_t>(1U, owner.separate_forwarding_shards);
+        const auto &bindings = owner.routers[egress_context.source.index].isis_transports;
+        for (const auto &binding : bindings) {
+          if (binding.identity.physical_port_ordinal != ingress_port) continue;
+          const IsisEgressChannel::Metadata metadata{binding.identity.device, binding.identity.interface_id,
+              ingress_port, binding.identity.configuration_generation, 0U, 0U, binding.identity.instance};
+          if (!matches_isis(binding, metadata, *wire)) continue;
+          if (owner.isis_channels.ingress[shard].try_send({metadata.device, metadata.interface_id,
+              metadata.physical_port_ordinal, metadata.configuration_generation, 0U, 0U, metadata.instance_id}, frame)) owner.isis_worker->notify();
+          else owner.egress_ring_dropped.fetch_add(1U, std::memory_order_relaxed);
+        }
+      }
     }
     if (owner.parallel()) {
       ForwardEgress observation;
@@ -2534,7 +2671,7 @@ ForwardResult NetworkPlane::Impl::apply_forward_command(
           owner.routers[command.device.index].dhcpv6_server_staging;
       if (const auto *pool = std::get_if<dhcpv6::LeasePool>(&command.fib);
           staged.active && pool) {
-        auto &target =
+        auto &target_pools =
             command.kind ==
                     ForwardCommandKind::add_router_dhcpv6_server_address_pool
                 ? staged.address_pools
@@ -2544,9 +2681,9 @@ ForwardResult NetworkPlane::Impl::apply_forward_command(
                     ForwardCommandKind::add_router_dhcpv6_server_address_pool
                 ? staged.expected_address_pools
                 : staged.expected_prefix_pools;
-        if (target.size() < expected)
+        if (target_pools.size() < expected)
           try {
-            target.push_back(*pool);
+            target_pools.push_back(*pool);
             result.success = true;
           } catch (const std::bad_alloc &) {
           }
@@ -3762,7 +3899,15 @@ NetworkPlane::Impl::service_forwarding(void *context, std::size_t shard_index,
   auto &owner = *static_cast<Impl *>(context);
   std::optional<Clock::time_point> next;
   auto &worker = *owner.forwarding_shards[shard_index];
+  IsisEgressReceipt receipt;
+  std::size_t receipt_budget = device_catalog::isis_work_budget_packets;
+  while (receipt_budget-- && worker.take_isis_receipt(receipt)) {
+    static_cast<void>(owner.isis_channels.egress[shard_index].release(
+        receipt.handle, receipt.metadata, receipt.enqueued));
+    owner.isis_worker->notify();
+  }
   owner.drain_ospf_egress(shard_index, &worker, now);
+  owner.drain_isis_egress(shard_index, &worker);
   for (std::size_t index = shard_index; index < owner.routers.size();
        index += owner.separate_forwarding_shards) {
     auto &slot = owner.routers[index];
@@ -3861,6 +4006,8 @@ NetworkPlane::Impl::service_forwarding(void *context, std::size_t shard_index,
     if (deadline && (!next || *deadline < *next))
       next = deadline;
   }
+  if (worker.can_emit(1U) && (owner.ospf_channels.egress[shard_index].consumer_pending() ||
+      owner.isis_channels.egress[shard_index].consumer_pending())) next = now;
   return next;
 }
 
@@ -3891,9 +4038,60 @@ void NetworkPlane::Impl::drain_ospf_egress(
   }
 }
 
+void NetworkPlane::Impl::drain_isis_egress(std::size_t shard_index, ForwardingShardWorker *worker) noexcept {
+  auto &channel = isis_channels.egress[shard_index];
+  std::size_t budget = device_catalog::isis_work_budget_packets;
+  while (budget-- && (!worker || worker->can_emit(1U))) {
+    const auto borrowed = channel.try_receive();
+    if (!borrowed) break;
+    const auto &metadata = borrowed->metadata;
+    auto *forwarder = router(metadata.device);
+    packet::isis::EthernetDecodeError error{};
+    const auto wire = packet::isis::parse_ethernet_pdu(borrowed->frame->view(), error);
+    bool transferred{};
+    bool enqueued{};
+    if (forwarder && wire && metadata.transmission_id &&
+        metadata.transmission_class == static_cast<std::uint8_t>(wire->pdu.type)) {
+      const auto &bindings = routers[metadata.device.index].isis_transports;
+      const auto selected = std::find_if(bindings.begin(), bindings.end(), [&](const auto &binding) {
+        return matches_isis(binding, metadata, *wire);
+      });
+      if (selected != bindings.end()) {
+        if (worker) {
+          struct Transfer { ForwardingShardWorker &worker; const IsisEgressChannel::Borrowed &borrowed; PortHandle port; };
+          Transfer context{*worker, *borrowed, selected->port};
+          transferred = forwarder->originate_isis(metadata.physical_port_ordinal, *borrowed->frame, &context,
+              +[](void *opaque, std::uint16_t ordinal, const packet::Frame &frame) {
+                const auto &transfer_context = *static_cast<Transfer *>(opaque);
+                ForwardEgress transfer;
+                transfer.kind = ForwardEgressKind::isis_transmit;
+                transfer.source = node(transfer_context.borrowed.metadata.device);
+                transfer.ordinal = ordinal;
+                transfer.expected_port = transfer_context.port;
+                transfer.isis_receipt = {transfer_context.borrowed.handle, transfer_context.borrowed.metadata, false};
+                packet::copy_frame(transfer.frame, frame);
+                return transfer_context.worker.emit(transfer);
+              });
+        } else {
+          const auto *physical = binding(node(metadata.device), metadata.physical_port_ordinal);
+          if (physical && physical->port == selected->port) {
+            EgressContext context{this, node(metadata.device), nullptr};
+            enqueued = forwarder->originate_isis(metadata.physical_port_ordinal, *borrowed->frame, &context, egress);
+          }
+        }
+      }
+    }
+    if (!transferred) {
+      static_cast<void>(channel.release(borrowed->handle, metadata, enqueued));
+      isis_worker->notify();
+    }
+  }
+}
+
 ForwardResult
 NetworkPlane::Impl::execute_forward(const ForwardCommand &source) noexcept {
-  ForwardCommand command = source;
+  auto &command = *forward_command_scratch;
+  command = source;
   command.id = next_forward_command_id++;
   const NodeHandle target =
       command.device ? node(command.device) : node(command.host);
@@ -3911,6 +4109,33 @@ NetworkPlane::Impl::execute_forward(const ForwardCommand &source) noexcept {
     std::this_thread::yield();
   }
   return result.id == command.id ? result : ForwardResult{.id = command.id};
+}
+
+isis::ControlResult NetworkPlane::Impl::execute_isis(isis::ControlCommand command) noexcept {
+  command.id = next_isis_command_id++;
+  const auto id = command.id;
+  if (!isis_worker->submit(std::move(command))) return {.id = id, .error = isis::ControlError::capacity};
+  isis::ControlResult result;
+  while (!isis_worker->read(result)) std::this_thread::yield();
+  return result.id == id ? result : isis::ControlResult{.id = id, .error = isis::ControlError::stale_configuration};
+}
+void NetworkPlane::Impl::retire_idle_isis_registration(DeviceHandle device) noexcept {
+  if (!live(device) || !isis_registered[device.index] || isis_instance_count[device.index] ||
+      !isis_transports[device.index].empty()) return;
+  isis::ControlCommand query;
+  query.kind = isis::ControlCommandKind::query_sequence_recovery;
+  query.identity.device = device;
+  const auto result = execute_isis(std::move(query));
+  if (result.error != isis::ControlError::none || result.sequence_recovery_pending) return;
+  isis::ControlCommand removal;
+  removal.kind = isis::ControlCommandKind::remove_device;
+  removal.identity.device = device;
+  if (execute_isis(std::move(removal)).error == isis::ControlError::none) isis_registered[device.index] = false;
+}
+bool NetworkPlane::Impl::isis_checkpoint_blocked() noexcept {
+  for (std::size_t index{}; index < isis_registered.size(); ++index)
+    if (isis_registered[index]) retire_idle_isis_registration({static_cast<std::uint16_t>(index), router_generations[index]});
+  return std::any_of(isis_registered.begin(), isis_registered.end(), [](bool registered) { return registered; });
 }
 
 ospf::ControlResult
@@ -4195,6 +4420,11 @@ void NetworkPlane::Impl::drain_forwarding_egress() noexcept {
   for (std::size_t shard_index = 0; shard_index < separate_forwarding_shards;
        ++shard_index) {
     auto &worker = *forwarding_shards[shard_index];
+    auto &pending = pending_isis_receipts[shard_index];
+    if (pending) {
+      if (!worker.return_isis(*pending)) continue;
+      pending.reset();
+    }
     std::size_t budget = device_catalog::fabric_work_budget_frames;
     ForwardEgress egress_frame;
     while (budget-- && worker.take_egress(egress_frame)) {
@@ -4206,9 +4436,29 @@ void NetworkPlane::Impl::drain_forwarding_egress() noexcept {
         continue;
       }
       const auto *current = binding(egress_frame.source, egress_frame.ordinal);
-      if (!current || current->port.node != egress_frame.source ||
-          !current->link) {
+      const auto finish_isis = [&](bool enqueued) {
+        if (egress_frame.kind != ForwardEgressKind::isis_transmit) return true;
+        auto receipt = egress_frame.isis_receipt;
+        receipt.enqueued = enqueued;
+        if (worker.return_isis(receipt)) return true;
+        pending = receipt;
+        return false;
+      };
+      bool current_isis = true;
+      if (egress_frame.kind == ForwardEgressKind::isis_transmit) {
+        packet::isis::EthernetDecodeError error{};
+        const auto wire = packet::isis::parse_ethernet_pdu(egress_frame.frame.view(), error);
+        const auto &metadata = egress_frame.isis_receipt.metadata;
+        current_isis = wire && metadata.device.index < isis_transports.size() &&
+            metadata.transmission_class == static_cast<std::uint8_t>(wire->pdu.type) &&
+            std::any_of(isis_transports[metadata.device.index].begin(), isis_transports[metadata.device.index].end(),
+                [&](const auto &binding) { return binding.port == egress_frame.expected_port && matches_isis(binding, metadata, *wire); });
+      }
+      if (!current || !current_isis || current->port.node != egress_frame.source ||
+          !current->link || (egress_frame.kind == ForwardEgressKind::isis_transmit &&
+                            current->port != egress_frame.expected_port)) {
         ++missing_binding_dropped;
+        if (!finish_isis(false)) break;
         continue;
       }
       if (egress_frame.source.kind == NodeKind::router &&
@@ -4220,10 +4470,13 @@ void NetworkPlane::Impl::drain_forwarding_egress() noexcept {
             egress_frame.source, egress_frame.frame);
       if (fabric->enqueue(current->link, current->endpoint,
                           egress_frame.frame) !=
-          MultiDeviceFabric::DropReason::none)
+          MultiDeviceFabric::DropReason::none) {
+        if (!finish_isis(false)) break;
         continue;
+      }
       observe(link_captures[current->link.index][current->endpoint],
               current->link, egress_frame.frame);
+      if (!finish_isis(true)) break;
     }
   }
 }
@@ -4262,7 +4515,7 @@ NetworkPlane::NetworkPlane(std::size_t logical_cpus)
   // prove concrete metadata and maximum forwarding transfer rings fit their
   // 24 MiB share of runtime_control_reserve_bytes. The remaining 8 MiB covers
   // registries, workflow vectors and standard-library allocation headers.
-  static_assert(sizeof(Impl) + device_catalog::high_forwarding_shards *
+  static_assert(sizeof(Impl) + sizeof(ForwardCommand) + device_catalog::high_forwarding_shards *
                                    sizeof(ForwardingShardWorker) <=
                     24U * 1024U * 1024U,
                 "network shard metadata exceeds its fixed Wasm reserve");
@@ -4326,6 +4579,15 @@ bool NetworkPlane::add_router(
 bool NetworkPlane::remove_router(DeviceHandle device) noexcept {
   if (!impl_->live(device))
     return false;
+  if (impl_->isis_registered[device.index] && !replace_isis_p2p_generation(device, {})) return false;
+  if (impl_->isis_registered[device.index]) {
+    isis::ControlCommand removal;
+    removal.kind = isis::ControlCommandKind::remove_device;
+    removal.identity.device = device;
+    if (impl_->execute_isis(std::move(removal)).error != isis::ControlError::none) return false;
+    impl_->isis_registered[device.index] = false;
+    impl_->isis_instance_count[device.index] = 0U;
+  }
   // Withdraw the protocol generation while physical ports still exist. This
   // lets the transaction clear every derived punt bit and prevents a reused
   // router slot from inheriting an old daemon generation.
@@ -4488,6 +4750,11 @@ bool NetworkPlane::configure_port(DeviceHandle device,
 
 bool NetworkPlane::remove_port(DeviceHandle device,
                                std::uint16_t ordinal) noexcept {
+  // The control owner must withdraw the complete circuit generation before
+  // destroying its physical port. Refuse an orphaned transport explicitly.
+  if (device.index < impl_->isis_transports.size() &&
+      std::any_of(impl_->isis_transports[device.index].begin(), impl_->isis_transports[device.index].end(),
+          [&](const auto &binding) { return binding.identity.device == device && binding.port.ordinal == ordinal; })) return false;
   if (impl_->parallel()) {
     ForwardPort port;
     port.ordinal = ordinal;
@@ -4511,6 +4778,221 @@ bool NetworkPlane::remove_port(DeviceHandle device,
   if (device.index < impl_->ospf_punt_masks.size())
     impl_->ospf_punt_masks[device.index][ordinal] = 0U;
   return true;
+}
+
+bool NetworkPlane::replace_isis_p2p_generation(DeviceHandle device,
+    std::span<const IsisP2pCircuitProgram> circuits) noexcept {
+  if (!impl_->live(device) || circuits.size() > device_catalog::maximum_routers * device_catalog::maximum_ports_per_router)
+    return false;
+  if (circuits.empty() && !impl_->isis_registered[device.index]) return true;
+  using Groups = std::array<std::vector<packet::Mac>, device_catalog::maximum_ports_per_router>;
+  std::unique_ptr<Groups> groups;
+  std::vector<IsisTransportBinding> link_projection, forwarding_projection;
+  isis::ControlCommand generation;
+  generation.kind = isis::ControlCommandKind::prepare_generation;
+  generation.identity.device = device;
+  std::array<bool, device_catalog::maximum_ports_per_router> affected{}, exchanged{};
+  try {
+    groups = std::make_unique<Groups>();
+    link_projection.reserve(circuits.size());
+    generation.circuits.reserve(circuits.size());
+    const auto &previous_bindings = impl_->isis_transports[device.index];
+    const auto identity_key = [](const isis::CircuitIdentity &identity) { return std::pair{identity.interface_id, identity.instance}; };
+    std::vector<std::size_t> previous_order;
+    previous_order.reserve(previous_bindings.size());
+    for (std::size_t index{}; index < previous_bindings.size(); ++index) previous_order.push_back(index);
+    std::sort(previous_order.begin(), previous_order.end(), [&](auto left, auto right) {
+      return identity_key(previous_bindings[left].identity) < identity_key(previous_bindings[right].identity);
+    });
+    for (const auto &program : circuits) {
+      const auto &definition = program.circuit;
+      const auto &identity = definition.identity;
+      const auto &configuration = definition.configuration;
+      if (!program.port || program.port.node != node(device) || identity.device != device ||
+          program.port.ordinal != identity.physical_port_ordinal || program.port.ordinal >= groups->size() ||
+          (configuration.hello_destination[0U] & 1U) == 0U) return false;
+      const auto old = std::lower_bound(previous_order.begin(), previous_order.end(), identity_key(identity), [&](auto index, auto key) {
+        return identity_key(previous_bindings[index].identity) < key;
+      });
+      if (old != previous_order.end() && identity_key(previous_bindings[*old].identity) == identity_key(identity) &&
+          identity.configuration_generation == previous_bindings[*old].identity.configuration_generation &&
+          program.port != previous_bindings[*old].port) return false;
+      generation.circuits.push_back(definition);
+      link_projection.push_back({identity, program.port, configuration.hello_destination,
+          configuration.instance_format.value_or(packet::isis::InstanceFormat::standard),
+          configuration.wire_instance, configuration.physical_point_to_point});
+      (*groups)[program.port.ordinal].push_back(configuration.hello_destination);
+      affected[program.port.ordinal] = true;
+    }
+    const auto selector = [](const IsisTransportBinding &binding) {
+      return std::tuple{binding.port.ordinal, binding.destination, binding.wire_instance};
+    };
+    std::sort(link_projection.begin(), link_projection.end(), [&](const auto &left, const auto &right) {
+      return selector(left) < selector(right);
+    });
+    for (std::size_t index = 1U; index < link_projection.size(); ++index)
+      if (selector(link_projection[index - 1U]) == selector(link_projection[index])) return false;
+    forwarding_projection = link_projection;
+    for (auto &memberships : *groups) {
+      std::sort(memberships.begin(), memberships.end());
+      memberships.erase(std::unique(memberships.begin(), memberships.end()), memberships.end());
+    }
+  } catch (const std::bad_alloc &) { return false; }
+  for (const auto &previous : impl_->isis_transports[device.index]) affected[previous.port.ordinal] = true;
+  const bool registered_here = !impl_->isis_registered[device.index];
+  if (!impl_->isis_registered[device.index]) {
+    isis::ControlCommand registration;
+    registration.kind = isis::ControlCommandKind::register_device;
+    registration.identity.device = device;
+    if (impl_->execute_isis(std::move(registration)).error != isis::ControlError::none) return false;
+    impl_->isis_registered[device.index] = true;
+  }
+  const auto discard_registration = [&] {
+    if (!registered_here) return;
+    impl_->retire_idle_isis_registration(device);
+  };
+  const auto cancel = [&] {
+    isis::ControlCommand abort;
+    abort.kind = isis::ControlCommandKind::abort_generation;
+    abort.identity.device = device;
+    static_cast<void>(impl_->execute_isis(std::move(abort)));
+  };
+  if (impl_->execute_isis(std::move(generation)).error != isis::ControlError::none) {
+    discard_registration();
+    return false;
+  }
+  if (!impl_->pause_forwarding()) { cancel(); discard_registration(); return false; }
+  auto *forwarder = impl_->router(device);
+  bool programmed = forwarder != nullptr;
+  for (std::size_t ordinal{}; ordinal < affected.size() && programmed; ++ordinal) {
+    if (!affected[ordinal]) continue;
+    programmed = forwarder->exchange_isis_punt(static_cast<std::uint16_t>(ordinal), (*groups)[ordinal]);
+    exchanged[ordinal] = programmed;
+  }
+  isis::ControlCommand commit;
+  commit.kind = isis::ControlCommandKind::commit_generation;
+  commit.identity.device = device;
+  if (!programmed || impl_->execute_isis(std::move(commit)).error != isis::ControlError::none) {
+    for (std::size_t ordinal{}; ordinal < exchanged.size(); ++ordinal)
+      if (exchanged[ordinal]) static_cast<void>(forwarder->exchange_isis_punt(static_cast<std::uint16_t>(ordinal), (*groups)[ordinal]));
+    cancel();
+    discard_registration();
+    impl_->resume_forwarding();
+    return false;
+  }
+  // The barrier excludes packet observers. All publications are non-allocating
+  // ownership swaps after the protocol owner has accepted commit.
+  impl_->routers[device.index].isis_transports.swap(forwarding_projection);
+  impl_->isis_transports[device.index].swap(link_projection);
+  impl_->retire_idle_isis_registration(device);
+  impl_->resume_forwarding();
+  return true;
+}
+
+std::optional<isis::ControlResult> NetworkPlane::query_isis_circuit(const isis::CircuitIdentity &identity) noexcept {
+  if (!impl_->live(identity.device) || !impl_->isis_registered[identity.device.index]) return std::nullopt;
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::query_circuit;
+  command.identity = identity;
+  return impl_->execute_isis(std::move(command));
+}
+
+bool NetworkPlane::add_isis_update_instance(DeviceHandle device, std::uint8_t instance,
+    const isis::UpdateInstanceProgram &program) noexcept {
+  if (!impl_->live(device) || instance > device_catalog::isis_instance_last) return false;
+  const bool registered_here = !impl_->isis_registered[device.index];
+  if (registered_here) {
+    isis::ControlCommand registration;
+    registration.kind = isis::ControlCommandKind::register_device;
+    registration.identity.device = device;
+    if (impl_->execute_isis(std::move(registration)).error != isis::ControlError::none) return false;
+    impl_->isis_registered[device.index] = true;
+  }
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::add_update_instance;
+  command.identity.device = device;
+  command.identity.instance = instance;
+  command.update = program;
+  if (impl_->execute_isis(std::move(command)).error == isis::ControlError::none) {
+    ++impl_->isis_instance_count[device.index];
+    return true;
+  }
+  if (registered_here) {
+    impl_->retire_idle_isis_registration(device);
+  }
+  return false;
+}
+
+bool NetworkPlane::remove_isis_update_instance(DeviceHandle device, std::uint8_t instance) noexcept {
+  if (!impl_->live(device) || !impl_->isis_registered[device.index] || instance > device_catalog::isis_instance_last)
+    return false;
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::remove_update_instance;
+  command.identity.device = device;
+  command.identity.instance = instance;
+  if (impl_->execute_isis(std::move(command)).error != isis::ControlError::none) return false;
+  --impl_->isis_instance_count[device.index];
+  impl_->retire_idle_isis_registration(device);
+  return true;
+}
+
+std::optional<isis::ControlResult> NetworkPlane::query_isis_update_instance(DeviceHandle device,
+    std::uint8_t instance) noexcept {
+  if (!impl_->live(device) || !impl_->isis_registered[device.index]) return std::nullopt;
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::query_update_instance;
+  command.identity.device = device;
+  command.identity.instance = instance;
+  return impl_->execute_isis(std::move(command));
+}
+
+std::optional<isis::ControlResult> NetworkPlane::query_isis_lsp(DeviceHandle device,
+    std::uint8_t instance, std::uint8_t level, const packet::isis::LspId &id) noexcept {
+  if (!impl_->live(device) || !impl_->isis_registered[device.index]) return std::nullopt;
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::query_update_instance;
+  command.identity.device = device;
+  command.identity.instance = instance;
+  command.level = level;
+  command.selected_lsp = id;
+  return impl_->execute_isis(std::move(command));
+}
+
+std::optional<isis::ControlResult> NetworkPlane::replace_isis_local_lsp(DeviceHandle device,
+    std::uint8_t instance, isis::LocalLspContent content) noexcept {
+  if (!impl_->live(device) || !impl_->isis_registered[device.index]) return std::nullopt;
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::replace_local_content;
+  command.identity.device = device;
+  command.identity.instance = instance;
+  command.local_content.emplace(std::move(content));
+  return impl_->execute_isis(std::move(command));
+}
+std::optional<isis::ControlResult> NetworkPlane::withdraw_isis_local_lsp(DeviceHandle device,
+    std::uint8_t instance, std::uint8_t level, const packet::isis::LspId &id) noexcept {
+  if (!impl_->live(device) || !impl_->isis_registered[device.index]) return std::nullopt;
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::withdraw_local_content;
+  command.identity.device = device;
+  command.identity.instance = instance;
+  command.local_content.emplace(isis::LocalLspContent{level, id, 0U, {}});
+  return impl_->execute_isis(std::move(command));
+}
+
+std::optional<isis::ControlResult> NetworkPlane::originate_isis_lsp(DeviceHandle device,
+    std::uint8_t instance, std::uint8_t level, std::span<const std::uint8_t> pdu,
+    isis::OriginPurgeReason purge) noexcept {
+  if (!impl_->live(device) || !impl_->isis_registered[device.index]) return std::nullopt;
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::originate_lsp;
+  command.identity.device = device;
+  command.identity.instance = instance;
+  command.level = level;
+  command.purge = purge;
+  try { command.local_lsp.assign(pdu.begin(), pdu.end()); }
+  catch (const std::bad_alloc &) { return isis::ControlResult{.error = isis::ControlError::capacity}; }
+  catch (const std::length_error &) { return isis::ControlResult{.error = isis::ControlError::invalid_argument}; }
+  return impl_->execute_isis(std::move(command));
 }
 
 bool NetworkPlane::add_ospf_process(
@@ -7290,6 +7772,7 @@ std::uint64_t NetworkPlane::capture_dropped() const noexcept {
 
 std::optional<NetworkPlaneCheckpoint>
 NetworkPlane::checkpoint(Clock::time_point now) {
+  if (impl_->isis_checkpoint_blocked()) return std::nullopt;
   if (!impl_->pause_forwarding())
     return std::nullopt;
   struct Resume final {
@@ -7467,6 +7950,7 @@ NetworkPlane::router_checkpoint(DeviceHandle device, Clock::time_point now) {
 
 bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
                            Clock::time_point now) {
+  if (impl_->isis_checkpoint_blocked()) return false;
   if (state.routers.size() > device_catalog::maximum_routers ||
       state.hosts.size() > device_catalog::maximum_hosts ||
       state.switches.size() > device_catalog::maximum_switches ||
@@ -8177,6 +8661,7 @@ void NetworkPlane::pump(Clock::time_point now) noexcept {
     // Service each router's local ND deadlines before medium delivery without
     // introducing a global timer queue or a synthetic periodic event.
     impl_->drain_ospf_egress(0U, nullptr, now);
+    impl_->drain_isis_egress(0U, nullptr);
     for (std::size_t index = 0; index < impl_->routers.size(); ++index) {
       auto &slot = impl_->routers[index];
       if (!slot.forwarder || !slot.generation)
@@ -8341,12 +8826,9 @@ void NetworkPlane::set_link_wakeup(void *context,
                                    void (*wakeup)(void *)) noexcept {
   impl_->link_wakeup_context = context;
   impl_->link_wakeup = wakeup;
-  // These callbacks are installed before any OSPF process can create the
-  // dedicated protocol pthread, so the worker reads immutable pointers. Route
-  // generations and encoded egress frames use distinct SPSC rings but wake
-  // the same network owner after release-publication.
-  impl_->ospf_channels.egress_wakeup_context = context;
-  impl_->ospf_channels.egress_wakeup = wakeup;
+  // Installed before protocol configuration is accepted. Route generations
+  // wake their link-owner consumer; encoded frames wake their selected
+  // forwarding consumer through the immutable per-shard adapter above.
   impl_->ospf_channels.route_wakeup_context = context;
   impl_->ospf_channels.route_wakeup = wakeup;
   for (std::size_t index = 0; index < impl_->separate_forwarding_shards;
@@ -8376,6 +8858,10 @@ NetworkPlane::forwarding_owner_turns(std::size_t index) const noexcept {
 
 std::uint64_t NetworkPlane::ospf_owner_thread_id() const noexcept {
   return impl_->ospf_worker ? impl_->ospf_worker->thread_id() : 0U;
+}
+
+std::uint64_t NetworkPlane::isis_owner_thread_id() const noexcept {
+  return impl_->isis_worker ? impl_->isis_worker->thread_id() : 0U;
 }
 
 } // namespace router::lab

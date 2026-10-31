@@ -90,6 +90,9 @@ public:
   [[nodiscard]] std::uint64_t ospf_owner_thread_id() const noexcept {
     return plane_.ospf_owner_thread_id();
   }
+  [[nodiscard]] std::uint64_t isis_owner_thread_id() const noexcept {
+    return plane_.isis_owner_thread_id();
+  }
 
 private:
   static void wake_link_owner(void *context) noexcept;

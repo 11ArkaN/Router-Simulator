@@ -976,23 +976,23 @@ std::uint64_t RuntimeSupervisor::dropped_packets() noexcept {
   return result && result->success ? result->value : 0;
 }
 
-std::optional<RouterForwarderCheckpoint>
+std::unique_ptr<const RouterForwarderCheckpoint>
 RuntimeSupervisor::router_operational_state(DeviceHandle device) noexcept {
   if (!devices_.get(device))
-    return std::nullopt;
+    return nullptr;
   auto &command = prepare(NetworkCommandKind::prepare_router_checkpoint);
   command.device = device;
   const auto result = dispatch(command);
   const auto *prepared = network_worker_->prepared_router_checkpoint();
   if (!result || !result->success || !prepared)
-    return std::nullopt;
+    return nullptr;
   // Acquire on the result ring publishes the immutable prepared value. Copying
   // now releases the worker-owned buffer for the next show request without
   // exposing forwarding pointers or serializing unrelated capture metadata.
   try {
-    return *prepared;
+    return std::make_unique<RouterForwarderCheckpoint>(*prepared);
   } catch (const std::bad_alloc &) {
-    return std::nullopt;
+    return nullptr;
   }
 }
 
