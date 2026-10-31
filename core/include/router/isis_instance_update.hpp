@@ -156,6 +156,14 @@ public:
       const packet::isis::LspId &id, TransmitAuthentication authentication,
       RuntimeClock::time_point now, std::span<std::uint8_t> option_scratch,
       std::span<std::uint8_t> pdu_scratch, LevelObserver observer) noexcept;
+  // The parent removed this own identity from its current generated set.
+  // Requires a retained live own body, preserves its sequence, and retains the
+  // initiated purge for MaxAge. Required missing keys refuse before mutation.
+  // Exclusive scratch and same-shard borrowed key lifetime match expiration.
+  [[nodiscard]] UpdatePurgeResult initiate_local_purge(std::size_t level,
+      const packet::isis::LspId &id, TransmitAuthentication authentication,
+      RuntimeClock::time_point now, std::span<std::uint8_t> option_scratch,
+      std::span<std::uint8_t> pdu_scratch, LevelObserver observer) noexcept;
   // Caller accepted this live own-source LSP on a real circuit and established
   // that its ID is outside the current generated set. Purges at the received
   // sequence or a newer cached copy's sequence, never increments it, and

@@ -10,6 +10,36 @@
 #include <stdexcept>
 
 namespace router::isis {
+ControlError ControlWorker::edit_local_content(ControlCommand &command, OwnedInstance &instance,
+    ControlResult &result) noexcept {
+  if (!command.local_content) return ControlError::invalid_argument;
+  if (instance.status != UpdateStatus::applied || !instance.local) return ControlError::update_refused;
+  auto &value = *command.local_content;
+  auto &records = instance.configuration.origination->content.records;
+  const auto desired = std::find_if(records.begin(), records.end(), [&](const auto &record) {
+    return record.level == value.level && record.id == value.id;
+  });
+  if (desired == records.end()) return ControlError::not_found;
+  const bool withdrawing = command.kind == ControlCommandKind::withdraw_local_content;
+  result.local_content_result = withdrawing ? instance.local->withdraw(value.level, value.id) :
+      instance.local->replace(value.level, value.id, value.flags, value.options, RuntimeClock::now());
+  switch (result.local_content_result) {
+  case LocalContentResult::missing: return ControlError::not_found;
+  case LocalContentResult::invalid: return ControlError::invalid_argument;
+  case LocalContentResult::capacity: return ControlError::capacity;
+  case LocalContentResult::changed:
+  case LocalContentResult::unchanged: break;
+  }
+  // Local replacement cannot allocate. The transferred command already owns
+  // the desired bytes, so committing the reconstruction program is a no-throw
+  // swap after validation. A rejected edit changes neither semantic owner.
+  desired->active = !withdrawing;
+  if (!withdrawing) {
+    desired->flags = value.flags;
+    desired->options.swap(value.options);
+  }
+  return ControlError::none;
+}
 RuntimeClock::time_point ControlWorker::service_local_instance(DeviceState &device, std::size_t index,
     RuntimeClock::time_point now, std::size_t &budget) noexcept {
   auto &instance = *device.instances[index];
@@ -117,9 +147,9 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
     egress.reserve(bindings.size());
     for (const auto binding : bindings)
       egress.push_back(std::make_unique<UpdateEgress>(instance, device.circuits[binding].random_state));
-    auto budget = configuration.origination->content.current.size();
+    auto budget = configuration.origination->content.active_records();
     const auto generated = local->service(*process, {}, now, scratch_, instance.observer(), budget);
-    if (generated.blocked || generated.published != configuration.origination->content.current.size() ||
+    if (generated.blocked || generated.published != configuration.origination->content.active_records() ||
         generated.terminal != GenerationStatus::waiting) {
       static_cast<void>(gate.resource_failed(RuntimeClock::now()));
       return gate.deadline().value_or(never);

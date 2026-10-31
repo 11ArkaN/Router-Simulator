@@ -671,6 +671,15 @@ public:
   // missing identity reports not_found, and no LSDB/key/packet reference escapes.
   [[nodiscard]] std::optional<isis::ControlResult> query_isis_lsp(DeviceHandle device,
       std::uint8_t instance, std::uint8_t level, const packet::isis::LspId &id) noexcept;
+  // Transfers local semantic intent to a pre-reserved identity on the IS-IS
+  // owner. Replacement activates it; withdrawal purges a non-root body.
+  // Refusal preserves runtime and reconstruction intent. No peer state enters
+  // these calls. Missing router registration returns nullopt; owner errors and
+  // unchanged results are explicit. The input value owns its option bytes.
+  [[nodiscard]] std::optional<isis::ControlResult> replace_isis_local_lsp(DeviceHandle device,
+      std::uint8_t instance, isis::LocalLspContent content) noexcept;
+  [[nodiscard]] std::optional<isis::ControlResult> withdraw_isis_local_lsp(DeviceHandle device,
+      std::uint8_t instance, std::uint8_t level, const packet::isis::LspId &id) noexcept;
   // Already composed local PDU bytes are copied before publication; no span or
   // key lease is retained. The originator supplied sequence, options and purge
   // reason. Result reports validation or admission failure explicitly.

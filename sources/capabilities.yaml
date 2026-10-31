@@ -19,6 +19,9 @@ features:
   routing.isis.database_validation:
     status: partially-implemented
     source_ids: [iso.10589.2002.database_validation]
+  routing.isis.local_lsp_withdrawal:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.local_lsp_generation]
   routing.isis.local_lsp_generation:
     status: partially-implemented
     source_ids: [iso.10589.2002.local_lsp_generation]

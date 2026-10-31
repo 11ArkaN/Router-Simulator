@@ -18,9 +18,12 @@ bool valid_content(std::size_t level, std::uint8_t flags, std::span<const std::u
   return cursor.valid();
 }
 }
+std::size_t LocalLspProgram::active_records() const noexcept {
+  return static_cast<std::size_t>(std::count_if(records.begin(), records.end(), [](const auto &record) { return record.active; }));
+}
 LocalLspSet::Entry::Entry(LocalLspContent value, const LocalLspLevelProgram &program,
     std::uint64_t random, RuntimeClock::time_point now)
-    : content{value.level, value.id, value.flags, {}},
+    : content{value.level, value.id, value.flags, {}, value.active},
       generation(program.minimum_interval, program.refresh_interval, random, now) {
   content.options.reserve(program.maximum_pdu_octets - packet::isis::lsp_header_octets);
   content.options.assign(value.options.begin(), value.options.end());
@@ -29,24 +32,24 @@ LocalLspSet::LocalLspSet(packet::isis::SystemId local, std::uint8_t maximum_area
     UpdateInstanceSelector selector, LocalLspProgram program, RuntimeClock::time_point now)
     : local_(local), maximum_areas_(maximum_areas), selector_(selector), levels_(program.levels) {
   if (!maximum_areas || maximum_areas == 255U || !program.random ||
-      selector.format > packet::isis::InstanceFormat::standard || program.current.empty())
+      selector.format > packet::isis::InstanceFormat::standard || program.records.empty())
     throw std::invalid_argument("Invalid IS-IS local LSP program");
   for (const auto &level : levels_) if (level && (!level->maximum_age ||
       level->maximum_pdu_octets < packet::isis::lsp_header_octets ||
       level->refresh_interval >= std::chrono::seconds{level->maximum_age}))
     throw std::invalid_argument("Invalid IS-IS local LSP lifetime or buffer");
-  std::sort(program.current.begin(), program.current.end(), [](const auto &left, const auto &right) {
+  std::sort(program.records.begin(), program.records.end(), [](const auto &left, const auto &right) {
     return left.level != right.level ? left.level < right.level : left.id < right.id;
   });
   std::array<bool, 2U> roots{};
-  entries_.reserve(program.current.size());
-  for (auto &content : program.current) {
+  entries_.reserve(program.records.size());
+  for (auto &content : program.records) {
     if (!valid_content(content.level, content.flags, content.options) || !levels_[content.level] ||
         !std::equal(local_.begin(), local_.end(), content.id.begin()) ||
         content.options.size() > levels_[content.level]->maximum_pdu_octets - packet::isis::lsp_header_octets ||
         find(content.level, content.id))
       throw std::invalid_argument("Invalid or duplicate current local IS-IS LSP");
-    roots[content.level] = roots[content.level] || (!content.id[6U] && !content.id[7U]);
+    roots[content.level] = roots[content.level] || (content.active && !content.id[6U] && !content.id[7U]);
     auto seed = program.random ^ (static_cast<std::uint64_t>(entries_.size()) + 1U);
     if (!seed) seed = program.random;
     const auto level = content.level;
@@ -63,7 +66,7 @@ LocalLspSet::Entry *LocalLspSet::find(std::size_t level, const packet::isis::Lsp
 }
 bool LocalLspSet::contains(std::size_t level, const packet::isis::LspId &id) const noexcept {
   return std::any_of(entries_.begin(), entries_.end(), [&](const auto &entry) {
-    return entry.content.level == level && entry.content.id == id;
+    return entry.content.active && entry.content.level == level && entry.content.id == id;
   });
 }
 std::optional<UpdateStatus> LocalLspSet::last_error(std::size_t level, const packet::isis::LspId &id) const noexcept {
@@ -83,14 +86,26 @@ LocalContentResult LocalLspSet::replace(std::size_t level, const packet::isis::L
   if (!valid_content(level, flags, options)) return LocalContentResult::invalid;
   if (options.size() > levels_[level]->maximum_pdu_octets - packet::isis::lsp_header_octets)
     return LocalContentResult::capacity;
-  if (entry->content.flags == flags && std::ranges::equal(entry->content.options, options))
+  if (entry->content.active && entry->content.flags == flags && std::ranges::equal(entry->content.options, options))
     return LocalContentResult::unchanged;
   // Public inputs must not borrow this private vector. Its reserved capacity
   // bounds replacement; no allocation or invalidation of a published view occurs.
   entry->content.options.assign(options.begin(), options.end());
   entry->content.flags = flags;
+  entry->content.active = true;
+  entry->retirement_pending = entry->retirement_blocked = false;
   entry->generation.changed(now);
   entry->generation.retry();
+  return LocalContentResult::changed;
+}
+LocalContentResult LocalLspSet::withdraw(std::size_t level, const packet::isis::LspId &id) noexcept {
+  auto *entry = find(level, id);
+  if (!entry) return LocalContentResult::missing;
+  if (!id[6U] && !id[7U]) return LocalContentResult::invalid;
+  if (!entry->content.active) return LocalContentResult::unchanged;
+  entry->content.active = false;
+  entry->retirement_pending = true;
+  entry->retirement_blocked = false;
   return LocalContentResult::changed;
 }
 bool LocalLspSet::require_after(std::size_t level, const packet::isis::LspId &id,
@@ -101,7 +116,10 @@ bool LocalLspSet::require_after(std::size_t level, const packet::isis::LspId &id
   return true;
 }
 void LocalLspSet::retry(std::size_t level) noexcept {
-  for (auto &entry : entries_) if (entry.content.level == level) entry.generation.retry();
+  for (auto &entry : entries_) if (entry.content.level == level) {
+    entry.generation.retry();
+    entry.retirement_blocked = false;
+  }
 }
 LocalContentResult LocalLspSet::waiting_overload(std::size_t level, bool enabled, RuntimeClock::time_point now) noexcept {
   if (level >= levels_.size() || !levels_[level]) return LocalContentResult::missing;
@@ -130,6 +148,29 @@ LocalGenerationResult LocalLspSet::service(InstanceUpdateProcess &update,
       const auto current = owner->database().database().find(entry.content.id, now);
       if (current && current->header.sequence > entry.generation.committed_sequence())
         entry.generation.require_after(current->header.sequence, now);
+    }
+    if (!entry.content.active) {
+      const auto current = owner ? owner->database().database().find(entry.content.id, now) : std::nullopt;
+      if (entry.retirement_pending && (!current || current->purge_installed)) {
+        entry.retirement_pending = entry.retirement_blocked = false;
+        entry.last_error = UpdateStatus::applied;
+      }
+      if (entry.retirement_pending && !entry.retirement_blocked && budget) {
+        --budget;
+        const auto purged = current->header.remaining_seconds ?
+            update.initiate_local_purge(level, entry.content.id, authentication[level], now,
+                scratch.options, scratch.pdu, observer) :
+            update.finalize_expiration(level, entry.content.id, authentication[level], now,
+                scratch.options, scratch.pdu, observer);
+        entry.last_error = purged.status;
+        if (purged.status == UpdateStatus::applied && purged.origin.install == LspInstallResult::installed) {
+          entry.retirement_pending = false;
+          ++result.published;
+        } else entry.retirement_blocked = true;
+      }
+      if (entry.retirement_blocked) ++result.blocked;
+      else if (entry.retirement_pending && (!result.deadline || now < *result.deadline)) result.deadline = now;
+      continue;
     }
     const auto due = entry.generation.deadline();
     if (entry.generation.sequence_exhaustion_due(now)) {

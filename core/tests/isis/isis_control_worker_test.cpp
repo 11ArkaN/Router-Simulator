@@ -945,7 +945,10 @@ void isis_control_origination_tests() {
   local.levels = {LocalLspLevelProgram{1200U, 1492U, 10ms, 1s}, LocalLspLevelProgram{1200U, 1492U, 10ms, 1s}};
   const packet::isis::LspId root{1U, 2U, 3U, 4U, 5U, 1U, 0U, 0U};
   const std::vector<std::uint8_t> options{1U, 4U, 3U, 0x49U, 0U, 1U, 129U, 1U, packet::isis::ipv4_nlpid};
-  local.current = {{0U, root, 3U, options}, {1U, root, 3U, options}};
+  local.records = {{0U, root, 3U, options}, {1U, root, 3U, options}};
+  auto reserved_fragment = root;
+  reserved_fragment.back() = 1U;
+  local.records.push_back({0U, reserved_fragment, 3U, {8U, 0U}, false});
   request = {};
   request.kind = ControlCommandKind::add_update_instance;
   request.identity = identity;
@@ -979,7 +982,7 @@ void isis_control_origination_tests() {
   request.identity = peer;
   require(command(std::move(request)).error == ControlError::none);
   program.local = configuration(2U).local.system;
-  for (auto &content : program.origination->content.current) content.id[5U] = 2U;
+  for (auto &content : program.origination->content.records) content.id[5U] = 2U;
   request = {};
   request.kind = ControlCommandKind::add_update_instance;
   request.identity = peer;
@@ -1077,6 +1080,26 @@ void isis_control_origination_tests() {
     require(RuntimeClock::now() < purged_by);
     std::this_thread::yield();
   }
+  request = {};
+  request.kind = ControlCommandKind::replace_local_content;
+  request.identity = identity;
+  request.local_content = LocalLspContent{0U, unknown, 3U, {8U, 0U}};
+  require(command(std::move(request)).error == ControlError::none);
+  const auto reactivated_by = RuntimeClock::now() + 3s;
+  for (;;) {
+    pump();
+    ControlCommand selected;
+    selected.kind = ControlCommandKind::query_update_instance;
+    selected.identity = identity;
+    selected.selected_lsp = unknown;
+    const auto response = command(std::move(selected));
+    require(response.error == ControlError::none && response.selected_lsp);
+    if (response.selected_lsp->remaining_seconds) {
+      require(response.selected_lsp->sequence >= 78U);
+      break;
+    }
+    require(RuntimeClock::now() < reactivated_by);
+  }
   LspContents old_incarnation;
   old_incarnation.header = {packet::isis::PduType::lsp_l1, root, 1200U,
       std::numeric_limits<std::uint32_t>::max(), 3U};
@@ -1106,7 +1129,7 @@ void isis_control_origination_tests() {
     require(command(std::move(request)).error == ControlError::none);
   }
   program.local = configuration(1U).local.system;
-  for (auto &content : program.origination->content.current) content.id[5U] = 1U;
+  for (auto &content : program.origination->content.records) content.id[5U] = 1U;
   request = {};
   request.kind = ControlCommandKind::add_update_instance;
   request.identity = identity;
@@ -1245,7 +1268,9 @@ void isis_network_plane_update_tests() {
       packet::isis::LspId root{};
       std::copy(automatic.local.begin(), automatic.local.end(), root.begin());
       const std::vector<std::uint8_t> options(semantic.begin(), semantic.end());
-      local.current = {{0U, root, 3U, options}, {1U, root, 3U, options}};
+      local.records = {{0U, root, 3U, options}, {1U, root, 3U, options}};
+      root.back() = 1U;
+      local.records.push_back({0U, root, 3U, {8U, 0U}, false});
       circuits[index].circuit.identity.configuration_generation = 8U;
       require(plane->add_isis_update_instance(devices[index], 0U, automatic));
       require(plane->replace_isis_p2p_generation(devices[index], std::span{&circuits[index], 1U}));
@@ -1261,6 +1286,36 @@ void isis_network_plane_update_tests() {
           left->local_root_sequences[0U] >= 2U && right->local_root_sequences[1U] >= 2U) break;
       require(RuntimeClock::now() < automatic_deadline);
     }
+    packet::isis::LspId fragment{};
+    std::copy(instances[0U].local.begin(), instances[0U].local.end(), fragment.begin());
+    fragment.back() = 1U;
+    const auto await_fragment = [&](std::uint32_t sequence, bool live) {
+      const auto until = RuntimeClock::now() + 3s;
+      for (;;) {
+        plane->pump();
+        const auto peer = plane->query_isis_lsp(devices[1U], 0U, 0U, fragment);
+        require(peer && (peer->error == ControlError::none || peer->error == ControlError::not_found));
+        if (peer->selected_lsp && peer->selected_lsp->sequence >= sequence &&
+            static_cast<bool>(peer->selected_lsp->remaining_seconds) == live) break;
+        require(RuntimeClock::now() < until);
+      }
+    };
+    const auto activated = plane->replace_isis_local_lsp(devices[0U], 0U, {0U, fragment, 3U, {8U, 0U}});
+    require(activated && activated->error == ControlError::none && activated->local_content_result == LocalContentResult::changed);
+    await_fragment(1U, true);
+    const auto withdrawn = plane->withdraw_isis_local_lsp(devices[0U], 0U, 0U, fragment);
+    require(withdrawn && withdrawn->error == ControlError::none && withdrawn->local_content_result == LocalContentResult::changed);
+    const auto repeated = plane->withdraw_isis_local_lsp(devices[0U], 0U, 0U, fragment);
+    require(repeated && repeated->error == ControlError::none && repeated->local_content_result == LocalContentResult::unchanged);
+    await_fragment(1U, false);
+    const auto reactivated = plane->replace_isis_local_lsp(devices[0U], 0U, {0U, fragment, 3U, {8U, 0U}});
+    require(reactivated && reactivated->error == ControlError::none);
+    await_fragment(2U, true);
+    const auto malformed = plane->replace_isis_local_lsp(devices[0U], 0U, {0U, fragment, 3U, {13U, 0U}});
+    require(malformed && malformed->error == ControlError::invalid_argument);
+    fragment.back() = 0U;
+    const auto root_refusal = plane->withdraw_isis_local_lsp(devices[0U], 0U, 0U, fragment);
+    require(root_refusal && root_refusal->error == ControlError::invalid_argument);
     const auto raw_refusal = plane->originate_isis_lsp(devices[0U], 0U, 0U, near_expiry.bytes);
     require(raw_refusal && raw_refusal->error == ControlError::update_refused);
     for (const auto device : devices) {

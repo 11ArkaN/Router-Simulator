@@ -314,6 +314,21 @@ UpdatePurgeResult InstanceUpdateProcess::finalize_expiration(std::size_t level,
   return publish_purge(level, stored->header, stored->pdu.maximum_area_addresses, selected->present,
       authentication, now, option_scratch, pdu_scratch, OriginPurgeReason::lifetime_expired, observer);
 }
+UpdatePurgeResult InstanceUpdateProcess::initiate_local_purge(std::size_t level,
+    const packet::isis::LspId &id, TransmitAuthentication authentication,
+    RuntimeClock::time_point now, std::span<std::uint8_t> option_scratch,
+    std::span<std::uint8_t> pdu_scratch, LevelObserver observer) noexcept {
+  if (!observer.event) return {UpdateStatus::missing_observer, {}, LspBuildStatus::invalid_header};
+  if (level >= levels_.size() || !levels_[level] || !std::equal(local_.begin(), local_.end(), id.begin()))
+    return {UpdateStatus::invalid_configuration, {}, LspBuildStatus::invalid_header};
+  const auto stored = levels_[level]->database().database().find(id, now);
+  if (!stored || stored->purge_installed || !stored->header.remaining_seconds) return {};
+  packet::isis::InstanceError error{};
+  const auto selected = packet::isis::select_instance(stored->pdu, selector_.format, false, error);
+  if (!selected || selected->instance != selector_.wire_instance) return {UpdateStatus::instance, {}, LspBuildStatus::invalid_header};
+  return publish_purge(level, stored->header, stored->pdu.maximum_area_addresses, selected->present,
+      authentication, now, option_scratch, pdu_scratch, OriginPurgeReason::initiated, observer);
+}
 UpdatePurgeResult InstanceUpdateProcess::purge_unknown_source(std::size_t level,
     const packet::isis::LspView &received, std::uint8_t maximum_areas, TransmitAuthentication authentication,
     RuntimeClock::time_point now, std::span<std::uint8_t> option_scratch,

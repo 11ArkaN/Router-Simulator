@@ -4958,6 +4958,27 @@ std::optional<isis::ControlResult> NetworkPlane::query_isis_lsp(DeviceHandle dev
   return impl_->execute_isis(std::move(command));
 }
 
+std::optional<isis::ControlResult> NetworkPlane::replace_isis_local_lsp(DeviceHandle device,
+    std::uint8_t instance, isis::LocalLspContent content) noexcept {
+  if (!impl_->live(device) || !impl_->isis_registered[device.index]) return std::nullopt;
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::replace_local_content;
+  command.identity.device = device;
+  command.identity.instance = instance;
+  command.local_content.emplace(std::move(content));
+  return impl_->execute_isis(std::move(command));
+}
+std::optional<isis::ControlResult> NetworkPlane::withdraw_isis_local_lsp(DeviceHandle device,
+    std::uint8_t instance, std::uint8_t level, const packet::isis::LspId &id) noexcept {
+  if (!impl_->live(device) || !impl_->isis_registered[device.index]) return std::nullopt;
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::withdraw_local_content;
+  command.identity.device = device;
+  command.identity.instance = instance;
+  command.local_content.emplace(isis::LocalLspContent{level, id, 0U, {}});
+  return impl_->execute_isis(std::move(command));
+}
+
 std::optional<isis::ControlResult> NetworkPlane::originate_isis_lsp(DeviceHandle device,
     std::uint8_t instance, std::uint8_t level, std::span<const std::uint8_t> pdu,
     isis::OriginPurgeReason purge) noexcept {

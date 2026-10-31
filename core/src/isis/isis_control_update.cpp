@@ -25,7 +25,7 @@ bool valid_origination(const UpdateInstanceProgram &program) noexcept {
     if (static_cast<bool>(local.levels[level]) != static_cast<bool>(program.levels[level])) return false;
     if (!local.levels[level]) continue;
     if (local.levels[level]->maximum_age != program.levels[level]->maximum_age ||
-        static_cast<std::size_t>(std::count_if(local.current.begin(), local.current.end(),
+        static_cast<std::size_t>(std::count_if(local.records.begin(), local.records.end(),
             [&](const auto &entry) { return entry.level == level; })) > program.levels[level]->database.records) return false;
   }
   return true;
@@ -133,10 +133,10 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
     auto instance = std::make_unique<OwnedInstance>(std::move(*command.update), slots,
         device.update_fences[index] + 1U);
     if (instance->local) {
-      auto budget = instance->configuration.origination->content.current.size();
+      auto budget = instance->configuration.origination->content.active_records();
       const auto generated = instance->local->service(*instance->process, {}, RuntimeClock::now(),
           scratch_, instance->observer(), budget);
-      if (generated.published != instance->configuration.origination->content.current.size() || generated.blocked ||
+      if (generated.published != instance->configuration.origination->content.active_records() || generated.blocked ||
           generated.terminal != GenerationStatus::waiting) return ControlError::update_refused;
     }
     std::vector<std::unique_ptr<UpdateEgress>> egress;

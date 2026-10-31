@@ -320,7 +320,9 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
   if (command.kind == ControlCommandKind::add_update_instance ||
       command.kind == ControlCommandKind::remove_update_instance ||
       command.kind == ControlCommandKind::query_update_instance ||
-      command.kind == ControlCommandKind::originate_lsp) {
+      command.kind == ControlCommandKind::originate_lsp ||
+      command.kind == ControlCommandKind::replace_local_content ||
+      command.kind == ControlCommandKind::withdraw_local_content) {
     const auto index = command.identity.instance;
     if (index >= device.instances.size()) result.error = ControlError::invalid_argument;
     else if (command.kind == ControlCommandKind::add_update_instance)
@@ -329,6 +331,11 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     else if (command.kind == ControlCommandKind::remove_update_instance) remove_update_instance(device, index);
     else {
       auto &instance = *device.instances[index];
+      if (command.kind == ControlCommandKind::replace_local_content ||
+          command.kind == ControlCommandKind::withdraw_local_content) {
+        result.error = edit_local_content(command, instance, result);
+        return result;
+      }
       if (command.kind == ControlCommandKind::originate_lsp) {
         if (instance.status != UpdateStatus::applied || !instance.process || instance.local)
           result.error = ControlError::update_refused;

@@ -13,6 +13,9 @@ struct LocalLspContent {
   packet::isis::LspId id{};
   std::uint8_t flags{};
   std::vector<std::uint8_t> options;
+  // Cold-reserved identity and semantic buffer; false excludes it from current
+  // generation without forgetting the sequence needed for later reuse.
+  bool active{true};
 };
 struct LocalLspLevelProgram {
   std::uint16_t maximum_age{}, maximum_pdu_octets{};
@@ -20,7 +23,9 @@ struct LocalLspLevelProgram {
 };
 struct LocalLspProgram {
   std::array<std::optional<LocalLspLevelProgram>, 2U> levels;
-  std::vector<LocalLspContent> current;
+  std::vector<LocalLspContent> records;
+  // Same-owner value count; inactive reserved identities consume no LSDB record.
+  [[nodiscard]] std::size_t active_records() const noexcept;
   std::uint64_t random{};
 };
 enum class LocalContentResult : std::uint8_t { unchanged, changed, missing, invalid, capacity };
@@ -33,27 +38,36 @@ class LocalLspSet final {
 public:
   // Cold construction validates unique local IDs, levels, framing and explicit
   // intervals, then reserves each semantic buffer before publication. Programs
-  // contain current content only, never received foreign bytes. The update
+  // contain local semantic records only, never received foreign bytes. The update
   // owner and all authentication leases outlive synchronous service calls.
   LocalLspSet(packet::isis::SystemId local, std::uint8_t maximum_areas,
       UpdateInstanceSelector selector, LocalLspProgram program,
       RuntimeClock::time_point now);
   // Same-owner content replacement within reserved capacity, without allocation.
+  // Also reactivates a reserved withdrawn identity with its retained counter.
   // Refusal preserves content and scheduling. Repeated identical content does
   // not regenerate an LSP. Configuration owner validates semantic TLV values.
   [[nodiscard]] LocalContentResult replace(std::size_t level, const packet::isis::LspId &id,
       std::uint8_t flags, std::span<const std::uint8_t> options, RuntimeClock::time_point now) noexcept;
+  // Withdraws a reserved non-root identity. Its current body is purged with
+  // unchanged sequence and MaxAge retention; an already expired body follows
+  // ordinary expiration. Root 00 cannot be withdrawn while its level exists.
+  // No allocation, immediate membership change, wire publication is deferred
+  // to service(). Unknown IDs report missing; repeated withdrawal is unchanged.
+  [[nodiscard]] LocalContentResult withdraw(std::size_t level, const packet::isis::LspId &id) noexcept;
   // Current-set membership is independent of retention in the local LSDB.
   [[nodiscard]] bool contains(std::size_t level, const packet::isis::LspId &id) const noexcept;
-  // Last publication result, or nullopt for a source outside the current set.
+  // Last publication result, or nullopt for an identity outside reserved slots.
   // Value projection only; no semantic content or key reference escapes.
   [[nodiscard]] std::optional<UpdateStatus> last_error(std::size_t level,
       const packet::isis::LspId &id) const noexcept;
-  // Committed local publication counter, zero while initial admission is pending.
+  // Committed live publication counter, retained while withdrawn; initially zero.
   [[nodiscard]] std::optional<std::uint32_t> sequence(std::size_t level,
       const packet::isis::LspId &id) const noexcept;
   // Parent classified a received own LSP/SNP as requiring regeneration. Unknown
   // IDs return false and remain the parent's initiated-purge responsibility.
+  // A reserved withdrawn ID only remembers this floor; it emits no live LSP
+  // until replace() reactivates it.
   [[nodiscard]] bool require_after(std::size_t level, const packet::isis::LspId &id,
       std::uint32_t sequence, RuntimeClock::time_point now) noexcept;
   // Projection from this same level process's overload event. Applies only to
@@ -76,6 +90,7 @@ private:
     LocalLspContent content;
     LspGenerationSchedule generation;
     UpdateStatus last_error{UpdateStatus::applied};
+    bool retirement_pending{}, retirement_blocked{};
     Entry(LocalLspContent value, const LocalLspLevelProgram &program,
         std::uint64_t random, RuntimeClock::time_point now);
   };

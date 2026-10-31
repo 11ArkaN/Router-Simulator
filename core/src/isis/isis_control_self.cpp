@@ -26,6 +26,7 @@ bool ControlWorker::handle_self_lsp(OwnedCircuit &owned, const packet::isis::Pdu
         frame, std::nullopt, now, instance.observer());
     return received.status == UpdateStatus::applied;
   }
+  static_cast<void>(instance.local->require_after(level, header.id, header.sequence, now));
   if (!header.remaining_seconds) {
     received = instance.process->receive_retired_local_purge(owned.update_slot, owned.identity.configuration_generation,
         frame, std::nullopt, now, instance.observer());
@@ -62,6 +63,8 @@ void ControlWorker::handle_confusion(OwnedCircuit &owned, const packet::isis::Pd
       received.status = UpdateStatus::self_originated;
       return;
     }
+    if (instance.local)
+      static_cast<void>(instance.local->require_after(received.level, conflicting.id, conflicting.sequence, now));
     const auto purged = instance.process->finalize_confusion(received.level, conflicting, {}, now,
         scratch_.options, scratch_.pdu, instance.observer());
     if (purged.status != UpdateStatus::applied) received.status = purged.status;

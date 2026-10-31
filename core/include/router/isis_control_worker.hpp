@@ -45,7 +45,7 @@ enum class ControlCommandKind : std::uint8_t {
   query_worker, register_device, remove_device, add_p2p_circuit,
   remove_circuit, query_circuit, prepare_generation, commit_generation,
   abort_generation, add_update_instance, remove_update_instance, query_update_instance, originate_lsp, shutdown,
-  query_sequence_recovery
+  query_sequence_recovery, replace_local_content, withdraw_local_content
 };
 struct CircuitDefinition {
   CircuitIdentity identity;
@@ -92,6 +92,8 @@ struct ControlCommand {
   // Raw local PDUs already passed the originator's sequence and key policy.
   std::optional<UpdateInstanceProgram> update;
   std::vector<std::uint8_t> local_lsp;
+  // Owned local configuration intent, never received peer content.
+  std::optional<LocalLspContent> local_content;
   std::uint8_t level{};
   // Read-only selected-LSP projection; no retained packet view crosses owners.
   std::optional<packet::isis::LspId> selected_lsp{};
@@ -134,6 +136,7 @@ struct ControlResult {
   std::optional<packet::isis::LspView> selected_lsp{};
   bool sequence_recovery_pending{};
   UpdateStatus update_status{UpdateStatus::inactive};
+  LocalContentResult local_content_result{LocalContentResult::missing};
   LevelOriginResult origin{};
   std::uint64_t update_epoch{};
   std::array<std::size_t, 2U> flood_requests{}, snp_requests{};
@@ -300,6 +303,8 @@ private:
       const P2pCircuitConfiguration &circuit) noexcept;
   [[nodiscard]] RuntimeClock::time_point service_update_lifetimes(OwnedInstance &instance,
       RuntimeClock::time_point now, std::size_t &budget) noexcept;
+  [[nodiscard]] ControlError edit_local_content(ControlCommand &command, OwnedInstance &instance,
+      ControlResult &result) noexcept;
   [[nodiscard]] RuntimeClock::time_point stop_local_instance(DeviceState &device, std::size_t index,
       UpdateStatus reason) noexcept;
   [[nodiscard]] RuntimeClock::time_point service_local_instance(DeviceState &device, std::size_t index,

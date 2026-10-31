@@ -13,6 +13,7 @@ void isis_lsp_builder_tests();
 void isis_database_validation_tests();
 void isis_lsp_generation_tests();
 void isis_local_lsp_set_tests();
+void isis_local_lsp_retirement_tests();
 void isis_sequence_recovery_tests();
 void isis_purge_options_tests();
 void isis_purge_builder_tests();
@@ -405,6 +406,7 @@ int main() {
     isis_database_validation_tests();
     isis_lsp_generation_tests();
     isis_local_lsp_set_tests();
+    isis_local_lsp_retirement_tests();
     isis_sequence_recovery_tests();
     isis_purge_options_tests();
     isis_purge_builder_tests();
