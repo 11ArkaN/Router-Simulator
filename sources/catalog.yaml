@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: iso.10589.2002.database_validation
+    kind: routing-protocol-database-integrity
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 7.3.18 and 10.1, periodic live-LSP checksum verification and decision notification
+    rfc_refs: []
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-10-31
+    implementation: [core/include/router/isis_database_validation.hpp, core/src/isis/isis_database_validation.cpp, core/include/router/isis_lsdb.hpp, core/src/isis/isis_lsdb.cpp, core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_origin.cpp, core/src/isis/isis_control_update.cpp]
+    tests: [core/tests/isis/isis_database_validation_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
+    status: experimental
+    notes: Owner-local scans verify retained live LSP checksums with bounded work and a sorted identity cursor. Effective zero lifetimes are exempt. Completion advances the decision notification generation even without content changes. Corruption is latched with its LSP identity and disables the complete experimental automatic entity. Recovery conservatively waits the full enabled-level MaxAge plus ZeroAgeLifetime before releasing old databases and generating fresh counters, using the existing parent-owned recovery gate. The cooldown is an emulator recovery policy, not an ISO-required corruption delay. Manual raw-PDU programs, production SPF notification consumption and active checkpoint continuity remain incomplete.
   - id: iso.10589.2002.local_lsp_generation
     kind: routing-protocol-local-generation-owner
     release: 26.7.R1

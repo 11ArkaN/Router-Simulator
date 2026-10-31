@@ -36,8 +36,13 @@ enum class UpdateStatus : std::uint8_t {
   applied, invalid_circuit, stale_configuration, invalid_event, epoch_exhausted,
   missing_observer, malformed, inactive, destination, instance, authentication,
   maximum_areas, receive_capacity, self_originated, level_refused, capacity, invalid_configuration, purge_options,
-  sequence_exhausted
+  sequence_exhausted, database_corrupted
 };
+// Same-owner lifecycle classification. Both failures retain the parent gate
+// until safe reconstruction; configuration may still replace Down bindings.
+[[nodiscard]] constexpr bool requires_reconstruction(UpdateStatus status) noexcept {
+  return status == UpdateStatus::sequence_exhausted || status == UpdateStatus::database_corrupted;
+}
 struct UpdateReceiveResult {
   UpdateStatus status{UpdateStatus::malformed};
   std::size_t level{};

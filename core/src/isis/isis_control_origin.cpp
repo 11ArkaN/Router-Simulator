@@ -15,7 +15,7 @@ RuntimeClock::time_point ControlWorker::service_local_instance(DeviceState &devi
   auto &instance = *device.instances[index];
   auto &gate = device.sequence_recovery[index];
   const auto never = RuntimeClock::time_point::max();
-  if (instance.status == UpdateStatus::sequence_exhausted) {
+  if (requires_reconstruction(instance.status)) {
     if (!gate) { instance.status = UpdateStatus::invalid_configuration; return never; }
     if (!gate->ready(now)) return gate->deadline().value_or(never);
     // Prepared generations borrow process slots. Their commit/abort command
@@ -25,10 +25,37 @@ RuntimeClock::time_point ControlWorker::service_local_instance(DeviceState &devi
   }
   if (instance.status != UpdateStatus::applied || !instance.local) return never;
   if (!instance.process || !gate) { instance.status = UpdateStatus::invalid_configuration; return never; }
+  auto validation_deadline = never;
+  for (std::size_t level{}; level < instance.validation.size(); ++level) {
+    if (!instance.validation[level]) continue;
+    const auto *owner = instance.process->level(level);
+    const auto checked = instance.validation[level]->service(owner->database().database(), now, budget);
+    const auto type = level ? packet::isis::PduType::lsp_l2 : packet::isis::PduType::lsp_l1;
+    if (checked.status == DatabaseValidationStatus::corrupted) {
+      OwnedInstance::level_event(&instance, {LevelEventKind::database_corrupted, type, checked.corrupted});
+      // Conservatively use the existing full lifetime cooldown before starting
+      // fresh counters. No potentially corrupt database is used for forwarding
+      // or flooding while correction and reacquisition are pending.
+      return stop_local_instance(device, index, UpdateStatus::database_corrupted);
+    }
+    if (checked.status == DatabaseValidationStatus::complete)
+      OwnedInstance::level_event(&instance, {LevelEventKind::validation_completed, type, std::nullopt});
+    validation_deadline = std::min(validation_deadline, instance.validation[level]->deadline().value_or(never));
+  }
+  if (instance.status != UpdateStatus::applied)
+    return stop_local_instance(device, index, instance.status);
   // Runtime authentication selection is not admitted yet. No unsigned output
   // may replace this explicit transmit policy when key leases are integrated.
   const auto generated = instance.local->service(*instance.process, {}, now, scratch_, instance.observer(), budget);
-  if (generated.terminal == GenerationStatus::waiting) return generated.deadline.value_or(never);
+  if (generated.terminal == GenerationStatus::waiting)
+    return std::min(validation_deadline, generated.deadline.value_or(never));
+  return stop_local_instance(device, index, generated.terminal == GenerationStatus::sequence_exhausted ?
+      UpdateStatus::sequence_exhausted : UpdateStatus::epoch_exhausted);
+}
+RuntimeClock::time_point ControlWorker::stop_local_instance(DeviceState &device, std::size_t index,
+    UpdateStatus reason) noexcept {
+  auto &instance = *device.instances[index];
+  const auto never = RuntimeClock::time_point::max();
   // Down must reach the old process while it still accepts its local circuit
   // events. No process reservation survives the stopped entity's restart.
   for (auto &owned : device.circuits) if (owned.update == &instance) {
@@ -36,14 +63,12 @@ RuntimeClock::time_point ControlWorker::service_local_instance(DeviceState &devi
     static_cast<void>(owned.circuit.down(&owned, event));
   }
   device.update_fences[index] = std::max(device.update_fences[index], instance.process->maximum_synchronization_epoch());
-  if (generated.terminal != GenerationStatus::sequence_exhausted) {
-    instance.status = UpdateStatus::epoch_exhausted;
-    return never;
-  }
-  instance.status = UpdateStatus::sequence_exhausted;
+  instance.status = reason;
+  if (!requires_reconstruction(reason)) return never;
   // Anchor after all Down callbacks, so their execution cannot shorten the
   // minimum interval for which the complete entity must remain disabled.
-  if (!gate->begin(RuntimeClock::now())) {
+  auto &gate = device.sequence_recovery[index];
+  if (!gate || !gate->begin(RuntimeClock::now())) {
     instance.status = UpdateStatus::invalid_event;
     return never;
   }
@@ -99,10 +124,15 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
       static_cast<void>(gate.resource_failed(RuntimeClock::now()));
       return gate.deadline().value_or(never);
     }
+    // Initial publication notifies this stable shell. Counter exhaustion in
+    // that observer is terminal and must not be overwritten by activation.
+    if (!requires_reconstruction(instance.status)) return never;
+    instance.reset_validation(now);
     if (!gate.recovered(now)) { instance.status = UpdateStatus::invalid_event; return never; }
     instance.process = std::move(process);
     instance.local = std::move(local);
     instance.status = UpdateStatus::applied;
+    instance.corrupted_lsp.reset();
     for (std::size_t slot{}; slot < bindings.size(); ++slot) {
       auto &owned = device.circuits[bindings[slot]];
       owned.update = &instance;

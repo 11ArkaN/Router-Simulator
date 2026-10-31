@@ -51,6 +51,7 @@ add_library(router_primitives STATIC
   src/isis/isis_hello_builder.cpp
   src/isis/isis_snp_builder.cpp
   src/isis/isis_lsp_builder.cpp
+  src/isis/isis_database_validation.cpp
   src/isis/isis_lsp_generation.cpp
   src/isis/isis_local_lsp_set.cpp
   src/isis/isis_sequence_recovery.cpp
@@ -566,6 +567,7 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_hello_builder_test.cpp
     tests/isis/isis_snp_builder_test.cpp
     tests/isis/isis_lsp_builder_test.cpp
+    tests/isis/isis_database_validation_test.cpp
     tests/isis/isis_lsp_generation_test.cpp
     tests/isis/isis_local_lsp_set_test.cpp
     tests/isis/isis_sequence_recovery_test.cpp

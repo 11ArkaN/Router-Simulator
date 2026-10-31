@@ -96,7 +96,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         identity.physical_port_ordinal >= device_catalog::maximum_ports_per_router ||
         (index && key(definitions[index - 1U].identity) >= key(identity))) return ControlError::invalid_argument;
     if (const auto &instance = device.instances[identity.instance]) {
-      if (instance->status != UpdateStatus::applied && instance->status != UpdateStatus::sequence_exhausted)
+      if (instance->status != UpdateStatus::applied && !requires_reconstruction(instance->status))
         return ControlError::update_refused;
       const auto &configuration = entry.configuration;
       if (!matches_update_instance(instance->configuration, configuration))
@@ -171,7 +171,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
     for (auto &replacement : staged.replacements) {
       auto &instance = device.instances[replacement.identity.instance];
       if (!instance) continue;
-      if (instance->status == UpdateStatus::sequence_exhausted) {
+      if (requires_reconstruction(instance->status)) {
         // Disabled bindings carry configuration only. Fresh level slots are
         // assigned together when the complete entity is reconstructed.
         replacement.update = instance.get();
@@ -268,7 +268,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     else if (prepared_->device != handle) result.error = ControlError::stale_device;
     else if (command.kind == ControlCommandKind::abort_generation) prepared_.reset();
     else if (std::any_of(device.instances.begin(), device.instances.end(), [](const auto &instance) {
-      return instance && instance->status != UpdateStatus::applied && instance->status != UpdateStatus::sequence_exhausted;
+      return instance && instance->status != UpdateStatus::applied && !requires_reconstruction(instance->status);
     })) {
       prepared_.reset();
       result.error = ControlError::update_refused;
@@ -349,6 +349,9 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
       }
       result.update_status = instance.status;
       result.update_epoch = instance.process ? instance.process->maximum_synchronization_epoch() : device.update_fences[index];
+      result.database_validations = instance.database_validations;
+      result.decision_revisions = instance.decision_revisions;
+      result.corrupted_lsp = instance.corrupted_lsp;
       packet::isis::LspId root{};
       std::copy(instance.configuration.local.begin(), instance.configuration.local.end(), root.begin());
       for (std::size_t level{}; level < result.retained_lsps.size(); ++level)

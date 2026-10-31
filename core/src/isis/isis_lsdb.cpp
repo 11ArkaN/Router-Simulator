@@ -73,6 +73,13 @@ std::optional<StoredLspView> LinkStateDatabase::at(std::size_t index,
   return index < records_.size() ? std::optional(view(records_[index], now)) : std::nullopt;
 }
 
+std::optional<StoredLspView> LinkStateDatabase::next_after(std::optional<packet::isis::LspId> cursor,
+    RuntimeClock::time_point now) const noexcept {
+  const auto entry = cursor ? std::upper_bound(records_.begin(), records_.end(), *cursor,
+      [](const auto &key, const Record &record) { return key < record.header.id; }) : records_.begin();
+  return entry == records_.end() ? std::nullopt : std::optional(view(*entry, now));
+}
+
 std::optional<LspDeadline> LinkStateDatabase::next_deadline(std::optional<LspDeadlineKind> kind,
     std::span<const packet::isis::LspId> blocked_expirations) const noexcept {
   std::optional<LspDeadline> result;

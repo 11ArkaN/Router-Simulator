@@ -10,6 +10,7 @@ void isis_ethernet_tests();
 void isis_hello_builder_tests();
 void isis_snp_builder_tests();
 void isis_lsp_builder_tests();
+void isis_database_validation_tests();
 void isis_lsp_generation_tests();
 void isis_local_lsp_set_tests();
 void isis_sequence_recovery_tests();
@@ -401,6 +402,7 @@ int main() {
     isis_hello_builder_tests();
     isis_snp_builder_tests();
     isis_lsp_builder_tests();
+    isis_database_validation_tests();
     isis_lsp_generation_tests();
     isis_local_lsp_set_tests();
     isis_sequence_recovery_tests();

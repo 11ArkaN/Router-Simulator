@@ -100,6 +100,10 @@ public:
                                                 RuntimeClock::time_point now) const noexcept;
   [[nodiscard]] std::optional<StoredLspView> at(std::size_t index,
                                               RuntimeClock::time_point now) const noexcept;
+  // First identity strictly after cursor, or the first record for nullopt.
+  // O(log n), no allocation. The borrowed view expires at the next mutation.
+  [[nodiscard]] std::optional<StoredLspView> next_after(std::optional<packet::isis::LspId> cursor,
+      RuntimeClock::time_point now) const noexcept;
   // Same-owner value projection, without allocation or a borrowed record.
   // Active expiration requires finalized purge construction before removal;
   // installed purges retain their selected retention deadline. Equal times

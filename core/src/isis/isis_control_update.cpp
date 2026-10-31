@@ -60,6 +60,17 @@ bool ControlWorker::matches_update_instance(const UpdateInstanceProgram &instanc
 void ControlWorker::OwnedInstance::level_event(void *context, const LevelEvent &event) noexcept {
   auto &instance = *static_cast<OwnedInstance *>(context);
   const auto index = event.level == packet::isis::PduType::lsp_l2 ? 1U : 0U;
+  if (event.kind == LevelEventKind::database_corrupted) { instance.corrupted_lsp = event.id; return; }
+  if (event.kind == LevelEventKind::database_changed || event.kind == LevelEventKind::validation_completed) {
+    if (instance.decision_revisions[index] == std::numeric_limits<std::uint64_t>::max())
+      instance.status = UpdateStatus::epoch_exhausted;
+    else ++instance.decision_revisions[index];
+  }
+  if (event.kind == LevelEventKind::validation_completed) {
+    if (instance.database_validations[index] != std::numeric_limits<std::uint64_t>::max())
+      ++instance.database_validations[index];
+    return;
+  }
   if (instance.revision[index] == std::numeric_limits<std::uint64_t>::max())
     instance.status = UpdateStatus::epoch_exhausted;
   else ++instance.revision[index];
@@ -162,7 +173,7 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
 ControlError ControlWorker::attach_update_circuit(DeviceState &device, OwnedCircuit &owned) noexcept {
   auto &instance = device.instances[owned.identity.instance];
   if (!instance) return ControlError::none;
-  if (instance->status != UpdateStatus::applied && instance->status != UpdateStatus::sequence_exhausted)
+  if (instance->status != UpdateStatus::applied && !requires_reconstruction(instance->status))
     return ControlError::update_refused;
   const auto &configuration = owned.circuit.configuration();
   if (!matches_update_instance(instance->configuration, configuration))
@@ -171,7 +182,7 @@ ControlError ControlWorker::attach_update_circuit(DeviceState &device, OwnedCirc
     if (&other != &owned && other.identity.instance == owned.identity.instance &&
         other.circuit.configuration().local.extended_circuit == configuration.local.extended_circuit)
       return ControlError::already_exists;
-  if (instance->status == UpdateStatus::sequence_exhausted) {
+  if (requires_reconstruction(instance->status)) {
     const auto count = std::count_if(device.circuits.begin(), device.circuits.end(), [&](const auto &other) {
       return other.identity.instance == owned.identity.instance;
     });

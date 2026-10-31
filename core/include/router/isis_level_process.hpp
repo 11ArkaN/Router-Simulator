@@ -11,7 +11,7 @@
 namespace router::isis {
 struct LevelCircuitConfiguration { bool broadcast{}; std::uint64_t epoch{}; };
 enum class LevelEventKind : std::uint8_t {
-  database_changed, circuit_changed, overload_entered, overload_recovered
+  database_changed, circuit_changed, overload_entered, overload_recovered, validation_completed, database_corrupted
 };
 struct LevelEvent {
   LevelEventKind kind{};

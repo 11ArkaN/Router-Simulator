@@ -6,6 +6,7 @@
 
 #include "router/isis_instance_update.hpp"
 #include "router/isis_local_lsp_set.hpp"
+#include "router/isis_database_validation.hpp"
 #include "router/isis_sequence_recovery.hpp"
 #include "router/owned_spsc_channel.hpp"
 #include "router/protocol_packet_channel.hpp"
@@ -128,6 +129,8 @@ struct ControlResult {
   bool hello_pending{};
   std::array<std::size_t, 2U> retained_lsps{}, retained_purges{};
   std::array<std::uint32_t, 2U> local_root_sequences{};
+  std::array<std::uint64_t, 2U> database_validations{}, decision_revisions{};
+  std::optional<packet::isis::LspId> corrupted_lsp{};
   std::optional<packet::isis::LspView> selected_lsp{};
   bool sequence_recovery_pending{};
   UpdateStatus update_status{UpdateStatus::inactive};
@@ -168,6 +171,9 @@ private:
     // the old databases before allocating fresh storage within the same budget.
     std::unique_ptr<InstanceUpdateProcess> process;
     std::unique_ptr<LocalLspSet> local;
+    std::array<std::optional<DatabaseValidation>, 2U> validation;
+    std::array<std::uint64_t, 2U> database_validations{}, decision_revisions{};
+    std::optional<packet::isis::LspId> corrupted_lsp;
     UpdateStatus status{UpdateStatus::applied};
     std::array<std::uint64_t, 2U> revision{}, expiration_revision{};
     std::array<std::vector<packet::isis::LspId>, 2U> expiration_blocked;
@@ -179,10 +185,22 @@ private:
             configuration.maximum_circuits, epoch)) {
       for (std::size_t level{}; level < 2U; ++level)
         if (configuration.levels[level]) expiration_blocked[level].reserve(configuration.levels[level]->database.records);
-      if (configuration.origination)
+      if (configuration.origination) {
         local = std::make_unique<LocalLspSet>(configuration.local, configuration.maximum_areas,
             UpdateInstanceSelector{configuration.format, configuration.wire_instance},
             configuration.origination->content, RuntimeClock::now());
+        reset_validation(RuntimeClock::now());
+      }
+    }
+    // Cold validated program reconstruction, on this control owner only.
+    void reset_validation(RuntimeClock::time_point now) {
+      for (std::size_t level{}; level < validation.size(); ++level) {
+        validation[level].reset();
+        if (!configuration.origination || !configuration.origination->content.levels[level]) continue;
+        const auto seed = configuration.origination->content.random ^ ((level + 1U) << 8U);
+        validation[level].emplace(configuration.origination->content.levels[level]->refresh_interval,
+            seed ? seed : configuration.origination->content.random, now);
+      }
     }
     OwnedInstance(OwnedInstance &&) = delete;
     OwnedInstance &operator=(OwnedInstance &&) = delete;
@@ -282,6 +300,8 @@ private:
       const P2pCircuitConfiguration &circuit) noexcept;
   [[nodiscard]] RuntimeClock::time_point service_update_lifetimes(OwnedInstance &instance,
       RuntimeClock::time_point now, std::size_t &budget) noexcept;
+  [[nodiscard]] RuntimeClock::time_point stop_local_instance(DeviceState &device, std::size_t index,
+      UpdateStatus reason) noexcept;
   [[nodiscard]] RuntimeClock::time_point service_local_instance(DeviceState &device, std::size_t index,
       RuntimeClock::time_point now, std::size_t &budget) noexcept;
   [[nodiscard]] RuntimeClock::time_point rebuild_local_instance(DeviceState &device, std::size_t index,
