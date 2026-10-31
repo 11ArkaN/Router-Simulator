@@ -37,6 +37,9 @@ features:
   routing.isis.instance_update:
     status: partially-implemented
     source_ids: [iso.10589.2002.instance_update]
+  routing.isis.decision_notifications:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.level_process, iso.10589.2002.database_validation]
   routing.isis.level_synchronization:
     status: partially-implemented
     source_ids: [iso.10589.2002.level_process, iso.10589.2002.level_database_owner, iso.10589.2002.lsdb]

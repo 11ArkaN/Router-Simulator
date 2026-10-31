@@ -26,6 +26,11 @@ RuntimeClock::time_point ControlWorker::service_update_lifetimes(OwnedInstance &
         break;
       }
     } else {
+      // Routing information expires at its own lifetime, even if the current
+      // transmit key is unavailable. This latch never edits retained wire or
+      // flood state, and later purge publication cannot request a second SPF.
+      static_cast<void>(instance.process->notify_expiration(next->level, next->deadline.id, now, instance.observer()));
+      if (instance.status != UpdateStatus::applied) break;
       // Experimental admission rejects authentication selection. The future
       // key-policy owner must supply its current transmit lease here explicitly.
       const auto result = instance.process->finalize_expiration(next->level, next->deadline.id,

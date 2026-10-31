@@ -61,7 +61,8 @@ void ControlWorker::OwnedInstance::level_event(void *context, const LevelEvent &
   auto &instance = *static_cast<OwnedInstance *>(context);
   const auto index = event.level == packet::isis::PduType::lsp_l2 ? 1U : 0U;
   if (event.kind == LevelEventKind::database_corrupted) { instance.corrupted_lsp = event.id; return; }
-  if (event.kind == LevelEventKind::database_changed || event.kind == LevelEventKind::validation_completed) {
+  if (event.kind == LevelEventKind::database_changed || event.kind == LevelEventKind::circuit_changed ||
+      event.kind == LevelEventKind::validation_completed) {
     if (instance.decision_revisions[index] == std::numeric_limits<std::uint64_t>::max())
       instance.status = UpdateStatus::epoch_exhausted;
     else ++instance.decision_revisions[index];

@@ -157,7 +157,9 @@ LocalGenerationResult LocalLspSet::service(InstanceUpdateProcess &update,
       }
       if (entry.retirement_pending && !entry.retirement_blocked && budget) {
         --budget;
-        const auto purged = current->header.remaining_seconds ?
+        const bool live = current->header.remaining_seconds != 0U;
+        if (!live) static_cast<void>(update.notify_expiration(level, entry.content.id, now, observer));
+        const auto purged = live ?
             update.initiate_local_purge(level, entry.content.id, authentication[level], now,
                 scratch.options, scratch.pdu, observer) :
             update.finalize_expiration(level, entry.content.id, authentication[level], now,

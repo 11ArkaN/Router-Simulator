@@ -11,7 +11,7 @@
 namespace router::isis {
 struct LevelCircuitConfiguration { bool broadcast{}; std::uint64_t epoch{}; };
 enum class LevelEventKind : std::uint8_t {
-  database_changed, circuit_changed, overload_entered, overload_recovered, validation_completed, database_corrupted
+  database_changed, circuit_changed, overload_entered, overload_recovered, validation_completed, database_corrupted, database_refreshed
 };
 struct LevelEvent {
   LevelEventKind kind{};
@@ -20,7 +20,9 @@ struct LevelEvent {
 };
 struct LevelObserver {
   void *context{};
-  // Synchronous same-owner notification. Mark origination/SPF work here;
+  // Synchronous same-owner notification. database_refreshed changes retained
+  // wire/lifetime state without requesting a decision for identical contents.
+  // Mark origination/SPF work for actual changes or validation completion here;
   // never reenter this owner or retain borrowed packet and database views.
   void (*event)(void *, const LevelEvent &) noexcept{};
 };
@@ -110,6 +112,12 @@ public:
   [[nodiscard]] std::optional<LevelOutputs> outputs(std::size_t circuit,
       std::uint64_t epoch) noexcept;
   [[nodiscard]] bool retire_purge(const packet::isis::LspId &id,
+      RuntimeClock::time_point now, LevelObserver observer) noexcept;
+  // Announces actual loss of expired routing information independently of
+  // purge authentication or storage availability. First eligible notification
+  // only, on this owner; false preserves state for missing observer, live,
+  // missing, finalized or already notified records. No encoded bytes change.
+  [[nodiscard]] bool notify_expiration(const packet::isis::LspId &id,
       RuntimeClock::time_point now, LevelObserver observer) noexcept;
   // Decision resource failure enters Waiting without resetting an existing
   // last-ignored-LSP deadline. Update admission failures reset that deadline.

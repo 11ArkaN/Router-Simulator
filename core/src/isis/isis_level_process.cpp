@@ -4,6 +4,7 @@
 
 #include "router/isis_level_process.hpp"
 
+#include <algorithm>
 #include <stdexcept>
 #include <new>
 #include <type_traits>
@@ -11,6 +12,20 @@
 
 namespace router::isis {
 namespace {
+// ISO 10589 7.3.1 separates information change from sequence/lifetime refresh.
+// Compare before admission can replace or relocate the borrowed old bytes.
+LevelEventKind content_event(const LinkStateDatabase &database, const packet::isis::PduView &pdu,
+    packet::isis::LspView header, RuntimeClock::time_point now) noexcept {
+  const auto current = database.find(header.id, now);
+  if (!current) return LevelEventKind::database_changed;
+  if (!header.checksum) header.remaining_seconds = 0U;
+  if (!header.remaining_seconds)
+    return current->purge_installed || current->expiration_notified ?
+        LevelEventKind::database_refreshed : LevelEventKind::database_changed;
+  if (current->purge_installed || !current->header.remaining_seconds || current->header.flags != header.flags ||
+      !std::ranges::equal(current->pdu.tlvs, pdu.tlvs)) return LevelEventKind::database_changed;
+  return LevelEventKind::database_refreshed;
+}
 std::vector<FloodCircuit> initial_circuits(std::span<const LevelCircuitConfiguration> values) {
   std::vector<FloodCircuit> result;
   result.reserve(values.size());
@@ -141,6 +156,10 @@ LevelLspResult LevelProcess::receive_lsp(std::size_t circuit, std::uint64_t epoc
     LevelObserver observer) noexcept {
   const auto status = accept(circuit, epoch, observer);
   if (status != LevelStatus::applied) return {status, {}, std::nullopt};
+  packet::isis::DecodeError error{};
+  const auto pdu = packet::isis::parse(wire, error);
+  const auto header = pdu ? packet::isis::lsp(*pdu) : std::nullopt;
+  const auto notification = header ? content_event(database_.database(), *pdu, *header, now) : LevelEventKind::database_changed;
   auto result = database_.receive(wire, circuit, now, maximum_age_, purge_retention_);
   if (result.flooding.waiting_state) {
     wait(now, true, observer);
@@ -149,11 +168,8 @@ LevelLspResult LevelProcess::receive_lsp(std::size_t circuit, std::uint64_t epoc
   if (result.install == LspInstallResult::malformed) return {LevelStatus::malformed, result, std::nullopt};
   if (result.install == LspInstallResult::invalid_checksum || result.install == LspInstallResult::excessive_lifetime)
     return {LevelStatus::discarded, result, std::nullopt};
-  if (result.install == LspInstallResult::installed) {
-    packet::isis::DecodeError error;
-    const auto pdu = packet::isis::parse(wire, error);
-    emit(LevelEventKind::database_changed, observer, packet::isis::lsp(*pdu)->id);
-  }
+  if (result.install == LspInstallResult::installed && header)
+    emit(notification, observer, header->id);
   if (!result.transient_acknowledgement) return {LevelStatus::applied, result, std::nullopt};
   if (circuits_[circuit].configuration.broadcast)
     return {LevelStatus::unsupported_lan_acknowledgement, result, std::nullopt};
@@ -199,6 +215,7 @@ LevelOriginResult LevelProcess::originate(std::span<const std::uint8_t> wire,
   }
   const auto retention = purge == OriginPurgeReason::initiated || purge == OriginPurgeReason::unknown_source
       ? std::chrono::seconds{maximum_age_} : purge_retention_;
+  const auto notification = content_event(database_.database(), *pdu, *header, now);
   const auto result = database_.originate(wire, now, maximum_age_, retention, minimum_allocation,
       purge == OriginPurgeReason::unknown_source || purge == OriginPurgeReason::confusion
           ? LspPurgeAnchor::current_event : LspPurgeAnchor::preserve_expiration);
@@ -207,7 +224,7 @@ LevelOriginResult LevelProcess::originate(std::span<const std::uint8_t> wire,
     return {LevelStatus::capacity, result};
   }
   if (result == LspInstallResult::installed) {
-    emit(LevelEventKind::database_changed, observer, header->id);
+    emit(notification, observer, header->id);
   }
   return {result == LspInstallResult::malformed ? LevelStatus::malformed :
       result == LspInstallResult::invalid_checksum || result == LspInstallResult::excessive_lifetime ||
@@ -225,6 +242,13 @@ std::optional<LevelOutputs> LevelProcess::outputs(std::size_t circuit, std::uint
 bool LevelProcess::retire_purge(const packet::isis::LspId &id,
     RuntimeClock::time_point now, LevelObserver observer) noexcept {
   if (!observer.event || !database_.retire_purge(id, now)) return false;
+  emit(LevelEventKind::database_changed, observer, id);
+  return true;
+}
+
+bool LevelProcess::notify_expiration(const packet::isis::LspId &id,
+    RuntimeClock::time_point now, LevelObserver observer) noexcept {
+  if (!observer.event || !database_.mark_expiration_notified(id, now)) return false;
   emit(LevelEventKind::database_changed, observer, id);
   return true;
 }

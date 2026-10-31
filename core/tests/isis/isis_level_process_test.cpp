@@ -22,7 +22,7 @@ void isis_level_process_tests() {
   const auto require = [](bool value, std::source_location location = std::source_location::current()) {
     if (!value) throw std::runtime_error("IS-IS level process ownership invariant failed at " + std::to_string(location.line()));
   };
-  struct Events { std::array<std::size_t, 4U> counts{}; } events;
+  struct Events { std::array<std::size_t, static_cast<std::size_t>(LevelEventKind::database_refreshed) + 1U> counts{}; } events;
   const LevelObserver observer{&events, +[](void *opaque, const LevelEvent &event) noexcept {
     ++static_cast<Events *>(opaque)->counts[static_cast<std::size_t>(event.kind)];
   }};
@@ -209,4 +209,65 @@ void isis_level_process_tests() {
       previous_incarnation.database().flags(old_id, 0U)->srm && previous_incarnation.database().flags(old_id, 1U)->srm);
   require(!previous_incarnation.retire_purge(old_id, now + 1199s, observer) &&
       previous_incarnation.retire_purge(old_id, now + 1200s, observer));
+}
+
+void isis_level_content_event_tests() {
+  using namespace router;
+  using namespace router::isis;
+  using namespace router::packet::isis;
+  using namespace std::chrono_literals;
+  const auto require = [](bool value, std::source_location location = std::source_location::current()) {
+    if (!value) throw std::runtime_error("IS-IS content notification failed at " + std::to_string(location.line()));
+  };
+  struct Events { std::array<std::size_t, static_cast<std::size_t>(LevelEventKind::database_refreshed) + 1U> counts{}; } events;
+  const LevelObserver observer{&events, +[](void *opaque, const LevelEvent &event) noexcept {
+    ++static_cast<Events *>(opaque)->counts[static_cast<std::size_t>(event.kind)];
+  }};
+  const auto count = [&](LevelEventKind kind) { return events.counts[static_cast<std::size_t>(kind)]; };
+  const auto now = RuntimeClock::time_point{100s};
+  const std::array circuits{LevelCircuitConfiguration{false, 7U}};
+  LevelProcess origin(PduType::lsp_l1, {4U, 4096U}, circuits, 8U, 128U, 1200U, 60s, 60s);
+  LevelProcess receiver(PduType::lsp_l1, {4U, 4096U}, circuits, 8U, 128U, 1200U, 60s, 60s);
+  const LspId id{1U, 2U, 3U, 4U, 5U, 6U, 0U, 0U};
+  const auto wire = [&](std::uint32_t sequence, std::uint16_t lifetime, std::uint8_t flags, std::uint8_t value) {
+    std::array<std::uint8_t, 128U> bytes{};
+    const std::array<std::uint8_t, 3U> options{8U, 1U, value};
+    const auto encoded = encode_lsp(bytes, {PduType::lsp_l1, id, lifetime, sequence, flags},
+        lifetime ? std::span<const std::uint8_t>(options) : std::span<const std::uint8_t>{});
+    require(encoded.has_value());
+    return std::vector<std::uint8_t>(encoded->begin(), encoded->end());
+  };
+  require(origin.circuit(0U, 7U, false, true, false, false, observer) == LevelStatus::applied &&
+      receiver.circuit(0U, 7U, false, true, false, false, observer) == LevelStatus::applied);
+  const auto first = wire(1U, 1200U, 3U, 0U);
+  const auto refreshed = wire(2U, 1100U, 3U, 0U);
+  require(origin.originate(first, now, OriginPurgeReason::none, observer).install == LspInstallResult::installed);
+  require(origin.originate(refreshed, now, OriginPurgeReason::none, observer).install == LspInstallResult::installed &&
+      count(LevelEventKind::database_changed) == 1U && count(LevelEventKind::database_refreshed) == 1U &&
+      origin.database().database().find(id, now)->header.sequence == 2U && origin.database().flags(id, 0U)->srm);
+  require(receiver.receive_lsp(0U, 7U, first, now, observer).database.install == LspInstallResult::installed &&
+      receiver.receive_lsp(0U, 7U, refreshed, now, observer).database.install == LspInstallResult::installed &&
+      count(LevelEventKind::database_changed) == 2U && count(LevelEventKind::database_refreshed) == 2U);
+  require(receiver.receive_lsp(0U, 7U, wire(3U, 1200U, 7U, 0U), now, observer).database.install == LspInstallResult::installed &&
+      count(LevelEventKind::database_changed) == 3U);
+  require(receiver.receive_lsp(0U, 7U, wire(4U, 1200U, 7U, 1U), now, observer).database.install == LspInstallResult::installed &&
+      count(LevelEventKind::database_changed) == 4U);
+  require(receiver.receive_lsp(0U, 7U, wire(5U, 0U, 7U, 1U), now, observer).database.install == LspInstallResult::installed &&
+      count(LevelEventKind::database_changed) == 5U);
+  require(receiver.receive_lsp(0U, 7U, wire(6U, 0U, 7U, 1U), now, observer).database.install == LspInstallResult::installed &&
+      count(LevelEventKind::database_changed) == 5U && count(LevelEventKind::database_refreshed) == 3U);
+  require(receiver.receive_lsp(0U, 7U, wire(7U, 1U, 7U, 1U), now, observer).database.install == LspInstallResult::installed &&
+      count(LevelEventKind::database_changed) == 6U);
+  require(receiver.receive_lsp(0U, 7U, wire(8U, 1200U, 7U, 1U), now + 2s, observer).database.install == LspInstallResult::installed &&
+      count(LevelEventKind::database_changed) == 7U);
+  // ISO 7.3.14 gives checksum zero an effective lifetime of zero, even when
+  // the received lifetime field remains positive. Classify the normalized state.
+  auto zero_checksum = wire(9U, 1200U, 7U, 1U);
+  zero_checksum[lsp_checksum_offset] = zero_checksum[lsp_checksum_offset + 1U] = 0U;
+  require(receiver.receive_lsp(0U, 7U, zero_checksum, now + 2s, observer).database.install == LspInstallResult::installed &&
+      count(LevelEventKind::database_changed) == 8U && !receiver.database().database().find(id, now + 2s)->header.remaining_seconds);
+  zero_checksum = wire(10U, 1200U, 7U, 1U);
+  zero_checksum[lsp_checksum_offset] = zero_checksum[lsp_checksum_offset + 1U] = 0U;
+  require(receiver.receive_lsp(0U, 7U, zero_checksum, now + 2s, observer).database.install == LspInstallResult::installed &&
+      count(LevelEventKind::database_changed) == 8U && count(LevelEventKind::database_refreshed) == 4U);
 }

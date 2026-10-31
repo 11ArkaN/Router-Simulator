@@ -57,6 +57,7 @@ struct StoredLspView {
   packet::isis::PduView pdu;
   packet::isis::LspView header;
   bool purge_installed{};
+  bool expiration_notified{};
 };
 
 enum class LspDeadlineKind : std::uint8_t { finalize_expiration, retire_purge };
@@ -114,6 +115,12 @@ public:
       std::optional<LspDeadlineKind> kind = std::nullopt,
       std::span<const packet::isis::LspId> blocked_expirations = {}) const noexcept;
 
+  // Same owner, after actual expiration and before routing notification.
+  // True latches the first notification for an unfinalized expired body.
+  // False means missing, live, finalized or already notified. Does not change
+  // encoded bytes, lifetime/retention anchors, allocation or flood obligations.
+  [[nodiscard]] bool mark_expiration_notified(const packet::isis::LspId &id,
+      RuntimeClock::time_point now) noexcept;
   // Only an installed purge whose retention deadline passed can be removed.
   // An active LSP that merely aged to zero must first pass the process owner's
   // authenticated purge construction, flooding and replacement path.
@@ -128,7 +135,7 @@ private:
     std::vector<std::uint8_t> bytes;
     RuntimeClock::time_point installed_at{};
     RuntimeClock::time_point retire_at{};
-    bool purge_installed{};
+    bool purge_installed{}, expiration_notified{};
   };
   [[nodiscard]] StoredLspView view(const Record &record, RuntimeClock::time_point now) const noexcept;
   packet::isis::PduType type_;

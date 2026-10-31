@@ -60,7 +60,9 @@ void isis_csnp_sequence_tests();
 void isis_snp_exchange_tests();
 void isis_lsp_exchange_tests();
 void isis_level_process_tests();
+void isis_level_content_event_tests();
 void isis_instance_update_tests();
+void isis_expiration_notification_tests();
 void digest_tests();
 
 void capture_store_tests();
@@ -453,7 +455,9 @@ int main() {
     isis_snp_exchange_tests();
     isis_lsp_exchange_tests();
     isis_level_process_tests();
+    isis_level_content_event_tests();
     isis_instance_update_tests();
+    isis_expiration_notification_tests();
     digest_tests();
     std::cout << "module tests passed\n";
     return 0;

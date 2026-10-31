@@ -58,7 +58,7 @@ StoredLspView LinkStateDatabase::view(const Record &record, RuntimeClock::time_p
   header.remaining_seconds = remaining(header, record.installed_at, now);
   const std::span<const std::uint8_t> bytes(record.bytes);
   return {{type_, static_cast<std::uint8_t>(bytes[7U] ? bytes[7U] : 3U), bytes,
-           bytes.subspan(packet::isis::lsp_header_octets)}, header, record.purge_installed};
+           bytes.subspan(packet::isis::lsp_header_octets)}, header, record.purge_installed, record.expiration_notified};
 }
 
 std::optional<StoredLspView> LinkStateDatabase::find(const packet::isis::LspId &id,
@@ -166,9 +166,20 @@ LspInstallResult LinkStateDatabase::install(std::span<const std::uint8_t> wire,
   entry->header = *header;
   entry->installed_at = now;
   entry->purge_installed = header->remaining_seconds == 0U;
+  entry->expiration_notified = false;
   entry->retire_at = after(purge_became_zero, purge_retention);
   allocated_octets_ = retained_other + entry->bytes.capacity();
   return Result::installed;
+}
+
+bool LinkStateDatabase::mark_expiration_notified(const packet::isis::LspId &id,
+    RuntimeClock::time_point now) noexcept {
+  const auto entry = std::lower_bound(records_.begin(), records_.end(), id,
+      [](const Record &record, const auto &key) { return record.header.id < key; });
+  if (entry == records_.end() || entry->header.id != id || entry->purge_installed || entry->expiration_notified ||
+      remaining(entry->header, entry->installed_at, now)) return false;
+  entry->expiration_notified = true;
+  return true;
 }
 
 bool LinkStateDatabase::retire_purge(const packet::isis::LspId &id,

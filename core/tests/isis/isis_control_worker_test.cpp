@@ -969,8 +969,8 @@ void isis_control_origination_tests() {
     require(state.update_status == UpdateStatus::applied);
     if (state.local_root_sequences[0U] >= 2U && state.local_root_sequences[1U] >= 2U &&
         state.database_validations[0U] && state.database_validations[1U]) {
-      require(state.decision_revisions[0U] > state.local_root_sequences[0U] &&
-          state.decision_revisions[1U] > state.local_root_sequences[1U]);
+      require(state.decision_revisions[0U] == initial.decision_revisions[0U] + state.database_validations[0U] &&
+          state.decision_revisions[1U] == initial.decision_revisions[1U] + state.database_validations[1U]);
       break;
     }
     require(RuntimeClock::now() < until);

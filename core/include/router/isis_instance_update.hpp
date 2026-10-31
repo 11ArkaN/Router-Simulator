@@ -148,6 +148,12 @@ public:
   // Borrowed blocked-ID spans are sorted unique and expire on return.
   [[nodiscard]] std::optional<UpdateDatabaseDeadline> next_database_deadline(
       std::array<std::span<const packet::isis::LspId>, 2U> blocked_expirations = {}) const noexcept;
+  // The owning lifetime service notifies routing at actual expiration even
+  // while authenticated purge output is blocked. First notification only; no
+  // key, encoded byte or flood state changes. False means ineligible/missing
+  // record, invalid level, missing observer or already notified. Same shard.
+  [[nodiscard]] bool notify_expiration(std::size_t level, const packet::isis::LspId &id,
+      RuntimeClock::time_point now, LevelObserver observer) noexcept;
   // Only an expired retained active body may become an expiration purge here.
   // The parent explicitly selects outbound authentication and supplies its lease;
   // missing required keys reject before mutation. Foreign checksum and namespace

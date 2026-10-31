@@ -300,6 +300,10 @@ std::optional<UpdateDatabaseDeadline> InstanceUpdateProcess::next_database_deadl
   return result;
 }
 
+bool InstanceUpdateProcess::notify_expiration(std::size_t level, const packet::isis::LspId &id,
+    RuntimeClock::time_point now, LevelObserver observer) noexcept {
+  return level < levels_.size() && levels_[level] && levels_[level]->notify_expiration(id, now, observer);
+}
 UpdatePurgeResult InstanceUpdateProcess::finalize_expiration(std::size_t level,
     const packet::isis::LspId &id, TransmitAuthentication authentication,
     RuntimeClock::time_point now, std::span<std::uint8_t> option_scratch,

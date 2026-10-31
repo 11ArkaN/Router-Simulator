@@ -6,6 +6,7 @@
 #include "router/isis_lsp_builder.hpp"
 #include "router/multi_device_fabric.hpp"
 
+#include <algorithm>
 #include <source_location>
 #include <stdexcept>
 #include <string>
@@ -649,4 +650,57 @@ void isis_instance_update_tests() {
   require(!e.update.retire_purge(0U, initiated_id, initiated_at + 1199s, e.observer) &&
       e.update.retire_purge(0U, initiated_id, initiated_at + 1200s, e.observer));
 
+}
+
+void isis_expiration_notification_tests() {
+  const auto now = RuntimeClock::time_point{100s};
+  const SystemId local{1U, 2U, 3U, 4U, 5U, 1U};
+  const LspId id{1U, 2U, 3U, 4U, 5U, 1U, 0U, 0U};
+  const UpdateLevelConfiguration level{{4U, 4096U}, 0U, 0U, 1492U,
+      1200U, 60s, 60s, false, false, false, PurgeRules::iso_10589};
+  InstanceUpdateProcess update(local, 3U, {level, std::nullopt}, {}, {InstanceFormat::standard, 0U});
+  struct Events { unsigned changed{}, refreshed{}; } events;
+  const LevelObserver observer{&events, +[](void *opaque, const LevelEvent &event) noexcept {
+    auto &values = *static_cast<Events *>(opaque);
+    if (event.kind == LevelEventKind::database_changed) ++values.changed;
+    if (event.kind == LevelEventKind::database_refreshed) ++values.refreshed;
+  }};
+  auto scratch = std::make_unique<PduScratch>();
+  const std::array<std::uint8_t, 3U> options{129U, 1U, ipv4_nlpid};
+  LspContents content;
+  content.header = {PduType::lsp_l1, id, 2U, 1U, 1U};
+  content.options = options;
+  content.maximum_pdu_octets = 1492U;
+  auto encoded = build_lsp_pdu(content, scratch->options, scratch->pdu);
+  require(encoded.status == LspBuildStatus::encoded && update.originate(0U, encoded.bytes, now,
+      OriginPurgeReason::none, observer).install == LspInstallResult::installed && events.changed == 1U);
+  const auto view = [&](RuntimeClock::time_point time) { return update.level(0U)->database().database().find(id, time); };
+  const std::vector<std::uint8_t> original(view(now)->pdu.bytes.begin(), view(now)->pdu.bytes.end());
+  auto missing = id;
+  missing.back() = 1U;
+  require(!update.notify_expiration(0U, id, now + 1s, observer) &&
+      !update.notify_expiration(2U, id, now + 2s, observer) &&
+      !update.notify_expiration(0U, missing, now + 2s, observer) &&
+      !update.notify_expiration(0U, id, now + 2s, {}) && !view(now + 2s)->expiration_notified);
+  require(update.notify_expiration(0U, id, now + 2s, observer) && events.changed == 2U &&
+      view(now + 2s)->expiration_notified && !view(now + 2s)->purge_installed &&
+      std::ranges::equal(original, view(now + 2s)->pdu.bytes));
+  require(!update.notify_expiration(0U, id, now + 3s, observer) && events.changed == 2U);
+  const auto refused = update.finalize_expiration(0U, id, {true, std::nullopt}, now + 3s,
+      scratch->options, scratch->pdu, observer);
+  require(refused.status == UpdateStatus::authentication && events.changed == 2U && !events.refreshed &&
+      view(now + 3s)->expiration_notified && !view(now + 3s)->purge_installed &&
+      std::ranges::equal(original, view(now + 3s)->pdu.bytes));
+  const auto finalized = update.finalize_expiration(0U, id, {}, now + 10s, scratch->options, scratch->pdu, observer);
+  require(finalized.status == UpdateStatus::applied && finalized.origin.install == LspInstallResult::installed &&
+      events.changed == 2U && events.refreshed == 1U && view(now + 10s)->purge_installed);
+  const auto retained = update.next_database_deadline();
+  require(retained && retained->deadline.kind == LspDeadlineKind::retire_purge && retained->deadline.at == now + 62s);
+  content.header.sequence = 2U;
+  content.header.remaining_seconds = 1200U;
+  encoded = build_lsp_pdu(content, scratch->options, scratch->pdu);
+  require(encoded.status == LspBuildStatus::encoded && update.originate(0U, encoded.bytes, now + 11s,
+      OriginPurgeReason::none, observer).install == LspInstallResult::installed && events.changed == 3U &&
+      !view(now + 11s)->expiration_notified && !update.notify_expiration(0U, id, now + 12s, observer));
+  require(update.notify_expiration(0U, id, now + 1211s, observer) && events.changed == 4U);
 }

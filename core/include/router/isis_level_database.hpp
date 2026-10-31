@@ -100,6 +100,10 @@ public:
   void omitted(const packet::isis::LspId &id, std::size_t circuit,
       const packet::isis::LspId &first, const packet::isis::LspId &last,
       RuntimeClock::time_point now) noexcept;
+  // Same-owner routing expiry latch only. No packet, flood flag or reservation
+  // changes; false reports an ineligible or already notified record.
+  [[nodiscard]] bool mark_expiration_notified(const packet::isis::LspId &id,
+      RuntimeClock::time_point now) noexcept { return database_.mark_expiration_notified(id, now); }
   // Retires only a finalized purge after its LSDB retention deadline, then
   // removes its flags in the same owner turn. No borrowed view survives it.
   [[nodiscard]] bool retire_purge(const packet::isis::LspId &id,
