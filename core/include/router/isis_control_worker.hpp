@@ -6,6 +6,7 @@
 
 #include "router/isis_instance_update.hpp"
 #include "router/isis_local_lsp_set.hpp"
+#include "router/isis_neighbor_origination.hpp"
 #include "router/isis_database_validation.hpp"
 #include "router/isis_sequence_recovery.hpp"
 #include "router/owned_spsc_channel.hpp"
@@ -64,6 +65,10 @@ struct UpdateTransmissionProgram {
 };
 struct LocalOriginProgram {
   LocalLspProgram content;
+  // Optional MT0 P2P neighbor ownership. Present programs reserve every allowed
+  // interface and metric before activation; base semantic records contain no
+  // neighbor TLVs. Values are resolved from the profile, never guessed here.
+  std::optional<std::vector<P2pOriginInterface>> neighbors;
   // Emulator allocation recovery policy, supplied explicitly by its owner.
   std::chrono::milliseconds resource_retry{};
 };
@@ -131,6 +136,7 @@ struct ControlResult {
   bool hello_pending{};
   std::array<std::size_t, 2U> retained_lsps{}, retained_purges{};
   std::array<std::uint32_t, 2U> local_root_sequences{};
+  std::array<std::optional<LspLinkCounts>, 2U> local_root_links{};
   std::array<std::uint64_t, 2U> database_validations{}, decision_revisions{};
   std::optional<packet::isis::LspId> corrupted_lsp{};
   std::optional<packet::isis::LspView> selected_lsp{};
@@ -174,6 +180,12 @@ private:
     // the old databases before allocating fresh storage within the same budget.
     std::unique_ptr<InstanceUpdateProcess> process;
     std::unique_ptr<LocalLspSet> local;
+    struct NeighborProjection { packet::isis::SystemId peer{}; Levels usage{Levels::none}; bool up{}; };
+    // Fixed slots follow sorted configured interface IDs. This owner rewrites
+    // the projection only while composing dirty roots; it contains no pointers.
+    std::vector<NeighborProjection> neighbor_projection;
+    std::array<bool, 2U> local_roots_dirty{true, true};
+    std::size_t first_root_level{};
     std::array<std::optional<DatabaseValidation>, 2U> validation;
     std::array<std::uint64_t, 2U> database_validations{}, decision_revisions{};
     std::optional<packet::isis::LspId> corrupted_lsp;
@@ -193,6 +205,8 @@ private:
             UpdateInstanceSelector{configuration.format, configuration.wire_instance},
             configuration.origination->content, RuntimeClock::now());
         reset_validation(RuntimeClock::now());
+        if (configuration.origination->neighbors)
+          neighbor_projection.resize(configuration.origination->neighbors->size());
       }
     }
     // Cold validated program reconstruction, on this control owner only.
@@ -300,9 +314,12 @@ private:
   static void remove_update_instance(DeviceState &device, std::size_t instance) noexcept;
   static UpdateCircuitConfiguration update_configuration(const OwnedCircuit &circuit) noexcept;
   [[nodiscard]] static bool matches_update_instance(const UpdateInstanceProgram &instance,
-      const P2pCircuitConfiguration &circuit) noexcept;
+      const P2pCircuitConfiguration &circuit, std::uint64_t interface_id) noexcept;
   [[nodiscard]] RuntimeClock::time_point service_update_lifetimes(OwnedInstance &instance,
       RuntimeClock::time_point now, std::size_t &budget) noexcept;
+  [[nodiscard]] static ControlError prepare_neighbor_origination(UpdateInstanceProgram &program) noexcept;
+  [[nodiscard]] bool compose_local_neighbors(OwnedInstance &instance, const DeviceState &device,
+      std::size_t index, LocalLspSet &target, RuntimeClock::time_point now, std::size_t &budget) noexcept;
   [[nodiscard]] ControlError edit_local_content(ControlCommand &command, OwnedInstance &instance,
       ControlResult &result) noexcept;
   [[nodiscard]] RuntimeClock::time_point stop_local_instance(DeviceState &device, std::size_t index,

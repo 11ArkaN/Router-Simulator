@@ -43,7 +43,7 @@ ControlWorker::UpdateEgress::UpdateEgress(const OwnedInstance &instance, std::ui
 }
 
 bool ControlWorker::matches_update_instance(const UpdateInstanceProgram &instance,
-    const P2pCircuitConfiguration &circuit) noexcept {
+    const P2pCircuitConfiguration &circuit, std::uint64_t interface_id) noexcept {
   if (circuit.local.system != instance.local || circuit.maximum_area_addresses != instance.maximum_areas ||
       circuit.wire_instance != instance.wire_instance ||
       circuit.instance_format.value_or(packet::isis::InstanceFormat::standard) != instance.format) return false;
@@ -54,12 +54,26 @@ bool ControlWorker::matches_update_instance(const UpdateInstanceProgram &instanc
       (circuit.instance_topologies.size() != 1U || circuit.instance_topologies[0U] != 0U)) return false;
   for (std::size_t level{}; level < 2U; ++level)
     if ((static_cast<std::uint8_t>(circuit.local.levels) & (1U << level)) && !instance.levels[level]) return false;
+  if (instance.origination && instance.origination->neighbors) {
+    // This composer owns MT0 only. A common nonzero topology must not make an
+    // adjacency eligible for a fabricated MT0 advertisement.
+    if (std::any_of(circuit.topologies.begin(), circuit.topologies.end(), [](const auto &entry) { return entry.id != 0U; }) ||
+        std::any_of(circuit.instance_topologies.begin(), circuit.instance_topologies.end(), [](auto id) { return id != 0U; }))
+      return false;
+    const auto &interfaces = *instance.origination->neighbors;
+    const auto found = std::lower_bound(interfaces.begin(), interfaces.end(), interface_id,
+        [](const auto &entry, auto id) { return entry.interface_id < id; });
+    if (found == interfaces.end() || found->interface_id != interface_id) return false;
+    for (std::size_t level{}; level < 2U; ++level)
+      if ((static_cast<std::uint8_t>(circuit.local.levels) & (1U << level)) && !found->levels[level]) return false;
+  }
   return true;
 }
 
 void ControlWorker::OwnedInstance::level_event(void *context, const LevelEvent &event) noexcept {
   auto &instance = *static_cast<OwnedInstance *>(context);
   const auto index = event.level == packet::isis::PduType::lsp_l2 ? 1U : 0U;
+  if (event.kind == LevelEventKind::circuit_changed) instance.local_roots_dirty[index] = true;
   if (event.kind == LevelEventKind::database_corrupted) { instance.corrupted_lsp = event.id; return; }
   if (event.kind == LevelEventKind::database_changed || event.kind == LevelEventKind::circuit_changed ||
       event.kind == LevelEventKind::validation_completed) {
@@ -107,6 +121,8 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
   for (const auto &level : command.update->levels)
     if (level && (level->authenticate_lsp || level->authenticate_csnp || level->authenticate_psnp))
       return ControlError::unsupported_authentication;
+  const auto neighbor_error = prepare_neighbor_origination(*command.update);
+  if (neighbor_error != ControlError::none) return neighbor_error;
   try {
     std::unique_ptr<SequenceRecovery> recovery;
     if (command.update->origination) {
@@ -123,7 +139,7 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
       const auto &owned = device.circuits[ordinal];
       if (owned.identity.instance != index) continue;
       const auto &configuration = owned.circuit.configuration();
-      if (!matches_update_instance(*command.update, configuration))
+      if (!matches_update_instance(*command.update, configuration, owned.identity.interface_id))
         return ControlError::invalid_argument;
       for (const auto previous : bindings)
         if (device.circuits[previous].circuit.configuration().local.extended_circuit ==
@@ -134,6 +150,9 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
     auto instance = std::make_unique<OwnedInstance>(std::move(*command.update), slots,
         device.update_fences[index] + 1U);
     if (instance->local) {
+      std::size_t composition_budget{2U};
+      if (!compose_local_neighbors(*instance, device, index, *instance->local, now, composition_budget))
+        return ControlError::update_refused;
       auto budget = instance->configuration.origination->content.active_records();
       const auto generated = instance->local->service(*instance->process, {}, RuntimeClock::now(),
           scratch_, instance->observer(), budget);
@@ -177,7 +196,7 @@ ControlError ControlWorker::attach_update_circuit(DeviceState &device, OwnedCirc
   if (instance->status != UpdateStatus::applied && !requires_reconstruction(instance->status))
     return ControlError::update_refused;
   const auto &configuration = owned.circuit.configuration();
-  if (!matches_update_instance(instance->configuration, configuration))
+  if (!matches_update_instance(instance->configuration, configuration, owned.identity.interface_id))
     return ControlError::invalid_argument;
   for (const auto &other : device.circuits)
     if (&other != &owned && other.identity.instance == owned.identity.instance &&

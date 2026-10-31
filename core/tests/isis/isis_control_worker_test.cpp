@@ -45,12 +45,36 @@ struct DeliveryContext {
   ControlWorker &worker;
   packet::Frame last;
   std::array<std::uint64_t, 2U> epochs{7U, 7U};
+  std::array<std::array<bool, 2U>, 2U> neighbor_roots{};
 };
 void delivered(void *opaque, const lab::MultiDeviceFabric::Delivery &value) {
   auto &context = *static_cast<DeliveryContext *>(opaque);
   const auto index = value.destination.node.index;
   require(context.channels.ingress[0U].try_send(
       {{index, 1U}, index + 1U, 0U, context.epochs[index]}, value.frame));
+  packet::isis::EthernetDecodeError error;
+  const auto decoded = packet::isis::parse_ethernet_pdu(value.frame.view(), error);
+  const auto header = decoded ? packet::isis::lsp(decoded->pdu) : std::nullopt;
+  if (header && header->remaining_seconds && !header->id[6U] && !header->id[7U] &&
+      header->id[5U] >= 1U && header->id[5U] <= 2U) {
+    const auto sender = static_cast<std::size_t>(header->id[5U] - 1U);
+    const packet::isis::LanId expected{1U, 2U, 3U, 4U, 5U, static_cast<std::uint8_t>(2U - sender), 0U};
+    bool narrow{}, wide{};
+    packet::isis::TlvCursor options(decoded->pdu.tlvs);
+    while (const auto option = options.next()) {
+      if (option->code == 2U) {
+        packet::isis::NarrowNeighborCursor links(*option);
+        while (const auto entry = links.next())
+          narrow = narrow || (entry->id == expected && entry->metrics.metric == 10U);
+      } else if (option->code == 22U) {
+        packet::isis::ExtendedNeighborCursor links(*option);
+        while (const auto entry = links.next())
+          wide = wide || (entry->id == expected && entry->metric == 10U);
+      }
+    }
+    const auto level = decoded->pdu.type == packet::isis::PduType::lsp_l2 ? 1U : 0U;
+    context.neighbor_roots[sender][level] = context.neighbor_roots[sender][level] || (narrow && wide && options.valid());
+  }
   packet::copy_frame(context.last, value.frame);
   context.worker.notify();
 }
@@ -940,6 +964,7 @@ void isis_control_origination_tests() {
       {1U, 5U, 5U, 1s, 10U, 1492U, 1U}};
   program.origination.emplace();
   program.origination->resource_retry = 100ms;
+  program.origination->neighbors = std::vector<P2pOriginInterface>{{1U, {P2pOriginMetric{10U, 10U}, P2pOriginMetric{10U, 10U}}}};
   auto &local = program.origination->content;
   local.random = 17U;
   local.levels = {LocalLspLevelProgram{1200U, 1492U, 10ms, 1s}, LocalLspLevelProgram{1200U, 1492U, 10ms, 1s}};
@@ -949,6 +974,22 @@ void isis_control_origination_tests() {
   auto reserved_fragment = root;
   reserved_fragment.back() = 1U;
   local.records.push_back({0U, reserved_fragment, 3U, {8U, 0U}, false});
+  const auto refuse_program = [&](UpdateInstanceProgram invalid, ControlError expected) {
+    ControlCommand add;
+    add.kind = ControlCommandKind::add_update_instance;
+    add.identity = identity;
+    add.update = std::move(invalid);
+    require(command(std::move(add)).error == expected);
+  };
+  auto invalid = program;
+  invalid.origination->neighbors->push_back(invalid.origination->neighbors->front());
+  refuse_program(std::move(invalid), ControlError::invalid_argument);
+  invalid = program;
+  invalid.origination->content.records[0U].options = {22U, 0U};
+  refuse_program(std::move(invalid), ControlError::invalid_argument);
+  invalid = program;
+  invalid.origination->content.levels[0U]->maximum_pdu_octets = 27U + 9U;
+  refuse_program(std::move(invalid), ControlError::capacity);
   request = {};
   request.kind = ControlCommandKind::add_update_instance;
   request.identity = identity;
@@ -963,6 +1004,8 @@ void isis_control_origination_tests() {
   const auto initial = query();
   require(initial.retained_lsps == std::array<std::size_t, 2U>{1U, 1U} &&
       initial.local_root_sequences == std::array<std::uint32_t, 2U>{1U, 1U});
+  require(initial.local_root_links[0U] == std::optional{LspLinkCounts{}} &&
+      initial.local_root_links[1U] == std::optional{LspLinkCounts{}});
   const auto until = RuntimeClock::now() + 3s;
   for (;;) {
     const auto state = query();
@@ -982,12 +1025,27 @@ void isis_control_origination_tests() {
   request.identity = peer;
   require(command(std::move(request)).error == ControlError::none);
   program.local = configuration(2U).local.system;
+  program.origination->neighbors->front().interface_id = 2U;
   for (auto &content : program.origination->content.records) content.id[5U] = 2U;
   request = {};
   request.kind = ControlCommandKind::add_update_instance;
   request.identity = peer;
   request.update = program;
   require(command(std::move(request)).error == ControlError::none);
+  request = {};
+  request.kind = ControlCommandKind::add_p2p_circuit;
+  request.identity = identity;
+  request.identity.interface_id = 99U;
+  request.configuration = configuration(1U);
+  request.random_state = 1U;
+  require(command(std::move(request)).error == ControlError::invalid_argument);
+  request = {};
+  request.kind = ControlCommandKind::add_p2p_circuit;
+  request.identity = identity;
+  request.configuration = configuration(1U);
+  request.configuration.topologies = {{2U, false, false}};
+  request.random_state = 1U;
+  require(command(std::move(request)).error == ControlError::invalid_argument);
   for (std::uint8_t index{}; index < 2U; ++index) {
     request = {};
     request.kind = ControlCommandKind::add_p2p_circuit;
@@ -1018,8 +1076,15 @@ void isis_control_origination_tests() {
     request.kind = ControlCommandKind::query_update_instance;
     request.identity = peer;
     const auto remote = command(std::move(request));
-    if (query().retained_lsps == std::array<std::size_t, 2U>{2U, 2U} &&
-        remote.retained_lsps == std::array<std::size_t, 2U>{2U, 2U}) break;
+    const auto own = query();
+    const auto linked = [](const auto &state) {
+      return state.local_root_links[0U] == std::optional{LspLinkCounts{1U, 1U}} &&
+          state.local_root_links[1U] == std::optional{LspLinkCounts{1U, 1U}};
+    };
+    if (own.retained_lsps == std::array<std::size_t, 2U>{2U, 2U} &&
+        remote.retained_lsps == std::array<std::size_t, 2U>{2U, 2U} && linked(own) && linked(remote) &&
+        context.neighbor_roots[0U][0U] && context.neighbor_roots[0U][1U] &&
+        context.neighbor_roots[1U][0U] && context.neighbor_roots[1U][1U]) break;
     require(RuntimeClock::now() < synchronized_by);
     std::this_thread::yield();
   }
@@ -1129,6 +1194,7 @@ void isis_control_origination_tests() {
     require(command(std::move(request)).error == ControlError::none);
   }
   program.local = configuration(1U).local.system;
+  program.origination->neighbors->front().interface_id = 1U;
   for (auto &content : program.origination->content.records) content.id[5U] = 1U;
   request = {};
   request.kind = ControlCommandKind::add_update_instance;
@@ -1261,6 +1327,8 @@ void isis_network_plane_update_tests() {
       auto &automatic = instances[index];
       automatic.origination.emplace();
       automatic.origination->resource_retry = 100ms;
+      automatic.origination->neighbors = std::vector<P2pOriginInterface>{{circuits[index].circuit.identity.interface_id,
+          {P2pOriginMetric{10U, 10U}, P2pOriginMetric{10U, 10U}}}};
       auto &local = automatic.origination->content;
       local.random = index + 1U;
       local.levels = {LocalLspLevelProgram{1200U, 1492U, 10ms, 1s},
@@ -1283,8 +1351,33 @@ void isis_network_plane_update_tests() {
       require(left && right && left->update_status == UpdateStatus::applied && right->update_status == UpdateStatus::applied);
       if (left->retained_lsps == std::array<std::size_t, 2U>{2U, 2U} &&
           right->retained_lsps == std::array<std::size_t, 2U>{2U, 2U} &&
-          left->local_root_sequences[0U] >= 2U && right->local_root_sequences[1U] >= 2U) break;
+          left->local_root_sequences[0U] >= 2U && right->local_root_sequences[1U] >= 2U &&
+          left->local_root_links[0U] == std::optional{LspLinkCounts{1U, 1U}} &&
+          left->local_root_links[1U] == std::optional{LspLinkCounts{1U, 1U}} &&
+          right->local_root_links[0U] == std::optional{LspLinkCounts{1U, 1U}} &&
+          right->local_root_links[1U] == std::optional{LspLinkCounts{1U, 1U}}) break;
       require(RuntimeClock::now() < automatic_deadline);
+    }
+    require(plane->replace_isis_p2p_generation(devices[0U], {}));
+    const auto down_by = RuntimeClock::now() + 3s;
+    for (;;) {
+      plane->pump();
+      const auto state = plane->query_isis_update_instance(devices[0U], 0U);
+      require(state && state->update_status == UpdateStatus::applied);
+      if (state->local_root_links[0U] == std::optional{LspLinkCounts{}} &&
+          state->local_root_links[1U] == std::optional{LspLinkCounts{}}) break;
+      require(RuntimeClock::now() < down_by);
+    }
+    circuits[0U].circuit.identity.configuration_generation = 9U;
+    require(plane->replace_isis_p2p_generation(devices[0U], std::span{&circuits[0U], 1U}));
+    const auto restored_by = RuntimeClock::now() + 6s;
+    for (;;) {
+      plane->pump();
+      const auto state = plane->query_isis_update_instance(devices[0U], 0U);
+      require(state && state->update_status == UpdateStatus::applied);
+      if (state->local_root_links[0U] == std::optional{LspLinkCounts{1U, 1U}} &&
+          state->local_root_links[1U] == std::optional{LspLinkCounts{1U, 1U}}) break;
+      require(RuntimeClock::now() < restored_by);
     }
     packet::isis::LspId fragment{};
     std::copy(instances[0U].local.begin(), instances[0U].local.end(), fragment.begin());
@@ -1316,6 +1409,27 @@ void isis_network_plane_update_tests() {
     fragment.back() = 0U;
     const auto root_refusal = plane->withdraw_isis_local_lsp(devices[0U], 0U, 0U, fragment);
     require(root_refusal && root_refusal->error == ControlError::invalid_argument);
+    const auto unchanged_root = plane->replace_isis_local_lsp(devices[0U], 0U,
+        {0U, fragment, 3U, std::vector<std::uint8_t>(semantic.begin(), semantic.end())});
+    require(unchanged_root && unchanged_root->error == ControlError::none &&
+        unchanged_root->local_content_result == LocalContentResult::unchanged);
+    const auto injected_links = plane->replace_isis_local_lsp(devices[0U], 0U, {0U, fragment, 3U, {22U, 0U}});
+    require(injected_links && injected_links->error == ControlError::invalid_argument);
+    auto edited_options = std::vector<std::uint8_t>(semantic.begin(), semantic.end());
+    edited_options.insert(edited_options.end(), {250U, 1U, 7U});
+    const auto edited_root = plane->replace_isis_local_lsp(devices[0U], 0U, {0U, fragment, 3U, edited_options});
+    require(edited_root && edited_root->error == ControlError::none &&
+        edited_root->local_content_result == LocalContentResult::changed);
+    const auto root_sequence = plane->query_isis_update_instance(devices[0U], 0U)->local_root_sequences[0U];
+    const auto edited_by = RuntimeClock::now() + 3s;
+    for (;;) {
+      plane->pump();
+      const auto state = plane->query_isis_update_instance(devices[0U], 0U);
+      require(state && state->update_status == UpdateStatus::applied);
+      if (state->local_root_sequences[0U] > root_sequence &&
+          state->local_root_links[0U] == std::optional{LspLinkCounts{1U, 1U}}) break;
+      require(RuntimeClock::now() < edited_by);
+    }
     const auto raw_refusal = plane->originate_isis_lsp(devices[0U], 0U, 0U, near_expiry.bytes);
     require(raw_refusal && raw_refusal->error == ControlError::update_refused);
     for (const auto device : devices) {

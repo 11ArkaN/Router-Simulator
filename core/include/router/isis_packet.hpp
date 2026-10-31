@@ -82,6 +82,8 @@ public:
   // Adds ISO padding TLVs to reach at least target octets. A one-octet gap
   // needs a two-octet zero-length TLV. Capacity is preflighted before mutation.
   [[nodiscard]] bool pad_to(std::size_t target) noexcept;
+  // Value-only capacity preflight for atomic groups of complete TLVs.
+  [[nodiscard]] std::size_t available() const noexcept { return output_.size() - length_; }
   [[nodiscard]] std::span<const std::uint8_t> bytes() const noexcept {
     return output_.first(length_);
   }

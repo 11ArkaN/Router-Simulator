@@ -21,6 +21,25 @@ ControlError ControlWorker::edit_local_content(ControlCommand &command, OwnedIns
   });
   if (desired == records.end()) return ControlError::not_found;
   const bool withdrawing = command.kind == ControlCommandKind::withdraw_local_content;
+  if (!withdrawing && instance.configuration.origination->neighbors) {
+    packet::isis::TlvCursor cursor(value.options);
+    while (const auto option = cursor.next())
+      if (option->code == 2U || option->code == 22U || option->code == 222U)
+        return ControlError::invalid_argument;
+    if (!cursor.valid()) return ControlError::invalid_argument;
+    if (!value.id[7U]) {
+      const auto &level = instance.configuration.origination->content.levels[value.level];
+      std::size_t required{};
+      for (const auto &entry : *instance.configuration.origination->neighbors)
+        if (entry.levels[value.level]) required += *p2p_origin_option_octets(*entry.levels[value.level]);
+      const auto capacity = level->maximum_pdu_octets - packet::isis::lsp_header_octets;
+      if (required > capacity || value.options.size() > capacity - required) return ControlError::capacity;
+    }
+    if (desired->active && desired->flags == value.flags && desired->options == value.options) {
+      result.local_content_result = LocalContentResult::unchanged;
+      return ControlError::none;
+    }
+  }
   result.local_content_result = withdrawing ? instance.local->withdraw(value.level, value.id) :
       instance.local->replace(value.level, value.id, value.flags, value.options, RuntimeClock::now());
   switch (result.local_content_result) {
@@ -37,6 +56,7 @@ ControlError ControlWorker::edit_local_content(ControlCommand &command, OwnedIns
   if (!withdrawing) {
     desired->flags = value.flags;
     desired->options.swap(value.options);
+    if (instance.configuration.origination->neighbors) instance.local_roots_dirty[value.level] = true;
   }
   return ControlError::none;
 }
@@ -76,9 +96,13 @@ RuntimeClock::time_point ControlWorker::service_local_instance(DeviceState &devi
     return stop_local_instance(device, index, instance.status);
   // Runtime authentication selection is not admitted yet. No unsigned output
   // may replace this explicit transmit policy when key leases are integrated.
-  const auto generated = instance.local->service(*instance.process, {}, now, scratch_, instance.observer(), budget);
+  const bool composed = compose_local_neighbors(instance, device, index, *instance.local, now, budget);
+  if (instance.status != UpdateStatus::applied) return stop_local_instance(device, index, instance.status);
+  std::size_t no_publication{};
+  const auto generated = instance.local->service(*instance.process, {}, now, scratch_, instance.observer(),
+      composed ? budget : no_publication);
   if (generated.terminal == GenerationStatus::waiting)
-    return std::min(validation_deadline, generated.deadline.value_or(never));
+    return composed ? std::min(validation_deadline, generated.deadline.value_or(never)) : now;
   return stop_local_instance(device, index, generated.terminal == GenerationStatus::sequence_exhausted ?
       UpdateStatus::sequence_exhausted : UpdateStatus::epoch_exhausted);
 }
@@ -132,7 +156,7 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
     for (std::size_t ordinal{}; ordinal < device.circuits.size(); ++ordinal) {
       const auto &owned = device.circuits[ordinal];
       if (owned.identity.instance != index) continue;
-      if (!matches_update_instance(instance.configuration, owned.circuit.configuration()))
+      if (!matches_update_instance(instance.configuration, owned.circuit.configuration(), owned.identity.interface_id))
         throw std::invalid_argument("IS-IS recovery circuit does not match its entity");
       slots.push_back(update_configuration(owned));
       bindings.push_back(ordinal);
@@ -147,6 +171,10 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
     egress.reserve(bindings.size());
     for (const auto binding : bindings)
       egress.push_back(std::make_unique<UpdateEgress>(instance, device.circuits[binding].random_state));
+    instance.local_roots_dirty.fill(true);
+    std::size_t composition_budget{2U};
+    if (!compose_local_neighbors(instance, device, index, *local, now, composition_budget))
+      throw std::invalid_argument("IS-IS recovery neighbor composition refused");
     auto budget = configuration.origination->content.active_records();
     const auto generated = local->service(*process, {}, now, scratch_, instance.observer(), budget);
     if (generated.blocked || generated.published != configuration.origination->content.active_records() ||

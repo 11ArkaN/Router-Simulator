@@ -99,7 +99,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
       if (instance->status != UpdateStatus::applied && !requires_reconstruction(instance->status))
         return ControlError::update_refused;
       const auto &configuration = entry.configuration;
-      if (!matches_update_instance(instance->configuration, configuration))
+      if (!matches_update_instance(instance->configuration, configuration, identity.interface_id))
         return ControlError::invalid_argument;
       const auto mask = static_cast<std::uint8_t>(configuration.local.levels);
       for (std::size_t level{}; level < 2U; ++level)
@@ -367,6 +367,8 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
           result.retained_lsps[level] = database.size();
           for (std::size_t record_index{}; record_index < database.size(); ++record_index)
             if (database.at(record_index, RuntimeClock::now())->purge_installed) ++result.retained_purges[level];
+          if (const auto own = database.find(root, RuntimeClock::now()))
+            result.local_root_links[level] = lsp_link_counts(own->pdu.tlvs);
           if (instance.local) result.local_root_sequences[level] = instance.local->sequence(level, root).value_or(0U);
         }
       if (command.selected_lsp) {

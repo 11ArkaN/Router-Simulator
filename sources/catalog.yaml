@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: iso.10589.2002.p2p_neighbor_origination
+    kind: routing-protocol-local-neighbor-composition
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 7.3.7 and 7.3.9, non-pseudonode P2P neighbor advertisement; RFC 5305 section 3, extended IS reachability
+    rfc_refs: [RFC5305]
+    yang_path: /configure/router/isis/interface/level/metric
+    last_verified_at: 2026-10-31
+    implementation: [core/include/router/isis_neighbor_origination.hpp, core/src/isis/isis_neighbor_origination.cpp, core/src/isis/isis_control_neighbors.cpp, core/src/isis/isis_control_update.cpp, core/src/isis/isis_control_origin.cpp, core/src/isis/isis_control_worker.cpp]
+    tests: [core/tests/isis/isis_reachability_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
+    status: experimental
+    notes: Optional MT0 P2P programs encode SystemID plus zero from actual accepted local Up snapshots for each negotiated level. Wide metrics are explicit values in the pinned YANG metric range 1..16777215; optional narrow values must already be resolved to 1..63. No default or clipping rule is inferred. Cold admission bounds every configured peer against root capacity, rejects neighbor TLVs in separately owned base content and refuses unmapped interfaces or nonzero-topology circuits. Runtime composition uses fixed owner-local projection slots and bounded generation credits. LAN, MT, stable fragment packing, complete root semantic derivation and production CLI admission remain incomplete.
   - id: iso.10589.2002.database_validation
     kind: routing-protocol-database-integrity
     release: 26.7.R1

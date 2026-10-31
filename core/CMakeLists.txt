@@ -54,6 +54,7 @@ add_library(router_primitives STATIC
   src/isis/isis_database_validation.cpp
   src/isis/isis_lsp_generation.cpp
   src/isis/isis_local_lsp_set.cpp
+  src/isis/isis_neighbor_origination.cpp
   src/isis/isis_sequence_recovery.cpp
   src/isis/isis_purge_options.cpp
   src/isis/isis_purge_builder.cpp
@@ -323,6 +324,7 @@ add_library(router_network STATIC
   src/isis/isis_control_update_egress.cpp
   src/isis/isis_control_update_lifetime.cpp
   src/isis/isis_control_origin.cpp
+  src/isis/isis_control_neighbors.cpp
   src/isis/isis_control_self.cpp
   src/runtime/capture_store.cpp
   src/dhcpv4/dhcpv4_endpoint_service.cpp

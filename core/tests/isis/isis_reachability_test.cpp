@@ -2,6 +2,7 @@
 // packets exercise borrowed traversal without a runtime or shared state.
 
 #include "router/isis_reachability.hpp"
+#include "router/isis_neighbor_origination.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,6 +18,39 @@ void require(bool condition, const char *message) {
 void isis_reachability_tests() {
   using namespace router::packet::isis;
   using router::ip::AddressFamily;
+  {
+    using namespace router::isis;
+    const SystemId peer{1U, 2U, 3U, 4U, 5U, 6U};
+    std::array<std::uint8_t, 27U> buffer{};
+    TlvWriter writer(buffer);
+    require(append_p2p_origin_neighbor(writer, peer, {10U, 10U}) && writer.available() == 0U,
+        "P2P neighbor metric pair did not fit exact capacity");
+    const auto counts = lsp_link_counts(writer.bytes());
+    require(counts && *counts == LspLinkCounts{1U, 1U}, "P2P neighbor pair missing encoded entries");
+    TlvCursor cursor(writer.bytes());
+    NarrowNeighborCursor narrow(*cursor.next());
+    const auto old = narrow.next();
+    ExtendedNeighborCursor wide(*cursor.next());
+    const auto extended = wide.next();
+    require(old && extended && old->metrics.metric == 10U && extended->metric == 10U &&
+        old->id == LanId{1U, 2U, 3U, 4U, 5U, 6U, 0U} && old->id == extended->id,
+        "P2P neighbor wire identity or metrics differ");
+    const auto saved = buffer;
+    require(!append_p2p_origin_neighbor(writer, peer, {10U, 10U}) && buffer == saved && writer.available() == 0U,
+        "P2P capacity refusal changed writer");
+    TlvWriter short_writer(std::span{buffer}.first(26U));
+    require(!append_p2p_origin_neighbor(short_writer, peer, {10U, 10U}) && short_writer.bytes().empty() && buffer == saved,
+        "P2P pair was partially appended");
+    require(!p2p_origin_option_octets({0U, {}}) && !p2p_origin_option_octets({0x1000000U, {}}) &&
+        !p2p_origin_option_octets({10U, 64U}) && !p2p_origin_option_octets({10U, 0U}),
+        "P2P accepted unresolved invalid metrics");
+    TlvWriter wide_writer(buffer);
+    require(append_p2p_origin_neighbor(wide_writer, peer, {0xffffffU, {}}) &&
+        lsp_link_counts(wide_writer.bytes()) == std::optional{LspLinkCounts{0U, 1U}},
+        "P2P wide-only maximum metric failed");
+    const std::array<std::uint8_t, 3U> malformed{22U, 1U, 0U};
+    require(!lsp_link_counts(malformed), "P2P accepted truncated neighbor option");
+  }
   const std::array<std::uint8_t, 15U> neighbor{
     1U, 2U, 3U, 4U, 5U, 6U, 7U, 0x12U, 0x34U, 0x56U, 4U, 250U, 2U, 0xabU, 0xcdU};
   ExtendedNeighborCursor neighbors({22U, neighbor});
