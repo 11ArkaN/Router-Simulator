@@ -29,6 +29,7 @@ void router_forwarder_isis_tests();
 void isis_three_way_tests();
 void isis_reachability_tests();
 void isis_multi_topology_tests();
+void isis_link_graph_tests();
 void isis_basic_tlvs_tests();
 void isis_narrow_reachability_tests();
 void isis_authentication_tests();
@@ -424,6 +425,7 @@ int main() {
     isis_three_way_tests();
     isis_reachability_tests();
     isis_multi_topology_tests();
+    isis_link_graph_tests();
     isis_basic_tlvs_tests();
     isis_narrow_reachability_tests();
     isis_authentication_tests();

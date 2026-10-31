@@ -16,6 +16,9 @@ features:
   routing.isis.p2p_neighbor_origination:
     status: partially-implemented
     source_ids: [iso.10589.2002.p2p_neighbor_origination, nokia.sros.26_7.isis.yang_roots]
+  routing.isis.lsdb_link_graph:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.lsdb_link_graph]
   routing.isis.local_lsp_composition:
     status: partially-implemented
     source_ids: [iso.10589.2002.lsp_composition]

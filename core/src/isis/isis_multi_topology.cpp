@@ -63,7 +63,7 @@ std::optional<bool> supports_topology(const PduView &pdu, std::uint16_t topology
       pdu.type == PduType::lan_hello_l1 || pdu.type == PduType::lan_hello_l2;
   if (!is_hello) {
     const auto header = lsp(pdu);
-    if (!header || header->id.back() != 0U) return std::nullopt;
+    if (!header || header->id[6U] || header->id.back() != 0U) return std::nullopt;
   }
   bool advertised{};
   bool found{};

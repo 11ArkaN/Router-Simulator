@@ -61,6 +61,7 @@ add_library(router_primitives STATIC
   src/forwarding/llc_packet.cpp
   src/isis/isis_three_way.cpp
   src/isis/isis_reachability.cpp
+  src/isis/isis_link_graph.cpp
   src/isis/isis_multi_topology.cpp
   src/isis/isis_basic_tlvs.cpp
   src/isis/isis_narrow_reachability.cpp
@@ -712,6 +713,7 @@ if(ROUTER_BUILD_TESTS)
     tests/ospf/ospf_route_channel_test.cpp
     tests/ospf/ospf_spf_test.cpp
     tests/isis/isis_spf_test.cpp
+    tests/isis/isis_link_graph_test.cpp
     tests/ospf/ospf_topology_test.cpp
     tests/forwarding/route_policy_test.cpp
     tests/forwarding/multi_device_fabric_test.cpp

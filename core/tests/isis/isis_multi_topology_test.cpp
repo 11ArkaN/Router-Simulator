@@ -78,6 +78,11 @@ void isis_multi_topology_tests() {
   encoded = encode_lsp(wire, lsp_header, only_mt2.bytes());
   pdu = parse(*encoded, error);
   require(supports_topology(*pdu, 2U) == true, "IS-IS MT fragment-zero membership failed");
+  lsp_header.id[6U] = 1U;
+  encoded = encode_lsp(wire, lsp_header, only_mt2.bytes());
+  pdu = parse(*encoded, error);
+  require(!supports_topology(*pdu, 2U), "IS-IS MT interpreted router membership on a shared pseudonode");
+  lsp_header.id[6U] = 0U;
   lsp_header.id.back() = 1U;
   encoded = encode_lsp(wire, lsp_header, only_mt2.bytes());
   pdu = parse(*encoded, error);

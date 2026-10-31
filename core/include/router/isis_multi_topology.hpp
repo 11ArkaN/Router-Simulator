@@ -37,9 +37,10 @@ private:
 [[nodiscard]] bool encode_topologies(TlvWriter &writer,
     std::span<const TopologyComponent> topologies, bool lsp_fragment_zero) noexcept;
 
-// Requires parse() output for a Hello or fragment-zero LSP. Unions membership
+// Requires parse() output for a Hello or non-pseudonode fragment-zero LSP. Unions membership
 // across all TLV 229 occurrences. Absence means MT0 only; explicit MT2 alone
 // does not imply MT0. nullopt means invalid context, ID or option framing.
+// Pseudonodes are shared by all MTs and must be handled separately.
 // This does not decide whether to establish or use an adjacency: LAN adjacency
 // formation must remain independent of having a common MT (RFC 5120 2.2).
 [[nodiscard]] std::optional<bool> supports_topology(const PduView &pdu,

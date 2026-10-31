@@ -1,5 +1,33 @@
 schema_version: 1
 records:
+  - id: iso.10589.2002.lsdb_link_graph
+    kind: routing-protocol-lsdb-graph
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 7.2.5 and 7.2.8, live root, overload and two-way connectivity; RFC 5120 sections 3, 4 and 6, shared pseudonodes and topology-specific reverse links
+    rfc_refs: [RFC1195, RFC3787, RFC5120, RFC5305, RFC5308, RFC8918]
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-10-31
+    implementation: [core/include/router/isis_link_graph.hpp, core/src/isis/isis_link_graph.cpp, core/include/router/isis_multi_topology.hpp, core/src/isis/isis_multi_topology.cpp]
+    tests: [core/tests/isis/isis_link_graph_test.cpp, core/tests/isis/isis_multi_topology_test.cpp]
+    status: experimental
+    notes: Narrow, wide and explicitly selected minimum-of-both graph generations derive only from one owner-local LSDB. Live fragment zero gates all fragments and supplies flags and topology membership. IP-family selection checks non-pseudonode NLPIDs while pseudonodes remain shared across topologies. Nonzero-MT router links use TLV 222; pseudonodes use standard TLV 22 and same-topology reverse connectivity. Overload removes transit arcs while preserving reachability to the node and local-root origination. Maximum link metrics exclude the corresponding directed arc. Duplicate directed pairs retain the minimum advertised metric. Malformed semantic options are ignored without rejecting retained LSPs. Bounded double buffers preserve publication on failure. The minimum-of-both selection follows the RFC 3787 section 5.2 recommendation without selecting an SR OS mixed-mode default or distance policy. Nonzero topologies require wide metrics. Runtime decision scheduling, forwarding next hops, prefix publication and production routing remain incomplete.
+  - id: nokia.sros.26_7.isis.csnp_model_default
+    kind: routing-protocol-configuration-default
+    release: 26.7.R1
+    platforms: [all-supported]
+    source_type: nokia-md-cli-reference
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html#d46533
+    section: csnp-interval, range and default; pinned nokia-conf-router-isis.yang leaf csnp-interval
+    rfc_refs: []
+    yang_path: /configure/router/isis/interface/csnp-interval
+    last_verified_at: 2026-10-31
+    implementation: [docs/adr/0007-isis-yang-defaults-and-cli-references.md, schemas/cli/isis-26.7.R1-inventory.json]
+    tests: [tools/yang/inventory.test.mjs]
+    status: researched
+    notes: The immutable YANG model and MD-CLI reference both declare range 1..65535 seconds and default 10. The classic reference gives P2P default 5, which conflicts with the model. The shared release profile selects the pinned YANG default 10 under ADR-0007, without a guessed media-dependent conversion or separate engine state. Experimental runtime programs still supply explicit effective periods; production CLI admission remains incomplete.
   - id: iso.10589.2002.p2p_neighbor_origination
     kind: routing-protocol-local-neighbor-composition
     release: 26.7.R1
@@ -97,7 +125,7 @@ records:
     implementation: [core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_update_egress.cpp]
     tests: [core/tests/isis/isis_control_worker_test.cpp]
     status: experimental
-    notes: A positive effective CSNP period drives periodic P2P CSNP sequences as documented by SR OS. The internal zero-period form selects ISO startup-only operation and is not a supported CLI input. The runtime program supplies its period explicitly. No CLI default is selected while the classic P2P default and pinned YANG default remain unresolved.
+    notes: A positive effective CSNP period drives periodic P2P CSNP sequences as documented by SR OS. The internal zero-period form selects ISO startup-only operation and is not a supported CLI input. The runtime program supplies its period explicitly. ADR-0007 selects the pinned YANG and MD-CLI default 10 for the shared configuration profile and records the conflicting classic P2P prose value 5. Runtime programs retain explicit effective periods; production CLI admission remains incomplete.
   - id: iso.10589.2002.runtime_update
     kind: routing-protocol-runtime-update-owner
     release: 26.7.R1
