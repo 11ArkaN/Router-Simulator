@@ -200,4 +200,16 @@ void isis_lsdb_tests() {
       local_storage.install(*wire, now, 1200U, 60s,
       {LspAdmissionOrigin::originated, nullptr, nullptr, 65536U}) == LspInstallResult::malformed,
       "IS-IS local storage reservation accepted a foreign or out-of-wire request");
+  other.remaining_seconds = 0U;
+  wire = encode_lsp(second, other, {});
+  const auto observed_live = now + std::chrono::seconds{input.remaining_seconds} + 20s;
+  require(wire && local_storage.install(*wire, observed_live, 1200U, 1200s,
+      {LspAdmissionOrigin::originated, nullptr, nullptr, 0U, LspPurgeAnchor::current_event}) == LspInstallResult::installed &&
+      local_storage.next_deadline(LspDeadlineKind::retire_purge)->at == observed_live + 1200s &&
+      !local_storage.retire_purge(root_id, observed_live + 1199s) &&
+      local_storage.retire_purge(root_id, observed_live + 1200s),
+      "IS-IS initiated purge reused an older expiration anchor for a newly observed live incarnation");
+  require(local_storage.install(*wire, now, 1200U, 60s,
+      {LspAdmissionOrigin::received, nullptr, nullptr, 0U, LspPurgeAnchor::current_event}) == LspInstallResult::malformed,
+      "IS-IS received input selected a local purge event anchor");
 }

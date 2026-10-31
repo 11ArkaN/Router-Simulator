@@ -18,6 +18,18 @@ bool valid_transmission(const UpdateTransmissionProgram &program) noexcept {
       program.pacing_period.count() > 0 && program.pacing_period <= std::chrono::milliseconds{65535} &&
       program.maximum_pdu_octets >= packet::isis::csnp_header_octets;
 }
+bool valid_origination(const UpdateInstanceProgram &program) noexcept {
+  if (!program.origination) return true;
+  const auto &local = program.origination->content;
+  for (std::size_t level{}; level < program.levels.size(); ++level) {
+    if (static_cast<bool>(local.levels[level]) != static_cast<bool>(program.levels[level])) return false;
+    if (!local.levels[level]) continue;
+    if (local.levels[level]->maximum_age != program.levels[level]->maximum_age ||
+        static_cast<std::size_t>(std::count_if(local.current.begin(), local.current.end(),
+            [&](const auto &entry) { return entry.level == level; })) > program.levels[level]->database.records) return false;
+  }
+  return true;
+}
 }
 ControlWorker::UpdateEgress::UpdateEgress(const OwnedInstance &instance, std::uint64_t seed)
     : random(seed ? seed : 1U) {
@@ -51,6 +63,8 @@ void ControlWorker::OwnedInstance::level_event(void *context, const LevelEvent &
   if (instance.revision[index] == std::numeric_limits<std::uint64_t>::max())
     instance.status = UpdateStatus::epoch_exhausted;
   else ++instance.revision[index];
+  if (instance.local && (event.kind == LevelEventKind::overload_entered || event.kind == LevelEventKind::overload_recovered))
+    static_cast<void>(instance.local->waiting_overload(index, event.kind == LevelEventKind::overload_entered, RuntimeClock::now()));
 }
 
 UpdateCircuitConfiguration ControlWorker::update_configuration(const OwnedCircuit &owned) noexcept {
@@ -67,8 +81,13 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
   if (!command.update || !command.update->maximum_circuits ||
       command.update->maximum_circuits > maximum_circuits_ ||
       !valid_transmission(command.update->transmission) ||
+      !valid_origination(*command.update) ||
       command.update->format > packet::isis::InstanceFormat::standard) return ControlError::invalid_argument;
   if (device.instances[index]) return ControlError::already_exists;
+  const auto now = RuntimeClock::now();
+  const auto &previous_recovery = device.sequence_recovery[index];
+  if (previous_recovery && previous_recovery->disabled() && !previous_recovery->ready(now))
+    return ControlError::sequence_cooldown;
   // Nonzero update instances need their per-level multicast projection first.
   // Hello transport alone must not silently enable an incomplete MI database.
   if (command.update->wire_instance) return ControlError::unsupported_update_instance;
@@ -77,6 +96,15 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
     if (level && (level->authenticate_lsp || level->authenticate_csnp || level->authenticate_psnp))
       return ControlError::unsupported_authentication;
   try {
+    std::unique_ptr<SequenceRecovery> recovery;
+    if (command.update->origination) {
+      std::array<std::optional<SequenceLevelLifetime>, 2U> lifetimes;
+      for (std::size_t level{}; level < lifetimes.size(); ++level)
+        if (command.update->levels[level]) lifetimes[level] = SequenceLevelLifetime{
+            command.update->levels[level]->maximum_age,
+            static_cast<std::uint16_t>(command.update->levels[level]->purge_retention.count())};
+      recovery = std::make_unique<SequenceRecovery>(lifetimes, command.update->origination->resource_retry);
+    }
     std::vector<UpdateCircuitConfiguration> slots;
     std::vector<std::size_t> bindings;
     for (std::size_t ordinal{}; ordinal < device.circuits.size(); ++ordinal) {
@@ -93,6 +121,13 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
     }
     auto instance = std::make_unique<OwnedInstance>(std::move(*command.update), slots,
         device.update_fences[index] + 1U);
+    if (instance->local) {
+      auto budget = instance->configuration.origination->content.current.size();
+      const auto generated = instance->local->service(*instance->process, {}, RuntimeClock::now(),
+          scratch_, instance->observer(), budget);
+      if (generated.published != instance->configuration.origination->content.current.size() || generated.blocked ||
+          generated.terminal != GenerationStatus::waiting) return ControlError::update_refused;
+    }
     std::vector<std::unique_ptr<UpdateEgress>> egress;
     egress.reserve(bindings.size());
     for (const auto binding : bindings)
@@ -106,7 +141,7 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
       P2pCircuitEvent event{};
       event.after = adjacency;
       event.transition.outcome = P2pOutcome::up;
-      if (instance->process.p2p(slot, owned.identity.configuration_generation,
+      if (instance->process->p2p(slot, owned.identity.configuration_generation,
           event, instance->observer()) != UpdateStatus::applied) return ControlError::update_refused;
     }
     for (std::size_t slot{}; slot < bindings.size(); ++slot) {
@@ -117,6 +152,7 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
       if (!owned.circuit.operational()) static_cast<void>(owned.circuit.up(RuntimeClock::now()));
     }
     device.instances[index] = std::move(instance);
+    device.sequence_recovery[index] = std::move(recovery);
     device.instance_order[device.instance_count++] = index;
     return ControlError::none;
   } catch (const std::bad_alloc &) { return ControlError::capacity; }
@@ -126,7 +162,8 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
 ControlError ControlWorker::attach_update_circuit(DeviceState &device, OwnedCircuit &owned) noexcept {
   auto &instance = device.instances[owned.identity.instance];
   if (!instance) return ControlError::none;
-  if (instance->status != UpdateStatus::applied) return ControlError::update_refused;
+  if (instance->status != UpdateStatus::applied && instance->status != UpdateStatus::sequence_exhausted)
+    return ControlError::update_refused;
   const auto &configuration = owned.circuit.configuration();
   if (!matches_update_instance(instance->configuration, configuration))
     return ControlError::invalid_argument;
@@ -134,11 +171,22 @@ ControlError ControlWorker::attach_update_circuit(DeviceState &device, OwnedCirc
     if (&other != &owned && other.identity.instance == owned.identity.instance &&
         other.circuit.configuration().local.extended_circuit == configuration.local.extended_circuit)
       return ControlError::already_exists;
+  if (instance->status == UpdateStatus::sequence_exhausted) {
+    const auto count = std::count_if(device.circuits.begin(), device.circuits.end(), [&](const auto &other) {
+      return other.identity.instance == owned.identity.instance;
+    });
+    // The caller already appended this candidate to the device vector.
+    if (static_cast<std::size_t>(count) > instance->configuration.maximum_circuits) return ControlError::capacity;
+    owned.update = instance.get();
+    static_cast<void>(owned.circuit.down(&owned, event));
+    return ControlError::none;
+  }
+  if (!instance->process) return ControlError::update_refused;
   std::unique_ptr<UpdateEgress> egress;
   try { egress = std::make_unique<UpdateEgress>(*instance, owned.random_state); }
   catch (const std::bad_alloc &) { return ControlError::capacity; }
   catch (const std::exception &) { return ControlError::invalid_argument; }
-  const auto admission = instance->process.admit_circuit(update_configuration(owned));
+  const auto admission = instance->process->admit_circuit(update_configuration(owned));
   if (admission.status != UpdateStatus::applied)
     return admission.status == UpdateStatus::capacity ? ControlError::capacity : ControlError::update_refused;
   owned.update = instance.get();
@@ -156,8 +204,9 @@ void ControlWorker::remove_update_instance(DeviceState &device, std::size_t inde
     owned.update = nullptr;
     owned.update_egress.reset();
   }
-  device.update_fences[index] = std::max(device.update_fences[index],
-      instance->process.maximum_synchronization_epoch());
+  if (instance->process)
+    device.update_fences[index] = std::max(device.update_fences[index],
+        instance->process->maximum_synchronization_epoch());
   instance.reset();
   const auto end = device.instance_order.begin() + device.instance_count;
   const auto position = std::find(device.instance_order.begin(), end, static_cast<std::uint8_t>(index));

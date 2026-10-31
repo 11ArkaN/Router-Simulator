@@ -67,6 +67,7 @@ struct Context {
   AuthenticationKey key;
   RuntimeClock::time_point now;
   bool accept_local_copies{};
+  bool accept_retired_purges{};
 };
 void delivered(void *opaque, const lab::MultiDeviceFabric::Delivery &delivery) {
   auto &context = *static_cast<Context *>(opaque);
@@ -81,9 +82,13 @@ void delivered(void *opaque, const lab::MultiDeviceFabric::Delivery &delivery) {
   } else {
     endpoint.received = endpoint.update.receive(0U, 7U, delivery.frame, context.key,
         context.now, endpoint.observer);
-    if (context.accept_local_copies && endpoint.received.status == UpdateStatus::self_originated)
-      endpoint.received = endpoint.update.receive_local_copy(0U, 7U, delivery.frame, context.key,
+    if (context.accept_local_copies && endpoint.received.status == UpdateStatus::self_originated) {
+      if (context.accept_retired_purges && !endpoint.received.local_lsp->remaining_seconds)
+        endpoint.received = endpoint.update.receive_retired_local_purge(0U, 7U, delivery.frame, context.key,
+            context.now, endpoint.observer);
+      else endpoint.received = endpoint.update.receive_local_copy(0U, 7U, delivery.frame, context.key,
           context.now, endpoint.observer);
+    }
   }
 }
 }
@@ -544,5 +549,104 @@ void isis_instance_update_tests() {
       key, e.circuit.configuration().local.system) == AuthenticationError::none);
   transmit(1U);
   require(e.received.status == UpdateStatus::malformed && e.update.level(0U)->transient_acknowledgements() == 1U);
+
+  owned.header = {PduType::lsp_l1, {1U, 2U, 3U, 4U, 5U, 5U, 0U, 2U}, 1200U, 20U, 3U};
+  owned.options = writer.bytes();
+  copy();
+  require(e.received.status == UpdateStatus::self_originated && e.received.local_lsp);
+  const auto unknown_live = *e.received.local_lsp;
+  require(e.update.purge_unknown_source(0U, unknown_live, 3U, {true, std::nullopt}, context.now,
+      scratch->options, scratch->pdu, e.observer).status == UpdateStatus::authentication);
+  require(!e.update.level(0U)->database().database().find(unknown_live.id, context.now));
+  require(e.update.purge_unknown_source(0U, unknown_live, 3U, {true, key}, context.now,
+      scratch->options, scratch->pdu, e.observer).origin.install == LspInstallResult::installed);
+  auto unknown_purge = e.update.level(0U)->database().database().find(unknown_live.id, context.now);
+  require(unknown_purge && unknown_purge->purge_installed && unknown_purge->header.sequence == 20U &&
+      verify_authentication(unknown_purge->pdu.bytes, key) == AuthenticationError::none);
+  owned.header.sequence = 21U;
+  copy();
+  require(e.received.status == UpdateStatus::self_originated && e.received.local_lsp);
+  require(e.update.purge_unknown_source(0U, *e.received.local_lsp, 3U, {true, key}, context.now,
+      scratch->options, scratch->pdu, e.observer).origin.install == LspInstallResult::installed);
+  unknown_purge = e.update.level(0U)->database().database().find(unknown_live.id, context.now);
+  require(unknown_purge->header.sequence == 21U && unknown_purge->purge_installed);
+
+  owned.header.id.back() = 3U;
+  owned.header.sequence = 7U;
+  owned.header.remaining_seconds = 2U;
+  built = build_lsp_pdu(owned, scratch->options, scratch->pdu);
+  require(built.status == LspBuildStatus::encoded && e.update.originate(0U, built.bytes, context.now,
+      OriginPurgeReason::none, e.observer).install == LspInstallResult::installed);
+  for (unsigned index{}; index < 2U; ++index) round();
+  owned.header.remaining_seconds = 1200U;
+  // An expired cached body does not establish current generated-set
+  // membership. This incarnation is handled by the unknown-source owner.
+  context.accept_local_copies = false;
+  copy();
+  require(e.received.status == UpdateStatus::self_originated && e.received.local_lsp);
+  const auto initiated_at = context.now;
+  require(e.update.purge_unknown_source(0U, *e.received.local_lsp, 3U, {true, key}, initiated_at,
+      scratch->options, scratch->pdu, e.observer).origin.install == LspInstallResult::installed);
+  const auto initiated_id = owned.header.id;
+  context.accept_local_copies = true;
+
+  owned.header.id.back() = 5U;
+  owned.header.sequence = 50U;
+  built = build_lsp_pdu(owned, scratch->options, scratch->pdu);
+  require(built.status == LspBuildStatus::encoded && e.update.originate(0U, built.bytes, context.now,
+      OriginPurgeReason::none, e.observer).install == LspInstallResult::installed);
+  owned.header.sequence = 40U;
+  context.accept_local_copies = false;
+  copy();
+  require(e.received.status == UpdateStatus::self_originated && e.received.local_lsp);
+  require(e.update.purge_unknown_source(0U, *e.received.local_lsp, 3U, {true, key}, context.now,
+      scratch->options, scratch->pdu, e.observer).origin.install == LspInstallResult::installed);
+  const auto newer_unknown = e.update.level(0U)->database().database().find(owned.header.id, context.now);
+  require(newer_unknown && newer_unknown->purge_installed && newer_unknown->header.sequence == 50U);
+  context.accept_local_copies = true;
+
+  owned.header = {PduType::lsp_l1, {1U, 2U, 3U, 4U, 5U, 6U, 0U, 0U}, 1200U, 3U, 3U};
+  copy();
+  require(e.received.status == UpdateStatus::applied);
+  const auto foreign_before = e.update.level(0U)->database().database().find(owned.header.id, context.now);
+  const auto before_checksum = foreign_before->header.checksum;
+  const auto *before_address = foreign_before->pdu.bytes.data();
+  owned.header.flags = 7U;
+  copy();
+  require(e.received.lsp.database.install == LspInstallResult::confusion);
+  const auto conflicting_frame = parse_ethernet_pdu(frame->view(), envelope);
+  const auto conflicting_header = lsp(conflicting_frame->pdu);
+  require(conflicting_header && conflicting_header->checksum != before_checksum);
+  const auto confused_at = context.now;
+  require(e.update.finalize_confusion(0U, *conflicting_header, {true, std::nullopt}, confused_at,
+      scratch->options, scratch->pdu, e.observer).status == UpdateStatus::authentication);
+  require(e.update.finalize_confusion(0U, *conflicting_header, {true, key}, confused_at,
+      scratch->options, scratch->pdu, e.observer).origin.install == LspInstallResult::installed);
+  const auto confusion_purge = e.update.level(0U)->database().database().find(owned.header.id, confused_at);
+  require(confusion_purge && confusion_purge->purge_installed && confusion_purge->header.checksum == before_checksum &&
+      confusion_purge->pdu.bytes.data() == before_address &&
+      verify_authentication(confusion_purge->pdu.bytes, key) == AuthenticationError::none);
+  const auto confused_id = owned.header.id;
+  require(e.update.receive_retired_local_purge(0U, 7U, *frame, key, context.now, e.observer).status == UpdateStatus::invalid_event);
+  owned.header = {PduType::lsp_l1, {1U, 2U, 3U, 4U, 5U, 5U, 0U, 4U}, 1200U, 8U, 3U};
+  built = build_lsp_pdu(owned, scratch->options, scratch->pdu);
+  require(built.status == LspBuildStatus::encoded && e.update.originate(0U, built.bytes, context.now,
+      OriginPurgeReason::none, e.observer).install == LspInstallResult::installed);
+  owned.header.remaining_seconds = 0U;
+  owned.options = {};
+  copy();
+  require(e.received.status == UpdateStatus::self_originated &&
+      !e.update.level(0U)->database().database().find(owned.header.id, context.now)->purge_installed);
+  context.accept_retired_purges = true;
+  copy();
+  const auto retired_at = context.now;
+  require(e.received.status == UpdateStatus::applied &&
+      e.update.level(0U)->database().database().find(owned.header.id, retired_at)->purge_installed);
+  require(!e.update.retire_purge(0U, confused_id, confused_at + 59s, e.observer) &&
+      !e.update.retire_purge(0U, owned.header.id, retired_at + 59s, e.observer) &&
+      e.update.retire_purge(0U, confused_id, confused_at + 60s, e.observer) &&
+      e.update.retire_purge(0U, owned.header.id, retired_at + 60s, e.observer));
+  require(!e.update.retire_purge(0U, initiated_id, initiated_at + 1199s, e.observer) &&
+      e.update.retire_purge(0U, initiated_id, initiated_at + 1200s, e.observer));
 
 }

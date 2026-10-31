@@ -5,6 +5,8 @@
 #pragma once
 
 #include "router/isis_instance_update.hpp"
+#include "router/isis_local_lsp_set.hpp"
+#include "router/isis_sequence_recovery.hpp"
 #include "router/owned_spsc_channel.hpp"
 #include "router/protocol_packet_channel.hpp"
 #include "router/protocol_transmission.hpp"
@@ -41,7 +43,8 @@ struct CircuitIdentity {
 enum class ControlCommandKind : std::uint8_t {
   query_worker, register_device, remove_device, add_p2p_circuit,
   remove_circuit, query_circuit, prepare_generation, commit_generation,
-  abort_generation, add_update_instance, remove_update_instance, query_update_instance, originate_lsp, shutdown
+  abort_generation, add_update_instance, remove_update_instance, query_update_instance, originate_lsp, shutdown,
+  query_sequence_recovery
 };
 struct CircuitDefinition {
   CircuitIdentity identity;
@@ -58,6 +61,11 @@ struct UpdateTransmissionProgram {
   std::size_t pacing_burst{};
   std::uint16_t maximum_pdu_octets{}, transit_seconds{};
 };
+struct LocalOriginProgram {
+  LocalLspProgram content;
+  // Emulator allocation recovery policy, supplied explicitly by its owner.
+  std::chrono::milliseconds resource_retry{};
+};
 struct UpdateInstanceProgram {
   packet::isis::SystemId local{};
   std::uint8_t maximum_areas{};
@@ -66,6 +74,7 @@ struct UpdateInstanceProgram {
   UpdateTransmissionProgram transmission;
   std::uint16_t wire_instance{};
   packet::isis::InstanceFormat format{packet::isis::InstanceFormat::standard};
+  std::optional<LocalOriginProgram> origination{};
 };
 struct ControlCommand {
   std::uint64_t id{};
@@ -83,12 +92,15 @@ struct ControlCommand {
   std::optional<UpdateInstanceProgram> update;
   std::vector<std::uint8_t> local_lsp;
   std::uint8_t level{};
+  // Read-only selected-LSP projection; no retained packet view crosses owners.
+  std::optional<packet::isis::LspId> selected_lsp{};
   OriginPurgeReason purge{OriginPurgeReason::none};
 };
 enum class ControlError : std::uint8_t {
   none, invalid_argument, stale_device, stale_configuration, not_found,
   already_exists, capacity, unsupported_authentication, construction_failed,
-  generation_pending, epoch_exhausted, update_refused, unsupported_update_instance
+  generation_pending, epoch_exhausted, update_refused, unsupported_update_instance, sequence_cooldown,
+  unsupported_origination
 };
 struct CircuitCounters {
   std::uint64_t received{};
@@ -115,6 +127,9 @@ struct ControlResult {
   std::uint32_t active_circuits{};
   bool hello_pending{};
   std::array<std::size_t, 2U> retained_lsps{}, retained_purges{};
+  std::array<std::uint32_t, 2U> local_root_sequences{};
+  std::optional<packet::isis::LspView> selected_lsp{};
+  bool sequence_recovery_pending{};
   UpdateStatus update_status{UpdateStatus::inactive};
   LevelOriginResult origin{};
   std::uint64_t update_epoch{};
@@ -149,18 +164,28 @@ public:
 private:
   struct OwnedInstance {
     UpdateInstanceProgram configuration;
-    InstanceUpdateProcess process;
+    // The stable shell outlives a disabled process. Reconstruction can release
+    // the old databases before allocating fresh storage within the same budget.
+    std::unique_ptr<InstanceUpdateProcess> process;
+    std::unique_ptr<LocalLspSet> local;
     UpdateStatus status{UpdateStatus::applied};
     std::array<std::uint64_t, 2U> revision{}, expiration_revision{};
     std::array<std::vector<packet::isis::LspId>, 2U> expiration_blocked;
     OwnedInstance(UpdateInstanceProgram program, std::span<const UpdateCircuitConfiguration> circuits,
         std::uint64_t epoch)
-        : configuration(std::move(program)), process(configuration.local, configuration.maximum_areas,
-            configuration.levels, circuits, {configuration.format, configuration.wire_instance},
-            configuration.maximum_circuits, epoch) {
+        : configuration(std::move(program)), process(std::make_unique<InstanceUpdateProcess>(
+            configuration.local, configuration.maximum_areas, configuration.levels, circuits,
+            UpdateInstanceSelector{configuration.format, configuration.wire_instance},
+            configuration.maximum_circuits, epoch)) {
       for (std::size_t level{}; level < 2U; ++level)
         if (configuration.levels[level]) expiration_blocked[level].reserve(configuration.levels[level]->database.records);
+      if (configuration.origination)
+        local = std::make_unique<LocalLspSet>(configuration.local, configuration.maximum_areas,
+            UpdateInstanceSelector{configuration.format, configuration.wire_instance},
+            configuration.origination->content, RuntimeClock::now());
     }
+    OwnedInstance(OwnedInstance &&) = delete;
+    OwnedInstance &operator=(OwnedInstance &&) = delete;
     [[nodiscard]] LevelObserver observer() noexcept { return {this, level_event}; }
     static void level_event(void *context, const LevelEvent &event) noexcept;
   };
@@ -221,6 +246,10 @@ private:
     // to the device scope and survive protocol removal for this same handle.
     std::array<std::unique_ptr<OwnedInstance>, device_catalog::isis_instance_last + 1U> instances;
     std::array<std::uint64_t, device_catalog::isis_instance_last + 1U> update_fences{};
+    // This control owner retains disabled-entity gates after instance deletion.
+    // Only a different physical DeviceHandle clears a pending cooldown early.
+    // Cold allocation is per configured originator, not per possible instance.
+    std::array<std::unique_ptr<SequenceRecovery>, device_catalog::isis_instance_last + 1U> sequence_recovery;
     // Same control owner maintains this dense iteration projection. Every live
     // key appears once; capacity is the configuration ID range, not admission.
     std::array<std::uint8_t, device_catalog::isis_instance_last + 1U> instance_order{};
@@ -253,6 +282,14 @@ private:
       const P2pCircuitConfiguration &circuit) noexcept;
   [[nodiscard]] RuntimeClock::time_point service_update_lifetimes(OwnedInstance &instance,
       RuntimeClock::time_point now, std::size_t &budget) noexcept;
+  [[nodiscard]] RuntimeClock::time_point service_local_instance(DeviceState &device, std::size_t index,
+      RuntimeClock::time_point now, std::size_t &budget) noexcept;
+  [[nodiscard]] RuntimeClock::time_point rebuild_local_instance(DeviceState &device, std::size_t index,
+      RuntimeClock::time_point now) noexcept;
+  [[nodiscard]] bool handle_self_lsp(OwnedCircuit &owned, const packet::isis::PduView &pdu,
+      const packet::Frame &frame, UpdateReceiveResult &received, RuntimeClock::time_point now) noexcept;
+  void handle_confusion(OwnedCircuit &owned, const packet::isis::PduView &pdu,
+      UpdateReceiveResult &received, RuntimeClock::time_point now) noexcept;
   [[nodiscard]] RuntimeClock::time_point emit_updates(OwnedCircuit &circuit,
       RuntimeClock::time_point now, std::size_t &budget) noexcept;
   [[nodiscard]] bool complete_update(OwnedCircuit &circuit,

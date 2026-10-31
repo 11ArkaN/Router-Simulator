@@ -34,6 +34,7 @@ enum class LspInstallResult : std::uint8_t {
 };
 
 enum class LspAdmissionOrigin : std::uint8_t { received, originated };
+enum class LspPurgeAnchor : std::uint8_t { preserve_expiration, current_event };
 struct LspAdmission {
   LspAdmissionOrigin origin{LspAdmissionOrigin::received};
   void *context{};
@@ -46,6 +47,10 @@ struct LspAdmission {
   // Originated admission only: reserve this record's future local content
   // inside the existing total byte budget. Received input cannot request it.
   std::size_t minimum_allocation{};
+  // A locally initiated purge of a newly observed live incarnation starts its
+  // retention now, even if an older retained body already expired. Received
+  // input cannot override the original local expiration anchor.
+  LspPurgeAnchor purge_anchor{LspPurgeAnchor::preserve_expiration};
 };
 
 struct StoredLspView {

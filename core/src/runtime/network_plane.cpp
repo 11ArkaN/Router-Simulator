@@ -1276,6 +1276,10 @@ struct NetworkPlane::Impl {
   [[nodiscard]] ospf::ControlResult
   execute_ospf(ospf::ControlCommand command) noexcept;
   [[nodiscard]] isis::ControlResult execute_isis(isis::ControlCommand command) noexcept;
+  // Serialized link owner asks the IS-IS owner about its own cooldown clock.
+  // Idle registration stays alive until that owner permits structural recovery.
+  void retire_idle_isis_registration(DeviceHandle device) noexcept;
+  [[nodiscard]] bool isis_checkpoint_blocked() noexcept;
   [[nodiscard]] bool queue_egress(ForwardingShardWorker *shard,
                                   NodeHandle source, std::uint16_t ordinal,
                                   const packet::Frame &frame) noexcept;
@@ -4115,6 +4119,24 @@ isis::ControlResult NetworkPlane::Impl::execute_isis(isis::ControlCommand comman
   while (!isis_worker->read(result)) std::this_thread::yield();
   return result.id == id ? result : isis::ControlResult{.id = id, .error = isis::ControlError::stale_configuration};
 }
+void NetworkPlane::Impl::retire_idle_isis_registration(DeviceHandle device) noexcept {
+  if (!live(device) || !isis_registered[device.index] || isis_instance_count[device.index] ||
+      !isis_transports[device.index].empty()) return;
+  isis::ControlCommand query;
+  query.kind = isis::ControlCommandKind::query_sequence_recovery;
+  query.identity.device = device;
+  const auto result = execute_isis(std::move(query));
+  if (result.error != isis::ControlError::none || result.sequence_recovery_pending) return;
+  isis::ControlCommand removal;
+  removal.kind = isis::ControlCommandKind::remove_device;
+  removal.identity.device = device;
+  if (execute_isis(std::move(removal)).error == isis::ControlError::none) isis_registered[device.index] = false;
+}
+bool NetworkPlane::Impl::isis_checkpoint_blocked() noexcept {
+  for (std::size_t index{}; index < isis_registered.size(); ++index)
+    if (isis_registered[index]) retire_idle_isis_registration({static_cast<std::uint16_t>(index), router_generations[index]});
+  return std::any_of(isis_registered.begin(), isis_registered.end(), [](bool registered) { return registered; });
+}
 
 ospf::ControlResult
 NetworkPlane::Impl::execute_ospf(ospf::ControlCommand command) noexcept {
@@ -4827,11 +4849,7 @@ bool NetworkPlane::replace_isis_p2p_generation(DeviceHandle device,
   }
   const auto discard_registration = [&] {
     if (!registered_here) return;
-    isis::ControlCommand removal;
-    removal.kind = isis::ControlCommandKind::remove_device;
-    removal.identity.device = device;
-    static_cast<void>(impl_->execute_isis(std::move(removal)));
-    impl_->isis_registered[device.index] = false;
+    impl_->retire_idle_isis_registration(device);
   };
   const auto cancel = [&] {
     isis::ControlCommand abort;
@@ -4866,15 +4884,7 @@ bool NetworkPlane::replace_isis_p2p_generation(DeviceHandle device,
   // ownership swaps after the protocol owner has accepted commit.
   impl_->routers[device.index].isis_transports.swap(forwarding_projection);
   impl_->isis_transports[device.index].swap(link_projection);
-  if (circuits.empty() && !impl_->isis_instance_count[device.index]) {
-    isis::ControlCommand removal;
-    removal.kind = isis::ControlCommandKind::remove_device;
-    removal.identity.device = device;
-    // This live registration just committed an empty generation. No intervening
-    // control producer or allocation can invalidate its non-allocating removal.
-    static_cast<void>(impl_->execute_isis(std::move(removal)));
-    impl_->isis_registered[device.index] = false;
-  }
+  impl_->retire_idle_isis_registration(device);
   impl_->resume_forwarding();
   return true;
 }
@@ -4908,11 +4918,7 @@ bool NetworkPlane::add_isis_update_instance(DeviceHandle device, std::uint8_t in
     return true;
   }
   if (registered_here) {
-    isis::ControlCommand removal;
-    removal.kind = isis::ControlCommandKind::remove_device;
-    removal.identity.device = device;
-    static_cast<void>(impl_->execute_isis(std::move(removal)));
-    impl_->isis_registered[device.index] = false;
+    impl_->retire_idle_isis_registration(device);
   }
   return false;
 }
@@ -4926,13 +4932,7 @@ bool NetworkPlane::remove_isis_update_instance(DeviceHandle device, std::uint8_t
   command.identity.instance = instance;
   if (impl_->execute_isis(std::move(command)).error != isis::ControlError::none) return false;
   --impl_->isis_instance_count[device.index];
-  if (!impl_->isis_instance_count[device.index] && impl_->isis_transports[device.index].empty()) {
-    isis::ControlCommand removal;
-    removal.kind = isis::ControlCommandKind::remove_device;
-    removal.identity.device = device;
-    static_cast<void>(impl_->execute_isis(std::move(removal)));
-    impl_->isis_registered[device.index] = false;
-  }
+  impl_->retire_idle_isis_registration(device);
   return true;
 }
 
@@ -4943,6 +4943,18 @@ std::optional<isis::ControlResult> NetworkPlane::query_isis_update_instance(Devi
   command.kind = isis::ControlCommandKind::query_update_instance;
   command.identity.device = device;
   command.identity.instance = instance;
+  return impl_->execute_isis(std::move(command));
+}
+
+std::optional<isis::ControlResult> NetworkPlane::query_isis_lsp(DeviceHandle device,
+    std::uint8_t instance, std::uint8_t level, const packet::isis::LspId &id) noexcept {
+  if (!impl_->live(device) || !impl_->isis_registered[device.index]) return std::nullopt;
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::query_update_instance;
+  command.identity.device = device;
+  command.identity.instance = instance;
+  command.level = level;
+  command.selected_lsp = id;
   return impl_->execute_isis(std::move(command));
 }
 
@@ -7739,8 +7751,7 @@ std::uint64_t NetworkPlane::capture_dropped() const noexcept {
 
 std::optional<NetworkPlaneCheckpoint>
 NetworkPlane::checkpoint(Clock::time_point now) {
-  if (std::any_of(impl_->isis_registered.begin(), impl_->isis_registered.end(),
-      [](bool active) { return active; })) return std::nullopt;
+  if (impl_->isis_checkpoint_blocked()) return std::nullopt;
   if (!impl_->pause_forwarding())
     return std::nullopt;
   struct Resume final {
@@ -7918,7 +7929,7 @@ NetworkPlane::router_checkpoint(DeviceHandle device, Clock::time_point now) {
 
 bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
                            Clock::time_point now) {
-  if (std::any_of(impl_->isis_registered.begin(), impl_->isis_registered.end(), [](bool active) { return active; })) return false;
+  if (impl_->isis_checkpoint_blocked()) return false;
   if (state.routers.size() > device_catalog::maximum_routers ||
       state.hosts.size() > device_catalog::maximum_hosts ||
       state.switches.size() > device_catalog::maximum_switches ||

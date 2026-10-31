@@ -10,36 +10,6 @@
 #include <stdexcept>
 
 namespace router::isis {
-namespace {
-// One borrowed SNP traversal keeps order across repeated TLV 9 options. No
-// state can be applied until a separate full traversal passed validation.
-class SnpEntries final {
-public:
-  explicit SnpEntries(std::span<const std::uint8_t> options) noexcept : options_(options) {}
-  std::optional<packet::isis::SnpEntry> next() noexcept {
-    if (!valid_) return std::nullopt;
-    while (remaining_.empty()) {
-      const auto option = options_.next();
-      if (!option) { valid_ = options_.valid(); return std::nullopt; }
-      if (option->code != 9U) continue;
-      if (option->value.size() % packet::isis::snp_entry_octets) {
-        valid_ = false;
-        return std::nullopt;
-      }
-      remaining_ = option->value;
-    }
-    const auto entry = packet::isis::snp_entry(remaining_.first(packet::isis::snp_entry_octets));
-    remaining_ = remaining_.subspan(packet::isis::snp_entry_octets);
-    valid_ = entry.has_value();
-    return entry;
-  }
-  bool valid() const noexcept { return valid_; }
-private:
-  packet::isis::TlvCursor options_;
-  std::span<const std::uint8_t> remaining_;
-  bool valid_{true};
-};
-}
 
 LevelDatabase::LevelDatabase(packet::isis::PduType type, LsdbLimits limits,
     std::span<const FloodCircuit> circuits, std::size_t maximum_circuits)
@@ -92,13 +62,14 @@ LevelReceiveResult LevelDatabase::receive(std::span<const std::uint8_t> wire,
 
 LspInstallResult LevelDatabase::originate(std::span<const std::uint8_t> wire,
     RuntimeClock::time_point now, std::uint16_t maximum_age,
-    std::chrono::seconds purge_retention, std::size_t minimum_allocation) noexcept {
-  return admit(wire, std::nullopt, now, maximum_age, purge_retention, minimum_allocation).install;
+    std::chrono::seconds purge_retention, std::size_t minimum_allocation, LspPurgeAnchor anchor) noexcept {
+  return admit(wire, std::nullopt, now, maximum_age, purge_retention, minimum_allocation, anchor).install;
 }
 
 LevelReceiveResult LevelDatabase::admit(std::span<const std::uint8_t> wire,
     std::optional<std::size_t> ingress, RuntimeClock::time_point now,
-    std::uint16_t maximum_age, std::chrono::seconds purge_retention, std::size_t minimum_allocation) noexcept {
+    std::uint16_t maximum_age, std::chrono::seconds purge_retention, std::size_t minimum_allocation,
+    LspPurgeAnchor anchor) noexcept {
   packet::isis::DecodeError error{};
   const auto pdu = packet::isis::parse(wire, error);
   const auto header = pdu ? packet::isis::lsp(*pdu) : std::nullopt;
@@ -116,7 +87,7 @@ LevelReceiveResult LevelDatabase::admit(std::span<const std::uint8_t> wire,
         try { pending.staged = {candidate.id, pending.owner.circuits_}; }
         catch (const std::bad_alloc &) { return false; }
         return true;
-      }, minimum_allocation});
+      }, minimum_allocation, anchor});
   if (!exists && installed == LspInstallResult::installed)
     records_.insert(records_.begin() + index, std::move(staged));
   if (installed == LspInstallResult::installed) records_[index].placeholder = false;
@@ -218,7 +189,7 @@ SnpBatchResult LevelDatabase::receive_snp(const packet::isis::PduView &pdu,
       (partial && circuits_[circuit].broadcast && !designated)) return {};
   const auto header = snp(pdu);
   if (!header || (complete && header->last < header->first)) return {SnpBatchStatus::malformed};
-  SnpEntries validation(pdu.tlvs);
+  SnpEntryCursor validation(pdu.tlvs);
   std::optional<LspId> previous;
   while (const auto entry = validation.next()) {
     if ((previous && entry->id <= *previous) ||
@@ -228,14 +199,14 @@ SnpBatchResult LevelDatabase::receive_snp(const packet::isis::PduView &pdu,
   }
   if (!validation.valid()) return {SnpBatchStatus::malformed};
   SnpBatchResult result{SnpBatchStatus::accepted};
-  SnpEntries entries(pdu.tlvs);
+  SnpEntryCursor entries(pdu.tlvs);
   while (const auto entry = entries.next()) {
     const auto applied = receive_snp_entry(*entry, circuit, now);
     result.waiting_state = result.waiting_state || applied.waiting_state;
     if (applied.confusion) ++result.confusions;
   }
   if (complete) {
-    SnpEntries mentioned(pdu.tlvs);
+    SnpEntryCursor mentioned(pdu.tlvs);
     auto entry = mentioned.next();
     for (const auto &record : records_) {
       while (entry && entry->id < record.id) entry = mentioned.next();

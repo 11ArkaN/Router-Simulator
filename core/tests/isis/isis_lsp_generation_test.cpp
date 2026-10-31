@@ -44,10 +44,25 @@ void isis_lsp_generation_tests() {
   const auto fight_back = first.prepare(refresh + 2s);
   require(fight_back.sequence == 101U && first.complete(fight_back.ticket, true, refresh + 2s));
   first.require_after(std::numeric_limits<std::uint32_t>::max(), refresh + 3s);
-  require(first.prepare(refresh + 4s).status == GenerationStatus::sequence_exhausted &&
+  require(first.deadline() == refresh + 3s && first.sequence_exhaustion_due(refresh + 3s) &&
+      first.prepare(refresh + 3s).status == GenerationStatus::sequence_exhausted &&
       first.stopped() && !first.deadline() && first.committed_sequence() == 101U);
   first.retry();
   require(first.prepare(refresh + 1000s).status == GenerationStatus::waiting && first.stopped());
+  LspGenerationSchedule blocked(2s, 40s, 3U, now);
+  const auto refused_initial = blocked.prepare(now);
+  require(blocked.complete(refused_initial.ticket, false, now) && blocked.blocked());
+  blocked.require_after(std::numeric_limits<std::uint32_t>::max(), now + 1ms);
+  require(blocked.sequence_exhaustion_due(now + 1ms) &&
+      blocked.prepare(now + 1ms).status == GenerationStatus::sequence_exhausted && !blocked.committed_sequence());
+  LspGenerationSchedule maximum(2s, 40s, 4U, now);
+  maximum.require_after(std::numeric_limits<std::uint32_t>::max() - 1U, now);
+  const auto final_sequence = maximum.prepare(now);
+  require(final_sequence.sequence == std::numeric_limits<std::uint32_t>::max() &&
+      maximum.complete(final_sequence.ticket, true, now) && !maximum.sequence_exhaustion_due(now));
+  const auto refresh_maximum = *maximum.deadline();
+  require(maximum.sequence_exhaustion_due(refresh_maximum) &&
+      maximum.prepare(refresh_maximum).status == GenerationStatus::sequence_exhausted);
   // Saturating deadlines cannot wrap into immediate work near clock exhaustion.
   LspGenerationSchedule near_limit(1s, 4s, 3U, RuntimeClock::time_point::max() - 1s);
   const auto last = near_limit.prepare(RuntimeClock::time_point::max() - 1s);

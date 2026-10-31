@@ -31,7 +31,7 @@ bool ControlWorker::complete_update(OwnedCircuit &owned,
     const packet::isis::PduView &pdu, RuntimeClock::time_point now) noexcept {
   const auto level = update_level(pdu.type);
   if (!level || !owned.update || !owned.update_egress || owned.update->status != UpdateStatus::applied) return false;
-  auto output = owned.update->process.outputs(owned.update_slot, *level);
+  auto output = owned.update->process->outputs(owned.update_slot, *level);
   if (!output || output->synchronization_epoch != receipt.metadata.protocol_epoch) return false;
   auto &egress = *owned.update_egress;
   if (is_lsp(pdu.type)) {
@@ -44,7 +44,7 @@ bool ControlWorker::complete_update(OwnedCircuit &owned,
     else ++owned.counters.lsp_refused;
     if (receipt.enqueued && completed.current_version) {
       std::erase_if(egress.retries, [&](const auto &entry) {
-        const auto *owner = owned.update->process.level(entry.level);
+        const auto *owner = owned.update->process->level(entry.level);
         return !owner || !owner->database().database().find(entry.header.id, now);
       });
       auto retry = std::find_if(egress.retries.begin(), egress.retries.end(), [&](const auto &entry) {
@@ -92,7 +92,7 @@ RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
   auto &channel = channels_.egress[shard];
   const auto available = [&] { return budget && channel.producer_available(); };
   for (std::size_t level{}; level < 2U; ++level) {
-    auto output = instance.process.outputs(owned.update_slot, level);
+    auto output = instance.process->outputs(owned.update_slot, level);
     if (!output) continue;
     if (egress.epochs[level] != output->synchronization_epoch || egress.synchronize) {
       egress.epochs[level] = output->synchronization_epoch;
@@ -169,7 +169,7 @@ RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
     if (available() && !output->reservations.lsp.pending() && now >= egress.lsp[level] && program.pacing_burst) {
       if (!egress.credits) egress.lsp[level] = egress.pacing;
       else {
-        const auto &database = instance.process.level(level)->database();
+        const auto &database = instance.process->level(level)->database();
         const auto count = database.database().size();
         if (!egress.remaining[level]) {
           egress.remaining[level] = count;

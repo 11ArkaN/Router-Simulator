@@ -41,6 +41,7 @@ void isis_local_lsp_set_tests() {
   require(publish(now).published == 1U && notifications == 2U);
   const auto stored = [&](std::size_t selected) { return update.level(selected)->database().database().find(root, now); };
   require(stored(0U)->header.sequence == 1U && stored(1U)->header.sequence == 1U &&
+      current.sequence(0U, root) == 1U && current.sequence(1U, root) == 1U &&
       update.level(0U)->database().database().allocated_octets() == 128U);
   require(current.replace(0U, root, 3U, area, now + 1s) == LocalContentResult::unchanged &&
       !publish(now + 1s).published);
@@ -54,6 +55,14 @@ void isis_local_lsp_set_tests() {
       publish(now + 3s).blocked == 1U && current.last_error(0U, root) == UpdateStatus::authentication);
   current.retry(0U);
   require(publish(now + 3s).published == 1U && stored(0U)->header.sequence == 102U);
+  require(current.waiting_overload(0U, true, now + 4s) == LocalContentResult::changed &&
+      publish(now + 4s).published == 1U && stored(0U)->header.flags == 7U);
+  require(current.waiting_overload(0U, false, now + 5s) == LocalContentResult::changed &&
+      publish(now + 5s).published == 1U && stored(0U)->header.flags == 3U);
+  require(current.replace(0U, root, 7U, area, now + 6s) == LocalContentResult::changed && publish(now + 6s).published == 1U);
+  require(current.waiting_overload(0U, true, now + 7s) == LocalContentResult::changed && publish(now + 7s).published == 1U &&
+      current.waiting_overload(0U, false, now + 8s) == LocalContentResult::changed && publish(now + 8s).published == 1U &&
+      stored(0U)->header.flags == 7U);
   auto missing = root;
   missing.back() = 1U;
   require(!current.contains(0U, missing) && !current.require_after(0U, missing, 9U, now) &&
@@ -63,8 +72,9 @@ void isis_local_lsp_set_tests() {
   require(current.replace(0U, root, 3U, poi, now) == LocalContentResult::invalid);
   const std::array<std::uint8_t, 104U> too_large{8U, 102U};
   require(current.replace(0U, root, 3U, too_large, now) == LocalContentResult::capacity);
-  require(current.require_after(0U, root, std::numeric_limits<std::uint32_t>::max(), now + 4s));
-  const auto exhausted = publish(now + 4s);
+  const auto committed = current.sequence(0U, root);
+  require(current.require_after(0U, root, std::numeric_limits<std::uint32_t>::max(), now + 9s));
+  const auto exhausted = publish(now + 9s, {}, 0U);
   require(exhausted.terminal == GenerationStatus::sequence_exhausted && !exhausted.deadline &&
-      !publish(now + 100s).published && stored(0U)->header.sequence == 102U);
+      !publish(now + 100s).published && stored(0U)->header.sequence == committed);
 }

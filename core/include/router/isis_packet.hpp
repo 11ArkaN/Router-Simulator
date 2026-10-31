@@ -100,6 +100,20 @@ struct SnpEntry {
 };
 
 inline constexpr std::size_t snp_entry_octets = 16U;
+// Traverses entries across repeated TLV 9 options, skipping unknown TLVs.
+// Borrowed options outlive this cursor; returned entries are value copies.
+// Malformed framing fails permanently. No allocation or shard affinity.
+// Ordering and CSNP range validation belong to the owner before any mutation.
+class SnpEntryCursor final {
+public:
+  explicit SnpEntryCursor(std::span<const std::uint8_t> options) noexcept : options_(options) {}
+  [[nodiscard]] std::optional<SnpEntry> next() noexcept;
+  [[nodiscard]] bool valid() const noexcept { return valid_; }
+private:
+  TlvCursor options_;
+  std::span<const std::uint8_t> remaining_;
+  bool valid_{true};
+};
 
 // ISO 10589 9.10 through 9.13 entry value, without its outer TLV header.
 // Reader requires exactly one entry. Writer preflights capacity and changes

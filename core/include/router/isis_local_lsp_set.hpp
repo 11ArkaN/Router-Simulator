@@ -49,10 +49,17 @@ public:
   // Value projection only; no semantic content or key reference escapes.
   [[nodiscard]] std::optional<UpdateStatus> last_error(std::size_t level,
       const packet::isis::LspId &id) const noexcept;
+  // Committed local publication counter, zero while initial admission is pending.
+  [[nodiscard]] std::optional<std::uint32_t> sequence(std::size_t level,
+      const packet::isis::LspId &id) const noexcept;
   // Parent classified a received own LSP/SNP as requiring regeneration. Unknown
   // IDs return false and remain the parent's initiated-purge responsibility.
   [[nodiscard]] bool require_after(std::size_t level, const packet::isis::LspId &id,
       std::uint32_t sequence, RuntimeClock::time_point now) noexcept;
+  // Projection from this same level process's overload event. Applies only to
+  // the zeroth non-pseudonode LSP and never clears a configured overload flag.
+  [[nodiscard]] LocalContentResult waiting_overload(std::size_t level, bool enabled,
+      RuntimeClock::time_point now) noexcept;
   // Retry only after an actual storage/key-policy event. No timer polling of
   // failed publication. Existing pending content and sequence floors survive.
   void retry(std::size_t level) noexcept;
@@ -77,6 +84,7 @@ private:
   std::uint8_t maximum_areas_{};
   UpdateInstanceSelector selector_;
   std::array<std::optional<LocalLspLevelProgram>, 2U> levels_;
+  std::array<bool, 2U> waiting_overload_{};
   std::vector<Entry> entries_;
   std::size_t first_{};
   GenerationStatus terminal_{GenerationStatus::waiting};

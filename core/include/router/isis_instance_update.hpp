@@ -35,7 +35,8 @@ struct UpdateCircuitConfiguration {
 enum class UpdateStatus : std::uint8_t {
   applied, invalid_circuit, stale_configuration, invalid_event, epoch_exhausted,
   missing_observer, malformed, inactive, destination, instance, authentication,
-  maximum_areas, receive_capacity, self_originated, level_refused, capacity, invalid_configuration, purge_options
+  maximum_areas, receive_capacity, self_originated, level_refused, capacity, invalid_configuration, purge_options,
+  sequence_exhausted
 };
 struct UpdateReceiveResult {
   UpdateStatus status{UpdateStatus::malformed};
@@ -45,7 +46,7 @@ struct UpdateReceiveResult {
   std::optional<packet::isis::LspView> local_lsp{};
 };
 struct UpdateDatabaseDeadline { std::size_t level{}; LspDeadline deadline; };
-struct UpdateExpirationResult {
+struct UpdatePurgeResult {
   UpdateStatus status{UpdateStatus::inactive};
   LevelOriginResult origin;
   LspBuildStatus composition{LspBuildStatus::invalid_header};
@@ -124,6 +125,13 @@ public:
       std::uint64_t configuration_epoch, const packet::Frame &frame,
       std::optional<AuthenticationKey> key, RuntimeClock::time_point now,
       LevelObserver observer) noexcept;
+  // Parent established that this own-source ID is no longer generated locally.
+  // Accepts only an effective purge through ordinary receive/acknowledgement;
+  // cannot admit foreign sources or overwrite a record with a live local LSP.
+  [[nodiscard]] UpdateReceiveResult receive_retired_local_purge(std::size_t circuit,
+      std::uint64_t configuration_epoch, const packet::Frame &frame,
+      std::optional<AuthenticationKey> key, RuntimeClock::time_point now,
+      LevelObserver observer) noexcept;
   // Local originator already selected sequence, semantic options and key. This
   // owner verifies level and local system identity before publishing the PDU.
   // Optional local allocation reserves future root content within the budget.
@@ -139,8 +147,24 @@ public:
   // The parent explicitly selects outbound authentication and supplies its lease;
   // missing required keys reject before mutation. Foreign checksum and namespace
   // survive generation. Scratch is exclusive and no key/view survives return.
-  [[nodiscard]] UpdateExpirationResult finalize_expiration(std::size_t level,
+  [[nodiscard]] UpdatePurgeResult finalize_expiration(std::size_t level,
       const packet::isis::LspId &id, TransmitAuthentication authentication,
+      RuntimeClock::time_point now, std::span<std::uint8_t> option_scratch,
+      std::span<std::uint8_t> pdu_scratch, LevelObserver observer) noexcept;
+  // Caller accepted this live own-source LSP on a real circuit and established
+  // that its ID is outside the current generated set. Purges at the received
+  // sequence or a newer cached copy's sequence, never increments it, and
+  // retains for MaxAge from this event.
+  [[nodiscard]] UpdatePurgeResult purge_unknown_source(std::size_t level,
+      const packet::isis::LspView &received, std::uint8_t maximum_areas,
+      TransmitAuthentication authentication, RuntimeClock::time_point now,
+      std::span<std::uint8_t> option_scratch, std::span<std::uint8_t> pdu_scratch,
+      LevelObserver observer) noexcept;
+  // Caller validated a same-sequence checksum conflict from LSP or SNP and
+  // excluded the current local generated set. Rechecks conflict against the
+  // retained active record before constructing a ZeroAgeLifetime purge.
+  [[nodiscard]] UpdatePurgeResult finalize_confusion(std::size_t level,
+      const packet::isis::LspView &conflicting, TransmitAuthentication authentication,
       RuntimeClock::time_point now, std::span<std::uint8_t> option_scratch,
       std::span<std::uint8_t> pdu_scratch, LevelObserver observer) noexcept;
   // A matching installed purge is removed only after its retained deadline.
@@ -159,10 +183,16 @@ public:
   // no old reservation may match a reconstructed output owner's first ticket.
   [[nodiscard]] std::uint64_t maximum_synchronization_epoch() const noexcept;
 private:
+  enum class LocalCopyAcceptance : std::uint8_t { none, retained, retired_purge };
+  [[nodiscard]] UpdatePurgeResult publish_purge(std::size_t level,
+      const packet::isis::LspView &original, std::uint8_t maximum_areas, bool instance_present,
+      TransmitAuthentication authentication, RuntimeClock::time_point now,
+      std::span<std::uint8_t> option_scratch, std::span<std::uint8_t> pdu_scratch,
+      OriginPurgeReason reason, LevelObserver observer) noexcept;
   [[nodiscard]] UpdateReceiveResult receive_impl(std::size_t circuit,
       std::uint64_t configuration_epoch, const packet::Frame &frame,
       std::optional<AuthenticationKey> key, RuntimeClock::time_point now,
-      LevelObserver observer, bool local_copy) noexcept;
+      LevelObserver observer, LocalCopyAcceptance local_copy) noexcept;
   struct Circuit {
     UpdateCircuitConfiguration configuration;
     std::array<std::uint64_t, 2U> synchronization_epochs{};

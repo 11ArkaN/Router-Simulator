@@ -38,8 +38,15 @@ void LspGenerationSchedule::require_after(std::uint32_t sequence, RuntimeClock::
   changed(now);
 }
 std::optional<RuntimeClock::time_point> LspGenerationSchedule::deadline() const noexcept {
-  if (pending_ || blocked_ || stopped_) return std::nullopt;
+  if (pending_ || stopped_) return std::nullopt;
+  if (std::max(committed_, observed_) == std::numeric_limits<std::uint32_t>::max())
+    return dirty_ ? std::min(changed_at_, refresh_at_) : refresh_at_;
+  if (blocked_) return std::nullopt;
   return std::max(hold_until_, dirty_ ? std::min(changed_at_, refresh_at_) : refresh_at_);
+}
+bool LspGenerationSchedule::sequence_exhaustion_due(RuntimeClock::time_point now) const noexcept {
+  const auto due = deadline();
+  return due && *due <= now && std::max(committed_, observed_) == std::numeric_limits<std::uint32_t>::max();
 }
 LspGeneration LspGenerationSchedule::prepare(RuntimeClock::time_point now) noexcept {
   const auto due = deadline();

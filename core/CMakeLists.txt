@@ -321,6 +321,8 @@ add_library(router_network STATIC
   src/isis/isis_control_update.cpp
   src/isis/isis_control_update_egress.cpp
   src/isis/isis_control_update_lifetime.cpp
+  src/isis/isis_control_origin.cpp
+  src/isis/isis_control_self.cpp
   src/runtime/capture_store.cpp
   src/dhcpv4/dhcpv4_endpoint_service.cpp
   src/dhcpv6/dhcpv6_endpoint_service.cpp

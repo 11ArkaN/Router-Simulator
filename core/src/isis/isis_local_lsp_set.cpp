@@ -71,6 +71,11 @@ std::optional<UpdateStatus> LocalLspSet::last_error(std::size_t level, const pac
     if (entry.content.level == level && entry.content.id == id) return entry.last_error;
   return std::nullopt;
 }
+std::optional<std::uint32_t> LocalLspSet::sequence(std::size_t level, const packet::isis::LspId &id) const noexcept {
+  for (const auto &entry : entries_)
+    if (entry.content.level == level && entry.content.id == id) return entry.generation.committed_sequence();
+  return std::nullopt;
+}
 LocalContentResult LocalLspSet::replace(std::size_t level, const packet::isis::LspId &id,
     std::uint8_t flags, std::span<const std::uint8_t> options, RuntimeClock::time_point now) noexcept {
   auto *entry = find(level, id);
@@ -98,6 +103,18 @@ bool LocalLspSet::require_after(std::size_t level, const packet::isis::LspId &id
 void LocalLspSet::retry(std::size_t level) noexcept {
   for (auto &entry : entries_) if (entry.content.level == level) entry.generation.retry();
 }
+LocalContentResult LocalLspSet::waiting_overload(std::size_t level, bool enabled, RuntimeClock::time_point now) noexcept {
+  if (level >= levels_.size() || !levels_[level]) return LocalContentResult::missing;
+  if (waiting_overload_[level] == enabled) return LocalContentResult::unchanged;
+  packet::isis::LspId root{};
+  std::copy(local_.begin(), local_.end(), root.begin());
+  auto *entry = find(level, root);
+  if (!entry) return LocalContentResult::missing;
+  waiting_overload_[level] = enabled;
+  entry->generation.changed(now);
+  entry->generation.retry();
+  return LocalContentResult::changed;
+}
 LocalGenerationResult LocalLspSet::service(InstanceUpdateProcess &update,
     std::array<TransmitAuthentication, 2U> authentication, RuntimeClock::time_point now,
     PduScratch &scratch, LevelObserver observer, std::size_t &budget) noexcept {
@@ -115,11 +132,17 @@ LocalGenerationResult LocalLspSet::service(InstanceUpdateProcess &update,
         entry.generation.require_after(current->header.sequence, now);
     }
     const auto due = entry.generation.deadline();
+    if (entry.generation.sequence_exhaustion_due(now)) {
+      terminal_ = result.terminal = entry.generation.prepare(now).status;
+      result.deadline.reset();
+      return result;
+    }
     if (budget && due && *due <= now) {
       --budget;
       const auto generation = entry.generation.prepare(now);
       if (generation.status != GenerationStatus::ready) {
         terminal_ = result.terminal = generation.status;
+        result.deadline.reset();
         return result;
       }
       LspBuild built;
@@ -130,6 +153,8 @@ LocalGenerationResult LocalLspSet::service(InstanceUpdateProcess &update,
         LspContents contents;
         contents.header = {level ? packet::isis::PduType::lsp_l2 : packet::isis::PduType::lsp_l1,
             entry.content.id, program.maximum_age, generation.sequence, entry.content.flags, maximum_areas_};
+        if (waiting_overload_[level] && !entry.content.id[6U] && !entry.content.id[7U])
+          contents.header.flags |= 4U; // ISO LSP Database Overload bit, independent of the configured flag.
         contents.options = entry.content.options;
         contents.authentication = key.key;
         contents.maximum_pdu_octets = program.maximum_pdu_octets;

@@ -95,7 +95,10 @@ LspInstallResult LinkStateDatabase::install(std::span<const std::uint8_t> wire,
   const auto pdu = packet::isis::parse(wire, error);
   if (!pdu || pdu->type != type_ || admission.origin > LspAdmissionOrigin::originated || purge_retention.count() < 0 ||
       purge_retention.count() > std::numeric_limits<std::uint16_t>::max() || admission.minimum_allocation > 65535U ||
-      (admission.minimum_allocation && admission.origin != LspAdmissionOrigin::originated)) return Result::malformed;
+      (admission.minimum_allocation && admission.origin != LspAdmissionOrigin::originated) ||
+      admission.purge_anchor > LspPurgeAnchor::current_event ||
+      (admission.purge_anchor != LspPurgeAnchor::preserve_expiration &&
+       admission.origin != LspAdmissionOrigin::originated)) return Result::malformed;
   auto header = packet::isis::lsp(*pdu);
   if (!header || !header->sequence) return Result::malformed;
   if (!header->checksum) header->remaining_seconds = 0U;
@@ -116,7 +119,7 @@ LspInstallResult LinkStateDatabase::install(std::span<const std::uint8_t> wire,
                            header->sequence == effective.sequence && !header->remaining_seconds;
     if (comparison == LspRecency::identical && !aged_body) return Result::identical;
     if (comparison == LspRecency::confusion) return Result::confusion;
-    if (aged_body)
+    if (aged_body && admission.purge_anchor == LspPurgeAnchor::preserve_expiration)
       purge_became_zero = after(entry->installed_at, std::chrono::seconds(entry->header.remaining_seconds));
   } else {
     if (!header->remaining_seconds && admission.origin == LspAdmissionOrigin::received) return Result::unknown_purge;

@@ -9,6 +9,7 @@
 #include <atomic>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <thread>
 
 namespace {
@@ -55,7 +56,11 @@ void protocol_owner_lifecycle_tests() {
     while (!plane->isis_owner_thread_id() || !plane->ospf_owner_thread_id() ||
         !plane->forwarding_owner_thread_id(0U) || !plane->forwarding_owner_thread_id(1U)) {
       if (router::lab::NetworkPlane::Clock::now() >= deadline)
-        throw std::runtime_error("Repeated network startup did not publish every protocol and forwarding owner");
+        throw std::runtime_error("Repeated network startup did not publish every owner: iteration=" +
+            std::to_string(iteration) + " isis=" + std::to_string(plane->isis_owner_thread_id()) +
+            " ospf=" + std::to_string(plane->ospf_owner_thread_id()) + " forwarding0=" +
+            std::to_string(plane->forwarding_owner_thread_id(0U)) + " forwarding1=" +
+            std::to_string(plane->forwarding_owner_thread_id(1U)));
       std::this_thread::yield();
     }
   }

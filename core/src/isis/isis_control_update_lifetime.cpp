@@ -14,21 +14,21 @@ RuntimeClock::time_point ControlWorker::service_update_lifetimes(OwnedInstance &
     for (std::size_t level{}; level < 2U; ++level)
       if (!instance.expiration_blocked[level].empty() && instance.expiration_revision[level] != instance.revision[level])
         instance.expiration_blocked[level].clear();
-    const auto next = instance.process.next_database_deadline({
+    const auto next = instance.process->next_database_deadline({
         std::span<const packet::isis::LspId>(instance.expiration_blocked[0U]),
         std::span<const packet::isis::LspId>(instance.expiration_blocked[1U])});
     if (!next) break;
     if (next->deadline.at > now || !budget) return next->deadline.at;
     --budget;
     if (next->deadline.kind == LspDeadlineKind::retire_purge) {
-      if (!instance.process.retire_purge(next->level, next->deadline.id, now, instance.observer())) {
+      if (!instance.process->retire_purge(next->level, next->deadline.id, now, instance.observer())) {
         instance.status = UpdateStatus::invalid_event;
         break;
       }
     } else {
       // Experimental admission rejects authentication selection. The future
       // key-policy owner must supply its current transmit lease here explicitly.
-      const auto result = instance.process.finalize_expiration(next->level, next->deadline.id,
+      const auto result = instance.process->finalize_expiration(next->level, next->deadline.id,
           {false, std::nullopt}, now, scratch_.options, scratch_.pdu, instance.observer());
       if (result.status == UpdateStatus::applied) continue;
       if (result.origin.install == LspInstallResult::capacity_exhausted ||

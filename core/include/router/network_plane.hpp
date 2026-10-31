@@ -667,6 +667,10 @@ public:
   [[nodiscard]] bool remove_isis_update_instance(DeviceHandle device, std::uint8_t instance) noexcept;
   [[nodiscard]] std::optional<isis::ControlResult> query_isis_update_instance(
       DeviceHandle device, std::uint8_t instance) noexcept;
+  // Same serialized control owner. Returns an immutable effective LSP header;
+  // missing identity reports not_found, and no LSDB/key/packet reference escapes.
+  [[nodiscard]] std::optional<isis::ControlResult> query_isis_lsp(DeviceHandle device,
+      std::uint8_t instance, std::uint8_t level, const packet::isis::LspId &id) noexcept;
   // Already composed local PDU bytes are copied before publication; no span or
   // key lease is retained. The originator supplied sequence, options and purge
   // reason. Result reports validation or admission failure explicitly.

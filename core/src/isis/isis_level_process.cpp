@@ -183,21 +183,25 @@ LevelOriginResult LevelProcess::originate(std::span<const std::uint8_t> wire,
   const auto pdu = packet::isis::parse(wire, error);
   const auto header = pdu ? packet::isis::lsp(*pdu) : std::nullopt;
   if (!header || pdu->type != database_.type()) return {};
-  if (purge > OriginPurgeReason::initiated ||
+  if (purge > OriginPurgeReason::confusion ||
       (header->remaining_seconds != 0U) != (purge == OriginPurgeReason::none))
     return {LevelStatus::invalid_configuration, LspInstallResult::malformed};
   if (header->remaining_seconds && !header->checksum)
     return {LevelStatus::discarded, LspInstallResult::invalid_checksum};
   if (purge != OriginPurgeReason::none) {
     const auto current = database_.database().find(header->id, now);
-    if (!current && purge == OriginPurgeReason::lifetime_expired)
+    if (!current && (purge == OriginPurgeReason::lifetime_expired || purge == OriginPurgeReason::confusion))
       return {LevelStatus::invalid_configuration, LspInstallResult::malformed};
-    if (current && ((purge == OriginPurgeReason::initiated) != (current->header.remaining_seconds != 0U)))
+    if (current && ((purge == OriginPurgeReason::initiated && !current->header.remaining_seconds) ||
+        (purge == OriginPurgeReason::lifetime_expired && current->header.remaining_seconds) ||
+        (purge == OriginPurgeReason::confusion && (!current->header.remaining_seconds || current->purge_installed))))
       return {LevelStatus::invalid_configuration, LspInstallResult::malformed};
   }
-  const auto retention = purge == OriginPurgeReason::initiated
+  const auto retention = purge == OriginPurgeReason::initiated || purge == OriginPurgeReason::unknown_source
       ? std::chrono::seconds{maximum_age_} : purge_retention_;
-  const auto result = database_.originate(wire, now, maximum_age_, retention, minimum_allocation);
+  const auto result = database_.originate(wire, now, maximum_age_, retention, minimum_allocation,
+      purge == OriginPurgeReason::unknown_source || purge == OriginPurgeReason::confusion
+          ? LspPurgeAnchor::current_event : LspPurgeAnchor::preserve_expiration);
   if (result == LspInstallResult::capacity_exhausted) {
     wait(now, true, observer);
     return {LevelStatus::capacity, result};

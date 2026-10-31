@@ -41,7 +41,7 @@ struct LevelOriginResult {
   LevelStatus status{LevelStatus::malformed};
   LspInstallResult install{LspInstallResult::malformed};
 };
-enum class OriginPurgeReason : std::uint8_t { none, lifetime_expired, initiated };
+enum class OriginPurgeReason : std::uint8_t { none, lifetime_expired, initiated, unknown_source, confusion };
 struct LevelOutputs {
   SnpExchange &snp;
   LspExchange &lsp;

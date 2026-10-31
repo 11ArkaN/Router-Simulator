@@ -45,6 +45,9 @@ public:
   [[nodiscard]] std::uint32_t committed_sequence() const noexcept { return committed_; }
   [[nodiscard]] bool stopped() const noexcept { return stopped_; }
   [[nodiscard]] bool blocked() const noexcept { return blocked_; }
+  // Sequence failure is metadata work, independent of publication credits,
+  // authentication availability and minimum spacing between generated PDUs.
+  [[nodiscard]] bool sequence_exhaustion_due(RuntimeClock::time_point now) const noexcept;
 private:
   std::chrono::microseconds minimum_, refresh_;
   std::uint64_t random_{}, tickets_{};

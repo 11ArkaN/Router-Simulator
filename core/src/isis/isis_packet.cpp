@@ -158,6 +158,21 @@ std::optional<SnpEntry> snp_entry(std::span<const std::uint8_t> bytes) noexcept 
   return result;
 }
 
+std::optional<SnpEntry> SnpEntryCursor::next() noexcept {
+  if (!valid_) return std::nullopt;
+  while (remaining_.empty()) {
+    const auto option = options_.next();
+    if (!option) { valid_ = options_.valid(); return std::nullopt; }
+    if (option->code != 9U) continue;
+    if (option->value.size() % snp_entry_octets) { valid_ = false; return std::nullopt; }
+    remaining_ = option->value;
+  }
+  const auto entry = snp_entry(remaining_.first(snp_entry_octets));
+  remaining_ = remaining_.subspan(snp_entry_octets);
+  valid_ = entry.has_value();
+  return entry;
+}
+
 bool encode_snp_entry(std::span<std::uint8_t> output, const SnpEntry &entry) noexcept {
   if (output.size() < snp_entry_octets)
     return false;

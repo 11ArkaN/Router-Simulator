@@ -68,7 +68,7 @@ void ControlWorker::event(void *context, const P2pCircuitEvent &value) noexcept 
     owned.update_egress->retries.clear();
   }
   if (owned.update && owned.update->status == UpdateStatus::applied) {
-    const auto status = owned.update->process.p2p(owned.update_slot,
+    const auto status = owned.update->process->p2p(owned.update_slot,
         owned.identity.configuration_generation, value, owned.update->observer());
     if (status != UpdateStatus::applied) owned.update->status = status;
   }
@@ -79,7 +79,7 @@ void ControlWorker::event(void *context, const P2pCircuitEvent &value) noexcept 
 ControlWorker::PreparedGeneration::~PreparedGeneration() {
   if (!committed) for (auto index = update_reservations.size(); index; --index) {
     auto &reservation = update_reservations[index - 1U];
-    if (!reservation.instance->process.cancel_circuit_admission(reservation.admission)) std::terminate();
+    if (!reservation.instance->process->cancel_circuit_admission(reservation.admission)) std::terminate();
   }
 }
 
@@ -96,7 +96,8 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         identity.physical_port_ordinal >= device_catalog::maximum_ports_per_router ||
         (index && key(definitions[index - 1U].identity) >= key(identity))) return ControlError::invalid_argument;
     if (const auto &instance = device.instances[identity.instance]) {
-      if (instance->status != UpdateStatus::applied) return ControlError::update_refused;
+      if (instance->status != UpdateStatus::applied && instance->status != UpdateStatus::sequence_exhausted)
+        return ControlError::update_refused;
       const auto &configuration = entry.configuration;
       if (!matches_update_instance(instance->configuration, configuration))
         return ControlError::invalid_argument;
@@ -170,6 +171,14 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
     for (auto &replacement : staged.replacements) {
       auto &instance = device.instances[replacement.identity.instance];
       if (!instance) continue;
+      if (instance->status == UpdateStatus::sequence_exhausted) {
+        // Disabled bindings carry configuration only. Fresh level slots are
+        // assigned together when the complete entity is reconstructed.
+        replacement.update = instance.get();
+        static_cast<void>(replacement.circuit.down(&replacement, event));
+        continue;
+      }
+      if (!instance->process) return ControlError::update_refused;
       replacement.update_egress = std::make_unique<UpdateEgress>(*instance, replacement.random_state);
       const auto old = std::find_if(device.circuits.begin(), device.circuits.end(), [&](const auto &current) {
         return same_circuit(current.identity, replacement.identity);
@@ -198,7 +207,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         replacement.update_slot = reusable->update_slot;
         replacement.rebind_update = true;
       } else {
-        auto admission = instance->process.admit_circuit(update_configuration(replacement));
+        auto admission = instance->process->admit_circuit(update_configuration(replacement));
         if (admission.status != UpdateStatus::applied)
           return admission.status == UpdateStatus::capacity ? ControlError::capacity : ControlError::update_refused;
         replacement.update_slot = *admission.index;
@@ -217,7 +226,7 @@ void ControlWorker::commit_generation(DeviceState &device) noexcept {
   for (std::size_t index{}; index < device.circuits.size(); ++index)
     if (!staged.keep[index]) retire_circuit(device, device.circuits[index]);
   for (auto &replacement : staged.replacements) if (replacement.rebind_update) {
-    if (replacement.update->process.rebind_circuit(replacement.update_slot,
+    if (replacement.update->process->rebind_circuit(replacement.update_slot,
         update_configuration(replacement)) != UpdateStatus::applied) std::terminate();
     replacement.rebind_update = false;
   }
@@ -235,7 +244,7 @@ void ControlWorker::retire_circuit(DeviceState &device, OwnedCircuit &circuit) n
   static_cast<void>(circuit.circuit.down(&circuit, event));
   if (circuit.update) {
     if (circuit.update->status == UpdateStatus::applied &&
-        circuit.update->process.release_circuit(circuit.update_slot,
+        circuit.update->process->release_circuit(circuit.update_slot,
             circuit.identity.configuration_generation) != UpdateStatus::applied) std::terminate();
     circuit.update = nullptr;
   }
@@ -259,7 +268,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     else if (prepared_->device != handle) result.error = ControlError::stale_device;
     else if (command.kind == ControlCommandKind::abort_generation) prepared_.reset();
     else if (std::any_of(device.instances.begin(), device.instances.end(), [](const auto &instance) {
-      return instance && instance->status != UpdateStatus::applied;
+      return instance && instance->status != UpdateStatus::applied && instance->status != UpdateStatus::sequence_exhausted;
     })) {
       prepared_.reset();
       result.error = ControlError::update_refused;
@@ -270,7 +279,8 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     return result;
   }
   if (prepared_ && command.kind != ControlCommandKind::query_circuit &&
-      command.kind != ControlCommandKind::query_update_instance) {
+      command.kind != ControlCommandKind::query_update_instance &&
+      command.kind != ControlCommandKind::query_sequence_recovery) {
     result.error = ControlError::generation_pending;
     return result;
   }
@@ -280,6 +290,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
       if (device.handle != handle) {
         device.retired_epoch_floor = 0U;
         device.update_fences.fill(0U);
+        for (auto &gate : device.sequence_recovery) gate.reset();
       }
       device.handle = handle;
       device.active = true;
@@ -287,6 +298,12 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     return result;
   }
   if (!device.active || device.handle != handle) { result.error = ControlError::stale_device; return result; }
+  if (command.kind == ControlCommandKind::query_sequence_recovery) {
+    const auto now = RuntimeClock::now();
+    result.sequence_recovery_pending = std::any_of(device.sequence_recovery.begin(), device.sequence_recovery.end(),
+        [&](const auto &gate) { return gate && gate->disabled() && !gate->ready(now); });
+    return result;
+  }
   if (command.kind == ControlCommandKind::prepare_generation) {
     result.error = prepare_generation(command, device);
     return result;
@@ -313,7 +330,8 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     else {
       auto &instance = *device.instances[index];
       if (command.kind == ControlCommandKind::originate_lsp) {
-        if (instance.status != UpdateStatus::applied) result.error = ControlError::update_refused;
+        if (instance.status != UpdateStatus::applied || !instance.process || instance.local)
+          result.error = ControlError::update_refused;
         else {
           packet::isis::DecodeError decode{};
           const auto pdu = packet::isis::parse(command.local_lsp, decode);
@@ -324,20 +342,33 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
             result.error = ControlError::update_refused;
             return result;
           }
-          result.origin = instance.process.originate(command.level, command.local_lsp,
+          result.origin = instance.process->originate(command.level, command.local_lsp,
               RuntimeClock::now(), command.purge, instance.observer());
           if (result.origin.status != LevelStatus::applied) result.error = ControlError::update_refused;
         }
       }
       result.update_status = instance.status;
-      result.update_epoch = instance.process.maximum_synchronization_epoch();
+      result.update_epoch = instance.process ? instance.process->maximum_synchronization_epoch() : device.update_fences[index];
+      packet::isis::LspId root{};
+      std::copy(instance.configuration.local.begin(), instance.configuration.local.end(), root.begin());
       for (std::size_t level{}; level < result.retained_lsps.size(); ++level)
-        if (const auto *owner = instance.process.level(level)) {
+        if (const auto *owner = instance.process ? instance.process->level(level) : nullptr) {
           const auto &database = owner->database().database();
           result.retained_lsps[level] = database.size();
           for (std::size_t record_index{}; record_index < database.size(); ++record_index)
             if (database.at(record_index, RuntimeClock::now())->purge_installed) ++result.retained_purges[level];
+          if (instance.local) result.local_root_sequences[level] = instance.local->sequence(level, root).value_or(0U);
         }
+      if (command.selected_lsp) {
+        if (command.level > 1U) {
+          result.error = ControlError::invalid_argument;
+          return result;
+        }
+        const auto *owner = instance.process ? instance.process->level(command.level) : nullptr;
+        const auto selected = owner ? owner->database().database().find(*command.selected_lsp, RuntimeClock::now()) : std::nullopt;
+        if (selected) result.selected_lsp = selected->header;
+        else result.error = ControlError::not_found;
+      }
     }
     return result;
   }
@@ -392,7 +423,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
   if (found->update) {
     result.update_status = found->update->status;
     for (std::size_t level{}; level < 2U; ++level) {
-      const auto *owner = found->update->process.level(level);
+      const auto *owner = found->update->process ? found->update->process->level(level) : nullptr;
       if (!owner) continue;
       const auto &database = owner->database();
       for (std::size_t index{}; index < database.size(); ++index) {
@@ -437,17 +468,27 @@ void ControlWorker::receive(
         ++owned.counters.update_discarded;
         owned.counters.last_update = UpdateStatus::inactive;
       } else {
-        const auto received = owned.update->process.receive(owned.update_slot,
+        auto received = owned.update->process->receive(owned.update_slot,
             owned.identity.configuration_generation, *packet.frame, std::nullopt,
             now, owned.update->observer());
+        const bool local_work = received.status == UpdateStatus::self_originated &&
+            handle_self_lsp(owned, wire->pdu, *packet.frame, received, now);
+        if (received.status == UpdateStatus::applied ||
+            received.snp.database.status == SnpBatchStatus::accepted)
+          handle_confusion(owned, wire->pdu, received, now);
         owned.counters.last_update = received.status;
         if (owned.update_egress && received.level < 2U) {
           owned.update_egress->lsp[received.level] = now;
           owned.update_egress->remaining[received.level] = 0U;
         }
         ++owned.counters.update_received;
-        if (received.status != UpdateStatus::applied) ++owned.counters.update_discarded;
+        if (received.status != UpdateStatus::applied && !local_work) ++owned.counters.update_discarded;
       }
+      continue;
+    }
+    if (owned.update && owned.update->status != UpdateStatus::applied) {
+      ++owned.counters.received;
+      ++owned.counters.discarded;
       continue;
     }
     const auto received = owned.circuit.receive(*packet.frame, std::nullopt, now, &owned, event);
@@ -523,11 +564,13 @@ void ControlWorker::run() noexcept {
     }
     auto deadline = PointToPointCircuit::Clock::time_point::max();
     auto transmit_budget = device_catalog::isis_work_budget_packets;
+    auto generation_budget = device_catalog::isis_work_budget_packets;
     auto lifetime_budget = device_catalog::isis_work_budget_packets;
     for (std::size_t offset{}; offset < devices_.size(); ++offset) {
       auto &device = devices_[(first_device_ + offset) % devices_.size()];
       for (std::size_t ordinal{}; ordinal < device.instance_count; ++ordinal) {
         const auto index = device.instance_order[(device.first_instance + ordinal) % device.instance_count];
+        deadline = std::min(deadline, service_local_instance(device, index, now, generation_budget));
         deadline = std::min(deadline, service_update_lifetimes(*device.instances[index], now, lifetime_budget));
       }
       if (device.instance_count) device.first_instance = (device.first_instance + 1U) % device.instance_count;

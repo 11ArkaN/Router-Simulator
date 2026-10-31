@@ -61,7 +61,8 @@ public:
   // the parent uses it to guarantee its own non-pseudonode zeroth LSP storage.
   [[nodiscard]] LspInstallResult originate(std::span<const std::uint8_t> wire,
       RuntimeClock::time_point now, std::uint16_t maximum_age,
-      std::chrono::seconds purge_retention, std::size_t minimum_allocation = 0U) noexcept;
+      std::chrono::seconds purge_retention, std::size_t minimum_allocation = 0U,
+      LspPurgeAnchor anchor = LspPurgeAnchor::preserve_expiration) noexcept;
   // Stable slot programming runs after the instance finishes its Down work.
   // Media cannot change while eligible. flood_all is the owner's explicit
   // adjacency-Up or synchronization decision, never inferred from topology.
@@ -131,7 +132,7 @@ private:
   [[nodiscard]] LevelReceiveResult admit(std::span<const std::uint8_t> wire,
       std::optional<std::size_t> ingress, RuntimeClock::time_point now,
       std::uint16_t maximum_age, std::chrono::seconds purge_retention,
-      std::size_t minimum_allocation = 0U) noexcept;
+      std::size_t minimum_allocation = 0U, LspPurgeAnchor anchor = LspPurgeAnchor::preserve_expiration) noexcept;
   struct Record {
     packet::isis::LspId id{};
     std::vector<FloodCircuit> circuits;

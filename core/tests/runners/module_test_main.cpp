@@ -41,6 +41,7 @@ void isis_p2p_circuit_tests();
 void isis_control_worker_tests();
 void isis_control_generation_tests();
 void isis_control_update_tests();
+void isis_control_origination_tests();
 void isis_network_plane_update_tests();
 void isis_network_plane_tests();
 void isis_network_plane_scale_tests();
@@ -431,6 +432,7 @@ int main() {
     isis_control_worker_tests();
     isis_control_generation_tests();
     isis_control_update_tests();
+    isis_control_origination_tests();
     isis_network_plane_update_tests();
     isis_network_plane_tests();
     isis_network_plane_scale_tests();
