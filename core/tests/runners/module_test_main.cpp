@@ -27,6 +27,7 @@ void protocol_transmission_tests();
 void owned_spsc_channel_tests();
 void router_forwarder_isis_tests();
 void isis_three_way_tests();
+void isis_prefix_attributes_tests();
 void isis_reachability_tests();
 void isis_multi_topology_tests();
 void isis_link_graph_tests();
@@ -423,6 +424,7 @@ int main() {
     owned_spsc_channel_tests();
     router_forwarder_isis_tests();
     isis_three_way_tests();
+    isis_prefix_attributes_tests();
     isis_reachability_tests();
     isis_multi_topology_tests();
     isis_link_graph_tests();

@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: ietf.isis.prefix_metadata
+    kind: routing-protocol-prefix-metadata
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc7794.html
+    section: RFC 7794 sections 2.1 and 2.2; RFC 5130 sections 3 and 4
+    rfc_refs: [RFC5130, RFC7794]
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-11-06
+    implementation: [core/include/router/isis_prefix_attributes.hpp, core/src/isis/isis_prefix_attributes.cpp]
+    tests: [core/tests/isis/isis_prefix_attributes_test.cpp]
+    status: experimental
+    notes: Bounded codecs preserve ordered 32-bit and 64-bit administrative tags and decode context-dependent X/R/N flags and source router IDs. IPv6 ignores the attribute X flag and non-host prefixes ignore N. Generation refuses invalid flag contexts. Policy consumption, source-ID consistency against originating router advertisements and production leaking remain incomplete.
   - id: iso.10589.2002.lsdb_link_graph
     kind: routing-protocol-lsdb-graph
     release: 26.7.R1

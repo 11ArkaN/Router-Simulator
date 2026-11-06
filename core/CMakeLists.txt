@@ -60,6 +60,7 @@ add_library(router_primitives STATIC
   src/isis/isis_purge_builder.cpp
   src/forwarding/llc_packet.cpp
   src/isis/isis_three_way.cpp
+  src/isis/isis_prefix_attributes.cpp
   src/isis/isis_reachability.cpp
   src/isis/isis_link_graph.cpp
   src/isis/isis_multi_topology.cpp
@@ -586,6 +587,7 @@ if(ROUTER_BUILD_TESTS)
     tests/runtime/protocol_transmission_test.cpp
     tests/runtime/owned_spsc_channel_test.cpp
     tests/isis/isis_three_way_test.cpp
+    tests/isis/isis_prefix_attributes_test.cpp
     tests/isis/isis_reachability_test.cpp
     tests/isis/isis_multi_topology_test.cpp
     tests/isis/isis_basic_tlvs_test.cpp
