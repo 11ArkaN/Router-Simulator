@@ -298,3 +298,15 @@ Experimental P2P generations connect the IS-IS owner to both runtime placements.
 Generation preparation stages changed circuits and multicast groups before the forwarding barrier. Unchanged epochs preserve adjacency, timer and pending-transmission state. Commit and multicast rollback exchange preallocated values without allocation. Active experimental IS-IS transport rejects structural checkpoint and restore until protocol-state persistence is implemented. Product CLI admission, LAN integration, circuit-derived origination content and routing remain in progress.
 
 Control generations with dynamic containers transfer ownership through fixed shared slots and SPSC handle rings. Packet metadata retains the circuit configuration generation. The ownership and stale-generation rules are recorded in [ADR 0006](docs/adr/0006-control-generation-handoff.md).
+
+Experimental extended-prefix collection retains origin LSP identities and ordered raw sub-TLV bytes from the same immutable local LSDB visit as a wide-metric IP-family graph. Eligible fragment-zero roots gate all fragments. Malformed whole options contribute no partial prefix subset, over-maximum advertised metrics are excluded, and bounded failures preserve the previous complete collection. Matching MT options use the same codecs. Narrow-prefix collection, attribute policy, prefix route selection and RIB publication remain incomplete.
+
+Experimental prefix-distance values implement separate IPv4 and IPv6 preference classes before administrative route preference. Narrow IPv4 preserves external metric type separately from external route type and compares external cost before internal distance. IPv6 retains its four up/down classes. Narrow total cost 1023 remains usable and larger sums reject; wide sums saturate at 0xFE000000. These values do not yet install prefix routes.
+
+Accepted P2P Hello address, family, area or topology changes now request a decision while ISO adjacency remains Up. Identical refreshes do not repeat that notification, and attribute changes preserve existing synchronization epochs and flood state.
+
+Optional experimental P2P prefix decisions prepare copied advertisements before SPF and publish prefixes, attributes and identity mappings only after the complete calculation succeeds. Prefix capacity and SPF scratch failures retain the previous distances and prefix data together. No prefix route is installed in the RIB yet.
+
+Experimental wide MT0 decision programs can select an IP family and retain prefix advertisements on the IS-IS pthread. First-hop seeds require that family in local configuration and accepted peer Hellos. Queries expose current-generation prefix counts and selected-prefix distances as values. Loss of one family can withdraw its costs while ISO adjacency remains Up for another family; synchronization is preserved.
+
+Normal experimental IPv6 prefix decisions exclude received link-local prefixes while retaining their encoded LSP for ordinary flooding.

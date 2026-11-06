@@ -75,7 +75,13 @@ struct LocalOriginProgram {
 };
 // Experimental wide MT0 decision budgets. No production routing or timer
 // defaults are inferred; root peers come from this owner's actual circuits.
-struct P2pDecisionProgram { std::size_t nodes{}, links{}, pending{}; };
+struct P2pDecisionProgram {
+  std::size_t nodes{}, links{}, pending{};
+  // Absent family selects topology diagnostics only. Prefix collection requires
+  // an explicit IPv4/IPv6 NLPID and never implies forwarding installation.
+  std::optional<std::uint8_t> protocol;
+  std::optional<PrefixCollectionBudget> prefixes;
+};
 struct UpdateInstanceProgram {
   packet::isis::SystemId local{};
   std::uint8_t maximum_areas{};
@@ -107,6 +113,7 @@ struct ControlCommand {
   std::uint8_t level{};
   // Read-only selected-LSP projection; no retained packet view crosses owners.
   std::optional<packet::isis::LspId> selected_lsp{};
+  std::optional<ip::IpPrefix> selected_prefix{};
   OriginPurgeReason purge{OriginPurgeReason::none};
 };
 enum class ControlError : std::uint8_t {
@@ -147,6 +154,8 @@ struct ControlResult {
   std::optional<packet::isis::LspView> selected_lsp{};
   std::array<std::uint64_t, 2U> decision_runs{};
   std::array<std::optional<std::uint32_t>, 2U> selected_cost{};
+  std::array<std::size_t, 2U> prefix_advertisements{};
+  std::array<std::optional<PrefixDistance>, 2U> selected_prefix_distance{};
   std::array<DecisionStatus, 2U> decision_status{DecisionStatus::invalid, DecisionStatus::invalid};
   bool sequence_recovery_pending{};
   UpdateStatus update_status{UpdateStatus::inactive};
@@ -211,7 +220,7 @@ private:
             configuration.maximum_circuits, epoch)) {
       if (configuration.decision) for (std::size_t level{}; level < 2U; ++level)
         if (configuration.levels[level]) decisions[level] = std::make_unique<P2pRouteDecision>(
-            configuration.decision->nodes, configuration.decision->links, configuration.decision->pending, MetricStyle::wide);
+            configuration.decision->nodes, configuration.decision->links, configuration.decision->pending, MetricStyle::wide, configuration.decision->prefixes);
       for (std::size_t level{}; level < 2U; ++level)
         if (configuration.levels[level]) expiration_blocked[level].reserve(configuration.levels[level]->database.records);
       if (configuration.origination) {

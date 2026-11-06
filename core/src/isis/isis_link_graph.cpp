@@ -77,6 +77,7 @@ LinkGraphStatus LinkGraph::rebuild(const LinkStateDatabase &database,
       (selection.topology && selection.metrics != GraphMetricStyle::wide) ||
       (selection.protocol && *selection.protocol != packet::isis::ipv4_nlpid &&
        *selection.protocol != packet::isis::ipv6_nlpid)) return LinkGraphStatus::invalid_selection;
+  working_.selection = selection;
   working_.nodes.clear();
   working_.links.clear();
   working_.root.reset();

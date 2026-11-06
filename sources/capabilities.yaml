@@ -1,6 +1,12 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  routing.isis.prefix_distance:
+    status: partially-implemented
+    source_ids: [ietf.isis.prefix_distance]
+  routing.isis.lsdb_prefix_collection:
+    status: partially-implemented
+    source_ids: [ietf.isis.lsdb_prefix_collection]
   runtime.protocol_reservation_epochs:
     status: implemented
     source_ids: [project.runtime.protocol_reservation_epochs]

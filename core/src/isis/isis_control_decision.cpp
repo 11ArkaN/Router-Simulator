@@ -20,6 +20,16 @@ void ControlWorker::service_p2p_decision(OwnedInstance &instance, const DeviceSt
     std::size_t count{};
     for (const auto &owned : device.circuits) {
       if (owned.identity.instance != index) continue;
+      const auto protocol = instance.configuration.decision->protocol;
+      if (protocol) {
+        const auto &local = owned.circuit.configuration().protocols;
+        if (std::find(local.begin(), local.end(), *protocol) == local.end()) continue;
+        bool peer_supports{};
+        packet::isis::TlvCursor attributes(owned.circuit.peer_attributes());
+        while (const auto option = attributes.next()) if (option->code == 129U)
+          peer_supports = peer_supports || packet::isis::supports_protocol(*option, *protocol);
+        if (!attributes.valid() || !peer_supports) continue;
+      }
       const auto adjacency = owned.circuit.adjacency();
       if (!adjacency.iso_up || !(static_cast<std::uint8_t>(adjacency.usage) & (1U << level))) continue;
       const auto found = std::lower_bound(interfaces.begin(), interfaces.end(), owned.identity.interface_id,
@@ -32,7 +42,7 @@ void ControlWorker::service_p2p_decision(OwnedInstance &instance, const DeviceSt
     packet::isis::LanId root{};
     std::copy(instance.configuration.local.begin(), instance.configuration.local.end(), root.begin());
     instance.decision_status[level] = instance.decisions[level]->calculate(
-        instance.process->level(level)->database().database(), {root, 0U, {}, GraphMetricStyle::wide},
+        instance.process->level(level)->database().database(), {root, 0U, instance.configuration.decision->protocol, GraphMetricStyle::wide},
         std::span{seeds}.first(count), static_cast<std::uint16_t>(interfaces.size()), now);
     instance.consumed_decision_revision[level] = instance.decision_revisions[level];
     if (instance.decision_runs[level] != std::numeric_limits<std::uint64_t>::max()) ++instance.decision_runs[level];

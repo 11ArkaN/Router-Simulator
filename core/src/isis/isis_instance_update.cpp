@@ -189,7 +189,16 @@ UpdateStatus InstanceUpdateProcess::p2p(std::size_t index, std::uint64_t configu
     // RFC 5303 Initialize emits no ISO adjacency Down. A later explicit Up
     // nevertheless restarts synchronization, even if ISO usage stayed Up.
     const bool resynchronize = up && event.transition.outcome == P2pOutcome::up;
-    if (was_up == up && !resynchronize) continue;
+    if (was_up == up && !resynchronize) {
+      // Accepted address, family, area or MT changes can alter forwarding or
+      // local origination without changing ISO Up. Notify the decision owner
+      // without resetting synchronization epochs, SNP cursors or flood state.
+      if (up && !std::equal(event.previous_attributes.begin(), event.previous_attributes.end(),
+                           event.attributes.begin(), event.attributes.end()))
+        observer.event(observer.context, {LevelEventKind::circuit_changed,
+            level ? packet::isis::PduType::lsp_l2 : packet::isis::PduType::lsp_l1, std::nullopt});
+      continue;
+    }
     if (!was_up && up && circuit.activated[level]) ++circuit.synchronization_epochs[level];
     // Constructor and event preflight guarantee this exact owner/slot/epoch.
     // A violated internal invariant must fail closed, never publish half an Up.

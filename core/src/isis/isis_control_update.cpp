@@ -124,6 +124,11 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
   if (command.update->decision && (!command.update->origination || !command.update->origination->neighbors ||
       command.update->origination->neighbors->size() > device_catalog::maximum_ecmp_paths))
     return ControlError::unsupported_origination;
+  if (command.update->decision) {
+    const auto protocol = command.update->decision->protocol;
+    if ((protocol && *protocol != packet::isis::ipv4_nlpid && *protocol != packet::isis::ipv6_nlpid) ||
+        (command.update->decision->prefixes && !protocol)) return ControlError::invalid_argument;
+  }
   const auto neighbor_error = prepare_neighbor_origination(*command.update);
   if (neighbor_error != ControlError::none) return neighbor_error;
   try {

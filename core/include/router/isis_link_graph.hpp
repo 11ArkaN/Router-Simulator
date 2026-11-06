@@ -39,13 +39,15 @@ public:
   // including a missing local root. The caller must then withdraw its routes.
   [[nodiscard]] LinkGraphStatus rebuild(const LinkStateDatabase &database,
       const LinkGraphSelection &selection, RuntimeClock::time_point now) noexcept;
-  // Published spans remain valid until the next successful rebuild or destruction.
+  // Published views remain valid until the next successful rebuild or destruction.
+  [[nodiscard]] const LinkGraphSelection &selection() const noexcept { return published_.selection; }
   [[nodiscard]] std::span<const LinkNode> nodes() const noexcept { return published_.nodes; }
   [[nodiscard]] std::span<const LinkArc> links() const noexcept { return published_.links; }
   [[nodiscard]] std::optional<std::uint32_t> root() const noexcept { return published_.root; }
   [[nodiscard]] std::size_t ignored_options() const noexcept { return published_.ignored; }
 private:
   struct Generation {
+    LinkGraphSelection selection;
     std::vector<LinkNode> nodes;
     std::vector<LinkArc> links;
     std::optional<std::uint32_t> root;

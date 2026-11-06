@@ -373,6 +373,20 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
             result.local_root_links[level] = lsp_link_counts(own->pdu.tlvs);
           if (instance.local) result.local_root_sequences[level] = instance.local->sequence(level, root).value_or(0U);
         }
+      for (std::size_t level{}; level < 2U; ++level) {
+        if (!instance.decisions[level] || instance.consumed_decision_revision[level] != instance.decision_revisions[level] ||
+            instance.status != UpdateStatus::applied || instance.decision_status[level] != DecisionStatus::applied) continue;
+        const auto &decision = *instance.decisions[level];
+        result.prefix_advertisements[level] = decision.prefixes().size();
+        if (!command.selected_prefix) continue;
+        for (std::size_t prefix{}; prefix < decision.prefixes().size(); ++prefix) {
+          const auto &entry = decision.prefixes()[prefix];
+          if (entry.prefix != *command.selected_prefix || (command.selected_lsp && entry.origin != *command.selected_lsp)) continue;
+          const auto distance = decision.distance_to_prefix(prefix);
+          auto &best = result.selected_prefix_distance[level];
+          if (distance && (!best || *distance < *best)) best = distance;
+        }
+      }
       if (command.selected_lsp) {
         if (command.level > 1U) {
           result.error = ControlError::invalid_argument;

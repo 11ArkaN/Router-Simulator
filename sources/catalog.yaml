@@ -1,5 +1,33 @@
 schema_version: 1
 records:
+  - id: ietf.isis.prefix_distance
+    kind: routing-protocol-prefix-selection
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc5302.html#section-3.2
+    section: RFC 5302 sections 2.1, 3.2 and 3.3; RFC 5305 sections 3, 4 and 4.1; RFC 5308 section 5; RFC 1195 appendix C.1.2
+    rfc_refs: [RFC1195, RFC5302, RFC5305, RFC5308]
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-11-06
+    implementation: [core/include/router/isis_prefix_distance.hpp]
+    tests: [core/tests/isis/isis_link_graph_test.cpp]
+    status: experimental
+    notes: Pure prefix-distance values retain six narrow IPv4 preference groups and distinguish external route type from external metric type. Internal-metric external routes receive the same intra-protocol rank as internal routes. External-metric candidates compare advertised external cost before origin distance. IPv4 ignores L2 down following RFC 5302 section 3.3 recommendation and RFC 5305 section 4.1 identical semantics. IPv6 retains all four mandatory up/down groups. Narrow sums admit 1023 and refuse larger values; wide sums saturate at 0xFE000000 and refuse over-maximum advertised metrics. Administrative preferences, cross-protocol RIB selection, policy and runtime prefix installation remain outside this experimental value contract.
+  - id: ietf.isis.lsdb_prefix_collection
+    kind: routing-protocol-prefix-collection
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc5305.html#section-4
+    section: RFC 5305 section 4; RFC 5308 sections 2 and 5; RFC 5120 section 6; RFC 8918 section 4; ISO 10589 clause 7.2.5
+    rfc_refs: [RFC1195, RFC5305, RFC5308, RFC5120, RFC8918]
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-11-06
+    implementation: [core/src/isis/isis_control_decision.cpp, core/src/isis/isis_control_worker.cpp, core/src/isis/isis_control_update.cpp, core/include/router/isis_control_worker.hpp, core/include/router/isis_prefix_set.hpp, core/include/router/isis_p2p_decision.hpp, core/include/router/isis_link_graph.hpp, core/src/isis/isis_link_graph.cpp]
+    tests: [core/tests/isis/isis_control_worker_test.cpp, core/tests/isis/isis_link_graph_test.cpp]
+    status: experimental
+    notes: One instance owner copies extended prefix advertisements and ordered raw sub-TLV bytes from the same immutable LSDB visit as its selected wide-metric IP-family graph. Live eligible roots gate every fragment; pseudonodes contribute no prefixes. Standard and matching nonzero-MT options use shared codecs. Advertised metrics above the maximum path metric and prohibited IPv6 link-local prefixes are excluded. Each whole semantic option is validated before capacity accounting or publication. Double buffers preserve complete prior records and attributes on refusal; a valid empty graph withdraws them. Prepare/commit/abort shares the same two buffers with optional P2P SPF prefix decisions. Prefix origins, source levels, attributes and SPF identity mappings publish together after all calculation succeeds. Prefix capacity or SPF scratch refusal retains the complete previous result. Optional wide MT0 runtime programs explicitly select a family and collection budgets. Local seeds require that family in both local configuration and accepted peer Hello NLPIDs. Prefix counts and selected-prefix distances cross the control channel as values only after the current decision revision completes. Physical-frame tests exercise both levels, family loss while ISO remains Up, family recovery and full adjacency loss. This collector does not interpret prefix attributes, choose routes, resolve next hops, extract narrow prefixes or program the RIB.
   - id: ietf.isis.prefix_metadata
     kind: routing-protocol-prefix-metadata
     release: 26.7.R1
@@ -223,7 +251,7 @@ records:
     implementation: [core/include/router/isis_instance_update.hpp, core/src/isis/isis_instance_update.cpp]
     tests: [core/tests/isis/isis_instance_update_test.cpp]
     status: experimental
-    notes: One instance joins local authenticated P2P circuit events to independent L1 and L2 update owners. Transport configuration epochs remain distinct from synchronization epochs advanced on adjacency reactivation. Receive validates level, adjacency, destination, instance, MRU, maximum-area and configured authentication before mutation. Locally sourced LSPs return an explicit unresolved self-originated result for fight-back or purge rather than entering the foreign LSDB path. Tests exchange Hello, LSP and PSNP through actual physical queues, retire only matching reservations and retain databases through same-configuration Down and Up. Initiated local purges absent from the sender database cross the same queues and receive transient peer acknowledgements without being retained by the receiver. Bounded cold admission adds a Down circuit to both levels atomically and rolls back earlier levels if a later reservation fails. Down bindings can be released and reused with strictly newer transport epochs while retaining level slots, ticket counters and synchronization fences. Cold admission rollback uses unique owner-local tickets and cannot cancel a newer admission in a reused slot. Entity construction accepts a nonzero initial synchronization epoch and exposes its maximum fence for parent-owned restart protection. An explicit RFC 5303 Up restarts synchronization even when the preceding Initialize retained ISO Up state. Production configuration, local sequence and purge ownership, LAN admission and route publication remain in progress.
+    notes: Accepted peer attribute changes while ISO Up request per-level decisions without restarting synchronization. Identical refreshes do not repeat this notification. Physical Hello tests change an advertised IPv4 address and retain both level epochs. One instance joins local authenticated P2P circuit events to independent L1 and L2 update owners. Transport configuration epochs remain distinct from synchronization epochs advanced on adjacency reactivation. Receive validates level, adjacency, destination, instance, MRU, maximum-area and configured authentication before mutation. Locally sourced LSPs return an explicit unresolved self-originated result for fight-back or purge rather than entering the foreign LSDB path. Tests exchange Hello, LSP and PSNP through actual physical queues, retire only matching reservations and retain databases through same-configuration Down and Up. Initiated local purges absent from the sender database cross the same queues and receive transient peer acknowledgements without being retained by the receiver. Bounded cold admission adds a Down circuit to both levels atomically and rolls back earlier levels if a later reservation fails. Down bindings can be released and reused with strictly newer transport epochs while retaining level slots, ticket counters and synchronization fences. Cold admission rollback uses unique owner-local tickets and cannot cancel a newer admission in a reused slot. Entity construction accepts a nonzero initial synchronization epoch and exposes its maximum fence for parent-owned restart protection. An explicit RFC 5303 Up restarts synchronization even when the preceding Initialize retained ISO Up state. Production configuration, local sequence and purge ownership, LAN admission and route publication remain in progress.
   - id: iso.10589.2002.level_process
     kind: routing-protocol-level-owner
     release: 26.7.R1

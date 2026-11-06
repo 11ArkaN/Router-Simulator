@@ -964,13 +964,19 @@ void isis_control_origination_tests() {
       {1U, 5U, 5U, 1s, 10U, 1492U, 1U}};
   program.origination.emplace();
   program.origination->resource_retry = 100ms;
-  program.decision = P2pDecisionProgram{8U, 32U, 64U};
+  program.decision = P2pDecisionProgram{8U, 32U, 64U, packet::isis::ipv4_nlpid, PrefixCollectionBudget{8U, 64U}};
   program.origination->neighbors = std::vector<P2pOriginInterface>{{1U, {P2pOriginMetric{10U, 10U}, P2pOriginMetric{10U, 10U}}}};
   auto &local = program.origination->content;
   local.random = 17U;
   local.levels = {LocalLspLevelProgram{1200U, 1492U, 10ms, 1s}, LocalLspLevelProgram{1200U, 1492U, 10ms, 1s}};
   const packet::isis::LspId root{1U, 2U, 3U, 4U, 5U, 1U, 0U, 0U};
-  const std::vector<std::uint8_t> options{1U, 4U, 3U, 0x49U, 0U, 1U, 129U, 1U, packet::isis::ipv4_nlpid};
+  std::vector<std::uint8_t> options{1U, 4U, 3U, 0x49U, 0U, 1U, 129U, 2U,
+      packet::isis::ipv4_nlpid, packet::isis::ipv6_nlpid};
+  const auto test_prefix = *ip::parse_ip_prefix("198.51.100.0/24");
+  std::array<std::uint8_t, 32U> prefix_bytes{};
+  packet::isis::TlvWriter prefix_writer(prefix_bytes);
+  require(packet::isis::encode_extended_prefix(prefix_writer, {test_prefix, 5U, false, false, false, {}}));
+  options.insert(options.end(), prefix_writer.bytes().begin(), prefix_writer.bytes().end());
   local.records = {{0U, root, 3U, options}, {1U, root, 3U, options}};
   auto reserved_fragment = root;
   reserved_fragment.back() = 1U;
@@ -983,6 +989,12 @@ void isis_control_origination_tests() {
     require(command(std::move(add)).error == expected);
   };
   auto invalid = program;
+  invalid.decision->protocol.reset();
+  refuse_program(std::move(invalid), ControlError::invalid_argument);
+  invalid = program;
+  invalid.decision->protocol = 0xeeU;
+  refuse_program(std::move(invalid), ControlError::invalid_argument);
+  invalid = program;
   invalid.origination->neighbors->push_back(invalid.origination->neighbors->front());
   refuse_program(std::move(invalid), ControlError::invalid_argument);
   invalid = program;
@@ -1052,6 +1064,8 @@ void isis_control_origination_tests() {
     request.kind = ControlCommandKind::add_p2p_circuit;
     request.identity = index ? peer : identity;
     request.configuration = configuration(static_cast<std::uint8_t>(index + 1U));
+    request.configuration.protocols.push_back(packet::isis::ipv6_nlpid);
+    request.configuration.ipv6_addresses.push_back(*ip::parse_ipv6(index ? "fe80::2" : "fe80::1"));
     request.random_state = index + 1U;
     require(command(std::move(request)).error == ControlError::none);
   }
@@ -1061,10 +1075,29 @@ void isis_control_origination_tests() {
       1'000'000'000U, 100ns, true));
   DeliveryContext context{*channels, *worker, {}};
   const auto synchronized_by = RuntimeClock::now() + 4s;
+  bool advertise_peer_ipv4{true};
+  auto altered_hello = std::make_unique<packet::Frame>();
   const auto pump = [&] {
     while (const auto frame = channels->egress[0U].try_receive()) {
+      const packet::Frame *transmitted = frame->frame;
+      if (!advertise_peer_ipv4 && frame->metadata.device.index == 1U) {
+        packet::isis::EthernetDecodeError error{};
+        const auto decoded = packet::isis::parse_ethernet_pdu(frame->frame->view(), error);
+        if (decoded && decoded->pdu.type == packet::isis::PduType::point_to_point_hello) {
+          packet::copy_frame(*altered_hello, *frame->frame);
+          packet::isis::TlvCursor attributes(decoded->pdu.tlvs);
+          while (const auto option = attributes.next()) if (option->code == 129U)
+            for (std::size_t protocol{}; protocol < option->value.size(); ++protocol)
+              if (option->value[protocol] == packet::isis::ipv4_nlpid) {
+                const auto offset = static_cast<std::size_t>(option->value.data() - frame->frame->bytes.data());
+                altered_hello->bytes[offset + protocol] = 0xeeU;
+              }
+          require(attributes.valid());
+          transmitted = altered_hello.get();
+        }
+      }
       const bool accepted = fabric->enqueue(link, static_cast<std::uint8_t>(frame->metadata.device.index),
-          *frame->frame) == lab::MultiDeviceFabric::DropReason::none;
+          *transmitted) == lab::MultiDeviceFabric::DropReason::none;
       require(channels->egress[0U].release(frame->handle, frame->metadata, accepted));
       worker->notify();
     }
@@ -1098,13 +1131,63 @@ void isis_control_origination_tests() {
     auto remote_root = root;
     remote_root[5U] = 2U;
     selected.selected_lsp = remote_root;
+    selected.selected_prefix = test_prefix;
     const auto state = command(std::move(selected));
     require(state.error == ControlError::none);
     if (state.selected_cost[0U] == 10U && state.selected_cost[1U] == 10U) {
-      require(state.decision_runs[0U] && state.decision_runs[1U]);
+      require(state.decision_runs[0U] && state.decision_runs[1U] &&
+          state.prefix_advertisements == std::array<std::size_t, 2U>{2U, 2U} &&
+          state.selected_prefix_distance[0U] == PrefixDistance{0U, 15U, 0U} &&
+          state.selected_prefix_distance[1U] == PrefixDistance{1U, 15U, 0U});
       break;
     }
     require(RuntimeClock::now() < decision_by);
+  }
+  // Losing only IPv4 NLPID on a dual-stack wire must not remove ISO Up, but
+  // the IPv4 decision can no longer seed this link from the peer's LSP alone.
+  const auto family_epoch = query().update_epoch;
+  advertise_peer_ipv4 = false;
+  const auto family_lost_by = RuntimeClock::now() + 4s;
+  for (;;) {
+    pump();
+    ControlCommand selected;
+    selected.kind = ControlCommandKind::query_update_instance;
+    selected.identity = identity;
+    auto remote_root = root;
+    remote_root[5U] = 2U;
+    selected.selected_lsp = remote_root;
+    selected.selected_prefix = test_prefix;
+    const auto state = command(std::move(selected));
+    if (state.prefix_advertisements == std::array<std::size_t, 2U>{2U, 2U} &&
+        !state.selected_cost[0U] && !state.selected_cost[1U]) {
+      require(!state.selected_prefix_distance[0U] && !state.selected_prefix_distance[1U] &&
+          state.update_epoch == family_epoch);
+      ControlCommand circuit;
+      circuit.kind = ControlCommandKind::query_circuit;
+      circuit.identity = identity;
+      require(command(std::move(circuit)).adjacency.iso_up);
+      break;
+    }
+    require(RuntimeClock::now() < family_lost_by);
+  }
+  advertise_peer_ipv4 = true;
+  const auto family_restored_by = RuntimeClock::now() + 4s;
+  for (;;) {
+    pump();
+    ControlCommand selected;
+    selected.kind = ControlCommandKind::query_update_instance;
+    selected.identity = identity;
+    auto remote_root = root;
+    remote_root[5U] = 2U;
+    selected.selected_lsp = remote_root;
+    selected.selected_prefix = test_prefix;
+    const auto state = command(std::move(selected));
+    if (state.selected_prefix_distance[0U] == PrefixDistance{0U, 15U, 0U} &&
+        state.selected_prefix_distance[1U] == PrefixDistance{1U, 15U, 0U}) {
+      require(state.update_epoch == family_epoch);
+      break;
+    }
+    require(RuntimeClock::now() < family_restored_by);
   }
   const auto lost_by = RuntimeClock::now() + 5s;
   for (;;) {
@@ -1114,12 +1197,14 @@ void isis_control_origination_tests() {
     auto remote_root = root;
     remote_root[5U] = 2U;
     selected.selected_lsp = remote_root;
+    selected.selected_prefix = test_prefix;
     const auto state = command(std::move(selected));
     require(state.error == ControlError::none);
     if (state.local_root_links[0U] == std::optional{LspLinkCounts{}} &&
         state.local_root_links[1U] == std::optional{LspLinkCounts{}} &&
         state.decision_status[0U] == DecisionStatus::applied && state.decision_status[1U] == DecisionStatus::applied &&
-        !state.selected_cost[0U] && !state.selected_cost[1U]) break;
+        !state.selected_cost[0U] && !state.selected_cost[1U] &&
+        !state.selected_prefix_distance[0U] && !state.selected_prefix_distance[1U]) break;
     require(RuntimeClock::now() < lost_by);
     std::this_thread::yield();
   }
@@ -1132,9 +1217,14 @@ void isis_control_origination_tests() {
     auto remote_root = root;
     remote_root[5U] = 2U;
     selected.selected_lsp = remote_root;
+    selected.selected_prefix = test_prefix;
     const auto state = command(std::move(selected));
     require(state.error == ControlError::none);
-    if (state.selected_cost[0U] == 10U && state.selected_cost[1U] == 10U) break;
+    if (state.selected_cost[0U] == 10U && state.selected_cost[1U] == 10U) {
+      require(state.selected_prefix_distance[0U] == PrefixDistance{0U, 15U, 0U} &&
+          state.selected_prefix_distance[1U] == PrefixDistance{1U, 15U, 0U});
+      break;
+    }
     require(RuntimeClock::now() < restored_decision_by);
   }
   auto scratch = std::make_unique<PduScratch>();

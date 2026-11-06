@@ -1,6 +1,8 @@
 // Encoded LSDB fixtures exercise eligibility before distance calculation. The
 // test owns clocks and bytes; no adjacency or editor graph supplies reachability.
 
+#include "router/isis_prefix_set.hpp"
+#include "router/isis_prefix_distance.hpp"
 #include "router/isis_link_graph.hpp"
 #include "router/isis_basic_tlvs.hpp"
 #include "router/isis_lsp_builder.hpp"
@@ -230,5 +232,184 @@ void isis_link_graph_tests() {
   require(bounded.rebuild(metrics.database, no_family, metrics.now) == LinkGraphStatus::capacity &&
       bounded.nodes().size() == 2U && bounded.links().size() == 2U && bounded.root());
   require(graph.rebuild(metrics.database, {node(4U), 0U, {}, GraphMetricStyle::wide}, metrics.now) == LinkGraphStatus::applied && !graph.root());
+
+  for (const auto budget : {std::size_t{}, std::numeric_limits<std::size_t>::max()}) {
+    bool refused{};
+    try { ExtendedPrefixSet invalid(budget, 0U); } catch (const std::invalid_argument &) { refused = true; }
+    require(refused);
+  }
+  Fixture prefixes;
+  prefixes.install(a, options(ab));
+  prefixes.install(b, options(std::span{ba_bc}.first(1U)));
+  std::array<std::uint8_t, 256U> prefix_buffer{};
+  TlvWriter prefix_writer(prefix_buffer);
+  const std::array<std::uint8_t, 7U> attributes{1U, 4U, 0U, 0U, 0U, 42U, 0U};
+  ExtendedPrefix advertised{*ip::parse_ip_prefix("192.0.2.0/24"), 5U, true, false, true,
+      std::span{attributes}.first(6U)};
+  require(encode_extended_prefix(prefix_writer, advertised));
+  const auto valid_prefix = std::vector<std::uint8_t>(prefix_writer.bytes().begin(), prefix_writer.bytes().end());
+  advertised.metric = maximum_path_metric + 1U;
+  require(encode_extended_prefix(prefix_writer, advertised));
+  prefixes.install(b, prefix_writer.bytes(), 3U, 1U, 1U);
+  prefixes.install(c, valid_prefix, 3U, 1U, 1U);
+  require(graph.rebuild(prefixes.database, selected, prefixes.now) == LinkGraphStatus::applied);
+  ExtendedPrefixSet collected(4U, 32U);
+  require(collected.rebuild(prefixes.database, graph, prefixes.now) == PrefixSetStatus::applied &&
+      collected.entries().size() == 1U && collected.entries()[0U].origin == identity(b, 1U) &&
+      collected.entries()[0U].prefix == advertised.prefix && collected.entries()[0U].metric == 5U &&
+      collected.entries()[0U].down && collected.attributes(0U).size() == 6U &&
+      std::equal(collected.attributes(0U).begin(), collected.attributes(0U).end(), attributes.begin()));
+  // Collection owns attributes, so subsequent LSDB replacement cannot alter it.
+  auto replaced_prefix = valid_prefix;
+  replaced_prefix.back() = 99U;
+  prefixes.install(b, replaced_prefix, 3U, 2U, 1U);
+  require(collected.attributes(0U)[5U] == 42U);
+  auto malformed_prefix = valid_prefix;
+  ++malformed_prefix[1U];
+  malformed_prefix.push_back(0U);
+  prefixes.install(b, malformed_prefix, 3U, 3U, 1U);
+  require(graph.rebuild(prefixes.database, selected, prefixes.now) == LinkGraphStatus::applied &&
+      collected.rebuild(prefixes.database, graph, prefixes.now) == PrefixSetStatus::applied &&
+      collected.entries().empty() && collected.ignored_options() == 1U);
+  prefixes.install(b, valid_prefix, 3U, 4U, 1U);
+  require(graph.rebuild(prefixes.database, selected, prefixes.now) == LinkGraphStatus::applied &&
+      collected.rebuild(prefixes.database, graph, prefixes.now) == PrefixSetStatus::applied);
+  ExtendedPrefixSet attributes_small(4U, 5U);
+  require(attributes_small.rebuild(prefixes.database, graph, prefixes.now) == PrefixSetStatus::capacity &&
+      attributes_small.entries().empty());
+  // A later capacity failure retains every old record and attribute byte.
+  prefixes.install(b, valid_prefix, 3U, 1U, 2U);
+  ExtendedPrefixSet one_prefix(1U, 6U);
+  prefixes.install(b, {}, 3U, 2U, 2U);
+  require(graph.rebuild(prefixes.database, selected, prefixes.now) == LinkGraphStatus::applied &&
+      one_prefix.rebuild(prefixes.database, graph, prefixes.now) == PrefixSetStatus::applied);
+  prefixes.install(b, malformed_prefix, 3U, 3U, 2U);
+  require(graph.rebuild(prefixes.database, selected, prefixes.now) == LinkGraphStatus::applied &&
+      one_prefix.rebuild(prefixes.database, graph, prefixes.now) == PrefixSetStatus::applied &&
+      one_prefix.entries().size() == 1U && one_prefix.ignored_options() == 1U);
+  prefixes.install(b, valid_prefix, 3U, 4U, 2U);
+  require(graph.rebuild(prefixes.database, selected, prefixes.now) == LinkGraphStatus::applied &&
+      one_prefix.rebuild(prefixes.database, graph, prefixes.now) == PrefixSetStatus::capacity &&
+      one_prefix.entries().size() == 1U && one_prefix.attributes(0U)[5U] == 42U);
+  require(graph.rebuild(prefixes.database, no_family, prefixes.now) == LinkGraphStatus::applied &&
+      one_prefix.rebuild(prefixes.database, graph, prefixes.now) == PrefixSetStatus::invalid_selection &&
+      one_prefix.entries().size() == 1U);
+  require(graph.rebuild(prefixes.database, {node(4U), 0U, ipv4_nlpid, GraphMetricStyle::wide}, prefixes.now) == LinkGraphStatus::applied &&
+      one_prefix.rebuild(prefixes.database, graph, prefixes.now) == PrefixSetStatus::applied && one_prefix.entries().empty());
+
+  Fixture mt_prefixes;
+  mt_prefixes.install(a, options(ab, both, true, 2U));
+  mt_prefixes.install(b, options(std::span{ba_bc}.first(1U), mt2, true, 2U));
+  TlvWriter mt_prefix_writer(prefix_buffer);
+  ExtendedPrefix v6_prefix{*ip::parse_ip_prefix("2001:db8:42::/64"), maximum_path_metric, true, true, false, {}};
+  require(encode_extended_prefix(mt_prefix_writer, v6_prefix) &&
+      encode_mt_prefix(mt_prefix_writer, 2U, v6_prefix) && encode_mt_prefix(mt_prefix_writer, 3U, v6_prefix));
+  mt_prefixes.install(b, mt_prefix_writer.bytes(), 3U, 1U, 1U);
+  mt_prefixes.install(pn, mt_prefix_writer.bytes());
+  // A received, well-framed MT2 option can still carry a prohibited link-local
+  // prefix. Keep the LSP but exclude that entry from normal prefix decisions.
+  const std::array<std::uint8_t, 18U> link_local_mt{237U, 16U, 0U, 2U,
+      0U, 0U, 0U, 5U, 0U, 64U, 0xfeU, 0x80U, 0U, 0U, 0U, 0U, 0U, 0U};
+  mt_prefixes.install(b, link_local_mt, 3U, 1U, 2U);
+  require(graph.rebuild(mt_prefixes.database, {a, 2U, ipv6_nlpid, GraphMetricStyle::wide}, mt_prefixes.now) == LinkGraphStatus::applied &&
+      collected.rebuild(mt_prefixes.database, graph, mt_prefixes.now) == PrefixSetStatus::applied &&
+      collected.entries().size() == 1U && collected.entries()[0U].origin == identity(b, 1U) &&
+      collected.entries()[0U].metric == maximum_path_metric && collected.entries()[0U].external &&
+      collected.entries()[0U].down && collected.entries()[0U].prefix == v6_prefix.prefix);
+  // MT membership changes on fragment zero immediately gate retained prefixes.
+  mt_prefixes.install(b, options(std::span{ba_bc}.first(1U)), 3U, 2U);
+  require(graph.rebuild(mt_prefixes.database, {a, 2U, ipv6_nlpid, GraphMetricStyle::wide}, mt_prefixes.now) == LinkGraphStatus::applied &&
+      collected.rebuild(mt_prefixes.database, graph, mt_prefixes.now) == PrefixSetStatus::applied && collected.entries().empty());
+
+  PrefixPath path{ip::AddressFamily::ipv4, MetricStyle::narrow, 1U, false, false, false, 10U, 100U};
+  require(prefix_distance(path) == PrefixDistance{0U, 110U, 0U});
+  path.external_route = true;
+  require(prefix_distance(path) == PrefixDistance{0U, 110U, 0U});
+  path.external_metric = true;
+  require(prefix_distance(path) == PrefixDistance{3U, 10U, 100U});
+  path.down = true;
+  require(prefix_distance(path) == PrefixDistance{5U, 10U, 100U});
+  path.level = 2U;
+  require(prefix_distance(path) == PrefixDistance{4U, 10U, 100U});
+  path.external_route = false;
+  require(!prefix_distance(path));
+  path.external_metric = false;
+  require(prefix_distance(path) == PrefixDistance{1U, 110U, 0U});
+  path.advertised_metric = 63U;
+  path.origin_distance = 960U;
+  require(prefix_distance(path) == PrefixDistance{1U, 1023U, 0U});
+  ++path.origin_distance;
+  require(!prefix_distance(path));
+  path.style = MetricStyle::wide;
+  path.advertised_metric = maximum_path_metric;
+  path.origin_distance = 1U;
+  require(prefix_distance(path) == PrefixDistance{1U, maximum_path_metric, 0U});
+  ++path.advertised_metric;
+  require(!prefix_distance(path));
+  path.family = ip::AddressFamily::ipv6;
+  path.advertised_metric = 1U;
+  path.origin_distance = 10U;
+  require(prefix_distance(path) == PrefixDistance{2U, 11U, 0U});
+  path.level = 1U;
+  require(prefix_distance(path) == PrefixDistance{3U, 11U, 0U});
+  path.down = false;
+  require(prefix_distance(path) == PrefixDistance{0U, 11U, 0U});
+  path.level = 2U;
+  require(prefix_distance(path) == PrefixDistance{1U, 11U, 0U});
+  path.style = MetricStyle::narrow;
+  require(!prefix_distance(path));
+  path.style = MetricStyle::wide;
+  path.level = 0U;
+  require(!prefix_distance(path));
+  require(PrefixDistance{0U, maximum_path_metric, 0U} < PrefixDistance{1U, 0U, 0U} &&
+      PrefixDistance{3U, 1U, 1000U} < PrefixDistance{3U, 2U, 1U} &&
+      PrefixDistance{3U, 1U, 9U} < PrefixDistance{3U, 1U, 10U});
+
+  Fixture atomic_prefixes;
+  atomic_prefixes.install(a, options(ab));
+  atomic_prefixes.install(b, options(std::span{ba_bc}.first(1U)));
+  atomic_prefixes.install(b, valid_prefix, 3U, 1U, 1U);
+  P2pRouteDecision prefix_decision(8U, 16U, 32U, MetricStyle::wide, PrefixCollectionBudget{1U, 6U});
+  require(prefix_decision.calculate(atomic_prefixes.database, selected, std::span{local_seeds}.first(1U), 2U,
+      atomic_prefixes.now) == DecisionStatus::applied && prefix_decision.prefixes().size() == 1U &&
+      prefix_decision.prefixes()[0U].level == 1U &&
+      prefix_decision.distance_to_prefix(0U) == PrefixDistance{2U, 35U, 0U});
+  atomic_prefixes.install(b, valid_prefix, 3U, 1U, 2U);
+  auto more_expensive = local_seeds;
+  more_expensive[0U].metric = 50U;
+  require(prefix_decision.calculate(atomic_prefixes.database, selected, std::span{more_expensive}.first(1U), 2U,
+      atomic_prefixes.now) == DecisionStatus::capacity && prefix_decision.prefixes().size() == 1U &&
+      prefix_decision.cost(b) == 30U && prefix_decision.prefix_attributes(0U)[5U] == 42U &&
+      prefix_decision.distance_to_prefix(0U) == PrefixDistance{2U, 35U, 0U});
+  atomic_prefixes.install(b, {}, 3U, 2U, 2U);
+  P2pRouteDecision small_pending(8U, 16U, 1U, MetricStyle::wide, PrefixCollectionBudget{4U, 32U});
+  require(small_pending.calculate(atomic_prefixes.database, selected, std::span{local_seeds}.first(1U), 2U,
+      atomic_prefixes.now) == DecisionStatus::applied);
+  atomic_prefixes.install(c, options({}));
+  atomic_prefixes.install(b, replaced_prefix, 3U, 2U, 1U);
+  const std::array split_seeds{local_seeds[0U], P2pSpfSeed{{1U, 2U, 3U, 4U, 5U, 3U}, 1U, 1U}};
+  require(small_pending.calculate(atomic_prefixes.database, selected, split_seeds, 2U,
+      atomic_prefixes.now) == DecisionStatus::calculation_failed && small_pending.cost(b) == 30U &&
+      small_pending.prefixes().size() == 1U && small_pending.prefix_attributes(0U)[5U] == 42U &&
+      small_pending.distance_to_prefix(0U) == PrefixDistance{2U, 35U, 0U});
+  require(prefix_decision.calculate(atomic_prefixes.database, {node(4U), 0U, ipv4_nlpid, GraphMetricStyle::wide},
+      {}, 0U, atomic_prefixes.now) == DecisionStatus::applied && prefix_decision.prefixes().empty() &&
+      !prefix_decision.cost(b) && !prefix_decision.distance_to_prefix(0U));
+  atomic_prefixes.install(b, valid_prefix, 3U, 3U, 1U);
+  require(graph.rebuild(atomic_prefixes.database, selected, atomic_prefixes.now) == LinkGraphStatus::applied);
+  ExtendedPrefixSet transaction(4U, 32U);
+  require(transaction.rebuild(atomic_prefixes.database, graph, atomic_prefixes.now) == PrefixSetStatus::applied);
+  atomic_prefixes.install(b, replaced_prefix, 3U, 4U, 1U);
+  require(graph.rebuild(atomic_prefixes.database, selected, atomic_prefixes.now) == LinkGraphStatus::applied &&
+      transaction.prepare(atomic_prefixes.database, graph, atomic_prefixes.now) == PrefixSetStatus::applied &&
+      transaction.attributes(0U)[5U] == 42U);
+  transaction.abort();
+  require(!transaction.commit() && transaction.attributes(0U)[5U] == 42U);
+  require(transaction.prepare(atomic_prefixes.database, graph, atomic_prefixes.now) == PrefixSetStatus::applied &&
+      transaction.commit() && transaction.attributes(0U)[5U] == 99U && !transaction.commit());
+  require(transaction.prepare(atomic_prefixes.database, graph, atomic_prefixes.now) == PrefixSetStatus::applied &&
+      graph.rebuild(atomic_prefixes.database, no_family, atomic_prefixes.now) == LinkGraphStatus::applied &&
+      transaction.prepare(atomic_prefixes.database, graph, atomic_prefixes.now) == PrefixSetStatus::invalid_selection &&
+      !transaction.commit() && transaction.attributes(0U)[5U] == 99U);
 
 }

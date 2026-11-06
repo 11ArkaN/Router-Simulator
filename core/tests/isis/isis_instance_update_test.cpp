@@ -175,6 +175,32 @@ void isis_instance_update_tests() {
   require(a.circuit.adjacency().iso_up && b.circuit.adjacency().iso_up);
   require(a.update.outputs(0U, 0U)->synchronization_epoch == 41U &&
       a.update.outputs(0U, 1U)->synchronization_epoch == 41U);
+  const auto original_changes = a.circuit_changes;
+  const auto original_epoch = a.update.maximum_synchronization_epoch();
+  context.now += 1s;
+  const auto changed_address = b.circuit.hello(*frame, std::nullopt, *scratch, context.now);
+  require(changed_address && *changed_address == HelloBuildResult::encoded);
+  EthernetDecodeError address_decode{};
+  const auto address_hello = parse_ethernet_pdu(frame->view(), address_decode);
+  require(address_hello.has_value());
+  TlvCursor address_options(address_hello->pdu.tlvs);
+  bool replaced_address{};
+  while (const auto option = address_options.next()) if (option->code == 132U) {
+    const auto offset = static_cast<std::size_t>(option->value.data() - frame->bytes.data());
+    frame->bytes[offset + 3U] = 22U;
+    replaced_address = true;
+  }
+  require(replaced_address && address_options.valid());
+  transmit(1U);
+  require(b.circuit.complete_hello(true, context.now));
+  require(a.circuit.adjacency().iso_up && a.circuit_changes == original_changes + 2U &&
+      a.update.maximum_synchronization_epoch() == original_epoch);
+  // An identical accepted refresh neither repeats the decision notification nor
+  // restarts either level's existing synchronization generation.
+  transmit(1U);
+  require(a.circuit_changes == original_changes + 2U &&
+      a.update.outputs(0U, 0U)->synchronization_epoch == original_epoch &&
+      a.update.outputs(0U, 1U)->synchronization_epoch == original_epoch);
   const auto source = a.circuit.configuration().mac;
   const auto destination = a.circuit.configuration().hello_destination;
   std::array<std::uint8_t, 128U> semantic{};
