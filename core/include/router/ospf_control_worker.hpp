@@ -79,6 +79,7 @@ enum class ControlCommandKind : std::uint8_t {
   commit_generation,
   abort_generation,
   begin_external_generation,
+  prepare_external_generation,
   commit_external_generation,
   abort_external_generation,
   query_process,
@@ -351,6 +352,7 @@ private:
   [[nodiscard]] bool coordinate_routes(
       std::span<OwnedProcess> processes,
       RuntimeClock::time_point now) noexcept;
+  [[nodiscard]] bool prepare_external_generation(std::size_t device) noexcept;
   void run() noexcept;
 
   ControlChannels &channels_;
@@ -370,6 +372,11 @@ private:
   std::array<std::optional<std::vector<ControlCommand>>,
              device_catalog::maximum_routers>
       external_staging_;
+  // A prepared export leases this router's process layout until commit or
+  // abort. Only this worker owns these vectors; commit performs no allocation.
+  std::array<std::optional<std::vector<std::vector<CoordinatorAdvertisement>>>,
+             device_catalog::maximum_routers>
+      prepared_external_;
   std::array<std::uint32_t, device_catalog::maximum_routers>
       expected_external_staging_{};
   std::array<std::uint64_t, device_catalog::maximum_routers>

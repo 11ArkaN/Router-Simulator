@@ -481,6 +481,13 @@ public:
   [[nodiscard]] bool program_fib(const routing::FibProgram &program) noexcept;
   [[nodiscard]] bool
   program_ipv6_fib(const routing::Ipv6FibProgram &program) noexcept;
+  // Forwarding owner only, one uninterrupted command turn. Inputs are borrowed
+  // immutable complete RIB outputs; at least one must exist with a nonzero
+  // generation. Preflight checks counts, staleness and idempotent replay for
+  // both families before any write. False preserves both tables. No allocation
+  // or callback occurs; null selects an unchanged family, not a withdrawal.
+  [[nodiscard]] bool program_fibs(const routing::FibProgram *ipv4,
+      const routing::Ipv6FibProgram *ipv6) noexcept;
   // A complete generation is validated against currently configured physical
   // ports and then published atomically. Partial SAP programming is forbidden
   // because a packet turn must observe either the old or new service graph.
@@ -780,6 +787,8 @@ public:
       std::uint16_t port_ordinal) noexcept;
 
 private:
+  [[nodiscard]] bool accepts_fib(const routing::FibProgram &program) const noexcept;
+  [[nodiscard]] bool accepts_ipv6_fib(const routing::Ipv6FibProgram &program) const noexcept;
   struct Dhcpv4ServerState;
   struct Adjacency {
     bool valid{};

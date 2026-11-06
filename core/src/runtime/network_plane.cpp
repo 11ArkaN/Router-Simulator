@@ -135,6 +135,7 @@ enum class ForwardCommandKind : std::uint8_t {
   configure_ospf_punt,
   program_fib,
   program_ipv6_fib,
+  program_fibs,
   begin_ipv6_address_generation,
   add_ipv6_interface_address,
   commit_ipv6_address_generation,
@@ -1109,8 +1110,8 @@ struct NetworkPlane::Impl {
     RoutePolicyProgram policy{};
     routing::FibProgram base_ipv4{};
     routing::Ipv6FibProgram base_ipv6{};
-    routing::RouteTable ipv4_rib{};
-    routing::Ipv6RouteTable ipv6_rib{};
+    std::unique_ptr<routing::RouteTable> ipv4_rib = std::make_unique<routing::RouteTable>();
+    std::unique_ptr<routing::Ipv6RouteTable> ipv6_rib = std::make_unique<routing::Ipv6RouteTable>();
     std::vector<routing::DynamicInput> ospf_ipv4{};
     std::vector<routing::Ipv6DynamicInput> ospf_ipv6{};
     // Configured rows retain policy-accepted intent even while their source
@@ -1140,6 +1141,27 @@ struct NetworkPlane::Impl {
   std::array<std::unique_ptr<RouteManagerState>,
              device_catalog::maximum_routers>
       route_managers{};
+  struct RouteStaging {
+    // Network owner writes only outside execute_forward. One synchronous
+    // command lends the fixed FIBs to one forwarding consumer; command/result
+    // release/acquire fences both directions. No other route command can run
+    // during that rendezvous. A failed admission retains network ownership.
+    std::unique_ptr<routing::RouteTable> ipv4 = std::make_unique<routing::RouteTable>();
+    std::unique_ptr<routing::Ipv6RouteTable> ipv6 = std::make_unique<routing::Ipv6RouteTable>();
+    routing::FibProgram fib{};
+    routing::Ipv6FibProgram ipv6_fib{};
+    std::vector<routing::ConnectedInput> connected;
+    std::vector<routing::Ipv6ConnectedInput> connected_ipv6;
+    DeviceHandle device{};
+    std::uint64_t command{};
+    bool install_ipv4{};
+    bool install_ipv6{};
+    RouteStaging() {
+      connected.reserve(device_catalog::maximum_fib_routes_per_router);
+      connected_ipv6.reserve(device_catalog::maximum_fib_routes_per_router);
+    }
+  };
+  std::unique_ptr<RouteStaging> route_staging = std::make_unique<RouteStaging>();
   // NetworkPlane owns the complete forwarding projection derived from the
   // active OSPF generation. Bit zero represents OSPFv2 and bit one OSPFv3.
   // These are internal presence bits, not protocol or vendor numeric values.
@@ -1168,7 +1190,11 @@ struct NetworkPlane::Impl {
          packet::Ipv4ReassemblyTable::payload_arena_allocation_bytes +
          packet::Ipv6ReassemblyTable::payload_arena_allocation_bytes +
          network_detail::EndpointStack::outbound_scratch_allocation_bytes);
-    static_assert(sizeof(Impl) + sizeof(ForwardCommand) + endpoint_heap_arenas <=
+    static_assert(sizeof(Impl) + sizeof(ForwardCommand) + endpoint_heap_arenas +
+                      sizeof(RouteStaging) + sizeof(routing::RouteTable) +
+                      sizeof(routing::Ipv6RouteTable) +
+                      device_catalog::maximum_fib_routes_per_router *
+                          (sizeof(routing::ConnectedInput) + sizeof(routing::Ipv6ConnectedInput)) <=
                       device_catalog::runtime_control_reserve_bytes,
                   "network plane and host protocol arenas exceed the generated "
                   "control reserve");
@@ -1239,7 +1265,9 @@ struct NetworkPlane::Impl {
       std::span<const routing::DynamicInput> ipv4_dynamic,
       std::span<const routing::Ipv6DynamicInput> ipv6_dynamic) noexcept;
   [[nodiscard]] bool reconcile_external_routes(
-      DeviceHandle device, RouteManagerState &state) noexcept;
+      DeviceHandle device, RouteManagerState &state,
+      const routing::RouteTable &ipv4, const routing::Ipv6RouteTable &ipv6,
+      std::vector<OspfExternalRouteProgram> &active, bool &prepared) noexcept;
   void drain_ospf_routes() noexcept;
 
   [[nodiscard]] bool live(DeviceHandle handle) const noexcept {
@@ -2044,6 +2072,14 @@ ForwardResult NetworkPlane::Impl::apply_forward_command(
     if (auto *forwarder = owner.router(command.device))
       if (const auto *fib = std::get_if<routing::FibProgram>(&command.fib))
         result.success = forwarder->program_fib(*fib);
+    break;
+  case ForwardCommandKind::program_fibs:
+    if (auto *forwarder = owner.router(command.device);
+        forwarder && owner.route_staging->device == command.device &&
+        owner.route_staging->command == command.id)
+      result.success = forwarder->program_fibs(
+          owner.route_staging->install_ipv4 ? &owner.route_staging->fib : nullptr,
+          owner.route_staging->install_ipv6 ? &owner.route_staging->ipv6_fib : nullptr);
     break;
   case ForwardCommandKind::program_ipv6_fib:
     if (auto *forwarder = owner.router(command.device))
@@ -4093,6 +4129,10 @@ NetworkPlane::Impl::execute_forward(const ForwardCommand &source) noexcept {
   auto &command = *forward_command_scratch;
   command = source;
   command.id = next_forward_command_id++;
+  if (command.kind == ForwardCommandKind::program_fibs) {
+    route_staging->device = command.device;
+    route_staging->command = command.id;
+  }
   const NodeHandle target =
       command.device ? node(command.device) : node(command.host);
   if (!target.generation)
@@ -4188,8 +4228,10 @@ bool NetworkPlane::Impl::install_ipv6_fib(
 }
 
 bool NetworkPlane::Impl::reconcile_external_routes(
-    DeviceHandle device, RouteManagerState &state) noexcept {
-  std::vector<OspfExternalRouteProgram> active;
+    DeviceHandle device, RouteManagerState &state,
+    const routing::RouteTable &ipv4, const routing::Ipv6RouteTable &ipv6,
+    std::vector<OspfExternalRouteProgram> &active, bool &prepared) noexcept {
+  prepared = false;
   try {
     active.reserve(state.configured_external_routes.size());
     for (const auto &external : state.configured_external_routes) {
@@ -4197,8 +4239,8 @@ bool NetworkPlane::Impl::reconcile_external_routes(
       const bool installed =
           source.destination.ipv6
               ? std::any_of(
-                    state.ipv6_rib.routes().begin(),
-                    state.ipv6_rib.routes().end(),
+                    ipv6.routes().begin(),
+                    ipv6.routes().end(),
                     [&](const auto &route) {
                       return route.network ==
                                  source.destination.ipv6_network &&
@@ -4207,8 +4249,8 @@ bool NetworkPlane::Impl::reconcile_external_routes(
                              route.source == source.source;
                     })
               : std::any_of(
-                    state.ipv4_rib.routes().begin(),
-                    state.ipv4_rib.routes().end(),
+                    ipv4.routes().begin(),
+                    ipv4.routes().end(),
                     [&](const auto &route) {
                       return route.network ==
                                  source.destination.ipv4_network &&
@@ -4270,12 +4312,12 @@ bool NetworkPlane::Impl::reconcile_external_routes(
   }
   result = execute_ospf(
       {.process = identity,
-       .kind = ospf::ControlCommandKind::commit_external_generation});
+       .kind = ospf::ControlCommandKind::prepare_external_generation});
   if (!result.success) {
     abort();
     return false;
   }
-  state.active_external_routes.swap(active);
+  prepared = true;
   return true;
 }
 
@@ -4283,82 +4325,85 @@ bool NetworkPlane::Impl::rebuild_managed_routes(
     DeviceHandle device, RouteManagerState &state,
     std::span<const routing::DynamicInput> ipv4_dynamic,
     std::span<const routing::Ipv6DynamicInput> ipv6_dynamic) noexcept {
-  if (!live(device) || !state.policy_configured)
-    return false;
-
+  if (!live(device) || !state.policy_configured) return false;
+  auto &staged = *route_staging;
+  staged.connected.clear();
+  staged.connected_ipv6.clear();
+  // These vectors reserve the fixed FIB ceiling at startup. No allocation or
+  // active-RIB mutation occurs while translating configured connected inputs.
   if (state.base_ipv4_configured) {
-    std::vector<routing::ConnectedInput> connected;
-    try {
-      connected.reserve(state.base_ipv4.count);
-      for (std::size_t index{}; index < state.base_ipv4.count; ++index) {
-        const auto &route = state.base_ipv4.routes[index];
-        if (route.source != routing::RouteSource::connected)
-          continue;
-        // The base FIB was compiled by the control-owned configuration model.
-        // Converting only connected selections preserves the interface and
-        // hardware oper state while unresolved static intent comes separately
-        // from RoutePolicyProgram.
-        connected.push_back({.configured = true,
-                             .operational = true,
-                             .network = route.network,
-                             .port_ordinal = route.port_ordinal,
-                             .prefix_length = route.prefix_length,
-                             .local_system = route.local_system});
-      }
-    } catch (const std::bad_alloc &) {
-      return false;
+    for (std::size_t index{}; index < state.base_ipv4.count; ++index) {
+      const auto &route = state.base_ipv4.routes[index];
+      if (route.source == routing::RouteSource::connected)
+        staged.connected.push_back({.configured = true, .operational = true,
+            .network = route.network, .port_ordinal = route.port_ordinal,
+            .prefix_length = route.prefix_length, .local_system = route.local_system});
     }
-
-    const bool changed = state.ipv4_rib.rebuild(
-        connected, state.policy.ipv4_statics, ipv4_dynamic,
-        state.policy.maximum_ecmp_paths);
-    if (!state.ipv4_rib.last_rebuild_valid())
-      return false;
-    if (changed || state.installed_ipv4_generation == 0U) {
-      if (++state.installed_ipv4_generation == 0U)
-        ++state.installed_ipv4_generation;
-      if (!install_ipv4_fib(
-              device,
-              state.ipv4_rib.compile(state.installed_ipv4_generation)))
-        return false;
-    }
+    static_cast<void>(staged.ipv4->rebuild(staged.connected,
+        state.policy.ipv4_statics, ipv4_dynamic, state.policy.maximum_ecmp_paths));
+    if (!staged.ipv4->last_rebuild_valid()) return false;
   }
-
   if (state.base_ipv6_configured) {
-    std::vector<routing::Ipv6ConnectedInput> connected;
-    try {
-      connected.reserve(state.base_ipv6.count);
-      for (std::size_t index{}; index < state.base_ipv6.count; ++index) {
-        const auto &route = state.base_ipv6.routes[index];
-        if (route.source != routing::RouteSource::connected)
-          continue;
-        connected.push_back(
-            {.configured = true,
-             .operational = true,
-             .network = route.network,
-             .interface_id = route.interface_id,
-             .physical_port_ordinal = route.physical_port_ordinal,
-             .prefix_length = route.prefix_length});
-      }
-    } catch (const std::bad_alloc &) {
-      return false;
+    for (std::size_t index{}; index < state.base_ipv6.count; ++index) {
+      const auto &route = state.base_ipv6.routes[index];
+      if (route.source == routing::RouteSource::connected)
+        staged.connected_ipv6.push_back({.configured = true, .operational = true,
+            .network = route.network, .interface_id = route.interface_id,
+            .physical_port_ordinal = route.physical_port_ordinal,
+            .prefix_length = route.prefix_length});
     }
-
-    const bool changed = state.ipv6_rib.rebuild(
-        connected, state.policy.ipv6_statics, {}, ipv6_dynamic,
-        state.policy.maximum_ecmp_paths);
-    if (!state.ipv6_rib.last_rebuild_valid())
-      return false;
-    if (changed || state.installed_ipv6_generation == 0U) {
-      if (++state.installed_ipv6_generation == 0U)
-        ++state.installed_ipv6_generation;
-      if (!install_ipv6_fib(
-              device,
-              state.ipv6_rib.compile(state.installed_ipv6_generation)))
-        return false;
+    static_cast<void>(staged.ipv6->rebuild(staged.connected_ipv6,
+        state.policy.ipv6_statics, {}, ipv6_dynamic, state.policy.maximum_ecmp_paths));
+    if (!staged.ipv6->last_rebuild_valid()) return false;
+  }
+  staged.install_ipv4 = state.base_ipv4_configured &&
+      (!state.installed_ipv4_generation || !staged.ipv4->same_selection(*state.ipv4_rib));
+  staged.install_ipv6 = state.base_ipv6_configured &&
+      (!state.installed_ipv6_generation || !staged.ipv6->same_selection(*state.ipv6_rib));
+  if ((staged.install_ipv4 && state.installed_ipv4_generation == UINT64_MAX) ||
+      (staged.install_ipv6 && state.installed_ipv6_generation == UINT64_MAX))
+    return false;
+  if (staged.install_ipv4)
+    staged.ipv4->compile_into(staged.fib, state.installed_ipv4_generation + 1U);
+  if (staged.install_ipv6)
+    staged.ipv6->compile_into(staged.ipv6_fib, state.installed_ipv6_generation + 1U);
+  std::vector<OspfExternalRouteProgram> active;
+  bool prepared{};
+  if (!reconcile_external_routes(device, state,
+          state.base_ipv4_configured ? *staged.ipv4 : *state.ipv4_rib,
+          state.base_ipv6_configured ? *staged.ipv6 : *state.ipv6_rib,
+          active, prepared)) return false;
+  bool installed = true;
+  if (staged.install_ipv4 || staged.install_ipv6) {
+    if (parallel()) {
+      installed = execute_forward({.kind = ForwardCommandKind::program_fibs,
+                                   .device = device}).success;
+    } else {
+      auto *forwarder = router(device);
+      installed = forwarder && forwarder->program_fibs(
+          staged.install_ipv4 ? &staged.fib : nullptr,
+          staged.install_ipv6 ? &staged.ipv6_fib : nullptr);
     }
   }
-  return reconcile_external_routes(device, state);
+  if (!installed) {
+    if (prepared) static_cast<void>(execute_ospf({.process = {.device = device},
+        .kind = ospf::ControlCommandKind::abort_external_generation}));
+    return false;
+  }
+  if (prepared) {
+    // The prepared lease prevents layout changes, and commit only swaps
+    // allocated vectors. Refusal here would violate the owner contract after
+    // FIB publication; continuing with inconsistent state is prohibited.
+    if (!execute_ospf({.process = {.device = device},
+            .kind = ospf::ControlCommandKind::commit_external_generation}).success)
+      std::terminate();
+    state.active_external_routes.swap(active);
+  }
+  if (state.base_ipv4_configured) state.ipv4_rib.swap(staged.ipv4);
+  if (state.base_ipv6_configured) state.ipv6_rib.swap(staged.ipv6);
+  if (staged.install_ipv4) ++state.installed_ipv4_generation;
+  if (staged.install_ipv6) ++state.installed_ipv6_generation;
+  return true;
 }
 
 void NetworkPlane::Impl::drain_ospf_routes() noexcept {
@@ -5130,8 +5175,8 @@ bool NetworkPlane::replace_ospf_generation(
       const bool installed =
           source.destination.ipv6
               ? std::any_of(
-                    manager->ipv6_rib.routes().begin(),
-                    manager->ipv6_rib.routes().end(),
+                    manager->ipv6_rib->routes().begin(),
+                    manager->ipv6_rib->routes().end(),
                     [&](const auto &route) {
                       return route.network ==
                                  source.destination.ipv6_network &&
@@ -5140,8 +5185,8 @@ bool NetworkPlane::replace_ospf_generation(
                              route.source == source.source;
                     })
               : std::any_of(
-                    manager->ipv4_rib.routes().begin(),
-                    manager->ipv4_rib.routes().end(),
+                    manager->ipv4_rib->routes().begin(),
+                    manager->ipv4_rib->routes().end(),
                     [&](const auto &route) {
                       return route.network ==
                                  source.destination.ipv4_network &&
@@ -5454,6 +5499,8 @@ bool NetworkPlane::replace_ospf_generation(
 
 bool NetworkPlane::program_fib(DeviceHandle device,
                                const routing::FibProgram &fib) noexcept {
+  if (fib.count > fib.routes.size() ||
+      fib.loop_free_alternate_count > fib.routes.size() - fib.count) return false;
   if (!impl_->live(device) ||
       device.index >= impl_->route_managers.size())
     return false;
@@ -5463,7 +5510,7 @@ bool NetworkPlane::program_fib(DeviceHandle device,
   // RuntimeSupervisor always publishes RoutePolicyProgram first.
   if (!manager || !manager->policy_configured)
     return impl_->install_ipv4_fib(device, fib);
-  if (!manager->base_ipv4_configured) {
+  if (!manager->base_ipv4_configured || !manager->installed_ipv4_generation) {
     // A restored forwarding owner may already hold this control generation.
     // Rebuild the manager at the same generation when no learned route changes
     // its bytes, which RouterForwarder accepts as an exact idempotent replay.
@@ -5490,13 +5537,15 @@ bool NetworkPlane::program_fib(DeviceHandle device,
 
 bool NetworkPlane::program_ipv6_fib(
     DeviceHandle device, const routing::Ipv6FibProgram &fib) noexcept {
+  if (fib.count > fib.routes.size() ||
+      fib.loop_free_alternate_count > fib.routes.size() - fib.count) return false;
   if (!impl_->live(device) ||
       device.index >= impl_->route_managers.size())
     return false;
   auto &manager = impl_->route_managers[device.index];
   if (!manager || !manager->policy_configured)
     return impl_->install_ipv6_fib(device, fib);
-  if (!manager->base_ipv6_configured) {
+  if (!manager->base_ipv6_configured || !manager->installed_ipv6_generation) {
     const auto configuration_floor =
         manager->ospf_ipv6.empty() && fib.generation
             ? fib.generation - 1U

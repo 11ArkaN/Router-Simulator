@@ -1,6 +1,15 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  forwarding.dual_family_fib:
+    status: partially-implemented
+    source_ids: [project.runtime.dual_family_fib]
+  runtime.control_generation_receipts:
+    status: partially-implemented
+    source_ids: [project.runtime.control_generation_handoff]
+  routing.route_publication:
+    status: partially-implemented
+    source_ids: [project.runtime.control_generation_handoff]
   routing.isis.prefix_distance:
     status: partially-implemented
     source_ids: [ietf.isis.prefix_distance]

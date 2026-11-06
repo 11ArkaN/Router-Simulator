@@ -72,6 +72,8 @@ struct Route {
   bool local_system{};
   OspfPathType ospf_path_type{OspfPathType::none};
   std::uint8_t protocol_instance{};
+  // Complete value equality keeps generation replay checks aligned with every field.
+  bool operator==(const Route &) const = default;
 };
 
 struct ConnectedInput {
@@ -142,9 +144,15 @@ public:
                              std::span<const DynamicInput> dynamic = {},
                              std::uint16_t maximum_ecmp_paths = 1U) noexcept;
   [[nodiscard]] FibProgram compile(std::uint64_t generation) const noexcept;
+  // Same owner, exclusive caller-owned output. Copies the complete published
+  // selection and zeros unused rows without a profile-sized return temporary.
+  // No allocation, borrowing, refusal or mutation of the RIB occurs.
+  void compile_into(FibProgram &output, std::uint64_t generation) const noexcept;
   [[nodiscard]] std::span<const Route> routes() const noexcept {
     return {routes_.data(), count_};
   }
+  // Same-owner comparison of complete active and repair selections.
+  [[nodiscard]] bool same_selection(const RouteTable &other) const noexcept;
   [[nodiscard]] bool last_rebuild_valid() const noexcept {
     return last_rebuild_valid_;
   }
@@ -204,6 +212,8 @@ struct Ipv6Route {
   RouteSource source{};
   OspfPathType ospf_path_type{OspfPathType::none};
   std::uint8_t protocol_instance{};
+  // Complete value equality keeps generation replay checks aligned with every field.
+  bool operator==(const Ipv6Route &) const = default;
 };
 
 struct Ipv6ConnectedInput {
@@ -272,9 +282,14 @@ public:
           std::uint16_t maximum_ecmp_paths = 1U)
       noexcept;
   [[nodiscard]] Ipv6FibProgram compile(std::uint64_t generation) const noexcept;
+  // Same owner and exclusive output, as IPv4 compile_into. Unused rows are
+  // cleared so a reused transfer arena cannot expose withdrawn route values.
+  void compile_into(Ipv6FibProgram &output, std::uint64_t generation) const noexcept;
   [[nodiscard]] std::span<const Ipv6Route> routes() const noexcept {
     return {routes_.data(), count_};
   }
+  // Includes repair paths; staged rebuild history is deliberately irrelevant.
+  [[nodiscard]] bool same_selection(const Ipv6RouteTable &other) const noexcept;
   [[nodiscard]] bool last_rebuild_valid() const noexcept {
     return last_rebuild_valid_;
   }

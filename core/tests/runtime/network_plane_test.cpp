@@ -81,6 +81,46 @@ void network_plane_tests() {
   using namespace router;
   using namespace router::lab;
   using namespace router::lab::routing;
+  for (const std::size_t cpus : {1U, 8U}) {
+    auto transaction_plane = std::make_unique<NetworkPlane>(cpus);
+    const DeviceHandle device{0U, 1U};
+    auto base4 = std::make_unique<FibProgram>();
+    auto base6 = std::make_unique<Ipv6FibProgram>();
+    base4->generation = 1U;
+    base4->count = 1U;
+    base4->routes[0U] = {.network = 0xc0000200U, .port_ordinal = 0U, .prefix_length = 24U};
+    base6->generation = 50U;
+    base6->count = 1U;
+    base6->routes[0U] = {.network = *ip::parse_ipv6("2001:db8:1::"),
+        .interface_id = 1U, .physical_port_ordinal = 0U, .prefix_length = 64U};
+    router::lab::RoutePolicyProgram policy;
+    require(transaction_plane->add_router(device, transport_secret(0x19U)) &&
+        transaction_plane->program_fib(device, *base4) &&
+        transaction_plane->program_ipv6_fib(device, *base6) &&
+        transaction_plane->program_route_policy(device, policy) &&
+        transaction_plane->program_fib(device, *base4),
+        "RIB transaction fixture failed");
+    base6->generation = 1U;
+    require(!transaction_plane->program_ipv6_fib(device, *base6),
+        "RIB transaction accepted a stale second family");
+    policy.ipv4_statics[0U] = {.configured = true, .network = 0xc6336400U,
+        .next_hop = 0xc0000201U, .prefix_length = 24U};
+    require(!transaction_plane->program_route_policy(device, policy),
+        "RIB transaction ignored stale IPv6 while changing IPv4");
+    auto retained = transaction_plane->router_checkpoint(device, NetworkPlane::Clock::now());
+    require(retained && retained->fib.generation == 1U && retained->fib.count == 1U &&
+        retained->ipv6_fib.generation == 50U && retained->ipv6_fib.count == 1U,
+        "Refused second family partially installed IPv4 or advanced a counter");
+    // Re-admission must explicitly use a generation beyond the forwarding
+    // owner's high water, even after an earlier admission was refused.
+    base6->generation = 51U;
+    require(transaction_plane->program_ipv6_fib(device, *base6),
+        "RIB transaction did not recover after stale-family refusal");
+    retained = transaction_plane->router_checkpoint(device, NetworkPlane::Clock::now());
+    require(retained && retained->fib.generation == 2U && retained->fib.count == 2U &&
+        retained->ipv6_fib.generation == 51U,
+        "Recovered RIB transaction lost prepared routes or advanced twice");
+  }
   // Module tests inject future steady-clock points and therefore select the
   // generated low-CPU combined owner explicitly. Physical shard scheduling is
   // covered separately with real host time by NetworkPlaneWorker tests.

@@ -310,3 +310,11 @@ Optional experimental P2P prefix decisions prepare copied advertisements before 
 Experimental wide MT0 decision programs can select an IP family and retain prefix advertisements on the IS-IS pthread. First-hop seeds require that family in local configuration and accepted peer Hellos. Queries expose current-generation prefix counts and selected-prefix distances as values. Loss of one family can withdraw its costs while ISO adjacency remains Up for another family; synchronization is preserved.
 
 Normal experimental IPv6 prefix decisions exclude received link-local prefixes while retaining their encoded LSP for ordinary flooding.
+
+Receipt-enabled route publication keeps complete generations in fixed shared slots and returns explicit installation or refusal results through the existing reverse SPSC ownership path. Credits cannot be reclaimed before the producer reads each result. Device and route-generation guards reject delayed completions after slot reuse. OSPF retains its consumption-only API over shared generation data and ownership mechanics. IS-IS RIB/FIB integration remains incomplete.
+
+The forwarding owner can preflight and commit IPv4 and IPv6 FIB generations in one uninterrupted command turn. A stale, malformed or conflicting generation leaves both families unchanged. Null preserves a family; an empty supplied generation withdraws it. RIB compilation can fill reusable transfer arenas directly and clears unused rows. Protocol installation-receipt integration remains incomplete.
+
+OSPF redistribution has an internal preparation transaction that validates replacement advertisements before installation. A prepared transaction holds the router process layout until allocation-free commit or abort and excludes checkpoint capture during that interval.
+
+The network route manager prepares both address-family RIBs before replacing a live table. It prepares OSPF redistribution first, installs changed IPv4 and IPv6 FIBs through one forwarding-owner command, then publishes the RIBs and installation counters. Refusal preserves the prior active selections. The fixed transfer arena uses the existing SPSC command/result ordering and control-memory reserve.

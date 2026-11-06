@@ -72,6 +72,16 @@ template <typename RouteValue>
   return !selection_less(left, right) && !selection_less(right, left);
 }
 
+template <typename Program, typename Entry>
+void compile_routes(Program &output, std::uint64_t generation,
+    std::span<const Entry> primary, std::span<const Entry> repairs, bool reset_unused = true) noexcept {
+  output.generation = generation;
+  output.count = static_cast<std::uint16_t>(primary.size());
+  output.loop_free_alternate_count = static_cast<std::uint16_t>(repairs.size());
+  if (reset_unused) std::fill(output.routes.begin(), output.routes.end(), Entry{});
+  std::copy(primary.begin(), primary.end(), output.routes.begin());
+  std::copy(repairs.begin(), repairs.end(), output.routes.begin() + primary.size());
+}
 } // namespace
 
 bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
@@ -433,16 +443,14 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
 }
 
 FibProgram RouteTable::compile(std::uint64_t generation) const noexcept {
-  FibProgram result{.generation = generation,
-                    .count = count_,
-                    .loop_free_alternate_count =
-                        loop_free_alternate_count_};
-  // A full value copy is the versioned control-to-forwarding boundary. It
-  // cannot retain RIB references that control mutates on the next transaction.
-  std::copy_n(routes_.begin(), count_, result.routes.begin());
-  std::copy_n(loop_free_alternates_.begin(), loop_free_alternate_count_,
-              result.routes.begin() + count_);
-  return result;
+  FibProgram output;
+  compile_routes(output, generation, std::span{routes_}.first(count_),
+      std::span{loop_free_alternates_}.first(loop_free_alternate_count_), false);
+  return output;
+}
+void RouteTable::compile_into(FibProgram &output, std::uint64_t generation) const noexcept {
+  compile_routes(output, generation, std::span{routes_}.first(count_),
+      std::span{loop_free_alternates_}.first(loop_free_alternate_count_));
 }
 
 bool lookup(const FibProgram &fib, std::uint32_t destination, Route &selected,
@@ -886,14 +894,14 @@ bool Ipv6RouteTable::rebuild(
 }
 
 Ipv6FibProgram Ipv6RouteTable::compile(std::uint64_t generation) const noexcept {
-  Ipv6FibProgram result{.generation = generation,
-                        .count = count_,
-                        .loop_free_alternate_count =
-                            loop_free_alternate_count_};
-  std::copy_n(routes_.begin(), count_, result.routes.begin());
-  std::copy_n(loop_free_alternates_.begin(), loop_free_alternate_count_,
-              result.routes.begin() + count_);
-  return result;
+  Ipv6FibProgram output;
+  compile_routes(output, generation, std::span{routes_}.first(count_),
+      std::span{loop_free_alternates_}.first(loop_free_alternate_count_), false);
+  return output;
+}
+void Ipv6RouteTable::compile_into(Ipv6FibProgram &output, std::uint64_t generation) const noexcept {
+  compile_routes(output, generation, std::span{routes_}.first(count_),
+      std::span{loop_free_alternates_}.first(loop_free_alternate_count_));
 }
 
 bool lookup(const Ipv6FibProgram &fib, const ip::Ipv6 &destination,
@@ -952,6 +960,24 @@ bool lookup_loop_free_alternate(const Ipv6FibProgram &fib,
     return false;
   selected = *equal[flow_hash % equal_count];
   return true;
+}
+
+bool RouteTable::same_selection(const RouteTable &other) const noexcept {
+  return count_ == other.count_ &&
+      loop_free_alternate_count_ == other.loop_free_alternate_count_ &&
+      std::equal(routes_.begin(), routes_.begin() + count_, other.routes_.begin()) &&
+      std::equal(loop_free_alternates_.begin(),
+                 loop_free_alternates_.begin() + loop_free_alternate_count_,
+                 other.loop_free_alternates_.begin());
+}
+
+bool Ipv6RouteTable::same_selection(const Ipv6RouteTable &other) const noexcept {
+  return count_ == other.count_ &&
+      loop_free_alternate_count_ == other.loop_free_alternate_count_ &&
+      std::equal(routes_.begin(), routes_.begin() + count_, other.routes_.begin()) &&
+      std::equal(loop_free_alternates_.begin(),
+                 loop_free_alternates_.begin() + loop_free_alternate_count_,
+                 other.loop_free_alternates_.begin());
 }
 
 } // namespace router::lab::routing

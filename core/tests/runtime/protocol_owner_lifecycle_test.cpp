@@ -41,6 +41,59 @@ template <typename Command, typename Worker> void exercise(Worker &worker) {
 
 void protocol_owner_lifecycle_tests() {
   {
+    using namespace router::ospf;
+    auto channels = std::make_unique<ControlChannels>();
+    ControlWorker worker(*channels, 1U);
+    std::uint64_t next_id{};
+    const auto execute = [&](ControlCommand command) {
+      command.id = ++next_id;
+      const auto deadline = RuntimeClock::now() + std::chrono::seconds{2};
+      while (!worker.submit(command)) {
+        if (RuntimeClock::now() >= deadline)
+          throw std::runtime_error("OSPF export command admission timed out");
+        std::this_thread::yield();
+      }
+      ControlResult result;
+      while (!worker.read(result)) {
+        if (RuntimeClock::now() >= deadline)
+          throw std::runtime_error("OSPF export result timed out");
+        std::this_thread::yield();
+      }
+      if (result.id != command.id)
+        throw std::runtime_error("OSPF export result identity mismatch");
+      return result.success;
+    };
+    const ProcessIdentity identity{.device = {0U, 1U}};
+    const auto transaction = [&](ControlCommandKind kind) {
+      return execute({.process = identity, .kind = kind});
+    };
+    if (transaction(ControlCommandKind::prepare_external_generation) ||
+        !transaction(ControlCommandKind::begin_external_generation) ||
+        !transaction(ControlCommandKind::prepare_external_generation) ||
+        !transaction(ControlCommandKind::prepare_external_generation) ||
+        transaction(ControlCommandKind::begin_external_generation) ||
+        transaction(ControlCommandKind::remove_process))
+      throw std::runtime_error("Prepared OSPF export did not pin process layout");
+    auto checkpoint = std::make_unique<ControlWorkerCheckpoint>();
+    const auto capture = [&] {
+      return execute({.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(checkpoint.get()),
+                      .kind = ControlCommandKind::checkpoint});
+    };
+    if (capture() || !transaction(ControlCommandKind::commit_external_generation) ||
+        !capture() || transaction(ControlCommandKind::commit_external_generation))
+      throw std::runtime_error("OSPF export preparation crossed checkpoint or committed twice");
+    if (!transaction(ControlCommandKind::begin_external_generation) ||
+        !transaction(ControlCommandKind::prepare_external_generation) ||
+        !transaction(ControlCommandKind::abort_external_generation) || !capture() ||
+        transaction(ControlCommandKind::commit_external_generation))
+      throw std::runtime_error("Aborted OSPF export retained its prepared lease");
+    if (!execute({.process = identity, .expected_external_routes = 1U,
+                  .kind = ControlCommandKind::begin_external_generation}) ||
+        transaction(ControlCommandKind::prepare_external_generation) ||
+        !transaction(ControlCommandKind::abort_external_generation))
+      throw std::runtime_error("Incomplete OSPF export preparation was accepted");
+  }
+  {
     auto channels = std::make_unique<router::isis::ControlChannels>();
     router::isis::ControlWorker worker(*channels, 1U, 1U);
     exercise<router::isis::ControlCommand>(worker);

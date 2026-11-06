@@ -586,6 +586,7 @@ if(ROUTER_BUILD_TESTS)
     tests/runtime/protocol_packet_completion_test.cpp
     tests/runtime/protocol_owner_lifecycle_test.cpp
     tests/runtime/protocol_transmission_test.cpp
+    tests/runtime/route_publication_test.cpp
     tests/runtime/owned_spsc_channel_test.cpp
     tests/isis/isis_three_way_test.cpp
     tests/isis/isis_prefix_attributes_test.cpp
@@ -731,6 +732,7 @@ if(ROUTER_BUILD_TESTS)
     tests/forwarding/router_forwarder_ipv4_redirect_test.cpp
     tests/forwarding/router_forwarder_local_ipv4_test.cpp
     tests/forwarding/router_forwarder_ospfv3_test.cpp
+    tests/forwarding/router_forwarder_fib_transaction_test.cpp
     tests/forwarding/router_forwarder_test.cpp
     tests/forwarding/sap_forwarding_test.cpp
     tests/runtime/session_workflows_test.cpp

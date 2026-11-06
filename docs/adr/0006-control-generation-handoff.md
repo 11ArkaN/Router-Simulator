@@ -17,6 +17,22 @@ The slot count bounds outstanding configuration transfers. It does not define th
 - A lease cannot be accessed after publication, cancellation or release. Generation values own their allocations and do not retain mutable references to another owner.
 - Sensitive plaintext must be erased before a consumer returns its slot.
 
+## Installation results
+
+Receipt-enabled transfers retain the same two SPSC handle rings. The consumer writes its final result inside its owned slot before release. The producer must explicitly acquire that result before the credit can be reused; acquiring another edit cannot silently discard an installation failure. Result views expire on the producer's next acquisition. Reinitialization destroys and constructs the value inside its fixed slot, avoiding profile-sized temporaries on a protocol stack.
+
+Route publication exposes an immutable complete generation to the RIB owner. Only after validating and finishing the actual RIB/FIB transaction may that owner return installed. Refusals preserve explicit stale, invalid, capacity or forwarding-failure results. Completion compares the expected device handle and route generation before releasing a slot, so a delayed result cannot complete a reused slot. The producer receives a small copied receipt, without borrowing route storage.
+
+The OSPF consumption-only channel shares the same ownership primitive and common generation data. Its existing release means completed consumption and does not acquire the installation guarantee of the receipt-enabled variant. Two route slots bound outstanding transfers; they do not change router, instance or FIB scale. IS-IS route installation and per-protocol RIB merging remain separate integration work.
+
+## Dual-family FIB programming
+
+The forwarding owner preflights both supplied family generations before changing either table. Counts, stale generations and changed equal-generation replays reject the complete operation. At least one nonzero generation is required. A null family preserves its current table; an empty generation explicitly withdraws that family's routes.
+
+Both commits run inside one uninterrupted forwarding command turn without allocation or external callbacks. Packet handling and state projections cannot interleave between the family writes. After preflight, a refusal would be an internal ownership violation and fails closed. Existing single-family APIs preserve their generation semantics.
+
+RIB compilation can write directly into an exclusively owned transfer arena. It copies active selections and repair paths and clears unused rows, so reuse cannot retain withdrawn route values. The network route manager uses this forwarding API for complete dual-family transactions. Protocol installation receipts remain separate integration work.
+
 ## Circuit generations
 
 Packet metadata carries device generation, logical interface ID, physical port and circuit configuration generation. The IS-IS worker and forwarding owner must reject an obsolete configuration generation before applying a frame or receipt. A current device handle alone cannot identify a reconfigured circuit.
@@ -56,3 +72,17 @@ Runtime startup creates separate permanent OSPF and IS-IS protocol owners before
 Encoded protocol output wakes its selected forwarding consumer. Route generations wake the link owner that consumes them. Returning a forwarding transfer credit also sets a persistent atomic work predicate, so notify-before-sleep cannot strand pending protocol output. Notifications carry no packet or configuration state. A bounded drainer schedules immediate continuation while its input still has ready frames and its output has capacity; full output waits for returned credits.
 
 Two-thread tests transfer variable-length values and verify complete publication, move ownership, cancellation, full backpressure and duplicate-return rejection. Configuration admission, runtime fairness and active-process limits are verified separately from this transport contract. No MPSC or MPMC queue is introduced.
+
+### Prepared external advertisements
+
+The OSPF owner can prepare a complete replacement of redistributed routes before the network owner installs the corresponding FIB. Preparation allocates and validates every replacement vector without changing live advertisements. It leases that router's process layout until commit or abort. Other commands for that router reject while the lease exists, and checkpoint or restore rejects while any lease exists. Protocol packet processing and timers continue on their existing owner.
+
+Commit swaps only prepared vectors, marks coordination pending and releases the lease. It does not allocate. Abort discards preparation without changing live advertisements. Existing callers may commit without an explicit preparation command; that path prepares first and can still refuse. The network RIB transaction must use explicit preparation before changing the FIB.
+
+### Network RIB transaction
+
+The network owner rebuilds both configured address families in heap-owned scratch RIBs. Refusal leaves both active RIBs and their installed generation counters unchanged. Selection comparison includes repair paths and compares against the target router, independently of which router last used the scratch tables.
+
+A single fixed transfer arena contains the two compiled FIBs. The network owner lends that arena to exactly one forwarding owner through one synchronous command. The command identity and complete device handle guard the borrow. The existing SPSC command release and result acquire delimit ownership; while awaiting the result, the network owner only drains frame egress and cannot enter another route transaction. The command envelope does not duplicate both family arrays in each ring slot. Combined forwarding uses the same preflight directly on its owner.
+
+The transaction prepares redistributed advertisements against the staged RIBs before sending the forwarding command. Forwarding refusal aborts preparation. Success commits the prepared advertisements without allocation, swaps the active RIB pointers and advances only the installed family counters. Counter exhaustion refuses instead of wrapping. Scratch tables, FIBs and connected-input reserves are included in the existing control-memory reserve check.

@@ -57,6 +57,7 @@ const cppLayers = new Map([
   ["protocol_packet_channel.hpp", 1],
   ["protocol_transmission.hpp", 0],
   ["owned_spsc_channel.hpp", 0],
+  ["route_generation.hpp", 1], ["route_publication.hpp", 1], ["ospf_route_channel.hpp", 1],
   ["isis_three_way.hpp", 0], ["isis_three_way.cpp", 0],
   ["isis_reachability.hpp", 0], ["isis_reachability.cpp", 0],
   ["isis_multi_topology.hpp", 0], ["isis_multi_topology.cpp", 0],

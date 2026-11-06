@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: project.runtime.dual_family_fib
+    kind: forwarding-state-transaction
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-architecture-decision
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0006-control-generation-handoff.md#dual-family-fib-programming
+    section: Dual-family FIB programming, preflight and transfer-arena ownership
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-11-06
+    implementation: [core/include/router/router_forwarder.hpp, core/src/forwarding/router_forwarder.cpp, core/include/router/multi_device_routing.hpp, core/src/forwarding/multi_device_routing.cpp, core/src/runtime/network_plane.cpp]
+    tests: [core/tests/forwarding/router_forwarder_fib_transaction_test.cpp, core/tests/runtime/network_plane_test.cpp]
+    status: experimental
+    notes: One forwarding owner preflights both family counts, staleness and active-row equality before any write. The dual-family API requires nonzero generations and at least one input. Null preserves a family while an empty supplied generation withdraws it. Existing single-family semantics remain unchanged. No allocation or external callback can interleave the two commits. RIB compile-into copies complete selections and repair paths into caller-owned fixed storage and clears unused rows without a profile-sized return temporary. Tests reject a stale or malformed second family and changed equal-generation replay without changing either table, accept valid/idempotent commits and verify complete withdrawal through a reused arena. Network route-manager staging preflights both RIBs, prepares OSPF export before installation and publishes selections only after one synchronous forwarding command succeeds. Scratch table comparisons include repair routes, transfer ownership is fenced by existing command/result rings and fixed scratch costs enter the existing control reserve. Combined-owner and separate-forwarding tests force a stale IPv6 generation while IPv4 has a newly selected static route, verify both FIB generations remain unchanged and then recover without skipping an IPv4 generation. Base FIB counts include repair entries in admission bounds. Protocol installation-receipt integration remains incomplete.
   - id: ietf.isis.prefix_distance
     kind: routing-protocol-prefix-selection
     release: 26.7.R1
@@ -192,8 +206,8 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-10-29
-    implementation: [core/include/router/protocol_packet_channel.hpp]
-    tests: [core/tests/runtime/protocol_packet_completion_test.cpp]
+    implementation: [core/include/router/protocol_packet_channel.hpp, core/include/router/ospf_control_worker.hpp, core/src/ospf/ospf_control_worker.cpp]
+    tests: [core/tests/runtime/protocol_packet_completion_test.cpp, core/tests/runtime/protocol_owner_lifecycle_test.cpp]
     status: implemented
     notes: A producer-owned protocol reservation epoch is independent of the transport configuration generation. Forwarding and link owners echo the complete metadata through release/acquire receipts. Guarded release rejects an old reservation epoch even when a slot reuses its device, interface, configuration, transmission class, local instance and ticket. Existing protocol producers may use zero. The fixed six-channel IS-IS set remains within its unchanged one MiB admission budget. Production CLI admission and LAN scheduling remain incomplete.
   - id: project.runtime.isis_p2p_transport
@@ -401,11 +415,11 @@ records:
     section: Ownership and ordering, circuit generations and worker lifecycle
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-10-28
-    implementation: [core/include/router/owned_spsc_channel.hpp, core/include/router/protocol_packet_channel.hpp]
-    tests: [core/tests/runtime/owned_spsc_channel_test.cpp, core/tests/runtime/protocol_packet_completion_test.cpp]
+    last_verified_at: 2026-11-06
+    implementation: [core/include/router/route_generation.hpp, core/include/router/route_publication.hpp, core/include/router/ospf_route_channel.hpp, core/include/router/owned_spsc_channel.hpp, core/include/router/protocol_packet_channel.hpp]
+    tests: [core/tests/runtime/route_publication_test.cpp, core/tests/ospf/ospf_route_channel_test.cpp, core/tests/runtime/owned_spsc_channel_test.cpp, core/tests/runtime/protocol_packet_completion_test.cpp]
     status: experimental
-    notes: Shared slots transfer exclusively owned dynamic control values through handle-only ready and return rings. One producer and one consumer use release/acquire ownership handoff. The independent circuit configuration generation in frame metadata supports rejection after live interface reconfiguration. Worker integration and its measured active-process limit remain separate work.
+    notes: Shared slots transfer exclusively owned dynamic control values through handle-only ready and return rings. One producer and one consumer use release/acquire ownership handoff. The independent circuit configuration generation in frame metadata supports rejection after live interface reconfiguration. Optional completion mode requires explicit producer result consumption before credit reuse. Consumer result writes are visible through the return acquire. Large values reset in place without a profile-sized stack temporary. A route wrapper compares device and route generation before completing borrowed storage and returns small copied installation receipts. Common route-generation data and ownership mechanics preserve the existing OSPF consumption-only API. Tests cover two-thread forward/result publication, pending-result backpressure, guarded slot reuse, explicit failure results, empty withdrawals and duplicate cancellation. OSPF export preparation validates and allocates replacement advertisements before a future FIB commit; its process-layout lease rejects mutation and checkpoint until allocation-free commit or abort. Tests cover preparation replay, incomplete input, abort, double commit and checkpoint exclusion. Production IS-IS RIB integration and its measured active-process limit remain separate work.
   - id: iso.10589.2002.p2p_circuit_owner
     kind: routing-protocol-circuit-owner
     release: 26.7.R1

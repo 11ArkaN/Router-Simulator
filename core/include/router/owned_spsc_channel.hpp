@@ -7,17 +7,20 @@
 #include "router/spsc_ring.hpp"
 
 #include <limits>
+#include <memory>
 #include <optional>
 #include <utility>
 
 namespace router::protocol {
 
-template <typename Value, std::size_t Capacity> class OwnedSpscChannel final {
+template <typename Value, std::size_t Capacity, bool WithCompletions = false> class OwnedSpscChannel final {
   static_assert(Capacity > 0U && Capacity <= std::numeric_limits<std::uint32_t>::max());
-  static_assert(std::is_nothrow_default_constructible_v<Value> && std::is_nothrow_move_assignable_v<Value>);
+  static_assert(std::is_nothrow_default_constructible_v<Value> && std::is_nothrow_move_assignable_v<Value> &&
+      std::is_nothrow_destructible_v<Value>);
 public:
   using Handle = std::uint32_t;
   struct Lease { Handle handle{}; Value *value{}; };
+  struct Completion { const Value *value{}; };
   OwnedSpscChannel() noexcept : available_count_(Capacity) {
     for (std::size_t index{}; index < Capacity; ++index)
       available_[index] = static_cast<Handle>(Capacity - index - 1U);
@@ -27,12 +30,13 @@ public:
   // destroys consumed values only after acquiring their returned handles.
   [[nodiscard]] std::optional<Lease> acquire() noexcept {
     Handle handle{};
-    while (returned_.try_pop(handle)) {
-      values_[handle] = Value{};
+    if constexpr (!WithCompletions) while (returned_.try_pop(handle)) {
+      reset(handle);
       available_[available_count_++] = handle;
     }
     if (!available_count_) return std::nullopt;
     handle = available_[--available_count_];
+    if constexpr (WithCompletions) reset(handle);
     editing_[handle] = true;
     return Lease{handle, &values_[handle]};
   }
@@ -46,7 +50,7 @@ public:
   // Producer cancels an unpublished edit, destroying its owned allocations.
   [[nodiscard]] bool cancel(Handle handle) noexcept {
     if (handle >= Capacity || !editing_[handle]) return false;
-    values_[handle] = Value{};
+    reset(handle);
     editing_[handle] = false;
     available_[available_count_++] = handle;
     return true;
@@ -68,9 +72,26 @@ public:
     borrowed_[handle] = false;
     return true;
   }
+  // Completion-enabled producer consumes the consumer's final value before
+  // recovering its credit. No acquire can silently discard this result. The
+  // read-only view expires at the next acquire; copy required receipt fields
+  // before that call. Consumer writes become visible through return acquire.
+  [[nodiscard]] std::optional<Completion> completion() noexcept requires WithCompletions {
+    Handle handle{};
+    if (!returned_.try_pop(handle)) return std::nullopt;
+    available_[available_count_++] = handle;
+    return Completion{&values_[handle]};
+  }
   [[nodiscard]] bool empty() const noexcept { return ready_.empty(); }
 
 private:
+  void reset(Handle handle) noexcept {
+    // Route generations can exceed a protocol stack's entire budget. Destroy
+    // and reconstruct in their fixed slot instead of materializing Value{} as
+    // a large temporary. Release/acquire ownership already ended every peer view.
+    std::destroy_at(&values_[handle]);
+    std::construct_at(&values_[handle]);
+  }
   std::array<Value, Capacity> values_{};
   // Capacity usable FIFO entries plus one sentinel per ring. Roles reverse
   // for returned_. Both directions use release/acquire publication. Overflow
