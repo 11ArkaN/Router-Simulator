@@ -356,6 +356,8 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
       }
       result.update_status = instance.status;
       result.update_epoch = instance.process ? instance.process->maximum_synchronization_epoch() : device.update_fences[index];
+      result.decision_runs = instance.decision_runs;
+      result.decision_status = instance.decision_status;
       result.database_validations = instance.database_validations;
       result.decision_revisions = instance.decision_revisions;
       result.corrupted_lsp = instance.corrupted_lsp;
@@ -380,6 +382,13 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
         const auto selected = owner ? owner->database().database().find(*command.selected_lsp, RuntimeClock::now()) : std::nullopt;
         if (selected) result.selected_lsp = selected->header;
         else result.error = ControlError::not_found;
+        packet::isis::LanId selected_node{};
+        std::copy_n(command.selected_lsp->begin(), selected_node.size(), selected_node.begin());
+        for (std::size_t level{}; level < 2U; ++level)
+          if (instance.decisions[level] && instance.consumed_decision_revision[level] == instance.decision_revisions[level] &&
+              instance.status == UpdateStatus::applied &&
+              instance.decision_status[level] == DecisionStatus::applied)
+            result.selected_cost[level] = instance.decisions[level]->cost(selected_node);
       }
     }
     return result;

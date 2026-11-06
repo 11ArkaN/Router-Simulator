@@ -7,6 +7,9 @@
 #include "router/isis_multi_topology.hpp"
 #include "router/isis_narrow_reachability.hpp"
 #include "router/isis_spf.hpp"
+#include "router/isis_p2p_spf_seed.hpp"
+#include "router/isis_p2p_spf_input.hpp"
+#include "router/isis_p2p_decision.hpp"
 
 #include <algorithm>
 #include <memory>
@@ -80,6 +83,20 @@ void isis_link_graph_tests() {
   const LinkGraphSelection selected{a, 0U, ipv4_nlpid, GraphMetricStyle::wide};
   require(graph.rebuild(f.database, selected, f.now) == LinkGraphStatus::applied && graph.root() &&
       graph.nodes().size() == 2U && graph.links().size() == 2U && arc(graph, a, b, 10U) && arc(graph, b, a, 20U));
+  const std::array local_seeds{P2pSpfSeed{{1U, 2U, 3U, 4U, 5U, 2U}, 30U, 0U},
+      P2pSpfSeed{{1U, 2U, 3U, 4U, 5U, 2U}, 40U, 1U}};
+  std::array<SpfEdge, 2U> seeded{};
+  const auto seeded_result = p2p_spf_seeds(graph, local_seeds, 2U, 63U, seeded);
+  require(seeded_result.status == SeedStatus::applied && seeded_result.count == 2U &&
+      seeded[0U].cost == 30U && seeded[1U].cost == 40U && seeded[0U].first_hop == 0U && seeded[1U].first_hop == 1U);
+  const auto saved_seed = seeded;
+  require(p2p_spf_seeds(graph, local_seeds, 2U, 63U, std::span{seeded}.first(1U)).status == SeedStatus::capacity &&
+      seeded[0U].cost == saved_seed[0U].cost && seeded[1U].cost == saved_seed[1U].cost);
+  require(p2p_spf_seeds(graph, local_seeds, 1U, 63U, seeded).status == SeedStatus::invalid &&
+      seeded[0U].cost == saved_seed[0U].cost);
+  P2pSpfInput limited_input(8U, 1U);
+  require(limited_input.rebuild(graph, {}, 0U, 63U) && limited_input.edges().size() == 1U);
+  require(!limited_input.rebuild(graph, local_seeds, 2U, 63U) && limited_input.edges().size() == 1U);
   // A live nonzero fragment becomes eligible only while its fragment zero lives.
   f.install(c, options({}), 3U, 1U, 0U, 1U);
   require(graph.rebuild(f.database, selected, f.now) == LinkGraphStatus::applied &&
@@ -97,6 +114,24 @@ void isis_link_graph_tests() {
   }
   SpfCalculator spf(8U, 64U, MetricStyle::wide);
   require(spf.calculate(*graph.root(), vertices, edges, 1U) && spf.cost(2U) == 11U && spf.first_hop_count(2U) == 1U);
+  P2pSpfInput actual_input(8U, 16U);
+  require(actual_input.rebuild(graph, local_seeds, 2U, 63U));
+  require(spf.calculate(*graph.root(), actual_input.vertices(), actual_input.edges(), 2U) &&
+      spf.cost(2U) == 31U && spf.first_hop_count(2U) == 1U && spf.first_hop(2U, 0U) == 0U);
+  const auto retained_edges = actual_input.edges().size();
+  require(!actual_input.rebuild(graph, local_seeds, 1U, 63U) && actual_input.edges().size() == retained_edges);
+  require(actual_input.rebuild(graph, {}, 0U, 63U) &&
+      spf.calculate(*graph.root(), actual_input.vertices(), actual_input.edges(), 0U) && !spf.reachable(2U));
+  P2pRouteDecision decision(8U, 16U, 64U, MetricStyle::wide);
+  require(decision.calculate(f.database, selected, local_seeds, 2U, f.now) == DecisionStatus::applied &&
+      decision.cost(c) == 31U && decision.first_hop_count(c) == 1U && decision.first_hop(c, 0U) == 0U);
+  require(decision.calculate(f.database, selected, local_seeds, 1U, f.now) == DecisionStatus::invalid &&
+      decision.cost(c) == 31U && decision.first_hop(c, 0U) == 0U);
+  require(decision.calculate(f.database, selected, {}, 0U, f.now) == DecisionStatus::applied &&
+      !decision.cost(c) && decision.first_hop_count(c) == 0U);
+  auto missing_root = selected;
+  missing_root.local = node(4U);
+  require(decision.calculate(f.database, missing_root, {}, 0U, f.now) == DecisionStatus::applied && !decision.cost(a));
   f.now += 2s;
   require(graph.rebuild(f.database, selected, f.now) == LinkGraphStatus::applied &&
       graph.nodes().size() == 2U && graph.links().size() == 2U);

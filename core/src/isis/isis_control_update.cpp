@@ -121,6 +121,9 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
   for (const auto &level : command.update->levels)
     if (level && (level->authenticate_lsp || level->authenticate_csnp || level->authenticate_psnp))
       return ControlError::unsupported_authentication;
+  if (command.update->decision && (!command.update->origination || !command.update->origination->neighbors ||
+      command.update->origination->neighbors->size() > device_catalog::maximum_ecmp_paths))
+    return ControlError::unsupported_origination;
   const auto neighbor_error = prepare_neighbor_origination(*command.update);
   if (neighbor_error != ControlError::none) return neighbor_error;
   try {

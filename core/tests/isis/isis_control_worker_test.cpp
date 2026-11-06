@@ -964,6 +964,7 @@ void isis_control_origination_tests() {
       {1U, 5U, 5U, 1s, 10U, 1492U, 1U}};
   program.origination.emplace();
   program.origination->resource_retry = 100ms;
+  program.decision = P2pDecisionProgram{8U, 32U, 64U};
   program.origination->neighbors = std::vector<P2pOriginInterface>{{1U, {P2pOriginMetric{10U, 10U}, P2pOriginMetric{10U, 10U}}}};
   auto &local = program.origination->content;
   local.random = 17U;
@@ -1087,6 +1088,54 @@ void isis_control_origination_tests() {
         context.neighbor_roots[1U][0U] && context.neighbor_roots[1U][1U]) break;
     require(RuntimeClock::now() < synchronized_by);
     std::this_thread::yield();
+  }
+  const auto decision_by = RuntimeClock::now() + 3s;
+  for (;;) {
+    pump();
+    ControlCommand selected;
+    selected.kind = ControlCommandKind::query_update_instance;
+    selected.identity = identity;
+    auto remote_root = root;
+    remote_root[5U] = 2U;
+    selected.selected_lsp = remote_root;
+    const auto state = command(std::move(selected));
+    require(state.error == ControlError::none);
+    if (state.selected_cost[0U] == 10U && state.selected_cost[1U] == 10U) {
+      require(state.decision_runs[0U] && state.decision_runs[1U]);
+      break;
+    }
+    require(RuntimeClock::now() < decision_by);
+  }
+  const auto lost_by = RuntimeClock::now() + 5s;
+  for (;;) {
+    ControlCommand selected;
+    selected.kind = ControlCommandKind::query_update_instance;
+    selected.identity = identity;
+    auto remote_root = root;
+    remote_root[5U] = 2U;
+    selected.selected_lsp = remote_root;
+    const auto state = command(std::move(selected));
+    require(state.error == ControlError::none);
+    if (state.local_root_links[0U] == std::optional{LspLinkCounts{}} &&
+        state.local_root_links[1U] == std::optional{LspLinkCounts{}} &&
+        state.decision_status[0U] == DecisionStatus::applied && state.decision_status[1U] == DecisionStatus::applied &&
+        !state.selected_cost[0U] && !state.selected_cost[1U]) break;
+    require(RuntimeClock::now() < lost_by);
+    std::this_thread::yield();
+  }
+  const auto restored_decision_by = RuntimeClock::now() + 5s;
+  for (;;) {
+    pump();
+    ControlCommand selected;
+    selected.kind = ControlCommandKind::query_update_instance;
+    selected.identity = identity;
+    auto remote_root = root;
+    remote_root[5U] = 2U;
+    selected.selected_lsp = remote_root;
+    const auto state = command(std::move(selected));
+    require(state.error == ControlError::none);
+    if (state.selected_cost[0U] == 10U && state.selected_cost[1U] == 10U) break;
+    require(RuntimeClock::now() < restored_decision_by);
   }
   auto scratch = std::make_unique<PduScratch>();
   auto replay = std::make_unique<packet::Frame>();

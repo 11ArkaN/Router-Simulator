@@ -101,8 +101,13 @@ RuntimeClock::time_point ControlWorker::service_local_instance(DeviceState &devi
   std::size_t no_publication{};
   const auto generated = instance.local->service(*instance.process, {}, now, scratch_, instance.observer(),
       composed ? budget : no_publication);
-  if (generated.terminal == GenerationStatus::waiting)
+  if (generated.terminal == GenerationStatus::waiting) {
+    if (composed) service_p2p_decision(instance, device, index, now, budget);
+    for (std::size_t level{}; level < 2U; ++level)
+      if (instance.decisions[level] && instance.consumed_decision_revision[level] != instance.decision_revisions[level])
+        return now;
     return composed ? std::min(validation_deadline, generated.deadline.value_or(never)) : now;
+  }
   return stop_local_instance(device, index, generated.terminal == GenerationStatus::sequence_exhausted ?
       UpdateStatus::sequence_exhausted : UpdateStatus::epoch_exhausted);
 }
@@ -147,6 +152,8 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
   // memory for two complete databases. Desired configuration stays in the shell.
   instance.local.reset();
   instance.process.reset();
+  instance.consumed_decision_revision.fill(0U);
+  instance.decision_status.fill(DecisionStatus::invalid);
   instance.revision.fill(0U);
   instance.expiration_revision.fill(0U);
   for (auto &blocked : instance.expiration_blocked) blocked.clear();

@@ -326,6 +326,7 @@ add_library(router_network STATIC
   src/isis/isis_control_update_egress.cpp
   src/isis/isis_control_update_lifetime.cpp
   src/isis/isis_control_origin.cpp
+  src/isis/isis_control_decision.cpp
   src/isis/isis_control_neighbors.cpp
   src/isis/isis_control_self.cpp
   src/runtime/capture_store.cpp

@@ -7,6 +7,7 @@
 #include "router/isis_instance_update.hpp"
 #include "router/isis_local_lsp_set.hpp"
 #include "router/isis_neighbor_origination.hpp"
+#include "router/isis_p2p_decision.hpp"
 #include "router/isis_database_validation.hpp"
 #include "router/isis_sequence_recovery.hpp"
 #include "router/owned_spsc_channel.hpp"
@@ -72,6 +73,9 @@ struct LocalOriginProgram {
   // Emulator allocation recovery policy, supplied explicitly by its owner.
   std::chrono::milliseconds resource_retry{};
 };
+// Experimental wide MT0 decision budgets. No production routing or timer
+// defaults are inferred; root peers come from this owner's actual circuits.
+struct P2pDecisionProgram { std::size_t nodes{}, links{}, pending{}; };
 struct UpdateInstanceProgram {
   packet::isis::SystemId local{};
   std::uint8_t maximum_areas{};
@@ -81,6 +85,7 @@ struct UpdateInstanceProgram {
   std::uint16_t wire_instance{};
   packet::isis::InstanceFormat format{packet::isis::InstanceFormat::standard};
   std::optional<LocalOriginProgram> origination{};
+  std::optional<P2pDecisionProgram> decision{};
 };
 struct ControlCommand {
   std::uint64_t id{};
@@ -140,6 +145,9 @@ struct ControlResult {
   std::array<std::uint64_t, 2U> database_validations{}, decision_revisions{};
   std::optional<packet::isis::LspId> corrupted_lsp{};
   std::optional<packet::isis::LspView> selected_lsp{};
+  std::array<std::uint64_t, 2U> decision_runs{};
+  std::array<std::optional<std::uint32_t>, 2U> selected_cost{};
+  std::array<DecisionStatus, 2U> decision_status{DecisionStatus::invalid, DecisionStatus::invalid};
   bool sequence_recovery_pending{};
   UpdateStatus update_status{UpdateStatus::inactive};
   LocalContentResult local_content_result{LocalContentResult::missing};
@@ -180,6 +188,9 @@ private:
     // the old databases before allocating fresh storage within the same budget.
     std::unique_ptr<InstanceUpdateProcess> process;
     std::unique_ptr<LocalLspSet> local;
+    std::array<std::unique_ptr<P2pRouteDecision>, 2U> decisions;
+    std::array<std::uint64_t, 2U> consumed_decision_revision{}, decision_runs{};
+    std::array<DecisionStatus, 2U> decision_status{DecisionStatus::invalid, DecisionStatus::invalid};
     struct NeighborProjection { packet::isis::SystemId peer{}; Levels usage{Levels::none}; bool up{}; };
     // Fixed slots follow sorted configured interface IDs. This owner rewrites
     // the projection only while composing dirty roots; it contains no pointers.
@@ -198,6 +209,9 @@ private:
             configuration.local, configuration.maximum_areas, configuration.levels, circuits,
             UpdateInstanceSelector{configuration.format, configuration.wire_instance},
             configuration.maximum_circuits, epoch)) {
+      if (configuration.decision) for (std::size_t level{}; level < 2U; ++level)
+        if (configuration.levels[level]) decisions[level] = std::make_unique<P2pRouteDecision>(
+            configuration.decision->nodes, configuration.decision->links, configuration.decision->pending, MetricStyle::wide);
       for (std::size_t level{}; level < 2U; ++level)
         if (configuration.levels[level]) expiration_blocked[level].reserve(configuration.levels[level]->database.records);
       if (configuration.origination) {
@@ -320,6 +334,8 @@ private:
   [[nodiscard]] static ControlError prepare_neighbor_origination(UpdateInstanceProgram &program) noexcept;
   [[nodiscard]] bool compose_local_neighbors(OwnedInstance &instance, const DeviceState &device,
       std::size_t index, LocalLspSet &target, RuntimeClock::time_point now, std::size_t &budget) noexcept;
+  void service_p2p_decision(OwnedInstance &instance, const DeviceState &device, std::size_t index,
+      RuntimeClock::time_point now, std::size_t &budget) noexcept;
   [[nodiscard]] ControlError edit_local_content(ControlCommand &command, OwnedInstance &instance,
       ControlResult &result) noexcept;
   [[nodiscard]] RuntimeClock::time_point stop_local_instance(DeviceState &device, std::size_t index,
