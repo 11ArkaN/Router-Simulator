@@ -135,6 +135,41 @@ UpdateCircuitConfiguration ControlWorker::update_configuration(const OwnedCircui
       view.broadcast, view.neighbor_capacity};
 }
 
+ControlError ControlWorker::validate_update_program(UpdateInstanceProgram &program) const noexcept {
+  if (!program.maximum_circuits || program.maximum_circuits > maximum_circuits_ || !valid_transmission(program.transmission) ||
+      !valid_origination(program) || program.format > packet::isis::InstanceFormat::standard) return ControlError::invalid_argument;
+  if (program.wire_instance) return ControlError::unsupported_update_instance;
+  for (const auto &level : program.levels)
+    if (level && (level->authenticate_lsp || level->authenticate_csnp || level->authenticate_psnp))
+      return ControlError::unsupported_authentication;
+  const bool routing = std::any_of(program.routing.begin(), program.routing.end(),
+      [](const auto &family) { return family.has_value(); });
+  if ((program.decision || routing) && (!program.origination ||
+      (!program.origination->neighbors && !program.origination->broadcast_neighbors)))
+    return ControlError::unsupported_origination;
+  if (program.decision) {
+    const auto protocol = program.decision->protocol;
+    if ((protocol && *protocol != packet::isis::ipv4_nlpid && *protocol != packet::isis::ipv6_nlpid) ||
+        (program.decision->prefixes && !protocol)) return ControlError::invalid_argument;
+  }
+  for (std::size_t family{}; family < program.routing.size(); ++family)
+    if (program.routing[family]) {
+      const auto &routing_program = *program.routing[family];
+      const auto protocol = family ? packet::isis::ipv6_nlpid : packet::isis::ipv4_nlpid;
+      if (routing_program.calculation.protocol != protocol || !routing_program.calculation.prefixes)
+        return ControlError::invalid_argument;
+      for (std::size_t level{}; level < routing_program.preferences.size(); ++level) if (program.levels[level]) {
+        const auto &preference = routing_program.preferences[level];
+        if (!preference.internal || preference.internal > 255U || !preference.external || preference.external > 255U)
+          return ControlError::invalid_argument;
+      }
+    }
+  const auto neighbor_error = prepare_neighbor_origination(program);
+  if (neighbor_error != ControlError::none) return neighbor_error;
+  if ((program.decision || routing) && !catalog_budget(*program.origination)) return ControlError::capacity;
+  return ControlError::none;
+}
+
 ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceState &device) noexcept {
   const auto index = command.identity.instance;
   if (!command.update || !command.update->maximum_circuits ||
@@ -151,34 +186,8 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
   // Hello transport alone must not silently enable an incomplete MI database.
   if (command.update->wire_instance) return ControlError::unsupported_update_instance;
   if (device.update_fences[index] == std::numeric_limits<std::uint64_t>::max()) return ControlError::epoch_exhausted;
-  for (const auto &level : command.update->levels)
-    if (level && (level->authenticate_lsp || level->authenticate_csnp || level->authenticate_psnp))
-      return ControlError::unsupported_authentication;
-  const bool routing = std::any_of(command.update->routing.begin(), command.update->routing.end(),
-      [](const auto &family) { return family.has_value(); });
-  if ((command.update->decision || routing) && (!command.update->origination ||
-      (!command.update->origination->neighbors && !command.update->origination->broadcast_neighbors)))
-    return ControlError::unsupported_origination;
-  if (command.update->decision) {
-    const auto protocol = command.update->decision->protocol;
-    if ((protocol && *protocol != packet::isis::ipv4_nlpid && *protocol != packet::isis::ipv6_nlpid) ||
-        (command.update->decision->prefixes && !protocol)) return ControlError::invalid_argument;
-  }
-  for (std::size_t family{}; family < command.update->routing.size(); ++family)
-    if (command.update->routing[family]) {
-      const auto &program = *command.update->routing[family];
-      const auto protocol = family ? packet::isis::ipv6_nlpid : packet::isis::ipv4_nlpid;
-      if (program.calculation.protocol != protocol || !program.calculation.prefixes)
-        return ControlError::invalid_argument;
-      for (std::size_t level{}; level < program.preferences.size(); ++level) if (command.update->levels[level]) {
-        const auto &preference = program.preferences[level];
-        if (!preference.internal || preference.internal > 255U || !preference.external || preference.external > 255U)
-          return ControlError::invalid_argument;
-      }
-    }
-  const auto neighbor_error = prepare_neighbor_origination(*command.update);
-  if (neighbor_error != ControlError::none) return neighbor_error;
-  if ((command.update->decision || routing) && !catalog_budget(*command.update->origination)) return ControlError::capacity;
+  const auto valid_program = validate_update_program(*command.update);
+  if (valid_program != ControlError::none) return valid_program;
   try {
     std::unique_ptr<SequenceRecovery> recovery;
     if (command.update->origination) {

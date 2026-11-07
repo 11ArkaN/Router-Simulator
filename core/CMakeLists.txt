@@ -347,6 +347,10 @@ add_library(router_network STATIC
   src/isis/isis_control_lan_update.cpp
   src/isis/isis_control_lan_origin.cpp
   src/isis/isis_control_worker.cpp
+  src/isis/isis_control_checkpoint_capture.cpp
+  src/isis/isis_control_checkpoint_instance.cpp
+  src/isis/isis_control_checkpoint_circuit.cpp
+  src/isis/isis_control_checkpoint_restore.cpp
   src/isis/isis_control_update.cpp
   src/isis/isis_control_update_egress.cpp
   src/isis/isis_control_update_lifetime.cpp
@@ -610,11 +614,14 @@ if(ROUTER_BUILD_TESTS)
     tests/forwarding/llc_packet_test.cpp
     tests/forwarding/router_forwarder_isis_test.cpp
     tests/runtime/protocol_packet_channel_test.cpp
+    tests/runtime/protocol_packet_checkpoint_test.cpp
     tests/runtime/protocol_packet_completion_test.cpp
     tests/runtime/protocol_owner_lifecycle_test.cpp
     tests/runtime/protocol_transmission_test.cpp
     tests/runtime/route_publication_test.cpp
+    tests/runtime/route_publication_checkpoint_test.cpp
     tests/runtime/owned_spsc_channel_test.cpp
+    tests/runtime/owned_spsc_checkpoint_test.cpp
     tests/isis/isis_three_way_test.cpp
     tests/isis/isis_prefix_attributes_test.cpp
     tests/isis/isis_reachability_test.cpp
@@ -633,6 +640,8 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_p2p_wire_test.cpp
     tests/isis/isis_p2p_circuit_test.cpp
     tests/isis/isis_control_worker_test.cpp
+    tests/isis/isis_checkpoint_barrier_test.cpp
+    tests/isis/isis_checkpoint_time_test.cpp
     tests/isis/isis_lan_circuit_test.cpp
     tests/isis/isis_broadcast_scan_test.cpp
     tests/isis/isis_jitter_test.cpp

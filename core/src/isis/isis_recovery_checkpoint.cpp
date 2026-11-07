@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <limits>
 
 namespace router::isis {
 SequenceRecoveryCheckpoint SequenceRecovery::checkpoint(RuntimeClock::time_point now) const {
@@ -30,6 +31,18 @@ bool SequenceRecovery::restore(const SequenceRecoveryCheckpoint &saved, RuntimeC
   disabled_ = saved.disabled;
   saturated_ = saved.saturated;
   return true;
+}
+std::optional<SequenceRecovery> SequenceRecovery::restore_checkpoint(const SequenceRecoveryCheckpoint &saved,
+    RuntimeClock::time_point now) noexcept {
+  const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(saved.cooldown);
+  const auto retry = std::chrono::duration_cast<std::chrono::milliseconds>(saved.resource_retry);
+  constexpr auto maximum = static_cast<std::uint32_t>(std::numeric_limits<std::uint16_t>::max()) * 2U;
+  if (seconds < std::chrono::seconds{2} || seconds > std::chrono::seconds{maximum} ||
+      saved.cooldown != std::chrono::duration_cast<RuntimeClock::duration>(seconds) || retry.count() <= 0 ||
+      retry > std::chrono::duration_cast<std::chrono::milliseconds>(RuntimeClock::duration::max()) ||
+      saved.resource_retry != std::chrono::duration_cast<RuntimeClock::duration>(retry)) return std::nullopt;
+  SequenceRecovery result(RestoredPolicy{}, saved.cooldown, saved.resource_retry);
+  return result.restore(saved, now) ? std::optional{result} : std::nullopt;
 }
 DatabaseValidationCheckpoint DatabaseValidation::checkpoint(RuntimeClock::time_point now) const {
   const auto due = checkpoint_time::offset(due_, now);

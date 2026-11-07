@@ -1,6 +1,18 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  persistence.isis_control_checkpoint_capture:
+    status: partially-implemented
+    source_ids: [project.isis.control_checkpoint_capture]
+  runtime.quiescent_owned_checkpoint:
+    status: partially-implemented
+    source_ids: [project.runtime.quiescent_owned_checkpoint]
+  runtime.isis_control_checkpoint_barrier:
+    status: partially-implemented
+    source_ids: [project.isis.control_checkpoint_barrier]
+  runtime.quiescent_packet_checkpoint:
+    status: partially-implemented
+    source_ids: [project.runtime.quiescent_packet_checkpoint]
   persistence.isis_decision_checkpoint:
     status: partially-implemented
     source_ids: [project.isis.decision_checkpoint]

@@ -58,4 +58,18 @@ void isis_sequence_recovery_tests() {
       waiting.recovered(now + 50ms));
   require(resumed.restore(waiting.checkpoint(now + 50ms), rebased) && !resumed.disabled());
 
+  const auto orphan = SequenceRecovery::restore_checkpoint(saved, rebased);
+  require(orphan && orphan->disabled() && orphan->deadline() == rebased + 959500ms);
+  for (unsigned invalid{}; invalid < 5U; ++invalid) {
+    auto bad = saved;
+    switch (invalid) {
+      case 0U: bad.cooldown = 1s; break;
+      case 1U: bad.cooldown = 131071s; break;
+      case 2U: bad.cooldown += 1ns; break;
+      case 3U: bad.resource_retry = 0ns; break;
+      default: bad.resource_retry += 1ns; break;
+    }
+    require(!SequenceRecovery::restore_checkpoint(bad, rebased));
+  }
+
 }

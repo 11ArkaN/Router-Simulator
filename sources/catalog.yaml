@@ -1,5 +1,61 @@
 schema_version: 1
 records:
+  - id: project.isis.control_checkpoint_capture
+    kind: protocol-owner-state-capture
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-runtime-ownership-contract
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0008-quiescent-protocol-channel-checkpoints.md
+    section: Post-acknowledgement owned-state capture
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/isis_control_checkpoint.hpp, core/src/isis/isis_control_checkpoint_capture.cpp, core/src/isis/isis_control_checkpoint_instance.cpp, core/src/isis/isis_control_checkpoint_circuit.cpp, core/src/isis/isis_control_checkpoint_restore.cpp, core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp, core/include/router/isis_checkpoint_time.hpp]
+    tests: [core/tests/isis/isis_checkpoint_barrier_test.cpp, core/tests/isis/isis_checkpoint_time_test.cpp]
+    status: experimental
+    notes: The quiescent protocol owner captures router registrations, instance policies, child databases and local/decision state, exact circuit reservations, egress pacing/retry state, former-DIS work, retained recovery gates, fair cursors and route publication stamps into detached owned values. A synchronous transfer rejects absent/stale barrier tokens and timestamps predating entry into quiescence or lying in the future. Capture stages the complete destination before replacement and consumes no protocol or channel work. Deadline sentinels retain immediate/never semantics separately from finite observed ages. Detached restoration validates admission policy and child images before constructing heap-stable candidate instances and circuits. Preparation, single-use commit and abort require the current barrier; pending preparation blocks barrier release. Commit swaps registries without allocation and never rewinds barrier high water. Joined forwarding/channel/link capture and protected structural serialization remain pending.
+  - id: project.runtime.quiescent_owned_checkpoint
+    kind: owned-generation-channel-checkpoint
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-runtime-ownership-contract
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0008-quiescent-protocol-channel-checkpoints.md
+    section: Five-role owned-value transfer and route receipt restoration
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/channel_checkpoint_partition.hpp, core/include/router/owned_spsc_channel.hpp, core/include/router/route_publication.hpp]
+    tests: [core/tests/runtime/owned_spsc_channel_test.cpp, core/tests/runtime/owned_spsc_checkpoint_test.cpp, core/tests/runtime/route_publication_test.cpp, core/tests/runtime/route_publication_checkpoint_test.cpp]
+    status: experimental
+    notes: The shared partition validator preserves free-stack, ready, borrowed, returned and producer-edit roles. Detached preparation stages all copied owned values before a single-use allocation-free commit. Values construct directly in heap storage even when larger than the protocol stack. Route restoration validates pending/final result ownership and rebinds consumer and producer pointer projections into new slots, preserving explicit installation refusals and both family payloads. Queued route admissibility remains with the RIB owner. Tests inject copy failure, mutate the detached source after preparation, destroy old channels and transfer a 2 MiB payload using the default 1 MiB native stack. Joined runtime barriers and structural persistence remain pending.
+  - id: project.isis.control_checkpoint_barrier
+    kind: protocol-owner-quiescence
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-runtime-ownership-contract
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0008-quiescent-protocol-channel-checkpoints.md
+    section: Protocol-owner acknowledgement and matching barrier release
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp]
+    tests: [core/tests/isis/isis_checkpoint_barrier_test.cpp]
+    status: experimental
+    notes: Internal commands acquire a monotonic owner-local quiescence token through the existing result-ring acknowledgement. Prepared generations, nested acquisition, stale release and configuration mutation while quiescent refuse explicitly. The paused owner handles only worker-status, matching release and shutdown, without touching protocol channels, route receipts, timers or output. The test holds actual pending ingress and a physical completion across multiple Hello periods, then resumes ordinary processing. Joined protocol snapshots, forwarding/link barrier orchestration and protected persistence remain pending.
+  - id: project.runtime.quiescent_packet_checkpoint
+    kind: shared-frame-channel-checkpoint
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-runtime-ownership-contract
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0008-quiescent-protocol-channel-checkpoints.md
+    section: Quiescent slot partition, ring ordering and restoration
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/channel_checkpoint_partition.hpp, core/include/router/spsc_ring.hpp, core/include/router/protocol_packet_channel.hpp, docs/adr/0008-quiescent-protocol-channel-checkpoints.md]
+    tests: [core/tests/runtime/protocol_packet_channel_test.cpp, core/tests/runtime/protocol_packet_completion_test.cpp, core/tests/runtime/protocol_packet_checkpoint_test.cpp]
+    status: experimental
+    notes: Same-barrier transfers preserve producer free-stack order, ready FIFO, consumer-borrowed handles and unconsumed return FIFO with exact occupied metadata and wire prefixes. Complete partition validation precedes allocation-free restoration in existing slots. Free wire bytes are omitted, and protocol-specific frame/reservation cross-checks remain with the enclosing coordinator. Both producer and consumer must acknowledge quiescence before cross-owned fields are read or replaced. Whole-runtime barrier, link receipt joins and protected serialization remain pending.
   - id: project.isis.decision_checkpoint
     kind: local-routing-decision-checkpoint
     release: 26.7.R1
@@ -41,7 +97,7 @@ records:
     implementation: [core/include/router/isis_instance_update.hpp, core/src/isis/isis_instance_update.cpp, core/src/isis/isis_instance_update_checkpoint.cpp, core/include/router/isis_lsp_generation.hpp, core/src/isis/isis_lsp_generation_checkpoint.cpp, core/include/router/isis_local_lsp_set.hpp, core/src/isis/isis_local_lsp_set_checkpoint.cpp, core/include/router/isis_sequence_recovery.hpp, core/include/router/isis_database_validation.hpp, core/src/isis/isis_recovery_checkpoint.cpp]
     tests: [core/tests/isis/isis_instance_update_test.cpp, core/tests/isis/isis_instance_checkpoint_test.cpp, core/tests/isis/isis_lsp_generation_test.cpp, core/tests/isis/isis_local_lsp_checkpoint_test.cpp, core/tests/isis/isis_sequence_recovery_test.cpp, core/tests/isis/isis_database_validation_test.cpp]
     status: experimental
-    notes: Versioned instance snapshots join both independent level owners, accepted peer catalogs, stable slots, synchronization epochs and admission counters. Restore validates parent policy and bindings before publishing a fresh owner without constructing disposable levels. Inactive levels can retain a previous medium until reactivation. The effective purge reservation uses the normal constructor policy. Local generation snapshots preserve relative refresh and hold-down timers, independent random state, observed sequence floors, pending tickets and blocked or exhausted work. Semantic snapshots retain reserved identities, withdrawn pseudonodes, retirement work, overload projections and round-robin progress. Recovery snapshots preserve effective cooldown/retry policy and terminal clock saturation; integrity scans retain their ordered identity cursor, random continuation and latched corruption. Whole-runtime capture, protected persistence and transport barrier integration remain pending.
+    notes: Versioned instance snapshots join both independent level owners, accepted peer catalogs, stable slots, synchronization epochs and admission counters. Restore validates parent policy and bindings before publishing a fresh owner without constructing disposable levels. Inactive levels can retain a previous medium until reactivation. The effective purge reservation uses the normal constructor policy. Local generation snapshots preserve relative refresh and hold-down timers, independent random state, observed sequence floors, pending tickets and blocked or exhausted work. Semantic snapshots retain reserved identities, withdrawn pseudonodes, retirement work, overload projections and round-robin progress. Retained recovery gates restore directly from validated effective cooldown/retry policy after their entity is removed. Recovery snapshots preserve effective cooldown/retry policy and terminal clock saturation; integrity scans retain their ordered identity cursor, random continuation and latched corruption. Whole-runtime capture, protected persistence and transport barrier integration remain pending.
   - id: project.isis.level_checkpoint
     kind: local-routing-level-checkpoint
     release: 26.7.R1
@@ -81,7 +137,7 @@ records:
     yang_path: null
     last_verified_at: 2026-11-07
     implementation: [core/include/router/isis_checkpoint_time.hpp, core/include/router/isis_lsdb.hpp, core/src/isis/isis_lsdb.cpp, core/src/isis/isis_lsdb_checkpoint.cpp, core/include/router/isis_level_database.hpp, core/src/isis/isis_level_database_checkpoint.cpp]
-    tests: [core/tests/isis/isis_lsdb_test.cpp, core/tests/isis/isis_lsdb_checkpoint_test.cpp, core/tests/isis/isis_level_database_test.cpp, core/tests/isis/isis_level_database_checkpoint_test.cpp]
+    tests: [core/tests/isis/isis_lsdb_test.cpp, core/tests/isis/isis_lsdb_checkpoint_test.cpp, core/tests/isis/isis_checkpoint_time_test.cpp, core/tests/isis/isis_level_database_test.cpp, core/tests/isis/isis_level_database_checkpoint_test.cpp]
     status: experimental
     notes: Same-owner versioned transfer values retain exact wire, allocation reservations, fractional installation ages, unfinalized expiry notifications and relative purge retirement. Restore validates level, limits, record order, identities, active checksums, timestamps and byte budgets before one atomic repository swap. Refusal preserves buffers and deadlines. Integer nanosecond conversion checks both signed clock endpoints; lifetime projection avoids signed subtraction overflow for long-expired records. The enclosing coordinator must protect secret-bearing wire and synchronize all owners before persisted serialization. The level snapshot also retains stable circuit slots, SRM/SSN and zero-sequence request metadata. Strict ordered identity matching proves every real LSP has exactly one metadata record and no placeholder shadows encoded state. Metadata allocations and cross-checks complete before the nested LSDB commits; only nonthrowing vector swaps follow. Active protocol barriers, remaining owners and the structural codec are not integrated yet.
   - id: project.runtime.isis_lan_transport

@@ -28,6 +28,10 @@
 
 namespace router::isis {
 
+struct ControlWorkerCheckpoint;
+struct ControlInstanceCheckpoint;
+struct ControlCircuitCheckpoint;
+
 struct ControlChannels {
   // One forwarding producer and this control consumer per ingress pair. Roles
   // reverse for egress; its receipt returns actual port-queue admission.
@@ -61,7 +65,8 @@ enum class ControlCommandKind : std::uint8_t {
   query_worker, register_device, remove_device, add_p2p_circuit,
   remove_circuit, query_circuit, prepare_generation, commit_generation,
   abort_generation, add_update_instance, remove_update_instance, query_update_instance, originate_lsp, shutdown,
-  query_sequence_recovery, replace_local_content, withdraw_local_content, add_lan_circuit
+  query_sequence_recovery, replace_local_content, withdraw_local_content, add_lan_circuit, begin_checkpoint_barrier, end_checkpoint_barrier, capture_checkpoint,
+  prepare_checkpoint_restore, commit_checkpoint_restore, abort_checkpoint_restore
 };
 // Exactly one medium is supplied. A broadcast program requires the legacy
 // P2P value to remain empty; selecting LAN never constructs a P2P state owner.
@@ -133,6 +138,7 @@ struct LanOriginInterface {
   std::uint8_t circuit{};
   std::size_t maximum_neighbors{};
   std::array<std::optional<P2pOriginMetric>, 2U> levels;
+  bool operator==(const LanOriginInterface &) const = default;
 };
 struct LocalOriginProgram {
   LocalLspProgram content;
@@ -146,6 +152,7 @@ struct LocalOriginProgram {
   // capacity. The same instance owner activates them from actual Up peers/DIS;
   // caller-supplied pseudonode bodies and overlapping P2P interfaces reject.
   std::optional<std::vector<LanOriginInterface>> broadcast_neighbors{};
+  bool operator==(const LocalOriginProgram &) const = default;
 };
 // Experimental wide MT0 decision budgets. No production routing or timer
 // defaults are inferred; root peers come from this owner's actual circuits.
@@ -155,14 +162,19 @@ struct P2pDecisionProgram {
   // an explicit IPv4/IPv6 NLPID and never implies forwarding installation.
   std::optional<std::uint8_t> protocol;
   std::optional<PrefixCollectionBudget> prefixes;
+  bool operator==(const P2pDecisionProgram &) const = default;
 };
 // Explicit effective configuration for experimental wide MT0 installation.
 // Family protocol and prefix budgets must be present; no vendor default is
 // inferred by this control owner. Preferences come from the configuration owner.
 struct P2pRouteFamilyProgram {
   P2pDecisionProgram calculation;
-  struct Preference { std::uint16_t internal{}, external{}; };
+  struct Preference {
+    std::uint16_t internal{}, external{};
+    bool operator==(const Preference &) const = default;
+  };
   std::array<Preference, 2U> preferences;
+  bool operator==(const P2pRouteFamilyProgram &) const = default;
 };
 struct UpdateInstanceProgram {
   packet::isis::SystemId local{};
@@ -175,10 +187,21 @@ struct UpdateInstanceProgram {
   std::optional<LocalOriginProgram> origination{};
   std::optional<P2pDecisionProgram> decision{};
   std::array<std::optional<P2pRouteFamilyProgram>, 2U> routing{};
+  bool operator==(const UpdateInstanceProgram &) const = default;
 };
 struct ControlCommand {
   std::uint64_t id{};
   ControlCommandKind kind{ControlCommandKind::query_worker};
+  // Serialized persistence coordinator. Begin requires zero and returns a new
+  // owner-local token; End must echo that exact token. No network information
+  // or clock is carried, and the token alone does not pause forwarding owners.
+  std::uint64_t checkpoint_barrier_epoch{};
+  // Internal synchronous transfer only. The serialized coordinator owns a
+  // ControlWorkerCheckpoint at this address and waits for this exact result
+  // before ending its lifetime. Neither pointer nor host epoch is persisted.
+  std::uintptr_t checkpoint_transfer{};
+  std::int64_t checkpoint_now_nanoseconds{};
+  std::uint64_t checkpoint_source_epoch{};
   CircuitIdentity identity;
   P2pCircuitConfiguration configuration;
   std::uint64_t random_state{};
@@ -209,7 +232,7 @@ enum class ControlError : std::uint8_t {
   none, invalid_argument, stale_device, stale_configuration, not_found,
   already_exists, capacity, unsupported_authentication, construction_failed,
   generation_pending, epoch_exhausted, update_refused, unsupported_update_instance, sequence_cooldown,
-  unsupported_origination, unsupported_update_medium
+  unsupported_origination, unsupported_update_medium, checkpoint_barrier_pending, stale_checkpoint_barrier
 };
 struct CircuitCounters {
   std::uint64_t received{};
@@ -228,6 +251,9 @@ struct CircuitCounters {
 };
 struct ControlResult {
   std::uint64_t id{};
+  // A nonzero value reports protocol-owner quiescence only. The result ring's
+  // release/acquire acknowledgement publishes all prior protocol state writes.
+  std::uint64_t checkpoint_barrier_epoch{};
   ControlError error{ControlError::none};
   P2pSnapshot adjacency{};
   bool broadcast_circuit{};
@@ -338,8 +364,8 @@ private:
     std::array<std::uint64_t, 2U> revision{}, expiration_revision{};
     std::array<std::vector<packet::isis::LspId>, 2U> expiration_blocked;
     OwnedInstance(UpdateInstanceProgram program, std::span<const UpdateCircuitConfiguration> circuits,
-        std::uint64_t epoch)
-        : configuration(std::move(program)), process(std::make_unique<InstanceUpdateProcess>(
+        std::uint64_t epoch, bool deferred = false)
+        : configuration(std::move(program)), process(deferred ? std::unique_ptr<InstanceUpdateProcess>{} : std::make_unique<InstanceUpdateProcess>(
             configuration.local, configuration.maximum_areas, configuration.levels, circuits,
             UpdateInstanceSelector{configuration.format, configuration.wire_instance},
             configuration.maximum_circuits, epoch)) {
@@ -500,14 +526,15 @@ private:
         return definition.broadcast && definition.configuration == P2pCircuitConfiguration{} && broadcast->matches(*definition.broadcast);
       return !definition.broadcast && p2p().configuration() == definition.configuration;
     }
-    OwnedCircuit(ControlCommand &command, PointToPointCircuit::Clock::time_point now)
+    OwnedCircuit(ControlCommand &command, PointToPointCircuit::Clock::time_point now,
+        std::optional<Medium> restored = {})
         : identity(command.identity),
           wire_instance(common(command).wire_instance),
           destinations(common(command).destinations()),
           update_transmission(command.update_transmission),
           format(common(command).instance_format.value_or(packet::isis::InstanceFormat::standard)),
           physical_point_to_point(!command.broadcast && command.configuration.physical_point_to_point),
-          circuit(make(command, now)),
+          circuit(restored ? std::move(*restored) : make(command, now)),
           transmission(command.identity.configuration_generation),
           lan_transmissions{protocol::TransmissionWindow(command.identity.configuration_generation),
               protocol::TransmissionWindow(command.identity.configuration_generation)}, random_state(command.random_state) {
@@ -580,6 +607,9 @@ private:
       CircuitUpdateView circuit, std::uint64_t interface_id) noexcept;
   [[nodiscard]] RuntimeClock::time_point service_update_lifetimes(OwnedInstance &instance,
       RuntimeClock::time_point now, std::size_t &budget) noexcept;
+  // Cold validation shares normal admission policy and prepares automatic
+  // identities in the caller-owned program. Failure publishes no live state.
+  [[nodiscard]] ControlError validate_update_program(UpdateInstanceProgram &program) const noexcept;
   [[nodiscard]] static ControlError prepare_neighbor_origination(UpdateInstanceProgram &program) noexcept;
   [[nodiscard]] static ControlError prepare_lan_origination(UpdateInstanceProgram &program,
       std::array<std::size_t, 2U> &root_octets) noexcept;
@@ -638,12 +668,40 @@ private:
   [[nodiscard]] RuntimeClock::time_point service_routes(DeviceState &device,
       RuntimeClock::time_point now) noexcept;
   void complete_routes(RuntimeClock::time_point now) noexcept;
+  // Protocol owner only with an acknowledged persistence barrier. Caller owns
+  // the destination until the synchronous operation completes. Capture stages
+  // every owned value before replacing the destination and can throw allocation,
+  // clock-range or invariant errors. No protocol/transport state is consumed.
+  [[nodiscard]] ControlWorkerCheckpoint capture_checkpoint(RuntimeClock::time_point now) const;
+  // Cold candidate construction only. Normal admission policy and child image
+  // validation precede publication; null refuses without touching live owners.
+  [[nodiscard]] std::unique_ptr<OwnedInstance> restore_checkpoint_instance(const ControlInstanceCheckpoint &saved,
+      RuntimeClock::time_point now) const noexcept;
+  // Detached circuit construction rebinds only to candidate instance owners.
+  // No live transport is consumed and refusal destroys the entire candidate.
+  [[nodiscard]] std::unique_ptr<OwnedCircuit> restore_checkpoint_circuit(const ControlCircuitCheckpoint &saved,
+      DeviceState &device, RuntimeClock::time_point now) const noexcept;
+  struct PreparedCheckpoint {
+    std::array<DeviceState, device_catalog::maximum_routers> devices;
+    std::size_t active_circuits{}, first_device{};
+    std::uint64_t source_epoch{};
+  };
+  // All allocation and validation complete before a candidate becomes visible.
+  // Commit only swaps owned registries under the unchanged transport barrier.
+  [[nodiscard]] std::unique_ptr<PreparedCheckpoint> prepare_checkpoint_restore(
+      const ControlWorkerCheckpoint &saved, std::uint64_t source_epoch, RuntimeClock::time_point now) const noexcept;
+  std::unique_ptr<PreparedCheckpoint> checkpoint_restore_;
   void run() noexcept;
   ControlChannels &channels_;
   std::size_t forwarding_shards_{};
   std::size_t maximum_circuits_{};
   std::size_t active_circuits_{};
   std::size_t first_device_{};
+  // This protocol pthread alone owns the monotonic barrier high water and
+  // current token. While active, only barrier release, worker status and shutdown
+  // run; protocol timers, channels and route publication remain untouched.
+  std::uint64_t checkpoint_barrier_counter_{}, checkpoint_barrier_epoch_{};
+  RuntimeClock::time_point checkpoint_barrier_started_{};
   std::array<DeviceState, device_catalog::maximum_routers> devices_;
   std::optional<PreparedGeneration> prepared_;
   protocol::OwnedSpscChannel<ControlCommand, device_catalog::isis_control_generation_slots> commands_;

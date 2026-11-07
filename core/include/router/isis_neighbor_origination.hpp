@@ -11,10 +11,12 @@ namespace router::isis {
 struct P2pOriginMetric {
   std::uint32_t wide{};
   std::optional<std::uint8_t> narrow;
+  bool operator==(const P2pOriginMetric &) const = default;
 };
 struct P2pOriginInterface {
   std::uint64_t interface_id{};
   std::array<std::optional<P2pOriginMetric>, 2U> levels;
+  bool operator==(const P2pOriginInterface &) const = default;
 };
 struct LspLinkCounts {
   std::uint32_t narrow{}, wide{};

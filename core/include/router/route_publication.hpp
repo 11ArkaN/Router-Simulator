@@ -19,6 +19,15 @@ template <std::size_t Capacity> class RoutePublicationChannel final {
   using Channel = protocol::OwnedSpscChannel<Publication, Capacity, true>;
 public:
   using Handle = typename Channel::Handle;
+  using Checkpoint = typename Channel::Checkpoint;
+  class PreparedRestore final {
+    friend class RoutePublicationChannel;
+    explicit PreparedRestore(std::unique_ptr<typename Channel::PreparedRestore> value) noexcept : channel_(std::move(value)) {}
+    std::unique_ptr<typename Channel::PreparedRestore> channel_;
+  public:
+    PreparedRestore(const PreparedRestore &) = delete;
+    PreparedRestore &operator=(const PreparedRestore &) = delete;
+  };
   struct Writable { Handle handle{}; RouteGeneration *generation{}; };
   struct Borrowed { Handle handle{}; const RouteGeneration *generation{}; };
   // Exactly one protocol producer and one RIB consumer per channel. FIFO in
@@ -59,6 +68,54 @@ public:
     const auto result = channel_.completion();
     return result ? std::optional{RouteInstallReceipt{result->value->routes.device,
         result->value->routes.generation, result->value->status}} : std::nullopt;
+  }
+  // Same quiescent coordinator after protocol and RIB owners acknowledge the
+  // barrier. Capture owns exact generations/results, may throw on allocation
+  // or a corrupt pointer projection, and consumes no installation receipt.
+  [[nodiscard]] Checkpoint checkpoint_quiescent(std::uint64_t barrier_epoch) const {
+    auto result = channel_.checkpoint_quiescent(barrier_epoch);
+    for (std::size_t index{}; index < Capacity; ++index)
+      if (borrowed_[index] != channel_.borrowed_value_quiescent(static_cast<Handle>(index)))
+        throw std::logic_error("Route checkpoint borrowed projection corrupted");
+    if (!valid_checkpoint(result, barrier_epoch)) throw std::logic_error("Route checkpoint result state corrupted");
+    return result;
+  }
+  // Validates transfer/result state, not RIB installation admissibility. A
+  // queued invalid route generation must still receive its ordinary refusal
+  // after resume rather than being installed or silently discarded by capture.
+  [[nodiscard]] static bool valid_checkpoint(const Checkpoint &saved, std::uint64_t expected_epoch) noexcept {
+    if (!Channel::valid_checkpoint(saved, expected_epoch)) return false;
+    std::array<bool, Capacity> returned{};
+    for (const auto handle : saved.returned) returned[handle] = true;
+    for (const auto &slot : saved.occupied)
+      if (slot.value.status > RouteInstallStatus::forwarding_failed ||
+          returned[slot.handle] == (slot.value.status == RouteInstallStatus::pending)) return false;
+    return true;
+  }
+  // Detached preparation stages every allocation before any channel commit.
+  // Invalid result state or failed value copy returns null without mutation.
+  [[nodiscard]] static std::unique_ptr<PreparedRestore> prepare_restore(const Checkpoint &saved,
+      std::uint64_t expected_epoch) noexcept {
+    if (!valid_checkpoint(saved, expected_epoch)) return nullptr;
+    auto prepared = Channel::prepare_restore(saved, expected_epoch);
+    if (!prepared) return nullptr;
+    try { return std::unique_ptr<PreparedRestore>{new PreparedRestore(std::move(prepared))}; }
+    catch (...) { return nullptr; }
+  }
+  // Both owners remain quiescent. One allocation-free commit restores exact
+  // values/credits and rebinds consumer pointers into the new slot storage.
+  // Stale/consumed preparation refuses before changing this projection.
+  [[nodiscard]] bool commit_quiescent(PreparedRestore &prepared, std::uint64_t expected_epoch) noexcept {
+    if (!prepared.channel_ || !channel_.commit_quiescent(*prepared.channel_, expected_epoch)) return false;
+    for (std::size_t index{}; index < Capacity; ++index)
+      borrowed_[index] = channel_.borrowed_value_quiescent(static_cast<Handle>(index));
+    return true;
+  }
+  // Quiescent coordinator only. Rebind an already reserved producer edit after
+  // restore, before producer resume. No acquisition or credit change occurs.
+  [[nodiscard]] RouteGeneration *editing_generation_quiescent(Handle handle) noexcept {
+    auto *publication = channel_.editing_value_quiescent(handle);
+    return publication ? &publication->routes : nullptr;
   }
 private:
   Channel channel_;

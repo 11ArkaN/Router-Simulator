@@ -39,7 +39,16 @@ public:
   // policy and preserves terminal clock saturation across host-epoch changes.
   [[nodiscard]] SequenceRecoveryCheckpoint checkpoint(RuntimeClock::time_point now) const;
   [[nodiscard]] bool restore(const SequenceRecoveryCheckpoint &saved, RuntimeClock::time_point now) noexcept;
+  // Same owner cold restoration of a retained gate after its entity was removed.
+  // The image retains effective policy even when no level configuration remains.
+  // Validate representable wire-lifetime sums, exact duration units and timer
+  // state before returning a value; nullopt refuses without allocation.
+  [[nodiscard]] static std::optional<SequenceRecovery> restore_checkpoint(const SequenceRecoveryCheckpoint &saved,
+      RuntimeClock::time_point now) noexcept;
 private:
+  struct RestoredPolicy {};
+  SequenceRecovery(RestoredPolicy, RuntimeClock::duration cooldown, RuntimeClock::duration resource_retry) noexcept
+      : cooldown_(cooldown), resource_retry_(resource_retry) {}
   void wait(RuntimeClock::time_point now, RuntimeClock::duration duration) noexcept;
   RuntimeClock::duration cooldown_, resource_retry_;
   RuntimeClock::time_point due_{};

@@ -16,6 +16,7 @@ struct LocalLspContent {
   // Cold-reserved identity and semantic buffer; false excludes it from current
   // generation without forgetting the sequence needed for later reuse.
   bool active{true};
+  bool operator==(const LocalLspContent &) const = default;
 };
 struct LocalLspLevelProgram {
   std::uint16_t maximum_age{}, maximum_pdu_octets{};
@@ -28,6 +29,7 @@ struct LocalLspProgram {
   // Same-owner value count; inactive reserved identities consume no LSDB record.
   [[nodiscard]] std::size_t active_records() const noexcept;
   std::uint64_t random{};
+  bool operator==(const LocalLspProgram &) const = default;
 };
 enum class LocalContentResult : std::uint8_t { unchanged, changed, missing, invalid, capacity };
 struct LocalGenerationResult {

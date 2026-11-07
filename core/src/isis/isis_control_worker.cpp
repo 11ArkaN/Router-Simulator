@@ -3,9 +3,11 @@
 // Device and configuration generations guard every ingress and completion.
 
 #include "router/isis_control_worker.hpp"
+#include "router/isis_control_checkpoint.hpp"
 
 #include <algorithm>
 #include <new>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 #include <type_traits>
@@ -280,6 +282,7 @@ void ControlWorker::retire_circuit(DeviceState &device, OwnedCircuit &circuit) n
 ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
   ControlResult result;
   result.id = command.id;
+  result.checkpoint_barrier_epoch = checkpoint_barrier_epoch_;
   result.thread_identity = identity_.load(std::memory_order_relaxed);
   result.active_circuits = static_cast<std::uint32_t>(active_circuits_);
   if (command.kind == ControlCommandKind::shutdown) {
@@ -287,6 +290,77 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     return result;
   }
   if (command.kind == ControlCommandKind::query_worker) return result;
+  if (command.kind == ControlCommandKind::begin_checkpoint_barrier) {
+    if (command.checkpoint_barrier_epoch) result.error = ControlError::invalid_argument;
+    else if (checkpoint_barrier_epoch_) result.error = ControlError::checkpoint_barrier_pending;
+    else if (prepared_) result.error = ControlError::generation_pending;
+    else if (checkpoint_barrier_counter_ == std::numeric_limits<std::uint64_t>::max()) result.error = ControlError::epoch_exhausted;
+    else {
+      checkpoint_barrier_started_ = RuntimeClock::now();
+      result.checkpoint_barrier_epoch = checkpoint_barrier_epoch_ = ++checkpoint_barrier_counter_;
+    }
+    return result;
+  }
+  if (command.kind == ControlCommandKind::end_checkpoint_barrier) {
+    if (!checkpoint_barrier_epoch_ || command.checkpoint_barrier_epoch != checkpoint_barrier_epoch_)
+      result.error = ControlError::stale_checkpoint_barrier;
+    else if (checkpoint_restore_) result.error = ControlError::generation_pending;
+    else result.checkpoint_barrier_epoch = checkpoint_barrier_epoch_ = 0U;
+    return result;
+  }
+  if (command.kind == ControlCommandKind::prepare_checkpoint_restore ||
+      command.kind == ControlCommandKind::commit_checkpoint_restore ||
+      command.kind == ControlCommandKind::abort_checkpoint_restore) {
+    if (!checkpoint_barrier_epoch_ || command.checkpoint_barrier_epoch != checkpoint_barrier_epoch_)
+      result.error = ControlError::stale_checkpoint_barrier;
+    else if (command.kind == ControlCommandKind::abort_checkpoint_restore) checkpoint_restore_.reset();
+    else if (command.kind == ControlCommandKind::commit_checkpoint_restore) {
+      if (!checkpoint_restore_ || checkpoint_restore_->source_epoch != command.checkpoint_source_epoch)
+        result.error = ControlError::stale_checkpoint_barrier;
+      else {
+        static_assert(std::is_nothrow_swappable_v<decltype(devices_)>);
+        devices_.swap(checkpoint_restore_->devices);
+        active_circuits_ = checkpoint_restore_->active_circuits;
+        first_device_ = checkpoint_restore_->first_device;
+        checkpoint_restore_.reset();
+        result.active_circuits = static_cast<std::uint32_t>(active_circuits_);
+      }
+    } else if (checkpoint_restore_) result.error = ControlError::generation_pending;
+    else {
+      const auto now = RuntimeClock::time_point{RuntimeClock::duration{command.checkpoint_now_nanoseconds}};
+      if (!command.checkpoint_transfer || now < checkpoint_barrier_started_ || now > RuntimeClock::now())
+        result.error = ControlError::invalid_argument;
+      else {
+        checkpoint_restore_ = prepare_checkpoint_restore(
+            *reinterpret_cast<const ControlWorkerCheckpoint *>(command.checkpoint_transfer), command.checkpoint_source_epoch, now);
+        if (!checkpoint_restore_) result.error = ControlError::invalid_argument;
+      }
+    }
+    return result;
+  }
+  if (command.kind == ControlCommandKind::capture_checkpoint) {
+    if (!checkpoint_barrier_epoch_ || command.checkpoint_barrier_epoch != checkpoint_barrier_epoch_) {
+      result.error = ControlError::stale_checkpoint_barrier;
+      return result;
+    }
+    const auto now = RuntimeClock::time_point{RuntimeClock::duration{command.checkpoint_now_nanoseconds}};
+    if (!command.checkpoint_transfer || now < checkpoint_barrier_started_ || now > RuntimeClock::now()) {
+      result.error = ControlError::invalid_argument;
+      return result;
+    }
+    if (checkpoint_restore_) { result.error = ControlError::generation_pending; return result; }
+    try {
+      auto staged = capture_checkpoint(now);
+      *reinterpret_cast<ControlWorkerCheckpoint *>(command.checkpoint_transfer) = std::move(staged);
+    } catch (const std::bad_alloc &) { result.error = ControlError::capacity; }
+      catch (const std::invalid_argument &) { result.error = ControlError::invalid_argument; }
+      catch (const std::exception &) { result.error = ControlError::construction_failed; }
+    return result;
+  }
+  if (checkpoint_barrier_epoch_) {
+    result.error = ControlError::checkpoint_barrier_pending;
+    return result;
+  }
   const auto handle = command.identity.device;
   if (!handle.generation || handle.index >= devices_.size()) { result.error = ControlError::invalid_argument; return result; }
   auto &device = devices_[handle.index];
@@ -653,6 +727,17 @@ void ControlWorker::run() noexcept {
       if (stop_.load(std::memory_order_acquire)) break;
     }
     if (stop_.load(std::memory_order_acquire)) break;
+    if (checkpoint_barrier_epoch_) {
+      // Command/result handling remains live, but neither protocol direction,
+      // route receipts nor any timer is touched after the barrier acknowledgement.
+      // A coalesced notification causes at most one extra paused command turn.
+      std::unique_lock lock(wait_mutex_);
+      wait_condition_.wait(lock, [&] {
+        return stop_.load(std::memory_order_acquire) || work_.load(std::memory_order_acquire) ||
+            (!pending_result && !commands_.empty());
+      });
+      continue;
+    }
     const auto now = PointToPointCircuit::Clock::now();
     complete_routes(now);
     for (std::size_t shard{}; shard < forwarding_shards_; ++shard) {

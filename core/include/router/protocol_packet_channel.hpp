@@ -1,13 +1,15 @@
 // Shared-memory frame channel between one producer shard and one consumer
 // shard. Each instance has one fixed direction, selected by its owner aggregate.
 // Handles cross two SPSC rings while storage remains in fixed shared slots.
-// No pointer, vector or postMessage copy crosses the ownership boundary.
+// Live transport sends no pointer, vector or postMessage copy across owners.
+// Quiescent persistence transfers are owned values outside the live rings.
 
 #pragma once
 
 #include "router/lab_registry.hpp"
 #include "router/packet.hpp"
 #include "router/spsc_ring.hpp"
+#include "router/channel_checkpoint_partition.hpp"
 
 #include <array>
 #include <cstddef>
@@ -15,6 +17,10 @@
 #include <limits>
 #include <optional>
 #include <type_traits>
+#include <algorithm>
+#include <span>
+#include <stdexcept>
+#include <vector>
 
 namespace router::protocol {
 
@@ -66,6 +72,24 @@ public:
     Metadata metadata{};
     const packet::Frame *frame{};
     bool enqueued{};
+  };
+
+  struct SlotCheckpoint {
+    Handle handle{};
+    Metadata metadata;
+    std::vector<std::uint8_t> bytes;
+  };
+  struct ReturnCheckpoint { Handle handle{}; bool enqueued{}; };
+  struct Checkpoint {
+    std::uint32_t version{1U};
+    std::uint64_t barrier_epoch{};
+    std::size_t capacity{Capacity};
+    bool with_completions{WithCompletions};
+    // Producer free-stack order and both ring FIFO orders are significant.
+    // Borrowed/occupied catalogs are canonical ascending handle order.
+    std::vector<Handle> available, ready, borrowed;
+    std::vector<ReturnCheckpoint> returned;
+    std::vector<SlotCheckpoint> occupied;
   };
 
   PacketChannel() noexcept : available_count_(Capacity) {
@@ -170,6 +194,91 @@ public:
       const auto &slot = slots_[handle];
       return predicate(slot.metadata, slot.frame);
     });
+  }
+
+  // Persistence coordinator only, after producer and consumer both acknowledge
+  // quiescence through release/acquire barriers. barrier_epoch is a nonzero
+  // snapshot-cohort identity, not a clock. Capture owns occupied wire prefixes
+  // and exact slot ownership; free-slot bytes are omitted. Allocation, invalid
+  // epoch or corrupt internal ownership can throw. No ring message is consumed.
+  // Secret-bearing wire requires protection by the enclosing persistence codec.
+  [[nodiscard]] Checkpoint checkpoint_quiescent(std::uint64_t barrier_epoch) const {
+    if (!barrier_epoch) throw std::invalid_argument("Protocol checkpoint requires a barrier epoch");
+    if (available_count_ > Capacity) throw std::logic_error("Protocol checkpoint free count corrupted");
+    Checkpoint result;
+    result.barrier_epoch = barrier_epoch;
+    result.available.assign(available_.begin(), available_.begin() + static_cast<std::ptrdiff_t>(available_count_));
+    result.ready = ready_.checkpoint_quiescent();
+    const auto returned = returned_.checkpoint_quiescent();
+    result.returned.reserve(returned.size());
+    for (const auto &value : returned) {
+      if constexpr (WithCompletions) result.returned.push_back({value.handle, value.enqueued});
+      else result.returned.push_back({value, false});
+    }
+    std::array<bool, Capacity> free{};
+    for (const auto handle : result.available) {
+      if (handle >= Capacity || free[handle]) throw std::logic_error("Protocol checkpoint free handles corrupted");
+      free[handle] = true;
+    }
+    result.occupied.reserve(Capacity - available_count_);
+    for (std::size_t index{}; index < Capacity; ++index) {
+      const auto handle = static_cast<Handle>(index);
+      if (borrowed_[index]) result.borrowed.push_back(handle);
+      if (free[index]) continue;
+      const auto &slot = slots_[index];
+      if (slot.frame.size() > slot.frame.bytes.size()) throw std::logic_error("Protocol checkpoint frame length corrupted");
+      const auto bytes = slot.frame.view();
+      result.occupied.push_back({handle, slot.metadata, {bytes.begin(), bytes.end()}});
+    }
+    if (!valid_checkpoint(result, barrier_epoch)) throw std::logic_error("Protocol checkpoint ownership corrupted");
+    return result;
+  }
+  // No owner access or allocation. Validates a complete disjoint partition and
+  // canonical occupied wire catalog. Protocol-specific metadata and matching
+  // frame/reservation identities remain the enclosing coordinator's contract.
+  [[nodiscard]] static bool valid_checkpoint(const Checkpoint &saved, std::uint64_t expected_epoch) noexcept {
+    if (!expected_epoch || saved.version != 1U || saved.barrier_epoch != expected_epoch || saved.capacity != Capacity ||
+        saved.with_completions != WithCompletions || saved.available.size() > Capacity || saved.ready.size() > Capacity ||
+        saved.borrowed.size() > Capacity || saved.returned.size() > Capacity ||
+        saved.occupied.size() != Capacity - saved.available.size()) return false;
+    const auto ownership = checkpoint::partition<Capacity>(saved.available, saved.ready, saved.borrowed, saved.returned,
+        {}, [](const ReturnCheckpoint &value) noexcept { return value.handle; });
+    if (!ownership) return false;
+    if constexpr (!WithCompletions) for (const auto &value : saved.returned) if (value.enqueued) return false;
+    for (std::size_t index{}; index < saved.occupied.size(); ++index) {
+      const auto &slot = saved.occupied[index];
+      if (slot.handle >= Capacity || (*ownership)[slot.handle] == checkpoint::SlotRole::available || slot.bytes.size() > packet::maximum_frame_octets ||
+          (index && saved.occupied[index - 1U].handle >= slot.handle)) return false;
+    }
+    // Count, ascending uniqueness and exclusion of free handles establish a
+    // bijection between every occupied role and its retained metadata/frame.
+    return true;
+  }
+  // Same quiescent coordinator, after validating all enclosing owners/channels.
+  // All old borrowed frame views expire. Refusal changes nothing; success uses
+  // existing slots and bounded handle-only scratch with no heap allocation.
+  // Resume must publish these writes before any old or new owner accesses them.
+  [[nodiscard]] bool restore_quiescent(const Checkpoint &saved, std::uint64_t expected_epoch) noexcept {
+    if (!valid_checkpoint(saved, expected_epoch)) return false;
+    std::array<ReturnValue, Capacity> returned{};
+    for (std::size_t index{}; index < saved.returned.size(); ++index) {
+      if constexpr (WithCompletions) returned[index] = {saved.returned[index].handle, saved.returned[index].enqueued};
+      else returned[index] = saved.returned[index].handle;
+    }
+    for (const auto &value : saved.occupied) {
+      auto &slot = slots_[value.handle];
+      slot.metadata = value.metadata;
+      slot.frame.length = static_cast<std::uint16_t>(value.bytes.size());
+      std::copy(value.bytes.begin(), value.bytes.end(), slot.frame.bytes.begin());
+    }
+    borrowed_.fill(false);
+    for (const auto handle : saved.borrowed) borrowed_[handle] = true;
+    std::copy(saved.available.begin(), saved.available.end(), available_.begin());
+    available_count_ = saved.available.size();
+    // Counts were bounded above, and these trivial ring copies cannot fail.
+    static_cast<void>(ready_.restore_quiescent(saved.ready));
+    static_cast<void>(returned_.restore_quiescent(std::span{returned}.first(saved.returned.size())));
+    return true;
   }
 
 private:
