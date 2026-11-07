@@ -31,12 +31,16 @@ struct UpdateCircuitConfiguration {
   packet::isis::InstanceFormat format{};
   std::uint16_t wire_instance{};
   std::array<packet::Mac, 2U> destinations{};
+  // Logical medium is independent of physical_point_to_point (RFC 5309).
+  // Broadcast peer capacity is an explicit emulator budget, per level.
+  bool broadcast{};
+  std::size_t neighbor_capacity{};
 };
 enum class UpdateStatus : std::uint8_t {
   applied, invalid_circuit, stale_configuration, invalid_event, epoch_exhausted,
   missing_observer, malformed, inactive, destination, instance, authentication,
   maximum_areas, receive_capacity, self_originated, level_refused, capacity, invalid_configuration, purge_options,
-  sequence_exhausted, database_corrupted
+  sequence_exhausted, database_corrupted, adjacency
 };
 // Same-owner lifecycle classification. Both failures retain the parent gate
 // until safe reconstruction; configuration may still replace Down bindings.
@@ -78,7 +82,7 @@ public:
   // entire instance; circuit admission cannot mix selectors. Standard nonzero
   // IIDs support ITID 0 here. The initial synchronization epoch must be
   // nonzero and exceed the parent-retained fence of any previous entity.
-  // This contract currently admits P2P only.
+  // Broadcast circuits reserve their accepted-peer storage before publication.
   InstanceUpdateProcess(packet::isis::SystemId local, std::uint8_t maximum_areas,
       std::array<std::optional<UpdateLevelConfiguration>, 2U> levels,
       std::span<const UpdateCircuitConfiguration> circuits, UpdateInstanceSelector selector,
@@ -111,6 +115,15 @@ public:
   // state and requires the enclosing instance to stop rather than reuse IDs.
   [[nodiscard]] UpdateStatus p2p(std::size_t circuit, std::uint64_t configuration_epoch,
       const P2pCircuitEvent &event, LevelObserver observer) noexcept;
+  // Same control owner supplies a sorted unique projection of this level's
+  // authenticated Up LAN neighbors. Values are copied without allocation;
+  // no view survives return. Empty withdraws the level and cancels receipts.
+  // A local DIS requires at least one Up neighbor. Membership/role changes
+  // preserve synchronization on an already active segment; first activation
+  // after the last Down advances its fence. Refusal leaves all state intact.
+  [[nodiscard]] UpdateStatus lan(std::size_t circuit, std::uint64_t configuration_epoch,
+      std::size_t level, std::span<const packet::Mac> neighbors, bool designated,
+      LevelObserver observer) noexcept;
   // Frame must be the actual ingress bytes for this circuit/configuration.
   // Performs level, destination, IID, adjacency, MRU, maximum-area and configured
   // authentication checks before LSDB mutation. Borrowed key expires on return.
@@ -221,7 +234,10 @@ private:
     std::uint64_t admission_ticket{};
     Levels active{Levels::none};
     packet::Mac peer{};
+    std::array<std::vector<packet::Mac>, 2U> lan_peers{};
   };
+  [[nodiscard]] static Circuit make_circuit(UpdateCircuitConfiguration configuration,
+      std::uint64_t initial_epoch);
   packet::isis::SystemId local_{};
   UpdateInstanceSelector selector_;
   std::uint8_t maximum_areas_{};

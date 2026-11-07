@@ -96,6 +96,71 @@ void delivered(void *opaque, const lab::MultiDeviceFabric::Delivery &delivery) {
 
 void isis_instance_update_tests() {
   auto now = RuntimeClock::time_point{100s};
+  {
+    const packet::Mac group{1U, 0x80U, 0xc2U, 0U, 0U, 0x14U};
+    const packet::Mac peer{2U, 0U, 0U, 0U, 0U, 2U};
+    const packet::Mac other{2U, 0U, 0U, 0U, 0U, 3U};
+    const std::array<packet::Mac, 1U> one{peer};
+    const std::array two{peer, other};
+    const std::array unsorted{other, peer};
+    auto configuration = level_configuration();
+    for (auto &level : configuration) {
+      level->authenticate_lsp = false;
+      level->authenticate_csnp = false;
+      level->authenticate_psnp = false;
+    }
+    const UpdateCircuitConfiguration binding{7U, Levels::both, false,
+        InstanceFormat::standard, 0U, {group, group}, true, 2U};
+    InstanceUpdateProcess lan({1U, 2U, 3U, 4U, 5U, 1U}, 3U, configuration,
+        std::array{binding}, {InstanceFormat::standard, 0U}, 2U, 41U);
+    const LevelObserver observer{nullptr, +[](void *, const LevelEvent &) noexcept {}};
+    require(lan.lan(0U, 6U, 0U, one, false, observer) == UpdateStatus::stale_configuration);
+    require(lan.lan(0U, 7U, 0U, unsorted, false, observer) == UpdateStatus::invalid_event);
+    require(!lan.outputs(0U, 0U));
+    require(lan.lan(0U, 7U, 0U, one, false, observer) == UpdateStatus::applied);
+    require(lan.outputs(0U, 0U)->synchronization_epoch == 41U && !lan.outputs(0U, 1U));
+    require(lan.p2p(0U, 7U, {}, observer) == UpdateStatus::invalid_event);
+    auto scratch = std::make_unique<PduScratch>();
+    auto frame = std::make_unique<packet::Frame>();
+    LspContents contents;
+    contents.header = {PduType::lsp_l1, {1U, 2U, 3U, 4U, 5U, 2U, 0U, 0U}, 1200U, 1U, 3U};
+    contents.maximum_pdu_octets = 1492U;
+    const auto built = build_lsp_pdu(contents, scratch->options, scratch->pdu);
+    require(built.status == LspBuildStatus::encoded && ethernet_pdu_into(*frame, other, group, built.bytes));
+    require(lan.receive(0U, 7U, *frame, {}, now, observer).status == UpdateStatus::adjacency &&
+        !lan.level(0U)->database().size());
+    std::copy(peer.begin(), peer.end(), frame->bytes.begin() + 6U);
+    require(lan.receive(0U, 7U, *frame, {}, now, observer).status == UpdateStatus::applied &&
+        lan.level(0U)->database().size() == 1U &&
+        !lan.level(0U)->database().flags(contents.header.id, 0U)->ssn);
+    require(lan.lan(0U, 7U, 0U, two, true, observer) == UpdateStatus::applied &&
+        lan.outputs(0U, 0U)->synchronization_epoch == 41U && lan.outputs(0U, 0U)->reservations.designated);
+    require(lan.lan(0U, 7U, 1U, std::span{&other, 1U}, false, observer) == UpdateStatus::applied);
+    // An L1 peer is not automatically a same-level L2 neighbor.
+    EthernetDecodeError decode_error{};
+    const auto received_wire = parse_ethernet_pdu(frame->view(), decode_error);
+    require(received_wire.has_value());
+    const auto pdu_offset = static_cast<std::size_t>(received_wire->pdu.bytes.data() - frame->bytes.data());
+    frame->bytes[pdu_offset + 4U] = static_cast<std::uint8_t>(PduType::lsp_l2);
+    require(lan.receive(0U, 7U, *frame, {}, now, observer).status == UpdateStatus::adjacency);
+    require(lan.lan(0U, 7U, 0U, {}, false, observer) == UpdateStatus::applied && !lan.outputs(0U, 0U));
+    require(lan.lan(0U, 7U, 0U, one, false, observer) == UpdateStatus::applied &&
+        lan.outputs(0U, 0U)->synchronization_epoch == 42U &&
+        lan.outputs(0U, 1U)->synchronization_epoch == 41U && lan.level(0U)->database().size() == 1U);
+    require(lan.lan(0U, 7U, 0U, {}, true, observer) == UpdateStatus::invalid_event);
+    require(lan.release_circuit(0U, 7U) == UpdateStatus::invalid_event);
+    require(lan.lan(0U, 7U, 0U, {}, false, observer) == UpdateStatus::applied &&
+        lan.lan(0U, 7U, 1U, {}, false, observer) == UpdateStatus::applied &&
+        lan.release_circuit(0U, 7U) == UpdateStatus::applied);
+    auto replacement = binding;
+    replacement.configuration_epoch = 8U;
+    replacement.neighbor_capacity = 3U;
+    require(lan.rebind_circuit(0U, replacement) == UpdateStatus::capacity);
+    replacement.neighbor_capacity = 2U;
+    require(lan.rebind_circuit(0U, replacement) == UpdateStatus::applied &&
+        lan.lan(0U, 8U, 0U, one, false, observer) == UpdateStatus::applied &&
+        lan.outputs(0U, 0U)->synchronization_epoch == 43U);
+  }
   Endpoint a(1U, now), b(2U, now);
   require(a.update.maximum_synchronization_epoch() == 41U && b.update.maximum_synchronization_epoch() == 41U);
   const auto destination_for_admission = a.circuit.configuration().hello_destination;

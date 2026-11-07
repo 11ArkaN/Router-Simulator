@@ -163,7 +163,7 @@ void isis_level_process_tests() {
       level.transient_acknowledgements() == 1U && level.database().size() == 1U);
   const auto another = wire(2U, 9U, 0U);
   require(level.receive_lsp(0U, 8U, another, now, observer).status == LevelStatus::capacity && !level.waiting());
-  require(level.receive_lsp(1U, 7U, another, now, observer).status == LevelStatus::unsupported_lan_acknowledgement);
+  require(level.receive_lsp(1U, 7U, another, now, observer).status == LevelStatus::capacity);
   require(level.circuit(0U, 8U, false, false, false, false, observer) == LevelStatus::applied &&
       !level.transient_acknowledgements() && !level.database().flags(id, 0U)->ssn);
   SnpTransmission lan;
@@ -180,6 +180,22 @@ void isis_level_process_tests() {
   }
   require(level.circuit(1U, 7U, true, true, false, false, observer) == LevelStatus::applied);
   require(!level.outputs(1U, 7U)->snp.complete(7U, lan.ticket, true, now).accepted);
+  // Unknown purge acknowledgements are mandatory even for the local DIS.
+  require(level.circuit(1U, 7U, true, true, true, false, observer) == LevelStatus::applied);
+  require(level.receive_lsp(1U, 7U, another, now, observer).status == LevelStatus::applied &&
+      level.transient_acknowledgements() == 1U && level.database().size() == 1U);
+  {
+    auto output = level.outputs(1U, 7U);
+    const auto saved_type = contents.header.type;
+    contents.header.type = PduType::psnp_l1;
+    const auto ack = output->snp.prepare(SnpEmission::transient_acknowledgement,
+        contents, output->designated, frame, *scratch, now);
+    require(ack.status == SnpExchangeStatus::encoded);
+    const auto receipt = queue(ack, 7U);
+    require(receipt.enqueued && output->snp.complete(receipt.epoch, receipt.ticket,
+        receipt.enqueued, now).accepted && !level.transient_acknowledgements() && level.database().size() == 1U);
+    contents.header.type = saved_type;
+  }
   const auto local_purge = wire(0U, 2U, 0U);
   require(level.originate(local_purge, now, OriginPurgeReason::lifetime_expired, observer).status == LevelStatus::invalid_configuration);
   require(level.originate(local_purge, now, OriginPurgeReason::initiated, observer).install == LspInstallResult::installed);

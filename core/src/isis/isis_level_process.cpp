@@ -171,8 +171,8 @@ LevelLspResult LevelProcess::receive_lsp(std::size_t circuit, std::uint64_t epoc
   if (result.install == LspInstallResult::installed && header)
     emit(notification, observer, header->id);
   if (!result.transient_acknowledgement) return {LevelStatus::applied, result, std::nullopt};
-  if (circuits_[circuit].configuration.broadcast)
-    return {LevelStatus::unsupported_lan_acknowledgement, result, std::nullopt};
+  // ISO 10589 7.3.16.4 acknowledges an unknown purge on its ingress
+  // circuit, including broadcast media, without retaining an LSDB entry.
   const auto admitted = acknowledgements_.admit(circuit, *result.transient_acknowledgement);
   const bool accepted = admitted.status == AcknowledgementAdmission::queued ||
       admitted.status == AcknowledgementAdmission::duplicate;

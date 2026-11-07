@@ -23,7 +23,10 @@ SnpTransmission SnpExchange::prepare(SnpEmission emission, SnpContents contents,
   const auto circuit = database_.circuit_state(circuit_);
   if (!circuit || !circuit->eligible) return {SnpExchangeStatus::ineligible};
   const bool is_complete = emission == SnpEmission::complete;
-  if (circuit->broadcast && ((is_complete && !designated) || (!is_complete && designated)))
+  // The DIS suppresses ordinary PSNPs, but an unknown-purge receipt is the
+  // explicit acknowledgement required by ISO 10589 7.3.16.4 on any circuit.
+  if (circuit->broadcast && ((is_complete && !designated) ||
+      (emission == SnpEmission::partial && designated)))
     return {SnpExchangeStatus::role_forbidden};
   const bool level1 = database_.type() == PduType::lsp_l1;
   const auto expected = is_complete ? (level1 ? PduType::csnp_l1 : PduType::csnp_l2)

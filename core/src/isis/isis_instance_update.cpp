@@ -27,6 +27,8 @@ bool valid_circuit(const UpdateCircuitConfiguration &circuit,
     UpdateInstanceSelector selector) noexcept {
   const auto mask = static_cast<std::uint8_t>(circuit.levels);
   if (!circuit.configuration_epoch || !mask || mask > 3U ||
+      (circuit.broadcast && (circuit.physical_point_to_point || !circuit.neighbor_capacity)) ||
+      (!circuit.broadcast && circuit.neighbor_capacity) ||
       circuit.format != selector.format || circuit.wire_instance != selector.wire_instance ||
       (circuit.format != packet::isis::InstanceFormat::standard &&
        circuit.format != packet::isis::InstanceFormat::legacy_2009)) return false;
@@ -35,6 +37,12 @@ bool valid_circuit(const UpdateCircuitConfiguration &circuit,
         (circuit.destinations[index][0U] & 1U) == 0U)) return false;
   return true;
 }
+}
+InstanceUpdateProcess::Circuit InstanceUpdateProcess::make_circuit(
+    UpdateCircuitConfiguration configuration, std::uint64_t initial_epoch) {
+  Circuit result{configuration, {initial_epoch, initial_epoch}};
+  for (auto &peers : result.lan_peers) peers.reserve(configuration.neighbor_capacity);
+  return result;
 }
 InstanceUpdateProcess::InstanceUpdateProcess(packet::isis::SystemId local,
     std::uint8_t maximum_areas,
@@ -56,7 +64,8 @@ InstanceUpdateProcess::InstanceUpdateProcess(packet::isis::SystemId local,
   for (const auto &circuit : circuits) {
     if (!valid_circuit(circuit, configuration_, selector_))
       throw std::invalid_argument("Invalid IS-IS update circuit generation");
-    circuits_.push_back({circuit, {initial_synchronization_epoch, initial_synchronization_epoch}});
+    circuits_.push_back(make_circuit(circuit, initial_synchronization_epoch));
+    slots[circuits_.size() - 1U].broadcast = circuit.broadcast;
   }
   for (std::size_t index{}; index < levels_.size(); ++index) {
     if (!configuration_[index]) continue;
@@ -92,6 +101,9 @@ UpdateCircuitAdmission InstanceUpdateProcess::admit_circuit(UpdateCircuitConfigu
     if (slot.configured) continue;
     if (configuration.configuration_epoch <= slot.configuration.configuration_epoch)
       return {UpdateStatus::stale_configuration, LevelStatus::stale_epoch, {}};
+    if (configuration.neighbor_capacity > slot.lan_peers[0U].capacity() ||
+        configuration.neighbor_capacity > slot.lan_peers[1U].capacity())
+      return {UpdateStatus::capacity, LevelStatus::capacity, {}};
     const auto previous_configuration = slot.configuration;
     slot.configuration = configuration;
     slot.configured = true;
@@ -101,12 +113,16 @@ UpdateCircuitAdmission InstanceUpdateProcess::admit_circuit(UpdateCircuitConfigu
   }
   if (circuits_.size() == maximum_circuits_) return {UpdateStatus::capacity, LevelStatus::capacity, {}};
   const auto index = circuits_.size();
-  try { circuits_.reserve(index + 1U); }
+  Circuit staged;
+  try {
+    staged = make_circuit(configuration, initial_synchronization_epoch_);
+    circuits_.reserve(index + 1U);
+  }
   catch (const std::bad_alloc &) { return {UpdateStatus::capacity, LevelStatus::capacity, {}}; }
   catch (const std::length_error &) { return {UpdateStatus::capacity, LevelStatus::capacity, {}}; }
   for (std::size_t level{}; level < levels_.size(); ++level) {
     if (!levels_[level]) continue;
-    const auto admitted = levels_[level]->admit_circuit({false, initial_synchronization_epoch_},
+    const auto admitted = levels_[level]->admit_circuit({configuration.broadcast, initial_synchronization_epoch_},
         configuration_[level]->snp_entry_capacity);
     if (admitted.status != LevelStatus::applied) {
       for (std::size_t previous{}; previous < level; ++previous)
@@ -115,7 +131,7 @@ UpdateCircuitAdmission InstanceUpdateProcess::admit_circuit(UpdateCircuitConfigu
     }
     if (admitted.index != index) std::terminate();
   }
-  circuits_.push_back({configuration, {initial_synchronization_epoch_, initial_synchronization_epoch_}});
+  circuits_.push_back(std::move(staged));
   circuits_.back().admission_pending = true;
   circuits_.back().admission_ticket = ++admission_ticket_;
   return {UpdateStatus::applied, LevelStatus::applied, index, true, configuration.configuration_epoch, circuits_.back().admission_ticket};
@@ -161,6 +177,8 @@ UpdateStatus InstanceUpdateProcess::rebind_circuit(std::size_t index,
   if (!valid_circuit(configuration, configuration_, selector_)) return UpdateStatus::invalid_configuration;
   if (configuration.configuration_epoch <= slot.configuration.configuration_epoch)
     return UpdateStatus::stale_configuration;
+  if (configuration.neighbor_capacity > slot.lan_peers[0U].capacity() ||
+      configuration.neighbor_capacity > slot.lan_peers[1U].capacity()) return UpdateStatus::capacity;
   slot.configuration = configuration;
   slot.configured = true;
   slot.admission_pending = false;
@@ -173,6 +191,7 @@ UpdateStatus InstanceUpdateProcess::p2p(std::size_t index, std::uint64_t configu
   if (index >= circuits_.size() || !circuits_[index].configured) return UpdateStatus::invalid_circuit;
   auto &circuit = circuits_[index];
   if (configuration_epoch != circuit.configuration.configuration_epoch) return UpdateStatus::stale_configuration;
+  if (circuit.configuration.broadcast) return UpdateStatus::invalid_event;
   const auto before = event.before.iso_up ? event.before.usage : Levels::none;
   const auto after = event.after.iso_up ? event.after.usage : Levels::none;
   const auto mask = static_cast<std::uint8_t>(after);
@@ -212,6 +231,40 @@ UpdateStatus InstanceUpdateProcess::p2p(std::size_t index, std::uint64_t configu
   return UpdateStatus::applied;
 }
 
+UpdateStatus InstanceUpdateProcess::lan(std::size_t index, std::uint64_t configuration_epoch,
+    std::size_t level, std::span<const packet::Mac> neighbors, bool designated,
+    LevelObserver observer) noexcept {
+  if (!observer.event) return UpdateStatus::missing_observer;
+  if (index >= circuits_.size() || !circuits_[index].configured) return UpdateStatus::invalid_circuit;
+  auto &circuit = circuits_[index];
+  if (configuration_epoch != circuit.configuration.configuration_epoch) return UpdateStatus::stale_configuration;
+  if (!circuit.configuration.broadcast || level >= levels_.size() ||
+      !includes(circuit.configuration.levels, level) || !levels_[level] ||
+      (designated && neighbors.empty())) return UpdateStatus::invalid_event;
+  if (neighbors.size() > circuit.configuration.neighbor_capacity) return UpdateStatus::capacity;
+  for (std::size_t peer{}; peer < neighbors.size(); ++peer)
+    if ((neighbors[peer][0U] & 1U) || neighbors[peer] == packet::Mac{} ||
+        (peer && !(neighbors[peer - 1U] < neighbors[peer]))) return UpdateStatus::invalid_event;
+  const bool was_up = includes(circuit.active, level), up = !neighbors.empty();
+  if (!was_up && up && circuit.activated[level] &&
+      circuit.synchronization_epochs[level] == std::numeric_limits<std::uint64_t>::max())
+    return UpdateStatus::epoch_exhausted;
+  const bool peers_changed = !std::equal(neighbors.begin(), neighbors.end(),
+      circuit.lan_peers[level].begin(), circuit.lan_peers[level].end());
+  if (!was_up && up && circuit.activated[level]) ++circuit.synchronization_epochs[level];
+  if (levels_[level]->circuit(index, circuit.synchronization_epochs[level], true,
+      up, designated, false, observer) != LevelStatus::applied) std::terminate();
+  circuit.lan_peers[level].assign(neighbors.begin(), neighbors.end());
+  circuit.activated[level] = circuit.activated[level] || up;
+  circuit.admission_pending = false;
+  const auto mask = static_cast<std::uint8_t>(1U << level);
+  circuit.active = static_cast<Levels>((static_cast<std::uint8_t>(circuit.active) & ~mask) | (up ? mask : 0U));
+  if (was_up && up && peers_changed)
+    observer.event(observer.context, {LevelEventKind::circuit_changed,
+        level ? packet::isis::PduType::lsp_l2 : packet::isis::PduType::lsp_l1, std::nullopt});
+  return UpdateStatus::applied;
+}
+
 UpdateReceiveResult InstanceUpdateProcess::receive(std::size_t index,
     std::uint64_t configuration_epoch, const packet::Frame &frame,
     std::optional<AuthenticationKey> key, RuntimeClock::time_point now,
@@ -244,6 +297,8 @@ UpdateReceiveResult InstanceUpdateProcess::receive_impl(std::size_t index,
   if (!selected) return {};
   const auto level = *selected;
   if (!includes(circuit.active, level) || !levels_[level]) return {UpdateStatus::inactive, level};
+  if (circuit.configuration.broadcast && !std::binary_search(circuit.lan_peers[level].begin(),
+      circuit.lan_peers[level].end(), wire->ethernet.source)) return {UpdateStatus::adjacency, level};
   if (wire->ethernet.destination != circuit.configuration.destinations[level])
     return {UpdateStatus::destination, level};
   const auto &effective = *configuration_[level];
