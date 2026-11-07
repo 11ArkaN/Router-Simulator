@@ -6,12 +6,8 @@
 
 namespace router::isis {
 
-std::optional<std::chrono::microseconds> jittered_interval(
-    std::chrono::microseconds base, std::uint64_t &state) noexcept {
-  if (base.count() <= 0 || !state) return std::nullopt;
-  // Architectural Jitter is 25%. Inclusive endpoints use one additional
-  // integer sample; sub-four-microsecond periods retain their single value.
-  const auto bound = static_cast<std::uint64_t>(base.count() / 4) + 1U;
+std::optional<std::uint64_t> random_below(std::uint64_t bound, std::uint64_t &state) noexcept {
+  if (!bound || !state) return std::nullopt;
   const auto threshold = (std::uint64_t{} - bound) % bound;
   std::uint64_t sample{};
   do {
@@ -20,7 +16,16 @@ std::optional<std::chrono::microseconds> jittered_interval(
     state ^= state >> 27U;
     sample = state * 0x2545f4914f6cdd1dULL;
   } while (sample < threshold);
-  return std::chrono::microseconds{base.count() - static_cast<std::int64_t>(sample % bound)};
+  return sample % bound;
+}
+
+std::optional<std::chrono::microseconds> jittered_interval(
+    std::chrono::microseconds base, std::uint64_t &state) noexcept {
+  if (base.count() <= 0 || !state) return std::nullopt;
+  // Architectural Jitter is 25%. Inclusive endpoints use one additional
+  // integer sample; sub-four-microsecond periods retain their single value.
+  const auto bound = static_cast<std::uint64_t>(base.count() / 4) + 1U;
+  return std::chrono::microseconds{base.count() - static_cast<std::int64_t>(*random_below(bound, state))};
 }
 
 } // namespace router::isis

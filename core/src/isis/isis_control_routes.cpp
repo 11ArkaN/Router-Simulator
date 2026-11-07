@@ -135,8 +135,8 @@ RuntimeClock::time_point ControlWorker::service_routes(DeviceState &device,
               [](const auto &entry, auto id) { return entry.interface_id < id; });
           if (found == interfaces.end() || found->interface_id != owned.identity.interface_id) continue;
           const auto token = static_cast<std::size_t>(found - interfaces.begin());
-          bindings[token] = select_next_hop(owned.circuit.adjacency(), owned.circuit.peer_attributes(),
-              owned.circuit.configuration().protocols,
+          bindings[token] = select_next_hop(owned.p2p().adjacency(), owned.p2p().peer_attributes(),
+              owned.p2p().configuration().protocols,
               {owned.identity.interface_id, owned.identity.configuration_generation, owned.identity.physical_port_ordinal},
               static_cast<std::uint8_t>(level + 1U), family ? ip::AddressFamily::ipv6 : ip::AddressFamily::ipv4);
         }

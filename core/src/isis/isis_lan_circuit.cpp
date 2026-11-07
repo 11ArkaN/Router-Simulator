@@ -199,6 +199,17 @@ bool LanCircuit::down(LanCircuitObserver observer) noexcept {
   return true;
 }
 
+bool LanCircuit::up(Clock::time_point now) noexcept {
+  if (operational_) return false;
+  hello_ = HelloSchedule(configuration_.hello_interval, true, false, hello_.random_state(), now);
+  election_ready_ = now + 2 * configuration_.hello_interval;
+  election_started_ = false;
+  std::copy(configuration_.local.system.begin(), configuration_.local.system.end(), advertised_lan_.begin());
+  advertised_lan_.back() = configuration_.local.circuit;
+  operational_ = true;
+  return true;
+}
+
 LanCircuit::Clock::time_point LanCircuit::deadline() const noexcept {
   if (!operational_) return Clock::time_point::max();
   auto result = hello_.deadline();

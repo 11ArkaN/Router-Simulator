@@ -68,7 +68,7 @@ bool ControlWorker::compose_local_neighbors(OwnedInstance &instance, const Devic
     const auto found = std::lower_bound(interfaces.begin(), interfaces.end(), owned.identity.interface_id,
         [](const auto &entry, auto id) { return entry.interface_id < id; });
     if (found == interfaces.end() || found->interface_id != owned.identity.interface_id) continue;
-    const auto adjacency = owned.circuit.adjacency();
+    const auto adjacency = owned.p2p().adjacency();
     instance.neighbor_projection[static_cast<std::size_t>(found - interfaces.begin())] =
         {adjacency.neighbor_system, adjacency.usage, adjacency.iso_up};
   }

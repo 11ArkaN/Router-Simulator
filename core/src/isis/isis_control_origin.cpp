@@ -117,7 +117,7 @@ RuntimeClock::time_point ControlWorker::stop_local_instance(DeviceState &device,
   // events. No process reservation survives the stopped entity's restart.
   for (auto &owned : device.circuits) if (owned.update == &instance) {
     owned.transmission.cancel();
-    static_cast<void>(owned.circuit.down(&owned, event));
+    circuit_down(owned);
   }
   device.update_fences[index] = std::max(device.update_fences[index], instance.process->maximum_synchronization_epoch());
   instance.status = reason;
@@ -142,7 +142,7 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
   }
   for (auto &owned : device.circuits) if (owned.identity.instance == index) {
     owned.transmission.cancel();
-    static_cast<void>(owned.circuit.down(&owned, event));
+    circuit_down(owned);
     owned.update_egress.reset();
   }
   // The old entity is disabled and no prepared admission borrows it. Free
@@ -165,7 +165,7 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
     for (std::size_t ordinal{}; ordinal < device.circuits.size(); ++ordinal) {
       const auto &owned = device.circuits[ordinal];
       if (owned.identity.instance != index) continue;
-      if (!matches_update_instance(instance.configuration, owned.circuit.configuration(), owned.identity.interface_id))
+      if (!matches_update_instance(instance.configuration, owned.p2p().configuration(), owned.identity.interface_id))
         throw std::invalid_argument("IS-IS recovery circuit does not match its entity");
       slots.push_back(update_configuration(owned));
       bindings.push_back(ordinal);
@@ -179,7 +179,7 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
     std::vector<std::unique_ptr<UpdateEgress>> egress;
     egress.reserve(bindings.size());
     for (const auto binding : bindings)
-      egress.push_back(std::make_unique<UpdateEgress>(instance, device.circuits[binding].random_state));
+      egress.push_back(std::make_unique<UpdateEgress>(instance, device.circuits[binding].random_state, device.circuits[binding].update_transmission));
     instance.local_roots_dirty.fill(true);
     std::size_t composition_budget{2U};
     if (!compose_local_neighbors(instance, device, index, *local, now, composition_budget))
@@ -205,7 +205,7 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
       owned.update = &instance;
       owned.update_slot = slot;
       owned.update_egress = std::move(egress[slot]);
-      static_cast<void>(owned.circuit.up(RuntimeClock::now()));
+      circuit_up(owned, RuntimeClock::now());
     }
     // Initial roots are installed, and the next loop schedules their ordinary
     // refresh deadlines along with Hello and update transmission work.

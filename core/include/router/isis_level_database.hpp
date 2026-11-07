@@ -124,6 +124,13 @@ public:
   [[nodiscard]] std::optional<FloodCircuit> circuit_state(std::size_t index) const noexcept {
     return index < circuits_.size() ? std::optional(circuits_[index]) : std::nullopt;
   }
+  // Same owner, no mutation between counting and indexed selection. These
+  // allocation-free LAN projections include retained SRM entries only, never
+  // zero-sequence placeholders. Ineligible slots return zero/no identity;
+  // invalid or non-broadcast slots return nullopt. Returned IDs own their bytes.
+  [[nodiscard]] std::optional<std::size_t> broadcast_srm_count(std::size_t circuit) const noexcept;
+  [[nodiscard]] std::optional<packet::isis::LspId> broadcast_srm_at(
+      std::size_t circuit, std::size_t ordinal) const noexcept;
   // Caller retains a separate scan cursor per circuit and advances it to the
   // returned cursor after selecting this batch. Selection never clears SSN.
   // The cyclic scan prevents low-ID churn from starving higher IDs; output

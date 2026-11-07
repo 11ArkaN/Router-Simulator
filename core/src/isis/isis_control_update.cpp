@@ -13,11 +13,6 @@
 
 namespace router::isis {
 namespace {
-bool valid_transmission(const UpdateTransmissionProgram &program) noexcept {
-  return program.partial_seconds && program.retransmit_seconds && program.transit_seconds &&
-      program.pacing_period.count() > 0 && program.pacing_period <= std::chrono::milliseconds{65535} &&
-      program.maximum_pdu_octets >= packet::isis::csnp_header_octets;
-}
 bool valid_origination(const UpdateInstanceProgram &program) noexcept {
   if (!program.origination) return true;
   const auto &local = program.origination->content;
@@ -31,8 +26,15 @@ bool valid_origination(const UpdateInstanceProgram &program) noexcept {
   return true;
 }
 }
-ControlWorker::UpdateEgress::UpdateEgress(const OwnedInstance &instance, std::uint64_t seed)
-    : random(seed ? seed : 1U) {
+bool ControlWorker::valid_transmission(const UpdateTransmissionProgram &program) noexcept {
+  return program.partial_seconds && program.retransmit_seconds && program.transit_seconds &&
+      program.pacing_period.count() > 0 && program.pacing_period <= std::chrono::milliseconds{65535} &&
+      program.maximum_pdu_octets >= packet::isis::csnp_header_octets;
+}
+
+ControlWorker::UpdateEgress::UpdateEgress(const OwnedInstance &instance, std::uint64_t seed,
+    const std::optional<UpdateTransmissionProgram> &override_program)
+    : program(override_program.value_or(instance.configuration.transmission)), random(seed ? seed : 1U) {
   std::size_t capacity{};
   for (const auto &level : instance.configuration.levels) if (level) {
     if (level->database.records > retries.max_size() - capacity)
@@ -94,7 +96,7 @@ void ControlWorker::OwnedInstance::level_event(void *context, const LevelEvent &
 }
 
 UpdateCircuitConfiguration ControlWorker::update_configuration(const OwnedCircuit &owned) noexcept {
-  return {owned.identity.configuration_generation, owned.circuit.configuration().local.levels,
+  return {owned.identity.configuration_generation, owned.p2p().configuration().local.levels,
       owned.physical_point_to_point, owned.format, owned.wire_instance, owned.destinations.levels};
 }
 
@@ -156,11 +158,12 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
     for (std::size_t ordinal{}; ordinal < device.circuits.size(); ++ordinal) {
       const auto &owned = device.circuits[ordinal];
       if (owned.identity.instance != index) continue;
-      const auto &configuration = owned.circuit.configuration();
+      if (owned.lan()) return ControlError::unsupported_update_medium;
+      const auto &configuration = owned.p2p().configuration();
       if (!matches_update_instance(*command.update, configuration, owned.identity.interface_id))
         return ControlError::invalid_argument;
       for (const auto previous : bindings)
-        if (device.circuits[previous].circuit.configuration().local.extended_circuit ==
+        if (device.circuits[previous].p2p().configuration().local.extended_circuit ==
             configuration.local.extended_circuit) return ControlError::already_exists;
       slots.push_back(update_configuration(owned));
       bindings.push_back(ordinal);
@@ -180,10 +183,10 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
     std::vector<std::unique_ptr<UpdateEgress>> egress;
     egress.reserve(bindings.size());
     for (const auto binding : bindings)
-      egress.push_back(std::make_unique<UpdateEgress>(*instance, device.circuits[binding].random_state));
+      egress.push_back(std::make_unique<UpdateEgress>(*instance, device.circuits[binding].random_state, device.circuits[binding].update_transmission));
     for (std::size_t slot{}; slot < bindings.size(); ++slot) {
       const auto &owned = device.circuits[bindings[slot]];
-      const auto adjacency = owned.circuit.adjacency();
+      const auto adjacency = owned.p2p().adjacency();
       if (!adjacency.iso_up) continue;
       // This is the same owner's already authenticated local projection,
       // never topology-derived peer information or an inter-router shortcut.
@@ -198,7 +201,7 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
       owned.update = instance.get();
       owned.update_slot = slot;
       owned.update_egress = std::move(egress[slot]);
-      if (!owned.circuit.operational()) static_cast<void>(owned.circuit.up(RuntimeClock::now()));
+      circuit_up(owned, RuntimeClock::now());
     }
     device.instances[index] = std::move(instance);
     device.sequence_recovery[index] = std::move(recovery);
@@ -213,12 +216,13 @@ ControlError ControlWorker::attach_update_circuit(DeviceState &device, OwnedCirc
   if (!instance) return ControlError::none;
   if (instance->status != UpdateStatus::applied && !requires_reconstruction(instance->status))
     return ControlError::update_refused;
-  const auto &configuration = owned.circuit.configuration();
+  if (owned.lan()) return ControlError::unsupported_update_medium;
+  const auto &configuration = owned.p2p().configuration();
   if (!matches_update_instance(instance->configuration, configuration, owned.identity.interface_id))
     return ControlError::invalid_argument;
   for (const auto &other : device.circuits)
     if (&other != &owned && other.identity.instance == owned.identity.instance &&
-        other.circuit.configuration().local.extended_circuit == configuration.local.extended_circuit)
+        other.p2p().configuration().local.extended_circuit == configuration.local.extended_circuit)
       return ControlError::already_exists;
   if (requires_reconstruction(instance->status)) {
     const auto count = std::count_if(device.circuits.begin(), device.circuits.end(), [&](const auto &other) {
@@ -227,12 +231,12 @@ ControlError ControlWorker::attach_update_circuit(DeviceState &device, OwnedCirc
     // The caller already appended this candidate to the device vector.
     if (static_cast<std::size_t>(count) > instance->configuration.maximum_circuits) return ControlError::capacity;
     owned.update = instance.get();
-    static_cast<void>(owned.circuit.down(&owned, event));
+    circuit_down(owned);
     return ControlError::none;
   }
   if (!instance->process) return ControlError::update_refused;
   std::unique_ptr<UpdateEgress> egress;
-  try { egress = std::make_unique<UpdateEgress>(*instance, owned.random_state); }
+  try { egress = std::make_unique<UpdateEgress>(*instance, owned.random_state, owned.update_transmission); }
   catch (const std::bad_alloc &) { return ControlError::capacity; }
   catch (const std::exception &) { return ControlError::invalid_argument; }
   const auto admission = instance->process->admit_circuit(update_configuration(owned));
@@ -249,7 +253,7 @@ void ControlWorker::remove_update_instance(DeviceState &device, std::size_t inde
   if (!instance) return;
   for (auto &owned : device.circuits) if (owned.update == instance.get()) {
     owned.transmission.cancel();
-    static_cast<void>(owned.circuit.down(&owned, event));
+    circuit_down(owned);
     owned.update = nullptr;
     owned.update_egress.reset();
   }

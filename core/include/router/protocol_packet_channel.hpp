@@ -157,6 +157,21 @@ public:
   // continue work after a coalesced notification exceeds one service quantum.
   [[nodiscard]] bool consumer_pending() const noexcept { return !ready_.empty(); }
 
+  // Same consumer only. Predicate views borrow initialized ready-frame bytes
+  // during this call and must not mutate this channel or retain references.
+  // Acquiring the ready-ring snapshot publishes slot metadata and frame bytes;
+  // no slot is popped, borrowed or returned, so the producer cannot reuse it.
+  // Later arrivals wait for the next query. Work is bounded by Capacity, with
+  // FIFO traversal and no allocation, packet copy or additional shared state.
+  template <typename Predicate>
+  [[nodiscard]] bool consumer_any_ready(Predicate &&predicate) const noexcept {
+    static_assert(std::is_nothrow_invocable_r_v<bool, Predicate, const Metadata &, const packet::Frame &>);
+    return ready_.consumer_any([&](const Handle &handle) noexcept {
+      const auto &slot = slots_[handle];
+      return predicate(slot.metadata, slot.frame);
+    });
+  }
+
 private:
   struct Returned {
     Handle handle{};

@@ -1,5 +1,33 @@
 schema_version: 1
 records:
+  - id: project.runtime.isis_lan_transport
+    kind: local-protocol-lan-transport-ownership
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-architecture-decision-and-iso-iec-standard
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0006-control-generation-handoff.md#is-is-circuit-medium-ownership
+    section: IS-IS circuit medium ownership; ISO 10589 clauses 8.4.1 through 8.4.5
+    rfc_refs: [RFC5309]
+    yang_path: /configure/router/isis/interface
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp, core/src/isis/isis_control_lan.cpp, core/include/router/isis_lan_circuit_pair.hpp, core/src/isis/isis_lan_circuit_pair.cpp, core/include/router/network_plane.hpp, core/src/runtime/network_plane.cpp]
+    tests: [core/tests/isis/isis_control_worker_test.cpp, core/tests/isis/isis_lan_circuit_test.cpp]
+    status: experimental
+    notes: A single router generation selects only its actual P2P or LAN state owner. LAN L1 and L2 use independent Hello windows and actual encoded PDU classes in physical receipt identities. The permanent protocol pthread receives peer information only through frames from ports, queues and links. Borrowed observer contexts remain on the current owner stack, preserving safety across circuit-vector moves. Copied active-level and medium projections guard multicast membership and ingress/egress matching. Queries return real LAN neighbor, DIS and scoped accepted-Hello bindings without a fabricated P2P adjacency. LAN update-instance admission rejects explicitly until broadcast pacing and database events are integrated; production CLI and active protocol checkpointing remain incomplete.
+  - id: project.runtime.ready_frame_queries
+    kind: local-protocol-queue-ownership
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-architecture-decision
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0006-control-generation-handoff.md#ready-frame-snapshots
+    section: Ready frame snapshots
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/spsc_ring.hpp, core/include/router/protocol_packet_channel.hpp]
+    tests: [core/tests/runtime/protocol_packet_channel_test.cpp, core/tests/runtime/protocol_packet_completion_test.cpp]
+    status: implemented
+    notes: The existing consumer acquires a bounded published-head snapshot and reads ready-frame metadata and bytes without advancing tail, borrowing slots, copying packets or changing credits. The producer cannot reuse visited slots before normal consumption. Callbacks are nonthrowing, cannot mutate the channel and retain no references. Concurrent append, wrap, full-capacity backpressure, FIFO and completion ownership are tested. Per-interface LAN ingress-backlog classification remains integration work.
   - id: project.runtime.forwarding_pause_receipts
     kind: local-forwarding-barrier-ownership
     release: 26.7.R1
@@ -293,7 +321,7 @@ records:
     implementation: [core/include/router/isis_circuit_destinations.hpp, core/include/router/isis_circuit_configuration.hpp, core/include/router/isis_instance_update.hpp, core/src/isis/isis_instance_update.cpp, core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp, core/src/isis/isis_control_update.cpp, core/src/isis/isis_control_update_egress.cpp, core/src/isis/isis_control_update_lifetime.cpp, core/src/isis/isis_control_origin.cpp, core/src/isis/isis_control_self.cpp, core/include/router/network_plane.hpp, core/src/runtime/network_plane.cpp]
     tests: [core/tests/isis/isis_next_hop_test.cpp, core/tests/isis/isis_lan_circuit_test.cpp, core/tests/isis/isis_instance_update_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
     status: experimental
-    notes: Copied transport projections select independently resolved Hello, L1 and L2 destinations by the encoded PDU type on protocol, forwarding and link owners; multicast admission and physical receipts use the same values. LAN update SNPA catalogs include Initializing adjacencies, while graph and pseudonode membership require Up. The update adapter retains bounded per-level LAN neighbor SNPA projections with explicit medium and peer budgets, validates same-level broadcast sources, preserves synchronization across membership and DIS changes, and fences reactivation after last-neighbor loss. Runtime LAN scheduling remains incomplete. The dedicated pthread owns stable heap instance shells, replaceable update processes, independent level databases and circuit-local encoded update scheduling. Parent-owned sequence-recovery gates outlive deleted instances. Idle protocol registration is retired only after an owner-local cooldown query permits structural recovery. Read-only selected LSP queries return effective headers by value without exposing retained packet views. Effective program values select periodic SNPs, retransmission and a shared interface burst budget without assigning SR OS defaults. Packet metadata preserves the exact synchronization epoch and ticket through actual physical admission. Failed queue admission retains obligations; P2P SRM retires through peer SNP acceptance. Cold generation preparation reserves new slots and aborts in reverse order; changed bindings reuse released Down slots without allocation at commit. Instance identity, wire selector, level subsets, unique extended circuit IDs and resource budgets are checked before publication. Removing interfaces preserves the instance; removing the entity retains its maximum fence outside the LSDB. Both actual NetworkPlane placements exchange L1 and L2 LSPs and PSNPs, preserve databases after interface withdrawal and reject unsupported structural checkpointing. Nonzero update IIDs reject explicitly until physical-peer MI capability and complete configured instance-mode integration are connected. Authentication selection, circuit-derived local origination, production CLI admission, LAN, routing, protocol persistence and measured active-instance limits remain incomplete.
+    notes: Copied transport projections select independently resolved Hello, L1 and L2 destinations by the encoded PDU type on protocol, forwarding and link owners; multicast admission and physical receipts use the same values. LAN update SNPA catalogs include Initializing adjacencies, while graph and pseudonode membership require Up. The update adapter retains bounded per-level LAN neighbor SNPA projections with explicit medium and peer budgets, validates same-level broadcast sources, preserves synchronization across membership and DIS changes, and fences reactivation after last-neighbor loss. Runtime LAN scheduling remains incomplete. The dedicated pthread owns stable heap instance shells, replaceable update processes, independent level databases and circuit-local encoded update scheduling. Parent-owned sequence-recovery gates outlive deleted instances. Idle protocol registration is retired only after an owner-local cooldown query permits structural recovery. Read-only selected LSP queries return effective headers by value without exposing retained packet views. Effective program values select periodic SNPs, retransmission and a shared interface burst budget without assigning SR OS defaults. A validated per-interface override owns all effective transmission values in its egress state and participates in exact circuit-generation comparison; absent overrides retain the experimental instance policy. Physical tests suppress instance-level LSP output and verify successful exchange only through explicit interface overrides. Same-epoch policy edits and malformed fresh policies preserve live state. Packet metadata preserves the exact synchronization epoch and ticket through actual physical admission. Failed queue admission retains obligations; P2P SRM retires through peer SNP acceptance. Cold generation preparation reserves new slots and aborts in reverse order; changed bindings reuse released Down slots without allocation at commit. Instance identity, wire selector, level subsets, unique extended circuit IDs and resource budgets are checked before publication. Removing interfaces preserves the instance; removing the entity retains its maximum fence outside the LSDB. Both actual NetworkPlane placements exchange L1 and L2 LSPs and PSNPs, preserve databases after interface withdrawal and reject unsupported structural checkpointing. Nonzero update IIDs reject explicitly until physical-peer MI capability and complete configured instance-mode integration are connected. Authentication selection, circuit-derived local origination, production CLI admission, LAN, routing, protocol persistence and measured active-instance limits remain incomplete.
   - id: project.runtime.protocol_reservation_epochs
     kind: concurrency-ownership-contract
     release: 26.7.R1
@@ -471,11 +499,11 @@ records:
     section: Clauses 8.4.1 through 8.4.5, LAN Hello, adjacency and designated-system election
     rfc_refs: [RFC1195, RFC5308, RFC5120, RFC8202]
     yang_path: /configure/router/isis/interface
-    last_verified_at: 2026-10-28
-    implementation: [core/include/router/isis_circuit_configuration.hpp, core/include/router/isis_lan_circuit.hpp, core/src/isis/isis_lan_circuit.cpp, core/include/router/isis_lan_adjacency_set.hpp, core/src/isis/isis_lan_adjacency_set.cpp]
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/isis_lan_circuit_pair.hpp, core/src/isis/isis_lan_circuit_pair.cpp, core/include/router/isis_circuit_configuration.hpp, core/include/router/isis_lan_circuit.hpp, core/src/isis/isis_lan_circuit.cpp, core/include/router/isis_lan_adjacency_set.hpp, core/src/isis/isis_lan_adjacency_set.cpp]
     tests: [core/tests/isis/isis_lan_circuit_test.cpp]
     status: experimental
-    notes: A circuit-level owner composes encoded Hellos from its received Initializing and Up neighbor set, delays DIS election by two ordinary Hello intervals, considers only Up competitors and changes its effective Hello interval and holding value with local DIS role. Authentication, instance selection, L1 area and maximum-area checks precede neighbor admission. LAN adjacency does not require a common MT component. Three circuit owners discover each other through physical queues and a learning bridge, then replace the DIS after carrier loss and holding expiry. Pseudonode origination, runtime configuration and control-worker LAN admission remain instance integration work.
+    notes: Down-to-Up restart resets peer and DIS projections, ordinary Hello role and startup election while retaining the PRNG continuation, with no allocation. A cold-admitted LAN pair validates shared interface and instance identity, explicit per-level groups and independently configured L1/L2 owners without retaining duplicate configuration. Invalid level shapes or incompatible identities refuse before publication. A circuit-level owner composes encoded Hellos from its received Initializing and Up neighbor set, delays DIS election by two ordinary Hello intervals, considers only Up competitors and changes its effective Hello interval and holding value with local DIS role. Authentication, instance selection, L1 area and maximum-area checks precede neighbor admission. LAN adjacency does not require a common MT component. Three circuit owners discover each other through physical queues and a learning bridge, then replace the DIS after carrier loss and holding expiry. Pseudonode origination, runtime configuration and control-worker LAN admission remain instance integration work.
   - id: nokia.sros.26_7.isis.address_family_adjacency
     kind: routing-protocol-adjacency-policy
     release: 26.7.R1
@@ -658,6 +686,20 @@ records:
     tests: [core/tests/isis/isis_hello_builder_test.cpp]
     status: experimental
     notes: The builder composes effective caller-owned Hello values into one Ethernet frame, splits fixed-width lists across complete TLVs, emits IID first and authenticates only after padding. It preserves prior output on failure and leaves a one-octet padding gap rather than exceeding the selected maximum. Configuration inheritance, mandatory protocol content and runtime scheduling remain with the instance owner.
+  - id: iso.10589.2002.broadcast_scan
+    kind: routing-protocol-broadcast-scheduling
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clauses 7.3.15.6 and 10.1, random single-LSP scan and queued-input inhibition
+    rfc_refs: []
+    yang_path: /configure/router/isis/interface/lsp-pacing-interval
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/isis_level_database.hpp, core/src/isis/isis_level_database.cpp, core/include/router/isis_broadcast_scan.hpp, core/src/isis/isis_broadcast_scan.cpp, core/include/router/isis_jitter.hpp, core/src/isis/isis_jitter.cpp]
+    tests: [core/tests/isis/isis_lan_circuit_test.cpp, core/tests/isis/isis_broadcast_scan_test.cpp, core/tests/isis/isis_jitter_test.cpp]
+    status: experimental
+    notes: Borrow-free LAN SRM count/index projections exclude zero-sequence placeholders and preserve level identity. A control-owned periodic scan chooses an unbiased index from the complete eligible SRM set supplied by its owner. Periods advance before work and apply architectural jitter. Queued incoming LSPs inhibit output except the permitted one-per-second path; only successful physical admission commits its spacing anchor. Refusal retains database obligations. Saturating local deadlines prevent overflow. Three-router encoded exchanges now select pending LSPs through these scans and commit them on physical queue admission. This component implements the single-PDU scan, without the optional burst exception. Profile-resolved bucket and burst behavior, actual ingress-backlog projection, LAN runtime wiring and active checkpoint continuation remain incomplete. The positive effective interval is bounded by the selected YANG pacing extent, without assigning a vendor default.
   - id: iso.10589.2002.periodic_jitter
     kind: routing-protocol-timing
     release: 26.7.R1
@@ -667,11 +709,11 @@ records:
     section: Clause 10.1 and table 2, architectural Jitter 25 percent and per-expiration uniform draws
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-10-27
+    last_verified_at: 2026-11-07
     implementation: [core/include/router/isis_jitter.hpp, core/src/isis/isis_jitter.cpp]
     tests: [core/tests/isis/isis_jitter_test.cpp]
     status: experimental
-    notes: The stateless helper consumes a caller-owned nonzero PRNG state, uses rejection sampling and returns periods within 75 through 100 percent of the supplied base at microsecond resolution. The owning circuit must preserve PRNG continuation, set deadlines before expiration work and enforce protocol-specific minimum spacing and the DIS Hello exception. Runtime scheduling remains in progress.
+    notes: Shared bounded random selection supports LAN candidate indices without duplicating the generator. The stateless jitter helper consumes a caller-owned nonzero PRNG state, uses rejection sampling and returns periods within 75 through 100 percent of the supplied base at microsecond resolution. The owning circuit must preserve PRNG continuation, set deadlines before expiration work and enforce protocol-specific minimum spacing and the DIS Hello exception. Runtime scheduling remains in progress.
   - id: iso.10589.2002.ethernet_dispatch
     kind: routing-protocol-forwarding-boundary
     release: 26.7.R1

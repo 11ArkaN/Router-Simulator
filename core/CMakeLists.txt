@@ -81,9 +81,11 @@ add_library(router_primitives STATIC
   src/isis/isis_adjacency.cpp
   src/isis/isis_p2p_adjacency.cpp
   src/isis/isis_p2p_circuit.cpp
+  src/isis/isis_lan_circuit_pair.cpp
   src/isis/isis_lan_circuit.cpp
   src/isis/isis_lan_adjacency.cpp
   src/isis/isis_lan_adjacency_set.cpp
+  src/isis/isis_broadcast_scan.cpp
   src/isis/isis_jitter.cpp
   src/isis/isis_hello_schedule.cpp
   src/isis/isis_flooding.cpp
@@ -322,6 +324,7 @@ add_library(router_device STATIC
 target_link_libraries(router_device PUBLIC router_primitives router_build_options)
 
 add_library(router_network STATIC
+  src/isis/isis_control_lan.cpp
   src/isis/isis_control_worker.cpp
   src/isis/isis_control_update.cpp
   src/isis/isis_control_update_egress.cpp
@@ -608,6 +611,7 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_p2p_circuit_test.cpp
     tests/isis/isis_control_worker_test.cpp
     tests/isis/isis_lan_circuit_test.cpp
+    tests/isis/isis_broadcast_scan_test.cpp
     tests/isis/isis_jitter_test.cpp
     tests/isis/isis_hello_schedule_test.cpp
     tests/isis/isis_flooding_test.cpp

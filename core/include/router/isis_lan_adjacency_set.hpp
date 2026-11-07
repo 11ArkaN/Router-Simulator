@@ -14,6 +14,7 @@ namespace router::isis {
 struct LanSetLimits {
   std::size_t neighbors{};
   std::size_t areas_per_neighbor{};
+  bool operator==(const LanSetLimits &) const = default;
 };
 enum class LanEventCause : std::uint8_t { received, expired, capacity_evicted, circuit_down, policy_mismatch };
 struct LanPeerEvent {

@@ -3,6 +3,8 @@
 // election delay, two-way admission and DIS replacement after carrier loss.
 
 #include "router/isis_lan_circuit.hpp"
+#include "router/isis_broadcast_scan.hpp"
+#include "router/isis_lan_circuit_pair.hpp"
 #include "router/isis_instance_update.hpp"
 #include "router/isis_lsp_builder.hpp"
 #include "router/isis_lan_origination.hpp"
@@ -105,13 +107,15 @@ void designated(void *opaque, const std::optional<DisSelection> &,
   synchronize(events);
 }
 struct Context {
-  std::array<std::unique_ptr<LanCircuit>, 3U> circuits;
+  std::array<LanCircuit *, 3U> circuits;
   std::array<Events, 3U> events;
   lab::EthernetSwitch &bridge;
   LanCircuit::Clock::time_point now;
   std::size_t active{3U};
   std::array<std::unique_ptr<InstanceUpdateProcess>, 3U> updates{};
   std::array<std::unique_ptr<LocalLspSet>, 3U> origins{};
+  std::array<std::unique_ptr<BroadcastScan>, 3U> scans{};
+  std::array<std::unique_ptr<LanCircuitPair>, 3U> circuit_owners{};
   LanCircuitObserver observer(std::size_t index) { return {&events[index], peer, designated}; }
 };
 void delivered(void *opaque, const lab::MultiDeviceFabric::Delivery &delivery) {
@@ -156,8 +160,13 @@ void isis_lan_circuit_tests() {
   Context context{{}, {}, bridge, start};
   auto scratch = std::make_unique<PduScratch>();
   for (std::uint16_t index{}; index < 3U; ++index) {
-    context.circuits[index] = std::make_unique<LanCircuit>(
-        configuration(static_cast<std::uint8_t>(index + 1U)), index + 123U, start);
+    LanCircuitProgram lan;
+    lan.levels[0U] = configuration(static_cast<std::uint8_t>(index + 1U));
+    lan.levels[0U]->levels = Levels::level1;
+    lan.levels[0U]->update_destinations = std::array{lan.levels[0U]->hello_destination,
+        packet::Mac{1U, 0x80U, 0xc2U, 0U, 0U, 0x15U}};
+    context.circuit_owners[index] = std::make_unique<LanCircuitPair>(std::move(lan), index + 123U, start);
+    context.circuits[index] = context.circuit_owners[index]->at(0U);
     const auto local = configuration(static_cast<std::uint8_t>(index + 1U));
     const UpdateLevelConfiguration level{{8U, 8192U}, 8U, 128U, 1492U,
         1200U, 60s, 60s, false, false, false, PurgeRules::registry_6233};
@@ -167,7 +176,7 @@ void isis_lan_circuit_tests() {
     context.updates[index] = std::make_unique<InstanceUpdateProcess>(local.local.system, 3U,
         std::array<std::optional<UpdateLevelConfiguration>, 2U>{level, {}}, std::array{binding},
         UpdateInstanceSelector{packet::isis::InstanceFormat::standard, 0U});
-    context.events[index].circuit = context.circuits[index].get();
+    context.events[index].circuit = context.circuits[index];
     context.events[index].update = context.updates[index].get();
     auto &events = context.events[index];
     std::copy(local.local.system.begin(), local.local.system.end(), events.root.begin());
@@ -181,6 +190,7 @@ void isis_lan_circuit_tests() {
     context.origins[index] = std::make_unique<LocalLspSet>(local.local.system, 3U,
         UpdateInstanceSelector{packet::isis::InstanceFormat::standard, 0U}, std::move(origin), start);
     events.origin = context.origins[index].get();
+    context.scans[index] = std::make_unique<BroadcastScan>(100ms, index + 41U, start);
     events.now = start;
     require(bridge.configure_port(index, {1000U, 1514U, true, true}));
     require(fabric->configure({index, 1U}, {lab::node(lab::DeviceHandle{index, 1U}), 0U, 1U},
@@ -205,29 +215,45 @@ void isis_lan_circuit_tests() {
     }
   };
   const auto flood = [&] {
+    const LevelObserver observer{nullptr, +[](void *, const LevelEvent &) noexcept {}};
     for (std::uint16_t index{}; index < context.active; ++index) {
-      const LevelObserver observer{nullptr, +[](void *, const LevelEvent &) noexcept {}};
       std::size_t work{4U};
       require(!context.origins[index]->service(*context.updates[index], {}, context.now,
           *scratch, observer, work).blocked);
-      auto output = context.updates[index]->outputs(0U, 0U);
-      if (!output) continue;
-      const auto local = configuration(static_cast<std::uint8_t>(index + 1U));
-      const auto &database = context.updates[index]->level(0U)->database();
-      for (std::size_t record{}; record < database.size(); ++record) {
-        const auto stored = database.database().at(record, context.now);
-        require(stored.has_value());
-        if (!database.flags(stored->header.id, 0U)->srm) continue;
+    }
+    // Each interface chooses one pending LSP per jittered scan. The fixture
+    // advances injected host time only to the next owner's actual deadline.
+    for (unsigned batch{}; batch < 32U; ++batch) {
+      auto next = RuntimeClock::time_point::max();
+      for (std::size_t index{}; index < context.active; ++index) {
+        const auto &database = context.updates[index]->level(0U)->database();
+        const auto count = database.broadcast_srm_count(0U);
+        require(count.has_value());
+        if (*count) next = std::min(next, context.scans[index]->deadline(false));
+      }
+      if (next == RuntimeClock::time_point::max()) return;
+      context.now = std::max(context.now, next);
+      for (std::uint16_t index{}; index < context.active; ++index) {
+        const auto &database = context.updates[index]->level(0U)->database();
+        const std::array levels{BroadcastLevel{&database, 0U}, BroadcastLevel{}};
+        const auto selected = context.scans[index]->begin(context.now, levels, false);
+        require(selected.status != BroadcastScanStatus::invalid_catalog);
+        if (!selected.candidate) continue;
+        auto output = context.updates[index]->outputs(0U, selected.candidate->level);
+        require(output.has_value());
+        const auto local = configuration(static_cast<std::uint8_t>(index + 1U));
         packet::Frame frame;
-        const auto sent = output->reservations.lsp.prepare(stored->header.id, local.mac,
+        const auto sent = output->reservations.lsp.prepare(selected.candidate->id, local.mac,
             local.hello_destination, 1492U, 1U, frame, *scratch, context.now);
         require(sent.status == LspEmissionStatus::encoded);
         const bool admitted = fabric->enqueue({index, 1U}, 0U, frame) == lab::MultiDeviceFabric::DropReason::none;
         require(admitted && output->reservations.lsp.complete(output->synchronization_epoch,
-            sent.ticket, admitted, context.now).accepted && !database.flags(stored->header.id, 0U)->srm);
+            sent.ticket, admitted, context.now).accepted && context.scans[index]->complete(admitted, context.now) &&
+            !database.flags(selected.candidate->id, 0U)->srm);
       }
+      flush();
     }
-    flush();
+    require(false);
   };
   const auto round = [&](LanCircuit::Clock::time_point now) {
     context.now = now;
@@ -418,4 +444,84 @@ void isis_lan_circuit_tests() {
         context.events[1U].pseudonode.begin()));
     check_routes(index, true);
   }
+}
+
+void isis_lan_circuit_pair_tests() {
+  using packet::isis::PduType;
+  const auto start = LanCircuit::Clock::time_point{100s};
+  LanCircuitProgram program;
+  program.levels[0U] = configuration(1U);
+  program.levels[1U] = configuration(1U);
+  const std::array groups{packet::Mac{1U, 0x80U, 0xc2U, 0U, 0U, 0x14U},
+      packet::Mac{1U, 0x80U, 0xc2U, 0U, 0U, 0x15U}};
+  for (std::size_t level{}; level < 2U; ++level) {
+    program.levels[level]->type = level ? PduType::lan_hello_l2 : PduType::lan_hello_l1;
+    program.levels[level]->hello_destination = groups[level];
+    program.levels[level]->update_destinations = groups;
+  }
+  program.levels[1U]->hello_interval = 2s;
+  program.levels[1U]->holding_seconds = 6U;
+  program.levels[1U]->local.priority = 20U;
+  LanCircuitPair pair(program, 75U, start);
+  require(pair.levels() == Levels::both && pair.at(0U) && pair.at(1U) && !pair.at(2U) && pair.matches(program));
+  require(pair.at(0U)->configuration().hello_interval == 1s && pair.at(1U)->configuration().hello_interval == 2s &&
+      pair.common().local.system == configuration(1U).local.system);
+  auto changed = program;
+  changed.levels[1U]->holding_seconds = 7U;
+  require(!pair.matches(changed));
+  const auto refused = [&](LanCircuitProgram input) {
+    try { LanCircuitPair invalid(std::move(input), 1U, start); }
+    catch (const std::invalid_argument &) { return true; }
+    return false;
+  };
+  require(refused({}));
+  changed = program;
+  changed.levels[1U]->local.system.back() = 2U;
+  require(refused(changed));
+  changed = program;
+  changed.levels[1U]->local.circuit = 0U;
+  require(refused(changed));
+  changed = program;
+  changed.levels[1U]->type = PduType::lan_hello_l1;
+  require(refused(changed));
+  changed = program;
+  changed.levels[0U]->update_destinations.reset();
+  require(refused(changed));
+  changed = program;
+  changed.levels[1U]->protocols.clear();
+  require(refused(changed));
+  changed = program;
+  changed.levels[1U]->limits.neighbors = 0U;
+  require(refused(changed));
+  changed = program;
+  changed.levels[0U].reset();
+  require(refused(changed));
+  changed.levels[1U]->levels = Levels::level2;
+  LanCircuitPair l2(changed, 5U, start);
+  const LanCircuitPair &view = l2;
+  require(l2.levels() == Levels::level2 && !view.at(0U) && view.at(1U) && !view.at(2U) && l2.matches(changed));
+  Events restart_events;
+  restart_events.circuit = pair.at(0U);
+  const LanCircuitObserver restart_observer{&restart_events, peer, designated};
+  require(!pair.at(0U)->up(start) && pair.at(0U)->operational());
+  require(!pair.at(0U)->down({}) && pair.at(0U)->operational());
+  require(pair.at(0U)->down(restart_observer) && !pair.at(0U)->operational() &&
+      pair.at(0U)->deadline() == LanCircuit::Clock::time_point::max());
+  require(!pair.at(0U)->down(restart_observer));
+  const auto resumed = start + 20s;
+  require(pair.at(0U)->up(resumed) && !pair.at(0U)->up(resumed) && pair.at(1U)->operational() &&
+      pair.at(0U)->neighbors().size() == 0U && !pair.at(0U)->designated());
+  auto restart_scratch = std::make_unique<PduScratch>();
+  packet::Frame restart_frame;
+  require(pair.at(0U)->hello(restart_frame, {}, *restart_scratch, resumed, restart_observer) == HelloBuildResult::encoded);
+  packet::isis::EthernetDecodeError restart_error{};
+  const auto restart_wire = packet::isis::parse_ethernet_pdu(restart_frame.view(), restart_error);
+  const auto restart_header = restart_wire ? packet::isis::hello(restart_wire->pdu) : std::nullopt;
+  packet::isis::LanId own_lan{};
+  std::copy(program.levels[0U]->local.system.begin(), program.levels[0U]->local.system.end(), own_lan.begin());
+  own_lan.back() = program.levels[0U]->local.circuit;
+  require(restart_header && restart_header->designated_id == own_lan &&
+      pair.at(0U)->complete_hello(true, resumed));
+  pair.at(0U)->service(resumed + 1s, 4U, restart_observer);
+  require(!pair.at(0U)->designated() && restart_events.changes == 0U);
 }

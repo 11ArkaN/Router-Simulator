@@ -22,6 +22,20 @@ void isis_jitter_tests() {
           "IS-IS invalid timer base changed PRNG state");
   std::uint64_t zero{};
   require(!router::isis::jittered_interval(1s, zero) && !zero, "IS-IS accepted an unseeded periodic timer");
+  require(!router::isis::random_below(0U, state) && state == saved &&
+      !router::isis::random_below(3U, zero) && !zero,
+      "IS-IS invalid bounded draw changed its owner state");
+  std::array<unsigned, 7U> choices{};
+  for (unsigned draw{}; draw < 70'000U; ++draw) {
+    const auto selected = router::isis::random_below(choices.size(), state);
+    require(selected && *selected < choices.size(), "IS-IS bounded draw escaped its candidate set");
+    ++choices[static_cast<std::size_t>(*selected)];
+  }
+  require(std::all_of(choices.begin(), choices.end(), [](auto count) { return count > 9300U && count < 10700U; }),
+      "IS-IS random candidate choice starved an index");
+  require(router::isis::random_below(1U, state) == 0U &&
+      router::isis::random_below(UINT64_MAX, state).has_value(),
+      "IS-IS bounded draw failed at a singleton or full-width bound");
   for (const auto base : {1000us, 5'000'000us, 10'000'000us, 1'200'000'000us}) {
     std::array<unsigned, 4U> bins{};
     const auto width = base.count() / 4;

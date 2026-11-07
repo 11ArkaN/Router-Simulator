@@ -58,7 +58,7 @@ bool ControlWorker::complete_update(OwnedCircuit &owned,
         egress.retries.push_back({});
         retry = egress.retries.end() - 1;
       }
-      *retry = {*header, *level, now + std::chrono::seconds{owned.update->configuration.transmission.retransmit_seconds}};
+      *retry = {*header, *level, now + std::chrono::seconds{egress.program.retransmit_seconds}};
     }
     egress.lsp[*level] = now;
   } else {
@@ -68,7 +68,7 @@ bool ControlWorker::complete_update(OwnedCircuit &owned,
     if (receipt.enqueued) ++owned.counters.snp_enqueued;
     else ++owned.counters.snp_refused;
     if (is_complete(pdu.type)) egress.complete[*level] = receipt.enqueued ? now : now +
-        *jittered_interval(std::chrono::seconds{owned.update->configuration.transmission.partial_seconds}, egress.random);
+        *jittered_interval(std::chrono::seconds{egress.program.partial_seconds}, egress.random);
   }
   return true;
 }
@@ -79,8 +79,8 @@ RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
   if (!owned.update || !owned.update_egress || owned.update->status != UpdateStatus::applied) return deadline;
   auto &instance = *owned.update;
   auto &egress = *owned.update_egress;
-  const auto &program = instance.configuration.transmission;
-  const auto &configuration = owned.circuit.configuration();
+  const auto &program = egress.program;
+  const auto &configuration = owned.p2p().configuration();
   const auto maximum_pdu = std::min<std::size_t>(program.maximum_pdu_octets,
       std::min(configuration.maximum_pdu_octets, packet::maximum_frame_octets -
           packet::ethernet_header_octets - packet::llc_ui_header_octets));

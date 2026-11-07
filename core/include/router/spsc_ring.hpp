@@ -1,3 +1,7 @@
+// One producer publishes trivial values to one consumer through a bounded FIFO.
+// Slot bytes become visible through release/acquire indices; dependencies point
+// only to standard value/atomic types. Full publication never overwrites input.
+
 #pragma once
 
 #include <array>
@@ -40,6 +44,21 @@ public:
     // additional ownership path for the slot bytes.
     return tail_.load(std::memory_order_relaxed) ==
            head_.load(std::memory_order_acquire);
+  }
+
+  // Consumer only, without popping, clearing or retaining a slot reference.
+  // Snapshot the producer head with acquire; until this consumer advances tail,
+  // the producer cannot reuse any visited slot. Later publications are outside
+  // this bounded snapshot. The nonthrowing predicate must not mutate this ring
+  // or retain its input. No extra observer or consumer ownership is introduced.
+  template <typename Predicate>
+  [[nodiscard]] bool consumer_any(Predicate &&predicate) const noexcept {
+    static_assert(std::is_nothrow_invocable_r_v<bool, Predicate, const T &>);
+    const auto tail = tail_.load(std::memory_order_relaxed);
+    const auto head = head_.load(std::memory_order_acquire);
+    for (auto index = tail; index != head; index = increment(index))
+      if (predicate(slots_[index])) return true;
+    return false;
   }
 
   [[nodiscard]] bool full() const noexcept {

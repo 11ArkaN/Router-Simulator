@@ -41,6 +41,7 @@ struct DisLocal {
   packet::Mac mac{};
   std::uint8_t priority{};
   std::uint8_t circuit{};
+  bool operator==(const DisLocal &) const = default;
 };
 struct DisNeighbor {
   packet::isis::SystemId system{};

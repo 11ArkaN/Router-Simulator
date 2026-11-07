@@ -50,15 +50,16 @@ struct NetworkLinkProgram {
   bool carrier{};
 };
 
-struct IsisP2pCircuitProgram {
+struct IsisCircuitProgram {
   // Serialized control owns source-resolved effective configuration. The
   // physical generation accompanies logical circuit identity so replacement
-  // hardware cannot inherit a queued frame. This experimental P2P transport
+  // hardware cannot inherit a queued frame. This experimental circuit transport
   // program selects transport only. Update owners are admitted separately;
   // routing and protocol checkpointing remain outside this experimental API.
   isis::CircuitDefinition circuit;
   PortHandle port{};
 };
+using IsisP2pCircuitProgram = IsisCircuitProgram;
 
 struct HostNetworkProgram {
   HostHandle host;
@@ -653,12 +654,22 @@ public:
   // Admission of a new logical circuit must exceed the device's maximum retired
   // epoch. This bound survives protocol withdrawal on the same router handle.
   // Failure preserves the live generation; unchanged epochs
-  // preserve adjacency, timers and pending tickets. Active experimental P2P
+  // preserve adjacency, timers and pending tickets. Active experimental IS-IS
   // transport explicitly blocks structural checkpoint/restore until supported.
+  [[nodiscard]] bool replace_isis_generation(DeviceHandle device,
+      std::span<const IsisCircuitProgram> circuits) noexcept;
   [[nodiscard]] bool replace_isis_p2p_generation(DeviceHandle device,
-      std::span<const IsisP2pCircuitProgram> circuits) noexcept;
+      std::span<const IsisP2pCircuitProgram> circuits) noexcept {
+    return replace_isis_generation(device, circuits);
+  }
   [[nodiscard]] std::optional<isis::ControlResult> query_isis_circuit(
       const isis::CircuitIdentity &identity) noexcept;
+  // Serialized network owner. Read a selected accepted LAN Hello binding;
+  // level is 1 or 2, the peer is its SNPA and the result owns all returned data.
+  // Missing scope/peer/address refuses without creating ARP or ND entries.
+  [[nodiscard]] std::optional<isis::ControlResult> query_isis_lan_next_hop(
+      const isis::CircuitIdentity &identity, std::uint8_t level, const packet::Mac &peer,
+      const ip::IpAddress &address) noexcept;
   // Serialized network owner copies effective values into an owned command.
   // Source identity, per-level budgets and transmission policy are explicit;
   // failure leaves existing circuits and databases intact. A process without

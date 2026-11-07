@@ -118,3 +118,23 @@ A fixed receipt-enabled SPSC channel carries complete generations to the network
 ### Forwarding pause acknowledgements
 
 A forwarding owner clears its resume predicate before release-publishing a pause acknowledgement. The consumer may capture state and resume immediately after acquiring that result. Clearing the predicate after acknowledgement could overwrite that early resume and leave the owner waiting forever. The subsequent wait acquires the predicate and therefore also handles a resume that arrived before the wait began. Repeated live-router snapshots exercise this ordering while protocol workers remain active. This barrier is internal state ownership, not a simulation control.
+
+### Ready frame snapshots
+
+The existing consumer may inspect a bounded snapshot of published ready entries without removing them. It captures its own tail and acquires the producer head. The producer cannot reuse any visited ring slot while that consumer leaves tail unchanged. Later publications are outside the captured extent. The callback must not mutate the ring or retain a reference, and no second consumer or observer reads shared slot bytes.
+
+The packet channel applies this query to initialized metadata and encoded frame bytes whose ready handles have been published. These frames cannot return to the producer free list until the normal consumer pop and release. The query allocates nothing, copies no packet, changes no credits and preserves FIFO order. Both ordinary ingress and completion-enabled egress keep the same ownership rules.
+
+LAN scheduling can use this contract to classify pending LSPs for the current interface and generation without consuming packets out of order. The protocol owner must inspect its own incoming channel, decode the actual frame and retain only a local bounded projection. Port-specific LAN backlog integration remains separate from this queue primitive.
+
+### IS-IS circuit medium ownership
+
+A router generation selects exactly one P2P or LAN program for each logical interface and local instance. The protocol owner constructs only that medium's state. A LAN aggregate contains independent L1 and L2 neighbor, DIS and Hello owners under one immutable local identity. Cold admission requires explicit level groups and rejects mixed P2P/LAN input, inconsistent identities and same-epoch edits before publishing any replacement.
+
+Each LAN level has a separate Hello transmission window. Encoded PDU type, interface epoch and local instance distinguish physical admission receipts even when both levels use the same ticket number. Callback contexts borrow the current circuit and level only during synchronous service; moving a generation retains no pointer to its previous vector element.
+
+The same prepared transport projection determines active level memberships and checks encoded selectors on protocol, forwarding and link owners. LAN and logical P2P media remain distinct even when both use Ethernet. Queries copy actual accepted-neighbor counts, per-level DIS selections and selected Hello next-hop bindings; no P2P adjacency is synthesized for LAN.
+
+Experimental LAN Hello generations use the permanent protocol pthread and existing physical frame channels. LAN update-instance admission remains an explicit unsupported-medium error until broadcast pacing, backlog projection and level database events are connected. Active protocol checkpointing remains blocked. The general circuit-generation API and the existing P2P entry point apply the same transaction.
+
+Effective update transmission values may be supplied per interface. Cold admission validates the complete override and circuit-generation equality includes it. The egress owner keeps one resolved value for SNP periods, LSP retries, PDU bounds and shared L1/L2 credits. Without an override it uses the explicit experimental instance policy. A policy edit requires a new transport epoch. LAN restart uses the retained PRNG continuation, restores ordinary Hello scheduling and repeats startup election without reviving a received neighbor or old DIS.

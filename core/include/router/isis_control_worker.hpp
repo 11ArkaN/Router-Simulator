@@ -5,6 +5,7 @@
 #pragma once
 
 #include "router/isis_instance_update.hpp"
+#include "router/isis_lan_circuit_pair.hpp"
 #include "router/isis_local_lsp_set.hpp"
 #include "router/isis_neighbor_origination.hpp"
 #include "router/isis_p2p_decision.hpp"
@@ -20,6 +21,8 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <variant>
+#include <stdexcept>
 
 namespace router::isis {
 
@@ -56,13 +59,16 @@ enum class ControlCommandKind : std::uint8_t {
   query_worker, register_device, remove_device, add_p2p_circuit,
   remove_circuit, query_circuit, prepare_generation, commit_generation,
   abort_generation, add_update_instance, remove_update_instance, query_update_instance, originate_lsp, shutdown,
-  query_sequence_recovery, replace_local_content, withdraw_local_content
+  query_sequence_recovery, replace_local_content, withdraw_local_content, add_lan_circuit
 };
-struct CircuitDefinition {
-  CircuitIdentity identity;
-  P2pCircuitConfiguration configuration;
-  std::uint64_t random_state{};
-};
+// Exactly one medium is supplied. A broadcast program requires the legacy
+// P2P value to remain empty; selecting LAN never constructs a P2P state owner.
+[[nodiscard]] inline const CircuitHelloConfiguration *circuit_hello_configuration(
+    const P2pCircuitConfiguration &p2p, const std::optional<LanCircuitProgram> &broadcast) noexcept {
+  if (!broadcast) return &p2p;
+  for (const auto &level : broadcast->levels) if (level) return &*level;
+  return nullptr;
+}
 // Effective values, not product defaults. Positive PSNP/retry seconds, pacing
 // period and transit decrement are mandatory. Zero complete_seconds selects
 // ISO startup-only CSNP; zero pacing_burst blocks LSP output while SNPs continue.
@@ -72,6 +78,24 @@ struct UpdateTransmissionProgram {
   std::chrono::milliseconds pacing_period{};
   std::size_t pacing_burst{};
   std::uint16_t maximum_pdu_octets{}, transit_seconds{};
+  bool operator==(const UpdateTransmissionProgram &) const = default;
+};
+struct CircuitDefinition {
+  CircuitIdentity identity;
+  P2pCircuitConfiguration configuration;
+  std::uint64_t random_state{};
+  std::optional<LanCircuitProgram> broadcast{};
+  // Cold effective interface policy overrides the experimental instance policy.
+  // It shares the circuit epoch: edits cannot retain live timers/tickets.
+  std::optional<UpdateTransmissionProgram> update_transmission{};
+  [[nodiscard]] const CircuitHelloConfiguration *common() const noexcept {
+    return circuit_hello_configuration(configuration, broadcast);
+  }
+  // LAN presence is explicit; cold admission checks each advertised mask.
+  [[nodiscard]] Levels levels() const noexcept {
+    if (!broadcast) return configuration.local.levels;
+    return static_cast<Levels>((broadcast->levels[0U] ? 1U : 0U) | (broadcast->levels[1U] ? 2U : 0U));
+  }
 };
 struct LocalOriginProgram {
   LocalLspProgram content;
@@ -117,6 +141,10 @@ struct ControlCommand {
   CircuitIdentity identity;
   P2pCircuitConfiguration configuration;
   std::uint64_t random_state{};
+  std::optional<LanCircuitProgram> broadcast{};
+  // Cold effective interface policy overrides the experimental instance policy.
+  // It shares the circuit epoch: edits cannot retain live timers/tickets.
+  std::optional<UpdateTransmissionProgram> update_transmission{};
   // Complete router generation, sorted by interface ID then local instance.
   // OwnedSpscChannel transfers these values without copying containers into a
   // ring. Prepare allocates before publication; commit preserves unchanged
@@ -133,13 +161,14 @@ struct ControlCommand {
   std::optional<packet::isis::LspId> selected_lsp{};
   std::optional<ip::IpPrefix> selected_prefix{};
   std::optional<ip::IpAddress> selected_next_hop{};
+  std::optional<packet::Mac> selected_lan_peer{};
   OriginPurgeReason purge{OriginPurgeReason::none};
 };
 enum class ControlError : std::uint8_t {
   none, invalid_argument, stale_device, stale_configuration, not_found,
   already_exists, capacity, unsupported_authentication, construction_failed,
   generation_pending, epoch_exhausted, update_refused, unsupported_update_instance, sequence_cooldown,
-  unsupported_origination
+  unsupported_origination, unsupported_update_medium
 };
 struct CircuitCounters {
   std::uint64_t received{};
@@ -154,12 +183,15 @@ struct CircuitCounters {
   std::uint64_t update_received{}, update_discarded{};
   UpdateStatus last_update{UpdateStatus::inactive};
   std::uint64_t lsp_enqueued{}, lsp_refused{}, snp_enqueued{}, snp_refused{};
-  std::uint64_t lsp_too_large{}, purge_pending{};
+  std::uint64_t lsp_too_large{}, purge_pending{}, designated_changes{};
 };
 struct ControlResult {
   std::uint64_t id{};
   ControlError error{ControlError::none};
   P2pSnapshot adjacency{};
+  bool broadcast_circuit{};
+  std::array<std::size_t, 2U> lan_neighbors{}, lan_up{};
+  std::array<std::optional<DisSelection>, 2U> designated{};
   std::optional<AdjacencyNextHop> bound_next_hop{};
   CircuitCounters counters{};
   std::uint64_t thread_identity{};
@@ -300,7 +332,9 @@ private:
     // Same protocol producer owns all deadlines and bounded retry metadata.
     // Credits cover both levels on this interface; port receipts alone anchor
     // retransmission. No frame, key, LSDB reference or cross-shard clock lives here.
-    UpdateEgress(const OwnedInstance &instance, std::uint64_t seed);
+    UpdateEgress(const OwnedInstance &instance, std::uint64_t seed,
+        const std::optional<UpdateTransmissionProgram> &override_program = {});
+    UpdateTransmissionProgram program;
     std::vector<Retry> retries;
     std::array<std::uint64_t, 2U> epochs{};
     std::array<RuntimeClock::time_point, 2U> partial{}, complete{};
@@ -317,24 +351,57 @@ private:
     CircuitIdentity identity;
     std::uint16_t wire_instance{};
     CircuitDestinations destinations;
+    std::optional<UpdateTransmissionProgram> update_transmission;
     packet::isis::InstanceFormat format{};
     bool physical_point_to_point{};
-    PointToPointCircuit circuit;
+    using Medium = std::variant<PointToPointCircuit, LanCircuitPair>;
+    Medium circuit;
     protocol::TransmissionWindow transmission;
+    std::array<protocol::TransmissionWindow, 2U> lan_transmissions;
     CircuitCounters counters;
     OwnedInstance *update{};
     std::size_t update_slot{};
     bool rebind_update{};
     std::unique_ptr<UpdateEgress> update_egress;
     std::uint64_t random_state{};
+    [[nodiscard]] static const CircuitHelloConfiguration &common(ControlCommand &command) {
+      const auto *value = circuit_hello_configuration(command.configuration, command.broadcast);
+      if (!value || (command.broadcast && command.configuration != P2pCircuitConfiguration{}))
+        throw std::invalid_argument("Invalid IS-IS circuit medium program");
+      return *value;
+    }
+    [[nodiscard]] static Medium make(ControlCommand &command, RuntimeClock::time_point now) {
+      if (command.broadcast)
+        return Medium{std::in_place_type<LanCircuitPair>, std::move(*command.broadcast), command.random_state, now};
+      return Medium{std::in_place_type<PointToPointCircuit>, std::move(command.configuration), command.random_state, now};
+    }
+    // Same owner. P2P access requires the selected medium to be P2P; cold
+    // update admission rejects broadcast before any P2P-only operation.
+    [[nodiscard]] PointToPointCircuit &p2p() { return std::get<PointToPointCircuit>(circuit); }
+    [[nodiscard]] const PointToPointCircuit &p2p() const { return std::get<PointToPointCircuit>(circuit); }
+    [[nodiscard]] LanCircuitPair *lan() noexcept { return std::get_if<LanCircuitPair>(&circuit); }
+    [[nodiscard]] const LanCircuitPair *lan() const noexcept { return std::get_if<LanCircuitPair>(&circuit); }
+    [[nodiscard]] const CircuitHelloConfiguration &common() const noexcept {
+      if (const auto *broadcast = lan()) return broadcast->common();
+      return p2p().configuration();
+    }
+    [[nodiscard]] bool matches(const CircuitDefinition &definition) const noexcept {
+      if (update_transmission != definition.update_transmission) return false;
+      if (const auto *broadcast = lan())
+        return definition.broadcast && definition.configuration == P2pCircuitConfiguration{} && broadcast->matches(*definition.broadcast);
+      return !definition.broadcast && p2p().configuration() == definition.configuration;
+    }
     OwnedCircuit(ControlCommand &command, PointToPointCircuit::Clock::time_point now)
         : identity(command.identity),
-          wire_instance(command.configuration.wire_instance),
-          destinations(command.configuration.destinations()),
-          format(command.configuration.instance_format.value_or(packet::isis::InstanceFormat::standard)),
-          physical_point_to_point(command.configuration.physical_point_to_point),
-          circuit(std::move(command.configuration), command.random_state, now),
-          transmission(command.identity.configuration_generation), random_state(command.random_state) {}
+          wire_instance(common(command).wire_instance),
+          destinations(common(command).destinations()),
+          update_transmission(command.update_transmission),
+          format(common(command).instance_format.value_or(packet::isis::InstanceFormat::standard)),
+          physical_point_to_point(!command.broadcast && command.configuration.physical_point_to_point),
+          circuit(make(command, now)),
+          transmission(command.identity.configuration_generation),
+          lan_transmissions{protocol::TransmissionWindow(command.identity.configuration_generation),
+              protocol::TransmissionWindow(command.identity.configuration_generation)}, random_state(command.random_state) {}
   };
   struct RouteStamp {
     std::uint64_t epoch{};
@@ -423,7 +490,17 @@ private:
   [[nodiscard]] bool complete_update(OwnedCircuit &circuit,
       const protocol::PacketChannel<device_catalog::isis_packet_ring_frames, true>::Completion &receipt,
       const packet::isis::PduView &pdu, RuntimeClock::time_point now) noexcept;
+  struct LanObserverContext { OwnedCircuit &circuit; std::size_t level; };
   static void event(void *context, const P2pCircuitEvent &event) noexcept;
+  static void lan_peer(void *context, const LanPeerEvent &event) noexcept;
+  static void lan_designated(void *context, const std::optional<DisSelection> &before,
+      const std::optional<DisSelection> &after) noexcept;
+  [[nodiscard]] static LanCircuitObserver lan_observer(LanObserverContext &context) noexcept;
+  static void circuit_down(OwnedCircuit &owned) noexcept;
+  static void circuit_up(OwnedCircuit &owned, RuntimeClock::time_point now) noexcept;
+  [[nodiscard]] static bool valid_transmission(const UpdateTransmissionProgram &program) noexcept;
+  [[nodiscard]] RuntimeClock::time_point service_lan(OwnedCircuit &circuit,
+      RuntimeClock::time_point now, std::size_t &budget) noexcept;
   [[nodiscard]] ControlResult apply(ControlCommand &command) noexcept;
   void receive(const protocol::PacketChannel<device_catalog::isis_packet_ring_frames>::Borrowed &packet,
       PointToPointCircuit::Clock::time_point now) noexcept;

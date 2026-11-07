@@ -1,6 +1,18 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  runtime.isis_lan_transport:
+    status: partially-implemented
+    source_ids: [project.runtime.isis_lan_transport]
+  routing.isis.lan_circuit_owner:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.lan_circuit_owner]
+  runtime.ready_frame_queries:
+    status: implemented
+    source_ids: [project.runtime.ready_frame_queries]
+  routing.isis.broadcast_scan:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.broadcast_scan]
   runtime.forwarding_pause_receipts:
     status: implemented
     source_ids: [project.runtime.forwarding_pause_receipts]

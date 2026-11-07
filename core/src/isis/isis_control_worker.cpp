@@ -95,7 +95,11 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         identity.instance > device_catalog::isis_instance_last ||
         identity.physical_port_ordinal >= device_catalog::maximum_ports_per_router ||
         (index && key(definitions[index - 1U].identity) >= key(identity))) return ControlError::invalid_argument;
+    const auto *common = entry.common();
+    if (entry.update_transmission && !valid_transmission(*entry.update_transmission)) return ControlError::invalid_argument;
+    if (!common || (entry.broadcast && entry.configuration != P2pCircuitConfiguration{})) return ControlError::invalid_argument;
     if (const auto &instance = device.instances[identity.instance]) {
+      if (entry.broadcast) return ControlError::unsupported_update_medium;
       if (instance->status != UpdateStatus::applied && !requires_reconstruction(instance->status))
         return ControlError::update_refused;
       const auto &configuration = entry.configuration;
@@ -112,13 +116,15 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
       }
       if (count > instance->configuration.maximum_circuits) return ControlError::capacity;
     }
-    if (entry.configuration.receive_authentication || entry.configuration.transmit_authentication)
+    if (common->receive_authentication || common->transmit_authentication)
       return ControlError::unsupported_authentication;
+    if (entry.broadcast) for (const auto &level : entry.broadcast->levels)
+      if (level && (level->receive_authentication || level->transmit_authentication)) return ControlError::unsupported_authentication;
     for (std::size_t previous = index; previous && definitions[previous - 1U].identity.interface_id == identity.interface_id;) {
       const auto &other = definitions[--previous];
       if (other.identity.physical_port_ordinal != identity.physical_port_ordinal ||
-          (other.configuration.wire_instance == entry.configuration.wire_instance &&
-           other.configuration.destinations().conflicts(entry.configuration.destinations()))) return ControlError::already_exists;
+          (other.common()->wire_instance == common->wire_instance &&
+           other.common()->destinations().conflicts(common->destinations()))) return ControlError::already_exists;
     }
   }
   try {
@@ -144,7 +150,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         if (entry.identity.configuration_generation < current.identity.configuration_generation)
           return ControlError::stale_configuration;
         if (entry.identity.configuration_generation == current.identity.configuration_generation) {
-          if (entry.identity != current.identity || entry.configuration != current.circuit.configuration())
+          if (entry.identity != current.identity || !current.matches(entry))
             return ControlError::stale_configuration;
           staged.keep[*old] = 1U;
           staged.plan.push_back({*old, true});
@@ -166,6 +172,8 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
       replacement.identity = entry.identity;
       replacement.configuration = std::move(entry.configuration);
       replacement.random_state = entry.random_state;
+      replacement.broadcast = std::move(entry.broadcast);
+      replacement.update_transmission = entry.update_transmission;
       staged.replacements.emplace_back(replacement, now);
     }
     for (auto &replacement : staged.replacements) {
@@ -175,11 +183,11 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         // Disabled bindings carry configuration only. Fresh level slots are
         // assigned together when the complete entity is reconstructed.
         replacement.update = instance.get();
-        static_cast<void>(replacement.circuit.down(&replacement, event));
+        circuit_down(replacement);
         continue;
       }
       if (!instance->process) return ControlError::update_refused;
-      replacement.update_egress = std::make_unique<UpdateEgress>(*instance, replacement.random_state);
+      replacement.update_egress = std::make_unique<UpdateEgress>(*instance, replacement.random_state, replacement.update_transmission);
       const auto old = std::find_if(device.circuits.begin(), device.circuits.end(), [&](const auto &current) {
         return same_circuit(current.identity, replacement.identity);
       });
@@ -241,7 +249,7 @@ void ControlWorker::commit_generation(DeviceState &device) noexcept {
 
 void ControlWorker::retire_circuit(DeviceState &device, OwnedCircuit &circuit) noexcept {
   device.retired_epoch_floor = std::max(device.retired_epoch_floor, circuit.identity.configuration_generation);
-  static_cast<void>(circuit.circuit.down(&circuit, event));
+  circuit_down(circuit);
   if (circuit.update) {
     if (circuit.update->status == UpdateStatus::applied &&
         circuit.update->process->release_circuit(circuit.update_slot,
@@ -421,7 +429,22 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
   }
   auto found = std::find_if(device.circuits.begin(), device.circuits.end(),
       [&](const auto &owned) { return same_circuit(owned.identity, command.identity); });
-  if (command.kind == ControlCommandKind::add_p2p_circuit) {
+  if (command.kind == ControlCommandKind::add_p2p_circuit || command.kind == ControlCommandKind::add_lan_circuit) {
+    const auto *common = circuit_hello_configuration(command.configuration, command.broadcast);
+    if (command.update_transmission && !valid_transmission(*command.update_transmission)) {
+      result.error = ControlError::invalid_argument;
+      return result;
+    }
+    if (!common || (command.kind == ControlCommandKind::add_lan_circuit) != command.broadcast.has_value() ||
+        (command.broadcast && command.configuration != P2pCircuitConfiguration{})) {
+      result.error = ControlError::invalid_argument;
+      return result;
+    }
+    if (command.broadcast) for (const auto &level : command.broadcast->levels)
+      if (level && (level->receive_authentication || level->transmit_authentication)) {
+        result.error = ControlError::unsupported_authentication;
+        return result;
+      }
     if (found != device.circuits.end()) result.error = ControlError::already_exists;
     else if (!command.identity.interface_id || !command.identity.configuration_generation ||
         command.identity.instance > device_catalog::isis_instance_last ||
@@ -429,13 +452,13 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
       result.error = ControlError::invalid_argument;
     else if (command.identity.configuration_generation <= device.retired_epoch_floor)
       result.error = ControlError::stale_configuration;
-    else if (command.configuration.receive_authentication || command.configuration.transmit_authentication)
+    else if (common->receive_authentication || common->transmit_authentication)
       result.error = ControlError::unsupported_authentication;
     else if (std::any_of(device.circuits.begin(), device.circuits.end(), [&](const auto &other) {
       return other.identity.interface_id == command.identity.interface_id &&
           (other.identity.physical_port_ordinal != command.identity.physical_port_ordinal ||
-           (other.wire_instance == command.configuration.wire_instance &&
-            other.destinations.conflicts(command.configuration.destinations())));
+           (other.wire_instance == common->wire_instance &&
+            other.destinations.conflicts(common->destinations())));
     })) result.error = ControlError::already_exists;
     else if (active_circuits_ >= maximum_circuits_) result.error = ControlError::capacity;
     else try {
@@ -464,16 +487,35 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     return result;
   }
   if (command.kind != ControlCommandKind::query_circuit) { result.error = ControlError::invalid_argument; return result; }
-  result.adjacency = found->circuit.adjacency();
-  if (command.selected_next_hop) {
-    result.bound_next_hop = bind_p2p_next_hop(result.adjacency,
-        found->circuit.peer_attributes(), found->circuit.configuration().protocols,
-        {found->identity.interface_id, found->identity.configuration_generation,
-         found->identity.physical_port_ordinal}, command.level, *command.selected_next_hop);
-    if (!result.bound_next_hop) result.error = ControlError::not_found;
+  result.broadcast_circuit = found->lan() != nullptr;
+  if (const auto *broadcast = found->lan()) {
+    for (std::size_t level{}; level < 2U; ++level) if (const auto *circuit = broadcast->at(level)) {
+      result.lan_neighbors[level] = circuit->neighbors().size();
+      result.designated[level] = circuit->designated();
+      result.hello_pending = result.hello_pending || circuit->hello_pending();
+      for (std::size_t peer{}; peer < circuit->neighbors().size(); ++peer)
+        result.lan_up[level] += circuit->neighbors().at(peer)->adjacency.state == LanState::up ? 1U : 0U;
+    }
+    if (command.selected_next_hop) {
+      const auto *circuit = command.level >= 1U && command.level <= 2U ? broadcast->at(command.level - 1U) : nullptr;
+      const auto peer = circuit && command.selected_lan_peer ? circuit->neighbors().find(*command.selected_lan_peer) : std::nullopt;
+      if (peer) result.bound_next_hop = bind_lan_next_hop(*peer, circuit->configuration().protocols,
+          {found->identity.interface_id, found->identity.configuration_generation, found->identity.physical_port_ordinal},
+          *command.selected_next_hop);
+      if (!result.bound_next_hop) result.error = ControlError::not_found;
+    }
+  } else {
+    result.adjacency = found->p2p().adjacency();
+    if (command.selected_next_hop) {
+      result.bound_next_hop = bind_p2p_next_hop(result.adjacency,
+          found->p2p().peer_attributes(), found->p2p().configuration().protocols,
+          {found->identity.interface_id, found->identity.configuration_generation,
+           found->identity.physical_port_ordinal}, command.level, *command.selected_next_hop);
+      if (!result.bound_next_hop) result.error = ControlError::not_found;
+    }
+    result.hello_pending = found->p2p().hello_pending();
   }
   result.counters = found->counters;
-  result.hello_pending = found->circuit.hello_pending();
   if (found->update) {
     result.update_status = found->update->status;
     for (std::size_t level{}; level < 2U; ++level) {
@@ -488,7 +530,13 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
       }
     }
   }
-  const auto holding = found->circuit.holding_deadline();
+  std::optional<RuntimeClock::time_point> holding;
+  if (const auto *broadcast = found->lan()) {
+    for (std::size_t level{}; level < 2U; ++level) if (const auto *circuit = broadcast->at(level)) {
+      const auto next = circuit->neighbors().deadline();
+      if (next && (!holding || *next < *holding)) holding = next;
+    }
+  } else holding = found->p2p().holding_deadline();
   if (holding) result.holding_deadline_nanoseconds =
       std::chrono::duration_cast<std::chrono::nanoseconds>(holding->time_since_epoch()).count();
   return result;
@@ -510,7 +558,10 @@ void ControlWorker::receive(
         owned.identity.instance != packet.metadata.instance_id) continue;
     packet::isis::InstanceError error{};
     const auto selection = packet::isis::select_instance(wire->pdu, owned.format, owned.physical_point_to_point, error);
-    const bool hello = wire->pdu.type == packet::isis::PduType::point_to_point_hello;
+    const bool p2p_hello = wire->pdu.type == packet::isis::PduType::point_to_point_hello;
+    const bool lan_hello = wire->pdu.type == packet::isis::PduType::lan_hello_l1 || wire->pdu.type == packet::isis::PduType::lan_hello_l2;
+    const bool hello = p2p_hello || lan_hello;
+    if ((p2p_hello && owned.lan()) || (lan_hello && !owned.lan())) continue;
     if ((owned.destinations.select(wire->pdu.type) != wire->ethernet.destination) || !selection ||
         selection->instance != owned.wire_instance) continue;
     if (owned.identity.configuration_generation != packet.metadata.configuration_generation) {
@@ -545,7 +596,18 @@ void ControlWorker::receive(
       ++owned.counters.discarded;
       continue;
     }
-    const auto received = owned.circuit.receive(*packet.frame, std::nullopt, now, &owned, event);
+    if (auto *broadcast = owned.lan()) {
+      const auto level = wire->pdu.type == packet::isis::PduType::lan_hello_l1 ? 0U : 1U;
+      auto *circuit = broadcast->at(level);
+      if (!circuit) continue;
+      LanObserverContext context{owned, level};
+      const auto received = circuit->receive(*packet.frame, std::nullopt, now, lan_observer(context));
+      if (received == LanCircuitReceive::instance) continue;
+      ++owned.counters.received;
+      if (received != LanCircuitReceive::accepted) ++owned.counters.discarded;
+      continue;
+    }
+    const auto received = owned.p2p().receive(*packet.frame, std::nullopt, now, &owned, event);
     if (received == CircuitReceive::instance) continue;
     ++owned.counters.received;
     if (received != CircuitReceive::accepted) ++owned.counters.discarded;
@@ -594,6 +656,22 @@ void ControlWorker::run() noexcept {
             ++owned.counters.stale_completion;
             continue;
           }
+          if (wire->pdu.type == packet::isis::PduType::lan_hello_l1 || wire->pdu.type == packet::isis::PduType::lan_hello_l2) {
+            const auto level = wire->pdu.type == packet::isis::PduType::lan_hello_l1 ? 0U : 1U;
+            auto *broadcast = owned.lan();
+            auto *circuit = broadcast ? broadcast->at(level) : nullptr;
+            if (!circuit || !owned.lan_transmissions[level].complete(completion->metadata.configuration_generation,
+                completion->metadata.transmission_id)) { ++owned.counters.stale_completion; continue; }
+            if (circuit->complete_hello(completion->enqueued, now)) {
+              if (completion->enqueued) ++owned.counters.hello_enqueued;
+              else ++owned.counters.hello_refused;
+            }
+            continue;
+          }
+          if (owned.lan() && wire->pdu.type == packet::isis::PduType::point_to_point_hello) {
+            ++owned.counters.stale_completion;
+            continue;
+          }
           if (wire->pdu.type != packet::isis::PduType::point_to_point_hello) {
             if (!complete_update(owned, *completion, wire->pdu, now)) ++owned.counters.stale_completion;
             continue;
@@ -603,7 +681,7 @@ void ControlWorker::run() noexcept {
             ++owned.counters.stale_completion;
             continue;
           }
-          if (owned.circuit.complete_hello(completion->enqueued, now)) {
+          if (owned.p2p().complete_hello(completion->enqueued, now)) {
             if (completion->enqueued) ++owned.counters.hello_enqueued;
             else ++owned.counters.hello_refused;
           }
@@ -633,20 +711,21 @@ void ControlWorker::run() noexcept {
         auto &owned = device.circuits[(device.first_circuit + ordinal) % device.circuits.size()];
         if (owned.update && owned.update->status != UpdateStatus::applied) {
           owned.transmission.cancel();
-          static_cast<void>(owned.circuit.down(&owned, event));
+          circuit_down(owned);
           continue;
         }
-        static_cast<void>(owned.circuit.expire(now, &owned, event));
+        if (owned.lan()) { deadline = std::min(deadline, service_lan(owned, now, transmit_budget)); continue; }
+        static_cast<void>(owned.p2p().expire(now, &owned, event));
         const auto shard = owned.identity.device.index % forwarding_shards_;
         auto &channel = channels_.egress[shard];
         if (transmit_budget && channel.producer_available()) {
-          const auto built = owned.circuit.hello(output_, std::nullopt, scratch_, now);
+          const auto built = owned.p2p().hello(output_, std::nullopt, scratch_, now);
           if (built) --transmit_budget;
           if (built && *built == HelloBuildResult::encoded) {
             const auto ticket = owned.transmission.begin();
             if (!ticket) {
               ++owned.counters.transmission_exhausted;
-              static_cast<void>(owned.circuit.down(&owned, event));
+              circuit_down(owned);
               continue;
             }
             const bool published = channel.try_send({owned.identity.device, owned.identity.interface_id,
@@ -654,17 +733,17 @@ void ControlWorker::run() noexcept {
                 static_cast<std::uint8_t>(packet::isis::PduType::point_to_point_hello), owned.identity.instance}, output_);
             if (!published) {
               owned.transmission.cancel();
-              static_cast<void>(owned.circuit.complete_hello(false, now));
+              static_cast<void>(owned.p2p().complete_hello(false, now));
             }
             else if (channels_.egress_wakeup) channels_.egress_wakeup(channels_.egress_context, shard);
           }
         }
         deadline = std::min(deadline, emit_updates(owned, now, transmit_budget));
-        const auto next = owned.circuit.deadline();
+        const auto next = owned.p2p().deadline();
         // A ready circuit with no channel credit waits for its completion
         // notification. Its holding deadline still participates in expiry.
         if (next > now || channel.producer_available()) deadline = std::min(deadline, next);
-        else if (const auto holding = owned.circuit.holding_deadline()) deadline = std::min(deadline, *holding);
+        else if (const auto holding = owned.p2p().holding_deadline()) deadline = std::min(deadline, *holding);
       }
       if (!device.circuits.empty()) device.first_circuit = (device.first_circuit + 1U) % device.circuits.size();
       deadline = std::min(deadline, service_routes(device, now));

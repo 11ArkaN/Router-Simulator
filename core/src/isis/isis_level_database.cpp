@@ -232,6 +232,24 @@ std::optional<packet::isis::SnpEntry> LevelDatabase::snp_entry_at(
   return index < records_.size() ? snp_entry(records_[index].id, now) : std::nullopt;
 }
 
+std::optional<std::size_t> LevelDatabase::broadcast_srm_count(std::size_t circuit) const noexcept {
+  if (circuit >= circuits_.size() || !circuits_[circuit].broadcast) return std::nullopt;
+  if (!circuits_[circuit].eligible) return 0U;
+  return static_cast<std::size_t>(std::count_if(records_.begin(), records_.end(), [&](const auto &record) {
+    return !record.placeholder && record.circuits[circuit].srm;
+  }));
+}
+std::optional<packet::isis::LspId> LevelDatabase::broadcast_srm_at(
+    std::size_t circuit, std::size_t ordinal) const noexcept {
+  if (circuit >= circuits_.size() || !circuits_[circuit].broadcast || !circuits_[circuit].eligible) return std::nullopt;
+  for (const auto &record : records_)
+    if (!record.placeholder && record.circuits[circuit].srm) {
+      if (!ordinal) return record.id;
+      --ordinal;
+    }
+  return std::nullopt;
+}
+
 PartialSnpSelection LevelDatabase::partial_snp(std::size_t circuit,
     std::optional<packet::isis::LspId> cursor,
     std::span<packet::isis::SnpEntry> output, RuntimeClock::time_point now) const noexcept {

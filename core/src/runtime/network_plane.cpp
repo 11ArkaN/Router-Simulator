@@ -543,6 +543,8 @@ struct IsisTransportBinding {
   packet::isis::InstanceFormat format{};
   std::uint16_t wire_instance{};
   bool physical_point_to_point{};
+  isis::Levels levels{isis::Levels::none};
+  bool broadcast{};
 };
 
 // Borrowed same-owner projections only. Both forwarding and link owners retain
@@ -555,6 +557,15 @@ struct IsisTransportBinding {
       binding.identity.instance != metadata.instance_id ||
       binding.identity.physical_port_ordinal != metadata.physical_port_ordinal ||
       binding.destinations.select(wire.pdu.type) != wire.ethernet.destination) return false;
+  using packet::isis::PduType;
+  const bool p2p_hello = wire.pdu.type == PduType::point_to_point_hello;
+  const bool lan_hello = wire.pdu.type == PduType::lan_hello_l1 || wire.pdu.type == PduType::lan_hello_l2;
+  if ((p2p_hello && binding.broadcast) || (lan_hello && !binding.broadcast)) return false;
+  if (!p2p_hello) {
+    const bool l2 = wire.pdu.type == PduType::lan_hello_l2 || wire.pdu.type == PduType::lsp_l2 ||
+        wire.pdu.type == PduType::csnp_l2 || wire.pdu.type == PduType::psnp_l2;
+    if (!(static_cast<std::uint8_t>(binding.levels) & (l2 ? 2U : 1U))) return false;
+  }
   packet::isis::InstanceError error{};
   const auto selected = packet::isis::select_instance(wire.pdu, binding.format, binding.physical_point_to_point, error);
   return selected && selected->instance == binding.wire_instance;
@@ -4898,8 +4909,8 @@ bool NetworkPlane::remove_port(DeviceHandle device,
   return true;
 }
 
-bool NetworkPlane::replace_isis_p2p_generation(DeviceHandle device,
-    std::span<const IsisP2pCircuitProgram> circuits) noexcept {
+bool NetworkPlane::replace_isis_generation(DeviceHandle device,
+    std::span<const IsisCircuitProgram> circuits) noexcept {
   if (!impl_->live(device) || circuits.size() > device_catalog::maximum_routers * device_catalog::maximum_ports_per_router)
     return false;
   if (circuits.empty() && !impl_->isis_registered[device.index]) return true;
@@ -4937,7 +4948,9 @@ bool NetworkPlane::replace_isis_p2p_generation(DeviceHandle device,
     for (const auto &program : circuits) {
       const auto &definition = program.circuit;
       const auto &identity = definition.identity;
-      const auto &configuration = definition.configuration;
+      const auto *common = definition.common();
+      if (!common) return false;
+      const auto &configuration = *common;
       if (!program.port || program.port.node != node(device) || identity.device != device ||
           program.port.ordinal != identity.physical_port_ordinal || program.port.ordinal >= groups->size() ||
           !configuration.destinations().valid()) return false;
@@ -4950,10 +4963,13 @@ bool NetworkPlane::replace_isis_p2p_generation(DeviceHandle device,
       generation.circuits.push_back(definition);
       link_projection.push_back({identity, program.port, configuration.destinations(),
           configuration.instance_format.value_or(packet::isis::InstanceFormat::standard),
-          configuration.wire_instance, configuration.physical_point_to_point});
+          configuration.wire_instance, !definition.broadcast && definition.configuration.physical_point_to_point,
+          definition.levels(), definition.broadcast.has_value()});
       const auto destinations = configuration.destinations();
-      (*groups)[program.port.ordinal].push_back(destinations.hello);
-      for (const auto &group : destinations.levels) (*groups)[program.port.ordinal].push_back(group);
+      if (!definition.broadcast) (*groups)[program.port.ordinal].push_back(destinations.hello);
+      for (std::size_t level{}; level < destinations.levels.size(); ++level)
+        if (static_cast<std::uint8_t>(definition.levels()) & (1U << level))
+          (*groups)[program.port.ordinal].push_back(destinations.levels[level]);
       affected[program.port.ordinal] = true;
     }
     const auto selector = [](const IsisTransportBinding &binding) {
@@ -5030,6 +5046,24 @@ std::optional<isis::ControlResult> NetworkPlane::query_isis_circuit(const isis::
   command.kind = isis::ControlCommandKind::query_circuit;
   command.identity = identity;
   return impl_->execute_isis(std::move(command));
+}
+
+std::optional<isis::ControlResult> NetworkPlane::query_isis_lan_next_hop(
+    const isis::CircuitIdentity &identity, std::uint8_t level, const packet::Mac &peer,
+    const ip::IpAddress &address) noexcept {
+  if (!impl_->live(identity.device) || !impl_->isis_registered[identity.device.index]) return std::nullopt;
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::query_circuit;
+  command.identity = identity;
+  command.level = level;
+  command.selected_lan_peer = peer;
+  command.selected_next_hop = address;
+  auto result = impl_->execute_isis(std::move(command));
+  if (result.error == isis::ControlError::none && !result.broadcast_circuit) {
+    result.error = isis::ControlError::invalid_argument;
+    result.bound_next_hop.reset();
+  }
+  return result;
 }
 
 bool NetworkPlane::add_isis_update_instance(DeviceHandle device, std::uint8_t instance,

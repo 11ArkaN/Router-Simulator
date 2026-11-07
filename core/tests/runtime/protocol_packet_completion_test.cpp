@@ -22,6 +22,15 @@ void protocol_packet_completion_tests() {
     if (!channel->try_send({{0U, 7U}, index, 0U, index + 100U, index + 1000U, 0U, 0U, index + 2000U}, frame))
       throw std::runtime_error("Protocol completion channel refused a reserved slot");
   }
+  std::size_t ready_count{};
+  static_cast<void>(channel->consumer_any_ready([&](const Channel::Metadata &metadata,
+      const router::packet::Frame &queued) noexcept {
+    if (metadata.interface_id != ready_count || queued.view().front() != ready_count)
+      ready_count = 100U;
+    else ++ready_count;
+    return false;
+  }));
+  if (ready_count != 4U) throw std::runtime_error("Completion ready snapshot lost FIFO bytes");
   if (channel->try_send({}, frame) || channel->producer_available() != 0U)
     throw std::runtime_error("Protocol completion channel exceeded its frame capacity");
   if (!channel->consumer_pending())
@@ -33,7 +42,8 @@ void protocol_packet_completion_tests() {
   }
   if (channel->producer_available() != 0U || channel->try_send({}, frame))
     throw std::runtime_error("Protocol completion channel reclaimed unconsumed results");
-  if (channel->consumer_pending())
+  if (channel->consumer_pending() ||
+      channel->consumer_any_ready([](const auto &, const auto &) noexcept { return true; }))
     throw std::runtime_error("Borrowed frames were confused with pending consumer work");
   for (std::uint64_t index = 0U; index < 4U; ++index) {
     const auto result = channel->try_completion();

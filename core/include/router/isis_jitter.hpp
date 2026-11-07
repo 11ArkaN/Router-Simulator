@@ -10,6 +10,13 @@
 
 namespace router::isis {
 
+// Draw an index in [0, bound) without modulo bias. The owning control process
+// supplies and retains its nonzero PRNG state, including across checkpoints.
+// Zero bound/state returns nullopt without mutation. No allocation or borrowed
+// retention; separate owners must never share mutable PRNG storage.
+[[nodiscard]] std::optional<std::uint64_t> random_below(
+    std::uint64_t bound, std::uint64_t &random_state) noexcept;
+
 // ISO 10589 10.1: uniformly choose a period between 75% and 100% of base,
 // with microsecond resolution. PRNG state is advanced on every draw and must
 // be retained in the owning process's checkpoint. Zero state or nonpositive

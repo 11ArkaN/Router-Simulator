@@ -24,15 +24,15 @@ void ControlWorker::service_p2p_decision(OwnedInstance &instance, const DeviceSt
       if (owned.identity.instance != index) continue;
       const auto protocol = program.protocol;
       if (protocol) {
-        const auto &local = owned.circuit.configuration().protocols;
+        const auto &local = owned.p2p().configuration().protocols;
         if (std::find(local.begin(), local.end(), *protocol) == local.end()) continue;
         bool peer_supports{};
-        packet::isis::TlvCursor attributes(owned.circuit.peer_attributes());
+        packet::isis::TlvCursor attributes(owned.p2p().peer_attributes());
         while (const auto option = attributes.next()) if (option->code == 129U)
           peer_supports = peer_supports || packet::isis::supports_protocol(*option, *protocol);
         if (!attributes.valid() || !peer_supports) continue;
       }
-      const auto adjacency = owned.circuit.adjacency();
+      const auto adjacency = owned.p2p().adjacency();
       if (!adjacency.iso_up || !(static_cast<std::uint8_t>(adjacency.usage) & (1U << level))) continue;
       const auto found = std::lower_bound(interfaces.begin(), interfaces.end(), owned.identity.interface_id,
           [](const auto &entry, auto id) { return entry.interface_id < id; });

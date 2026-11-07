@@ -16,6 +16,7 @@ struct LanCircuitConfiguration : CircuitHelloConfiguration {
   LanSetLimits limits;
   std::chrono::microseconds designated_hello_interval{};
   std::uint16_t designated_holding_seconds{};
+  bool operator==(const LanCircuitConfiguration &) const = default;
 };
 struct LanCircuitObserver {
   void *context{};
@@ -51,7 +52,15 @@ public:
       Clock::time_point now, LanCircuitObserver observer) noexcept;
   [[nodiscard]] bool complete_hello(bool enqueued, Clock::time_point now) noexcept;
   [[nodiscard]] bool down(LanCircuitObserver observer) noexcept;
+  // Same owner after Down. Restarts startup election and Hello state using the
+  // retained PRNG continuation, without restoring any old peer or DIS identity.
+  // False leaves an already operational circuit unchanged; allocates nothing.
+  [[nodiscard]] bool up(Clock::time_point now) noexcept;
+  [[nodiscard]] bool operational() const noexcept { return operational_; }
   [[nodiscard]] Clock::time_point deadline() const noexcept;
+  [[nodiscard]] bool hello_pending() const noexcept { return hello_.pending(); }
+  // Borrow immutable effective configuration until move or destruction.
+  [[nodiscard]] const LanCircuitConfiguration &configuration() const noexcept { return configuration_; }
   [[nodiscard]] const LanAdjacencySet &neighbors() const noexcept { return neighbors_; }
   [[nodiscard]] std::optional<DisSelection> designated() const noexcept { return designated_; }
 private:
