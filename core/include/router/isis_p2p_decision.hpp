@@ -1,5 +1,5 @@
 // One instance control shard owns graph translation, SPF scratch and the
-// identity projection of its last complete P2P decision. Dependencies point
+// identity projection of its last complete P2P/LAN decision. Dependencies point
 // to local LSDB values and shared distance calculation, never another router.
 
 // Source: iso.10589.2002.lsdb_link_graph
@@ -32,7 +32,8 @@ public:
   // result so the route owner can withdraw this protocol's candidates.
   [[nodiscard]] DecisionStatus calculate(const LinkStateDatabase &database,
       const LinkGraphSelection &selection, std::span<const P2pSpfSeed> local,
-      std::uint16_t catalog_size, RuntimeClock::time_point now) noexcept {
+      std::uint16_t catalog_size, RuntimeClock::time_point now,
+      std::span<const LanSpfCircuit> lans = {}) noexcept {
     const auto translated = graph_.rebuild(database, selection, now);
     if (translated != LinkGraphStatus::applied)
       return translated == LinkGraphStatus::capacity ? DecisionStatus::capacity : DecisionStatus::invalid;
@@ -46,7 +47,7 @@ public:
       if (prefixes_) static_cast<void>(prefixes_->commit());
       return DecisionStatus::applied;
     }
-    if (!input_.rebuild(graph_, local, catalog_size, maximum_metric_)) {
+    if (!input_.rebuild(graph_, local, catalog_size, maximum_metric_, lans)) {
       if (prefixes_) prefixes_->abort();
       return DecisionStatus::invalid;
     }

@@ -55,6 +55,7 @@ add_library(router_primitives STATIC
   src/isis/isis_lsp_generation.cpp
   src/isis/isis_local_lsp_set.cpp
   src/isis/isis_neighbor_origination.cpp
+  src/isis/isis_lan_origination.cpp
   src/isis/isis_sequence_recovery.cpp
   src/isis/isis_purge_options.cpp
   src/isis/isis_purge_builder.cpp

@@ -1,4 +1,4 @@
-// Local P2P adjacency seeds belong to the instance control owner. This value
+// Local adjacency seeds belong to the instance control owner. This value
 // adapter maps accepted Up peers into an immutable LSDB graph without reading
 // remote runtime state. It owns no adjacency, timer or forwarding catalog.
 
@@ -19,7 +19,7 @@ struct P2pSpfSeed {
 };
 enum class SeedStatus : std::uint8_t { applied, invalid, capacity };
 struct SeedResult { SeedStatus status{}; std::size_t count{}; };
-// Requires same-level, same-MT accepted Up P2P snapshots and current effective
+// Requires same-level, same-MT accepted Up P2P/LAN snapshots and current effective
 // local metrics. Tokens name the owner's actual next-hop catalog, not a MAC.
 // ISO Annex C initializes local distances from adjacencies, independently of
 // stale own LSP metrics. Peers lacking a live eligible root cannot expand.

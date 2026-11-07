@@ -2,12 +2,89 @@
 // PDUs. Tests publish encoded L1/L2 records through the actual update owner.
 
 #include "router/isis_local_lsp_set.hpp"
+#include "router/isis_lan_origination.hpp"
 
 #include <limits>
 #include <memory>
 #include <source_location>
 #include <stdexcept>
 #include <string>
+
+void isis_lan_pseudonode_lifecycle_tests() {
+  using namespace router;
+  using namespace router::isis;
+  using namespace router::packet::isis;
+  using namespace std::chrono_literals;
+  const auto require = [](bool value, std::source_location location = std::source_location::current()) {
+    if (!value) throw std::runtime_error("IS-IS pseudonode lifecycle failed at " + std::to_string(location.line()));
+  };
+  const auto now = RuntimeClock::time_point{100s};
+  const SystemId local{1U, 2U, 3U, 4U, 5U, 6U};
+  const LspId root{1U, 2U, 3U, 4U, 5U, 6U, 0U, 0U};
+  auto pseudonode = root;
+  pseudonode[6U] = 4U;
+  const UpdateLevelConfiguration level{{8U, 8192U}, 0U, 0U, 1492U, 1200U, 60s, 60s,
+      false, false, false, PurgeRules::iso_10589};
+  InstanceUpdateProcess update(local, 3U, {level, level}, {}, {InstanceFormat::standard, 0U});
+  LocalLspProgram program;
+  program.levels = {LocalLspLevelProgram{1200U, 256U, 1s, 40s}, LocalLspLevelProgram{1200U, 256U, 1s, 40s}};
+  program.random = 19U;
+  program.records = {{0U, root, 3U, {}}, {1U, root, 3U, {}},
+      {0U, pseudonode, 3U, {}, false}, {1U, pseudonode, 3U, {}, false}};
+  LocalLspSet current(local, 3U, {InstanceFormat::standard, 0U}, std::move(program), now);
+  const LevelObserver observer{nullptr, +[](void *, const LevelEvent &) noexcept {}};
+  auto scratch = std::make_unique<PduScratch>();
+  std::array<std::uint8_t, 256U> options{};
+  const std::array peers{SystemId{1U, 2U, 3U, 4U, 5U, 2U}, SystemId{1U, 2U, 3U, 4U, 5U, 3U}};
+  const auto publish = [&](RuntimeClock::time_point time, std::array<TransmitAuthentication, 2U> keys = {}) {
+    std::size_t work{4U};
+    return current.service(update, keys, time, *scratch, observer, work);
+  };
+  const auto stored = [&](std::size_t selected, RuntimeClock::time_point time) {
+    return update.level(selected)->database().database().find(pseudonode, time);
+  };
+  require(publish(now).published == 2U && !stored(0U, now) && !stored(1U, now));
+  require(synchronize_lan_pseudonode(current, 0U, pseudonode, 3U, true, peers, true,
+      options, now + 1s) == LocalContentResult::changed && current.contains(0U, pseudonode) &&
+      !current.contains(1U, pseudonode) && publish(now + 1s).published == 1U);
+  require(stored(0U, now + 1s)->header.sequence == 1U &&
+      lsp_link_counts(stored(0U, now + 1s)->pdu.tlvs) == std::optional{LspLinkCounts{3U, 3U}});
+  require(synchronize_lan_pseudonode(current, 0U, pseudonode, 3U, true, peers, true,
+      options, now + 2s) == LocalContentResult::unchanged && !publish(now + 2s).published);
+  require(synchronize_lan_pseudonode(current, 0U, pseudonode, 3U, true, std::span(peers).first(1U), true,
+      options, now + 2s) == LocalContentResult::changed && publish(now + 2s).published == 1U &&
+      stored(0U, now + 2s)->header.sequence == 2U);
+  require(synchronize_lan_pseudonode(current, 1U, pseudonode, 3U, true, peers, false,
+      options, now + 2s) == LocalContentResult::changed && publish(now + 2s).published == 1U &&
+      stored(1U, now + 2s)->header.sequence == 1U);
+  const std::array reversed{peers[1U], peers[0U]};
+  require(synchronize_lan_pseudonode(current, 0U, root, 3U, false, {}, false, options, now + 3s) ==
+      LocalContentResult::invalid && current.contains(0U, root));
+  auto missing = pseudonode;
+  ++missing[6U];
+  require(synchronize_lan_pseudonode(current, 0U, missing, 3U, true, peers, false, options, now + 3s) ==
+      LocalContentResult::missing);
+  require(synchronize_lan_pseudonode(current, 0U, pseudonode, 3U, true, reversed, true, options, now + 3s) ==
+      LocalContentResult::invalid && synchronize_lan_pseudonode(current, 0U, pseudonode, 3U, true, peers,
+      true, std::span(options).first(80U), now + 3s) == LocalContentResult::capacity &&
+      !publish(now + 3s).published && stored(0U, now + 3s)->header.sequence == 2U);
+  require(synchronize_lan_pseudonode(current, 0U, pseudonode, 3U, false, {}, false, options, now + 3s) ==
+      LocalContentResult::changed && !current.contains(0U, pseudonode));
+  const auto blocked = publish(now + 3s, {TransmitAuthentication{true, std::nullopt}, {}});
+  require(blocked.blocked == 1U && !blocked.published && stored(0U, now + 3s)->header.remaining_seconds);
+  current.retry(0U);
+  require(publish(now + 3s).published == 1U && stored(0U, now + 3s)->purge_installed &&
+      stored(0U, now + 3s)->header.sequence == 2U && !stored(0U, now + 3s)->header.remaining_seconds &&
+      stored(1U, now + 3s)->header.remaining_seconds);
+  const auto retirement = update.level(0U)->database().database().next_deadline(LspDeadlineKind::retire_purge);
+  require(retirement && retirement->at == now + 1203s);
+  require(synchronize_lan_pseudonode(current, 0U, pseudonode, 3U, false, {}, false, options, now + 4s) ==
+      LocalContentResult::unchanged);
+  require(synchronize_lan_pseudonode(current, 0U, pseudonode, 3U, true, peers, true, options, now + 4s) ==
+      LocalContentResult::changed && publish(now + 4s).published == 1U &&
+      stored(0U, now + 4s)->header.sequence == 3U && !stored(0U, now + 4s)->purge_installed &&
+      current.sequence(0U, pseudonode) == 3U && current.sequence(1U, pseudonode) == 1U);
+}
 
 void isis_local_lsp_set_tests() {
   using namespace router;

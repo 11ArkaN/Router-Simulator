@@ -68,8 +68,125 @@ bool arc(const LinkGraph &graph, LanId from, LanId to, std::uint32_t metric) {
     return graph.nodes()[link.source].id == from && graph.nodes()[link.target].id == to && link.metric == metric;
   });
 }
+void lan_spf_inputs() {
+  Fixture f;
+  const auto a = node(1U), b = node(2U), dis = node(3U), c = node(4U), pn = node(3U, 7U);
+  const std::array ap{ExtendedNeighbor{pn, 10U, {}}};
+  const std::array bp_bc{ExtendedNeighbor{pn, 30U, {}}, ExtendedNeighbor{c, 7U, {}}};
+  const std::array dp{ExtendedNeighbor{pn, 20U, {}}};
+  const std::array cb{ExtendedNeighbor{b, 8U, {}}};
+  f.install(a, options(ap));
+  auto b_options = options(bp_bc);
+  std::array<std::uint8_t, 64U> prefix_bytes{};
+  TlvWriter prefix_writer(prefix_bytes);
+  ExtendedPrefix v4;
+  v4.prefix.network.bytes = {192U, 0U, 2U, 2U};
+  v4.prefix.length = 32U;
+  v4.metric = 5U;
+  ExtendedPrefix v6;
+  v6.prefix.network.family = ip::AddressFamily::ipv6;
+  v6.prefix.network.bytes = {0x20U, 1U, 0x0dU, 0xb8U, 0U, 2U};
+  v6.prefix.length = 64U;
+  v6.metric = 7U;
+  require(encode_extended_prefix(prefix_writer, v4) && encode_extended_prefix(prefix_writer, v6));
+  b_options.insert(b_options.end(), prefix_writer.bytes().begin(), prefix_writer.bytes().end());
+  f.install(b, b_options);
+  f.install(dis, options(dp));
+  f.install(c, options(cb));
+  std::array<std::uint8_t, 128U> pn_bytes{};
+  TlvWriter writer(pn_bytes);
+  for (const auto id : {a, b, dis}) require(encode_extended_neighbor(writer, {id, 0U, {}}));
+  f.install(pn, writer.bytes());
+  LinkGraph graph(8U, 32U);
+  const LinkGraphSelection selection{a, 0U, ipv4_nlpid, GraphMetricStyle::wide};
+  require(graph.rebuild(f.database, selection, f.now) == LinkGraphStatus::applied);
+  const auto vertex = [&](LanId id) {
+    const auto found = std::find_if(graph.nodes().begin(), graph.nodes().end(), [&](const auto &value) { return value.id == id; });
+    require(found != graph.nodes().end());
+    return static_cast<std::uint32_t>(found - graph.nodes().begin());
+  };
+  const std::array<P2pSpfSeed, 1U> dis_only{{{{1U, 2U, 3U, 4U, 5U, 3U}, 10U, 0U}}};
+  const std::array lans{LanSpfCircuit{101U, pn, 10U, 0U}};
+  SpfInput input(8U, 32U);
+  SpfCalculator spf(8U, 32U, MetricStyle::wide);
+  require(input.rebuild(graph, dis_only, 2U, maximum_link_metric - 1U, lans) &&
+      input.vertices()[vertex(pn)].tie_priority == 0U && input.vertices()[vertex(b)].tie_priority == 1U &&
+      spf.calculate(*graph.root(), input.vertices(), input.edges(), 2U) &&
+      spf.cost(vertex(b)) == 10U && spf.first_hop(vertex(b), 0U) == 0U &&
+      spf.cost(vertex(c)) == 17U && spf.first_hop(vertex(c), 0U) == 0U);
+  // A real local adjacency takes precedence over indirect initialization
+  // through the DIS, even while both use the same LAN cost.
+  const std::array direct{dis_only[0U], P2pSpfSeed{{1U, 2U, 3U, 4U, 5U, 2U}, 10U, 1U}};
+  require(input.rebuild(graph, direct, 2U, maximum_link_metric - 1U, lans) &&
+      spf.calculate(*graph.root(), input.vertices(), input.edges(), 2U) &&
+      spf.cost(vertex(b)) == 10U && spf.first_hop_count(vertex(b)) == 1U && spf.first_hop(vertex(b), 0U) == 1U &&
+      spf.cost(vertex(c)) == 17U && spf.first_hop(vertex(c), 0U) == 1U && !spf.first_hop_count(*graph.root()));
+  P2pRouteDecision decision(8U, 32U, 64U, MetricStyle::wide, PrefixCollectionBudget{4U, 64U});
+  require(decision.calculate(f.database, selection, dis_only, 2U, f.now, lans) == DecisionStatus::applied &&
+      decision.cost(b) == 10U && decision.prefixes().size() == 1U &&
+      decision.prefixes()[0U].prefix == v4.prefix && decision.distance_to_prefix(0U) == std::optional{PrefixDistance{0U, 15U, 0U}});
+  require(decision.calculate(f.database, {a, 0U, ipv6_nlpid, GraphMetricStyle::wide}, direct, 2U,
+      f.now, lans) == DecisionStatus::applied && decision.first_hop(b, 0U) == 1U &&
+      decision.prefixes().size() == 1U && decision.prefixes()[0U].prefix == v6.prefix &&
+      decision.distance_to_prefix(0U) == std::optional{PrefixDistance{0U, 17U, 0U}});
+  const std::vector<SpfEdge> saved(input.edges().begin(), input.edges().end());
+  const auto unchanged = [&] {
+    return std::equal(saved.begin(), saved.end(), input.edges().begin(), input.edges().end(),
+        [](const auto &left, const auto &right) {
+          return left.target_vertex == right.target_vertex && left.cost == right.cost && left.first_hop == right.first_hop;
+        });
+  };
+  const std::array invalid_token{LanSpfCircuit{101U, pn, 10U, 1U}};
+  const std::array invalid_metric{LanSpfCircuit{101U, pn, 11U, 0U}};
+  const std::array unsorted{lans[0U], LanSpfCircuit{100U, pn, 10U, 0U}};
+  require(!input.rebuild(graph, dis_only, 2U, maximum_link_metric - 1U, invalid_token) && unchanged() &&
+      !input.rebuild(graph, dis_only, 2U, maximum_link_metric - 1U, invalid_metric) && unchanged() &&
+      !input.rebuild(graph, dis_only, 2U, maximum_link_metric - 1U, unsorted) && unchanged());
+  require(decision.calculate(f.database, selection, dis_only, 2U, f.now, invalid_token) == DecisionStatus::invalid &&
+      decision.first_hop(b, 0U) == 1U && decision.prefixes()[0U].prefix == v6.prefix &&
+      decision.distance_to_prefix(0U) == std::optional{PrefixDistance{0U, 17U, 0U}});
+  // A newly selected DIS can still advertise the old winner's LAN ID until
+  // its next Hello. Real local adjacencies stay usable without PN fallback.
+  require(input.rebuild(graph, direct, 2U, maximum_link_metric - 1U, invalid_token) &&
+      spf.calculate(*graph.root(), input.vertices(), input.edges(), 2U) &&
+      spf.cost(vertex(b)) == 10U && spf.first_hop(vertex(b), 0U) == 1U);
+  SpfInput bounded(8U, 8U);
+  require(!bounded.rebuild(graph, dis_only, 2U, maximum_link_metric - 1U, lans) && bounded.vertices().empty());
+  // A remote LAN remains a normal transit graph for a P2P-only local owner.
+  Fixture remote;
+  remote.install(a, options(std::array{ExtendedNeighbor{dis, 10U, {}}}));
+  remote.install(dis, options(std::array{ExtendedNeighbor{a, 20U, {}}, ExtendedNeighbor{pn, 20U, {}}}));
+  remote.install(b, options(bp_bc));
+  remote.install(c, options(cb));
+  TlvWriter remote_pn(pn_bytes);
+  for (const auto id : {b, dis}) require(encode_extended_neighbor(remote_pn, {id, 0U, {}}));
+  remote.install(pn, remote_pn.bytes());
+  LinkGraph remote_graph(8U, 32U);
+  require(remote_graph.rebuild(remote.database, selection, remote.now) == LinkGraphStatus::applied &&
+      input.rebuild(remote_graph, dis_only, 2U, maximum_link_metric - 1U) &&
+      spf.calculate(*remote_graph.root(), input.vertices(), input.edges(), 2U) && spf.cost(vertex(c)) == 37U);
+  auto dis_v6 = options(dp);
+  dis_v6[2U] = ipv6_nlpid;
+  f.install(dis, dis_v6, 3U, 2U);
+  require(graph.rebuild(f.database, selection, f.now) == LinkGraphStatus::applied &&
+      input.rebuild(graph, dis_only, 2U, maximum_link_metric - 1U, lans) &&
+      spf.calculate(*graph.root(), input.vertices(), input.edges(), 2U) && !spf.reachable(vertex(b)));
+  f.install(dis, options(dp), 3U, 3U);
+  f.install(b, options(std::span(bp_bc).subspan(1U)), 3U, 2U);
+  require(graph.rebuild(f.database, selection, f.now) == LinkGraphStatus::applied &&
+      input.rebuild(graph, dis_only, 2U, maximum_link_metric - 1U, lans) &&
+      spf.calculate(*graph.root(), input.vertices(), input.edges(), 2U) && !spf.reachable(vertex(b)));
+  f.install(b, options(bp_bc), 3U, 3U);
+  f.install(pn, {}, 3U, 2U, 0U, 0U);
+  require(graph.rebuild(f.database, selection, f.now) == LinkGraphStatus::applied &&
+      input.rebuild(graph, dis_only, 2U, maximum_link_metric - 1U, lans) &&
+      spf.calculate(*graph.root(), input.vertices(), input.edges(), 2U) && !spf.reachable(vertex(b)));
+  require(input.rebuild(graph, direct, 2U, maximum_link_metric - 1U, lans) &&
+      spf.calculate(*graph.root(), input.vertices(), input.edges(), 2U) && spf.cost(vertex(c)) == 17U);
+}
 }
 void isis_link_graph_tests() {
+  lan_spf_inputs();
   for (const auto budget : {std::size_t{}, std::numeric_limits<std::size_t>::max()}) {
     bool refused{};
     try { LinkGraph invalid(budget, 1U); } catch (const std::invalid_argument &) { refused = true; }

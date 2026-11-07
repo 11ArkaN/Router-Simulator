@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <stdexcept>
 
 namespace {
@@ -50,6 +51,80 @@ void isis_reachability_tests() {
         "P2P wide-only maximum metric failed");
     const std::array<std::uint8_t, 3U> malformed{22U, 1U, 0U};
     require(!lsp_link_counts(malformed), "P2P accepted truncated neighbor option");
+  }
+  {
+    using namespace router::isis;
+    const SystemId local{1U, 2U, 3U, 4U, 5U, 1U};
+    const std::array peers{SystemId{1U, 2U, 3U, 4U, 5U, 2U}, SystemId{1U, 2U, 3U, 4U, 5U, 3U}};
+    const LanId pseudonode{1U, 2U, 3U, 4U, 5U, 3U, 7U};
+    std::array<std::uint8_t, 81U> bytes{};
+    TlvWriter root(bytes);
+    require(append_lan_origin_neighbor(root, pseudonode, {1234U, 10U}), "LAN root edge composition failed");
+    TlvCursor root_options(root.bytes());
+    NarrowNeighborCursor narrow_root(*root_options.next());
+    ExtendedNeighborCursor wide_root(*root_options.next());
+    const auto old_root = narrow_root.next();
+    const auto new_root = wide_root.next();
+    require(old_root && new_root && old_root->id == pseudonode && new_root->id == pseudonode &&
+        old_root->metrics.metric == 10U && new_root->metric == 1234U,
+        "LAN root did not retain designated pseudonode and circuit costs");
+    auto invalid_pseudonode = pseudonode;
+    invalid_pseudonode.back() = 0U;
+    const auto saved_root = bytes;
+    require(!append_lan_origin_neighbor(root, invalid_pseudonode, {10U, {}}) && bytes == saved_root &&
+        !append_lan_origin_neighbor(root, pseudonode, {0U, {}}) && bytes == saved_root,
+        "LAN root admitted a non-pseudonode ID or zero circuit cost");
+    for (const bool narrow : {false, true}) {
+      const auto required = lan_pseudonode_option_octets(peers.size(), narrow);
+      require(required == (narrow ? 81U : 39U), "Pseudonode size omitted its own system edge");
+      TlvWriter writer(std::span(bytes).first(*required));
+      require(append_lan_pseudonode_neighbors(writer, local, peers, narrow) && !writer.available(),
+          "Pseudonode neighbors did not fit exact capacity");
+      const auto counts = lsp_link_counts(writer.bytes());
+      require(counts == std::optional{LspLinkCounts{narrow ? 3U : 0U, 3U}},
+          "Pseudonode reachability encodings have wrong edge counts");
+      TlvCursor options(writer.bytes());
+      std::size_t wide_count{}, narrow_count{};
+      while (const auto option = options.next()) {
+        require(wide_count < 3U, "Pseudonode encoded an unexpected extra edge");
+        LanId expected{};
+        const auto system = wide_count ? peers[wide_count - 1U] : local;
+        std::copy(system.begin(), system.end(), expected.begin());
+        if (option->code == 2U) {
+          NarrowNeighborCursor entries(*option);
+          const auto entry = entries.next();
+          require(entry && entry->id == expected && entry->metrics.metric == 0U &&
+              !entry->metrics.external_metric && !entry->virtual_link && !entries.next() && entries.valid(),
+              "Pseudonode narrow edge must be internal and zero cost");
+          ++narrow_count;
+        } else {
+          ExtendedNeighborCursor entries(*option);
+          const auto entry = entries.next();
+          require(entry && entry->id == expected && entry->metric == 0U && entry->sub_tlvs.empty() &&
+              !entries.next() && entries.valid(), "Pseudonode wide edge must be zero cost");
+          ++wide_count;
+        }
+      }
+      require(options.valid() && wide_count == 3U && narrow_count == (narrow ? 3U : 0U),
+          "Pseudonode missing local or peer system edge");
+      const auto saved = bytes;
+      TlvWriter short_writer(std::span(bytes).first(*required - 1U));
+      require(!append_lan_pseudonode_neighbors(short_writer, local, peers, narrow) &&
+          short_writer.bytes().empty() && bytes == saved, "Pseudonode capacity refusal partially changed content");
+    }
+    const auto saved = bytes;
+    for (const auto invalid : {std::array{peers[1U], peers[0U]}, std::array{peers[0U], peers[0U]},
+        std::array{local, peers[0U]}}) {
+      TlvWriter writer(bytes);
+      require(!append_lan_pseudonode_neighbors(writer, local, invalid, true) &&
+          writer.bytes().empty() && bytes == saved, "Pseudonode accepted unordered, duplicate or self peer");
+    }
+    require(!lan_pseudonode_option_octets(std::numeric_limits<std::size_t>::max(), false) &&
+        !lan_pseudonode_option_octets(std::numeric_limits<std::size_t>::max() / 27U, true),
+        "Pseudonode size calculation overflowed");
+    TlvWriter isolated(bytes);
+    require(append_lan_pseudonode_neighbors(isolated, local, {}, true) && isolated.bytes().size() == 27U,
+        "Pseudonode composer omitted its local system with no Up peers");
   }
   const std::array<std::uint8_t, 15U> neighbor{
     1U, 2U, 3U, 4U, 5U, 6U, 7U, 0x12U, 0x34U, 0x56U, 4U, 250U, 2U, 0xabU, 0xcdU};

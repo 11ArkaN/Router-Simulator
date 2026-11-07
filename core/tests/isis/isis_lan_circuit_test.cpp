@@ -5,10 +5,13 @@
 #include "router/isis_lan_circuit.hpp"
 #include "router/isis_instance_update.hpp"
 #include "router/isis_lsp_builder.hpp"
+#include "router/isis_lan_origination.hpp"
+#include "router/isis_p2p_decision.hpp"
 #include "router/ethernet_switch.hpp"
 #include "router/multi_device_fabric.hpp"
 
 #include <memory>
+#include <algorithm>
 #include <source_location>
 #include <stdexcept>
 
@@ -46,19 +49,44 @@ struct Events {
   bool old_areas{true}, update_ok{true};
   LanCircuit *circuit{};
   InstanceUpdateProcess *update{};
+  LocalLspSet *origin{};
+  packet::isis::LspId root{}, pseudonode{};
+  std::vector<std::uint8_t> base;
+  RuntimeClock::time_point now{};
 };
 void synchronize(Events &events) noexcept {
   if (!events.update) return;
   std::array<packet::Mac, 4U> peers{};
+  std::array<packet::isis::SystemId, 4U> systems{};
   std::size_t count{};
   for (std::size_t index{}; index < events.circuit->neighbors().size(); ++index) {
     const auto neighbor = events.circuit->neighbors().at(index)->adjacency;
-    if (neighbor.state == LanState::up) peers[count++] = neighbor.mac;
+    if (neighbor.state == LanState::up) {
+      peers[count] = neighbor.mac;
+      systems[count++] = neighbor.system;
+    }
   }
   const auto selected = events.circuit->designated();
   const LevelObserver observer{nullptr, +[](void *, const LevelEvent &) noexcept {}};
   events.update_ok = events.update_ok && events.update->lan(0U, 7U, 0U,
       std::span(peers).first(count), count && selected && selected->local, observer) == UpdateStatus::applied;
+  if (!events.origin) return;
+  const auto accepted = [](LocalContentResult result) {
+    return result == LocalContentResult::changed || result == LocalContentResult::unchanged;
+  };
+  auto system_peers = std::span(systems).first(count);
+  std::sort(system_peers.begin(), system_peers.end());
+  const auto unique_end = std::unique(system_peers.begin(), system_peers.end());
+  std::array<std::uint8_t, 256U> options{};
+  events.update_ok = events.update_ok && accepted(synchronize_lan_pseudonode(*events.origin,
+      0U, events.pseudonode, 3U, count && selected && selected->local,
+      std::span<const packet::isis::SystemId>(system_peers.begin(), unique_end), true, options, events.now));
+  packet::isis::TlvWriter writer(options);
+  packet::isis::TlvCursor base(events.base);
+  while (const auto option = base.next()) events.update_ok = events.update_ok && writer.append(option->code, option->value);
+  if (selected) events.update_ok = events.update_ok && append_lan_origin_neighbor(writer, selected->lan, {10U, 10U});
+  events.update_ok = events.update_ok && base.valid() && accepted(events.origin->replace(0U,
+      events.root, 3U, writer.bytes(), events.now));
 }
 void peer(void *opaque, const LanPeerEvent &value) noexcept {
   auto &events = *static_cast<Events *>(opaque);
@@ -82,6 +110,7 @@ struct Context {
   LanCircuit::Clock::time_point now;
   std::size_t active{3U};
   std::array<std::unique_ptr<InstanceUpdateProcess>, 3U> updates{};
+  std::array<std::unique_ptr<LocalLspSet>, 3U> origins{};
   LanCircuitObserver observer(std::size_t index) { return {&events[index], peer, designated}; }
 };
 void delivered(void *opaque, const lab::MultiDeviceFabric::Delivery &delivery) {
@@ -90,6 +119,7 @@ void delivered(void *opaque, const lab::MultiDeviceFabric::Delivery &delivery) {
     require(!context.bridge.ingress(delivery.destination.ordinal, delivery.frame, context.now).malformed);
   } else if (delivery.destination.node.index < context.active) {
     const auto index = delivery.destination.node.index;
+    context.events[index].now = context.now;
     packet::isis::EthernetDecodeError error{};
     const auto wire = packet::isis::parse_ethernet_pdu(delivery.frame.view(), error);
     require(wire.has_value());
@@ -130,6 +160,19 @@ void isis_lan_circuit_tests() {
         UpdateInstanceSelector{packet::isis::InstanceFormat::standard, 0U});
     context.events[index].circuit = context.circuits[index].get();
     context.events[index].update = context.updates[index].get();
+    auto &events = context.events[index];
+    std::copy(local.local.system.begin(), local.local.system.end(), events.root.begin());
+    events.pseudonode = events.root;
+    events.pseudonode[6U] = local.local.circuit;
+    events.base = {1U, 4U, 3U, 0x49U, 0U, 1U, 129U, 1U, packet::isis::ipv4_nlpid};
+    LocalLspProgram origin;
+    origin.levels[0U] = LocalLspLevelProgram{1200U, 256U, 1s, 40s};
+    origin.random = index + 19U;
+    origin.records = {{0U, events.root, 3U, events.base}, {0U, events.pseudonode, 3U, {}, false}};
+    context.origins[index] = std::make_unique<LocalLspSet>(local.local.system, 3U,
+        UpdateInstanceSelector{packet::isis::InstanceFormat::standard, 0U}, std::move(origin), start);
+    events.origin = context.origins[index].get();
+    events.now = start;
     require(bridge.configure_port(index, {1000U, 1514U, true, true}));
     require(fabric->configure({index, 1U}, {lab::node(lab::DeviceHandle{index, 1U}), 0U, 1U},
         {lab::node(lab::SwitchHandle{0U, 1U}), index, 1U}, 1'000'000'000U, 100ns, true));
@@ -152,9 +195,35 @@ void isis_lan_circuit_tests() {
       fabric->pump_delivery(&context, delivered, context.now);
     }
   };
+  const auto flood = [&] {
+    for (std::uint16_t index{}; index < context.active; ++index) {
+      const LevelObserver observer{nullptr, +[](void *, const LevelEvent &) noexcept {}};
+      std::size_t work{4U};
+      require(!context.origins[index]->service(*context.updates[index], {}, context.now,
+          *scratch, observer, work).blocked);
+      auto output = context.updates[index]->outputs(0U, 0U);
+      if (!output) continue;
+      const auto local = configuration(static_cast<std::uint8_t>(index + 1U));
+      const auto &database = context.updates[index]->level(0U)->database();
+      for (std::size_t record{}; record < database.size(); ++record) {
+        const auto stored = database.database().at(record, context.now);
+        require(stored.has_value());
+        if (!database.flags(stored->header.id, 0U)->srm) continue;
+        packet::Frame frame;
+        const auto sent = output->reservations.lsp.prepare(stored->header.id, local.mac,
+            local.hello_destination, 1492U, 1U, frame, *scratch, context.now);
+        require(sent.status == LspEmissionStatus::encoded);
+        const bool admitted = fabric->enqueue({index, 1U}, 0U, frame) == lab::MultiDeviceFabric::DropReason::none;
+        require(admitted && output->reservations.lsp.complete(output->synchronization_epoch,
+            sent.ticket, admitted, context.now).accepted && !database.flags(stored->header.id, 0U)->srm);
+      }
+    }
+    flush();
+  };
   const auto round = [&](LanCircuit::Clock::time_point now) {
     context.now = now;
     for (std::uint16_t index{}; index < context.active; ++index) {
+      context.events[index].now = now;
       packet::Frame frame;
       require(context.circuits[index]->hello(frame, std::nullopt, *scratch, now,
           context.observer(index)) == HelloBuildResult::encoded);
@@ -162,6 +231,48 @@ void isis_lan_circuit_tests() {
       require(admitted && context.circuits[index]->complete_hello(admitted, now));
     }
     flush();
+    flood();
+  };
+  const auto check_routes = [&](std::size_t index, bool converged = false) {
+    std::array<P2pSpfSeed, 4U> seeds{};
+    std::size_t count{};
+    const auto selected = context.circuits[index]->designated();
+    require(selected.has_value());
+    std::optional<std::uint16_t> dis_token;
+    for (std::size_t peer{}; peer < context.circuits[index]->neighbors().size(); ++peer) {
+      const auto neighbor = context.circuits[index]->neighbors().at(peer)->adjacency;
+      if (neighbor.state != LanState::up) continue;
+      seeds[count] = {neighbor.system, 10U, static_cast<std::uint16_t>(count)};
+      if (neighbor.system == selected->system) dis_token = static_cast<std::uint16_t>(count);
+      ++count;
+    }
+    const std::array lans{LanSpfCircuit{101U, selected->lan, 10U, dis_token}};
+    packet::isis::LanId local{};
+    std::copy_n(context.events[index].root.begin(), local.size(), local.begin());
+    P2pRouteDecision decision(8U, 32U, 64U, MetricStyle::wide);
+    const auto status = decision.calculate(context.updates[index]->level(0U)->database().database(),
+        {local, 0U, packet::isis::ipv4_nlpid, GraphMetricStyle::wide}, std::span(seeds).first(count),
+        static_cast<std::uint16_t>(count), context.now, lans);
+    if (status != DecisionStatus::applied)
+      throw std::runtime_error("IS-IS LAN decision router " + std::to_string(index) + " status " +
+          std::to_string(static_cast<unsigned>(status)) + " DIS " + std::to_string(selected->system.back()) +
+          " pseudonode " + std::to_string(selected->lan.back()) + " token " +
+          (dis_token ? std::to_string(*dis_token) : "local") + " peers " + std::to_string(count));
+    for (std::size_t peer{}; peer < count; ++peer) {
+      packet::isis::LanId id{};
+      std::copy(seeds[peer].peer.begin(), seeds[peer].peer.end(), id.begin());
+      require(decision.cost(id) == 10U && decision.first_hop_count(id) == 1U && decision.first_hop(id, 0U) == peer);
+    }
+    require(decision.cost(local) == 0U && !decision.first_hop_count(local));
+    if (context.active == 2U) {
+      packet::isis::LanId retired{};
+      std::copy_n(context.events[2U].root.begin(), retired.size(), retired.begin());
+      // Before the next Hello, R2 still sees R1's old root-to-PN link and
+      // legitimately computes a transient path through R1. Only new encoded
+      // R1 content can remove that path from R2's independent database.
+      if (converged || index == 0U) require(!decision.cost(retired));
+      else require(decision.cost(retired) == 20U);
+    }
   };
   round(start);
   for (const auto &circuit : context.circuits)
@@ -187,28 +298,23 @@ void isis_lan_circuit_tests() {
   for (std::size_t index{}; index < 3U; ++index) {
     const auto selected = context.circuits[index]->designated();
     require(selected && selected->system.back() == 3U && selected->local == (index == 2U));
+    const auto pseudonode = context.updates[index]->level(0U)->database().database().find(
+        context.events[2U].pseudonode, context.now);
+    require(pseudonode && lsp_link_counts(pseudonode->pdu.tlvs) == std::optional{LspLinkCounts{3U, 3U}} &&
+        context.updates[index]->level(0U)->database().size() == 4U &&
+        context.origins[index]->contains(0U, context.events[index].pseudonode) == (index == 2U));
+    check_routes(index);
   }
   {
     const auto local = configuration(1U);
     LspContents contents;
     contents.header = {packet::isis::PduType::lsp_l1, {1U, 2U, 3U, 4U, 5U, 1U, 0U, 0U}, 1200U, 1U, 3U};
     contents.maximum_pdu_octets = 1492U;
-    const auto built = build_lsp_pdu(contents, scratch->options, scratch->pdu);
     const LevelObserver observer{nullptr, +[](void *, const LevelEvent &) noexcept {}};
-    require(built.status == LspBuildStatus::encoded && context.updates[0U]->originate(0U,
-        built.bytes, context.now, OriginPurgeReason::none, observer).install == LspInstallResult::installed);
     auto output = context.updates[0U]->outputs(0U, 0U);
     packet::Frame frame;
-    const auto sent = output->reservations.lsp.prepare(contents.header.id, local.mac,
-        local.hello_destination, 1492U, 1U, frame, *scratch, context.now);
-    require(sent.status == LspEmissionStatus::encoded);
-    const bool admitted = fabric->enqueue({0U, 1U}, 0U, frame) == lab::MultiDeviceFabric::DropReason::none;
-    require(admitted && output->reservations.lsp.complete(output->synchronization_epoch,
-        sent.ticket, admitted, context.now).accepted);
-    require(!context.updates[0U]->level(0U)->database().flags(contents.header.id, 0U)->srm);
-    flush();
     for (std::size_t index{}; index < 3U; ++index) {
-      require(context.updates[index]->level(0U)->database().size() == 1U &&
+      require(context.updates[index]->level(0U)->database().size() == 4U &&
           !context.updates[index]->level(0U)->database().flags(contents.header.id, 0U)->ssn);
       require(context.updates[index]->outputs(0U, 0U)->reservations.designated == (index == 2U));
     }
@@ -225,7 +331,7 @@ void isis_lan_circuit_tests() {
             sent_purge.ticket, true, context.now).accepted);
     flush();
     for (std::uint16_t index{1U}; index < 3U; ++index) {
-      require(context.updates[index]->level(0U)->database().size() == 1U &&
+      require(context.updates[index]->level(0U)->database().size() == 4U &&
           context.updates[index]->level(0U)->transient_acknowledgements() == 1U);
       auto acknowledgement = context.updates[index]->outputs(0U, 0U);
       SnpContents snp;
@@ -249,11 +355,17 @@ void isis_lan_circuit_tests() {
   require(context.circuits[2U]->down(context.observer(2U)) &&
       context.events[2U].down == 2U && context.events[2U].old_areas &&
       context.events[2U].update_ok && !context.updates[2U]->outputs(0U, 0U));
+  flood();
+  require(!context.origins[2U]->contains(0U, context.events[2U].pseudonode) &&
+      context.updates[2U]->level(0U)->database().database().find(context.events[2U].pseudonode,
+          context.now)->purge_installed);
   context.active = 2U;
   require(fabric->set_carrier({2U, 1U}, false) && bridge.configure_port(2U, {1000U, 1514U, true, false}));
   round(start + 3s);
   round(start + 4s);
+  context.now = start + 5s + 10ms;
   for (std::size_t index{}; index < 2U; ++index) {
+    context.events[index].now = context.now;
     context.circuits[index]->service(start + 5s + 10ms, 4U, context.observer(index));
     const auto selected = context.circuits[index]->designated();
     require(selected && selected->system.back() == 2U && selected->local == (index == 1U) &&
@@ -261,5 +373,32 @@ void isis_lan_circuit_tests() {
         context.events[index].old_areas);
     require(context.events[index].update_ok && context.updates[index]->outputs(0U, 0U)->reservations.designated ==
         (index == 1U) && context.updates[index]->outputs(0U, 0U)->synchronization_epoch == 1U);
+  }
+  flood();
+  for (std::size_t index{}; index < 2U; ++index) {
+    const auto pseudonode = context.updates[index]->level(0U)->database().database().find(
+        context.events[1U].pseudonode, context.now);
+    require(pseudonode && pseudonode->header.sequence == 1U &&
+        lsp_link_counts(pseudonode->pdu.tlvs) == std::optional{LspLinkCounts{2U, 2U}});
+    const auto root = context.updates[index]->level(0U)->database().database().find(context.events[index].root, context.now);
+    require(root.has_value());
+    packet::isis::TlvCursor options(root->pdu.tlvs);
+    bool points_to_new_dis{};
+    while (const auto option = options.next()) if (option->code == 22U) {
+      packet::isis::ExtendedNeighborCursor links(*option);
+      const auto link = links.next();
+      points_to_new_dis = points_to_new_dis || (link && link->id == context.circuits[index]->designated()->lan &&
+          link->metric == 10U);
+    }
+    require(options.valid() && points_to_new_dis);
+    check_routes(index);
+  }
+  // The new DIS advertises its own LAN ID only in its following Hello.
+  round(start + 6s);
+  for (std::size_t index{}; index < 2U; ++index) {
+    const auto selected = context.circuits[index]->designated();
+    require(selected && std::equal(selected->lan.begin(), selected->lan.end(),
+        context.events[1U].pseudonode.begin()));
+    check_routes(index, true);
   }
 }
