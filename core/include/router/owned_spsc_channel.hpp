@@ -28,6 +28,9 @@ public:
   struct SlotCheckpoint {
     Handle handle{};
     Value value;
+    // A decoder can construct an empty owned slot directly in heap storage;
+    // it must validate the completed partition before publishing any owner.
+    SlotCheckpoint() noexcept : handle{}, value{} {}
     // Direct in-vector construction keeps even profile-sized values off stack.
     SlotCheckpoint(Handle slot, const Value &source) : handle(slot), value(source) {}
   };

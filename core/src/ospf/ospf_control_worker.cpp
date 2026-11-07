@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <limits>
 #include <new>
 
@@ -98,6 +99,81 @@ bool ControlWorker::prepare_external_generation(std::size_t device) noexcept {
   }
 }
 
+bool ControlWorker::prepare_checkpoint_restore(ControlWorkerCheckpoint &source,
+    RuntimeClock::time_point now, std::uint64_t transaction) noexcept {
+  if (checkpoint_restore_ || !transaction ||
+      std::any_of(prepared_external_.begin(), prepared_external_.end(), [](const auto &value) { return value.has_value(); })) return false;
+  try {
+    auto candidate = std::make_unique<PreparedCheckpoint>();
+      for (const auto &saved : source.processes) {
+        const auto &definition = saved.definition;
+        if (!definition.process.device ||
+            definition.process.device.index >= candidate->processes.size() ||
+            definition.router_id == 0U ||
+            definition.maximum_interfaces == 0U ||
+            (definition.process.version != packet::ospf::version_two &&
+             definition.process.version !=
+                 packet::ospf::version_three))
+          return false;
+        auto &device = candidate->processes[definition.process.device.index];
+        if (std::any_of(device.begin(), device.end(),
+                        [&](const auto &candidate) {
+                          return candidate.identity ==
+                                 definition.process;
+                        }))
+          return false;
+        device.emplace_back(definition);
+        auto &owned = device.back();
+        if (!owned.process.restore(saved.process, now))
+          return false;
+        owned.ranges = saved.ranges;
+        owned.virtual_links = saved.virtual_links;
+        owned.authentications = saved.authentications;
+        owned.external_routes = saved.external_routes;
+        owned.published_route_generation =
+            saved.published_route_generation;
+        owned.coordinated_route_generation =
+            saved.coordinated_route_generation;
+      }
+    candidate->source = &source;
+    candidate->transaction = transaction;
+    candidate->next_route_generation = source.next_route_generation;
+    candidate->active_devices = source.active_devices;
+    candidate->route_publication_pending = source.route_publication_pending;
+    candidate->route_coordination_pending = source.route_coordination_pending;
+    checkpoint_restore_ = std::move(candidate);
+    return true;
+  } catch (const std::exception &) { return false; }
+}
+bool ControlWorker::commit_checkpoint_restore(std::uint64_t transaction) noexcept {
+  if (!checkpoint_restore_ || checkpoint_restore_->transaction != transaction) return false;
+  auto &candidate = *checkpoint_restore_;
+  // The caller keeps its source through this result. Key copies are erased
+  // only at commit, so an aborted preparation leaves the source reusable.
+  for (auto &saved : candidate.source->processes) {
+    for (auto &interface : saved.process.interfaces) {
+      if (interface.send_authentication) interface.send_authentication->key.fill(0U);
+      for (auto &authentication : interface.receive_authentications) authentication.key.fill(0U);
+    }
+    for (auto &authentication : saved.authentications) authentication.authentication.key.fill(0U);
+  }
+  processes_.swap(candidate.processes);
+  next_route_generation_ = candidate.next_route_generation;
+  active_devices_ = candidate.active_devices;
+  route_publication_pending_ = candidate.route_publication_pending;
+  route_coordination_pending_ = candidate.route_coordination_pending;
+  // Network restore reconstructs the RIB owner; preserve the established
+  // complete-generation republish after the protocol state is installed.
+  for (std::size_t index{}; index < processes_.size(); ++index) if (!processes_[index].empty()) {
+    route_publication_pending_[index] = true;
+    route_coordination_pending_[index] = true;
+  }
+  for (auto &staging : generation_staging_) staging.reset();
+  for (auto &staging : external_staging_) staging.reset();
+  checkpoint_restore_.reset();
+  return true;
+}
+
 ControlResult ControlWorker::apply(const ControlCommand &command) noexcept {
   ControlResult result{.id = command.id};
   // Shutdown is worker-scoped and intentionally carries no router identity.
@@ -113,6 +189,7 @@ ControlResult ControlWorker::apply(const ControlCommand &command) noexcept {
       std::any_of(prepared_external_.begin(), prepared_external_.end(),
                   [](const auto &prepared) { return prepared.has_value(); }))
     return result;
+  if (checkpoint_restore_ && command.kind == ControlCommandKind::checkpoint) return result;
   if (command.kind == ControlCommandKind::checkpoint) {
     auto *destination = reinterpret_cast<ControlWorkerCheckpoint *>(
         command.checkpoint_transfer);
@@ -150,86 +227,30 @@ ControlResult ControlWorker::apply(const ControlCommand &command) noexcept {
     }
     return result;
   }
-  if (command.kind == ControlCommandKind::restore_checkpoint) {
-    auto *source =
-        reinterpret_cast<ControlWorkerCheckpoint *>(
-            command.checkpoint_transfer);
-    if (!source)
-      return result;
-    try {
-      std::array<std::vector<OwnedProcess>,
-                 device_catalog::maximum_routers>
-          replacement;
-      const auto now = RuntimeClock::time_point{
-          std::chrono::nanoseconds{command.operation_now_nanoseconds}};
-      for (const auto &saved : source->processes) {
-        const auto &definition = saved.definition;
-        if (!definition.process.device ||
-            definition.process.device.index >= replacement.size() ||
-            definition.router_id == 0U ||
-            definition.maximum_interfaces == 0U ||
-            (definition.process.version != packet::ospf::version_two &&
-             definition.process.version !=
-                 packet::ospf::version_three))
-          return result;
-        auto &device = replacement[definition.process.device.index];
-        if (std::any_of(device.begin(), device.end(),
-                        [&](const auto &candidate) {
-                          return candidate.identity ==
-                                 definition.process;
-                        }))
-          return result;
-        device.emplace_back(definition);
-        auto &owned = device.back();
-        if (!owned.process.restore(saved.process, now))
-          return result;
-        owned.ranges = saved.ranges;
-        owned.virtual_links = saved.virtual_links;
-        owned.authentications = saved.authentications;
-        owned.external_routes = saved.external_routes;
-        owned.published_route_generation =
-            saved.published_route_generation;
-        owned.coordinated_route_generation =
-            saved.coordinated_route_generation;
-      }
-      // The replacement processes now own their copied key material. Erase
-      // the detached checkpoint copies before committing so destruction of a
-      // moved RuntimeSupervisorCheckpoint never leaves plaintext in freed
-      // WebAssembly heap pages.
-      for (auto &saved : source->processes) {
-        for (auto &interface : saved.process.interfaces) {
-          if (interface.send_authentication)
-            interface.send_authentication->key.fill(0U);
-          for (auto &authentication :
-               interface.receive_authentications)
-            authentication.key.fill(0U);
-        }
-        for (auto &authentication : saved.authentications)
-          authentication.authentication.key.fill(0U);
-      }
-      processes_.swap(replacement);
-      next_route_generation_ = source->next_route_generation;
-      active_devices_ = source->active_devices;
-      route_publication_pending_ =
-          source->route_publication_pending;
-      route_coordination_pending_ =
-          source->route_coordination_pending;
-      // NetworkPlane deliberately rebuilds its route-manager owners empty.
-      // Every restored router with a protocol process must therefore publish
-      // the complete route generation reconstructed from its LSDB, even when
-      // that same generation had already been consumed before checkpoint.
-      for (std::size_t index{}; index < processes_.size(); ++index)
-        if (!processes_[index].empty()) {
-          route_publication_pending_[index] = true;
-          route_coordination_pending_[index] = true;
-        }
-      for (auto &staging : generation_staging_)
-        staging.reset();
-      for (auto &staging : external_staging_)
-        staging.reset();
+  if (command.kind == ControlCommandKind::prepare_checkpoint_restore) {
+    auto *source = reinterpret_cast<ControlWorkerCheckpoint *>(command.checkpoint_transfer);
+    result.success = source && prepare_checkpoint_restore(*source,
+        RuntimeClock::time_point{std::chrono::nanoseconds{command.operation_now_nanoseconds}}, command.checkpoint_transaction);
+    return result;
+  }
+  if (command.kind == ControlCommandKind::commit_checkpoint_restore) {
+    result.success = commit_checkpoint_restore(command.checkpoint_transaction);
+    return result;
+  }
+  if (command.kind == ControlCommandKind::abort_checkpoint_restore) {
+    if (checkpoint_restore_ && checkpoint_restore_->transaction == command.checkpoint_transaction) {
+      checkpoint_restore_.reset();
       result.success = true;
-    } catch (const std::bad_alloc &) {
     }
+    return result;
+  }
+  if (checkpoint_restore_) return result;
+  if (command.kind == ControlCommandKind::restore_checkpoint) {
+    auto *source = reinterpret_cast<ControlWorkerCheckpoint *>(command.checkpoint_transfer);
+    const auto transaction = command.id ? command.id : 1U;
+    result.success = source && prepare_checkpoint_restore(*source,
+        RuntimeClock::time_point{std::chrono::nanoseconds{command.operation_now_nanoseconds}}, transaction) &&
+        commit_checkpoint_restore(transaction);
     return result;
   }
   if (!command.process.device ||
@@ -726,6 +747,9 @@ ControlResult ControlWorker::apply(const ControlCommand &command) noexcept {
   case ControlCommandKind::shutdown:
   case ControlCommandKind::checkpoint:
   case ControlCommandKind::restore_checkpoint:
+  case ControlCommandKind::prepare_checkpoint_restore:
+  case ControlCommandKind::commit_checkpoint_restore:
+  case ControlCommandKind::abort_checkpoint_restore:
     // Handled before router identity validation above.
     return result;
   }
@@ -1198,6 +1222,16 @@ void ControlWorker::run() noexcept {
       }
     }
 
+    if (checkpoint_restore_) {
+      // The prepared owner graph leases the restore boundary. Forwarding is
+      // independently paused by the coordinator. Existing queues and timers
+      // remain untouched until matching commit/abort, including under wakeups.
+      std::unique_lock lock(wait_mutex_);
+      wait_condition_.wait(lock, [&] {
+        return stop_requested_.load(std::memory_order_acquire) || !commands_.empty();
+      });
+      continue;
+    }
     auto now = RuntimeClock::now();
     std::size_t receive_budget =
         device_catalog::ospf_work_budget_packets;

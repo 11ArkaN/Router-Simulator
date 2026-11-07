@@ -373,6 +373,9 @@ add_library(router_network STATIC
   src/device/router_ipv6_address_table.cpp
   src/forwarding/multi_device_fabric.cpp
   src/runtime/network_plane.cpp
+  src/runtime/network_transfer_checkpoint.cpp
+  src/runtime/isis_runtime_checkpoint.cpp
+  src/runtime/isis_checkpoint_codec.cpp
   # OSPF is a separate control pthread, but its packet channels terminate at
   # forwarding shards. Keeping the worker in the network layer preserves the
   # primitive protocol library's independence from lab device handles.
@@ -617,6 +620,7 @@ if(ROUTER_BUILD_TESTS)
     tests/runtime/protocol_packet_checkpoint_test.cpp
     tests/runtime/protocol_packet_completion_test.cpp
     tests/runtime/protocol_owner_lifecycle_test.cpp
+    tests/runtime/ospf_checkpoint_restore_test.cpp
     tests/runtime/protocol_transmission_test.cpp
     tests/runtime/route_publication_test.cpp
     tests/runtime/route_publication_checkpoint_test.cpp
@@ -641,6 +645,9 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_p2p_circuit_test.cpp
     tests/isis/isis_control_worker_test.cpp
     tests/isis/isis_checkpoint_barrier_test.cpp
+    tests/runtime/network_transfer_checkpoint_test.cpp
+    tests/security/isis_checkpoint_protection_test.cpp
+    tests/runtime/isis_checkpoint_codec_test.cpp
     tests/isis/isis_checkpoint_time_test.cpp
     tests/isis/isis_lan_circuit_test.cpp
     tests/isis/isis_broadcast_scan_test.cpp

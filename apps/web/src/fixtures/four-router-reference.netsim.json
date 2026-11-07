@@ -1,7 +1,7 @@
 {
   "mode": "project",
   "formatVersion": 4,
-  "checkpointAbi": 9,
+  "checkpointAbi": 10,
   "project": {
     "format": "router-simulator-project",
     "version": 5,

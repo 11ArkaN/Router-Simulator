@@ -424,7 +424,7 @@ Intencja zapisuje instancje, interfejsy, unnumbered, poziomy, topologie, polityk
 
 Import samej konfiguracji uruchamia nowy proces, który buduje sąsiedztwa i trasy przez rzeczywiste ramki. Nie tworzy sztucznej LSDB z grafu zapisanej topologii.
 
-Przed zmianą wersji przeprowadzić audyt rzeczywistych kontraktów i wygenerowanych stałych. Podstawą rozpoznania wersji nie może być nazwa pliku. Obecny kod deklaruje project 5, checkpoint ABI 9 i runtime snapshot ABI 9, a część nazw plików zachowuje starsze numery.
+Przed zmianą wersji przeprowadzić audyt rzeczywistych kontraktów i wygenerowanych stałych. Podstawą rozpoznania wersji nie może być nazwa pliku. Obecny kod deklaruje project 5, checkpoint ABI 10 i runtime snapshot ABI 9, a część nazw plików zachowuje starsze numery.
 
 Uzgodniona polityka odrzuca nieobsługiwane starsze wersje. Ten etap nie dodaje migratora projektu ani żywego checkpointu. Zachować istniejącą, jawną ścieżkę odzyskania kompatybilnej konfiguracji, jeśli aktualny format pozwala ją bezpiecznie wydzielić. Odrzucony import nie zmienia aktywnego laboratorium.
 

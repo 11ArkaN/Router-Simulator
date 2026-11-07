@@ -61,9 +61,9 @@ const cppBoolean = (value) => value ? "true" : "false";
 if (catalog.release !== "26.7.R1") fail("release must match the pinned baseline");
 if (protocol.version !== 4 || protocol.snapshot_abi !== 9 ||
     protocol.telemetry_abi !== 6 ||
-    protocol.checkpoint_abi !== 9 ||
-    !protocol.operations || checkpoint.version !== 9)
-  fail("runtime protocol 4, snapshot ABI 9, telemetry ABI 6 and checkpoint schema 9 are required");
+    protocol.checkpoint_abi !== 10 ||
+    !protocol.operations || checkpoint.version !== 10)
+  fail("runtime protocol 4, snapshot ABI 9, telemetry ABI 6 and checkpoint schema 10 are required");
 for (const [name, value] of Object.entries(catalog.limits ?? {})) exactInteger(value, `limits.${name}`, 1);
 if (catalog.limits.routers !== 16 ||
     catalog.limits.sr_routers !== 16 ||

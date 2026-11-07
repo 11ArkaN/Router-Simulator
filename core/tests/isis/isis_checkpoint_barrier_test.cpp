@@ -4,6 +4,8 @@
 
 #include "router/isis_control_worker.hpp"
 #include "router/isis_control_checkpoint.hpp"
+#include "router/isis_runtime_checkpoint.hpp"
+#include "router/isis_checkpoint_codec.hpp"
 #include "router/isis_lsp_builder.hpp"
 
 #include <memory>
@@ -132,6 +134,34 @@ void isis_checkpoint_barrier_tests() {
   const auto &circuit_image = captured.devices[0U].circuits[0U];
   require(circuit_image.update_slot == 0U && circuit_image.egress && circuit_image.transmission.pending &&
       std::get<P2pCircuitCheckpoint>(circuit_image.medium).hello.pending);
+  lab::IsisRuntimeCheckpoint joined;
+  joined.control = captured;
+  joined.ingress.push_back(ingress);
+  joined.egress.push_back(egress);
+  joined.routes = channels->routes->checkpoint_quiescent(captured.barrier_epoch);
+  joined.ports.push_back({identity, {lab::node(identity.device), identity.physical_port_ordinal, 1U}});
+  require(lab::valid_isis_runtime_links(joined));
+  std::array<std::uint8_t, 32U> checkpoint_key{}, checkpoint_binding{};
+  checkpoint_key.fill(0x53U); checkpoint_binding.fill(0x87U);
+  auto checkpoint_vault = vault::SecretVault::create(checkpoint_key, std::array<std::uint8_t, 3U>{'l', 'a', 'b'}, 1U);
+  require(checkpoint_vault.has_value());
+  const auto encoded_initial = lab::isis_checkpoint::encode(joined, *checkpoint_vault, checkpoint_binding);
+  require(encoded_initial.has_value());
+  auto decoded_initial = lab::isis_checkpoint::decode(*encoded_initial, *checkpoint_vault, checkpoint_binding);
+  require(decoded_initial && decoded_initial->control.devices[0U].instances[0U].process->levels[0U]->database.database.records[0U].bytes == originate.local_lsp);
+  const auto transport_refuses = [&](auto corrupt) {
+    auto malformed = joined;
+    corrupt(malformed);
+    require(!lab::valid_isis_runtime_links(malformed));
+  };
+  transport_refuses([](auto &value) { ++value.egress[0U].barrier_epoch; });
+  transport_refuses([](auto &value) { ++value.egress[0U].occupied[0U].metadata.transmission_id; });
+  transport_refuses([](auto &value) { value.egress[0U].occupied[0U].bytes[0U] = 0U;
+    value.egress[0U].occupied[0U].bytes[14U] = 0U; });
+  transport_refuses([](auto &value) { value.egress[0U].occupied[0U].bytes[0U] ^= 1U; });
+  transport_refuses([](auto &value) { value.egress[0U].occupied[0U].bytes[6U] ^= 1U; });
+  transport_refuses([](auto &value) { value.ports[0U].port.generation = 0U; });
+  transport_refuses([](auto &value) { value.ports.clear(); });
   auto invalid_capture = capture;
   invalid_capture.checkpoint_transfer = 0U;
   require(command(invalid_capture).error == ControlError::invalid_argument && captured.active_circuits == 1U);
@@ -176,7 +206,7 @@ void isis_checkpoint_barrier_tests() {
   refuses([](auto &image) { image.devices[0U].circuits[0U].egress->pacing.kind = static_cast<checkpoint_time::DeadlineKind>(99U); });
   refuses([](auto &image) { image.devices[0U].instances[0U].process->configuration.local[0U] ^= 1U; });
   refuses([](auto &image) { image.devices[0U].instances[0U].decision_status[0U] = static_cast<DecisionStatus>(99U); });
-  restore.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(&captured);
+  restore.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(&decoded_initial->control);
   require(command(restore).error == ControlError::none);
   require(command(restore).error == ControlError::generation_pending);
   end.checkpoint_barrier_epoch = barrier.checkpoint_barrier_epoch;
@@ -275,6 +305,7 @@ void isis_checkpoint_barrier_tests() {
   restore.checkpoint_barrier_epoch = lan_barrier.checkpoint_barrier_epoch;
   restore.checkpoint_source_epoch = captured.barrier_epoch;
   restore.checkpoint_now_nanoseconds = capture.checkpoint_now_nanoseconds;
+  restore.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(&captured);
   require(command(restore).error == ControlError::none);
   commit_restore = restore;
   commit_restore.kind = ControlCommandKind::commit_checkpoint_restore;
@@ -284,6 +315,21 @@ void isis_checkpoint_barrier_tests() {
   require(command(inspect).error == ControlError::none &&
       after_refusal.devices[0U].circuits[0U].definition.identity.configuration_generation == 8U &&
       after_refusal.devices[0U].circuits[0U].egress->broadcast_scan.has_value());
+  joined.control = after_refusal;
+  joined.ingress[0U] = channels->ingress[0U].checkpoint_quiescent(captured.barrier_epoch);
+  joined.egress[0U] = channels->egress[0U].checkpoint_quiescent(captured.barrier_epoch);
+  joined.routes = channels->routes->checkpoint_quiescent(captured.barrier_epoch);
+  joined.ports[0U].identity = add_lan.identity;
+  require(lab::valid_isis_runtime_links(joined)); // Old canceled P2P wire remains legal deferred work.
+  const auto encoded_lan = lab::isis_checkpoint::encode(joined, *checkpoint_vault, checkpoint_binding);
+  require(encoded_lan.has_value());
+  auto decoded_lan = lab::isis_checkpoint::decode(*encoded_lan, *checkpoint_vault, checkpoint_binding);
+  require(decoded_lan != nullptr);
+  restore.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(&decoded_lan->control);
+  require(command(restore).error == ControlError::none);
+  commit_restore = restore;
+  commit_restore.kind = ControlCommandKind::commit_checkpoint_restore;
+  require(command(commit_restore).error == ControlError::none);
   worker->stop(); // Shutdown must join even while protocol service is quiescent.
   require(!worker->thread_id() && !worker->submit(ControlCommand{}));
 }

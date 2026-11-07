@@ -70,7 +70,7 @@ describe("netsim manifest format 4", () => {
   it("rejects stale formats and non-canonical binary payloads", () => {
     const manifest = createCheckpointManifestV4(project(), Uint8Array.of(1));
     expect(manifest.checkpointAbi).toBe(LAB_RUNTIME_PROTOCOL.checkpointAbi);
-    for (const checkpointAbi of [7, 8])
+    for (const checkpointAbi of [7, 8, 9])
       expect(() => parseNetsimV4(JSON.stringify({ ...manifest, checkpointAbi })))
         .toThrow("not supported");
     expect(() => parseNetsimV4(JSON.stringify({ ...manifest, formatVersion: 1 })))

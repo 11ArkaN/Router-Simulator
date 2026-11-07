@@ -3,6 +3,8 @@
 
 #include "router/network_plane.hpp"
 #include "router/route_input_store.hpp"
+#include "router/network_transfer_checkpoint.hpp"
+#include "router/isis_runtime_checkpoint.hpp"
 
 #include "dhcpv4/dhcpv4_endpoint_service.hpp"
 #include "dhcpv6/dhcpv6_endpoint_service.hpp"
@@ -536,6 +538,8 @@ template <typename Entry>
 }
 
 using IsisEgressChannel = protocol::PacketChannel<device_catalog::isis_packet_ring_frames, true>;
+constexpr std::size_t maximum_isis_control_circuits =
+    device_catalog::maximum_routers * device_catalog::maximum_ports_per_router;
 struct IsisTransportBinding {
   isis::CircuitIdentity identity;
   PortHandle port{};
@@ -571,13 +575,8 @@ struct IsisTransportBinding {
   return selected && selected->instance == binding.wire_instance;
 }
 
-struct IsisEgressReceipt {
-  IsisEgressChannel::Handle handle{};
-  IsisEgressChannel::Metadata metadata{};
-  bool enqueued{};
-};
-
-enum class ForwardEgressKind : std::uint8_t { transmit, cpm_punt, isis_transmit };
+using IsisEgressReceipt = IsisLinkReceiptCheckpoint;
+using ForwardEgressKind = ForwardTransferKind;
 
 struct ForwardEgress {
   // Producer: one forwarding shard. Consumer: link owner. CPM observations use
@@ -718,6 +717,75 @@ public:
     // owner can only release slots between this check and publication, so a
     // complete fragment batch admitted here cannot become partially full.
     return frames <= egress_.producer_available();
+  }
+
+  // The coordinator has consumed this owner's pause acknowledgement and has
+  // stopped link-side queue mutation. Pause drains all ingress before ack; an
+  // unexpected residual ingress or rendezvous is an invariant failure, not
+  // permission to discard a packet. Snapshot preserves every egress kind.
+  [[nodiscard]] ForwardShardTransferCheckpoint checkpoint_transfers(std::uint64_t epoch,
+      std::optional<IsisEgressReceipt> retained) const {
+    if (!epoch || resume_requested_.load(std::memory_order_acquire) || !ingress_.empty() ||
+        !commands_.empty() || !results_.empty()) throw std::logic_error("Forwarding transfer capture requires quiescence");
+    ForwardShardTransferCheckpoint result;
+    result.barrier_epoch = epoch;
+    result.retained_receipt = retained;
+    result.receipts = isis_receipts_.checkpoint_quiescent();
+    result.egress = egress_.checkpoint_quiescent([](const ForwardEgress &frame) {
+      ForwardTransferCheckpoint value;
+      value.kind = frame.kind;
+      value.source = frame.source;
+      value.ordinal = frame.ordinal;
+      value.expected_port = frame.expected_port;
+      if (frame.kind == ForwardEgressKind::isis_transmit) value.isis_receipt = frame.isis_receipt;
+      value.bytes.assign(frame.frame.view().begin(), frame.frame.view().end());
+      return value;
+    });
+    return result;
+  }
+  struct PreparedTransfers {
+    std::uint64_t source_epoch{};
+    bool ready{true};
+    std::vector<ForwardEgress> egress;
+    std::vector<IsisEgressReceipt> receipts;
+  };
+  // Cold coordinator staging. The enclosing protocol/channel validator must
+  // additionally prove each borrowed credit has exactly one external reference.
+  // Payloads are constructed directly on heap, never as a batch on the stack.
+  [[nodiscard]] static std::unique_ptr<PreparedTransfers> prepare_transfers(
+      const ForwardShardTransferCheckpoint &saved, std::uint64_t source_epoch) {
+    if (saved.version != 1U || !source_epoch || saved.barrier_epoch != source_epoch ||
+        saved.egress.size() >= device_catalog::forwarding_ring_frames ||
+        saved.receipts.size() > device_catalog::isis_packet_ring_frames) return nullptr;
+    auto result = std::make_unique<PreparedTransfers>();
+    result->source_epoch = source_epoch;
+    result->receipts = saved.receipts;
+    result->egress.reserve(saved.egress.size());
+    for (const auto &frame : saved.egress) {
+      if (frame.kind > ForwardEgressKind::isis_transmit || frame.bytes.size() > packet::maximum_frame_octets ||
+          frame.isis_receipt.has_value() != (frame.kind == ForwardEgressKind::isis_transmit)) return nullptr;
+      auto &value = result->egress.emplace_back();
+      value.kind = frame.kind;
+      value.source = frame.source;
+      value.ordinal = frame.ordinal;
+      value.expected_port = frame.expected_port;
+      if (frame.isis_receipt) value.isis_receipt = *frame.isis_receipt;
+      value.frame.length = static_cast<std::uint16_t>(frame.bytes.size());
+      std::copy(frame.bytes.begin(), frame.bytes.end(), value.frame.bytes.begin());
+    }
+    return result;
+  }
+  // Quiescent coordinator only after every dependent owner is prepared. All
+  // sizes and allocations were validated before the first queue write. A saved
+  // physical receipt resumes as a result, never as another transmit operation.
+  [[nodiscard]] bool commit_transfers(PreparedTransfers &saved, std::uint64_t source_epoch) noexcept {
+    if (!source_epoch || !saved.ready || saved.source_epoch != source_epoch || resume_requested_.load(std::memory_order_acquire) ||
+        !ingress_.empty() || !commands_.empty() || !results_.empty() ||
+        saved.egress.size() >= device_catalog::forwarding_ring_frames ||
+        saved.receipts.size() > device_catalog::isis_packet_ring_frames) return false;
+    if (!egress_.restore_quiescent(saved.egress) || !isis_receipts_.restore_quiescent(saved.receipts)) std::terminate();
+    saved.ready = false;
+    return true;
   }
 
   void set_link_wakeup(void *context, void (*wakeup)(void *)) noexcept {
@@ -1286,7 +1354,7 @@ struct NetworkPlane::Impl {
     // capacity. Production multi-instance scale requires its measured profile.
     isis_worker = std::make_unique<isis::ControlWorker>(isis_channels,
         std::max<std::size_t>(1U, separate_forwarding_shards),
-        device_catalog::maximum_routers * device_catalog::maximum_ports_per_router);
+        maximum_isis_control_circuits);
     // Publish every protocol object and immutable callback before forwarding
     // enters maintenance and reads those pointers. Construction order alone
     // cannot protect a thread that was already started inside the loop above.
@@ -1376,7 +1444,61 @@ struct NetworkPlane::Impl {
   // Serialized link owner asks the IS-IS owner about its own cooldown clock.
   // Idle registration stays alive until that owner permits structural recovery.
   void retire_idle_isis_registration(DeviceHandle device) noexcept;
-  [[nodiscard]] bool isis_checkpoint_blocked() noexcept;
+  struct CheckpointQuiescence {
+    Impl &owner;
+    std::uint64_t isis_barrier{};
+    bool forwarding{}, isis_prepared{}, ospf_prepared{};
+    [[nodiscard]] bool enter() noexcept {
+      forwarding = true;
+      if (!owner.pause_forwarding()) return false;
+      isis::ControlCommand begin;
+      begin.kind = isis::ControlCommandKind::begin_checkpoint_barrier;
+      const auto result = owner.execute_isis(std::move(begin));
+      if (result.error != isis::ControlError::none) return false;
+      isis_barrier = result.checkpoint_barrier_epoch;
+      return true;
+    }
+    ~CheckpointQuiescence() {
+      if (ospf_prepared) {
+        ospf::ControlCommand abort;
+        abort.kind = ospf::ControlCommandKind::abort_checkpoint_restore;
+        abort.checkpoint_transaction = isis_barrier;
+        if (!owner.execute_ospf(abort).success) std::terminate();
+      }
+      if (isis_prepared) {
+        isis::ControlCommand abort;
+        abort.kind = isis::ControlCommandKind::abort_checkpoint_restore;
+        abort.checkpoint_barrier_epoch = isis_barrier;
+        if (owner.execute_isis(std::move(abort)).error != isis::ControlError::none) std::terminate();
+      }
+      if (isis_barrier) {
+        isis::ControlCommand end;
+        end.kind = isis::ControlCommandKind::end_checkpoint_barrier;
+        end.checkpoint_barrier_epoch = isis_barrier;
+        if (owner.execute_isis(std::move(end)).error != isis::ControlError::none) std::terminate();
+      }
+      if (forwarding) owner.resume_forwarding();
+    }
+  };
+  struct PreparedIsisCheckpoint {
+    const IsisRuntimeCheckpoint *source{};
+    std::unique_ptr<::router::routing::RoutePublication::PreparedRestore> routes;
+    std::vector<std::unique_ptr<ForwardingShardWorker::PreparedTransfers>> forwarding;
+    std::array<std::vector<IsisTransportBinding>, device_catalog::maximum_routers> links;
+    std::array<bool, device_catalog::maximum_routers> registered{};
+    std::array<std::size_t, device_catalog::maximum_routers> instances{};
+  };
+  [[nodiscard]] IsisRuntimeCheckpoint empty_isis_checkpoint(std::uint64_t epoch) const;
+  [[nodiscard]] std::unique_ptr<PreparedIsisCheckpoint> prepare_isis_checkpoint(
+      const IsisRuntimeCheckpoint &source, std::uint64_t barrier, Clock::time_point anchor) noexcept;
+  void commit_isis_checkpoint(PreparedIsisCheckpoint &prepared, std::uint64_t barrier) noexcept;
+  [[nodiscard]] bool stage_isis_checkpoint(PreparedIsisCheckpoint &prepared,
+      decltype(routers) &router_candidates, decltype(route_managers) &route_candidates,
+      const NetworkPlaneCheckpoint &source) noexcept;
+  // All forwarding owners are paused and the protocol has acknowledged epoch.
+  // Caller retains both barriers through the enclosing fabric/forwarder capture.
+  [[nodiscard]] std::unique_ptr<IsisRuntimeCheckpoint> capture_isis_checkpoint(
+      std::uint64_t epoch, Clock::time_point anchor) noexcept;
   [[nodiscard]] bool queue_egress(ForwardingShardWorker *shard,
                                   NodeHandle source, std::uint16_t ordinal,
                                   const packet::Frame &frame) noexcept;
@@ -4249,10 +4371,201 @@ void NetworkPlane::Impl::retire_idle_isis_registration(DeviceHandle device) noex
   removal.identity.device = device;
   if (execute_isis(std::move(removal)).error == isis::ControlError::none) isis_registered[device.index] = false;
 }
-bool NetworkPlane::Impl::isis_checkpoint_blocked() noexcept {
-  for (std::size_t index{}; index < isis_registered.size(); ++index)
-    if (isis_registered[index]) retire_idle_isis_registration({static_cast<std::uint16_t>(index), router_generations[index]});
-  return std::any_of(isis_registered.begin(), isis_registered.end(), [](bool registered) { return registered; });
+std::unique_ptr<IsisRuntimeCheckpoint> NetworkPlane::Impl::capture_isis_checkpoint(
+    std::uint64_t epoch, Clock::time_point anchor) noexcept {
+  try {
+    auto result = std::make_unique<IsisRuntimeCheckpoint>();
+    isis::ControlCommand capture_command;
+    capture_command.kind = isis::ControlCommandKind::capture_checkpoint;
+    capture_command.checkpoint_barrier_epoch = epoch;
+    capture_command.checkpoint_now_nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count();
+    capture_command.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(&result->control);
+    if (execute_isis(std::move(capture_command)).error != isis::ControlError::none) return nullptr;
+    const auto count = result->control.forwarding_shards;
+    result->ingress.reserve(count);
+    result->egress.reserve(count);
+    for (std::size_t index{}; index < count; ++index) {
+      result->ingress.push_back(isis_channels.ingress[index].checkpoint_quiescent(epoch));
+      result->egress.push_back(isis_channels.egress[index].checkpoint_quiescent(epoch));
+    }
+    result->routes = isis_channels.routes->checkpoint_quiescent(epoch);
+    result->forwarding.reserve(separate_forwarding_shards);
+    for (std::size_t index{}; index < separate_forwarding_shards; ++index)
+      result->forwarding.push_back(forwarding_shards[index]->checkpoint_transfers(epoch, pending_isis_receipts[index]));
+    result->ports.reserve(result->control.active_circuits);
+    for (const auto &device : isis_transports) for (const auto &binding : device)
+      result->ports.push_back({binding.identity, binding.port});
+    for (std::size_t index{}; index < route_managers.size(); ++index) {
+      const auto &manager = route_managers[index];
+      if (!manager || !manager->isis_generation) continue;
+      auto &installed = result->installed.emplace_back();
+      installed.device = {static_cast<std::uint16_t>(index), router_generations[index]};
+      installed.generation = manager->isis_generation;
+      const auto ipv4 = manager->ipv4_candidates.second();
+      const auto ipv6 = manager->ipv6_candidates.second();
+      installed.ipv4.assign(ipv4.begin(), ipv4.end());
+      installed.ipv6.assign(ipv6.begin(), ipv6.end());
+    }
+    if (!valid_isis_runtime_links(*result)) return nullptr;
+    return result;
+  } catch (const std::exception &) { return nullptr; }
+}
+IsisRuntimeCheckpoint NetworkPlane::Impl::empty_isis_checkpoint(std::uint64_t epoch) const {
+  IsisRuntimeCheckpoint result;
+  result.control.barrier_epoch = epoch;
+  result.control.forwarding_shards = std::max<std::size_t>(1U, separate_forwarding_shards);
+  result.control.maximum_circuits = maximum_isis_control_circuits;
+  const auto empty = [epoch](auto &image) {
+    image.barrier_epoch = epoch;
+    image.available.reserve(image.capacity);
+    for (auto index = image.capacity; index; --index) image.available.push_back(static_cast<std::uint32_t>(index - 1U));
+  };
+  result.ingress.resize(result.control.forwarding_shards);
+  result.egress.resize(result.control.forwarding_shards);
+  for (auto &image : result.ingress) empty(image);
+  for (auto &image : result.egress) empty(image);
+  empty(result.routes);
+  result.forwarding.resize(separate_forwarding_shards);
+  for (auto &image : result.forwarding) image.barrier_epoch = epoch;
+  return result;
+}
+std::unique_ptr<NetworkPlane::Impl::PreparedIsisCheckpoint> NetworkPlane::Impl::prepare_isis_checkpoint(
+    const IsisRuntimeCheckpoint &source, std::uint64_t barrier, Clock::time_point anchor) noexcept {
+  if (!barrier || !valid_isis_runtime_links(source) ||
+      source.control.maximum_circuits != maximum_isis_control_circuits ||
+      source.control.forwarding_shards != std::max<std::size_t>(1U, separate_forwarding_shards) ||
+      source.forwarding.size() != separate_forwarding_shards) return nullptr;
+  try {
+    auto result = std::make_unique<PreparedIsisCheckpoint>();
+    result->source = &source;
+    result->routes = ::router::routing::RoutePublication::prepare_restore(source.routes, source.control.barrier_epoch);
+    if (!result->routes) return nullptr;
+    result->forwarding.reserve(separate_forwarding_shards);
+    for (const auto &image : source.forwarding) {
+      auto prepared = ForwardingShardWorker::prepare_transfers(image, source.control.barrier_epoch);
+      if (!prepared) return nullptr;
+      result->forwarding.push_back(std::move(prepared));
+    }
+    for (const auto &device : source.control.devices) {
+      if (!device.handle || device.handle.index >= result->registered.size()) return nullptr;
+      result->registered[device.handle.index] = device.active;
+      result->instances[device.handle.index] = device.instances.size();
+    }
+    // Preserve the captured transport dispatch order, independently of the
+    // control owner's fair circuit iteration order.
+    for (const auto &port : source.ports) {
+      const auto device = std::find_if(source.control.devices.begin(), source.control.devices.end(),
+          [&](const auto &value) { return value.handle == port.identity.device; });
+      if (device == source.control.devices.end()) return nullptr;
+      const auto circuit = std::find_if(device->circuits.begin(), device->circuits.end(),
+          [&](const auto &value) { return value.definition.identity == port.identity; });
+      if (circuit == device->circuits.end()) return nullptr;
+      const auto *configuration = circuit->definition.common();
+      if (!configuration) return nullptr;
+      result->links[device->handle.index].push_back({circuit->definition.identity, port.port, configuration->destinations(),
+          configuration->instance_format.value_or(packet::isis::InstanceFormat::standard), configuration->wire_instance,
+          !circuit->definition.broadcast && circuit->definition.configuration.physical_point_to_point,
+          circuit->definition.levels(), circuit->definition.broadcast.has_value()});
+    }
+    isis::ControlCommand prepare;
+    prepare.kind = isis::ControlCommandKind::prepare_checkpoint_restore;
+    prepare.checkpoint_barrier_epoch = barrier;
+    prepare.checkpoint_source_epoch = source.control.barrier_epoch;
+    prepare.checkpoint_now_nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count();
+    prepare.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(&source.control);
+    if (execute_isis(std::move(prepare)).error != isis::ControlError::none) return nullptr;
+    return result;
+  } catch (const std::exception &) { return nullptr; }
+}
+bool NetworkPlane::Impl::stage_isis_checkpoint(PreparedIsisCheckpoint &prepared,
+    decltype(routers) &router_candidates, decltype(route_managers) &route_candidates,
+    const NetworkPlaneCheckpoint &source) noexcept {
+  try {
+    const auto &protocol = *prepared.source;
+    for (const auto &device : protocol.control.devices)
+      if (device.active && (device.handle.index >= router_candidates.size() ||
+          router_candidates[device.handle.index].generation != device.handle.generation)) return false;
+    using Groups = std::array<std::vector<packet::Mac>, device_catalog::maximum_ports_per_router>;
+    for (std::size_t index{}; index < prepared.links.size(); ++index) {
+      auto &target = router_candidates[index];
+      if (prepared.links[index].empty()) continue;
+      if (!target.forwarder) return false;
+      auto groups = std::make_unique<Groups>();
+      target.isis_transports = prepared.links[index];
+      for (const auto &binding : prepared.links[index]) {
+        if (binding.port.node != node(binding.identity.device) || target.generation != binding.identity.device.generation ||
+            binding.port.ordinal >= groups->size() || !binding.destinations.valid()) return false;
+        for (const auto &link : source.fabric.links) for (const auto &port : link.endpoints)
+          if (port.node == binding.port.node && port.ordinal == binding.port.ordinal && port != binding.port) return false;
+        if (!binding.broadcast) (*groups)[binding.port.ordinal].push_back(binding.destinations.hello);
+        for (std::size_t level{}; level < 2U; ++level)
+          if (static_cast<std::uint8_t>(binding.levels) & (1U << level))
+            (*groups)[binding.port.ordinal].push_back(binding.destinations.levels[level]);
+      }
+      for (std::size_t ordinal{}; ordinal < groups->size(); ++ordinal) {
+        auto &values = (*groups)[ordinal];
+        if (values.empty()) continue;
+        std::sort(values.begin(), values.end());
+        values.erase(std::unique(values.begin(), values.end()), values.end());
+        if (!target.forwarder->configure_isis_punt(static_cast<std::uint16_t>(ordinal), values)) return false;
+      }
+    }
+    for (const auto &installed : protocol.installed) {
+      if (installed.device.index >= route_candidates.size() ||
+          router_candidates[installed.device.index].generation != installed.device.generation ||
+          !route_candidates[installed.device.index]) return false;
+      auto &manager = *route_candidates[installed.device.index];
+      if (!manager.ipv4_candidates.replace_second(installed.ipv4) ||
+          !manager.ipv6_candidates.replace_second(installed.ipv6)) return false;
+      manager.isis_generation = installed.generation;
+    }
+    // Forwarding owns the exact selected FIB. Require each restored IS-IS row
+    // to originate in the RIB owner's accepted generation, including repair
+    // membership. Losing candidates need not occur in the selected FIB.
+    for (const auto &router : source.routers) {
+      const auto installed = std::find_if(protocol.installed.begin(), protocol.installed.end(),
+          [&](const auto &value) { return value.device == router.device; });
+      const auto validate = [&](const auto &fib, const auto &candidates) {
+        const auto count = static_cast<std::size_t>(fib.count) + fib.loop_free_alternate_count;
+        for (std::size_t index{}; index < count; ++index) {
+          const auto &row = fib.routes[index];
+          if (row.source != routing::RouteSource::isis) continue;
+          if (!std::any_of(candidates.begin(), candidates.end(), [&](const auto &candidate) {
+            return candidate.loop_free_alternate == (index >= fib.count) &&
+                row.network == candidate.network && row.next_hop == candidate.next_hop &&
+                row.prefix_length == candidate.prefix_length && row.preference == candidate.preference && row.metric == candidate.metric &&
+                physical_route_port(row) == physical_route_port(candidate) && row.interface_id == candidate.interface_id &&
+                row.interface_generation == candidate.interface_generation && row.protocol_instance == candidate.protocol_instance &&
+                row.isis_path_type == candidate.isis_path_type && row.isis_rank == candidate.isis_rank && row.ospf_path_type == candidate.ospf_path_type;
+          })) return false;
+        }
+        return true;
+      };
+      const auto ipv4 = installed == protocol.installed.end() ? std::span<const routing::DynamicInput>{} : std::span<const routing::DynamicInput>{installed->ipv4};
+      const auto ipv6 = installed == protocol.installed.end() ? std::span<const routing::Ipv6DynamicInput>{} : std::span<const routing::Ipv6DynamicInput>{installed->ipv6};
+      if (!validate(router.forwarding.fib, ipv4) || !validate(router.forwarding.ipv6_fib, ipv6)) return false;
+    }
+    return true;
+  } catch (const std::exception &) { return false; }
+}
+void NetworkPlane::Impl::commit_isis_checkpoint(PreparedIsisCheckpoint &prepared, std::uint64_t barrier) noexcept {
+  const auto &source = *prepared.source;
+  for (std::size_t index{}; index < source.ingress.size(); ++index)
+    if (!isis_channels.ingress[index].restore_quiescent(source.ingress[index], source.control.barrier_epoch) ||
+        !isis_channels.egress[index].restore_quiescent(source.egress[index], source.control.barrier_epoch)) std::terminate();
+  if (!isis_channels.routes->commit_quiescent(*prepared.routes, source.control.barrier_epoch)) std::terminate();
+  for (std::size_t index{}; index < prepared.forwarding.size(); ++index) {
+    if (!forwarding_shards[index]->commit_transfers(*prepared.forwarding[index], source.control.barrier_epoch)) std::terminate();
+    pending_isis_receipts[index] = source.forwarding[index].retained_receipt;
+  }
+  isis_transports.swap(prepared.links);
+  isis_registered = prepared.registered;
+  isis_instance_count = prepared.instances;
+  isis::ControlCommand commit;
+  commit.kind = isis::ControlCommandKind::commit_checkpoint_restore;
+  commit.checkpoint_barrier_epoch = barrier;
+  commit.checkpoint_source_epoch = source.control.barrier_epoch;
+  if (execute_isis(std::move(commit)).error != isis::ControlError::none) std::terminate();
 }
 
 ospf::ControlResult
@@ -4621,17 +4934,18 @@ bool NetworkPlane::Impl::pause_forwarding() noexcept {
         {.id = ids[index], .kind = ForwardCommandKind::pause}))
       std::this_thread::yield();
   }
+  bool valid = true;
   for (std::size_t index = 0; index < separate_forwarding_shards; ++index) {
     ForwardResult result;
     while (!forwarding_shards[index]->result(result)) {
       drain_forwarding_egress();
       std::this_thread::yield();
     }
-    if (result.id != ids[index] || !result.success)
-      return false;
+    if (result.id != ids[index] || !result.success) valid = false;
   }
   drain_forwarding_egress();
-  return true;
+  if (!valid) resume_forwarding();
+  return valid;
 }
 
 void NetworkPlane::Impl::resume_forwarding() noexcept {
@@ -7919,14 +8233,24 @@ std::uint64_t NetworkPlane::capture_dropped() const noexcept {
 
 std::optional<NetworkPlaneCheckpoint>
 NetworkPlane::checkpoint(Clock::time_point now) {
-  if (impl_->isis_checkpoint_blocked()) return std::nullopt;
-  if (!impl_->pause_forwarding())
-    return std::nullopt;
-  struct Resume final {
-    Impl *owner;
-    ~Resume() { owner->resume_forwarding(); }
-  } resume{impl_.get()};
+  Impl::CheckpointQuiescence barrier{*impl_};
+  if (!barrier.enter()) return std::nullopt;
+  // All IS-IS packet owners have acknowledged before this real-time anchor.
+  // Empty protocol state needs no image and preserves the existing explicit
+  // caller clock contract for non-protocol forwarding fixtures.
+  const auto anchor = Clock::now();
+  auto isis_state = impl_->capture_isis_checkpoint(barrier.isis_barrier, anchor);
+  if (!isis_state) return std::nullopt;
+  const bool has_isis = !isis_state->control.devices.empty() || !isis_state->installed.empty() ||
+      !isis_state->routes.occupied.empty() ||
+      std::any_of(isis_state->ingress.begin(), isis_state->ingress.end(), [](const auto &image) { return !image.occupied.empty(); }) ||
+      std::any_of(isis_state->egress.begin(), isis_state->egress.end(), [](const auto &image) { return !image.occupied.empty(); }) ||
+      std::any_of(isis_state->forwarding.begin(), isis_state->forwarding.end(), [](const auto &image) {
+        return !image.egress.empty() || !image.receipts.empty() || image.retained_receipt.has_value();
+      });
+  if (has_isis) now = anchor;
   NetworkPlaneCheckpoint state;
+  if (has_isis) state.isis.emplace(std::move(*isis_state));
   const auto ospf_result = impl_->execute_ospf(
       {.checkpoint_transfer =
            reinterpret_cast<std::uintptr_t>(&state.ospf),
@@ -8097,7 +8421,6 @@ NetworkPlane::router_checkpoint(DeviceHandle device, Clock::time_point now) {
 
 bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
                            Clock::time_point now) {
-  if (impl_->isis_checkpoint_blocked()) return false;
   if (state.routers.size() > device_catalog::maximum_routers ||
       state.hosts.size() > device_catalog::maximum_hosts ||
       state.switches.size() > device_catalog::maximum_switches ||
@@ -8106,12 +8429,10 @@ bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
       !MultiDeviceFabric::validate_checkpoint(state.fabric) ||
       !CaptureStore::validate_checkpoint(state.capture))
     return false;
-  if (!impl_->pause_forwarding())
-    return false;
-  struct Resume final {
-    Impl *owner;
-    ~Resume() { owner->resume_forwarding(); }
-  } resume{impl_.get()};
+  Impl::CheckpointQuiescence barrier{*impl_};
+  if (!barrier.enter()) return false;
+  const auto protocol_anchor = Clock::now();
+  if (state.isis) now = protocol_anchor;
   std::array<bool, device_catalog::maximum_routers> router_seen{};
   std::array<bool, device_catalog::maximum_hosts> host_seen{};
   std::array<bool, device_catalog::maximum_switches> switch_seen{};
@@ -8522,6 +8843,21 @@ bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
       }
     }
 
+    std::optional<IsisRuntimeCheckpoint> empty_isis;
+    if (!state.isis) empty_isis.emplace(impl_->empty_isis_checkpoint(barrier.isis_barrier));
+    const auto &isis_source = state.isis ? *state.isis : *empty_isis;
+    auto prepared_isis = impl_->prepare_isis_checkpoint(isis_source, barrier.isis_barrier, protocol_anchor);
+    if (!prepared_isis) return false;
+    barrier.isis_prepared = true;
+    if (!impl_->stage_isis_checkpoint(*prepared_isis, *staged_routers, *staged_route_managers, state)) return false;
+    ospf::ControlCommand prepare_ospf;
+    prepare_ospf.kind = ospf::ControlCommandKind::prepare_checkpoint_restore;
+    prepare_ospf.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(const_cast<ospf::ControlWorkerCheckpoint *>(&state.ospf));
+    prepare_ospf.checkpoint_transaction = barrier.isis_barrier;
+    prepare_ospf.operation_now_nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+    if (!impl_->execute_ospf(prepare_ospf).success) return false;
+    barrier.ospf_prepared = true;
+
     // CaptureStore performs its own replacement-object staging and swaps only
     // after all allocations succeed. Fabric validation proves its fixed-pool
     // installation cannot fail, so no fallible operation follows that swap.
@@ -8634,20 +8970,15 @@ bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
     }
     impl_->ospf_punt_masks = std::move(*restored_ospf_punt_masks);
 
-    // OSPF restoration is the final owner commit. Every forwarding, fabric,
-    // capture and multicast-punt value has already passed validation, while
-    // the protocol command reconstructs derived routes from its restored LSDB
-    // before publishing success.
-    const auto ospf_restore = impl_->execute_ospf(
-        {.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(
-             const_cast<ospf::ControlWorkerCheckpoint *>(&state.ospf)),
-         .operation_now_nanoseconds =
-             std::chrono::duration_cast<std::chrono::nanoseconds>(
-                 now.time_since_epoch())
-                 .count(),
-                 .kind = ospf::ControlCommandKind::restore_checkpoint});
-    if (!ospf_restore.success)
-      std::terminate();
+    // All protocol allocations were completed before CaptureStore committed.
+    // Queue restoration and both protocol commits now only replace owned state.
+    impl_->commit_isis_checkpoint(*prepared_isis, barrier.isis_barrier);
+    barrier.isis_prepared = false;
+    ospf::ControlCommand commit_ospf;
+    commit_ospf.kind = ospf::ControlCommandKind::commit_checkpoint_restore;
+    commit_ospf.checkpoint_transaction = barrier.isis_barrier;
+    if (!impl_->execute_ospf(commit_ospf).success) std::terminate();
+    barrier.ospf_prepared = false;
     return true;
   } catch (const std::bad_alloc &) {
     return false;

@@ -196,7 +196,7 @@ export function SnapshotWorkspace({ checkpointInput, onExport, onImport }: {
   checkpointInput: RefObject<HTMLInputElement | null>; onExport(): void;
   onImport(event: ChangeEvent<HTMLInputElement>): void;
 }) {
-  return <section className="workspace-page snapshot-page" aria-labelledby="snapshot-title"><header className="workspace-page-head"><div><span>RUNTIME STATE</span><h1 id="snapshot-title">Snapshots</h1></div></header><div className="snapshot-card"><strong>Portable checkpoint</strong><p>Preserves the full multi-device runtime and user-owned topology.</p><div className="workspace-actions"><button className="primary" onClick={onExport}>Export checkpoint</button><button onClick={() => checkpointInput.current?.click()}>Import checkpoint</button></div><input ref={checkpointInput} hidden type="file" accept=".bin,.checkpoint,application/octet-stream" onChange={onImport} /></div></section>;
+  return <section className="workspace-page snapshot-page" aria-labelledby="snapshot-title"><header className="workspace-page-head"><div><span>RUNTIME STATE</span><h1 id="snapshot-title">Snapshots</h1></div></header><div className="snapshot-card"><strong>Portable checkpoint</strong><p>Preserves the full multi-device runtime and user-owned topology.</p><div className="workspace-actions"><button className="primary" onClick={onExport}>Export checkpoint</button><button onClick={() => checkpointInput.current?.click()}>Import checkpoint</button></div><input ref={checkpointInput} hidden type="file" accept=".netsim,application/json" onChange={onImport} /></div></section>;
 }
 
 export function NotesWorkspace({ value, onChange }: { value: string; onChange(value: string): void }) {

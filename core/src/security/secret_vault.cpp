@@ -4,6 +4,7 @@
 // Source: nist.project_key_vault.aes_gcm
 
 #include "router/secret_vault.hpp"
+#include "router/generated_device_catalog.hpp"
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -15,6 +16,7 @@
 #include <limits>
 #include <memory>
 #include <ranges>
+#include <string_view>
 #include <utility>
 
 namespace router::vault {
@@ -86,7 +88,7 @@ bool valid_key(std::span<const std::uint8_t> key) noexcept {
 }
 
 bool valid_kind(SecretKind kind) noexcept {
-  // The upper bound follows the newest purpose so every sealable record the
+  // The upper bound follows the newest stable purpose so every record the
   // CLI editors can produce is accepted. Adding a SecretKind without moving
   // this bound silently rejects that whole secret family at seal time.
   const auto value = static_cast<std::uint8_t>(kind);
@@ -152,9 +154,9 @@ bool cipher_aad(EVP_CIPHER_CTX *cipher, std::span<const std::uint8_t> aad,
 bool seal_record(std::span<const std::uint8_t> key,
                  std::span<const std::uint8_t> context, SecretHandle handle,
                  SecretKind kind, std::span<const std::uint8_t> plaintext,
-                 std::vector<std::uint8_t> &output) {
-  if (!valid_key(key) || !handle || !valid_kind(kind) || plaintext.empty() ||
-      plaintext.size() > maximum_secret_octets ||
+                 std::vector<std::uint8_t> &output, std::size_t maximum = maximum_secret_octets) {
+  if (!valid_key(key) || !handle || (!valid_kind(kind) && kind != SecretKind::isis_checkpoint_state) || plaintext.empty() ||
+      plaintext.size() > maximum ||
       plaintext.size() >
           static_cast<std::size_t>(std::numeric_limits<int>::max()))
     return false;
@@ -206,16 +208,16 @@ bool seal_record(std::span<const std::uint8_t> key,
 }
 
 std::pair<Result, std::optional<SensitiveBytes>>
-open_record(std::span<const std::uint8_t> key,
-            std::span<const std::uint8_t> context, const SealedRecord &record) {
-  const auto sealed = std::span<const std::uint8_t>{record.sealed};
-  if (!valid_key(key) || !record.handle || !valid_kind(record.kind) ||
+open_payload(std::span<const std::uint8_t> key, std::span<const std::uint8_t> context,
+    SecretHandle handle, SecretKind kind, std::span<const std::uint8_t> sealed,
+    std::size_t maximum = maximum_secret_octets) {
+  if (!valid_key(key) || !handle || (!valid_kind(kind) && kind != SecretKind::isis_checkpoint_state) ||
       sealed.size() < header_octets + tag_octets ||
       !std::ranges::equal(sealed.first(magic.size()), magic) ||
       sealed[magic.size()] != format_version)
     return {Result::authentication_failed, std::nullopt};
   const auto size = read_u32(sealed, header_octets - length_octets);
-  if (!size || size > maximum_secret_octets ||
+  if (!size || size > maximum ||
       size > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
       sealed.size() != header_octets + size + tag_octets)
     return {Result::authentication_failed, std::nullopt};
@@ -224,7 +226,7 @@ open_record(std::span<const std::uint8_t> key,
   const auto ciphertext = sealed.subspan(header_octets, size);
   const auto tag = sealed.last(tag_octets);
   const auto aad = additional_data(sealed.first(header_octets), context,
-                                   record.handle, record.kind);
+                                   handle, kind);
   SensitiveBytes plaintext{std::vector<std::uint8_t>(size)};
   CipherOwner cipher{EVP_CIPHER_CTX_new()};
   if (!cipher ||
@@ -254,6 +256,19 @@ open_record(std::span<const std::uint8_t> key,
   return {Result::applied, std::move(plaintext)};
 }
 
+std::pair<Result, std::optional<SensitiveBytes>>
+open_record(std::span<const std::uint8_t> key, std::span<const std::uint8_t> context, const SealedRecord &record) {
+  if (!valid_kind(record.kind)) return {Result::authentication_failed, std::nullopt};
+  return open_payload(key, context, record.handle, record.kind, record.sealed);
+}
+std::vector<std::uint8_t> checkpoint_context(std::span<const std::uint8_t> context,
+    std::span<const std::uint8_t> binding) {
+  constexpr std::string_view purpose{"router-simulator/isis-checkpoint/v1"};
+  std::vector<std::uint8_t> result(context.begin(), context.end());
+  result.insert(result.end(), purpose.begin(), purpose.end());
+  result.insert(result.end(), binding.begin(), binding.end());
+  return result;
+}
 } // namespace
 
 OpenedSecret::OpenedSecret(std::vector<std::uint8_t> plaintext) noexcept
@@ -431,6 +446,31 @@ SecretVault::open(SecretHandle handle,
   } catch (...) {
     return {Result::resource_exhausted, std::nullopt};
   }
+}
+
+std::pair<Result, std::vector<std::uint8_t>> SecretVault::seal_isis_checkpoint(
+    std::span<const std::uint8_t> plaintext, std::span<const std::uint8_t> binding) const noexcept {
+  if (binding.size() != 32U || plaintext.empty() || plaintext.size() > device_catalog::wasm_initial_memory_bytes)
+    return {Result::invalid_argument, {}};
+  try {
+    std::vector<std::uint8_t> result;
+    const auto context = checkpoint_context(context_, binding);
+    if (!seal_record(wrapping_key_, context, 1U, SecretKind::isis_checkpoint_state, plaintext, result,
+        device_catalog::wasm_initial_memory_bytes)) return {Result::cryptographic_failure, {}};
+    return {Result::applied, std::move(result)};
+  } catch (...) { return {Result::resource_exhausted, {}}; }
+}
+std::pair<Result, std::optional<OpenedSecret>> SecretVault::open_isis_checkpoint(
+    std::span<const std::uint8_t> sealed, std::span<const std::uint8_t> binding) const noexcept {
+  if (binding.size() != 32U || sealed.size() > device_catalog::wasm_initial_memory_bytes + header_octets + tag_octets)
+    return {Result::invalid_argument, std::nullopt};
+  try {
+    const auto context = checkpoint_context(context_, binding);
+    auto [status, plaintext] = open_payload(wrapping_key_, context, 1U, SecretKind::isis_checkpoint_state, sealed,
+        device_catalog::wasm_initial_memory_bytes);
+    if (status != Result::applied || !plaintext) return {status, std::nullopt};
+    return {Result::applied, OpenedSecret{std::exchange(plaintext->value, {})}};
+  } catch (...) { return {Result::resource_exhausted, std::nullopt}; }
 }
 
 Result SecretVault::erase(SecretHandle handle) noexcept {

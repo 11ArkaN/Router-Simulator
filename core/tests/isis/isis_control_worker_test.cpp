@@ -470,7 +470,10 @@ void isis_network_plane_tests() {
       require(lab::NetworkPlane::Clock::now() < refusal_deadline);
       std::this_thread::yield();
     }
-    require(!plane->checkpoint() && !plane->restore(*initial) && !plane->remove_port(devices[0U], 0U));
+    auto refused_image = plane->checkpoint();
+    require(refused_image && refused_image->isis && !plane->remove_port(devices[0U], 0U));
+    require(plane->restore(*refused_image));
+    require(query(0U).counters.hello_refused >= 1U);
     cable.carrier = true;
     require(plane->configure_link(cable));
     const auto converge = [&] {
@@ -486,6 +489,9 @@ void isis_network_plane_tests() {
       }
     };
     converge();
+    const auto connected_image = plane->checkpoint();
+    require(connected_image && connected_image->isis && plane->restore(*connected_image));
+    require(query(0U).adjacency.iso_up && query(1U).adjacency.iso_up);
     const auto retained = query(0U);
     require(publish(0U) && query(0U).adjacency.iso_up && query(0U).counters.adjacency_up == retained.counters.adjacency_up);
     auto invalid = programs[0U];
@@ -1420,7 +1426,9 @@ void isis_network_plane_update_tests() {
     require(!plane->add_isis_update_instance(devices[0U], 1U, unsupported) && plane->checkpoint());
     for (std::size_t index{}; index < devices.size(); ++index) {
       require(plane->add_isis_update_instance(devices[index], 0U, instances[index]));
-      require(!plane->checkpoint());
+      const auto cold = plane->checkpoint();
+      require(cold && cold->isis && plane->restore(*cold));
+      require(plane->query_isis_update_instance(devices[index], 0U)->error == ControlError::none);
       require(plane->replace_isis_p2p_generation(devices[index], std::span{&circuits[index], 1U}));
     }
     const auto query = [&](std::size_t index) {
@@ -1567,7 +1575,11 @@ void isis_network_plane_update_tests() {
       const auto retained = plane->query_isis_update_instance(devices[index], 0U);
       require(retained && retained->retained_lsps == std::array<std::size_t, 2U>{1U, 1U});
     }
-    require(!plane->checkpoint() && !plane->restore(*initial));
+    const auto retired = plane->checkpoint();
+    require(retired.has_value());
+    require(retired->isis.has_value());
+    require(plane->restore(*retired));
+    require(plane->query_isis_update_instance(devices[0U], 0U)->update_epoch == epoch);
     for (const auto device : devices) require(plane->remove_isis_update_instance(device, 0U));
     require(plane->checkpoint().has_value());
     require(plane->add_isis_update_instance(devices[0U], 0U, instances[0U]));
@@ -1970,7 +1982,24 @@ void isis_network_plane_lan_tests() {
         bound6->bound_next_hop->interface == NextHopInterface{interface, 7U, 0U});
     const auto absent = plane->query_isis_lan_next_hop(programs[0U].circuit.identity, 2U, peer,
         *ip::parse_ip_address("fe80::99"));
-    require(absent && absent->error == ControlError::not_found && !absent->bound_next_hop && !plane->checkpoint());
+    require(absent && absent->error == ControlError::not_found && !absent->bound_next_hop);
+    const auto elected = plane->checkpoint();
+    require(elected && elected->isis && plane->restore(*elected));
+    // RuntimeSupervisor owns base intent and republishes it after the network
+    // owner commits. This direct network fixture performs the same handoff.
+    const auto restore_base = [&] {
+      for (const auto &router : initial->routers) {
+        lab::RoutePolicyProgram policy;
+        require(plane->program_route_policy(router.device, policy) &&
+            plane->program_fib(router.device, router.forwarding.fib) &&
+            plane->program_ipv6_fib(router.device, router.forwarding.ipv6_fib));
+      }
+    };
+    restore_base();
+    require(query(0U).lan_up[0U] == 1U && query(0U).lan_up[1U] == 1U);
+    const auto restored_binding = plane->query_isis_lan_next_hop(programs[0U].circuit.identity, 1U, peer,
+        *ip::parse_ip_address("198.51.100.2"));
+    require(restored_binding && restored_binding->bound_next_hop == bound4->bound_next_hop);
     auto invalid = programs[0U];
     invalid.circuit.broadcast->levels[0U]->local.priority = 10U;
     require(!plane->replace_isis_generation(devices[0U], std::span{&invalid, 1U}) && query(0U).lan_up[0U] == 1U);
@@ -2197,6 +2226,14 @@ void isis_network_plane_lan_tests() {
       }
       return true;
     });
+    const auto routed_checkpoint = plane->checkpoint();
+    require(routed_checkpoint && routed_checkpoint->isis && routed_checkpoint->isis->installed.size() == 2U);
+    require(plane->restore(*routed_checkpoint));
+    restore_base();
+    for (const auto device : devices) {
+      const auto restored_routes = heap_router_checkpoint(*plane, device, RuntimeClock::now());
+      require(restored_routes && restored_routes->fib.count == 2U && restored_routes->ipv6_fib.count == 2U);
+    }
     bool sent4{}, sent6{};
     const auto replies_by = RuntimeClock::now() + 5s;
     while (!sent4 || !sent6 || !plane->router_ping_reply(devices[0U], 771U) ||

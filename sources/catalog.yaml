@@ -1,5 +1,47 @@
 schema_version: 1
 records:
+  - id: project.runtime.prepared_protocol_restore
+    kind: prepared-protocol-owner-restore
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-runtime-ownership-contract
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0008-quiescent-protocol-channel-checkpoints.md
+    section: Existing protocol owner participation
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/ospf_control_worker.hpp, core/src/ospf/ospf_control_worker.cpp]
+    tests: [core/tests/runtime/ospf_checkpoint_restore_test.cpp, core/tests/runtime/protocol_owner_lifecycle_test.cpp]
+    status: experimental
+    notes: The OSPF owner prepares detached restored processes before global network publication. An enclosing transaction token guards single-use commit and abort. Prepared state suspends protocol queue and timer service while allowing matching lifecycle commands and shutdown. Aborting preserves live owners and reusable input; commit erases source authentication copies and swaps without allocation while preserving the existing route republish behavior. The synchronous legacy restore command uses the same preparation and commit internally. The network coordinator prepares this owner before publishing fabric, forwarders or route candidates and aborts it on any earlier refusal.
+  - id: project.isis.protected_checkpoint_codec
+    kind: protected-protocol-checkpoint-codec
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-runtime-ownership-contract
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0008-quiescent-protocol-channel-checkpoints.md
+    section: Canonical protected protocol image
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/isis_checkpoint_codec.hpp, core/src/runtime/isis_checkpoint_codec.cpp, core/src/runtime/isis_checkpoint_fields.hpp, core/include/router/isis_runtime_checkpoint.hpp, core/include/router/owned_spsc_channel.hpp, core/include/router/secret_vault.hpp, core/src/security/secret_vault.cpp, core/src/runtime/lab_checkpoint.cpp, core/src/runtime/lab_runtime.cpp, schemas/checkpoint/10.yaml]
+    tests: [core/tests/runtime/runtime_supervisor_test.cpp, core/tests/runtime/isis_checkpoint_codec_test.cpp, core/tests/security/isis_checkpoint_protection_test.cpp, core/tests/isis/isis_checkpoint_barrier_test.cpp]
+    status: experimental
+    notes: One explicit field order serves encoding and decoding of detached IS-IS owners, packet partitions, route transfers and physical receipts. Scalar integers and counts use fixed little-endian 64-bit values independently of native or Wasm size_t width. Boolean and variant encodings are canonical, byte arrays retain exact octets and route arrays serialize only their owned prefix. The decoder authenticates the outer-prefix binding before parsing, spends a cumulative allocation budget before reserve, refuses narrow overflow or trailing input and validates transport joins. Cleansing allocation erases intermediate plaintext storage even during vector growth. Flat record field counts are checked by structured bindings. Structural ABI 10 seals the entire enclosing body, including fabric and capture wire, whenever IS-IS state is present. The decoder authenticates the body before parsing any nested state. A missing vault, changed prefix, wrong project key, truncated body or modified tag refuses. Project format 5 and snapshot ABI 9 remain unchanged.
+  - id: project.isis.runtime_checkpoint_join
+    kind: protocol-transport-checkpoint-join
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-runtime-ownership-contract
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0008-quiescent-protocol-channel-checkpoints.md
+    section: Physical transfer ownership and protocol reservation joins
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/network_transfer_checkpoint.hpp, core/src/runtime/network_transfer_checkpoint.cpp, core/include/router/isis_runtime_checkpoint.hpp, core/src/runtime/isis_runtime_checkpoint.cpp, core/src/runtime/network_plane.cpp, core/include/router/spsc_ring.hpp]
+    tests: [core/tests/runtime/network_transfer_checkpoint_test.cpp, core/tests/isis/isis_checkpoint_barrier_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
+    status: experimental
+    notes: Detached forwarding transfers preserve all egress kinds, exact FIFO order, live frame prefixes, physical completion FIFO and link-owner overflow retention. A bijection joins every borrowed protocol credit to exactly one remaining physical frame or receipt, with guarded metadata and encoded PDU agreement. The joined IS-IS image validates cohorts, ports, exact current Hello/LSP/SNP reservations and pending route generations while preserving canceled stale transport work. Forwarding preparation stages fixed-frame payloads on heap before allocation-free queue replacement. The network coordinator holds forwarding and protocol barriers through whole-fabric capture and stages replacement owners, route candidates, physical transfer queues and punt projections before its first commit. Accepted RIB candidates and publication high water survive independently of protocol decisions. A direct consumer installation before enabling the route publisher retains its own high water. Matching forwarding shard layout is required; cross-layout transfer remapping is not implemented.
   - id: project.isis.control_checkpoint_capture
     kind: protocol-owner-state-capture
     release: 26.7.R1
@@ -2613,11 +2655,11 @@ records:
     section: Sections 5.1 and 5.2
     rfc_refs: [RFC8018]
     yang_path: null
-    last_verified_at: 2026-07-24
-    implementation: [apps/web/src/persistence.ts, apps/web/src/runtime/project-secret-vault.ts, apps/web/src/runtime/multi-router-client.ts, apps/web/src/ui/App.tsx]
-    tests: [apps/web/src/persistence-v4.test.ts]
+    last_verified_at: 2026-11-07
+    implementation: [apps/web/src/persistence.ts, apps/web/src/runtime/project-secret-vault.ts, apps/web/src/runtime/multi-router-client.ts, apps/web/src/ui/App.tsx, apps/web/src/ui/WorkspaceViews.tsx, apps/web/src/runtime/project-import.ts]
+    tests: [apps/web/src/persistence-v4.test.ts, apps/web/src/ui/WorkspaceViews.test.tsx, apps/web/src/runtime/project-import.test.ts]
     status: implemented
-    notes: The complete portable manifest and project wrapping key are encrypted with AES-256-GCM using a random 128-bit salt, random 96-bit nonce and PBKDF2-HMAC-SHA-256. The authenticated header binds the format, KDF parameters and cipher parameters. The 600000-iteration work factor follows the current OWASP PBKDF2-HMAC-SHA-256 recommendation. Decryption authenticates before parsing or replacing runtime state, and the imported project key is persisted under the device-bound non-extractable AES-KW key only after the replacement runtime and checkpoint validate.
+    notes: The complete portable manifest and project wrapping key are encrypted with AES-256-GCM using a random 128-bit salt, random 96-bit nonce and PBKDF2-HMAC-SHA-256. The authenticated header binds the format, KDF parameters and cipher parameters. The 600000-iteration work factor follows the current OWASP PBKDF2-HMAC-SHA-256 recommendation. Decryption authenticates before parsing or replacing runtime state, and the imported project key is persisted under the device-bound non-extractable AES-KW key only after the replacement runtime and checkpoint validate. The Snapshots panel imports its own protected netsim export through the same authenticated project import path, rather than passing the envelope to the raw structural decoder. Complete checkpoints initialize the project vault and restore a fresh runtime directly, without first replaying configuration or falling back on refusal; the resulting object identities must match the portable manifest.
   - id: ecma.number.max_safe_integer
     kind: project-data-boundary
     release: ECMA-262
@@ -3960,9 +4002,9 @@ records:
     yang_path: null
     last_verified_at: 2026-07-18
     implementation: [core/include/router/secret_vault.hpp, core/src/security/secret_vault.cpp, core/include/router/lab_checkpoint.hpp, core/src/runtime/lab_checkpoint.cpp, core/src/runtime/lab_runtime.cpp, core/src/runtime/wasm_api.cpp, apps/web/src/runtime/project-secret-vault.ts, apps/web/src/runtime/runtime.worker.ts, apps/web/src/runtime/multi-router-client.ts, core/include/router/dnssec_signer.hpp, core/src/dns/dnssec_signer.cpp, core/include/router/dnssec_zone_keys.hpp, core/src/dns/dnssec_zone_keys.cpp, core/include/router/pki_store.hpp, core/src/security/pki_store.cpp]
-    tests: [core/tests/security/secret_vault_test.cpp, core/tests/runtime/lab_runtime_test.cpp, core/tests/dns/dnssec_signer_test.cpp, core/tests/dns/dnssec_zone_keys_test.cpp, core/tests/security/pki_store_test.cpp]
+    tests: [core/tests/security/isis_checkpoint_protection_test.cpp, core/tests/security/secret_vault_test.cpp, core/tests/runtime/lab_runtime_test.cpp, core/tests/dns/dnssec_signer_test.cpp, core/tests/dns/dnssec_zone_keys_test.cpp, core/tests/security/pki_store_test.cpp]
     status: partially-implemented
-    notes: The common project vault seals IPsec PPK and IKE pre-shared-key records with AES-256-GCM using a fresh 96-bit private random nonce and full 128-bit tag. Version, record purpose, stable handle, ciphertext length and project context are authenticated. Plaintext is exposed only through a short-lived erasing owner, and complete transactional restore or rewrap rejects a wrong key, wrong context, edited metadata or tampering before publishing state. The browser stores a non-extractable AES-KW device key and only the wrapped per-project key in IndexedDB, then transfers raw project material directly to the runtime Worker during initialization. Provider-owned DNSSEC and PKI stores retain their earlier purpose-specific AES-GCM records pending migration to the common handle owner. Passphrase-protected portable transfer and project-key rotation through every provider remain incomplete.
+    notes: Detached IS-IS checkpoint protection binds the encrypted payload to a 32-byte structural-prefix digest under a separate authenticated purpose, without inserting records or advancing handles. Ordinary credential sizes remain bounded at 64 KiB; detached payloads use the existing initial Wasm memory bound and reject before exposing unauthenticated plaintext. The common project vault seals IPsec PPK and IKE pre-shared-key records with AES-256-GCM using a fresh 96-bit private random nonce and full 128-bit tag. Version, record purpose, stable handle, ciphertext length and project context are authenticated. Plaintext is exposed only through a short-lived erasing owner, and complete transactional restore or rewrap rejects a wrong key, wrong context, edited metadata or tampering before publishing state. The browser stores a non-extractable AES-KW device key and only the wrapped per-project key in IndexedDB, then transfers raw project material directly to the runtime Worker during initialization. Provider-owned DNSSEC and PKI stores retain their earlier purpose-specific AES-GCM records pending migration to the common handle owner. Passphrase-protected portable transfer and project-key rotation through every provider remain incomplete.
   - id: ietf.pki.path_validation.rfc5280
     kind: public-key-infrastructure
     release: 26.7.R1

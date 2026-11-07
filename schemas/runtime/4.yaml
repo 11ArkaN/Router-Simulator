@@ -4,7 +4,7 @@ snapshot_abi: 9
 # when offsets, widths or publication semantics change, not whenever the
 # structural runtime snapshot gains another configuration domain.
 telemetry_abi: 6
-checkpoint_abi: 9
+checkpoint_abi: 10
 # Snapshot ABI 9 carries canonical OSPF configuration intent.
 # Checkpoint ABI 9 retains scoped routes and independent IS-IS provenance.
 # Runtime protocol framing remains version 4 because operation messages are

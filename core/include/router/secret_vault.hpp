@@ -35,7 +35,9 @@ enum class SecretKind : std::uint8_t {
   ipsec_client_db_pre_shared_key = 12U,
   ipsec_radius_auth_password = 13U,
   pki_est_http_password = 14U,
-  pki_cmp_initial_auth_password = 15U
+  pki_cmp_initial_auth_password = 15U,
+  // Detached checkpoint purpose; stable record seal/restore rejects this kind.
+  isis_checkpoint_state = 16U
 };
 
 struct SealedRecord {
@@ -126,6 +128,18 @@ public:
   // the bytes under a different protocol contract.
   [[nodiscard]] std::pair<Result, std::optional<OpenedSecret>>
   open(SecretHandle handle, SecretKind expected_kind) const noexcept;
+
+  // Owning persistence coordinator only. Binding is the SHA-256 of the outer
+  // structural checkpoint prefix, so ciphertext cannot be transplanted into a
+  // different owner graph. Payload is nonempty and bounded by the profile's
+  // initial Wasm memory. This detached purpose allocates no stable handle,
+  // changes no vault record/counter and uses a fresh GCM nonce on every seal.
+  [[nodiscard]] std::pair<Result, std::vector<std::uint8_t>> seal_isis_checkpoint(
+      std::span<const std::uint8_t> plaintext, std::span<const std::uint8_t> binding) const noexcept;
+  // Authenticates all ciphertext and binding before exposing a cleansing
+  // plaintext owner. Wrong project, context, binding or tag yields no bytes.
+  [[nodiscard]] std::pair<Result, std::optional<OpenedSecret>> open_isis_checkpoint(
+      std::span<const std::uint8_t> sealed, std::span<const std::uint8_t> binding) const noexcept;
 
   // Erasure and pruning affect encrypted records only. Callers must first
   // collect handles from running configuration, every candidate and active

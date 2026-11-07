@@ -168,13 +168,22 @@ describe("multi-router workspace controls", () => {
     expect(changed).toHaveBeenCalled();
   });
 
-  it("opens checkpoint import through the owned binary input", async () => {
+  it("imports the same portable format exported by the snapshot panel", async () => {
     const user = userEvent.setup();
     const input = createRef<HTMLInputElement>();
-    render(<SnapshotWorkspace checkpointInput={input} onExport={vi.fn()}
-      onImport={vi.fn()} />);
+    const exported = vi.fn();
+    const imported = vi.fn((event: React.ChangeEvent<HTMLInputElement>) =>
+      event.target.files?.[0]);
+    render(<SnapshotWorkspace checkpointInput={input} onExport={exported}
+      onImport={imported} />);
     const click = vi.spyOn(input.current!, "click");
+    await user.click(screen.getByRole("button", { name: "Export checkpoint" }));
+    expect(exported).toHaveBeenCalledOnce();
     await user.click(screen.getByRole("button", { name: "Import checkpoint" }));
     expect(click).toHaveBeenCalledOnce();
-  });
-});
+    const file = new File(["protected checkpoint"], "lab.checkpoint.netsim",
+      { type: "application/json" });
+    await user.upload(input.current!, file);
+    expect(imported).toHaveBeenCalledOnce();
+    expect(imported.mock.results[0].value).toBe(file);
+  });});

@@ -90,7 +90,10 @@ enum class ControlCommandKind : std::uint8_t {
   reset_database,
   checkpoint,
   restore_checkpoint,
-  shutdown
+  shutdown,
+  prepare_checkpoint_restore,
+  commit_checkpoint_restore,
+  abort_checkpoint_restore
 };
 
 struct ProcessIdentity {
@@ -114,6 +117,10 @@ struct ControlCommand {
   // owns the pointed value and waits for this exact command result before its
   // lifetime can end. No pointer is persisted or published to another queue.
   std::uintptr_t checkpoint_transfer{};
+  // Prepare retains this caller-owned checkpoint through matching commit or
+  // abort. One serialized coordinator keeps the source alive until that result.
+  // The token belongs to the enclosing restore barrier and is never persisted.
+  std::uint64_t checkpoint_transaction{};
   std::int64_t operation_now_nanoseconds{};
   std::uint32_t router_id{};
   std::uint32_t initial_dd_sequence{};
@@ -312,6 +319,21 @@ private:
     OwnedProcess &operator=(OwnedProcess &&) noexcept = default;
     ~OwnedProcess();
   };
+
+  struct PreparedCheckpoint {
+    std::array<std::vector<OwnedProcess>, device_catalog::maximum_routers> processes;
+    std::array<std::uint64_t, device_catalog::maximum_routers> next_route_generation{};
+    std::array<lab::DeviceHandle, device_catalog::maximum_routers> active_devices{};
+    std::array<bool, device_catalog::maximum_routers> route_publication_pending{}, route_coordination_pending{};
+    ControlWorkerCheckpoint *source{};
+    std::uint64_t transaction{};
+  };
+  // Same protocol owner. Prepare allocates detached owners; matching commit
+  // only swaps and clears source key copies. Abort preserves all live owners.
+  [[nodiscard]] bool prepare_checkpoint_restore(ControlWorkerCheckpoint &source,
+      RuntimeClock::time_point now, std::uint64_t transaction) noexcept;
+  [[nodiscard]] bool commit_checkpoint_restore(std::uint64_t transaction) noexcept;
+  std::unique_ptr<PreparedCheckpoint> checkpoint_restore_;
 
   struct GenerationStaging {
     // Only the OSPF owner pthread mutates these vectors. Begin reserves the

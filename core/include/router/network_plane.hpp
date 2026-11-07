@@ -18,6 +18,7 @@
 #include "router/multi_device_routing.hpp"
 #include "router/ospf_control_worker.hpp"
 #include "router/isis_control_worker.hpp"
+#include "router/isis_runtime_checkpoint.hpp"
 #include "router/ospf_process.hpp"
 #include "router/packet.hpp"
 #include "router/router_forwarder.hpp"
@@ -592,6 +593,9 @@ struct NetworkPlaneCheckpoint {
   // pointer into live process state and stores all deadlines as durations
   // relative to the same checkpoint instant used by forwarding and fabric.
   ospf::ControlWorkerCheckpoint ospf;
+  // Present whenever IS-IS owns semantic state or queued transport work.
+  // One protected protocol image joins packet, route and physical credits.
+  std::optional<IsisRuntimeCheckpoint> isis;
   std::vector<CapturePointProgram> capture_points;
   std::uint64_t capture_dropped{};
   // Transfer rings exist only between physical runtime owners. Their loss

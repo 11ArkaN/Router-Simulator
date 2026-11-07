@@ -1,6 +1,15 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  runtime.prepared_protocol_restore:
+    status: partially-implemented
+    source_ids: [project.runtime.prepared_protocol_restore]
+  persistence.isis_checkpoint_codec:
+    status: partially-implemented
+    source_ids: [project.isis.protected_checkpoint_codec, nist.project_key_vault.aes_gcm]
+  persistence.isis_runtime_checkpoint_join:
+    status: partially-implemented
+    source_ids: [project.isis.runtime_checkpoint_join]
   persistence.isis_control_checkpoint_capture:
     status: partially-implemented
     source_ids: [project.isis.control_checkpoint_capture]
