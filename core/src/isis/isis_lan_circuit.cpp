@@ -11,7 +11,7 @@ namespace router::isis {
 LanCircuit::LanCircuit(LanCircuitConfiguration configuration, std::uint64_t random_state,
     Clock::time_point now)
     : configuration_(std::move(configuration)),
-      neighbors_(configuration_.type, configuration_.mac, configuration_.limits),
+      neighbors_(configuration_.type, configuration_.mac, configuration_.limits, configuration_.peer_attribute_octets),
       hello_(configuration_.hello_interval, true, false, random_state, now),
       election_ready_(now + 2 * configuration_.hello_interval) {
   const auto level = configuration_.type == packet::isis::PduType::lan_hello_l1 ? 1U : 2U;
@@ -21,7 +21,8 @@ LanCircuit::LanCircuit(LanCircuitConfiguration configuration, std::uint64_t rand
       (static_cast<unsigned>(configuration_.levels) & level) == 0U ||
       static_cast<unsigned>(configuration_.levels) > 3U || configuration_.local.priority > 127U ||
       configuration_.local.mac != configuration_.mac || (configuration_.mac[0U] & 1U) ||
-      (configuration_.hello_destination[0U] & 1U) == 0U ||
+      !configuration_.destinations().valid() ||
+      configuration_.hello_destination != configuration_.destinations().levels[level - 1U] ||
       (configuration_.emit_instance && !configuration_.instance_format) ||
       (!configuration_.emit_instance && configuration_.wire_instance))
     throw std::invalid_argument("Invalid IS-IS LAN circuit configuration");

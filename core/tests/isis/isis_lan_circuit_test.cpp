@@ -41,6 +41,7 @@ LanCircuitConfiguration configuration(std::uint8_t id) {
   result.holding_seconds = result.designated_holding_seconds = 3U;
   result.hello_interval = result.designated_hello_interval = 1s;
   result.maximum_pdu_octets = 1492U;
+  result.peer_attribute_octets = 512U;
   result.limits = {4U, 3U};
   return result;
 }
@@ -58,18 +59,18 @@ void synchronize(Events &events) noexcept {
   if (!events.update) return;
   std::array<packet::Mac, 4U> peers{};
   std::array<packet::isis::SystemId, 4U> systems{};
-  std::size_t count{};
+  std::size_t count{}, accepted_count{};
   for (std::size_t index{}; index < events.circuit->neighbors().size(); ++index) {
     const auto neighbor = events.circuit->neighbors().at(index)->adjacency;
+    peers[accepted_count++] = neighbor.mac;
     if (neighbor.state == LanState::up) {
-      peers[count] = neighbor.mac;
       systems[count++] = neighbor.system;
     }
   }
   const auto selected = events.circuit->designated();
   const LevelObserver observer{nullptr, +[](void *, const LevelEvent &) noexcept {}};
   events.update_ok = events.update_ok && events.update->lan(0U, 7U, 0U,
-      std::span(peers).first(count), count && selected && selected->local, observer) == UpdateStatus::applied;
+      std::span(peers).first(accepted_count), count && selected && selected->local, observer) == UpdateStatus::applied;
   if (!events.origin) return;
   const auto accepted = [](LocalContentResult result) {
     return result == LocalContentResult::changed || result == LocalContentResult::unchanged;
@@ -144,6 +145,14 @@ void isis_lan_circuit_tests() {
   lab::EthernetSwitch bridge(device_catalog::ethernet_switch_profiles[0U], *pool);
   auto fabric = std::make_unique<lab::MultiDeviceFabric>();
   const auto start = LanCircuit::Clock::time_point{100s};
+  auto invalid_groups = configuration(1U);
+  invalid_groups.update_destinations = std::array<packet::Mac, 2U>{
+      packet::Mac{1U, 0x80U, 0xc2U, 0U, 0U, 0x15U}, invalid_groups.hello_destination};
+  bool groups_rejected{};
+  try { LanCircuit invalid(std::move(invalid_groups), 1U, start); }
+  catch (const std::invalid_argument &) { groups_rejected = true; }
+  require(groups_rejected);
+
   Context context{{}, {}, bridge, start};
   auto scratch = std::make_unique<PduScratch>();
   for (std::uint16_t index{}; index < 3U; ++index) {
@@ -275,8 +284,16 @@ void isis_lan_circuit_tests() {
     }
   };
   round(start);
-  for (const auto &circuit : context.circuits)
-    require(circuit->neighbors().size() == 2U && !circuit->designated());
+  for (std::size_t index{}; index < context.circuits.size(); ++index) {
+    const auto &circuit = context.circuits[index];
+    require(circuit->neighbors().size() == 2U && !circuit->designated() && !context.events[index].up);
+    // The first Hello creates Initializing adjacencies. ISO update acceptance
+    // uses same-level SNPA membership, while SPF and pseudonodes still use Up.
+    require(circuit->neighbors().at(0U)->adjacency.state == LanState::initializing &&
+        context.updates[index]->level(0U)->database().size() == 3U &&
+        context.updates[index]->outputs(0U, 0U)->synchronization_epoch == 1U &&
+        !context.origins[index]->contains(0U, context.events[index].pseudonode));
+  }
   round(start + 1s);
   for (std::size_t index{}; index < 3U; ++index)
     require(context.events[index].up == 2U && !context.circuits[index]->designated());

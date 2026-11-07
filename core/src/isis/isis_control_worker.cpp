@@ -118,7 +118,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
       const auto &other = definitions[--previous];
       if (other.identity.physical_port_ordinal != identity.physical_port_ordinal ||
           (other.configuration.wire_instance == entry.configuration.wire_instance &&
-           other.configuration.hello_destination == entry.configuration.hello_destination)) return ControlError::already_exists;
+           other.configuration.destinations().conflicts(entry.configuration.destinations()))) return ControlError::already_exists;
     }
   }
   try {
@@ -435,7 +435,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
       return other.identity.interface_id == command.identity.interface_id &&
           (other.identity.physical_port_ordinal != command.identity.physical_port_ordinal ||
            (other.wire_instance == command.configuration.wire_instance &&
-            other.destination == command.configuration.hello_destination));
+            other.destinations.conflicts(command.configuration.destinations())));
     })) result.error = ControlError::already_exists;
     else if (active_circuits_ >= maximum_circuits_) result.error = ControlError::capacity;
     else try {
@@ -511,7 +511,7 @@ void ControlWorker::receive(
     packet::isis::InstanceError error{};
     const auto selection = packet::isis::select_instance(wire->pdu, owned.format, owned.physical_point_to_point, error);
     const bool hello = wire->pdu.type == packet::isis::PduType::point_to_point_hello;
-    if ((hello && wire->ethernet.destination != owned.destination) || !selection ||
+    if ((owned.destinations.select(wire->pdu.type) != wire->ethernet.destination) || !selection ||
         selection->instance != owned.wire_instance) continue;
     if (owned.identity.configuration_generation != packet.metadata.configuration_generation) {
       ++owned.counters.stale_ingress;
@@ -588,7 +588,7 @@ void ControlWorker::run() noexcept {
             owned.identity.instance == completion->metadata.instance_id) {
           packet::isis::InstanceError error{};
           const auto selection = packet::isis::select_instance(wire->pdu, owned.format, owned.physical_point_to_point, error);
-          if (wire->ethernet.destination != owned.destination || !selection || selection->instance != owned.wire_instance) continue;
+          if (owned.destinations.select(wire->pdu.type) != wire->ethernet.destination || !selection || selection->instance != owned.wire_instance) continue;
           if (owned.identity.configuration_generation != completion->metadata.configuration_generation ||
               completion->metadata.transmission_class != static_cast<std::uint8_t>(wire->pdu.type)) {
             ++owned.counters.stale_completion;

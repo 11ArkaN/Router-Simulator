@@ -16,7 +16,7 @@ PointToPointCircuit::PointToPointCircuit(P2pCircuitConfiguration configuration,
       hello_(configuration_.hello_interval, false, false, random_state, now) {
   if (!configuration_.holding_seconds || !configuration_.maximum_area_addresses ||
       !configuration_.maximum_pdu_octets || !configuration_.peer_attribute_octets ||
-      (configuration_.hello_destination[0U] & 1U) == 0U ||
+      !configuration_.destinations().valid() ||
       configuration_.physical_point_to_point == configuration_.local.over_lan ||
       (configuration_.emit_instance && !configuration_.instance_format) ||
       (!configuration_.emit_instance && configuration_.wire_instance))

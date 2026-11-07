@@ -3,6 +3,7 @@
 // iso.10589.2002.adjacency_decisions, clauses 8.4.2 through 8.4.3.
 
 #include "router/isis_lan_adjacency_set.hpp"
+#include "router/isis_multi_topology.hpp"
 
 #include <algorithm>
 #include <new>
@@ -11,21 +12,24 @@
 
 namespace router::isis {
 
-LanAdjacencySet::LanAdjacencySet(packet::isis::PduType type, packet::Mac local, LanSetLimits limits)
-    : type_(type), local_(local), limits_(limits) {
+LanAdjacencySet::LanAdjacencySet(packet::isis::PduType type, packet::Mac local, LanSetLimits limits,
+    std::size_t attribute_octets)
+    : type_(type), local_(local), limits_(limits), maximum_attribute_octets_(attribute_octets) {
   if (type != packet::isis::PduType::lan_hello_l1 && type != packet::isis::PduType::lan_hello_l2)
     throw std::invalid_argument("IS-IS LAN set requires an L1 or L2 LAN Hello");
   if (limits.neighbors > peers_.max_size() || limits.neighbors > candidate_scratch_.max_size() ||
-      limits.areas_per_neighbor > area_scratch_.max_size())
+      limits.areas_per_neighbor > area_scratch_.max_size() ||
+      attribute_octets > attribute_scratch_.max_size() || (limits.neighbors && !attribute_octets))
     throw std::invalid_argument("IS-IS LAN set resource extent exceeds its container bound");
   peers_.reserve(limits.neighbors);
   candidate_scratch_.reserve(limits.neighbors);
   area_scratch_.reserve(limits.areas_per_neighbor);
+  attribute_scratch_.reserve(attribute_octets);
   static_assert(std::is_nothrow_move_constructible_v<Peer> && std::is_nothrow_move_assignable_v<Peer>);
 }
 
 LanPeerView LanAdjacencySet::view(const Peer &peer) const noexcept {
-  return {peer.adjacency.snapshot(), peer.areas};
+  return {peer.adjacency.snapshot(), peer.areas, peer.attributes, type_};
 }
 
 std::size_t LanAdjacencySet::position(const packet::Mac &mac) const noexcept {
@@ -52,20 +56,34 @@ std::optional<LanAdjacencySet::Clock::time_point> LanAdjacencySet::deadline() co
   return earliest;
 }
 
-LanSetResult LanAdjacencySet::stage_areas(const packet::isis::PduView &pdu) noexcept {
+LanSetResult LanAdjacencySet::stage_peer(const packet::isis::PduView &pdu) noexcept {
   area_scratch_.clear();
+  attribute_scratch_.clear();
+  if (!supports_topology(pdu, 0U).has_value()) return LanSetResult::malformed;
   packet::isis::TlvCursor options(pdu.tlvs);
   while (const auto option = options.next()) {
-    if (option->code != 1U) continue;
-    packet::isis::AreaAddressCursor areas(*option);
-    while (const auto area = areas.next()) {
-      if (area_scratch_.size() == limits_.areas_per_neighbor) return LanSetResult::capacity_refused;
-      NeighborArea retained;
-      retained.length = static_cast<std::uint8_t>(area->size());
-      std::copy(area->begin(), area->end(), retained.bytes.begin());
-      area_scratch_.push_back(retained);
+    if (option->code == 1U) {
+      packet::isis::AreaAddressCursor areas(*option);
+      while (const auto area = areas.next()) {
+        if (area_scratch_.size() == limits_.areas_per_neighbor) return LanSetResult::capacity_refused;
+        NeighborArea retained;
+        retained.length = static_cast<std::uint8_t>(area->size());
+        std::copy(area->begin(), area->end(), retained.bytes.begin());
+        area_scratch_.push_back(retained);
+      }
+      if (!areas.valid()) return LanSetResult::malformed;
     }
-    if (!areas.valid()) return LanSetResult::malformed;
+    if (option->code == 132U && !packet::isis::FixedAddressCursor<4U>(*option, 132U).valid())
+      return LanSetResult::malformed;
+    if (option->code == 232U && !packet::isis::valid_ipv6_interface_addresses(*option, type_))
+      return LanSetResult::malformed;
+    if (option->code != 1U && option->code != 129U && option->code != 132U &&
+        option->code != 232U && option->code != 229U) continue;
+    const auto octets = option->value.size() + 2U;
+    if (octets > maximum_attribute_octets_ - attribute_scratch_.size()) return LanSetResult::capacity_refused;
+    attribute_scratch_.push_back(option->code);
+    attribute_scratch_.push_back(static_cast<std::uint8_t>(option->value.size()));
+    attribute_scratch_.insert(attribute_scratch_.end(), option->value.begin(), option->value.end());
   }
   return options.valid() ? LanSetResult::accepted : LanSetResult::malformed;
 }
@@ -89,7 +107,7 @@ LanSetResult LanAdjacencySet::receive(const packet::isis::PduView &pdu, const pa
   const auto index = position(source);
   const bool existing = index < peers_.size() && peers_[index].adjacency.snapshot().mac == source;
   if (existing && peers_[index].adjacency.snapshot().system != header->source) return LanSetResult::discarded;
-  const auto staged = stage_areas(pdu);
+  const auto staged = stage_peer(pdu);
   if (staged != LanSetResult::accepted) return staged;
   if (existing) {
     auto &peer = peers_[index];
@@ -97,13 +115,15 @@ LanSetResult LanAdjacencySet::receive(const packet::isis::PduView &pdu, const pa
     const auto update = peer.adjacency.receive(pdu, source, now);
     if (!update.holding_refreshed) return LanSetResult::discarded;
     peer.areas.swap(area_scratch_);
-    observer(context, {{before, area_scratch_}, view(peer), update, LanEventCause::received});
+    peer.attributes.swap(attribute_scratch_);
+    observer(context, {{before, area_scratch_, attribute_scratch_, type_}, view(peer), update, LanEventCause::received});
     return LanSetResult::accepted;
   }
   LanAdjacency adjacency(type_, header->source, source, local_);
   const auto update = adjacency.receive(pdu, source, now);
   if (!update.holding_refreshed) return LanSetResult::discarded;
   std::vector<NeighborArea> retained;
+  std::vector<std::uint8_t> attributes;
   if (peers_.size() == limits_.neighbors) {
     candidate_scratch_.clear();
     for (const auto &peer : peers_) {
@@ -117,13 +137,18 @@ LanSetResult LanAdjacencySet::receive(const packet::isis::PduView &pdu, const pa
     // the victim while leaving an unadmitted replacement behind.
     auto retired = remove(eviction.victim, LanEventCause::capacity_evicted, now, context, observer);
     retained = std::move(retired.areas);
+    attributes = std::move(retired.attributes);
   } else {
-    try { retained.reserve(limits_.areas_per_neighbor); }
+    try {
+      retained.reserve(limits_.areas_per_neighbor);
+      attributes.reserve(maximum_attribute_octets_);
+    }
     catch (const std::bad_alloc &) { return LanSetResult::memory_refused; }
   }
   retained.assign(area_scratch_.begin(), area_scratch_.end());
+  attributes.assign(attribute_scratch_.begin(), attribute_scratch_.end());
   const auto inserted = peers_.insert(peers_.begin() + static_cast<std::ptrdiff_t>(position(source)),
-                                     Peer{std::move(adjacency), std::move(retained)});
+                                     Peer{std::move(adjacency), std::move(retained), std::move(attributes)});
   observer(context, {{}, view(*inserted), update, LanEventCause::received});
   return LanSetResult::accepted;
 }

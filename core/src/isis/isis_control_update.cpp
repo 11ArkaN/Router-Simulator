@@ -94,12 +94,8 @@ void ControlWorker::OwnedInstance::level_event(void *context, const LevelEvent &
 }
 
 UpdateCircuitConfiguration ControlWorker::update_configuration(const OwnedCircuit &owned) noexcept {
-  // RFC 5309 permits AllISs, AllL1ISs or AllL2ISs for logical P2P PDUs.
-  // This experimental transport supplies its explicitly selected multicast
-  // group for both levels; production per-level group selection is separate.
   return {owned.identity.configuration_generation, owned.circuit.configuration().local.levels,
-      owned.physical_point_to_point, owned.format, owned.wire_instance,
-      {owned.destination, owned.destination}};
+      owned.physical_point_to_point, owned.format, owned.wire_instance, owned.destinations.levels};
 }
 
 ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceState &device) noexcept {

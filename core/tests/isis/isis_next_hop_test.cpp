@@ -2,6 +2,7 @@
 // scope. Test storage supplies no remote runtime state or neighbor-cache entry.
 
 #include "router/isis_next_hop.hpp"
+#include "router/isis_circuit_destinations.hpp"
 
 #include <stdexcept>
 
@@ -14,6 +15,17 @@ void isis_next_hop_tests() {
   using namespace router;
   using namespace router::isis;
   using namespace router::packet::isis;
+  const CircuitDestinations destinations{{1U, 0x80U, 0xc2U, 0U, 0U, 9U},
+      {packet::Mac{1U, 0x80U, 0xc2U, 0U, 0U, 0x14U}, packet::Mac{1U, 0x80U, 0xc2U, 0U, 0U, 0x15U}}};
+  require(destinations.valid() && destinations.select(PduType::point_to_point_hello) == destinations.hello);
+  for (const auto type : {PduType::lan_hello_l1, PduType::lsp_l1, PduType::csnp_l1, PduType::psnp_l1})
+    require(destinations.select(type) == destinations.levels[0U]);
+  for (const auto type : {PduType::lan_hello_l2, PduType::lsp_l2, PduType::csnp_l2, PduType::psnp_l2})
+    require(destinations.select(type) == destinations.levels[1U]);
+  require(!destinations.select(static_cast<PduType>(255U)));
+  auto invalid_destinations = destinations;
+  invalid_destinations.levels[1U][0U] = 2U;
+  require(!invalid_destinations.valid() && destinations.conflicts(invalid_destinations));
   std::array<std::uint8_t, 256U> storage{};
   TlvWriter writer(storage);
   const std::array protocols{ipv4_nlpid, ipv6_nlpid};
@@ -73,7 +85,33 @@ void isis_next_hop_tests() {
   auto noncanonical = address4;
   noncanonical.bytes[15U] = 1U;
   require(!bind(noncanonical));
+  LanPeerView lan{{}, {}, writer.bytes(), PduType::lan_hello_l1};
+  lan.adjacency.present = true;
+  lan.adjacency.state = LanState::up;
+  lan.adjacency.system = adjacency.neighbor_system;
+  const auto lan4 = bind_lan_next_hop(lan, protocols, scope, address4);
+  const auto lan6 = bind_lan_next_hop(lan, protocols, scope, address6);
+  require(lan4 && lan6 && lan4->level == 1U && lan4->peer == adjacency.neighbor_system &&
+      lan6->interface == scope && lan6->address == address6);
+  lan.type = PduType::lan_hello_l2;
+  require(bind_lan_next_hop(lan, protocols, scope, address4)->level == 2U);
+  require(!bind_lan_next_hop(lan, v4_only, scope, address6) &&
+      !bind_lan_next_hop(lan, protocols, scope, *ip::parse_ip_address("203.0.113.8")));
+  lan.adjacency.state = LanState::initializing;
+  require(!bind_lan_next_hop(lan, protocols, scope, address4));
+  lan.adjacency.state = LanState::up;
+  lan.adjacency.present = false;
+  require(!bind_lan_next_hop(lan, protocols, scope, address4));
+  lan.adjacency.present = true;
+  lan.type = PduType::point_to_point_hello;
+  require(!bind_lan_next_hop(lan, protocols, scope, address4));
+  lan.type = PduType::lan_hello_l2;
+  lan.attributes = std::span(storage).first(length + 1U);
+  require(!bind_lan_next_hop(lan, protocols, scope, address4));
+  lan.attributes = writer.bytes();
   // A malformed known address option invalidates the binding even for IPv4.
   const std::array bad_address{std::uint8_t{1U}};
   require(writer.append(232U, bad_address) && !bind(address4));
+  lan.attributes = writer.bytes();
+  require(!bind_lan_next_hop(lan, protocols, scope, address4));
 }

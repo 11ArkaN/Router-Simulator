@@ -42,7 +42,7 @@ void observe(void *opaque, const router::isis::LanPeerEvent &event) noexcept {
 router::packet::isis::PduView hello(std::array<std::uint8_t, 512U> &wire,
     router::packet::isis::HelloInput header, const router::packet::Mac &local,
     std::uint8_t area_suffix, std::size_t area_count = 1U, bool two_way = false,
-    bool malformed_area = false) {
+    bool malformed_area = false, std::span<const std::uint8_t> extra = {}) {
   using namespace router::packet::isis;
   std::array<std::uint8_t, 256U> options{};
   TlvWriter writer(options);
@@ -55,6 +55,10 @@ router::packet::isis::PduView hello(std::array<std::uint8_t, 512U> &wire,
   const std::array<router::packet::Mac, 1U> neighbor{local};
   require(encode_fixed_addresses<6U>(writer, 6U, two_way ? std::span(neighbor) : std::span(neighbor).first(0U)),
           "IS-IS retained-neighbor fixture failed");
+  TlvCursor additional(extra);
+  while (const auto option = additional.next())
+    require(writer.append(option->code, option->value), "IS-IS LAN extra option fixture failed");
+  require(additional.valid(), "IS-IS LAN extra framing fixture failed");
   const auto encoded = encode_hello(wire, header, writer.bytes());
   DecodeError error{};
   const auto pdu = encoded ? parse(*encoded, error) : std::nullopt;
@@ -72,7 +76,7 @@ void isis_lan_adjacency_set_tests() {
   const router::packet::Mac first{2U, 0U, 0U, 0U, 0U, 1U};
   const router::packet::Mac second{2U, 0U, 0U, 0U, 0U, 2U};
   const router::packet::Mac third{2U, 0U, 0U, 0U, 0U, 3U};
-  LanAdjacencySet set(PduType::lan_hello_l1, local, {2U, 2U});
+  LanAdjacencySet set(PduType::lan_hello_l1, local, {2U, 2U}, 512U);
   Trace trace{&set, third};
   HelloInput input{PduType::lan_hello_l1, {1U, 2U, 3U, 4U, 5U, 1U}, 3U, 3U, 0U, 10U};
   std::array<std::uint8_t, 512U> wire{};
@@ -126,7 +130,7 @@ void isis_lan_adjacency_set_tests() {
           "IS-IS LAN circuit shutdown lost its owned Down event");
   require(set.receive(hello(wire, input, local, 1U), first, now, &trace, nullptr) == LanSetResult::missing_observer &&
             set.size() == 0U, "IS-IS LAN accepted a state change without an event consumer");
-  LanAdjacencySet other_level(PduType::lan_hello_l2, local, {1U, 2U});
+  LanAdjacencySet other_level(PduType::lan_hello_l2, local, {1U, 2U}, 512U);
   Trace other_trace{&other_level};
   require(other_level.receive(hello(wire, input, local, 1U), first, now, &other_trace, observe) == LanSetResult::discarded,
           "IS-IS LAN set mixed L1 and L2 peers");
@@ -142,4 +146,64 @@ void isis_lan_adjacency_set_tests() {
             other_level.find(first)->areas.front().view().back() == 3U && other_level.deadline() == now + 5s &&
             other_level.at(0U) && !other_level.at(1U),
           "IS-IS LAN one-way Down deleted its retained Init record, areas or holding deadline");
+  // Retained non-secret options survive receive-buffer reuse. Invalid address
+  // widths and exhausted byte budgets cannot extend a holding deadline.
+  LanAdjacencySet retained(PduType::lan_hello_l2, local, {1U, 2U}, 32U);
+  Trace retained_trace{&retained};
+  std::array<std::uint8_t, 64U> option_bytes{};
+  TlvWriter option_writer(option_bytes);
+  const std::array<std::uint8_t, 1U> protocol{ipv4_nlpid};
+  const std::array<router::packet::Ipv4, 1U> addresses{{{203U, 0U, 113U, 7U}}};
+  const std::array<std::uint8_t, 2U> secret{1U, 99U};
+  require(option_writer.append(129U, protocol) && encode_fixed_addresses<4U>(option_writer, 132U, addresses) &&
+      option_writer.append(10U, secret), "IS-IS retained option fixture failed");
+  require(retained.receive(hello(wire, input, local, 1U, 1U, true, false, option_writer.bytes()),
+      first, now, &retained_trace, observe) == LanSetResult::accepted,
+      "IS-IS LAN did not retain IP attributes");
+  wire.fill(0U);
+  const auto owned = retained.find(first);
+  require(owned && owned->type == PduType::lan_hello_l2 && owned->attributes.size() == 15U,
+      "IS-IS LAN retained secret options or lost selected attributes");
+  TlvCursor retained_options(owned->attributes);
+  bool found_ip{};
+  while (const auto option = retained_options.next()) {
+    require(option->code != 10U && option->code != 6U, "IS-IS LAN retained secret or transient neighbor option");
+    if (option->code == 132U) found_ip = option->value.back() == 7U;
+  }
+  require(found_ip && retained_options.valid(), "IS-IS LAN borrowed IP bytes from receive storage");
+  const auto deadline = retained.deadline();
+  TlvWriter invalid_writer(option_bytes);
+  const std::array<std::uint8_t, 1U> invalid_address{1U};
+  require(invalid_writer.append(132U, invalid_address), "IS-IS malformed address fixture failed");
+  require(retained.receive(hello(wire, input, local, 2U, 1U, true, false, invalid_writer.bytes()),
+      first, now + 1s, &retained_trace, observe) == LanSetResult::malformed && retained.deadline() == deadline &&
+      retained.find(first)->attributes.size() == 15U && retained_trace.count == 1U,
+      "IS-IS LAN malformed IP option mutated accepted attributes or timer");
+  TlvWriter oversized(option_bytes);
+  const std::array<std::uint8_t, 30U> protocols{};
+  require(oversized.append(129U, protocols), "IS-IS oversized retained option fixture failed");
+  require(retained.receive(hello(wire, input, local, 2U, 1U, true, false, oversized.bytes()),
+      first, now + 1s, &retained_trace, observe) == LanSetResult::capacity_refused &&
+      retained.deadline() == deadline && retained_trace.count == 1U,
+      "IS-IS LAN attribute budget refusal refreshed a deadline");
+
+  TlvWriter invalid_mt(option_bytes);
+  require(invalid_mt.append(229U, invalid_address), "IS-IS malformed MT fixture failed");
+  require(retained.receive(hello(wire, input, local, 2U, 1U, true, false, invalid_mt.bytes()),
+      first, now + 1s, &retained_trace, observe) == LanSetResult::malformed && retained.deadline() == deadline,
+      "IS-IS LAN malformed MT refreshed a deadline");
+  TlvWriter invalid_v6(option_bytes);
+  require(invalid_v6.append(232U, invalid_address), "IS-IS malformed IPv6 fixture failed");
+  require(retained.receive(hello(wire, input, local, 2U, 1U, true, false, invalid_v6.bytes()),
+      first, now + 1s, &retained_trace, observe) == LanSetResult::malformed && retained.deadline() == deadline,
+      "IS-IS LAN malformed IPv6 refreshed a deadline");
+  // Lack of common MT does not prevent ISO LAN adjacency formation.
+  TlvWriter mt_only(option_bytes);
+  const std::array<std::uint8_t, 2U> topology_two{0U, 2U};
+  require(mt_only.append(229U, topology_two), "IS-IS MT-only fixture failed");
+  require(retained.receive(hello(wire, input, local, 2U, 1U, true, false, mt_only.bytes()),
+      first, now + 1s, &retained_trace, observe) == LanSetResult::accepted &&
+      retained.find(first)->adjacency.state == LanState::up && retained.deadline() == now + 4s,
+      "IS-IS LAN incorrectly required common MT0 for adjacency formation");
+
 }

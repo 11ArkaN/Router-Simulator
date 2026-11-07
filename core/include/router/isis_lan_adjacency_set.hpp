@@ -1,12 +1,11 @@
 // One circuit/instance/level owns this bounded LAN neighbor collection. Its
-// control shard retains area projections and synchronously dispatches local
+// control shard retains non-secret Hello projections and synchronously dispatches local
 // adjacency events. No forwarding, runtime or other device state is accessed.
 
 #pragma once
 
 #include "router/isis_adjacency.hpp"
-#include "router/isis_lan_adjacency.hpp"
-#include "router/isis_neighbor_attributes.hpp"
+#include "router/isis_lan_peer.hpp"
 
 #include <vector>
 
@@ -15,10 +14,6 @@ namespace router::isis {
 struct LanSetLimits {
   std::size_t neighbors{};
   std::size_t areas_per_neighbor{};
-};
-struct LanPeerView {
-  LanSnapshot adjacency;
-  std::span<const NeighborArea> areas;
 };
 enum class LanEventCause : std::uint8_t { received, expired, capacity_evicted, circuit_down, policy_mismatch };
 struct LanPeerEvent {
@@ -41,18 +36,21 @@ public:
   using Clock = LanAdjacency::Clock;
   // Type must be an L1/L2 LAN Hello. Limits are explicit emulator resources,
   // not protocol or vendor scale claims. Metadata and reusable receive scratch
-  // allocate here; a new peer allocates its bounded area storage before any
+  // allocate here; a new peer allocates its bounded attribute storage before any
   // eviction. Allocation/invalid container extent may throw at construction.
-  LanAdjacencySet(packet::isis::PduType type, packet::Mac local, LanSetLimits limits);
+  // A nonempty neighbor budget requires a positive attribute byte budget.
+  // Only area, NLPID, IP-address and MT TLVs are retained; no key/auth TLV.
+  LanAdjacencySet(packet::isis::PduType type, packet::Mac local, LanSetLimits limits,
+      std::size_t attribute_octets);
 
   // Owner has accepted media, instance, authentication and level-specific
   // area/max-area tests and drained due holding expirations. This call retains
-  // all received area options before refreshing any timer. Existing MAC with
+  // all selected non-secret options before refreshing any timer. Existing MAC with
   // a changed system ID is discarded. Capacity includes Initializing peers;
   // the lowest priority then lowest MAC loses. Failed admission changes no
   // peer or timer. Every accepted update, including one-way loss, is observed.
-  // Area and neighbor budgets refuse admission explicitly; existing updates
-  // reuse preallocated area buffers without transferring borrowed wire views.
+  // Area, attribute-byte and neighbor budgets refuse admission explicitly; updates
+  // reuse preallocated buffers without transferring borrowed wire views.
   [[nodiscard]] LanSetResult receive(const packet::isis::PduView &pdu,
       const packet::Mac &source, Clock::time_point now,
       void *context, LanPeerObserver observer) noexcept;
@@ -81,17 +79,20 @@ private:
   struct Peer {
     LanAdjacency adjacency;
     std::vector<NeighborArea> areas;
+    std::vector<std::uint8_t> attributes;
   };
   [[nodiscard]] LanPeerView view(const Peer &peer) const noexcept;
   [[nodiscard]] std::size_t position(const packet::Mac &mac) const noexcept;
-  [[nodiscard]] LanSetResult stage_areas(const packet::isis::PduView &pdu) noexcept;
+  [[nodiscard]] LanSetResult stage_peer(const packet::isis::PduView &pdu) noexcept;
   Peer remove(std::size_t index, LanEventCause cause, Clock::time_point now,
               void *context, LanPeerObserver observer) noexcept;
   packet::isis::PduType type_;
   packet::Mac local_;
   LanSetLimits limits_;
+  std::size_t maximum_attribute_octets_{};
   std::vector<Peer> peers_;
   std::vector<NeighborArea> area_scratch_;
+  std::vector<std::uint8_t> attribute_scratch_;
   std::vector<LanCandidate> candidate_scratch_;
 };
 

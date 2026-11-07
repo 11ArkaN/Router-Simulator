@@ -1373,6 +1373,12 @@ void isis_network_plane_update_tests() {
       require(plane->add_router(devices[index], secret));
       auto &circuit = circuits[index];
       circuit.circuit = {{devices[index], 1U, 7U, 0U, 0U}, configuration(static_cast<std::uint8_t>(index + 1U)), index + 1U};
+      // RFC 5309 permits AllISs for logical P2P Hello while update levels
+      // retain separate explicit AllL1ISs and AllL2ISs groups.
+      circuit.circuit.configuration.hello_destination = {1U, 0x80U, 0xc2U, 0U, 0U, 9U};
+      circuit.circuit.configuration.update_destinations = std::array<packet::Mac, 2U>{
+          packet::Mac{1U, 0x80U, 0xc2U, 0U, 0U, 0x14U},
+          packet::Mac{1U, 0x80U, 0xc2U, 0U, 0U, 0x15U}};
       circuit.port = {lab::node(devices[index]), 0U, 1U};
       lab::ForwardPort port;
       port.configured = port.operational = true;

@@ -127,7 +127,7 @@ RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
     contents.header.source = instance.configuration.local;
     contents.header.maximum_area_addresses = instance.configuration.maximum_areas;
     contents.source = configuration.mac;
-    contents.destination = owned.destination;
+    contents.destination = owned.destinations.levels[level];
     contents.maximum_pdu_octets = maximum_pdu;
     const std::array<std::uint16_t, 1U> topology{0U};
     if (owned.wire_instance || (owned.format == packet::isis::InstanceFormat::legacy_2009 && configuration.emit_instance))
@@ -193,7 +193,7 @@ RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
             continue;
           }
           const auto prepared = output->reservations.lsp.prepare(stored->header.id, configuration.mac,
-              owned.destination, maximum_pdu, program.transit_seconds, output_, scratch_, now);
+              owned.destinations.levels[level], maximum_pdu, program.transit_seconds, output_, scratch_, now);
           if (prepared.status == LspEmissionStatus::encoded) {
             --egress.credits;
             publish(prepared.ticket, level ? packet::isis::PduType::lsp_l2 : packet::isis::PduType::lsp_l1);

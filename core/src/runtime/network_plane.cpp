@@ -539,7 +539,7 @@ using IsisEgressChannel = protocol::PacketChannel<device_catalog::isis_packet_ri
 struct IsisTransportBinding {
   isis::CircuitIdentity identity;
   PortHandle port{};
-  packet::Mac destination{};
+  isis::CircuitDestinations destinations;
   packet::isis::InstanceFormat format{};
   std::uint16_t wire_instance{};
   bool physical_point_to_point{};
@@ -554,7 +554,7 @@ struct IsisTransportBinding {
       binding.identity.configuration_generation != metadata.configuration_generation ||
       binding.identity.instance != metadata.instance_id ||
       binding.identity.physical_port_ordinal != metadata.physical_port_ordinal ||
-      binding.destination != wire.ethernet.destination) return false;
+      binding.destinations.select(wire.pdu.type) != wire.ethernet.destination) return false;
   packet::isis::InstanceError error{};
   const auto selected = packet::isis::select_instance(wire.pdu, binding.format, binding.physical_point_to_point, error);
   return selected && selected->instance == binding.wire_instance;
@@ -4940,7 +4940,7 @@ bool NetworkPlane::replace_isis_p2p_generation(DeviceHandle device,
       const auto &configuration = definition.configuration;
       if (!program.port || program.port.node != node(device) || identity.device != device ||
           program.port.ordinal != identity.physical_port_ordinal || program.port.ordinal >= groups->size() ||
-          (configuration.hello_destination[0U] & 1U) == 0U) return false;
+          !configuration.destinations().valid()) return false;
       const auto old = std::lower_bound(previous_order.begin(), previous_order.end(), identity_key(identity), [&](auto index, auto key) {
         return identity_key(previous_bindings[index].identity) < key;
       });
@@ -4948,20 +4948,25 @@ bool NetworkPlane::replace_isis_p2p_generation(DeviceHandle device,
           identity.configuration_generation == previous_bindings[*old].identity.configuration_generation &&
           program.port != previous_bindings[*old].port) return false;
       generation.circuits.push_back(definition);
-      link_projection.push_back({identity, program.port, configuration.hello_destination,
+      link_projection.push_back({identity, program.port, configuration.destinations(),
           configuration.instance_format.value_or(packet::isis::InstanceFormat::standard),
           configuration.wire_instance, configuration.physical_point_to_point});
-      (*groups)[program.port.ordinal].push_back(configuration.hello_destination);
+      const auto destinations = configuration.destinations();
+      (*groups)[program.port.ordinal].push_back(destinations.hello);
+      for (const auto &group : destinations.levels) (*groups)[program.port.ordinal].push_back(group);
       affected[program.port.ordinal] = true;
     }
     const auto selector = [](const IsisTransportBinding &binding) {
-      return std::tuple{binding.port.ordinal, binding.destination, binding.wire_instance};
+      return std::pair{binding.port.ordinal, binding.wire_instance};
     };
     std::sort(link_projection.begin(), link_projection.end(), [&](const auto &left, const auto &right) {
       return selector(left) < selector(right);
     });
-    for (std::size_t index = 1U; index < link_projection.size(); ++index)
-      if (selector(link_projection[index - 1U]) == selector(link_projection[index])) return false;
+    for (std::size_t index{}; index < link_projection.size(); ++index)
+      for (auto previous = index; previous && selector(link_projection[previous - 1U]) == selector(link_projection[index]);) {
+        --previous;
+        if (link_projection[previous].destinations.conflicts(link_projection[index].destinations)) return false;
+      }
     forwarding_projection = link_projection;
     for (auto &memberships : *groups) {
       std::sort(memberships.begin(), memberships.end());

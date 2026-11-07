@@ -116,10 +116,10 @@ public:
   [[nodiscard]] UpdateStatus p2p(std::size_t circuit, std::uint64_t configuration_epoch,
       const P2pCircuitEvent &event, LevelObserver observer) noexcept;
   // Same control owner supplies a sorted unique projection of this level's
-  // authenticated Up LAN neighbors. Values are copied without allocation;
+  // authenticated LAN neighbors, including Initializing records. Values are copied without allocation;
   // no view survives return. Empty withdraws the level and cancels receipts.
-  // A local DIS requires at least one Up neighbor. Membership/role changes
-  // preserve synchronization on an already active segment; first activation
+  // The caller supplies the actual DIS role from its election owner. Membership/role changes
+  // preserve synchronization while any same-level adjacency remains; first activation
   // after the last Down advances its fence. Refusal leaves all state intact.
   [[nodiscard]] UpdateStatus lan(std::size_t circuit, std::uint64_t configuration_epoch,
       std::size_t level, std::span<const packet::Mac> neighbors, bool designated,

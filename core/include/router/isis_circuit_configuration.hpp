@@ -5,6 +5,7 @@
 #pragma once
 
 #include "router/isis_hello_builder.hpp"
+#include "router/isis_circuit_destinations.hpp"
 #include "router/isis_neighbor_attributes.hpp"
 
 #include <vector>
@@ -33,6 +34,12 @@ struct CircuitHelloConfiguration {
   std::chrono::microseconds hello_interval{};
   std::size_t maximum_pdu_octets{};
   std::size_t peer_attribute_octets{};
+  // Explicit resolved L1/L2 update groups. Absence retains the experimental
+  // shared-Hello transport; production configuration must resolve this value.
+  std::optional<std::array<packet::Mac, 2U>> update_destinations;
+  [[nodiscard]] CircuitDestinations destinations() const noexcept {
+    return {hello_destination, update_destinations.value_or(std::array{hello_destination, hello_destination})};
+  }
   bool operator==(const CircuitHelloConfiguration &) const = default;
 };
 

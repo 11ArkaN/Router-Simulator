@@ -316,7 +316,7 @@ private:
   struct OwnedCircuit {
     CircuitIdentity identity;
     std::uint16_t wire_instance{};
-    packet::Mac destination{};
+    CircuitDestinations destinations;
     packet::isis::InstanceFormat format{};
     bool physical_point_to_point{};
     PointToPointCircuit circuit;
@@ -330,7 +330,7 @@ private:
     OwnedCircuit(ControlCommand &command, PointToPointCircuit::Clock::time_point now)
         : identity(command.identity),
           wire_instance(command.configuration.wire_instance),
-          destination(command.configuration.hello_destination),
+          destinations(command.configuration.destinations()),
           format(command.configuration.instance_format.value_or(packet::isis::InstanceFormat::standard)),
           physical_point_to_point(command.configuration.physical_point_to_point),
           circuit(std::move(command.configuration), command.random_state, now),
