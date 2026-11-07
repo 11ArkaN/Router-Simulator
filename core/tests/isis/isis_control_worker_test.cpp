@@ -4,6 +4,7 @@
 
 #include "router/isis_control_worker.hpp"
 #include "router/isis_lsp_builder.hpp"
+#include "router/isis_rib_input.hpp"
 #include "router/multi_device_fabric.hpp"
 #include "router/network_plane.hpp"
 
@@ -147,6 +148,22 @@ void isis_control_worker_tests() {
     require(PointToPointCircuit::Clock::now() < deadline);
     std::this_thread::yield();
   }
+  ControlCommand next_hop_query;
+  next_hop_query.kind = ControlCommandKind::query_circuit;
+  next_hop_query.identity = identities[0U];
+  next_hop_query.level = 1U;
+  next_hop_query.selected_next_hop = *ip::parse_ip_address("192.0.2.2");
+  const auto binding = command(next_hop_query);
+  require(binding.error == ControlError::none && binding.bound_next_hop &&
+      binding.bound_next_hop->interface.interface_id == 1U &&
+      binding.bound_next_hop->interface.configuration_generation == 7U &&
+      binding.bound_next_hop->interface.physical_port_ordinal == 0U &&
+      binding.bound_next_hop->address == *next_hop_query.selected_next_hop &&
+      binding.bound_next_hop->peer == configuration(2U).local.system);
+  next_hop_query.selected_next_hop = *ip::parse_ip_address("192.0.2.1");
+  require(command(next_hop_query).error == ControlError::not_found);
+  next_hop_query.identity.configuration_generation = 6U;
+  require(command(next_hop_query).error == ControlError::stale_configuration);
   const auto before = query(0U);
   require(before.counters.adjacency_up == 1U && before.counters.hello_enqueued >= 2U);
   require(wakeups.count.load(std::memory_order_acquire) >= 4U && !wakeups.invalid.load(std::memory_order_relaxed));
@@ -1396,6 +1413,74 @@ void isis_network_plane_update_tests() {
       plane->pump();
       require(RuntimeClock::now() < deadline);
     }
+    {
+      // Exercise the consumer contract with complete, copied protocol values.
+      // SPF and accepted-Hello binding are verified in their separate fixtures.
+      using Install = ::router::routing::RouteInstallStatus;
+      auto base4 = std::make_unique<lab::routing::FibProgram>();
+      auto base6 = std::make_unique<lab::routing::Ipv6FibProgram>();
+      base4->generation = base6->generation = 1U;
+      base4->count = base6->count = 1U;
+      base4->routes[0U] = {.network = 0xc0000200U, .port_ordinal = 0U, .prefix_length = 24U};
+      base6->routes[0U] = {.network = *ip::parse_ipv6("2001:db8:12::"), .interface_id = 1U,
+          .physical_port_ordinal = 0U, .prefix_length = 64U};
+      lab::RoutePolicyProgram policy;
+      require(plane->program_route_policy(devices[0U], policy) &&
+          plane->program_fib(devices[0U], *base4) && plane->program_ipv6_fib(devices[0U], *base6));
+      auto publication = std::make_unique<::router::routing::RouteGeneration>();
+      publication->device = devices[0U];
+      publication->generation = 1U;
+      PrefixRouteCandidate route;
+      route.destination = *ip::parse_ip_prefix("198.51.100.0/24");
+      route.distance = {0U, 20U, 0U};
+      route.next_hop = {{1U, 7U, 0U}, {}, *ip::parse_ip_address("192.0.2.2"), 1U};
+      const auto first4 = make_ipv4_rib_input(route, 0U, 15U);
+      route.destination = *ip::parse_ip_prefix("2001:db8:100::/64");
+      route.next_hop.address = *ip::parse_ip_address("fe80::2");
+      const auto first6 = make_ipv6_rib_input(route, 0U, 15U);
+      require(first4 && first6);
+      publication->ipv4[0U] = *first4;
+      publication->ipv6[0U] = *first6;
+      publication->ipv4_count = publication->ipv6_count = 1U;
+      require(plane->program_isis_routes(*publication) == Install::installed &&
+          plane->program_isis_routes(*publication) == Install::stale);
+      auto selected = plane->router_checkpoint(devices[0U], RuntimeClock::now());
+      require(selected && selected->fib.count == 2U && selected->ipv6_fib.count == 2U);
+      const auto learned4 = std::find_if(selected->fib.routes.begin(), selected->fib.routes.begin() + selected->fib.count,
+          [](const auto &entry) { return entry.source == lab::routing::RouteSource::isis; });
+      require(learned4 != selected->fib.routes.begin() + selected->fib.count && learned4->interface_generation == 7U);
+      publication->generation = 2U;
+      publication->ipv4[0U].metric = 21U;
+      publication->ipv6[0U].interface_generation = 6U;
+      const auto old4 = selected->fib.generation, old6 = selected->ipv6_fib.generation;
+      require(plane->program_isis_routes(*publication) == Install::invalid);
+      selected = plane->router_checkpoint(devices[0U], RuntimeClock::now());
+      require(selected && selected->fib.generation == old4 && selected->ipv6_fib.generation == old6);
+      require(!plane->replace_isis_p2p_generation(devices[0U], {}));
+      publication->ipv6[0U].interface_generation = 7U;
+      require(plane->program_isis_routes(*publication) == Install::installed);
+      // A failed second-family selection returns no installed key.
+      base6->routes[0U].prefix_length = 129U;
+      require(!plane->program_ipv6_fib(devices[0U], *base6));
+      publication->generation = 3U;
+      publication->ipv4[0U].metric = 22U;
+      selected = plane->router_checkpoint(devices[0U], RuntimeClock::now());
+      const auto retained4 = selected->fib.generation, retained6 = selected->ipv6_fib.generation;
+      require(plane->program_isis_routes(*publication) == Install::selection_failed);
+      selected = plane->router_checkpoint(devices[0U], RuntimeClock::now());
+      require(selected && selected->fib.generation == retained4 && selected->ipv6_fib.generation == retained6);
+      base6->routes[0U].prefix_length = 64U;
+      base6->generation = retained6 + 1U;
+      require(plane->program_ipv6_fib(devices[0U], *base6));
+      require(plane->program_isis_routes(*publication) == Install::installed);
+      publication->generation = 4U;
+      publication->ipv4_count = publication->ipv6_count = 0U;
+      require(plane->program_isis_routes(*publication) == Install::installed);
+      selected = plane->router_checkpoint(devices[0U], RuntimeClock::now());
+      require(selected && selected->fib.count == 1U && selected->ipv6_fib.count == 1U &&
+          selected->fib.routes[0U].source == lab::routing::RouteSource::connected &&
+          selected->ipv6_fib.routes[0U].source == lab::routing::RouteSource::connected);
+    }
     auto scratch = std::make_unique<PduScratch>();
     LspContents contents;
     contents.header = {packet::isis::PduType::lsp_l1,
@@ -1577,5 +1662,166 @@ void isis_network_plane_update_tests() {
     }
     require(plane->checkpoint().has_value());
     require(plane->remove_router(devices[0U]) && plane->checkpoint() && plane->restore(*initial));
+  }
+}
+
+void isis_network_plane_route_publication_tests() {
+  using Install = ::router::routing::RouteInstallStatus;
+  using Source = lab::routing::RouteSource;
+  constexpr auto interface = lab::physical_interface_id(0U);
+  for (const auto cpus : {1U, 8U}) {
+    auto plane = std::make_unique<lab::NetworkPlane>(cpus);
+    const std::array devices{lab::DeviceHandle{0U, 1U}, lab::DeviceHandle{1U, 1U}};
+    std::array<lab::IsisP2pCircuitProgram, 2U> circuits;
+    std::array<UpdateInstanceProgram, 2U> programs;
+    const UpdateLevelConfiguration level{{8U, 8192U}, 8U, 128U, 1492U,
+        1200U, 60s, 60s, false, false, false, PurgeRules::iso_10589};
+    for (std::size_t index{}; index < devices.size(); ++index) {
+      crypto::Sha256Digest secret{};
+      secret.fill(static_cast<std::uint8_t>(index + 1U));
+      require(plane->add_router(devices[index], secret));
+      auto hello = configuration(static_cast<std::uint8_t>(index + 1U));
+      // RFC 1195 4.4 requires forwarding to a physically adjacent router
+      // even when its IPv4 address belongs to a different logical subnet.
+      if (index) hello.ipv4_addresses[0U] = {198U, 51U, 100U, 2U};
+      hello.protocols.push_back(packet::isis::ipv6_nlpid);
+      hello.ipv6_addresses.push_back(*ip::parse_ipv6(index ? "fe80::2" : "fe80::1"));
+      circuits[index] = {{{devices[index], interface, 7U, 0U, 0U}, hello, index + 1U},
+          {lab::node(devices[index]), 0U, 1U}};
+      lab::ForwardPort port;
+      port.configured = port.operational = true;
+      port.ordinal = 0U;
+      port.mtu = 1514U;
+      port.address = index ? 0xc6336402U : 0xc0000201U;
+      port.network = index ? 0xc6336400U : 0xc0000200U;
+      port.prefix_length = 24U;
+      port.speed_mbps = 1000U;
+      port.mac = hello.mac;
+      port.ipv6_configured = true;
+      port.ipv6_address = *ip::parse_ipv6(index ? "2001:db8:12::2" : "2001:db8:12::1");
+      port.ipv6_network = *ip::parse_ipv6("2001:db8:12::");
+      port.ipv6_link_local = hello.ipv6_addresses.front();
+      port.ipv6_prefix_length = 64U;
+      require(plane->configure_port(devices[index], port));
+      auto base4 = std::make_unique<lab::routing::FibProgram>();
+      auto base6 = std::make_unique<lab::routing::Ipv6FibProgram>();
+      base4->generation = base6->generation = 1U;
+      base4->count = base6->count = 1U;
+      base4->routes[0U] = {.network = port.network, .port_ordinal = 0U, .prefix_length = 24U};
+      base6->routes[0U] = {.network = port.ipv6_network, .interface_id = interface,
+          .physical_port_ordinal = 0U, .prefix_length = 64U};
+      lab::RoutePolicyProgram policy;
+      require(plane->program_route_policy(devices[index], policy) && plane->program_fib(devices[index], *base4) &&
+          plane->program_ipv6_fib(devices[index], *base6));
+      auto &program = programs[index];
+      program = {hello.local.system, 3U, {level, level}, 1U, {1U, 5U, 5U, 1s, 10U, 1492U, 1U}};
+      program.origination.emplace();
+      program.origination->resource_retry = 100ms;
+      program.origination->neighbors = std::vector<P2pOriginInterface>{{interface,
+          {P2pOriginMetric{10U, 10U}, P2pOriginMetric{10U, 10U}}}};
+      auto &local = program.origination->content;
+      local.random = index + 1U;
+      local.levels = {LocalLspLevelProgram{1200U, 1492U, 10ms, 1s}, LocalLspLevelProgram{1200U, 1492U, 10ms, 1s}};
+      std::array<std::uint8_t, 256U> storage{};
+      packet::isis::TlvWriter writer(storage);
+      const std::array<std::uint8_t, 4U> area{3U, 0x49U, 0U, 1U};
+      require(writer.append(1U, area) && writer.append(129U, hello.protocols));
+      require(packet::isis::encode_extended_prefix(writer,
+          {.prefix = *ip::parse_ip_prefix(index ? "198.51.100.2/32" : "192.0.2.1/32"), .metric = 5U, .sub_tlvs = {}}) &&
+          packet::isis::encode_extended_prefix(writer,
+          {.prefix = *ip::parse_ip_prefix(index ? "2001:db8:12::2/128" : "2001:db8:12::1/128"), .metric = 7U, .sub_tlvs = {}}));
+      packet::isis::LspId root{};
+      std::copy(program.local.begin(), program.local.end(), root.begin());
+      const std::vector<std::uint8_t> options(writer.bytes().begin(), writer.bytes().end());
+      local.records = {{0U, root, 3U, options}, {1U, root, 3U, options}};
+      for (std::size_t family{}; family < program.routing.size(); ++family) {
+        program.routing[family].emplace();
+        auto &route = *program.routing[family];
+        route.calculation = {8U, 16U, 32U,
+            family ? packet::isis::ipv6_nlpid : packet::isis::ipv4_nlpid, PrefixCollectionBudget{8U, 128U}};
+        route.preferences = {P2pRouteFamilyProgram::Preference{15U, 160U}, P2pRouteFamilyProgram::Preference{18U, 165U}};
+      }
+    }
+    require(plane->configure_link({{0U, 1U}, circuits[0U].port, circuits[1U].port, 1'000'000'000U, 100ns, true}));
+    auto invalid = programs[0U];
+    invalid.routing[0U]->preferences[0U].internal = 0U;
+    require(!plane->add_isis_update_instance(devices[0U], 0U, invalid));
+    invalid = programs[0U];
+    invalid.routing[1U]->calculation.protocol = packet::isis::ipv4_nlpid;
+    require(!plane->add_isis_update_instance(devices[0U], 0U, invalid));
+    std::array<std::uint64_t, 2U> generations{};
+    for (unsigned cycle{}; cycle < 2U; ++cycle) {
+      for (std::size_t index{}; index < devices.size(); ++index) {
+        circuits[index].circuit.identity.configuration_generation = 7U + cycle;
+        require(plane->add_isis_update_instance(devices[index], 0U, programs[index]) &&
+            plane->replace_isis_p2p_generation(devices[index], std::span{&circuits[index], 1U}));
+      }
+      const auto converged = RuntimeClock::now() + 8s;
+      for (;;) {
+        plane->pump();
+        bool ready = true;
+        for (std::size_t index{}; index < devices.size(); ++index) {
+          const auto state = plane->query_isis_update_instance(devices[index], 0U);
+          const auto selected = plane->router_checkpoint(devices[index], RuntimeClock::now());
+          require(state && state->error == ControlError::none && selected);
+          ready = ready && state->route_install_status == Install::installed && state->route_installed_generation > generations[index];
+          const auto address = *ip::parse_ipv6(index ? "2001:db8:12::2" : "2001:db8:12::1");
+          ready = ready && std::any_of(selected->ipv6_dad.begin(), selected->ipv6_dad.end(),
+              [&](const auto &dad) { return dad.interface_id == interface && dad.address == address &&
+                  dad.state == lab::Ipv6DadState::preferred; });
+          ready = ready && std::any_of(selected->fib.routes.begin(), selected->fib.routes.begin() + selected->fib.count,
+              [&](const auto &route) { return route.source == Source::isis && route.metric == 15U &&
+                  route.interface_generation == 7U + cycle && route.next_hop == (index ? 0xc0000201U : 0xc6336402U); });
+          ready = ready && std::any_of(selected->ipv6_fib.routes.begin(), selected->ipv6_fib.routes.begin() + selected->ipv6_fib.count,
+              [&](const auto &route) { return route.source == Source::isis && route.metric == 17U &&
+                  route.interface_generation == 7U + cycle && route.interface_id == interface; });
+        }
+        if (ready) break;
+        require(RuntimeClock::now() < converged);
+      }
+      // Back-to-back owner snapshots can resume before the forwarding pthread
+      // reaches its wait. A published pause receipt must already be armed so
+      // that an early resume is retained rather than overwritten afterwards.
+      for (std::size_t sample{}; sample < 128U; ++sample) {
+        const auto state = plane->router_checkpoint(devices[sample % devices.size()], RuntimeClock::now());
+        require(state && state->fib.count == 2U && state->ipv6_fib.count == 2U);
+      }
+      // Real ARP and ND resolve the bound peer; encoded requests and replies
+      // traverse the configured physical link in both owner layouts.
+      const auto ping_by = RuntimeClock::now() + 5s;
+      bool sent4{}, sent6{};
+      while (!sent4 || !sent6 || !plane->router_ping_reply(devices[0U], 71U) ||
+          !plane->router_ipv6_ping_reply(devices[0U], 72U)) {
+        plane->pump();
+        if (!sent4) sent4 = plane->start_router_ping(devices[0U], 0xc6336402U, 71U, RuntimeClock::now());
+        if (!sent6) sent6 = plane->start_router_ipv6_ping(devices[0U], *ip::parse_ipv6("2001:db8:12::2"), 72U, RuntimeClock::now());
+        if (RuntimeClock::now() >= ping_by) {
+          const auto state = plane->router_checkpoint(devices[0U], RuntimeClock::now());
+          throw std::runtime_error("IS-IS forwarding timeout CPUs=" + std::to_string(cpus) +
+              " cycle=" + std::to_string(cycle) + " sent4=" + std::to_string(sent4) + " sent6=" + std::to_string(sent6) +
+              " reply4=" + std::to_string(plane->router_ping_reply(devices[0U], 71U)) +
+              " reply6=" + std::to_string(plane->router_ipv6_ping_reply(devices[0U], 72U)) +
+              " drop=" + std::to_string(state ? static_cast<unsigned>(state->last_drop) : 255U));
+        }
+      }
+      for (std::size_t index{}; index < devices.size(); ++index) {
+        generations[index] = plane->query_isis_update_instance(devices[index], 0U)->route_installed_generation;
+        require(plane->remove_isis_update_instance(devices[index], 0U));
+      }
+      const auto withdrawn = RuntimeClock::now() + 5s;
+      std::array<bool, 2U> removed{};
+      for (;;) {
+        plane->pump();
+        for (std::size_t index{}; index < devices.size(); ++index) if (!removed[index])
+          removed[index] = plane->replace_isis_p2p_generation(devices[index], {});
+        if (removed[0U] && removed[1U]) break;
+        require(RuntimeClock::now() < withdrawn);
+      }
+      for (const auto device : devices) {
+        const auto selected = plane->router_checkpoint(device, RuntimeClock::now());
+        require(selected && selected->fib.count == 1U && selected->ipv6_fib.count == 1U &&
+            selected->fib.routes[0U].source == Source::connected && selected->ipv6_fib.routes[0U].source == Source::connected);
+      }
+    }
   }
 }

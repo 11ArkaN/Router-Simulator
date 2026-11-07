@@ -2,6 +2,7 @@
 // through encoded frames admitted to MultiDeviceFabric.
 
 #include "router/network_plane.hpp"
+#include "router/route_input_store.hpp"
 
 #include "dhcpv4/dhcpv4_endpoint_service.hpp"
 #include "dhcpv6/dhcpv6_endpoint_service.hpp"
@@ -24,6 +25,7 @@
 #include <new>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <tuple>
 #include <utility>
 #include <variant>
@@ -423,7 +425,27 @@ using ForwardProgram = std::variant<
     DnsSigningKeyDefinition, DnsRecordBegin, DnsRdataChunk,
     DnsTransactionCommand>;
 
-struct ForwardCommand {
+// A request borrows only until its synchronous execute call returns. Payload
+// materialization copies into the link owner's fixed heap command before a
+// forwarding queue can observe it. Never retain a request initialized from a
+// temporary payload beyond that full call expression; queued commands use the
+// owned ForwardProgram specialization and contain no borrowed payload pointer.
+struct ForwardProgramReference {
+  const void *value{};
+  void (*copy)(ForwardProgram &, const void *) noexcept{};
+  ForwardProgramReference() = default;
+  template <typename Value> ForwardProgramReference(const Value &source) noexcept
+      : value(&source), copy(+[](ForwardProgram &target, const void *input) noexcept {
+          static_assert(std::is_nothrow_assignable_v<ForwardProgram &, const Value &>);
+          target = *static_cast<const Value *>(input);
+        }) {}
+  void copy_to(ForwardProgram &target) const noexcept {
+    if (copy) copy(target, value);
+    else target.emplace<routing::FibProgram>();
+  }
+};
+
+template <typename Program> struct ForwardCommandValue {
   // Producer: link owner. Consumer: exactly one forwarding shard selected by
   // stable node index. Every field is a value, never a registry pointer.
   std::uint64_t id{};
@@ -437,7 +459,7 @@ struct ForwardCommand {
   // One programming command carries one FIB or one RA projection. Keeping
   // alternatives in-place avoids summing unrelated maximum-size payloads in
   // every SPSC slot while retaining value ownership across the shard boundary.
-  ForwardProgram fib{};
+  Program fib{};
   HostNetworkProgram host_program{};
   std::uint32_t destination{};
   packet::Ipv6 ipv6_destination{};
@@ -470,6 +492,24 @@ struct ForwardCommand {
   std::uint32_t mld_import_policy_expected_entries{};
 };
 
+using ForwardCommand = ForwardCommandValue<ForwardProgram>;
+using ForwardRequest = ForwardCommandValue<ForwardProgramReference>;
+// One field list copies the common value header across request and owned
+// specializations. Payload ownership changes only at explicit materialization.
+template <typename Value> auto forward_header(Value &value) noexcept {
+  return std::tie(value.id, value.logical_interface_id, value.kind, value.device,
+      value.router_transport_secret, value.transit_forwarding_enabled,
+      value.host, value.port, value.host_program, value.destination,
+      value.ipv6_destination, value.ipv6_source, value.host_destination,
+      value.sequence, value.payload_octets, value.operation_now, value.flag,
+      value.ospf_version_two, value.ospf_version_three, value.mld_group_specific,
+      value.ipv4_neighbor_interface_specific, value.ipv6_neighbor_interface_specific,
+      value.mld_static_operation, value.mld_ssm_operation, value.mld_ssm_translation,
+      value.mld_ssm_expected_entries, value.mld_import_policy_operation,
+      value.mld_import_policy_entry, value.mld_import_policy_default_action,
+      value.mld_import_policy_expected_entries);
+}
+
 struct ForwardResult {
   // Producer: one forwarding shard. Consumer: link owner. A result remains in
   // the bounded ring until consumed; a command is never acknowledged early.
@@ -485,6 +525,15 @@ struct ForwardIngress {
   PortHandle destination{};
   packet::Frame frame{};
 };
+
+// Both address-family route values carry a physical ordinal under their own
+// field name. Keep this value projection outside nested generic callbacks so
+// each instantiation has one explicit return type and no captured type state.
+template <typename Entry>
+[[nodiscard]] std::uint16_t physical_route_port(const Entry &entry) noexcept {
+  if constexpr (requires { entry.port_ordinal; }) return entry.port_ordinal;
+  else return entry.physical_port_ordinal;
+}
 
 using IsisEgressChannel = protocol::PacketChannel<device_catalog::isis_packet_ring_frames, true>;
 struct IsisTransportBinding {
@@ -729,6 +778,11 @@ private:
                           ? ForwardResult{command_id, true, 0}
                           : command_handler_(owner_, index_, *pending_command);
         pending_command.reset();
+        // Arm the pause before its release-published acknowledgement. The
+        // consumer may resume immediately after reading that result; clearing
+        // the word afterwards could erase its signal and strand this owner.
+        if (command_kind == ForwardCommandKind::pause)
+          resume_requested_.store(false, std::memory_order_release);
         while (!results_.try_push(result) &&
                !stop_requested_.load(std::memory_order_acquire)) {
           std::unique_lock lock(wait_mutex_);
@@ -742,7 +796,6 @@ private:
           break;
         }
         if (command_kind == ForwardCommandKind::pause) {
-          resume_requested_.store(false, std::memory_order_release);
           std::unique_lock lock(wait_mutex_);
           wait_condition_.wait(lock, [&] {
             return stop_requested_.load(std::memory_order_acquire) ||
@@ -1112,8 +1165,9 @@ struct NetworkPlane::Impl {
     routing::Ipv6FibProgram base_ipv6{};
     std::unique_ptr<routing::RouteTable> ipv4_rib = std::make_unique<routing::RouteTable>();
     std::unique_ptr<routing::Ipv6RouteTable> ipv6_rib = std::make_unique<routing::Ipv6RouteTable>();
-    std::vector<routing::DynamicInput> ospf_ipv4{};
-    std::vector<routing::Ipv6DynamicInput> ospf_ipv6{};
+    ::router::routing::RouteInputStore<routing::DynamicInput> ipv4_candidates;
+    ::router::routing::RouteInputStore<routing::Ipv6DynamicInput> ipv6_candidates;
+    std::uint64_t isis_generation{};
     // Configured rows retain policy-accepted intent even while their source
     // route is absent from the selected RIB. Active rows are the last complete
     // transaction published to the OSPF owner. Separating both is what lets a
@@ -1128,13 +1182,7 @@ struct NetworkPlane::Impl {
     bool base_ipv4_configured{};
     bool base_ipv6_configured{};
 
-    RouteManagerState() {
-      // Active generations reserve the generated route ceiling at device
-      // admission. After a borrowed channel generation has been selected and
-      // programmed, retaining it therefore cannot fail due to vector growth.
-      ospf_ipv4.reserve(device_catalog::maximum_dynamic_routes_per_router);
-      ospf_ipv6.reserve(device_catalog::maximum_dynamic_routes_per_router);
-    }
+
   };
   // Route tables contain profile-sized fixed arrays and are therefore
   // allocated only for admitted routers, not eagerly for every registry slot.
@@ -1184,6 +1232,9 @@ struct NetworkPlane::Impl {
     // allocations not included directly in sizeof(Impl). Proving both costs
     // against the generated control reserve prevents a new protocol arena from
     // silently consuming the generated baseline assumed by runtime startup.
+    // Empty route stores allocate no candidate arrays. Variable protocol routes
+    // prepare bounded storage before installation and may request normal Wasm
+    // heap growth, as do protocol LSDBs; all eager router RIBs are counted here.
     constexpr auto endpoint_heap_arenas =
         device_catalog::maximum_hosts *
         (transport::UdpEndpoint::payload_arena_allocation_bytes +
@@ -1191,8 +1242,11 @@ struct NetworkPlane::Impl {
          packet::Ipv6ReassemblyTable::payload_arena_allocation_bytes +
          network_detail::EndpointStack::outbound_scratch_allocation_bytes);
     static_assert(sizeof(Impl) + sizeof(ForwardCommand) + endpoint_heap_arenas +
+                      sizeof(ospf::RouteChannel) + sizeof(::router::routing::RoutePublication) +
                       sizeof(RouteStaging) + sizeof(routing::RouteTable) +
                       sizeof(routing::Ipv6RouteTable) +
+                      device_catalog::maximum_routers * (sizeof(RouteManagerState) +
+                          sizeof(routing::RouteTable) + sizeof(routing::Ipv6RouteTable)) +
                       device_catalog::maximum_fib_routes_per_router *
                           (sizeof(routing::ConnectedInput) + sizeof(routing::Ipv6ConnectedInput)) <=
                       device_catalog::runtime_control_reserve_bytes,
@@ -1263,7 +1317,10 @@ struct NetworkPlane::Impl {
   [[nodiscard]] bool rebuild_managed_routes(
       DeviceHandle device, RouteManagerState &state,
       std::span<const routing::DynamicInput> ipv4_dynamic,
-      std::span<const routing::Ipv6DynamicInput> ipv6_dynamic) noexcept;
+      std::span<const routing::Ipv6DynamicInput> ipv6_dynamic,
+      std::span<const routing::DynamicInput> isis_ipv4,
+      std::span<const routing::Ipv6DynamicInput> isis_ipv6,
+      ::router::routing::RouteInstallStatus *failure = nullptr) noexcept;
   [[nodiscard]] bool reconcile_external_routes(
       DeviceHandle device, RouteManagerState &state,
       const routing::RouteTable &ipv4, const routing::Ipv6RouteTable &ipv6,
@@ -1299,8 +1356,9 @@ struct NetworkPlane::Impl {
   static std::optional<Clock::time_point>
   service_forwarding(void *context, std::size_t shard_index,
                      Clock::time_point now) noexcept;
-  [[nodiscard]] ForwardResult
-  execute_forward(const ForwardCommand &command) noexcept;
+  [[nodiscard]] ForwardResult execute_forward(const ForwardRequest &command) noexcept;
+  template <typename Program>
+  [[nodiscard]] ForwardResult execute_forward(const ForwardCommandValue<Program> &command) noexcept;
   [[nodiscard]] ospf::ControlResult
   execute_ospf(ospf::ControlCommand command) noexcept;
   [[nodiscard]] isis::ControlResult execute_isis(isis::ControlCommand command) noexcept;
@@ -4124,15 +4182,22 @@ void NetworkPlane::Impl::drain_isis_egress(std::size_t shard_index, ForwardingSh
   }
 }
 
-ForwardResult
-NetworkPlane::Impl::execute_forward(const ForwardCommand &source) noexcept {
+ForwardResult NetworkPlane::Impl::execute_forward(const ForwardRequest &source) noexcept {
+  return execute_forward<ForwardProgramReference>(source);
+}
+template <typename Program>
+ForwardResult NetworkPlane::Impl::execute_forward(const ForwardCommandValue<Program> &source) noexcept {
+  if (!next_forward_command_id || next_forward_command_id == UINT64_MAX) return {};
   auto &command = *forward_command_scratch;
-  command = source;
+  forward_header(command) = forward_header(source);
+  if constexpr (std::is_same_v<Program, ForwardProgramReference>) source.fib.copy_to(command.fib);
+  else command.fib = source.fib;
   command.id = next_forward_command_id++;
   if (command.kind == ForwardCommandKind::program_fibs) {
     route_staging->device = command.device;
     route_staging->command = command.id;
   }
+  if (!parallel()) return apply_forward_command(this, 0U, command);
   const NodeHandle target =
       command.device ? node(command.device) : node(command.host);
   if (!target.generation)
@@ -4166,7 +4231,7 @@ void NetworkPlane::Impl::retire_idle_isis_registration(DeviceHandle device) noex
   query.kind = isis::ControlCommandKind::query_sequence_recovery;
   query.identity.device = device;
   const auto result = execute_isis(std::move(query));
-  if (result.error != isis::ControlError::none || result.sequence_recovery_pending) return;
+  if (result.error != isis::ControlError::none || result.sequence_recovery_pending || result.route_withdrawal_pending) return;
   isis::ControlCommand removal;
   removal.kind = isis::ControlCommandKind::remove_device;
   removal.identity.device = device;
@@ -4324,7 +4389,11 @@ bool NetworkPlane::Impl::reconcile_external_routes(
 bool NetworkPlane::Impl::rebuild_managed_routes(
     DeviceHandle device, RouteManagerState &state,
     std::span<const routing::DynamicInput> ipv4_dynamic,
-    std::span<const routing::Ipv6DynamicInput> ipv6_dynamic) noexcept {
+    std::span<const routing::Ipv6DynamicInput> ipv6_dynamic,
+    std::span<const routing::DynamicInput> isis_ipv4,
+    std::span<const routing::Ipv6DynamicInput> isis_ipv6,
+    ::router::routing::RouteInstallStatus *failure) noexcept {
+  if (failure) *failure = ::router::routing::RouteInstallStatus::selection_failed;
   if (!live(device) || !state.policy_configured) return false;
   auto &staged = *route_staging;
   staged.connected.clear();
@@ -4337,10 +4406,11 @@ bool NetworkPlane::Impl::rebuild_managed_routes(
       if (route.source == routing::RouteSource::connected)
         staged.connected.push_back({.configured = true, .operational = true,
             .network = route.network, .port_ordinal = route.port_ordinal,
-            .prefix_length = route.prefix_length, .local_system = route.local_system});
+            .prefix_length = route.prefix_length, .local_system = route.local_system,
+            .interface_id = route.interface_id, .interface_generation = route.interface_generation});
     }
     static_cast<void>(staged.ipv4->rebuild(staged.connected,
-        state.policy.ipv4_statics, ipv4_dynamic, state.policy.maximum_ecmp_paths));
+        state.policy.ipv4_statics, ipv4_dynamic, state.policy.maximum_ecmp_paths, isis_ipv4));
     if (!staged.ipv4->last_rebuild_valid()) return false;
   }
   if (state.base_ipv6_configured) {
@@ -4350,10 +4420,10 @@ bool NetworkPlane::Impl::rebuild_managed_routes(
         staged.connected_ipv6.push_back({.configured = true, .operational = true,
             .network = route.network, .interface_id = route.interface_id,
             .physical_port_ordinal = route.physical_port_ordinal,
-            .prefix_length = route.prefix_length});
+            .prefix_length = route.prefix_length, .interface_generation = route.interface_generation});
     }
     static_cast<void>(staged.ipv6->rebuild(staged.connected_ipv6,
-        state.policy.ipv6_statics, {}, ipv6_dynamic, state.policy.maximum_ecmp_paths));
+        state.policy.ipv6_statics, {}, ipv6_dynamic, state.policy.maximum_ecmp_paths, isis_ipv6));
     if (!staged.ipv6->last_rebuild_valid()) return false;
   }
   staged.install_ipv4 = state.base_ipv4_configured &&
@@ -4386,6 +4456,7 @@ bool NetworkPlane::Impl::rebuild_managed_routes(
     }
   }
   if (!installed) {
+    if (failure) *failure = ::router::routing::RouteInstallStatus::forwarding_failed;
     if (prepared) static_cast<void>(execute_ospf({.process = {.device = device},
         .kind = ospf::ControlCommandKind::abort_external_generation}));
     return false;
@@ -4420,7 +4491,9 @@ void NetworkPlane::Impl::drain_ospf_routes() noexcept {
       }
       if (manager && published.generation > manager->ospf_generation &&
           published.ipv4_count <= published.ipv4.size() &&
-          published.ipv6_count <= published.ipv6.size()) {
+          published.ipv6_count <= published.ipv6.size() &&
+          manager->ipv4_candidates.prepare_first(published.ipv4_count) &&
+          manager->ipv6_candidates.prepare_first(published.ipv6_count)) {
         const auto ipv4 = std::span<const routing::DynamicInput>{
             published.ipv4}.first(published.ipv4_count);
         const auto ipv6 = std::span<const routing::Ipv6DynamicInput>{
@@ -4431,14 +4504,14 @@ void NetworkPlane::Impl::drain_ospf_routes() noexcept {
         // in capacity-reserved active vectors without a second large staging
         // allocation per router.
         if (manager->policy_configured &&
-            !rebuild_managed_routes(published.device, *manager, ipv4, ipv6)) {
+            !rebuild_managed_routes(published.device, *manager, ipv4, ipv6, manager->ipv4_candidates.second(), manager->ipv6_candidates.second())) {
           static_cast<void>(
               rebuild_managed_routes(published.device, *manager,
-                                     manager->ospf_ipv4,
-                                     manager->ospf_ipv6));
+                                     manager->ipv4_candidates.first(),
+                                     manager->ipv6_candidates.first(), manager->ipv4_candidates.second(), manager->ipv6_candidates.second()));
         } else {
-          manager->ospf_ipv4.assign(ipv4.begin(), ipv4.end());
-          manager->ospf_ipv6.assign(ipv6.begin(), ipv6.end());
+          if (!manager->ipv4_candidates.replace_first(ipv4)) std::terminate();
+          if (!manager->ipv6_candidates.replace_first(ipv6)) std::terminate();
           manager->ospf_generation = published.generation;
         }
       }
@@ -4830,6 +4903,18 @@ bool NetworkPlane::replace_isis_p2p_generation(DeviceHandle device,
   if (!impl_->live(device) || circuits.size() > device_catalog::maximum_routers * device_catalog::maximum_ports_per_router)
     return false;
   if (circuits.empty() && !impl_->isis_registered[device.index]) return true;
+  if (const auto &manager = impl_->route_managers[device.index]) {
+    const auto retained = [&](const auto &entry) {
+      return std::any_of(circuits.begin(), circuits.end(), [&](const auto &program) {
+        const auto &identity = program.circuit.identity;
+        return identity.device == device && identity.interface_id == entry.interface_id &&
+            identity.configuration_generation == entry.interface_generation && identity.instance == entry.protocol_instance &&
+            identity.physical_port_ordinal == physical_route_port(entry);
+      });
+    };
+    if (!std::all_of(manager->ipv4_candidates.second().begin(), manager->ipv4_candidates.second().end(), retained) ||
+        !std::all_of(manager->ipv6_candidates.second().begin(), manager->ipv6_candidates.second().end(), retained)) return false;
+  }
   using Groups = std::array<std::vector<packet::Mac>, device_catalog::maximum_ports_per_router>;
   std::unique_ptr<Groups> groups;
   std::vector<IsisTransportBinding> link_projection, forwarding_projection;
@@ -5517,7 +5602,7 @@ bool NetworkPlane::program_fib(DeviceHandle device,
     // If OSPF converged first, advance beyond the restored base generation
     // because the composed bytes are intentionally different.
     const auto configuration_floor =
-        manager->ospf_ipv4.empty() && fib.generation
+        manager->ipv4_candidates.first().empty() && manager->ipv4_candidates.second().empty() && fib.generation
             ? fib.generation - 1U
             : fib.generation;
     // A restored forwarding owner may already hold a generation advanced by
@@ -5531,8 +5616,8 @@ bool NetworkPlane::program_fib(DeviceHandle device,
   }
   manager->base_ipv4 = fib;
   manager->base_ipv4_configured = true;
-  return impl_->rebuild_managed_routes(device, *manager, manager->ospf_ipv4,
-                                       manager->ospf_ipv6);
+  return impl_->rebuild_managed_routes(device, *manager, manager->ipv4_candidates.first(),
+                                       manager->ipv6_candidates.first(), manager->ipv4_candidates.second(), manager->ipv6_candidates.second());
 }
 
 bool NetworkPlane::program_ipv6_fib(
@@ -5547,7 +5632,7 @@ bool NetworkPlane::program_ipv6_fib(
     return impl_->install_ipv6_fib(device, fib);
   if (!manager->base_ipv6_configured || !manager->installed_ipv6_generation) {
     const auto configuration_floor =
-        manager->ospf_ipv6.empty() && fib.generation
+        manager->ipv6_candidates.first().empty() && manager->ipv6_candidates.second().empty() && fib.generation
             ? fib.generation - 1U
             : fib.generation;
     manager->installed_ipv6_generation =
@@ -5555,8 +5640,8 @@ bool NetworkPlane::program_ipv6_fib(
   }
   manager->base_ipv6 = fib;
   manager->base_ipv6_configured = true;
-  return impl_->rebuild_managed_routes(device, *manager, manager->ospf_ipv4,
-                                       manager->ospf_ipv6);
+  return impl_->rebuild_managed_routes(device, *manager, manager->ipv4_candidates.first(),
+                                       manager->ipv6_candidates.first(), manager->ipv4_candidates.second(), manager->ipv6_candidates.second());
 }
 
 bool NetworkPlane::program_route_policy(
@@ -5605,8 +5690,52 @@ bool NetworkPlane::program_route_policy(
   // generations instead of waiting for unrelated protocol activity.
   if (!manager->base_ipv4_configured && !manager->base_ipv6_configured)
     return true;
-  return impl_->rebuild_managed_routes(device, *manager, manager->ospf_ipv4,
-                                       manager->ospf_ipv6);
+  return impl_->rebuild_managed_routes(device, *manager, manager->ipv4_candidates.first(),
+                                       manager->ipv6_candidates.first(), manager->ipv4_candidates.second(), manager->ipv6_candidates.second());
+}
+
+::router::routing::RouteInstallStatus NetworkPlane::program_isis_routes(
+    const ::router::routing::RouteGeneration &generation) noexcept {
+  using Status = ::router::routing::RouteInstallStatus;
+  const auto device = generation.device;
+  if (!impl_->live(device)) return Status::stale;
+  auto &manager = impl_->route_managers[device.index];
+  if (!generation.generation || !manager || !manager->policy_configured) return Status::invalid;
+  if (generation.generation <= manager->isis_generation) return Status::stale;
+  if (generation.ipv4_count > generation.ipv4.size() || generation.ipv6_count > generation.ipv6.size() ||
+      manager->ipv4_candidates.first().size() > generation.ipv4.size() - generation.ipv4_count ||
+      manager->ipv6_candidates.first().size() > generation.ipv6.size() - generation.ipv6_count) return Status::capacity;
+  if ((generation.ipv4_count && !manager->base_ipv4_configured) ||
+      (generation.ipv6_count && !manager->base_ipv6_configured)) return Status::invalid;
+  const auto ipv4 = std::span<const routing::DynamicInput>{generation.ipv4}.first(generation.ipv4_count);
+  const auto ipv6 = std::span<const routing::Ipv6DynamicInput>{generation.ipv6}.first(generation.ipv6_count);
+  const auto valid = [&](const auto &entry) {
+    constexpr bool family6 = std::is_same_v<std::remove_cvref_t<decltype(entry)>, routing::Ipv6DynamicInput>;
+    if (!entry.configured || !entry.operational || entry.source != routing::RouteSource::isis ||
+        entry.preference < 1U || entry.preference > 255U ||
+        !routing::valid_route_path(entry.source, entry.ospf_path_type, entry.isis_path_type, entry.isis_rank, family6))
+      return false;
+    const auto &bindings = impl_->isis_transports[device.index];
+    return std::any_of(bindings.begin(), bindings.end(), [&](const auto &binding) {
+      const auto &identity = binding.identity;
+      return identity.device == device && identity.instance == entry.protocol_instance &&
+          identity.interface_id == entry.interface_id && identity.configuration_generation == entry.interface_generation &&
+          identity.physical_port_ordinal == physical_route_port(entry);
+    });
+  };
+  if (!std::all_of(ipv4.begin(), ipv4.end(), valid) || !std::all_of(ipv6.begin(), ipv6.end(), valid))
+    return Status::invalid;
+  if (!manager->ipv4_candidates.prepare_second(generation.ipv4_count) ||
+      !manager->ipv6_candidates.prepare_second(generation.ipv6_count)) return Status::capacity;
+  Status failure{};
+  if (!impl_->rebuild_managed_routes(device, *manager, manager->ipv4_candidates.first(), manager->ipv6_candidates.first(), ipv4, ipv6, &failure))
+    return failure;
+  // Both arenas were prepared before the transaction. Retention cannot fail
+  // after the dual-family FIB commit, and only that commit advances the key.
+  if (!manager->ipv4_candidates.replace_second(ipv4)) std::terminate();
+  if (!manager->ipv6_candidates.replace_second(ipv6)) std::terminate();
+  manager->isis_generation = generation.generation;
+  return Status::installed;
 }
 
 std::optional<OspfRouteDiagnostics>
@@ -5620,9 +5749,9 @@ NetworkPlane::ospf_route_diagnostics(DeviceHandle device) const noexcept {
   return OspfRouteDiagnostics{
       .generation = manager->ospf_generation,
       .ipv4_candidates =
-          static_cast<std::uint32_t>(manager->ospf_ipv4.size()),
+          static_cast<std::uint32_t>(manager->ipv4_candidates.first().size()),
       .ipv6_candidates =
-          static_cast<std::uint32_t>(manager->ospf_ipv6.size())};
+          static_cast<std::uint32_t>(manager->ipv6_candidates.first().size())};
 }
 
 std::optional<ospf::ControlResult>
@@ -5655,12 +5784,10 @@ bool NetworkPlane::program_ipv6_address_generation(
   if (!device || addresses.size() > RouterIpv6AddressTable::capacity)
     return false;
   const auto operation_now = Clock::now();
-  const auto execute = [&](ForwardCommand command) noexcept {
+  const auto execute = [&](ForwardRequest command) noexcept {
     command.device = device;
     command.operation_now = operation_now;
-    return impl_->parallel()
-               ? impl_->execute_forward(command).success
-               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+    return impl_->execute_forward(command).success;
   };
   if (!execute({.kind = ForwardCommandKind::begin_ipv6_address_generation,
                 .fib = Ipv6AddressGenerationBegin{
@@ -5690,11 +5817,9 @@ bool NetworkPlane::program_sap_generation(
       interfaces.size() > std::numeric_limits<std::uint32_t>::max())
     return false;
 
-  const auto execute = [&](ForwardCommand command) noexcept {
+  const auto execute = [&](ForwardRequest command) noexcept {
     command.device = device;
-    return impl_->parallel()
-               ? impl_->execute_forward(command).success
-               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+    return impl_->execute_forward(command).success;
   };
   if (!execute({.kind = ForwardCommandKind::begin_sap_generation,
                 .fib = SapGenerationBegin{
@@ -5909,9 +6034,7 @@ bool NetworkPlane::configure_dhcpv4_relay(
                                    ForwardCommandKind::configure_dhcpv4_relay,
                                .device = device,
                                .fib = begin};
-  return (impl_->parallel()
-              ? impl_->execute_forward(command)
-              : Impl::apply_forward_command(impl_.get(), 0U, command))
+  return (impl_->execute_forward(command))
       .success;
 }
 
@@ -5923,9 +6046,7 @@ bool NetworkPlane::remove_dhcpv4_relay(
       .logical_interface_id = logical_interface_id,
       .kind = ForwardCommandKind::remove_dhcpv4_relay,
       .device = device};
-  return (impl_->parallel()
-              ? impl_->execute_forward(command)
-              : Impl::apply_forward_command(impl_.get(), 0U, command))
+  return (impl_->execute_forward(command))
       .success;
 }
 
@@ -5942,11 +6063,9 @@ bool NetworkPlane::configure_router_dhcpv4_server(
       program.exclusions.size() >
           device_catalog::dhcpv4_leases_per_server)
     return false;
-  const auto execute = [&](ForwardCommand command) noexcept {
+  const auto execute = [&](ForwardRequest command) noexcept {
     command.device = program.device;
-    return impl_->parallel()
-               ? impl_->execute_forward(command).success
-               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+    return impl_->execute_forward(command).success;
   };
   const auto &configuration = program.configuration;
   Dhcpv4ServerBegin begin{
@@ -6009,9 +6128,7 @@ bool NetworkPlane::remove_router_dhcpv4_server(
       .kind = ForwardCommandKind::remove_router_dhcpv4_server,
       .device = device,
       .fib = begin};
-  return (impl_->parallel()
-              ? impl_->execute_forward(command)
-              : Impl::apply_forward_command(impl_.get(), 0U, command))
+  return (impl_->execute_forward(command))
       .success;
 }
 
@@ -6026,9 +6143,7 @@ bool NetworkPlane::clear_router_dhcpv4_server_statistics(
       .kind = ForwardCommandKind::clear_router_dhcpv4_server_statistics,
       .device = device,
       .fib = operation};
-  return (impl_->parallel()
-              ? impl_->execute_forward(command)
-              : Impl::apply_forward_command(impl_.get(), 0U, command))
+  return (impl_->execute_forward(command))
       .success;
 }
 
@@ -6046,9 +6161,7 @@ bool NetworkPlane::clear_router_dhcpv4_server_leases(
       .kind = ForwardCommandKind::clear_router_dhcpv4_server_leases,
       .device = device,
       .fib = operation};
-  return (impl_->parallel()
-              ? impl_->execute_forward(command)
-              : Impl::apply_forward_command(impl_.get(), 0U, command))
+  return (impl_->execute_forward(command))
       .success;
 }
 
@@ -6066,9 +6179,7 @@ dhcpv4::ForceRenewStatus NetworkPlane::send_router_dhcpv4_force_renew(
       .device = device,
       .fib = operation};
   const auto result =
-      impl_->parallel()
-          ? impl_->execute_forward(command)
-          : Impl::apply_forward_command(impl_.get(), 0U, command);
+      impl_->execute_forward(command);
   return static_cast<dhcpv4::ForceRenewStatus>(result.value);
 }
 
@@ -6081,11 +6192,9 @@ bool NetworkPlane::configure_dhcpv6_relay(
       configuration.server_count > configuration.servers.size())
     return false;
 
-  const auto execute = [&](ForwardCommand command) noexcept {
+  const auto execute = [&](ForwardRequest command) noexcept {
     command.device = device;
-    return impl_->parallel()
-               ? impl_->execute_forward(command).success
-               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+    return impl_->execute_forward(command).success;
   };
   const Dhcpv6RelayBegin begin{
       .interface_id = configuration.interface_id,
@@ -6167,9 +6276,7 @@ bool NetworkPlane::clear_dhcpv6_relay_leases(
       .kind = ForwardCommandKind::clear_dhcpv6_relay_leases,
       .device = device,
       .fib = program};
-  return (impl_->parallel()
-              ? impl_->execute_forward(command)
-              : Impl::apply_forward_command(impl_.get(), 0U, command))
+  return (impl_->execute_forward(command))
       .success;
 }
 
@@ -6443,9 +6550,7 @@ bool NetworkPlane::configure_router_bof_management(
       .kind = ForwardCommandKind::configure_router_bof_management,
       .device = program.device,
       .host_program = endpoint};
-  return impl_->parallel()
-             ? impl_->execute_forward(command).success
-             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  return impl_->execute_forward(command).success;
 }
 
 bool NetworkPlane::configure_router_bof_dhcpv4_client(
@@ -6457,11 +6562,9 @@ bool NetworkPlane::configure_router_bof_dhcpv4_client(
     return false;
   if (program.configuration.user_class.size() > 254U)
     return false;
-  const auto execute = [&](ForwardCommand command) noexcept {
+  const auto execute = [&](ForwardRequest command) noexcept {
     command.device = program.device;
-    return impl_->parallel()
-               ? impl_->execute_forward(command).success
-               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+    return impl_->execute_forward(command).success;
   };
   Dhcpv4ClientBegin begin{
       .hardware_address = program.configuration.hardware_address,
@@ -6499,9 +6602,7 @@ bool NetworkPlane::remove_router_bof_dhcpv4_client(
   const ForwardCommand command{
       .kind = ForwardCommandKind::remove_router_bof_dhcpv4_client,
       .device = device};
-  return impl_->parallel()
-             ? impl_->execute_forward(command).success
-             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  return impl_->execute_forward(command).success;
 }
 
 bool NetworkPlane::configure_router_bof_dhcpv6_client(
@@ -6514,11 +6615,9 @@ bool NetworkPlane::configure_router_bof_dhcpv6_client(
           std::numeric_limits<std::uint32_t>::max() ||
       program.configuration.user_class.size() > 255U)
     return false;
-  const auto execute = [&](ForwardCommand command) noexcept {
+  const auto execute = [&](ForwardRequest command) noexcept {
     command.device = program.device;
-    return impl_->parallel()
-               ? impl_->execute_forward(command).success
-               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+    return impl_->execute_forward(command).success;
   };
   Dhcpv6ClientBegin begin{
       .duid = program.configuration.duid,
@@ -6567,9 +6666,7 @@ bool NetworkPlane::remove_router_bof_dhcpv6_client(
   const ForwardCommand command{
       .kind = ForwardCommandKind::remove_router_bof_dhcpv6_client,
       .device = device};
-  return impl_->parallel()
-             ? impl_->execute_forward(command).success
-             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  return impl_->execute_forward(command).success;
 }
 
 bool NetworkPlane::configure_host(const HostNetworkProgram &program) noexcept {
@@ -6615,11 +6712,9 @@ bool NetworkPlane::configure_host_dhcpv4_client(
     return false;
   if (program.configuration.user_class.size() > 254U)
     return false;
-  const auto execute = [&](ForwardCommand command) noexcept {
+  const auto execute = [&](ForwardRequest command) noexcept {
     command.host = program.host;
-    return impl_->parallel()
-               ? impl_->execute_forward(command).success
-               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+    return impl_->execute_forward(command).success;
   };
 
   Dhcpv4ClientBegin begin{
@@ -6652,9 +6747,7 @@ bool NetworkPlane::configure_host_dhcpv4_client(
 bool NetworkPlane::remove_host_dhcpv4_client(HostHandle host) noexcept {
   const ForwardCommand command{
       .kind = ForwardCommandKind::remove_host_dhcpv4_client, .host = host};
-  return impl_->parallel()
-             ? impl_->execute_forward(command).success
-             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  return impl_->execute_forward(command).success;
 }
 
 bool NetworkPlane::configure_host_dhcpv4_server(
@@ -6670,11 +6763,9 @@ bool NetworkPlane::configure_host_dhcpv4_server(
       program.exclusions.size() >
           device_catalog::dhcpv4_leases_per_server)
     return false;
-  const auto execute = [&](ForwardCommand command) noexcept {
+  const auto execute = [&](ForwardRequest command) noexcept {
     command.host = program.host;
-    return impl_->parallel()
-               ? impl_->execute_forward(command).success
-               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+    return impl_->execute_forward(command).success;
   };
   const auto &configuration = program.configuration;
   const Dhcpv4ServerBegin begin{
@@ -6727,9 +6818,7 @@ abort_dhcpv4_server:
 bool NetworkPlane::remove_host_dhcpv4_server(HostHandle host) noexcept {
   const ForwardCommand command{
       .kind = ForwardCommandKind::remove_host_dhcpv4_server, .host = host};
-  return impl_->parallel()
-             ? impl_->execute_forward(command).success
-             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  return impl_->execute_forward(command).success;
 }
 
 std::optional<std::size_t>
@@ -6745,8 +6834,7 @@ NetworkPlane::host_dhcpv4_client_status(HostHandle host) noexcept {
   const ForwardCommand command{
       .kind = ForwardCommandKind::host_dhcpv4_client_status, .host = host};
   const auto result =
-      impl_->parallel() ? impl_->execute_forward(command)
-                        : Impl::apply_forward_command(impl_.get(), 0U, command);
+      impl_->execute_forward(command);
   return result.success ? std::optional{result.dhcpv4_client} : std::nullopt;
 }
 
@@ -6759,11 +6847,9 @@ bool NetworkPlane::configure_host_dhcpv6_client(
           std::numeric_limits<std::uint32_t>::max() ||
       program.configuration.user_class.size() > 255U)
     return false;
-  const auto execute = [&](ForwardCommand command) noexcept {
+  const auto execute = [&](ForwardRequest command) noexcept {
     command.host = program.host;
-    return impl_->parallel()
-               ? impl_->execute_forward(command).success
-               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+    return impl_->execute_forward(command).success;
   };
   Dhcpv6ClientBegin begin{
       .duid = program.configuration.duid,
@@ -6807,9 +6893,7 @@ bool NetworkPlane::configure_host_dhcpv6_client(
 bool NetworkPlane::remove_host_dhcpv6_client(HostHandle host) noexcept {
   const ForwardCommand command{
       .kind = ForwardCommandKind::remove_host_dhcpv6_client, .host = host};
-  return impl_->parallel()
-             ? impl_->execute_forward(command).success
-             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  return impl_->execute_forward(command).success;
 }
 
 bool NetworkPlane::configure_host_dhcpv6_server(
@@ -6822,11 +6906,9 @@ bool NetworkPlane::configure_host_dhcpv6_server(
           std::numeric_limits<std::uint32_t>::max() ||
       program.prefix_pools.size() > std::numeric_limits<std::uint32_t>::max())
     return false;
-  const auto execute = [&](ForwardCommand command) noexcept {
+  const auto execute = [&](ForwardRequest command) noexcept {
     command.host = program.host;
-    return impl_->parallel()
-               ? impl_->execute_forward(command).success
-               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+    return impl_->execute_forward(command).success;
   };
   const auto &configuration = program.configuration;
   Dhcpv6ServerBegin begin{
@@ -6883,9 +6965,7 @@ abort_server:
 bool NetworkPlane::remove_host_dhcpv6_server(HostHandle host) noexcept {
   const ForwardCommand command{
       .kind = ForwardCommandKind::remove_host_dhcpv6_server, .host = host};
-  return impl_->parallel()
-             ? impl_->execute_forward(command).success
-             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  return impl_->execute_forward(command).success;
 }
 
 bool NetworkPlane::configure_router_dhcpv6_server(
@@ -6903,11 +6983,9 @@ bool NetworkPlane::configure_router_dhcpv6_server(
       program.prefix_pools.size() >
           std::numeric_limits<std::uint32_t>::max())
     return false;
-  const auto execute = [&](ForwardCommand command) noexcept {
+  const auto execute = [&](ForwardRequest command) noexcept {
     command.device = program.device;
-    return impl_->parallel()
-               ? impl_->execute_forward(command).success
-               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+    return impl_->execute_forward(command).success;
   };
   const auto &configuration = program.configuration;
   Dhcpv6ServerBegin begin{
@@ -6976,9 +7054,7 @@ bool NetworkPlane::remove_router_dhcpv6_server(
       .kind = ForwardCommandKind::remove_router_dhcpv6_server,
       .device = device,
       .fib = begin};
-  return impl_->parallel()
-             ? impl_->execute_forward(command).success
-             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  return impl_->execute_forward(command).success;
 }
 
 bool NetworkPlane::clear_router_dhcpv6_server_leases(
@@ -6995,9 +7071,7 @@ bool NetworkPlane::clear_router_dhcpv6_server_leases(
       .kind = ForwardCommandKind::clear_router_dhcpv6_server_leases,
       .device = device,
       .fib = operation};
-  return impl_->parallel()
-             ? impl_->execute_forward(command).success
-             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  return impl_->execute_forward(command).success;
 }
 
 bool NetworkPlane::clear_router_dhcpv6_server_statistics(
@@ -7011,9 +7085,7 @@ bool NetworkPlane::clear_router_dhcpv6_server_statistics(
       .kind = ForwardCommandKind::clear_router_dhcpv6_server_statistics,
       .device = device,
       .fib = operation};
-  return impl_->parallel()
-             ? impl_->execute_forward(command).success
-             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  return impl_->execute_forward(command).success;
 }
 
 std::optional<std::size_t>
@@ -7021,8 +7093,7 @@ NetworkPlane::host_dhcpv6_client_lease_count(HostHandle host) noexcept {
   const ForwardCommand command{
       .kind = ForwardCommandKind::host_dhcpv6_client_status, .host = host};
   const auto result =
-      impl_->parallel() ? impl_->execute_forward(command)
-                        : Impl::apply_forward_command(impl_.get(), 0U, command);
+      impl_->execute_forward(command);
   return result.success ? std::optional<std::size_t>{result.value}
                         : std::nullopt;
 }
@@ -7033,11 +7104,9 @@ bool NetworkPlane::configure_host_dns_resolver(
       program.root_hints.size() > std::numeric_limits<std::uint32_t>::max() ||
       program.trust_anchors.size() > std::numeric_limits<std::uint32_t>::max())
     return false;
-  const auto execute = [&](ForwardCommand command) noexcept {
+  const auto execute = [&](ForwardRequest command) noexcept {
     command.host = program.host;
-    return impl_->parallel()
-               ? impl_->execute_forward(command).success
-               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+    return impl_->execute_forward(command).success;
   };
   if (!execute({.kind = ForwardCommandKind::begin_host_dns_resolver,
                 .fib = DnsResolverBegin{
@@ -7103,9 +7172,7 @@ abort_resolver:
 bool NetworkPlane::remove_host_dns_resolver(HostHandle host) noexcept {
   const ForwardCommand command{
       .kind = ForwardCommandKind::remove_host_dns_resolver, .host = host};
-  return impl_->parallel()
-             ? impl_->execute_forward(command).success
-             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  return impl_->execute_forward(command).success;
 }
 
 bool NetworkPlane::configure_host_dns_authoritative(
@@ -7113,11 +7180,9 @@ bool NetworkPlane::configure_host_dns_authoritative(
   if (!program.host || program.zones.empty() ||
       program.zones.size() > std::numeric_limits<std::uint32_t>::max())
     return false;
-  const auto execute = [&](ForwardCommand command) noexcept {
+  const auto execute = [&](ForwardRequest command) noexcept {
     command.host = program.host;
-    return impl_->parallel()
-               ? impl_->execute_forward(command).success
-               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+    return impl_->execute_forward(command).success;
   };
   if (!execute({.kind = ForwardCommandKind::begin_host_dns_authoritative,
                 .fib = DnsAuthoritativeBegin{
@@ -7175,12 +7240,10 @@ bool NetworkPlane::configure_host_dns_signed_authoritative(
       program.zones.size() > std::numeric_limits<std::uint32_t>::max() ||
       !impl_->signing_vault_initialized)
     return false;
-  const auto execute = [&](ForwardCommand command) noexcept {
+  const auto execute = [&](ForwardRequest command) noexcept {
     command.host = program.host;
     command.operation_now = Clock::now();
-    return impl_->parallel()
-               ? impl_->execute_forward(command).success
-               : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+    return impl_->execute_forward(command).success;
   };
   if (!execute({.kind = ForwardCommandKind::begin_host_dns_signed_authoritative,
                 .fib = DnsAuthoritativeBegin{
@@ -7251,9 +7314,7 @@ abort_signed_authoritative:
 bool NetworkPlane::remove_host_dns_authoritative(HostHandle host) noexcept {
   const ForwardCommand command{
       .kind = ForwardCommandKind::remove_host_dns_authoritative, .host = host};
-  return impl_->parallel()
-             ? impl_->execute_forward(command).success
-             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  return impl_->execute_forward(command).success;
 }
 
 std::optional<dns::TransactionHandle>
@@ -7266,8 +7327,7 @@ NetworkPlane::start_host_dns_query(HostHandle host,
       .fib = DnsTransactionCommand{.question = question, .transaction = {}},
       .operation_now = now};
   const auto result =
-      impl_->parallel() ? impl_->execute_forward(command)
-                        : Impl::apply_forward_command(impl_.get(), 0U, command);
+      impl_->execute_forward(command);
   return result.success
              ? std::optional<dns::TransactionHandle>{dns::TransactionHandle{
                    .index = static_cast<std::uint32_t>(result.value),
@@ -7295,9 +7355,7 @@ bool NetworkPlane::release_host_dns_query(
       .kind = ForwardCommandKind::release_host_dns_query,
       .host = host,
       .fib = DnsTransactionCommand{.question = {}, .transaction = transaction}};
-  return impl_->parallel()
-             ? impl_->execute_forward(command).success
-             : Impl::apply_forward_command(impl_.get(), 0U, command).success;
+  return impl_->execute_forward(command).success;
 }
 
 bool NetworkPlane::configure_link(const NetworkLinkProgram &program) noexcept {
@@ -8703,6 +8761,16 @@ void NetworkPlane::pump(Clock::time_point now) noexcept {
   // by a forwarding shard. Drain them before packet work so a just-converged
   // next hop can be installed before subsequent data frames are forwarded.
   impl_->drain_ospf_routes();
+  while (const auto borrowed = impl_->isis_channels.routes->try_receive()) {
+    const auto device = borrowed->generation->device;
+    const auto generation = borrowed->generation->generation;
+    const auto status = program_isis_routes(*borrowed->generation);
+    if (!impl_->isis_channels.routes->complete(borrowed->handle, device, generation, status)) std::terminate();
+    impl_->isis_worker->notify();
+  }
+  for (std::size_t index{}; index < impl_->isis_registered.size(); ++index)
+    if (impl_->isis_registered[index] && !impl_->isis_instance_count[index] && impl_->isis_transports[index].empty())
+      impl_->retire_idle_isis_registration({static_cast<std::uint16_t>(index), impl_->router_generations[index]});
   if (impl_->parallel()) {
     impl_->drain_forwarding_egress();
   } else {
@@ -8880,6 +8948,8 @@ void NetworkPlane::set_link_wakeup(void *context,
   // forwarding consumer through the immutable per-shard adapter above.
   impl_->ospf_channels.route_wakeup_context = context;
   impl_->ospf_channels.route_wakeup = wakeup;
+  impl_->isis_channels.route_wakeup_context = context;
+  impl_->isis_channels.route_wakeup = wakeup;
   for (std::size_t index = 0; index < impl_->separate_forwarding_shards;
        ++index)
     impl_->forwarding_shards[index]->set_link_wakeup(context, wakeup);

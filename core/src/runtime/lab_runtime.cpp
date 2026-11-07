@@ -1048,6 +1048,7 @@ route_policy_source(std::string_view text) noexcept {
     return routing::RouteSource::ospf;
   if (text == "ospf3")
     return routing::RouteSource::ospf3;
+  if (text == "isis") return routing::RouteSource::isis;
   return std::nullopt;
 }
 
@@ -6045,6 +6046,9 @@ md_policy_configuration_info(const Configuration &configuration,
             case routing::RouteSource::ospf3:
               out << "ospf3\n";
               break;
+            case routing::RouteSource::isis:
+              out << "isis\n";
+              break;
             }
           }
         }
@@ -8700,6 +8704,8 @@ route_policy_source_text(routing::RouteSource source) noexcept {
     return "ospf";
   case routing::RouteSource::ospf3:
     return "ospf3";
+  case routing::RouteSource::isis:
+    return "isis";
   }
   return {};
 }
@@ -14504,6 +14510,10 @@ std::string LabRuntime::session_state(std::string_view session_id) const {
 
 std::string LabRuntime::execute_session(std::string_view session_id,
                                         std::string_view input) {
+  const auto inline_input = cli_detail::trim(input);
+  if (!inline_input.starts_with("//") || inline_input.size() <= 2U)
+    return execute_session_command(session_id, input);
+
   auto *terminal = session(session_id);
   if (!terminal)
     return {};
@@ -14544,10 +14554,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
   // presentation-only DeviceState view would therefore render empty or reject
   // otherwise supported operational reports.
   //
-  // Execute the foreign line recursively through this same router-bound
+  // Execute the foreign line through this same router-bound
   // session. The leading slash makes the command absolute in the target
-  // engine, so its saved context cannot qualify the command. Recursion is
-  // bounded to one level because the rewritten input cannot begin with `//`.
+  // engine, so its saved context cannot qualify the command. The normal
+  // command handler runs once; its rewritten input cannot begin with `//`.
   // The session remains bound to the same DeviceHandle throughout, which is
   // the key invariant preventing an inline engine command from observing
   // another router.
@@ -14569,9 +14579,9 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       const auto target_prompt = cli_prompt(view, terminal->cli);
 
       auto foreign_output =
-          execute_session(session_id, "/" + std::string{foreign_input});
+          execute_session_command(session_id, "/" + std::string{foreign_input});
 
-      // execute_session appends the versioned terminal-state netstrings used
+      // The command handler appends the versioned terminal-state netstrings used
       // by the browser bridge. That transport suffix belongs only to the outer
       // request. Remove the exact current suffix before composing the visible
       // inline transcript, rather than parsing or guessing its byte lengths.
@@ -14580,7 +14590,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         foreign_output.resize(foreign_output.size() - foreign_state.size());
 
       // The target prompt is displayed before the absolute command in Nokia's
-      // inline transcript. The recursive execution also appends that prompt,
+      // inline transcript. The command handler also appends that prompt,
       // so remove only the exact suffix to avoid duplicating it or trimming
       // command output that happens to contain prompt-like text.
       const auto returned_prompt = cli_prompt(view, terminal->cli);
@@ -14598,7 +14608,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       const auto visible_target_prompt = target_prompt.starts_with('\n')
                                              ? target_prompt.substr(1U)
                                              : target_prompt;
-      // The recursive report owns no knowledge of the outer inline-engine
+      // The command report owns no knowledge of the outer inline-engine
       // transcript. Separate its last row from CLI #2051 or #2052 even when
       // the formatter intentionally omitted a final newline before its prompt.
       if (!foreign_output.empty() && foreign_output.back() != '\n')
@@ -14609,6 +14619,42 @@ std::string LabRuntime::execute_session(std::string_view session_id,
              cli_prompt(view, terminal->cli) + session_state(session_id);
     }
   }
+
+  return execute_session_command(session_id, input);
+}
+
+std::string LabRuntime::execute_session_command(std::string_view session_id,
+                                        std::string_view input) {
+  auto *terminal = session(session_id);
+  if (!terminal)
+    return {};
+  const auto *session_record = supervisor_.sessions().get(terminal->handle);
+  const auto *device = session_record
+                           ? supervisor_.devices().get(session_record->device)
+                           : nullptr;
+  // Configuration commands below update the selected router's canonical
+  // intent only after the owning supervisor accepts the same mutation. Keep a
+  // mutable pointer here instead of casting away constness at each commit.
+  auto *intent = device ? router(device->node_id) : nullptr;
+  if (!session_record || !device || !intent)
+    return {};
+  if (terminal->ping.active)
+    return "MINOR: CLI #2069: Operation not allowed - another command is in "
+           "progress" +
+           session_state(session_id);
+  // Shared global candidate edits can be made by another terminal. Refresh
+  // prompt markers before interpreting this input so the next command and its
+  // exit policy observe the router-owned datastore, not a stale session copy.
+  if (const auto status = supervisor_.session_status(terminal->handle)) {
+    terminal->cli.candidate_dirty = status->candidate_dirty;
+    terminal->cli.candidate_outdated = status->baseline_outdated;
+  }
+  // This view supplies only prompt identity to the reusable CLI state machine.
+  // Product configuration remains in RouterIntent and RuntimeSupervisor.
+  DeviceState view;
+  view.configuration.running.system_name.fill('\0');
+  std::copy(device->system_name.begin(), device->system_name.end(),
+            view.configuration.running.system_name.begin());
 
   const auto initialize_candidate = [&](CandidateMode mode) {
     if (mode == CandidateMode::private_candidate) {
@@ -24681,6 +24727,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               return "OSPF";
             case routing::RouteSource::ospf3:
               return "OSPF3";
+            case routing::RouteSource::isis:
+              return "IS-IS";
             }
             return "";
           };
@@ -24983,6 +25031,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               return "OSPF";
             case routing::RouteSource::ospf3:
               return "OSPF3";
+            case routing::RouteSource::isis:
+              return "IS-IS";
             }
             return "LOCAL";
           };
@@ -27613,12 +27663,12 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
     checkpoint_bytes_.clear();
     return {};
   }
-  checkpoint_bytes_ = checkpoint_v7::encode(*checkpoint);
+  checkpoint_bytes_ = checkpoint_v9::encode(*checkpoint);
   return checkpoint_bytes_;
 }
 
 bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
-  auto checkpoint = checkpoint_v7::decode(bytes);
+  auto checkpoint = checkpoint_v9::decode(bytes);
   if (!checkpoint)
     return false;
   try {

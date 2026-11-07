@@ -1,0 +1,1357 @@
+{
+  "mode": "project",
+  "formatVersion": 4,
+  "checkpointAbi": 9,
+  "project": {
+    "format": "router-simulator-project",
+    "version": 5,
+    "projectId": "four-router-reference",
+    "name": "Four router reference lab",
+    "dhcpServers": [],
+    "routers": [
+      {
+        "id": "r1",
+        "kind": "router",
+        "profileId": "7750-sr-1",
+        "release": "26.7.R1",
+        "systemName": "R1",
+        "hardware": {
+          "cards": [
+            {
+              "slot": 1,
+              "admin": "up",
+              "provisionedType": "cpm-1",
+              "equippedType": "cpm-1",
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "up",
+                  "provisionedType": "me6-100gb-qsfp28",
+                  "equippedType": "me6-100gb-qsfp28"
+                },
+                {
+                  "slot": 2,
+                  "admin": "up",
+                  "provisionedType": "me12-100gb-qsfp28",
+                  "equippedType": "me12-100gb-qsfp28"
+                }
+              ]
+            }
+          ]
+        },
+        "running": {
+          "systemName": "R1",
+          "maximumEcmpPaths": 1,
+          "ports": [
+            {
+              "id": "1/1/1",
+              "admin": "up",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/1/2",
+              "admin": "up",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/1/3",
+              "admin": "up",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/1/4",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/1/5",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/1/6",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/2/1",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/2/2",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/2/3",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/2/4",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/2/5",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/2/6",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/2/7",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/2/8",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/2/9",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/2/10",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/2/11",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            },
+            {
+              "id": "1/2/12",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 100000
+            }
+          ],
+          "interfaces": [
+            {
+              "name": "to-h1",
+              "portId": "1/1/1",
+              "address": "192.0.2.1/30",
+              "arpTimeoutSeconds": null,
+              "arpRetryTimerDeciseconds": null,
+              "ipv6Addresses": [],
+              "admin": "up"
+            },
+            {
+              "name": "to-r2",
+              "portId": "1/1/2",
+              "address": "10.0.12.1/30",
+              "arpTimeoutSeconds": null,
+              "arpRetryTimerDeciseconds": null,
+              "ipv6Addresses": [],
+              "admin": "up"
+            },
+            {
+              "name": "to-r4",
+              "portId": "1/1/3",
+              "address": "10.0.14.1/30",
+              "arpTimeoutSeconds": null,
+              "arpRetryTimerDeciseconds": null,
+              "ipv6Addresses": [],
+              "admin": "up"
+            }
+          ],
+          "staticRoutes": [
+            {
+              "prefix": "192.0.2.4/30",
+              "nextHop": "10.0.12.2",
+              "indirect": false
+            },
+            {
+              "prefix": "192.0.2.8/30",
+              "nextHop": "10.0.12.2",
+              "indirect": false
+            },
+            {
+              "prefix": "192.0.2.12/30",
+              "nextHop": "10.0.14.2",
+              "indirect": false
+            }
+          ],
+          "ipv6StaticRoutes": [],
+          "policyOptions": {
+            "prefixLists": [],
+            "statements": []
+          },
+          "ospf": {
+            "instances": []
+          }
+        }
+      },
+      {
+        "id": "r2",
+        "kind": "router",
+        "profileId": "7750-sr-7",
+        "release": "26.7.R1",
+        "systemName": "R2",
+        "hardware": {
+          "cards": [
+            {
+              "slot": 1,
+              "admin": "up",
+              "provisionedType": "imm-2pac-fp3",
+              "equippedType": "imm-2pac-fp3",
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "up",
+                  "provisionedType": "p10-10g-sfp",
+                  "equippedType": "p10-10g-sfp"
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 2,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 3,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 4,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 5,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            }
+          ]
+        },
+        "running": {
+          "systemName": "R2",
+          "maximumEcmpPaths": 1,
+          "ports": [
+            {
+              "id": "1/1/1",
+              "admin": "up",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/2",
+              "admin": "up",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/3",
+              "admin": "up",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/4",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/5",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/6",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/7",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/8",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/9",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/10",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            }
+          ],
+          "interfaces": [
+            {
+              "name": "to-r1",
+              "portId": "1/1/1",
+              "address": "10.0.12.2/30",
+              "arpTimeoutSeconds": null,
+              "arpRetryTimerDeciseconds": null,
+              "ipv6Addresses": [],
+              "admin": "up"
+            },
+            {
+              "name": "to-r3",
+              "portId": "1/1/2",
+              "address": "10.0.23.1/30",
+              "arpTimeoutSeconds": null,
+              "arpRetryTimerDeciseconds": null,
+              "ipv6Addresses": [],
+              "admin": "up"
+            },
+            {
+              "name": "to-h2",
+              "portId": "1/1/3",
+              "address": "192.0.2.5/30",
+              "arpTimeoutSeconds": null,
+              "arpRetryTimerDeciseconds": null,
+              "ipv6Addresses": [],
+              "admin": "up"
+            }
+          ],
+          "staticRoutes": [
+            {
+              "prefix": "192.0.2.0/30",
+              "nextHop": "10.0.12.1",
+              "indirect": false
+            },
+            {
+              "prefix": "192.0.2.8/30",
+              "nextHop": "10.0.23.2",
+              "indirect": false
+            },
+            {
+              "prefix": "192.0.2.12/30",
+              "nextHop": "10.0.23.2",
+              "indirect": false
+            }
+          ],
+          "ipv6StaticRoutes": [],
+          "policyOptions": {
+            "prefixLists": [],
+            "statements": []
+          },
+          "ospf": {
+            "instances": []
+          }
+        }
+      },
+      {
+        "id": "r3",
+        "kind": "router",
+        "profileId": "7750-sr-12",
+        "release": "26.7.R1",
+        "systemName": "R3",
+        "hardware": {
+          "cards": [
+            {
+              "slot": 1,
+              "admin": "up",
+              "provisionedType": "imm-2pac-fp3",
+              "equippedType": "imm-2pac-fp3",
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "up",
+                  "provisionedType": "p10-10g-sfp",
+                  "equippedType": "p10-10g-sfp"
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 2,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 3,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 4,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 5,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 6,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 7,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 8,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 9,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 10,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            }
+          ]
+        },
+        "running": {
+          "systemName": "R3",
+          "maximumEcmpPaths": 1,
+          "ports": [
+            {
+              "id": "1/1/1",
+              "admin": "up",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/2",
+              "admin": "up",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/3",
+              "admin": "up",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/4",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/5",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/6",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/7",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/8",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/9",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/10",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            }
+          ],
+          "interfaces": [
+            {
+              "name": "to-r2",
+              "portId": "1/1/1",
+              "address": "10.0.23.2/30",
+              "arpTimeoutSeconds": null,
+              "arpRetryTimerDeciseconds": null,
+              "ipv6Addresses": [],
+              "admin": "up"
+            },
+            {
+              "name": "to-r4",
+              "portId": "1/1/2",
+              "address": "10.0.34.1/30",
+              "arpTimeoutSeconds": null,
+              "arpRetryTimerDeciseconds": null,
+              "ipv6Addresses": [],
+              "admin": "up"
+            },
+            {
+              "name": "to-h3",
+              "portId": "1/1/3",
+              "address": "192.0.2.9/30",
+              "arpTimeoutSeconds": null,
+              "arpRetryTimerDeciseconds": null,
+              "ipv6Addresses": [],
+              "admin": "up"
+            }
+          ],
+          "staticRoutes": [
+            {
+              "prefix": "192.0.2.0/30",
+              "nextHop": "10.0.23.1",
+              "indirect": false
+            },
+            {
+              "prefix": "192.0.2.4/30",
+              "nextHop": "10.0.23.1",
+              "indirect": false
+            },
+            {
+              "prefix": "192.0.2.12/30",
+              "nextHop": "10.0.34.2",
+              "indirect": false
+            }
+          ],
+          "ipv6StaticRoutes": [],
+          "policyOptions": {
+            "prefixLists": [],
+            "statements": []
+          },
+          "ospf": {
+            "instances": []
+          }
+        }
+      },
+      {
+        "id": "r4",
+        "kind": "router",
+        "profileId": "7750-sr-7",
+        "release": "26.7.R1",
+        "systemName": "R4",
+        "hardware": {
+          "cards": [
+            {
+              "slot": 1,
+              "admin": "up",
+              "provisionedType": "imm-2pac-fp3",
+              "equippedType": "imm-2pac-fp3",
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "up",
+                  "provisionedType": "p10-10g-sfp",
+                  "equippedType": "p10-10g-sfp"
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 2,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 3,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 4,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            },
+            {
+              "slot": 5,
+              "admin": "down",
+              "provisionedType": null,
+              "equippedType": null,
+              "mdas": [
+                {
+                  "slot": 1,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                },
+                {
+                  "slot": 2,
+                  "admin": "down",
+                  "provisionedType": null,
+                  "equippedType": null
+                }
+              ]
+            }
+          ]
+        },
+        "running": {
+          "systemName": "R4",
+          "maximumEcmpPaths": 1,
+          "ports": [
+            {
+              "id": "1/1/1",
+              "admin": "up",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/2",
+              "admin": "up",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/3",
+              "admin": "up",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/4",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/5",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/6",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/7",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/8",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/9",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            },
+            {
+              "id": "1/1/10",
+              "admin": "down",
+              "mtu": 9212,
+              "description": "",
+              "speedMbps": 10000
+            }
+          ],
+          "interfaces": [
+            {
+              "name": "to-r3",
+              "portId": "1/1/1",
+              "address": "10.0.34.2/30",
+              "arpTimeoutSeconds": null,
+              "arpRetryTimerDeciseconds": null,
+              "ipv6Addresses": [],
+              "admin": "up"
+            },
+            {
+              "name": "to-r1",
+              "portId": "1/1/2",
+              "address": "10.0.14.2/30",
+              "arpTimeoutSeconds": null,
+              "arpRetryTimerDeciseconds": null,
+              "ipv6Addresses": [],
+              "admin": "up"
+            },
+            {
+              "name": "to-h4",
+              "portId": "1/1/3",
+              "address": "192.0.2.13/30",
+              "arpTimeoutSeconds": null,
+              "arpRetryTimerDeciseconds": null,
+              "ipv6Addresses": [],
+              "admin": "up"
+            }
+          ],
+          "staticRoutes": [
+            {
+              "prefix": "192.0.2.0/30",
+              "nextHop": "10.0.14.1",
+              "indirect": false
+            },
+            {
+              "prefix": "192.0.2.4/30",
+              "nextHop": "10.0.34.1",
+              "indirect": false
+            },
+            {
+              "prefix": "192.0.2.8/30",
+              "nextHop": "10.0.34.1",
+              "indirect": false
+            }
+          ],
+          "ipv6StaticRoutes": [],
+          "policyOptions": {
+            "prefixLists": [],
+            "statements": []
+          },
+          "ospf": {
+            "instances": []
+          }
+        }
+      }
+    ],
+    "hosts": [
+      {
+        "id": "h1",
+        "kind": "host",
+        "name": "Host 1",
+        "eth0": {
+          "mac": "02:00:00:00:00:01",
+          "address": "192.0.2.2/30",
+          "gateway": "192.0.2.1",
+          "mtu": 1500,
+          "mode": "ethernet",
+          "transportSecretHex": "0101010101010101010101010101010101010101010101010101010101010101",
+          "dhcpv4": {
+            "client": null,
+            "server": null
+          },
+          "dns": {
+            "resolver": null,
+            "authoritative": null
+          },
+          "ipv6": {
+            "autoconfiguration": true,
+            "interfaceId": "628963565149030354",
+            "interfaceIdentifierMode": "modified-eui64",
+            "stableIidSecret": null,
+            "networkId": "",
+            "dhcpv6": {
+              "client": null,
+              "server": null
+            }
+          }
+        }
+      },
+      {
+        "id": "h2",
+        "kind": "host",
+        "name": "Host 2",
+        "eth0": {
+          "mac": "02:00:00:00:00:02",
+          "address": "192.0.2.6/30",
+          "gateway": "192.0.2.5",
+          "mtu": 1500,
+          "mode": "ethernet",
+          "transportSecretHex": "0202020202020202020202020202020202020202020202020202020202020202",
+          "dhcpv4": {
+            "client": null,
+            "server": null
+          },
+          "dns": {
+            "resolver": null,
+            "authoritative": null
+          },
+          "ipv6": {
+            "autoconfiguration": true,
+            "interfaceId": "628962465637402143",
+            "interfaceIdentifierMode": "modified-eui64",
+            "stableIidSecret": null,
+            "networkId": "",
+            "dhcpv6": {
+              "client": null,
+              "server": null
+            }
+          }
+        }
+      },
+      {
+        "id": "h3",
+        "kind": "host",
+        "name": "Host 3",
+        "eth0": {
+          "mac": "02:00:00:00:00:03",
+          "address": "192.0.2.10/30",
+          "gateway": "192.0.2.9",
+          "mtu": 1500,
+          "mode": "ethernet",
+          "transportSecretHex": "0303030303030303030303030303030303030303030303030303030303030303",
+          "dhcpv4": {
+            "client": null,
+            "server": null
+          },
+          "dns": {
+            "resolver": null,
+            "authoritative": null
+          },
+          "ipv6": {
+            "autoconfiguration": true,
+            "interfaceId": "628961366125773932",
+            "interfaceIdentifierMode": "modified-eui64",
+            "stableIidSecret": null,
+            "networkId": "",
+            "dhcpv6": {
+              "client": null,
+              "server": null
+            }
+          }
+        }
+      },
+      {
+        "id": "h4",
+        "kind": "host",
+        "name": "Host 4",
+        "eth0": {
+          "mac": "02:00:00:00:00:04",
+          "address": "192.0.2.14/30",
+          "gateway": "192.0.2.13",
+          "mtu": 1500,
+          "mode": "ethernet",
+          "transportSecretHex": "0404040404040404040404040404040404040404040404040404040404040404",
+          "dhcpv4": {
+            "client": null,
+            "server": null
+          },
+          "dns": {
+            "resolver": null,
+            "authoritative": null
+          },
+          "ipv6": {
+            "autoconfiguration": true,
+            "interfaceId": "628960266614145721",
+            "interfaceIdentifierMode": "modified-eui64",
+            "stableIidSecret": null,
+            "networkId": "",
+            "dhcpv6": {
+              "client": null,
+              "server": null
+            }
+          }
+        }
+      }
+    ],
+    "switches": [],
+    "links": [
+      {
+        "id": "h1-r1",
+        "endpoints": [
+          {
+            "nodeId": "h1",
+            "portId": "eth0"
+          },
+          {
+            "nodeId": "r1",
+            "portId": "1/1/1"
+          }
+        ],
+        "admin": "up",
+        "configuredSpeedMbps": null,
+        "propagationDelayNs": 100
+      },
+      {
+        "id": "r1-r2",
+        "endpoints": [
+          {
+            "nodeId": "r1",
+            "portId": "1/1/2"
+          },
+          {
+            "nodeId": "r2",
+            "portId": "1/1/1"
+          }
+        ],
+        "admin": "up",
+        "configuredSpeedMbps": null,
+        "propagationDelayNs": 100
+      },
+      {
+        "id": "r2-h2",
+        "endpoints": [
+          {
+            "nodeId": "r2",
+            "portId": "1/1/3"
+          },
+          {
+            "nodeId": "h2",
+            "portId": "eth0"
+          }
+        ],
+        "admin": "up",
+        "configuredSpeedMbps": null,
+        "propagationDelayNs": 100
+      },
+      {
+        "id": "r2-r3",
+        "endpoints": [
+          {
+            "nodeId": "r2",
+            "portId": "1/1/2"
+          },
+          {
+            "nodeId": "r3",
+            "portId": "1/1/1"
+          }
+        ],
+        "admin": "up",
+        "configuredSpeedMbps": null,
+        "propagationDelayNs": 100
+      },
+      {
+        "id": "r3-h3",
+        "endpoints": [
+          {
+            "nodeId": "r3",
+            "portId": "1/1/3"
+          },
+          {
+            "nodeId": "h3",
+            "portId": "eth0"
+          }
+        ],
+        "admin": "up",
+        "configuredSpeedMbps": null,
+        "propagationDelayNs": 100
+      },
+      {
+        "id": "r3-r4",
+        "endpoints": [
+          {
+            "nodeId": "r3",
+            "portId": "1/1/2"
+          },
+          {
+            "nodeId": "r4",
+            "portId": "1/1/1"
+          }
+        ],
+        "admin": "up",
+        "configuredSpeedMbps": null,
+        "propagationDelayNs": 100
+      },
+      {
+        "id": "r4-h4",
+        "endpoints": [
+          {
+            "nodeId": "r4",
+            "portId": "1/1/3"
+          },
+          {
+            "nodeId": "h4",
+            "portId": "eth0"
+          }
+        ],
+        "admin": "up",
+        "configuredSpeedMbps": null,
+        "propagationDelayNs": 100
+      },
+      {
+        "id": "r1-r4",
+        "endpoints": [
+          {
+            "nodeId": "r1",
+            "portId": "1/1/3"
+          },
+          {
+            "nodeId": "r4",
+            "portId": "1/1/2"
+          }
+        ],
+        "admin": "up",
+        "configuredSpeedMbps": null,
+        "propagationDelayNs": 100
+      }
+    ],
+    "annotations": [],
+    "notes": "",
+    "layout": {
+      "nodes": {
+        "h1": {
+          "x": 40,
+          "y": 310
+        },
+        "r1": {
+          "x": 220,
+          "y": 310
+        },
+        "r2": {
+          "x": 480,
+          "y": 180
+        },
+        "h2": {
+          "x": 480,
+          "y": 20
+        },
+        "r3": {
+          "x": 740,
+          "y": 180
+        },
+        "h3": {
+          "x": 740,
+          "y": 20
+        },
+        "r4": {
+          "x": 1000,
+          "y": 310
+        },
+        "h4": {
+          "x": 1180,
+          "y": 310
+        }
+      },
+      "sidebarWidth": 194,
+      "inspectorWidth": 324,
+      "terminalHeight": 360
+    },
+    "updatedAt": "2026-07-16T00:00:00.000Z"
+  }
+}

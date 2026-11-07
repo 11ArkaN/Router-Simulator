@@ -61,9 +61,9 @@ const cppBoolean = (value) => value ? "true" : "false";
 if (catalog.release !== "26.7.R1") fail("release must match the pinned baseline");
 if (protocol.version !== 4 || protocol.snapshot_abi !== 9 ||
     protocol.telemetry_abi !== 6 ||
-    protocol.checkpoint_abi !== 8 ||
-    !protocol.operations || checkpoint.version !== 8)
-  fail("runtime protocol 4, snapshot ABI 9, telemetry ABI 6 and checkpoint schema 8 are required");
+    protocol.checkpoint_abi !== 9 ||
+    !protocol.operations || checkpoint.version !== 9)
+  fail("runtime protocol 4, snapshot ABI 9, telemetry ABI 6 and checkpoint schema 9 are required");
 for (const [name, value] of Object.entries(catalog.limits ?? {})) exactInteger(value, `limits.${name}`, 1);
 if (catalog.limits.routers !== 16 ||
     catalog.limits.sr_routers !== 16 ||
@@ -1303,6 +1303,7 @@ ${Object.entries(protocol.operations).map(([name, value]) =>
 const protocolTypescript = `// Generated browser names for runtime protocol 4.\n` +
 `export const LAB_RUNTIME_PROTOCOL = ${JSON.stringify({ version: protocol.version,
   snapshotAbi: protocol.snapshot_abi, telemetryAbi: protocol.telemetry_abi,
+  checkpointAbi: protocol.checkpoint_abi,
   ...protocol.operations }, null, 2)} as const;\n`;
 const cmake = `# Generated from profiles/catalog/26.7.R1.yaml. Do not edit.\n` +
   `set(ROUTER_WASM_STACK_BYTES ${catalog.runtime.wasm_stack_bytes})\n` +

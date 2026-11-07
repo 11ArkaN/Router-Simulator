@@ -12,6 +12,8 @@
 #include "router/isis_p2p_spf_seed.hpp"
 #include "router/isis_p2p_spf_input.hpp"
 #include "router/isis_p2p_decision.hpp"
+#include "router/isis_prefix_routes.hpp"
+#include "router/isis_rib_input.hpp"
 
 #include <algorithm>
 #include <memory>
@@ -374,6 +376,60 @@ void isis_link_graph_tests() {
       atomic_prefixes.now) == DecisionStatus::applied && prefix_decision.prefixes().size() == 1U &&
       prefix_decision.prefixes()[0U].level == 1U &&
       prefix_decision.distance_to_prefix(0U) == PrefixDistance{2U, 35U, 0U});
+  std::array<std::uint8_t, 64U> hello_storage{};
+  TlvWriter hello_writer(hello_storage);
+  const std::array<std::uint8_t, 1U> hello_protocols{ipv4_nlpid};
+  const std::array<packet::Ipv4, 1U> hello_addresses{{{192U, 0U, 2U, 2U}}};
+  require(hello_writer.append(129U, hello_protocols) &&
+      encode_fixed_addresses<4U>(hello_writer, 132U, hello_addresses));
+  P2pSnapshot accepted;
+  std::copy_n(b.begin(), accepted.neighbor_system.size(), accepted.neighbor_system.begin());
+  accepted.present = accepted.iso_up = true;
+  accepted.usage = Levels::both;
+  std::array<std::optional<AdjacencyNextHop>, 2U> bindings{
+      bind_p2p_next_hop(accepted, hello_writer.bytes(), hello_protocols,
+          {42U, 7U, 1U}, 1U, *ip::parse_ip_address("192.0.2.2")),
+      bind_p2p_next_hop(accepted, hello_writer.bytes(), hello_protocols,
+          {43U, 8U, 2U}, 1U, *ip::parse_ip_address("192.0.2.2"))};
+  std::array<PrefixRouteCandidate, 2U> routes{};
+  auto candidate_result = collect_prefix_routes(prefix_decision, bindings, routes);
+  require(candidate_result.status == PrefixRoutesStatus::applied && candidate_result.count == 1U &&
+      routes[0U].distance == PrefixDistance{2U, 35U, 0U} &&
+      routes[0U].destination == prefix_decision.prefixes()[0U].prefix &&
+      routes[0U].origin == prefix_decision.prefixes()[0U].origin &&
+      routes[0U].next_hop.interface.interface_id == 42U && routes[0U].down);
+  const auto rib_candidate = make_ipv4_rib_input(routes[0U], 7U, 15U);
+  require(rib_candidate && rib_candidate->metric == 35U && rib_candidate->isis_rank == 2U &&
+      rib_candidate->interface_id == 42U && rib_candidate->interface_generation == 7U &&
+      rib_candidate->protocol_instance == 7U && rib_candidate->next_hop == 0xc0000202U &&
+      rib_candidate->source == lab::routing::RouteSource::isis && !make_ipv6_rib_input(routes[0U], 7U, 15U));
+  const auto retained_routes = routes;
+  require(collect_prefix_routes(prefix_decision, bindings, {}).status == PrefixRoutesStatus::capacity &&
+      routes == retained_routes);
+  require(collect_prefix_routes(prefix_decision, {}, routes).status == PrefixRoutesStatus::invalid &&
+      routes == retained_routes);
+  bindings[0U]->level = 2U;
+  require(collect_prefix_routes(prefix_decision, bindings, routes).status == PrefixRoutesStatus::invalid &&
+      routes == retained_routes);
+  bindings[0U]->level = 1U;
+  bindings[0U]->address = *ip::parse_ip_address("fe80::2");
+  require(collect_prefix_routes(prefix_decision, bindings, routes).status == PrefixRoutesStatus::invalid &&
+      routes == retained_routes);
+  bindings[0U].reset();
+  candidate_result = collect_prefix_routes(prefix_decision, bindings, routes);
+  require(candidate_result.status == PrefixRoutesStatus::applied && candidate_result.count == 0U);
+  bindings[0U] = retained_routes[0U].next_hop;
+  auto equal_seeds = local_seeds;
+  equal_seeds[1U].metric = equal_seeds[0U].metric;
+  require(prefix_decision.calculate(atomic_prefixes.database, selected, equal_seeds, 2U,
+      atomic_prefixes.now) == DecisionStatus::applied);
+  candidate_result = collect_prefix_routes(prefix_decision, bindings, routes);
+  require(candidate_result.status == PrefixRoutesStatus::applied && candidate_result.count == 2U &&
+      routes[0U].next_hop.interface.interface_id == 42U &&
+      routes[1U].next_hop.interface.interface_id == 43U && routes[0U].distance == routes[1U].distance);
+  const auto retained_ecmp = routes;
+  require(collect_prefix_routes(prefix_decision, bindings, std::span{routes}.first(1U)).status ==
+      PrefixRoutesStatus::capacity && routes == retained_ecmp);
   atomic_prefixes.install(b, valid_prefix, 3U, 1U, 2U);
   auto more_expensive = local_seeds;
   more_expensive[0U].metric = 50U;

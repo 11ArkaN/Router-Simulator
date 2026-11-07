@@ -1,6 +1,24 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  runtime.forwarding_pause_receipts:
+    status: implemented
+    source_ids: [project.runtime.forwarding_pause_receipts]
+  routing.isis.route_publication:
+    status: partially-implemented
+    source_ids: [project.isis.route_publication]
+  routing.isis.rib_selection:
+    status: partially-implemented
+    source_ids: [nokia.sros.26_7.isis.shared_rib_selection]
+  persistence.checkpoint_9_route_provenance:
+    status: implemented
+    source_ids: [project.persistence.checkpoint_9_route_provenance]
+  routing.isis.prefix_next_hop_candidates:
+    status: partially-implemented
+    source_ids: [ietf.isis.prefix_next_hop_candidates]
+  routing.isis.adjacency_next_hop_binding:
+    status: partially-implemented
+    source_ids: [ietf.isis.adjacency_next_hop_binding]
   forwarding.dual_family_fib:
     status: partially-implemented
     source_ids: [project.runtime.dual_family_fib]

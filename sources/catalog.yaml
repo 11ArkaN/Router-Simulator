@@ -1,5 +1,89 @@
 schema_version: 1
 records:
+  - id: project.runtime.forwarding_pause_receipts
+    kind: local-forwarding-barrier-ownership
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-architecture-decision
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0006-control-generation-handoff.md#forwarding-pause-acknowledgements
+    section: Forwarding pause acknowledgements
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-11-06
+    implementation: [core/src/runtime/network_plane.cpp]
+    tests: [core/tests/isis/isis_control_worker_test.cpp]
+    status: implemented
+    notes: A forwarding owner clears its resume predicate before release-publishing the pause receipt. The consumer can resume immediately after acquiring that receipt without losing its signal. Repeated live-router snapshots exercise the barrier in combined and separate owner layouts; no simulation pause control or global clock is introduced.
+  - id: project.isis.route_publication
+    kind: local-routing-publication-ownership
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-architecture-decision-and-ietf-rfc
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0006-control-generation-handoff.md#is-is-route-publication
+    section: IS-IS route publication; RFC 1195 sections 4.2 and 4.4; RFC 5308 sections 3 and 5
+    rfc_refs: [RFC1195, RFC5308]
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-11-06
+    implementation: [core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_routes.cpp, core/src/isis/isis_control_decision.cpp, core/src/isis/isis_control_origin.cpp, core/src/isis/isis_control_update.cpp, core/src/runtime/network_plane.cpp, core/include/router/route_publication.hpp]
+    tests: [core/tests/isis/isis_control_worker_test.cpp, core/tests/runtime/route_publication_test.cpp]
+    status: experimental
+    notes: Independently budgeted IPv4 and IPv6 wide MT0 decisions feed complete per-router generations across enabled levels and instances. Exact epochs and decision revisions fence publication. Accepted Hellos supply scoped next hops; numerically lowest usable address selection is an emulator policy without a vendor-ranking claim. The network owner returns keyed installation receipts after the dual-family transaction. Explicit emulator recovery periods bound refusal retry. Per-device generation high water survives same-handle protocol removal. Physical forwarding tests use distinct IPv4 subnets on one adjacency as required by RFC 1195 section 4.4, and resolve IPv6 through scoped link-local next hops. Production CLI activation, complete lifecycle transactions, policy, LAN, MT2 and active protocol checkpoints remain incomplete.
+  - id: nokia.sros.26_7.isis.shared_rib_selection
+    kind: routing-protocol-rib-selection
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: vendor-cli-reference-and-ietf-rfc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-p-commands-pool-3.html#ai9j785l4t
+    section: IS-IS level preference and default protocol preference table; RFC 5302 section 3.2; RFC 5308 section 5; RFC 1195 appendix C
+    rfc_refs: [RFC1195, RFC5302, RFC5308]
+    yang_path: /configure/router/isis/level/preference
+    last_verified_at: 2026-11-06
+    implementation: [core/include/router/multi_device_routing.hpp, core/include/router/isis_rib_input.hpp, core/include/router/route_input_store.hpp, core/include/router/network_plane.hpp, core/src/forwarding/multi_device_routing.cpp, core/src/runtime/network_plane.cpp]
+    tests: [core/tests/forwarding/isis_rib_test.cpp, core/tests/forwarding/multi_device_routing_test.cpp, core/tests/isis/isis_link_graph_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
+    status: experimental
+    notes: Shared RIB values distinguish IS-IS source, level/internal/external provenance and normative prefix-distance rank from OSPF path types. Per-instance IS-IS distance pruning precedes global administrative preference and preserves all equal best paths. IPv4 external-metric ties retain internal distance while IPv6 down rank three is not treated as an external metric. Different protocols with equal configured preference use the documented default table instead of enum order. Protocol winners are selected before cross-protocol comparison to prevent comparator cycles. Indirect static resolution uses the same mechanism and retains logical interface scope and configuration generation. Invalid mixed provenance, preferences outside the pinned range 1..255, missing IS-IS scope generation or combined input resource overflow rejects the complete rebuild. Separate immutable protocol input spans avoid concatenation and permit independent withdrawal. Retained generations share one bounded arena per family. Empty router admission allocates no candidate arrays; preparation before installation may request normal checked runtime heap growth. Overlapping shifts preserve the other protocol without duplicating its full route budget. All eager per-router RIB allocations are included in the unchanged control-reserve proof. A typed adapter copies prefix distances and accepted-Hello interface scopes without inferring preferences. The local installation API validates current circuit identity and retains IS-IS independently from OSPF after the dual-family transaction. Circuit replacement cannot orphan retained IS-IS candidates. Automatic protocol-owner publication, complete multi-instance selection and receipt-channel integration remain incomplete.
+  - id: project.persistence.checkpoint_9_route_provenance
+    kind: checkpoint-value-contract
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-architecture-decision
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0006-control-generation-handoff.md#checkpoint-route-provenance
+    section: Checkpoint route provenance
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-11-06
+    implementation: [schemas/checkpoint/9.yaml, schemas/runtime/4.yaml, profiles/7750-sr-7-iom4-e.yaml, core/include/router/lab_checkpoint.hpp, core/src/runtime/lab_checkpoint.cpp, core/src/runtime/runtime_supervisor_checkpoint.cpp, apps/web/src/persistence.ts, packages/contracts/src/lab-project-v4.ts, tools/generate-device-catalog.mjs]
+    tests: [core/tests/runtime/runtime_supervisor_test.cpp, apps/web/src/persistence-v4.test.ts]
+    status: implemented
+    notes: ABI 9 serializes explicit route provenance and logical scope generations for both address families without padding or runtime pointers. The codec, generated profile and browser manifest share one ABI constant. Old magic, old ABI and mixed IS-IS/OSPF provenance reject before restoration. Detached codec tests verify copied route and connected-input fields only; active IS-IS protocol checkpoint continuity remains unsupported and is not implied by this value contract. Portable project format 5 and structural runtime snapshot ABI 9 are unchanged.
+  - id: ietf.isis.prefix_next_hop_candidates
+    kind: routing-protocol-prefix-next-hop-candidates
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc1195.html#appendix-C.1
+    section: RFC 1195 appendix C.1 and section 4.4; RFC 5302 section 3.2; RFC 5308 sections 3 and 5; ISO 10589 annex C local adjacency initialization
+    rfc_refs: [RFC1195, RFC5302, RFC5308]
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-11-06
+    implementation: [core/include/router/isis_prefix_routes.hpp, core/include/router/isis_next_hop.hpp, core/include/router/isis_p2p_decision.hpp]
+    tests: [core/tests/isis/isis_link_graph_test.cpp, core/tests/isis/isis_next_hop_test.cpp]
+    status: experimental
+    notes: Allocation-free translation joins copied advertisements and completed SPF first-hop tokens with current accepted-Hello bindings on the instance owner. Values copy destination, structured distance, original LSP identity, up/down and external flags, peer IP and complete local scope. Parallel equal-cost adjacencies remain distinct. An unresolved binding removes that candidate; local origins without first hops create no learned route. Full token, family, level and capacity preflight precedes every output write. Applied zero is a complete withdrawal. The caller must fence current decision revisions and use the exact binding catalog from the calculation. Prefix policy, intra-protocol best-class selection, administrative preference and RIB publication remain separate required integration.
+  - id: ietf.isis.adjacency_next_hop_binding
+    kind: routing-protocol-next-hop-binding
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc1195.html#section-4.4
+    section: RFC 1195 sections 4.2, 4.4 and 5.2; RFC 5308 section 3; RFC 5309 sections 4.1 and 4.3; RFC 1812 section 4.2.2.11
+    rfc_refs: [RFC1195, RFC5308, RFC5309, RFC1812]
+    yang_path: /state/router/isis/interface/adjacency
+    last_verified_at: 2026-11-06
+    implementation: [core/include/router/isis_next_hop.hpp, core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp]
+    tests: [core/tests/isis/isis_next_hop_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
+    status: experimental
+    notes: A caller-selected IP address binds only to its current accepted Up P2P Hello, negotiated level and local interface/configuration generation. Both local and peer NLPIDs must support the family. The copied value retains peer system ID, logical interface scope and physical egress but no MAC. IPv4 subnet equality is not required, including numbered neighbors on different logical subnets. IPv6 Hello addresses must be link-local. Invalid interface scope, malformed trailing options or absent addresses refuse without partial output. This value contract does not choose a vendor multiple-address preference, create an ARP/ND entry or install a route. Typed circuit queries use the same owner-local binder; production next-hop selection and RIB publication remain incomplete.
   - id: project.runtime.dual_family_fib
     kind: forwarding-state-transaction
     release: 26.7.R1
@@ -206,7 +290,7 @@ records:
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-10-29
-    implementation: [core/include/router/protocol_packet_channel.hpp, core/include/router/ospf_control_worker.hpp, core/src/ospf/ospf_control_worker.cpp]
+    implementation: [core/include/router/protocol_packet_channel.hpp, core/src/runtime/network_plane.cpp, core/include/router/ospf_control_worker.hpp, core/src/ospf/ospf_control_worker.cpp]
     tests: [core/tests/runtime/protocol_packet_completion_test.cpp, core/tests/runtime/protocol_owner_lifecycle_test.cpp]
     status: implemented
     notes: A producer-owned protocol reservation epoch is independent of the transport configuration generation. Forwarding and link owners echo the complete metadata through release/acquire receipts. Guarded release rejects an old reservation epoch even when a slot reuses its device, interface, configuration, transmission class, local instance and ticket. Existing protocol producers may use zero. The fixed six-channel IS-IS set remains within its unchanged one MiB admission budget. Production CLI admission and LAN scheduling remain incomplete.
@@ -419,7 +503,7 @@ records:
     implementation: [core/include/router/route_generation.hpp, core/include/router/route_publication.hpp, core/include/router/ospf_route_channel.hpp, core/include/router/owned_spsc_channel.hpp, core/include/router/protocol_packet_channel.hpp]
     tests: [core/tests/runtime/route_publication_test.cpp, core/tests/ospf/ospf_route_channel_test.cpp, core/tests/runtime/owned_spsc_channel_test.cpp, core/tests/runtime/protocol_packet_completion_test.cpp]
     status: experimental
-    notes: Shared slots transfer exclusively owned dynamic control values through handle-only ready and return rings. One producer and one consumer use release/acquire ownership handoff. The independent circuit configuration generation in frame metadata supports rejection after live interface reconfiguration. Optional completion mode requires explicit producer result consumption before credit reuse. Consumer result writes are visible through the return acquire. Large values reset in place without a profile-sized stack temporary. A route wrapper compares device and route generation before completing borrowed storage and returns small copied installation receipts. Common route-generation data and ownership mechanics preserve the existing OSPF consumption-only API. Tests cover two-thread forward/result publication, pending-result backpressure, guarded slot reuse, explicit failure results, empty withdrawals and duplicate cancellation. OSPF export preparation validates and allocates replacement advertisements before a future FIB commit; its process-layout lease rejects mutation and checkpoint until allocation-free commit or abort. Tests cover preparation replay, incomplete input, abort, double commit and checkpoint exclusion. Production IS-IS RIB integration and its measured active-process limit remain separate work.
+    notes: Shared slots transfer exclusively owned dynamic control values through handle-only ready and return rings. One producer and one consumer use release/acquire ownership handoff. The independent circuit configuration generation in frame metadata supports rejection after live interface reconfiguration. Optional completion mode requires explicit producer result consumption before credit reuse. Consumer result writes are visible through the return acquire. Large values reset in place without a profile-sized stack temporary. A route wrapper compares device and route generation before completing borrowed storage and returns small copied installation receipts. Common route-generation data and ownership mechanics preserve the existing OSPF consumption-only API. Tests cover two-thread forward/result publication, pending-result backpressure, guarded slot reuse, explicit failure results, empty withdrawals and duplicate cancellation. Synchronous forwarding requests borrow payloads only within the call and materialize complete values into heap command scratch before either forwarding placement executes them; queue payloads remain owned. No stack or queue limit is raised. OSPF export preparation validates and allocates replacement advertisements before a future FIB commit; its process-layout lease rejects mutation and checkpoint until allocation-free commit or abort. Tests cover preparation replay, incomplete input, abort, double commit and checkpoint exclusion. Production IS-IS RIB integration and its measured active-process limit remain separate work.
   - id: iso.10589.2002.p2p_circuit_owner
     kind: routing-protocol-circuit-owner
     release: 26.7.R1

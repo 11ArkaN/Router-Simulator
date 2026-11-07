@@ -86,3 +86,35 @@ The network owner rebuilds both configured address families in heap-owned scratc
 A single fixed transfer arena contains the two compiled FIBs. The network owner lends that arena to exactly one forwarding owner through one synchronous command. The command identity and complete device handle guard the borrow. The existing SPSC command release and result acquire delimit ownership; while awaiting the result, the network owner only drains frame egress and cannot enter another route transaction. The command envelope does not duplicate both family arrays in each ring slot. Combined forwarding uses the same preflight directly on its owner.
 
 The transaction prepares redistributed advertisements against the staged RIBs before sending the forwarding command. Forwarding refusal aborts preparation. Success commits the prepared advertisements without allocation, swaps the active RIB pointers and advances only the installed family counters. Counter exhaustion refuses instead of wrapping. Scratch tables, FIBs and connected-input reserves are included in the existing control-memory reserve check.
+
+### Checkpoint route provenance
+
+Checkpoint ABI 9 stores stable logical interface IDs and their configuration generations in route inputs and selected FIB rows. IS-IS source, path type and prefix-distance rank are independent of OSPF path types. A decoded IS-IS route requires valid family/level/rank provenance, a nonzero logical scope generation and a supported instance ID. Connected and static rows cannot carry protocol path metadata.
+
+The codec ABI comes from the generated profile and is checked against its versioned namespace. Browser manifest creation and parsing use the same generated protocol value. Magic, ABI and schema identity must match before a detached graph can be decoded. There is no compatibility reader for older checkpoint images. Portable project format 5 and runtime snapshot ABI 9 retain their current shapes.
+
+This value-format contract preserves owned route data. It does not add an active IS-IS owner checkpoint or bypass the existing admission error for that unsupported operation.
+
+### Forwarding request materialization
+
+Synchronous forwarding requests borrow their programming payload only for the duration of the call. The link owner copies the value header and materializes the complete payload in its existing heap-owned command scratch before publishing an owned command. Only the owned specialization enters the SPSC ring; a request payload pointer never crosses that boundary.
+
+Combined and separate forwarding placements share this materialization step. The serialized network owner cannot enter another configuration command while one is being applied or awaiting its result. Encoded frame egress can still drain while waiting. Counter exhaustion refuses admission rather than reusing a command identity.
+
+A request initialized from a temporary payload is valid only within the complete synchronous call expression. A retained local command uses the owned payload type. This distinction keeps repeated maximum-size command temporaries off the control stack without changing queue capacity, the production stack limit or payload ownership.
+
+### IS-IS candidate admission
+
+The network owner retains OSPF and IS-IS candidates independently. Rebuild reads two immutable spans against one generated input budget; no concatenated route arena is allocated. Every configuration or OSPF rebuild explicitly supplies retained IS-IS spans. A complete local IS-IS generation must name a current device, local instance, logical interface, physical port and configuration generation. The consumer prepares bounded candidate capacity before the dual-family RIB/FIB transaction, then copies accepted values only after it succeeds. Empty router admission allocates no candidate arrays; active protocol storage may request checked runtime heap growth, like an LSDB. The unchanged initial-memory proof includes all eager per-router RIB allocations. Each arena contains two protocol partitions under one generated route ceiling. Replacing the first partition shifts the retained second partition within the same allocation; no second full protocol reserve or concatenation buffer is allocated. Growth, shrink, withdrawal and combined-capacity refusal preserve the other partition. Selection refusal and forwarding refusal return distinct results. Failed generations do not advance the accepted IS-IS key. Empty generations withdraw IS-IS while preserving other route sources. Circuit replacement must retain every installed IS-IS scope until the protocol owner has withdrawn its candidates. Automatic producer publication and receipt-channel integration are still required.
+
+### IS-IS route publication
+
+The IS-IS owner calculates independent IPv4 and IPv6 wide MT0 decisions with explicit budgets and preferences. Each publication contains all configured instances, families and levels for one router. Exact instance epochs and decision revisions form the pending snapshot; no hash or remote state substitutes for this fence. Publication waits for every required decision to consume its current revision. Calculation refusal preserves the installed generation.
+
+Next hops come from accepted Hellos and current local circuit identity. RFC 1195 permits multiple interface addresses without ranking them. The emulator chooses the numerically lowest usable advertised address, independently of TLV ordering. This is a local policy, not a claim about undocumented SR OS multiple-address ranking. IPv6 requires a scoped link-local next hop. ARP and ND exchange actual packets on the forwarding owner.
+
+A fixed receipt-enabled SPSC channel carries complete generations to the network owner. The consumer installs both families before returning the device, generation and installation or refusal status. The producer consumes the receipt before slot reuse. Refusal retries at the explicitly configured emulator recovery period; a full channel waits for completion notification. Same-handle protocol removal preserves publication high water. Idle registration waits for acknowledged empty withdrawal. Production activation, complete lifecycle transactions and active protocol checkpointing remain integration work.
+
+### Forwarding pause acknowledgements
+
+A forwarding owner clears its resume predicate before release-publishing a pause acknowledgement. The consumer may capture state and resume immediately after acquiring that result. Clearing the predicate after acknowledgement could overwrite that early resume and leave the owner waiting forever. The subsequent wait acquires the predicate and therefore also handles a resume that arrived before the wait began. Repeated live-router snapshots exercise this ordering while protocol workers remain active. This barrier is internal state ownership, not a simulation control.

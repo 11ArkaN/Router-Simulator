@@ -291,6 +291,12 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
         device.retired_epoch_floor = 0U;
         device.update_fences.fill(0U);
         for (auto &gate : device.sequence_recovery) gate.reset();
+        device.installed_routes = {};
+        device.pending_routes = {};
+        device.route_generation = device.route_installed = device.route_pending = 0U;
+        device.route_status = ::router::routing::RouteInstallStatus::pending;
+        device.route_retry_at = {};
+        device.route_retry = {};
       }
       device.handle = handle;
       device.active = true;
@@ -298,6 +304,12 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     return result;
   }
   if (!device.active || device.handle != handle) { result.error = ControlError::stale_device; return result; }
+  result.route_published_generation = device.route_generation;
+  result.route_installed_generation = device.route_installed;
+  result.route_install_status = device.route_status;
+  result.route_withdrawal_pending = device.route_pending ||
+      std::any_of(device.installed_routes.begin(), device.installed_routes.end(),
+          [](const auto &stamp) { return stamp.families != 0U; });
   if (command.kind == ControlCommandKind::query_sequence_recovery) {
     const auto now = RuntimeClock::now();
     result.sequence_recovery_pending = std::any_of(device.sequence_recovery.begin(), device.sequence_recovery.end(),
@@ -453,6 +465,13 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
   }
   if (command.kind != ControlCommandKind::query_circuit) { result.error = ControlError::invalid_argument; return result; }
   result.adjacency = found->circuit.adjacency();
+  if (command.selected_next_hop) {
+    result.bound_next_hop = bind_p2p_next_hop(result.adjacency,
+        found->circuit.peer_attributes(), found->circuit.configuration().protocols,
+        {found->identity.interface_id, found->identity.configuration_generation,
+         found->identity.physical_port_ordinal}, command.level, *command.selected_next_hop);
+    if (!result.bound_next_hop) result.error = ControlError::not_found;
+  }
   result.counters = found->counters;
   result.hello_pending = found->circuit.hello_pending();
   if (found->update) {
@@ -551,6 +570,7 @@ void ControlWorker::run() noexcept {
     }
     if (stop_.load(std::memory_order_acquire)) break;
     const auto now = PointToPointCircuit::Clock::now();
+    complete_routes(now);
     for (std::size_t shard{}; shard < forwarding_shards_; ++shard) {
       auto budget = device_catalog::isis_work_budget_packets;
       while (budget--) {
@@ -647,6 +667,7 @@ void ControlWorker::run() noexcept {
         else if (const auto holding = owned.circuit.holding_deadline()) deadline = std::min(deadline, *holding);
       }
       if (!device.circuits.empty()) device.first_circuit = (device.first_circuit + 1U) % device.circuits.size();
+      deadline = std::min(deadline, service_routes(device, now));
     }
     first_device_ = (first_device_ + 1U) % devices_.size();
     std::unique_lock lock(wait_mutex_);

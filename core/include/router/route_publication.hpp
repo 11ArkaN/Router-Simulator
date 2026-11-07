@@ -8,7 +8,7 @@
 #include "router/route_generation.hpp"
 
 namespace router::routing {
-enum class RouteInstallStatus : std::uint8_t { pending, installed, stale, invalid, capacity, forwarding_failed };
+enum class RouteInstallStatus : std::uint8_t { pending, installed, stale, invalid, capacity, selection_failed, forwarding_failed };
 struct RouteInstallReceipt {
   lab::DeviceHandle device{};
   std::uint64_t generation{};

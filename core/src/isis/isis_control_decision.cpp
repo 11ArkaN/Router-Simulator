@@ -1,6 +1,6 @@
 // The IS-IS pthread consumes its own decision revisions and accepted circuit
-// snapshots. This experimental wide MT0 projection publishes no RIB or FIB
-// entries and has no access to editor topology or another router's state.
+// snapshots. Wide MT0 calculations feed diagnostics and optional complete
+// route publications without editor topology or another router's state.
 
 // Source: iso.10589.2002.lsdb_link_graph
 
@@ -12,15 +12,17 @@
 namespace router::isis {
 void ControlWorker::service_p2p_decision(OwnedInstance &instance, const DeviceState &device,
     std::size_t index, RuntimeClock::time_point now, std::size_t &budget) noexcept {
-  if (!instance.configuration.decision) return;
+  if (!instance.configuration.origination || !instance.configuration.origination->neighbors) return;
   const auto &interfaces = *instance.configuration.origination->neighbors;
   std::array<P2pSpfSeed, device_catalog::maximum_ecmp_paths> seeds{};
+  const auto calculate = [&](const P2pDecisionProgram &program,
+      auto &decisions, auto &consumed, auto &status, std::array<std::uint64_t, 2U> *runs) {
   for (std::size_t level{}; level < 2U && budget; ++level) {
-    if (!instance.decisions[level] || instance.consumed_decision_revision[level] == instance.decision_revisions[level]) continue;
+    if (!decisions[level] || consumed[level] == instance.decision_revisions[level]) continue;
     std::size_t count{};
     for (const auto &owned : device.circuits) {
       if (owned.identity.instance != index) continue;
-      const auto protocol = instance.configuration.decision->protocol;
+      const auto protocol = program.protocol;
       if (protocol) {
         const auto &local = owned.circuit.configuration().protocols;
         if (std::find(local.begin(), local.end(), *protocol) == local.end()) continue;
@@ -41,12 +43,21 @@ void ControlWorker::service_p2p_decision(OwnedInstance &instance, const DeviceSt
     }
     packet::isis::LanId root{};
     std::copy(instance.configuration.local.begin(), instance.configuration.local.end(), root.begin());
-    instance.decision_status[level] = instance.decisions[level]->calculate(
-        instance.process->level(level)->database().database(), {root, 0U, instance.configuration.decision->protocol, GraphMetricStyle::wide},
+    status[level] = decisions[level]->calculate(
+        instance.process->level(level)->database().database(), {root, 0U, program.protocol, GraphMetricStyle::wide},
         std::span{seeds}.first(count), static_cast<std::uint16_t>(interfaces.size()), now);
-    instance.consumed_decision_revision[level] = instance.decision_revisions[level];
-    if (instance.decision_runs[level] != std::numeric_limits<std::uint64_t>::max()) ++instance.decision_runs[level];
+    consumed[level] = instance.decision_revisions[level];
+    if (runs && (*runs)[level] != std::numeric_limits<std::uint64_t>::max()) ++(*runs)[level];
     --budget;
   }
+  };
+  if (instance.configuration.decision)
+    calculate(*instance.configuration.decision, instance.decisions, instance.consumed_decision_revision,
+        instance.decision_status, &instance.decision_runs);
+  for (std::size_t family{}; family < instance.configuration.routing.size(); ++family)
+    if (instance.configuration.routing[family]) {
+      auto &owned = instance.route_families[family];
+      calculate(instance.configuration.routing[family]->calculation, owned.decisions, owned.consumed, owned.status, nullptr);
+    }
 }
 } // namespace router::isis

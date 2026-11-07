@@ -22,6 +22,7 @@
 #include "router/packet.hpp"
 #include "router/router_forwarder.hpp"
 #include "router/route_policy.hpp"
+#include "router/route_publication.hpp"
 #include "router/udp_transport.hpp"
 
 #include <array>
@@ -709,6 +710,13 @@ public:
   [[nodiscard]] bool
   program_route_policy(DeviceHandle device,
                        const RoutePolicyProgram &policy) noexcept;
+  // Serialized network owner only. The protocol producer fences a complete
+  // generation against its current LSDB and accepted-Hello revisions. This
+  // consumer validates local circuit epochs, merges retained OSPF and commits
+  // both RIB/FIB families before returning installed. Failure retains the last
+  // accepted generation; no input view escapes. Empty counts withdraw IS-IS.
+  [[nodiscard]] ::router::routing::RouteInstallStatus program_isis_routes(
+      const ::router::routing::RouteGeneration &generation) noexcept;
   [[nodiscard]] std::optional<OspfRouteDiagnostics>
   ospf_route_diagnostics(DeviceHandle device) const noexcept;
   [[nodiscard]] std::optional<ospf::ControlResult>

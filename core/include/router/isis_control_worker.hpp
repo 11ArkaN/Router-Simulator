@@ -8,6 +8,8 @@
 #include "router/isis_local_lsp_set.hpp"
 #include "router/isis_neighbor_origination.hpp"
 #include "router/isis_p2p_decision.hpp"
+#include "router/isis_next_hop.hpp"
+#include "router/route_publication.hpp"
 #include "router/isis_database_validation.hpp"
 #include "router/isis_sequence_recovery.hpp"
 #include "router/owned_spsc_channel.hpp"
@@ -29,6 +31,13 @@ struct ControlChannels {
              device_catalog::high_forwarding_shards> ingress;
   std::array<protocol::PacketChannel<device_catalog::isis_packet_ring_frames, true>,
              device_catalog::high_forwarding_shards> egress;
+  // Producer: this protocol pthread. Consumer: serialized network RIB owner.
+  // Fixed generations and installation results use the receipt-enabled SPSC
+  // contract. The aggregate outlives both owners; no LSDB pointer crosses it.
+  std::unique_ptr<::router::routing::RoutePublication> routes{
+      std::make_unique<::router::routing::RoutePublication>()};
+  void *route_wakeup_context{};
+  void (*route_wakeup)(void *){};
   // Installed before startup. Notification carries no network information.
   void *egress_context{};
   void (*egress_wakeup)(void *, std::size_t forwarding_shard){};
@@ -82,6 +91,14 @@ struct P2pDecisionProgram {
   std::optional<std::uint8_t> protocol;
   std::optional<PrefixCollectionBudget> prefixes;
 };
+// Explicit effective configuration for experimental wide MT0 installation.
+// Family protocol and prefix budgets must be present; no vendor default is
+// inferred by this control owner. Preferences come from the configuration owner.
+struct P2pRouteFamilyProgram {
+  P2pDecisionProgram calculation;
+  struct Preference { std::uint16_t internal{}, external{}; };
+  std::array<Preference, 2U> preferences;
+};
 struct UpdateInstanceProgram {
   packet::isis::SystemId local{};
   std::uint8_t maximum_areas{};
@@ -92,6 +109,7 @@ struct UpdateInstanceProgram {
   packet::isis::InstanceFormat format{packet::isis::InstanceFormat::standard};
   std::optional<LocalOriginProgram> origination{};
   std::optional<P2pDecisionProgram> decision{};
+  std::array<std::optional<P2pRouteFamilyProgram>, 2U> routing{};
 };
 struct ControlCommand {
   std::uint64_t id{};
@@ -114,6 +132,7 @@ struct ControlCommand {
   // Read-only selected-LSP projection; no retained packet view crosses owners.
   std::optional<packet::isis::LspId> selected_lsp{};
   std::optional<ip::IpPrefix> selected_prefix{};
+  std::optional<ip::IpAddress> selected_next_hop{};
   OriginPurgeReason purge{OriginPurgeReason::none};
 };
 enum class ControlError : std::uint8_t {
@@ -141,6 +160,7 @@ struct ControlResult {
   std::uint64_t id{};
   ControlError error{ControlError::none};
   P2pSnapshot adjacency{};
+  std::optional<AdjacencyNextHop> bound_next_hop{};
   CircuitCounters counters{};
   std::uint64_t thread_identity{};
   std::int64_t holding_deadline_nanoseconds{};
@@ -157,6 +177,9 @@ struct ControlResult {
   std::array<std::size_t, 2U> prefix_advertisements{};
   std::array<std::optional<PrefixDistance>, 2U> selected_prefix_distance{};
   std::array<DecisionStatus, 2U> decision_status{DecisionStatus::invalid, DecisionStatus::invalid};
+  std::uint64_t route_published_generation{}, route_installed_generation{};
+  bool route_withdrawal_pending{};
+  ::router::routing::RouteInstallStatus route_install_status{::router::routing::RouteInstallStatus::pending};
   bool sequence_recovery_pending{};
   UpdateStatus update_status{UpdateStatus::inactive};
   LocalContentResult local_content_result{LocalContentResult::missing};
@@ -200,6 +223,20 @@ private:
     std::array<std::unique_ptr<P2pRouteDecision>, 2U> decisions;
     std::array<std::uint64_t, 2U> consumed_decision_revision{}, decision_runs{};
     std::array<DecisionStatus, 2U> decision_status{DecisionStatus::invalid, DecisionStatus::invalid};
+    struct RouteFamily {
+      std::array<std::unique_ptr<P2pRouteDecision>, 2U> decisions;
+      std::array<std::uint64_t, 2U> consumed{};
+      std::array<DecisionStatus, 2U> status{DecisionStatus::invalid, DecisionStatus::invalid};
+    };
+    std::array<RouteFamily, 2U> route_families;
+    [[nodiscard]] bool decisions_pending() const noexcept {
+      for (std::size_t level{}; level < 2U; ++level) {
+        if (decisions[level] && consumed_decision_revision[level] != decision_revisions[level]) return true;
+        for (const auto &family : route_families)
+          if (family.decisions[level] && family.consumed[level] != decision_revisions[level]) return true;
+      }
+      return false;
+    }
     struct NeighborProjection { packet::isis::SystemId peer{}; Levels usage{Levels::none}; bool up{}; };
     // Fixed slots follow sorted configured interface IDs. This owner rewrites
     // the projection only while composing dirty roots; it contains no pointers.
@@ -221,6 +258,13 @@ private:
       if (configuration.decision) for (std::size_t level{}; level < 2U; ++level)
         if (configuration.levels[level]) decisions[level] = std::make_unique<P2pRouteDecision>(
             configuration.decision->nodes, configuration.decision->links, configuration.decision->pending, MetricStyle::wide, configuration.decision->prefixes);
+      for (std::size_t family{}; family < configuration.routing.size(); ++family)
+        if (configuration.routing[family]) {
+          const auto &calculation = configuration.routing[family]->calculation;
+          for (std::size_t level{}; level < 2U; ++level) if (configuration.levels[level])
+            route_families[family].decisions[level] = std::make_unique<P2pRouteDecision>(
+                calculation.nodes, calculation.links, calculation.pending, MetricStyle::wide, calculation.prefixes);
+        }
       for (std::size_t level{}; level < 2U; ++level)
         if (configuration.levels[level]) expiration_blocked[level].reserve(configuration.levels[level]->database.records);
       if (configuration.origination) {
@@ -292,6 +336,14 @@ private:
           circuit(std::move(command.configuration), command.random_state, now),
           transmission(command.identity.configuration_generation), random_state(command.random_state) {}
   };
+  struct RouteStamp {
+    std::uint64_t epoch{};
+    std::array<std::uint64_t, 2U> decision{};
+    UpdateStatus status{UpdateStatus::inactive};
+    std::uint8_t families{};
+    bool operator==(const RouteStamp &) const = default;
+  };
+  using RouteStamps = std::array<RouteStamp, device_catalog::isis_instance_last + 1U>;
   struct DeviceState {
     lab::DeviceHandle handle{};
     bool active{};
@@ -313,6 +365,15 @@ private:
     std::array<std::uint8_t, device_catalog::isis_instance_last + 1U> instance_order{};
     std::size_t instance_count{}, first_instance{};
     std::size_t first_circuit{};
+    // This protocol owner keeps publication high water across unregistering
+    // the same physical handle. Pending snapshots own exact revision values;
+    // no hash or pointer substitutes for a freshness fence.
+    RouteStamps installed_routes{}, pending_routes{};
+    std::uint64_t route_generation{}, route_installed{}, route_pending{};
+    ::router::routing::RouteInstallStatus route_status{::router::routing::RouteInstallStatus::pending};
+    RuntimeClock::time_point route_retry_at{};
+    std::chrono::milliseconds route_retry{};
+
   };
   struct PreparedGeneration {
     PreparedGeneration() = default;
@@ -366,6 +427,9 @@ private:
   [[nodiscard]] ControlResult apply(ControlCommand &command) noexcept;
   void receive(const protocol::PacketChannel<device_catalog::isis_packet_ring_frames>::Borrowed &packet,
       PointToPointCircuit::Clock::time_point now) noexcept;
+  [[nodiscard]] RuntimeClock::time_point service_routes(DeviceState &device,
+      RuntimeClock::time_point now) noexcept;
+  void complete_routes(RuntimeClock::time_point now) noexcept;
   void run() noexcept;
   ControlChannels &channels_;
   std::size_t forwarding_shards_{};

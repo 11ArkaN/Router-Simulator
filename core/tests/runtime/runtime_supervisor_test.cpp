@@ -1090,8 +1090,52 @@ void runtime_supervisor_tests() {
        // abort or replace it with the ordinary private MD candidate.
        .classic_policy_candidate = classic_policy_candidate,
        .classic_policy_edit_active = true});
-  const auto bytes = checkpoint_v7::encode(*checkpoint);
-  auto decoded = checkpoint_v7::decode(bytes);
+  const auto bytes = checkpoint_v9::encode(*checkpoint);
+  auto decoded = checkpoint_v9::decode(bytes);
+  {
+    // Detached codec fixtures exercise new values without claiming an active
+    // IS-IS process checkpoint or restoring fabricated protocol ownership.
+    auto scoped = std::make_unique<RuntimeSupervisorCheckpoint>(*checkpoint);
+    require(!scoped->network.routers.empty() && !scoped->control.empty(),
+        "scoped route checkpoint fixture has no router owner");
+    auto &forwarding = scoped->network.routers.front().forwarding;
+    forwarding.fib.count = forwarding.ipv6_fib.count = 1U;
+    forwarding.fib.loop_free_alternate_count = forwarding.ipv6_fib.loop_free_alternate_count = 0U;
+    forwarding.fib.routes[0U] = {.network = 0xc6336400U, .next_hop = 0xc0000202U,
+        .port_ordinal = 1U, .prefix_length = 24U, .preference = 160U, .metric = 5U,
+        .source = routing::RouteSource::isis, .protocol_instance = 7U,
+        .interface_id = 42U, .isis_path_type = routing::IsisPathType::level1_external,
+        .isis_rank = 3U, .interface_generation = 17U};
+    forwarding.ipv6_fib.routes[0U] = {.network = *router::ip::parse_ipv6("2001:db8:1::"),
+        .next_hop = *router::ip::parse_ipv6("fe80::2"), .interface_id = 43U,
+        .physical_port_ordinal = 1U, .prefix_length = 64U, .preference = 165U,
+        .metric = 33U, .source = routing::RouteSource::isis, .protocol_instance = 8U,
+        .isis_path_type = routing::IsisPathType::level2_external,
+        .isis_rank = 2U, .interface_generation = 18U};
+    auto &control = scoped->control.front();
+    control.connected[0U].interface_id = 44U;
+    control.connected[0U].interface_generation = 19U;
+    control.ipv6_connected[0U].configured = true;
+    control.ipv6_connected[0U].interface_id = 45U;
+    control.ipv6_connected[0U].interface_generation = 20U;
+    auto restored = checkpoint_v9::decode(checkpoint_v9::encode(*scoped));
+    require(restored && restored->network.routers.front().forwarding.fib.routes[0U] == forwarding.fib.routes[0U] &&
+        restored->network.routers.front().forwarding.ipv6_fib.routes[0U] == forwarding.ipv6_fib.routes[0U] &&
+        restored->control.front().connected[0U].interface_generation == 19U &&
+        restored->control.front().connected[0U].interface_id == 44U &&
+        restored->control.front().ipv6_connected[0U].interface_generation == 20U,
+        "checkpoint lost IS-IS provenance or local interface scope");
+    forwarding.fib.routes[0U].ospf_path_type = routing::OspfPathType::intra_area;
+    require(!checkpoint_v9::decode(checkpoint_v9::encode(*scoped)),
+        "checkpoint accepted mixed IS-IS and OSPF provenance");
+    auto old_magic = bytes;
+    old_magic[6U] = '7';
+    require(!checkpoint_v9::decode(old_magic), "checkpoint accepted an obsolete magic");
+    auto old_abi = bytes;
+    old_abi[8U] = 7U;
+    require(!checkpoint_v9::decode(old_abi), "checkpoint accepted an obsolete ABI");
+  }
+
   require(decoded && bytes.size() > 64 &&
               decoded->network.hosts.front().endpoint.ipv4_reassembly.size() ==
                   1U &&
@@ -1140,7 +1184,7 @@ void runtime_supervisor_tests() {
           "checkpoint ABI 6 did not round-trip the value graph");
   auto corrupted = bytes;
   corrupted[0] ^= 0x5aU;
-  require(!checkpoint_v7::decode(corrupted),
+  require(!checkpoint_v9::decode(corrupted),
           "checkpoint ABI 6 accepted corrupted family magic");
   decoded->network.hosts.front().dns.reset();
   // The two portable entries above belong to LabRuntime in production. Remove
@@ -1319,8 +1363,8 @@ void runtime_supervisor_tests() {
   auto ies_checkpoint = runtime->checkpoint();
   require(static_cast<bool>(ies_checkpoint),
           "IES runtime checkpoint was unavailable");
-  const auto ies_checkpoint_bytes = checkpoint_v7::encode(*ies_checkpoint);
-  auto decoded_ies_checkpoint = checkpoint_v7::decode(ies_checkpoint_bytes);
+  const auto ies_checkpoint_bytes = checkpoint_v9::encode(*ies_checkpoint);
+  auto decoded_ies_checkpoint = checkpoint_v9::decode(ies_checkpoint_bytes);
   require(static_cast<bool>(decoded_ies_checkpoint),
           "IES control graph did not survive checkpoint ABI 6 encoding");
   require(decoded_ies_checkpoint->control.size() == 1U &&
@@ -1574,8 +1618,8 @@ void runtime_supervisor_tests() {
   auto dhcp_checkpoint = runtime->checkpoint();
   require(static_cast<bool>(dhcp_checkpoint),
           "threaded DHCPv6 checkpoint was unavailable");
-  const auto dhcp_checkpoint_bytes = checkpoint_v7::encode(*dhcp_checkpoint);
-  auto decoded_dhcp_checkpoint = checkpoint_v7::decode(dhcp_checkpoint_bytes);
+  const auto dhcp_checkpoint_bytes = checkpoint_v9::encode(*dhcp_checkpoint);
+  auto decoded_dhcp_checkpoint = checkpoint_v9::decode(dhcp_checkpoint_bytes);
   require(static_cast<bool>(decoded_dhcp_checkpoint),
           "DHCPv6 state did not survive checkpoint ABI 6 encoding");
   runtime.reset();

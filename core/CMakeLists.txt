@@ -327,6 +327,7 @@ add_library(router_network STATIC
   src/isis/isis_control_update_lifetime.cpp
   src/isis/isis_control_origin.cpp
   src/isis/isis_control_decision.cpp
+  src/isis/isis_control_routes.cpp
   src/isis/isis_control_neighbors.cpp
   src/isis/isis_control_self.cpp
   src/runtime/capture_store.cpp
@@ -593,6 +594,7 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_reachability_test.cpp
     tests/isis/isis_multi_topology_test.cpp
     tests/isis/isis_basic_tlvs_test.cpp
+    tests/isis/isis_next_hop_test.cpp
     tests/isis/isis_narrow_reachability_test.cpp
     tests/isis/isis_authentication_test.cpp
     tests/isis/isis_instance_tlv_test.cpp
@@ -722,6 +724,7 @@ if(ROUTER_BUILD_TESTS)
     tests/forwarding/route_policy_test.cpp
     tests/forwarding/multi_device_fabric_test.cpp
     tests/forwarding/multi_device_routing_test.cpp
+    tests/forwarding/isis_rib_test.cpp
     tests/runners/module_test_main.cpp
     tests/forwarding/network_endpoint_ipv4_test.cpp
     tests/forwarding/network_endpoint_ipv6_test.cpp

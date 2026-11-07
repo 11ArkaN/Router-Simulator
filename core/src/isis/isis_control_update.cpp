@@ -121,7 +121,9 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
   for (const auto &level : command.update->levels)
     if (level && (level->authenticate_lsp || level->authenticate_csnp || level->authenticate_psnp))
       return ControlError::unsupported_authentication;
-  if (command.update->decision && (!command.update->origination || !command.update->origination->neighbors ||
+  const bool routing = std::any_of(command.update->routing.begin(), command.update->routing.end(),
+      [](const auto &family) { return family.has_value(); });
+  if ((command.update->decision || routing) && (!command.update->origination || !command.update->origination->neighbors ||
       command.update->origination->neighbors->size() > device_catalog::maximum_ecmp_paths))
     return ControlError::unsupported_origination;
   if (command.update->decision) {
@@ -129,6 +131,18 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
     if ((protocol && *protocol != packet::isis::ipv4_nlpid && *protocol != packet::isis::ipv6_nlpid) ||
         (command.update->decision->prefixes && !protocol)) return ControlError::invalid_argument;
   }
+  for (std::size_t family{}; family < command.update->routing.size(); ++family)
+    if (command.update->routing[family]) {
+      const auto &program = *command.update->routing[family];
+      const auto protocol = family ? packet::isis::ipv6_nlpid : packet::isis::ipv4_nlpid;
+      if (program.calculation.protocol != protocol || !program.calculation.prefixes)
+        return ControlError::invalid_argument;
+      for (std::size_t level{}; level < program.preferences.size(); ++level) if (command.update->levels[level]) {
+        const auto &preference = program.preferences[level];
+        if (!preference.internal || preference.internal > 255U || !preference.external || preference.external > 255U)
+          return ControlError::invalid_argument;
+      }
+    }
   const auto neighbor_error = prepare_neighbor_origination(*command.update);
   if (neighbor_error != ControlError::none) return neighbor_error;
   try {

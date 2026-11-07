@@ -617,7 +617,7 @@ namespace checkpoint_validation {
 
 // Preconditions: both programs passed their binary decoder and use the same
 // generation. Postcondition: true means every connected/static route rebuilt
-// by the control owner remains selected and every additional row has an OSPF
+// by the control owner remains selected and every additional row has an explicit protocol
 // owner. The function does not mutate either checkpoint image.
 [[nodiscard]] bool base_fib_preserved(
     const routing::FibProgram &base,
