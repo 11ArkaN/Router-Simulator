@@ -97,6 +97,61 @@ void delivered(void *opaque, const lab::MultiDeviceFabric::Delivery &delivery) {
 void isis_instance_update_tests() {
   auto now = RuntimeClock::time_point{100s};
   {
+    // A new DIS purges all retained fragments of the previous foreign
+    // pseudonode without changing sequence/checksum or another namespace.
+    const packet::Mac group{1U, 0x80U, 0xc2U, 0U, 0U, 0x14U};
+    const packet::Mac peer{2U, 0U, 0U, 0U, 0U, 2U};
+    auto configuration = level_configuration();
+    for (auto &level : configuration) {
+      level->authenticate_lsp = false;
+      // Reserve room for POI added to the authenticated foreign purge.
+      level->database.minimum_pdu_allocation = 128U;
+    }
+    const UpdateCircuitConfiguration binding{7U, Levels::both, false, InstanceFormat::standard,
+        0U, {group, group}, true, 2U};
+    InstanceUpdateProcess update({1U, 2U, 3U, 4U, 5U, 1U}, 3U, configuration,
+        std::array{binding}, {InstanceFormat::standard, 0U}, 2U, 41U);
+    const LevelObserver observer{nullptr, +[](void *, const LevelEvent &) noexcept {}};
+    require(update.lan(0U, 7U, 0U, std::span{&peer, 1U}, true, observer) == UpdateStatus::applied);
+    const std::array<std::uint8_t, 6U> secret{1U, 2U, 3U, 4U, 5U, 6U};
+    const AuthenticationKey key{AuthenticationMethod::hmac_sha256, 7U, secret};
+    auto scratch = std::make_unique<PduScratch>();
+    auto frame = std::make_unique<packet::Frame>();
+    const LanId previous{1U, 2U, 3U, 4U, 5U, 2U, 7U};
+    for (const auto fragment : {0U, 255U}) {
+      LspContents contents;
+      contents.header = {PduType::lsp_l1, {1U, 2U, 3U, 4U, 5U, 2U, 7U,
+          static_cast<std::uint8_t>(fragment)}, 1200U, 17U, 3U};
+      contents.maximum_pdu_octets = 1492U;
+      contents.authentication = key;
+      const auto built = build_lsp_pdu(contents, scratch->options, scratch->pdu);
+      require(built.status == LspBuildStatus::encoded && ethernet_pdu_into(*frame, peer, group, built.bytes));
+      require(update.receive(0U, 7U, *frame, key, now, observer).status == UpdateStatus::applied);
+      const auto stored = update.level(0U)->database().database().find(contents.header.id, now);
+      require(stored.has_value());
+      const auto checksum = stored->header.checksum;
+      const auto bytes = stored->pdu.bytes.data();
+      auto wrong = previous;
+      wrong[6U] = 0U;
+      require(update.purge_previous_pseudonode(0U, wrong, contents.header.id, {true, key}, now,
+          scratch->options, scratch->pdu, observer).status == UpdateStatus::invalid_configuration);
+      require(update.purge_previous_pseudonode(0U, previous, contents.header.id, {true, std::nullopt}, now,
+          scratch->options, scratch->pdu, observer).status == UpdateStatus::authentication);
+      require(update.level(0U)->database().database().find(contents.header.id, now)->header.remaining_seconds == 1200U);
+      require(update.purge_previous_pseudonode(0U, previous, contents.header.id, {true, key}, now + 2s,
+          scratch->options, scratch->pdu, observer).status == UpdateStatus::applied);
+      const auto purged = update.level(0U)->database().database().find(contents.header.id, now + 2s);
+      require(purged && purged->purge_installed && !purged->header.remaining_seconds);
+      require(purged->header.sequence == 17U && purged->header.checksum == checksum);
+      require(verify_authentication(purged->pdu.bytes, key) == AuthenticationError::none);
+      require(purged->pdu.bytes.data() == bytes);
+      require(update.purge_previous_pseudonode(0U, previous, contents.header.id, {true, key}, now + 3s,
+          scratch->options, scratch->pdu, observer).status == UpdateStatus::inactive);
+      require(!update.retire_purge(0U, contents.header.id, now + 1201s, observer) &&
+          update.retire_purge(0U, contents.header.id, now + 1202s, observer));
+    }
+  }
+  {
     const packet::Mac group{1U, 0x80U, 0xc2U, 0U, 0U, 0x14U};
     const packet::Mac peer{2U, 0U, 0U, 0U, 0U, 2U};
     const packet::Mac other{2U, 0U, 0U, 0U, 0U, 3U};
@@ -136,6 +191,41 @@ void isis_instance_update_tests() {
     require(lan.lan(0U, 7U, 0U, two, true, observer) == UpdateStatus::applied &&
         lan.outputs(0U, 0U)->synchronization_epoch == 41U && lan.outputs(0U, 0U)->reservations.designated);
     require(lan.lan(0U, 7U, 1U, std::span{&other, 1U}, false, observer) == UpdateStatus::applied);
+    SnpContents pending_contents;
+    pending_contents.header.type = PduType::csnp_l1;
+    pending_contents.header.source = {1U, 2U, 3U, 4U, 5U, 1U};
+    pending_contents.header.maximum_area_addresses = 3U;
+    pending_contents.source = hello_configuration(1U).mac;
+    pending_contents.destination = group;
+    pending_contents.maximum_pdu_octets = 1492U;
+    auto pending_frame = std::make_unique<packet::Frame>();
+    const auto pending = lan.outputs(0U, 0U)->reservations.snp.prepare(SnpEmission::complete,
+        pending_contents, true, *pending_frame, *scratch, now);
+    require(pending.status == SnpExchangeStatus::encoded);
+    auto prepared_binding = binding;
+    prepared_binding.configuration_epoch = 8U;
+    prepared_binding.neighbor_capacity = 3U;
+    auto impossible_binding = prepared_binding;
+    impossible_binding.neighbor_capacity = std::numeric_limits<std::size_t>::max();
+    require(lan.prepare_rebind_circuit(1U, prepared_binding) == UpdateStatus::invalid_circuit &&
+        lan.prepare_rebind_circuit(0U, binding) == UpdateStatus::stale_configuration);
+    auto invalid_binding = prepared_binding;
+    invalid_binding.broadcast = false;
+    require(lan.prepare_rebind_circuit(0U, invalid_binding) == UpdateStatus::invalid_configuration &&
+        lan.prepare_rebind_circuit(0U, impossible_binding) == UpdateStatus::capacity &&
+        lan.outputs(0U, 0U)->synchronization_epoch == 41U &&
+        lan.outputs(0U, 0U)->reservations.designated);
+    const auto *retained_bytes = lan.level(0U)->database().database().find(contents.header.id, now)->pdu.bytes.data();
+    require(lan.prepare_rebind_circuit(0U, prepared_binding) == UpdateStatus::applied &&
+        lan.outputs(0U, 1U)->synchronization_epoch == 41U &&
+        lan.receive(0U, 7U, *frame, {}, now, observer).status == UpdateStatus::applied &&
+        lan.level(0U)->database().database().find(contents.header.id, now)->pdu.bytes.data() == retained_bytes &&
+        lan.outputs(0U, 0U)->reservations.snp.pending() &&
+        lan.outputs(0U, 0U)->reservations.snp.complete(41U, pending.ticket, false, now).accepted);
+    const std::array three{peer, other, packet::Mac{2U, 0U, 0U, 0U, 0U, 4U}};
+    // Reserving storage is not publishing a larger configured peer budget.
+    require(lan.lan(0U, 7U, 0U, three, true, observer) == UpdateStatus::capacity &&
+        lan.outputs(0U, 0U)->synchronization_epoch == 41U);
     // An L1 peer is not automatically a same-level L2 neighbor.
     EthernetDecodeError decode_error{};
     const auto received_wire = parse_ethernet_pdu(frame->view(), decode_error);
@@ -154,11 +244,13 @@ void isis_instance_update_tests() {
         lan.release_circuit(0U, 7U) == UpdateStatus::applied);
     auto replacement = binding;
     replacement.configuration_epoch = 8U;
-    replacement.neighbor_capacity = 3U;
-    require(lan.rebind_circuit(0U, replacement) == UpdateStatus::capacity);
-    replacement.neighbor_capacity = 2U;
+    replacement.neighbor_capacity = 4U;
+    require(lan.rebind_circuit(0U, replacement) == UpdateStatus::capacity &&
+        lan.prepare_rebind_circuit(0U, replacement) == UpdateStatus::applied);
     require(lan.rebind_circuit(0U, replacement) == UpdateStatus::applied &&
         lan.lan(0U, 8U, 0U, one, false, observer) == UpdateStatus::applied &&
+        lan.outputs(0U, 0U)->synchronization_epoch == 43U);
+    require(lan.lan(0U, 8U, 0U, three, true, observer) == UpdateStatus::applied &&
         lan.outputs(0U, 0U)->synchronization_epoch == 43U);
   }
   Endpoint a(1U, now), b(2U, now);

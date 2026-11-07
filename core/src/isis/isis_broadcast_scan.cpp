@@ -23,6 +23,11 @@ BroadcastScan::BroadcastScan(std::chrono::microseconds interval, std::uint64_t s
     throw std::invalid_argument("Invalid IS-IS broadcast scan program");
   periodic_ = later(now, *jittered_interval(interval_, random_));
 }
+bool BroadcastScan::activate(Clock::time_point now) noexcept {
+  if (pending_) return false;
+  periodic_ = later(now, *jittered_interval(interval_, random_));
+  return true;
+}
 std::optional<std::size_t> BroadcastScan::begin(Clock::time_point now,
     std::size_t candidates, bool ingress_pending) noexcept {
   if (now < periodic_ || now == Clock::time_point::max()) return std::nullopt;

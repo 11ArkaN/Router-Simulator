@@ -98,20 +98,25 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
     const auto *common = entry.common();
     if (entry.update_transmission && !valid_transmission(*entry.update_transmission)) return ControlError::invalid_argument;
     if (!common || (entry.broadcast && entry.configuration != P2pCircuitConfiguration{})) return ControlError::invalid_argument;
+    if (entry.update_transmission && !valid_medium_transmission(*entry.update_transmission, entry.update_view()))
+      return ControlError::invalid_argument;
     if (const auto &instance = device.instances[identity.instance]) {
-      if (entry.broadcast) return ControlError::unsupported_update_medium;
+      const auto view = entry.update_view();
+      const auto &transmission = entry.update_transmission.value_or(instance->configuration.transmission);
+      if (!valid_medium_transmission(transmission, view)) return ControlError::unsupported_update_medium;
       if (instance->status != UpdateStatus::applied && !requires_reconstruction(instance->status))
         return ControlError::update_refused;
-      const auto &configuration = entry.configuration;
-      if (!matches_update_instance(instance->configuration, configuration, identity.interface_id))
+      if (!matches_update_instance(instance->configuration, entry.update_view(), identity.interface_id))
         return ControlError::invalid_argument;
-      const auto mask = static_cast<std::uint8_t>(configuration.local.levels);
+      const auto mask = static_cast<std::uint8_t>(view.levels);
       for (std::size_t level{}; level < 2U; ++level)
         if ((mask & (1U << level)) && !instance->configuration.levels[level]) return ControlError::invalid_argument;
       std::size_t count{};
       for (const auto &other : definitions) if (other.identity.instance == identity.instance) {
         ++count;
-        if (&other != &entry && other.configuration.local.extended_circuit == configuration.local.extended_circuit)
+        if (!other.common()) return ControlError::invalid_argument;
+        const auto other_view = other.update_view();
+        if (&other != &entry && other_view.broadcast == view.broadcast && other_view.circuit_id == view.circuit_id)
           return ControlError::already_exists;
       }
       if (count > instance->configuration.maximum_circuits) return ControlError::capacity;
@@ -191,7 +196,17 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
       const auto old = std::find_if(device.circuits.begin(), device.circuits.end(), [&](const auto &current) {
         return same_circuit(current.identity, replacement.identity);
       });
+      if (old != device.circuits.end() && old->lan() && replacement.lan() &&
+          old->identity.physical_port_ordinal == replacement.identity.physical_port_ordinal &&
+          old->wire_instance == replacement.wire_instance && old->format == replacement.format) {
+        for (std::size_t level{}; level < 2U; ++level)
+          replacement.previous_dis[level].remote = old->previous_dis[level].remote;
+      }
       if (old != device.circuits.end() && old->update) {
+        const auto reserved = instance->process->prepare_rebind_circuit(old->update_slot,
+            update_configuration(replacement));
+        if (reserved != UpdateStatus::applied)
+          return reserved == UpdateStatus::capacity ? ControlError::capacity : ControlError::update_refused;
         replacement.update = instance.get();
         replacement.update_slot = old->update_slot;
         replacement.rebind_update = true;
@@ -212,6 +227,10 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
       });
       replacement.update = instance.get();
       if (reusable != device.circuits.end()) {
+        const auto reserved = instance->process->prepare_rebind_circuit(reusable->update_slot,
+            update_configuration(replacement));
+        if (reserved != UpdateStatus::applied)
+          return reserved == UpdateStatus::capacity ? ControlError::capacity : ControlError::update_refused;
         replacement.update_slot = reusable->update_slot;
         replacement.rebind_update = true;
       } else {
@@ -414,7 +433,10 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
         }
         const auto *owner = instance.process ? instance.process->level(command.level) : nullptr;
         const auto selected = owner ? owner->database().database().find(*command.selected_lsp, RuntimeClock::now()) : std::nullopt;
-        if (selected) result.selected_lsp = selected->header;
+        if (selected) {
+          result.selected_lsp = selected->header;
+          result.selected_lsp_links = lsp_link_counts(selected->pdu.tlvs);
+        }
         else result.error = ControlError::not_found;
         packet::isis::LanId selected_node{};
         std::copy_n(command.selected_lsp->begin(), selected_node.size(), selected_node.begin());
@@ -695,15 +717,32 @@ void ControlWorker::run() noexcept {
         static_cast<void>(channels_.ingress[shard].release(packet->handle));
       }
     }
+    classify_lan_backlog();
     auto deadline = PointToPointCircuit::Clock::time_point::max();
     auto transmit_budget = device_catalog::isis_work_budget_packets;
     auto generation_budget = device_catalog::isis_work_budget_packets;
     auto lifetime_budget = device_catalog::isis_work_budget_packets;
     for (std::size_t offset{}; offset < devices_.size(); ++offset) {
       auto &device = devices_[(first_device_ + offset) % devices_.size()];
+      // Expired adjacency and DIS work precedes new local content and SPF.
+      // If a bounded LAN expiration quantum leaves due peers, defer fresh
+      // decisions to the next immediate owner turn rather than reuse stale Up.
+      bool adjacency_pending{};
+      for (auto &owned : device.circuits) {
+        if (owned.update && owned.update->status != UpdateStatus::applied) continue;
+        if (auto *broadcast = owned.lan()) {
+          for (std::size_t level{}; level < 2U; ++level) if (auto *circuit = broadcast->at(level)) {
+            LanObserverContext context{owned, level};
+            circuit->service(now, device_catalog::isis_work_budget_packets, lan_observer(context));
+            if (const auto due = circuit->neighbors().deadline(); due && *due <= now) adjacency_pending = true;
+          }
+        } else static_cast<void>(owned.p2p().expire(now, &owned, event));
+      }
+      if (adjacency_pending) deadline = std::min(deadline, now);
       for (std::size_t ordinal{}; ordinal < device.instance_count; ++ordinal) {
         const auto index = device.instance_order[(device.first_instance + ordinal) % device.instance_count];
-        deadline = std::min(deadline, service_local_instance(device, index, now, generation_budget));
+        if (!adjacency_pending)
+          deadline = std::min(deadline, service_local_instance(device, index, now, generation_budget));
         deadline = std::min(deadline, service_update_lifetimes(*device.instances[index], now, lifetime_budget));
       }
       if (device.instance_count) device.first_instance = (device.first_instance + 1U) % device.instance_count;
@@ -714,8 +753,12 @@ void ControlWorker::run() noexcept {
           circuit_down(owned);
           continue;
         }
-        if (owned.lan()) { deadline = std::min(deadline, service_lan(owned, now, transmit_budget)); continue; }
-        static_cast<void>(owned.p2p().expire(now, &owned, event));
+        if (owned.lan()) {
+          deadline = std::min(deadline, service_previous_pseudonodes(owned, now, lifetime_budget));
+          deadline = std::min(deadline, service_lan(owned, now, transmit_budget));
+          deadline = std::min(deadline, emit_updates(owned, now, transmit_budget));
+          continue;
+        }
         const auto shard = owned.identity.device.index % forwarding_shards_;
         auto &channel = channels_.egress[shard];
         if (transmit_budget && channel.producer_available()) {

@@ -103,6 +103,14 @@ public:
   // slots, ticket counters and synchronization fences for bounded safe reuse.
   [[nodiscard]] UpdateStatus release_circuit(std::size_t circuit,
       std::uint64_t configuration_epoch) noexcept;
+  // Cold preparation on this control owner, before any Down or commit. A valid
+  // strictly newer binding may reserve larger per-level LAN peer buffers while
+  // the old circuit stays active. Copies and allocations finish before swapping
+  // either buffer; refusal preserves peers, configuration, flags and tickets.
+  // No borrowed view may span this call. Successful abort retains only bounded
+  // spare capacity; shrinking/rebinding remains allocation-free at commit.
+  [[nodiscard]] UpdateStatus prepare_rebind_circuit(std::size_t circuit,
+      UpdateCircuitConfiguration configuration) noexcept;
   // Commit-only binding replacement after release_circuit completed Down.
   // Requires a strictly newer transport epoch and prevalidated configuration.
   // No allocation or coordinator replacement; refuses before any mutation.
@@ -183,6 +191,19 @@ public:
       const packet::isis::LspId &id, TransmitAuthentication authentication,
       RuntimeClock::time_point now, std::span<std::uint8_t> option_scratch,
       std::span<std::uint8_t> pdu_scratch, LevelObserver observer) noexcept;
+  // ISO 10589 7.2.3: the parent became DIS for this previously selected LAN
+  // pseudonode. Requires a nonzero foreign pseudonode prefix matching id.
+  // Purges only a retained live fragment, preserving sequence and checksum;
+  // MaxAge retention starts now. Missing keys refuse without mutation. Runs
+  // on this instance owner with exclusive scratch and borrowed key lifetime.
+  // inactive means absent, expired or already purged. Invalid level/namespace
+  // returns invalid_configuration, a mismatched wire selector returns instance;
+  // authentication/capacity refusals preserve the retained body and flood flags.
+  [[nodiscard]] UpdatePurgeResult purge_previous_pseudonode(std::size_t level,
+      const packet::isis::LanId &previous, const packet::isis::LspId &id,
+      TransmitAuthentication authentication, RuntimeClock::time_point now,
+      std::span<std::uint8_t> option_scratch, std::span<std::uint8_t> pdu_scratch,
+      LevelObserver observer) noexcept;
   // Caller accepted this live own-source LSP on a real circuit and established
   // that its ID is outside the current generated set. Purges at the received
   // sequence or a newer cached copy's sequence, never increments it, and

@@ -51,6 +51,9 @@ struct SpfEdge {
 
 class ShortestPaths {
 public:
+  // Token storage capacity is distinct from the selected ECMP width. Callers
+  // admit a complete adjacency catalog within these already allocated words.
+  static constexpr std::size_t maximum_first_hops = first_hop_word_count * 64U;
   // max_pending_candidates is an emulator resource bound. It must be derived
   // from the active profile and sized for repeated equal-cost propagation.
   // Policy requires a finite maximum below unreachable_distance and an edge

@@ -5,6 +5,7 @@
 #pragma once
 
 #include "router/isis_instance_update.hpp"
+#include "router/isis_broadcast_scan.hpp"
 #include "router/isis_lan_circuit_pair.hpp"
 #include "router/isis_local_lsp_set.hpp"
 #include "router/isis_neighbor_origination.hpp"
@@ -17,6 +18,7 @@
 #include "router/protocol_packet_channel.hpp"
 #include "router/protocol_transmission.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -73,12 +75,29 @@ enum class ControlCommandKind : std::uint8_t {
 // period and transit decrement are mandatory. Zero complete_seconds selects
 // ISO startup-only CSNP; zero pacing_burst blocks LSP output while SNPs continue.
 // The configuration owner resolves per-interface SR OS burst policy beforehand.
+// Explicit effective LAN timing, not a vendor default or an optional burst.
+// Zero LSP scan suppresses LSP output; CSNP separation stays positive.
+struct BroadcastTransmissionProgram {
+  std::chrono::microseconds lsp_scan_interval{}, csnp_separation{};
+  bool operator==(const BroadcastTransmissionProgram &) const = default;
+};
 struct UpdateTransmissionProgram {
   std::uint16_t partial_seconds{}, retransmit_seconds{}, complete_seconds{};
   std::chrono::milliseconds pacing_period{};
   std::size_t pacing_burst{};
   std::uint16_t maximum_pdu_octets{}, transit_seconds{};
+  std::optional<BroadcastTransmissionProgram> broadcast{};
   bool operator==(const UpdateTransmissionProgram &) const = default;
+};
+// Immutable same-owner medium view; the referenced Hello configuration outlives
+// the current call. No view crosses a queue or a configuration mutation.
+struct CircuitUpdateView {
+  const CircuitHelloConfiguration &hello;
+  packet::isis::SystemId system;
+  Levels levels;
+  bool physical_point_to_point{}, broadcast{};
+  std::uint32_t circuit_id{};
+  std::size_t neighbor_capacity{};
 };
 struct CircuitDefinition {
   CircuitIdentity identity;
@@ -91,11 +110,29 @@ struct CircuitDefinition {
   [[nodiscard]] const CircuitHelloConfiguration *common() const noexcept {
     return circuit_hello_configuration(configuration, broadcast);
   }
+  // Requires common() != nullptr; borrow only through this cold owner call.
+  [[nodiscard]] CircuitUpdateView update_view() const noexcept {
+    if (!broadcast) return {configuration, configuration.local.system, configuration.local.levels,
+        configuration.physical_point_to_point, false, configuration.local.extended_circuit, 0U};
+    const auto &first = broadcast->levels[0U] ? *broadcast->levels[0U] : *broadcast->levels[1U];
+    std::size_t capacity{};
+    for (const auto &level : broadcast->levels)
+      if (level && level->limits.neighbors > capacity) capacity = level->limits.neighbors;
+    return {first, first.local.system, levels(), false, true, first.local.circuit, capacity};
+  }
   // LAN presence is explicit; cold admission checks each advertised mask.
   [[nodiscard]] Levels levels() const noexcept {
     if (!broadcast) return configuration.local.levels;
     return static_cast<Levels>((broadcast->levels[0U] ? 1U : 0U) | (broadcast->levels[1U] ? 2U : 0U));
   }
+};
+// Explicit LAN origin intent. Circuit identity and maximum accepted neighbor
+// budget must match the transport owner; peer system IDs are learned on wire.
+struct LanOriginInterface {
+  std::uint64_t interface_id{};
+  std::uint8_t circuit{};
+  std::size_t maximum_neighbors{};
+  std::array<std::optional<P2pOriginMetric>, 2U> levels;
 };
 struct LocalOriginProgram {
   LocalLspProgram content;
@@ -105,6 +142,10 @@ struct LocalOriginProgram {
   std::optional<std::vector<P2pOriginInterface>> neighbors;
   // Emulator allocation recovery policy, supplied explicitly by its owner.
   std::chrono::milliseconds resource_retry{};
+  // Cold preparation reserves inactive pseudonode identities and semantic
+  // capacity. The same instance owner activates them from actual Up peers/DIS;
+  // caller-supplied pseudonode bodies and overlapping P2P interfaces reject.
+  std::optional<std::vector<LanOriginInterface>> broadcast_neighbors{};
 };
 // Experimental wide MT0 decision budgets. No production routing or timer
 // defaults are inferred; root peers come from this owner's actual circuits.
@@ -204,6 +245,7 @@ struct ControlResult {
   std::array<std::uint64_t, 2U> database_validations{}, decision_revisions{};
   std::optional<packet::isis::LspId> corrupted_lsp{};
   std::optional<packet::isis::LspView> selected_lsp{};
+  std::optional<LspLinkCounts> selected_lsp_links{};
   std::array<std::uint64_t, 2U> decision_runs{};
   std::array<std::optional<std::uint32_t>, 2U> selected_cost{};
   std::array<std::size_t, 2U> prefix_advertisements{};
@@ -259,8 +301,19 @@ private:
       std::array<std::unique_ptr<P2pRouteDecision>, 2U> decisions;
       std::array<std::uint64_t, 2U> consumed{};
       std::array<DecisionStatus, 2U> status{DecisionStatus::invalid, DecisionStatus::invalid};
+      // Exact token-indexed bindings commit only with the complete decision.
+      std::array<std::vector<std::optional<AdjacencyNextHop>>, 2U> bindings;
     };
     std::array<RouteFamily, 2U> route_families;
+    struct DecisionInput {
+      std::vector<P2pSpfSeed> seeds;
+      std::vector<LanSpfCircuit> lans;
+      std::vector<std::optional<AdjacencyNextHop>> bindings;
+    };
+    // One control-owned work catalog is reused across levels/families. Bounds
+    // cover configured P2P interfaces and every potential LAN adjacency, rather
+    // than the requested ECMP width. No borrowed peer view survives preparation.
+    DecisionInput decision_input;
     [[nodiscard]] bool decisions_pending() const noexcept {
       for (std::size_t level{}; level < 2U; ++level) {
         if (decisions[level] && consumed_decision_revision[level] != decision_revisions[level]) return true;
@@ -273,6 +326,9 @@ private:
     // Fixed slots follow sorted configured interface IDs. This owner rewrites
     // the projection only while composing dirty roots; it contains no pointers.
     std::vector<NeighborProjection> neighbor_projection;
+    // One scratch catalog, owned by this instance control shard. Cold reserve
+    // covers its largest configured LAN. Sorting/deduplication never allocates.
+    std::vector<packet::isis::SystemId> lan_projection;
     std::array<bool, 2U> local_roots_dirty{true, true};
     std::size_t first_root_level{};
     std::array<std::optional<DatabaseValidation>, 2U> validation;
@@ -287,6 +343,19 @@ private:
             configuration.local, configuration.maximum_areas, configuration.levels, circuits,
             UpdateInstanceSelector{configuration.format, configuration.wire_instance},
             configuration.maximum_circuits, epoch)) {
+      const bool routing = std::any_of(configuration.routing.begin(), configuration.routing.end(),
+          [](const auto &family) { return family.has_value(); });
+      if (configuration.decision || routing) {
+        const auto capacity = catalog_budget(*configuration.origination);
+        if (!capacity) throw std::invalid_argument("IS-IS adjacency catalog exceeds its explicit token storage");
+        decision_input.seeds.reserve(*capacity);
+        decision_input.bindings.reserve(*capacity);
+        decision_input.lans.reserve(configuration.origination->broadcast_neighbors ?
+            configuration.origination->broadcast_neighbors->size() : 0U);
+        for (std::size_t family{}; family < configuration.routing.size(); ++family) if (configuration.routing[family])
+          for (std::size_t level{}; level < 2U; ++level) if (configuration.levels[level])
+            route_families[family].bindings[level].reserve(*capacity);
+      }
       if (configuration.decision) for (std::size_t level{}; level < 2U; ++level)
         if (configuration.levels[level]) decisions[level] = std::make_unique<P2pRouteDecision>(
             configuration.decision->nodes, configuration.decision->links, configuration.decision->pending, MetricStyle::wide, configuration.decision->prefixes);
@@ -306,6 +375,12 @@ private:
         reset_validation(RuntimeClock::now());
         if (configuration.origination->neighbors)
           neighbor_projection.resize(configuration.origination->neighbors->size());
+        if (configuration.origination->broadcast_neighbors) {
+          std::size_t maximum{};
+          for (const auto &entry : *configuration.origination->broadcast_neighbors)
+            if (entry.maximum_neighbors > maximum) maximum = entry.maximum_neighbors;
+          lan_projection.reserve(maximum);
+        }
       }
     }
     // Cold validated program reconstruction, on this control owner only.
@@ -337,7 +412,7 @@ private:
     UpdateTransmissionProgram program;
     std::vector<Retry> retries;
     std::array<std::uint64_t, 2U> epochs{};
-    std::array<RuntimeClock::time_point, 2U> partial{}, complete{};
+    std::array<RuntimeClock::time_point, 2U> partial{}, complete{}, complete_periodic{};
     std::array<bool, 2U> complete_started{}, transient_first{};
     std::array<std::size_t, 2U> scan{}, remaining{};
     std::array<std::uint64_t, 2U> revision{};
@@ -345,6 +420,14 @@ private:
     RuntimeClock::time_point pacing{};
     std::size_t credits{};
     std::uint64_t random{};
+    struct LanReservation { std::size_t level{}; std::uint64_t epoch{}, ticket{}; };
+    // One interface scan and receipt fence cover both levels. Physical success
+    // alone commits backlog spacing; selected-level cancellation releases it.
+    std::optional<BroadcastScan> broadcast_scan;
+    bool lan_active{};
+    std::optional<LanReservation> lan_lsp, lan_csnp;
+    RuntimeClock::time_point csnp_ready{};
+    std::array<bool, 2U> designated{};
     bool synchronize{true};
   };
   struct OwnedCircuit {
@@ -362,8 +445,34 @@ private:
     OwnedInstance *update{};
     std::size_t update_slot{};
     bool rebind_update{};
+    bool queued_lsp{};
+    // This circuit control owner remembers the last remote DIS across an empty
+    // neighbor set. One bounded fragment cursor per level runs only while local
+    // DIS; role loss cancels work before a newly legitimate remote incarnation.
+    struct PreviousDis {
+      std::optional<packet::isis::LanId> remote;
+      std::uint16_t fragment{256U};
+      RuntimeClock::time_point retry{};
+    };
+    std::array<PreviousDis, 2U> previous_dis;
     std::unique_ptr<UpdateEgress> update_egress;
+    // Sorted accepted MAC scratch belongs to this control owner. Each level
+    // reserves its configured neighbor bound cold; callbacks never allocate.
+    std::array<std::vector<packet::Mac>, 2U> update_peers;
     std::uint64_t random_state{};
+    [[nodiscard]] CircuitUpdateView update_view() const noexcept {
+      if (const auto *broadcast = lan()) {
+        const auto &first = broadcast->common();
+        std::size_t capacity{};
+        for (std::size_t level{}; level < 2U; ++level)
+          if (const auto *entry = broadcast->at(level); entry && entry->configuration().limits.neighbors > capacity)
+            capacity = entry->configuration().limits.neighbors;
+        return {first, first.local.system, broadcast->levels(), false, true, first.local.circuit, capacity};
+      }
+      const auto &value = p2p().configuration();
+      return {value, value.local.system, value.local.levels, value.physical_point_to_point,
+          false, value.local.extended_circuit, 0U};
+    }
     [[nodiscard]] static const CircuitHelloConfiguration &common(ControlCommand &command) {
       const auto *value = circuit_hello_configuration(command.configuration, command.broadcast);
       if (!value || (command.broadcast && command.configuration != P2pCircuitConfiguration{}))
@@ -401,7 +510,10 @@ private:
           circuit(make(command, now)),
           transmission(command.identity.configuration_generation),
           lan_transmissions{protocol::TransmissionWindow(command.identity.configuration_generation),
-              protocol::TransmissionWindow(command.identity.configuration_generation)}, random_state(command.random_state) {}
+              protocol::TransmissionWindow(command.identity.configuration_generation)}, random_state(command.random_state) {
+      if (const auto *broadcast = lan()) for (std::size_t level{}; level < 2U; ++level)
+        if (const auto *entry = broadcast->at(level)) update_peers[level].reserve(entry->configuration().limits.neighbors);
+    }
   };
   struct RouteStamp {
     std::uint64_t epoch{};
@@ -465,12 +577,21 @@ private:
   static void remove_update_instance(DeviceState &device, std::size_t instance) noexcept;
   static UpdateCircuitConfiguration update_configuration(const OwnedCircuit &circuit) noexcept;
   [[nodiscard]] static bool matches_update_instance(const UpdateInstanceProgram &instance,
-      const P2pCircuitConfiguration &circuit, std::uint64_t interface_id) noexcept;
+      CircuitUpdateView circuit, std::uint64_t interface_id) noexcept;
   [[nodiscard]] RuntimeClock::time_point service_update_lifetimes(OwnedInstance &instance,
       RuntimeClock::time_point now, std::size_t &budget) noexcept;
   [[nodiscard]] static ControlError prepare_neighbor_origination(UpdateInstanceProgram &program) noexcept;
+  [[nodiscard]] static ControlError prepare_lan_origination(UpdateInstanceProgram &program,
+      std::array<std::size_t, 2U> &root_octets) noexcept;
+  [[nodiscard]] bool compose_lan_pseudonodes(OwnedInstance &instance, const DeviceState &device,
+      std::size_t index, std::size_t level, LocalLspSet &target, RuntimeClock::time_point now) noexcept;
+  [[nodiscard]] static bool append_lan_links(const OwnedInstance &instance, const DeviceState &device,
+      std::size_t index, std::size_t level, packet::isis::TlvWriter &writer) noexcept;
   [[nodiscard]] bool compose_local_neighbors(OwnedInstance &instance, const DeviceState &device,
       std::size_t index, LocalLspSet &target, RuntimeClock::time_point now, std::size_t &budget) noexcept;
+  [[nodiscard]] static std::optional<std::size_t> catalog_budget(const LocalOriginProgram &origin) noexcept;
+  [[nodiscard]] static DecisionStatus prepare_decision_input(OwnedInstance &instance, const DeviceState &device,
+      std::size_t index, std::size_t level, std::optional<std::uint8_t> protocol) noexcept;
   void service_p2p_decision(OwnedInstance &instance, const DeviceState &device, std::size_t index,
       RuntimeClock::time_point now, std::size_t &budget) noexcept;
   [[nodiscard]] ControlError edit_local_content(ControlCommand &command, OwnedInstance &instance,
@@ -496,9 +617,19 @@ private:
   static void lan_designated(void *context, const std::optional<DisSelection> &before,
       const std::optional<DisSelection> &after) noexcept;
   [[nodiscard]] static LanCircuitObserver lan_observer(LanObserverContext &context) noexcept;
+  [[nodiscard]] static UpdateStatus project_lan(OwnedCircuit &circuit, OwnedInstance &instance,
+      std::size_t slot, std::size_t level) noexcept;
+  [[nodiscard]] RuntimeClock::time_point service_previous_pseudonodes(OwnedCircuit &circuit,
+      RuntimeClock::time_point now, std::size_t &budget) noexcept;
+  static void synchronize_lan(OwnedCircuit &circuit, std::size_t level) noexcept;
   static void circuit_down(OwnedCircuit &owned) noexcept;
   static void circuit_up(OwnedCircuit &owned, RuntimeClock::time_point now) noexcept;
   [[nodiscard]] static bool valid_transmission(const UpdateTransmissionProgram &program) noexcept;
+  [[nodiscard]] static bool valid_medium_transmission(const UpdateTransmissionProgram &program,
+      CircuitUpdateView circuit) noexcept;
+  void classify_lan_backlog() noexcept;
+  [[nodiscard]] RuntimeClock::time_point emit_broadcast_lsp(OwnedCircuit &circuit,
+      RuntimeClock::time_point now, std::size_t &budget, std::size_t maximum_pdu) noexcept;
   [[nodiscard]] RuntimeClock::time_point service_lan(OwnedCircuit &circuit,
       RuntimeClock::time_point now, std::size_t &budget) noexcept;
   [[nodiscard]] ControlResult apply(ControlCommand &command) noexcept;

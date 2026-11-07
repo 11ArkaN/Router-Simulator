@@ -54,6 +54,21 @@ void isis_broadcast_scan_tests() {
     require(left.begin(at, 11U, false) == right.begin(at, 11U, false) && left.random_state() == right.random_state());
     require(left.complete(true, at) && right.complete(true, at));
   }
+  BroadcastScan reactivated(100ms, 79U, start);
+  const auto activated = start + 5s;
+  const auto before_activation = reactivated.random_state();
+  require(reactivated.activate(activated) && reactivated.random_state() != before_activation);
+  require(reactivated.deadline(false) >= activated + 75ms &&
+      reactivated.deadline(false) <= activated + 100ms && !reactivated.begin(activated, 1U, false));
+  const auto emitted = reactivated.deadline(false);
+  require(reactivated.begin(emitted, 1U, true) == 0U);
+  const auto reserved_random = reactivated.random_state();
+  require(!reactivated.activate(emitted + 1ms) && reactivated.random_state() == reserved_random &&
+      reactivated.deadline(false) == BroadcastScan::Clock::time_point::max());
+  require(reactivated.complete(true, emitted) && reactivated.activate(emitted + 10ms));
+  require(reactivated.deadline(false) > emitted + 10ms && reactivated.deadline(true) == emitted + 1s);
+  require(!reactivated.begin(emitted + 900ms, 1U, true));
+  require(reactivated.begin(emitted + 1s, 1U, true) == 0U && reactivated.complete(true, emitted + 1s));
   BroadcastScan boundary(100ms, 1U, BroadcastScan::Clock::time_point::max() - 1us);
   require(boundary.deadline(false) == BroadcastScan::Clock::time_point::max() &&
       !boundary.begin(BroadcastScan::Clock::time_point::max(), 1U, false));

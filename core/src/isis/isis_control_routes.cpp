@@ -11,39 +11,6 @@
 #include <limits>
 
 namespace router::isis {
-namespace {
-// RFC 1195 does not order the advertised interface addresses. The emulator's
-// deterministic choice is the numerically lowest usable address, independent
-// of TLV order. This does not infer an undocumented vendor address preference.
-std::optional<AdjacencyNextHop> select_next_hop(const P2pSnapshot &adjacency,
-    std::span<const std::uint8_t> attributes, std::span<const std::uint8_t> protocols,
-    NextHopInterface interface, std::uint8_t level, ip::AddressFamily family) noexcept {
-  std::optional<ip::IpAddress> selected;
-  packet::isis::TlvCursor options(attributes);
-  while (const auto option = options.next()) {
-    if (family == ip::AddressFamily::ipv4 && option->code == 132U) {
-      packet::isis::FixedAddressCursor<4U> addresses(*option, 132U);
-      while (const auto address = addresses.next()) {
-        if (!(*address)[0U] || (*address)[0U] == 127U || (*address)[0U] >= 224U) continue;
-        ip::IpAddress value;
-        std::copy(address->begin(), address->end(), value.bytes.begin());
-        if (!selected || value < *selected) selected = value;
-      }
-      if (!addresses.valid()) return std::nullopt;
-    } else if (family == ip::AddressFamily::ipv6 && option->code == 232U) {
-      packet::isis::FixedAddressCursor<16U> addresses(*option, 232U);
-      while (const auto address = addresses.next()) {
-        if (!ip::is_link_local(*address)) continue;
-        const ip::IpAddress value{family, *address};
-        if (!selected || value < *selected) selected = value;
-      }
-      if (!addresses.valid()) return std::nullopt;
-    }
-  }
-  return options.valid() && selected ?
-      bind_p2p_next_hop(adjacency, attributes, protocols, interface, level, *selected) : std::nullopt;
-}
-}
 
 void ControlWorker::complete_routes(RuntimeClock::time_point now) noexcept {
   while (const auto receipt = channels_.routes->try_completion()) {
@@ -124,23 +91,11 @@ RuntimeClock::time_point ControlWorker::service_routes(DeviceState &device,
     for (std::size_t family{}; family < instance->configuration.routing.size() && failure == Status::pending; ++family) {
       const auto &program = instance->configuration.routing[family];
       if (!program) continue;
-      const auto &interfaces = *instance->configuration.origination->neighbors;
       for (std::size_t level{}; level < 2U && failure == Status::pending; ++level) {
         const auto &decision = instance->route_families[family].decisions[level];
         if (!decision) continue;
-        std::array<std::optional<AdjacencyNextHop>, device_catalog::maximum_ecmp_paths> bindings{};
-        for (const auto &owned : device.circuits) {
-          if (owned.identity.instance != index) continue;
-          const auto found = std::lower_bound(interfaces.begin(), interfaces.end(), owned.identity.interface_id,
-              [](const auto &entry, auto id) { return entry.interface_id < id; });
-          if (found == interfaces.end() || found->interface_id != owned.identity.interface_id) continue;
-          const auto token = static_cast<std::size_t>(found - interfaces.begin());
-          bindings[token] = select_next_hop(owned.p2p().adjacency(), owned.p2p().peer_attributes(),
-              owned.p2p().configuration().protocols,
-              {owned.identity.interface_id, owned.identity.configuration_generation, owned.identity.physical_port_ordinal},
-              static_cast<std::uint8_t>(level + 1U), family ? ip::AddressFamily::ipv6 : ip::AddressFamily::ipv4);
-        }
-        const auto collected = visit_prefix_routes(*decision, std::span{bindings}.first(interfaces.size()),
+        const auto &bindings = instance->route_families[family].bindings[level];
+        const auto collected = visit_prefix_routes(*decision, std::span{bindings},
             [&](std::size_t, const PrefixRouteCandidate &candidate) {
           const auto preference = candidate.external ? program->preferences[level].external : program->preferences[level].internal;
           if (family) {

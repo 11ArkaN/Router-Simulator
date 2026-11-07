@@ -16,4 +16,4 @@ The internal update program supplies an explicit effective interval. Its zero-pe
 
 ## Validation
 
-The source inventory verifies the immutable Git blobs, typedef resolution and declared defaults. Generated command validation must retain each engine's documented removal operator and restore the shared configuration default. Protocol tests use explicit effective intervals and independently verify periodic or startup-only transmission.
+The source inventory verifies the immutable Git blobs, typedef resolution and declared defaults. RFC 7950 sections 7.6.1, 7.7.2 and 7.8.2 govern default projection: keys ignore defaults, mandatory leaves cannot inherit them and leaf-list minimum cardinality controls inheritance. Lexical values preserve type identity and full integer precision. Ancestor presence, choice selection and when/feature activation remain separate checks. Generated command validation must retain each engine's documented removal operator and restore the shared configuration default. Protocol tests use explicit effective intervals and independently verify periodic or startup-only transmission.

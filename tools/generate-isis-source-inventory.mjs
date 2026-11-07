@@ -10,6 +10,7 @@ import { parse, stringify } from "yaml";
 import { parseStatements } from "./yang/statements.mjs";
 import { dependencyClosure, groupingInventory, statementInventory } from "./yang/inventory.mjs";
 import { typeResolver } from "./yang/types.mjs";
+import { nodeDefaults } from "./yang/defaults.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const lockPath = resolve(root, "sources/yang/26.7.R1.lock.yaml");
@@ -92,6 +93,9 @@ const inventory = { schema_version: 2, release: lock.release, source_commit: loc
   management: ["nokia-oper-reset", "nokia-oper-perform", "nokia-oper-global", "nokia-debug-conf"]
     .flatMap((name) => statementInventory(modules.get(name), '', name, resolveType).filter((row) =>
       /\/(?:isis|is-is|sr-isis)(?:\/|$)/.test(row.data_path)).map((row) => ({ source_module: name, ...row }))) };
+// Validate omission semantics separately from raw source evidence. Mandatory
+// and key leaves must never acquire implicit values from a typedef default.
+for (const rows of [inventory.configuration, inventory.state, inventory.management]) nodeDefaults(rows);
 const output = resolve(root, "schemas/cli/isis-26.7.R1-inventory.json");
 const products = [[lockPath, stringify(expandedLock, { lineWidth: 0 })],
   [output, JSON.stringify(inventory, null, 2) + "\n"]];

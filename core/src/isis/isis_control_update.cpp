@@ -27,14 +27,31 @@ bool valid_origination(const UpdateInstanceProgram &program) noexcept {
 }
 }
 bool ControlWorker::valid_transmission(const UpdateTransmissionProgram &program) noexcept {
+  const auto maximum = std::chrono::milliseconds{65535};
+  if (program.broadcast && (program.broadcast->lsp_scan_interval < std::chrono::microseconds::zero() ||
+      program.broadcast->lsp_scan_interval > maximum || program.broadcast->csnp_separation <= std::chrono::microseconds::zero() ||
+      program.broadcast->csnp_separation > maximum)) return false;
   return program.partial_seconds && program.retransmit_seconds && program.transit_seconds &&
       program.pacing_period.count() > 0 && program.pacing_period <= std::chrono::milliseconds{65535} &&
       program.maximum_pdu_octets >= packet::isis::csnp_header_octets;
 }
 
+bool ControlWorker::valid_medium_transmission(const UpdateTransmissionProgram &program,
+    CircuitUpdateView circuit) noexcept {
+  return valid_transmission(program) && program.broadcast.has_value() == circuit.broadcast &&
+      (!circuit.broadcast || program.complete_seconds);
+}
+
 ControlWorker::UpdateEgress::UpdateEgress(const OwnedInstance &instance, std::uint64_t seed,
     const std::optional<UpdateTransmissionProgram> &override_program)
     : program(override_program.value_or(instance.configuration.transmission)), random(seed ? seed : 1U) {
+  if (program.broadcast) {
+    auto scan_seed = random ^ 0x4c414eU;
+    if (!scan_seed) scan_seed = random;
+    if (program.broadcast->lsp_scan_interval.count())
+      broadcast_scan.emplace(program.broadcast->lsp_scan_interval, scan_seed, RuntimeClock::now());
+    return;
+  }
   std::size_t capacity{};
   for (const auto &level : instance.configuration.levels) if (level) {
     if (level->database.records > retries.max_size() - capacity)
@@ -45,17 +62,33 @@ ControlWorker::UpdateEgress::UpdateEgress(const OwnedInstance &instance, std::ui
 }
 
 bool ControlWorker::matches_update_instance(const UpdateInstanceProgram &instance,
-    const P2pCircuitConfiguration &circuit, std::uint64_t interface_id) noexcept {
-  if (circuit.local.system != instance.local || circuit.maximum_area_addresses != instance.maximum_areas ||
+    CircuitUpdateView view, std::uint64_t interface_id) noexcept {
+  const auto &circuit = view.hello;
+  if (view.system != instance.local || circuit.maximum_area_addresses != instance.maximum_areas ||
       circuit.wire_instance != instance.wire_instance ||
       circuit.instance_format.value_or(packet::isis::InstanceFormat::standard) != instance.format) return false;
   if (instance.format == packet::isis::InstanceFormat::legacy_2009 && !circuit.instance_topologies.empty()) return false;
   if (instance.format == packet::isis::InstanceFormat::standard && !instance.wire_instance && circuit.emit_instance &&
-      (!circuit.physical_point_to_point || !circuit.instance_topologies.empty())) return false;
+      (!view.physical_point_to_point || !circuit.instance_topologies.empty())) return false;
   if (instance.format == packet::isis::InstanceFormat::standard && instance.wire_instance &&
       (circuit.instance_topologies.size() != 1U || circuit.instance_topologies[0U] != 0U)) return false;
   for (std::size_t level{}; level < 2U; ++level)
-    if ((static_cast<std::uint8_t>(circuit.local.levels) & (1U << level)) && !instance.levels[level]) return false;
+    if ((static_cast<std::uint8_t>(view.levels) & (1U << level)) && !instance.levels[level]) return false;
+  if (view.broadcast && instance.origination &&
+      (instance.origination->neighbors || instance.origination->broadcast_neighbors)) {
+    if (!instance.origination->broadcast_neighbors) return false;
+    const auto &interfaces = *instance.origination->broadcast_neighbors;
+    const auto found = std::lower_bound(interfaces.begin(), interfaces.end(), interface_id,
+        [](const auto &entry, auto id) { return entry.interface_id < id; });
+    if (found == interfaces.end() || found->interface_id != interface_id || found->circuit != view.circuit_id ||
+        found->maximum_neighbors < view.neighbor_capacity) return false;
+    for (std::size_t level{}; level < 2U; ++level)
+      if ((static_cast<std::uint8_t>(view.levels) & (1U << level)) && !found->levels[level]) return false;
+    if (std::any_of(circuit.topologies.begin(), circuit.topologies.end(), [](const auto &entry) { return entry.id != 0U; })) return false;
+    return true;
+  }
+  if (!view.broadcast && instance.origination && instance.origination->broadcast_neighbors && !instance.origination->neighbors)
+    return false;
   if (instance.origination && instance.origination->neighbors) {
     // This composer owns MT0 only. A common nonzero topology must not make an
     // adjacency eligible for a fabricated MT0 advertisement.
@@ -67,7 +100,7 @@ bool ControlWorker::matches_update_instance(const UpdateInstanceProgram &instanc
         [](const auto &entry, auto id) { return entry.interface_id < id; });
     if (found == interfaces.end() || found->interface_id != interface_id) return false;
     for (std::size_t level{}; level < 2U; ++level)
-      if ((static_cast<std::uint8_t>(circuit.local.levels) & (1U << level)) && !found->levels[level]) return false;
+      if ((static_cast<std::uint8_t>(view.levels) & (1U << level)) && !found->levels[level]) return false;
   }
   return true;
 }
@@ -96,8 +129,10 @@ void ControlWorker::OwnedInstance::level_event(void *context, const LevelEvent &
 }
 
 UpdateCircuitConfiguration ControlWorker::update_configuration(const OwnedCircuit &owned) noexcept {
-  return {owned.identity.configuration_generation, owned.p2p().configuration().local.levels,
-      owned.physical_point_to_point, owned.format, owned.wire_instance, owned.destinations.levels};
+  const auto view = owned.update_view();
+  return {owned.identity.configuration_generation, view.levels,
+      view.physical_point_to_point, owned.format, owned.wire_instance, owned.destinations.levels,
+      view.broadcast, view.neighbor_capacity};
 }
 
 ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceState &device) noexcept {
@@ -121,8 +156,8 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
       return ControlError::unsupported_authentication;
   const bool routing = std::any_of(command.update->routing.begin(), command.update->routing.end(),
       [](const auto &family) { return family.has_value(); });
-  if ((command.update->decision || routing) && (!command.update->origination || !command.update->origination->neighbors ||
-      command.update->origination->neighbors->size() > device_catalog::maximum_ecmp_paths))
+  if ((command.update->decision || routing) && (!command.update->origination ||
+      (!command.update->origination->neighbors && !command.update->origination->broadcast_neighbors)))
     return ControlError::unsupported_origination;
   if (command.update->decision) {
     const auto protocol = command.update->decision->protocol;
@@ -143,6 +178,7 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
     }
   const auto neighbor_error = prepare_neighbor_origination(*command.update);
   if (neighbor_error != ControlError::none) return neighbor_error;
+  if ((command.update->decision || routing) && !catalog_budget(*command.update->origination)) return ControlError::capacity;
   try {
     std::unique_ptr<SequenceRecovery> recovery;
     if (command.update->origination) {
@@ -158,13 +194,14 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
     for (std::size_t ordinal{}; ordinal < device.circuits.size(); ++ordinal) {
       const auto &owned = device.circuits[ordinal];
       if (owned.identity.instance != index) continue;
-      if (owned.lan()) return ControlError::unsupported_update_medium;
-      const auto &configuration = owned.p2p().configuration();
-      if (!matches_update_instance(*command.update, configuration, owned.identity.interface_id))
+      const auto view = owned.update_view();
+      if (!valid_medium_transmission(owned.update_transmission.value_or(command.update->transmission), view))
+        return ControlError::unsupported_update_medium;
+      if (!matches_update_instance(*command.update, owned.update_view(), owned.identity.interface_id))
         return ControlError::invalid_argument;
       for (const auto previous : bindings)
-        if (device.circuits[previous].p2p().configuration().local.extended_circuit ==
-            configuration.local.extended_circuit) return ControlError::already_exists;
+        if (const auto other = device.circuits[previous].update_view();
+            other.broadcast == view.broadcast && other.circuit_id == view.circuit_id) return ControlError::already_exists;
       slots.push_back(update_configuration(owned));
       bindings.push_back(ordinal);
     }
@@ -174,10 +211,14 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
       std::size_t composition_budget{2U};
       if (!compose_local_neighbors(*instance, device, index, *instance->local, now, composition_budget))
         return ControlError::update_refused;
-      auto budget = instance->configuration.origination->content.active_records();
+      const auto expected = static_cast<std::size_t>(std::count_if(instance->configuration.origination->content.records.begin(),
+          instance->configuration.origination->content.records.end(), [&](const auto &record) {
+            return instance->local->contains(record.level, record.id);
+          }));
+      auto budget = expected;
       const auto generated = instance->local->service(*instance->process, {}, RuntimeClock::now(),
           scratch_, instance->observer(), budget);
-      if (generated.published != instance->configuration.origination->content.active_records() || generated.blocked ||
+      if (generated.published != expected || generated.blocked ||
           generated.terminal != GenerationStatus::waiting) return ControlError::update_refused;
     }
     std::vector<std::unique_ptr<UpdateEgress>> egress;
@@ -185,7 +226,12 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
     for (const auto binding : bindings)
       egress.push_back(std::make_unique<UpdateEgress>(*instance, device.circuits[binding].random_state, device.circuits[binding].update_transmission));
     for (std::size_t slot{}; slot < bindings.size(); ++slot) {
-      const auto &owned = device.circuits[bindings[slot]];
+      auto &owned = device.circuits[bindings[slot]];
+      if (auto *broadcast = owned.lan()) {
+        for (std::size_t level{}; level < 2U; ++level) if (broadcast->at(level) &&
+            project_lan(owned, *instance, slot, level) != UpdateStatus::applied) return ControlError::update_refused;
+        continue;
+      }
       const auto adjacency = owned.p2p().adjacency();
       if (!adjacency.iso_up) continue;
       // This is the same owner's already authenticated local projection,
@@ -216,13 +262,14 @@ ControlError ControlWorker::attach_update_circuit(DeviceState &device, OwnedCirc
   if (!instance) return ControlError::none;
   if (instance->status != UpdateStatus::applied && !requires_reconstruction(instance->status))
     return ControlError::update_refused;
-  if (owned.lan()) return ControlError::unsupported_update_medium;
-  const auto &configuration = owned.p2p().configuration();
-  if (!matches_update_instance(instance->configuration, configuration, owned.identity.interface_id))
+  const auto view = owned.update_view();
+  if (!valid_medium_transmission(owned.update_transmission.value_or(instance->configuration.transmission), view))
+    return ControlError::unsupported_update_medium;
+  if (!matches_update_instance(instance->configuration, owned.update_view(), owned.identity.interface_id))
     return ControlError::invalid_argument;
   for (const auto &other : device.circuits)
     if (&other != &owned && other.identity.instance == owned.identity.instance &&
-        other.p2p().configuration().local.extended_circuit == configuration.local.extended_circuit)
+        other.update_view().broadcast == view.broadcast && other.update_view().circuit_id == view.circuit_id)
       return ControlError::already_exists;
   if (requires_reconstruction(instance->status)) {
     const auto count = std::count_if(device.circuits.begin(), device.circuits.end(), [&](const auto &other) {

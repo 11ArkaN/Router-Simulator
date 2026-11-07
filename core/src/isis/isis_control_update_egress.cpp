@@ -37,12 +37,19 @@ bool ControlWorker::complete_update(OwnedCircuit &owned,
   if (is_lsp(pdu.type)) {
     const auto header = packet::isis::lsp(pdu);
     if (!header) return false;
+    if (owned.lan() && (!egress.lan_lsp || egress.lan_lsp->level != *level ||
+        egress.lan_lsp->epoch != receipt.metadata.protocol_epoch || egress.lan_lsp->ticket != receipt.metadata.transmission_id)) return false;
     const auto completed = output->reservations.lsp.complete(receipt.metadata.protocol_epoch,
         receipt.metadata.transmission_id, receipt.enqueued, now);
     if (!completed.accepted) return false;
     if (receipt.enqueued) ++owned.counters.lsp_enqueued;
     else ++owned.counters.lsp_refused;
-    if (receipt.enqueued && completed.current_version) {
+    if (owned.lan()) {
+      if (!egress.broadcast_scan || !egress.broadcast_scan->complete(receipt.enqueued, now))
+        owned.update->status = UpdateStatus::invalid_event;
+      egress.lan_lsp.reset();
+    }
+    if (!owned.lan() && receipt.enqueued && completed.current_version) {
       std::erase_if(egress.retries, [&](const auto &entry) {
         const auto *owner = owned.update->process->level(entry.level);
         return !owner || !owner->database().database().find(entry.header.id, now);
@@ -62,11 +69,17 @@ bool ControlWorker::complete_update(OwnedCircuit &owned,
     }
     egress.lsp[*level] = now;
   } else {
+    if (owned.lan() && is_complete(pdu.type) && (!egress.lan_csnp || egress.lan_csnp->level != *level ||
+        egress.lan_csnp->epoch != receipt.metadata.protocol_epoch || egress.lan_csnp->ticket != receipt.metadata.transmission_id)) return false;
     const auto completed = output->reservations.snp.complete(receipt.metadata.protocol_epoch,
         receipt.metadata.transmission_id, receipt.enqueued, now);
     if (!completed.accepted) return false;
     if (receipt.enqueued) ++owned.counters.snp_enqueued;
     else ++owned.counters.snp_refused;
+    if (owned.lan() && is_complete(pdu.type)) {
+      egress.lan_csnp.reset();
+      if (receipt.enqueued) egress.csnp_ready = now + egress.program.broadcast->csnp_separation;
+    }
     if (is_complete(pdu.type)) egress.complete[*level] = receipt.enqueued ? now : now +
         *jittered_interval(std::chrono::seconds{egress.program.partial_seconds}, egress.random);
   }
@@ -80,7 +93,8 @@ RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
   auto &instance = *owned.update;
   auto &egress = *owned.update_egress;
   const auto &program = egress.program;
-  const auto &configuration = owned.p2p().configuration();
+  const auto &configuration = owned.common();
+  const bool broadcast = owned.lan() != nullptr;
   const auto maximum_pdu = std::min<std::size_t>(program.maximum_pdu_octets,
       std::min(configuration.maximum_pdu_octets, packet::maximum_frame_octets -
           packet::ethernet_header_octets - packet::llc_ui_header_octets));
@@ -91,6 +105,10 @@ RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
   const auto shard = owned.identity.device.index % forwarding_shards_;
   auto &channel = channels_.egress[shard];
   const auto available = [&] { return budget && channel.producer_available(); };
+  const auto next_complete_period = [&] {
+    return program.complete_seconds ? now + *jittered_interval(std::chrono::seconds{program.complete_seconds}, egress.random)
+        : RuntimeClock::time_point::max();
+  };
   for (std::size_t level{}; level < 2U; ++level) {
     auto output = instance.process->outputs(owned.update_slot, level);
     if (!output) continue;
@@ -98,6 +116,7 @@ RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
       egress.epochs[level] = output->synchronization_epoch;
       egress.complete[level] = egress.partial[level] = egress.lsp[level] = now;
       egress.complete_started[level] = true;
+      egress.complete_periodic[level] = next_complete_period();
       egress.remaining[level] = 0U;
     }
     if (egress.revision[level] != instance.revision[level]) {
@@ -105,8 +124,16 @@ RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
       egress.lsp[level] = now;
       egress.remaining[level] = 0U;
     }
+    if (broadcast && egress.designated[level] != output->reservations.designated) {
+      egress.designated[level] = output->reservations.designated;
+      egress.complete[level] = now;
+      egress.complete_started[level] = true;
+      egress.complete_periodic[level] = next_complete_period();
+    }
     const auto publish = [&](std::uint64_t ticket, packet::isis::PduType type) {
       --budget;
+      if (broadcast && is_complete(type))
+        egress.lan_csnp = UpdateEgress::LanReservation{level, output->synchronization_epoch, ticket};
       const bool published = channel.try_send({owned.identity.device, owned.identity.interface_id,
           owned.identity.physical_port_ordinal, owned.identity.configuration_generation, ticket,
           static_cast<std::uint8_t>(type), owned.identity.instance, output->synchronization_epoch}, output_);
@@ -119,8 +146,10 @@ RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
       } else {
         static_cast<void>(output->reservations.snp.complete(output->synchronization_epoch, ticket, false, now));
         ++owned.counters.snp_refused;
-        if (is_complete(type)) egress.complete[level] = now +
-            *jittered_interval(std::chrono::seconds{program.partial_seconds}, egress.random);
+        if (is_complete(type)) {
+          egress.lan_csnp.reset();
+          egress.complete[level] = now + *jittered_interval(std::chrono::seconds{program.partial_seconds}, egress.random);
+        }
       }
     };
     SnpContents contents;
@@ -134,19 +163,20 @@ RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
       contents.instance = PduInstanceOption{owned.format, owned.wire_instance,
           owned.format == packet::isis::InstanceFormat::standard ? std::span<const std::uint16_t>(topology) :
               std::span<const std::uint16_t>{}};
-    if (available() && !output->reservations.snp.pending() && now >= egress.complete[level]) {
+    if (available() && !output->reservations.snp.pending() && now >= egress.complete[level] &&
+        (!broadcast || (output->reservations.designated && !egress.lan_csnp && now >= egress.csnp_ready))) {
       if (!egress.complete_started[level]) {
         output->reservations.snp.request_complete();
         egress.complete_started[level] = true;
+        egress.complete_periodic[level] = next_complete_period();
       }
       contents.header.type = level ? packet::isis::PduType::csnp_l2 : packet::isis::PduType::csnp_l1;
       const auto prepared = output->reservations.snp.prepare(SnpEmission::complete,
-          contents, false, output_, scratch_, now);
+          contents, output->reservations.designated, output_, scratch_, now);
       if (prepared.status == SnpExchangeStatus::encoded) publish(prepared.ticket, contents.header.type);
       else if (prepared.status == SnpExchangeStatus::idle) {
         egress.complete_started[level] = false;
-        egress.complete[level] = program.complete_seconds ? now +
-            *jittered_interval(std::chrono::seconds{program.complete_seconds}, egress.random) : RuntimeClock::time_point::max();
+        egress.complete[level] = egress.complete_periodic[level];
       } else instance.status = UpdateStatus::invalid_configuration;
     }
     if (instance.status != UpdateStatus::applied) return RuntimeClock::time_point::max();
@@ -156,17 +186,19 @@ RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
       for (unsigned choice{}; choice < 2U; ++choice) {
         const bool transient = egress.transient_first[level] != (choice != 0U);
         const auto prepared = output->reservations.snp.prepare(transient ? SnpEmission::transient_acknowledgement :
-            SnpEmission::partial, contents, false, output_, scratch_, now);
+            SnpEmission::partial, contents, output->reservations.designated, output_, scratch_, now);
         if (prepared.status == SnpExchangeStatus::encoded) {
           publish(prepared.ticket, contents.header.type);
           egress.transient_first[level] = !transient;
           break;
         }
-        if (prepared.status != SnpExchangeStatus::idle) { instance.status = UpdateStatus::invalid_configuration; break; }
+        if (prepared.status != SnpExchangeStatus::idle && prepared.status != SnpExchangeStatus::role_forbidden) {
+          instance.status = UpdateStatus::invalid_configuration; break;
+        }
       }
     }
     if (instance.status != UpdateStatus::applied) return RuntimeClock::time_point::max();
-    if (available() && !output->reservations.lsp.pending() && now >= egress.lsp[level] && program.pacing_burst) {
+    if (!broadcast && available() && !output->reservations.lsp.pending() && now >= egress.lsp[level] && program.pacing_burst) {
       if (!egress.credits) egress.lsp[level] = egress.pacing;
       else {
         const auto &database = instance.process->level(level)->database();
@@ -208,12 +240,18 @@ RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
         egress.lsp[level] = egress.remaining[level] ? now : egress.earliest[level];
       }
     }
-    if (available()) {
-      if (!output->reservations.snp.pending()) deadline = std::min({deadline, egress.complete[level], egress.partial[level]});
-      if (!output->reservations.lsp.pending() && program.pacing_burst) deadline = std::min(deadline, egress.lsp[level]);
+    if (channel.producer_available()) {
+      if (!output->reservations.snp.pending()) {
+        deadline = std::min(deadline, egress.partial[level]);
+        if (!broadcast || (output->reservations.designated && !egress.lan_csnp))
+          deadline = std::min(deadline, broadcast ? std::max(egress.complete[level], egress.csnp_ready) : egress.complete[level]);
+      }
+      if (!broadcast && !output->reservations.lsp.pending() && program.pacing_burst)
+        deadline = std::min(deadline, egress.lsp[level]);
     }
   }
   egress.synchronize = false;
+  if (broadcast) deadline = std::min(deadline, emit_broadcast_lsp(owned, now, budget, maximum_pdu));
   return deadline;
 }
 } // namespace router::isis

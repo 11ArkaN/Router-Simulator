@@ -101,9 +101,8 @@ UpdateCircuitAdmission InstanceUpdateProcess::admit_circuit(UpdateCircuitConfigu
     if (slot.configured) continue;
     if (configuration.configuration_epoch <= slot.configuration.configuration_epoch)
       return {UpdateStatus::stale_configuration, LevelStatus::stale_epoch, {}};
-    if (configuration.neighbor_capacity > slot.lan_peers[0U].capacity() ||
-        configuration.neighbor_capacity > slot.lan_peers[1U].capacity())
-      return {UpdateStatus::capacity, LevelStatus::capacity, {}};
+    const auto prepared = prepare_rebind_circuit(index, configuration);
+    if (prepared != UpdateStatus::applied) return {prepared, LevelStatus::capacity, {}};
     const auto previous_configuration = slot.configuration;
     slot.configuration = configuration;
     slot.configured = true;
@@ -167,6 +166,28 @@ UpdateStatus InstanceUpdateProcess::release_circuit(std::size_t index,
   if (slot.active != Levels::none) return UpdateStatus::invalid_event;
   slot.configured = false;
   slot.peer = {};
+  return UpdateStatus::applied;
+}
+
+UpdateStatus InstanceUpdateProcess::prepare_rebind_circuit(std::size_t index,
+    UpdateCircuitConfiguration configuration) noexcept {
+  if (index >= circuits_.size()) return UpdateStatus::invalid_circuit;
+  if (!valid_circuit(configuration, configuration_, selector_)) return UpdateStatus::invalid_configuration;
+  auto &slot = circuits_[index];
+  if (configuration.configuration_epoch <= slot.configuration.configuration_epoch)
+    return UpdateStatus::stale_configuration;
+  std::array<std::optional<std::vector<packet::Mac>>, 2U> staged;
+  try {
+    for (std::size_t level{}; level < staged.size(); ++level)
+      if (configuration.neighbor_capacity > slot.lan_peers[level].capacity()) {
+        auto &peers = staged[level].emplace();
+        peers.reserve(configuration.neighbor_capacity);
+        peers.assign(slot.lan_peers[level].begin(), slot.lan_peers[level].end());
+      }
+  } catch (const std::bad_alloc &) { return UpdateStatus::capacity; }
+    catch (const std::length_error &) { return UpdateStatus::capacity; }
+  for (std::size_t level{}; level < staged.size(); ++level)
+    if (staged[level]) slot.lan_peers[level].swap(*staged[level]);
   return UpdateStatus::applied;
 }
 
@@ -394,6 +415,25 @@ UpdatePurgeResult InstanceUpdateProcess::initiate_local_purge(std::size_t level,
   packet::isis::InstanceError error{};
   const auto selected = packet::isis::select_instance(stored->pdu, selector_.format, false, error);
   if (!selected || selected->instance != selector_.wire_instance) return {UpdateStatus::instance, {}, LspBuildStatus::invalid_header};
+  return publish_purge(level, stored->header, stored->pdu.maximum_area_addresses, selected->present,
+      authentication, now, option_scratch, pdu_scratch, OriginPurgeReason::initiated, observer);
+}
+UpdatePurgeResult InstanceUpdateProcess::purge_previous_pseudonode(std::size_t level,
+    const packet::isis::LanId &previous, const packet::isis::LspId &id,
+    TransmitAuthentication authentication, RuntimeClock::time_point now,
+    std::span<std::uint8_t> option_scratch, std::span<std::uint8_t> pdu_scratch,
+    LevelObserver observer) noexcept {
+  if (!observer.event) return {UpdateStatus::missing_observer, {}, LspBuildStatus::invalid_header};
+  if (level >= levels_.size() || !levels_[level] || !previous[6U] ||
+      !std::equal(previous.begin(), previous.end(), id.begin()) ||
+      std::equal(local_.begin(), local_.end(), previous.begin()))
+    return {UpdateStatus::invalid_configuration, {}, LspBuildStatus::invalid_header};
+  const auto stored = levels_[level]->database().database().find(id, now);
+  if (!stored || stored->purge_installed || !stored->header.remaining_seconds) return {};
+  packet::isis::InstanceError error{};
+  const auto selected = packet::isis::select_instance(stored->pdu, selector_.format, false, error);
+  if (!selected || selected->instance != selector_.wire_instance)
+    return {UpdateStatus::instance, {}, LspBuildStatus::invalid_header};
   return publish_purge(level, stored->header, stored->pdu.maximum_area_addresses, selected->present,
       authentication, now, option_scratch, pdu_scratch, OriginPurgeReason::initiated, observer);
 }

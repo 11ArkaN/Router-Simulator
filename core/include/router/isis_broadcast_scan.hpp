@@ -28,6 +28,10 @@ public:
   // vendor pacing-bucket default. Invalid inputs throw before publication.
   BroadcastScan(std::chrono::microseconds interval, std::uint64_t random_state,
       Clock::time_point now);
+  // Same owner rearms the first active-neighbor scan after an idle period.
+  // Pending reservations refuse activation without mutation. Physical-success
+  // spacing and PRNG continuation survive reactivation; no allocation occurs.
+  [[nodiscard]] bool activate(Clock::time_point now) noexcept;
   // Same control owner. Count covers the complete currently eligible SRM set,
   // across both levels of this interface. A returned index uniformly selects
   // its entry for immediate same-turn reservation. No borrowed view survives.

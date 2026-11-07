@@ -73,6 +73,34 @@ namespace next_hop_detail {
   if (!options.valid() || !peer_supports || !advertised) return std::nullopt;
   return AdjacencyNextHop{interface, peer, selected, level};
 }
+// RFC 1195 supplies no multiple-address ranking. The emulator consistently
+// chooses the lowest usable advertised address, independent of TLV order.
+[[nodiscard]] inline std::optional<ip::IpAddress> lowest_address(
+    std::span<const std::uint8_t> attributes, ip::AddressFamily family) noexcept {
+  std::optional<ip::IpAddress> selected;
+  packet::isis::TlvCursor options(attributes);
+  while (const auto option = options.next()) {
+    if (family == ip::AddressFamily::ipv4 && option->code == 132U) {
+      packet::isis::FixedAddressCursor<4U> addresses(*option, 132U);
+      while (const auto address = addresses.next()) {
+        if (!(*address)[0U] || (*address)[0U] == 127U || (*address)[0U] >= 224U) continue;
+        ip::IpAddress value;
+        std::copy(address->begin(), address->end(), value.bytes.begin());
+        if (!selected || value < *selected) selected = value;
+      }
+      if (!addresses.valid()) return std::nullopt;
+    } else if (family == ip::AddressFamily::ipv6 && option->code == 232U) {
+      packet::isis::FixedAddressCursor<16U> addresses(*option, 232U);
+      while (const auto address = addresses.next()) {
+        if (!ip::is_link_local(*address)) continue;
+        const ip::IpAddress value{family, *address};
+        if (!selected || value < *selected) selected = value;
+      }
+      if (!addresses.valid()) return std::nullopt;
+    }
+  }
+  return options.valid() ? selected : std::nullopt;
+}
 } // namespace next_hop_detail
 // Same-owner accepted P2P snapshot and attributes are required. No allocation;
 // invalid level, non-Up adjacency or invalid Hello binding returns nullopt.
@@ -97,5 +125,19 @@ namespace next_hop_detail {
   const auto level = peer.type == PduType::lan_hello_l1 ? std::uint8_t{1U} : std::uint8_t{2U};
   return next_hop_detail::bind_hello(peer.adjacency.system, peer.attributes, local_protocols,
       interface, level, selected, peer.type);
+}
+// Same owner and preconditions as the explicit-address binders above. Values
+// own their bytes; no address, MAC, ARP or ND state is synthesized.
+[[nodiscard]] inline std::optional<AdjacencyNextHop> select_p2p_next_hop(
+    const P2pSnapshot &adjacency, std::span<const std::uint8_t> attributes,
+    std::span<const std::uint8_t> protocols, NextHopInterface interface,
+    std::uint8_t level, ip::AddressFamily family) noexcept {
+  const auto selected = next_hop_detail::lowest_address(attributes, family);
+  return selected ? bind_p2p_next_hop(adjacency, attributes, protocols, interface, level, *selected) : std::nullopt;
+}
+[[nodiscard]] inline std::optional<AdjacencyNextHop> select_lan_next_hop(const LanPeerView &peer,
+    std::span<const std::uint8_t> protocols, NextHopInterface interface, ip::AddressFamily family) noexcept {
+  const auto selected = next_hop_detail::lowest_address(peer.attributes, family);
+  return selected ? bind_lan_next_hop(peer, protocols, interface, *selected) : std::nullopt;
 }
 } // namespace router::isis

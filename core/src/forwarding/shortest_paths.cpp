@@ -32,7 +32,7 @@ bool ShortestPaths::calculate(
   if (vertices.empty() || vertices.size() > maximum_vertices_ ||
       root_vertex >= vertices.size() ||
       maximum_pending_candidates_ == 0U ||
-      first_hop_count_value > device_catalog::maximum_ecmp_paths)
+      first_hop_count_value > maximum_first_hops)
     return false;
 
   // Validate every adjacency extent and target before touching scratch state.

@@ -15,13 +15,15 @@ ControlError ControlWorker::edit_local_content(ControlCommand &command, OwnedIns
   if (!command.local_content) return ControlError::invalid_argument;
   if (instance.status != UpdateStatus::applied || !instance.local) return ControlError::update_refused;
   auto &value = *command.local_content;
+  const auto &origin = *instance.configuration.origination;
+  if (value.id[6U] && origin.broadcast_neighbors) return ControlError::unsupported_origination;
   auto &records = instance.configuration.origination->content.records;
   const auto desired = std::find_if(records.begin(), records.end(), [&](const auto &record) {
     return record.level == value.level && record.id == value.id;
   });
   if (desired == records.end()) return ControlError::not_found;
   const bool withdrawing = command.kind == ControlCommandKind::withdraw_local_content;
-  if (!withdrawing && instance.configuration.origination->neighbors) {
+  if (!withdrawing && (origin.neighbors || origin.broadcast_neighbors)) {
     packet::isis::TlvCursor cursor(value.options);
     while (const auto option = cursor.next())
       if (option->code == 2U || option->code == 22U || option->code == 222U)
@@ -30,7 +32,9 @@ ControlError ControlWorker::edit_local_content(ControlCommand &command, OwnedIns
     if (!value.id[7U]) {
       const auto &level = instance.configuration.origination->content.levels[value.level];
       std::size_t required{};
-      for (const auto &entry : *instance.configuration.origination->neighbors)
+      if (origin.neighbors) for (const auto &entry : *origin.neighbors)
+        if (entry.levels[value.level]) required += *p2p_origin_option_octets(*entry.levels[value.level]);
+      if (origin.broadcast_neighbors) for (const auto &entry : *origin.broadcast_neighbors)
         if (entry.levels[value.level]) required += *p2p_origin_option_octets(*entry.levels[value.level]);
       const auto capacity = level->maximum_pdu_octets - packet::isis::lsp_header_octets;
       if (required > capacity || value.options.size() > capacity - required) return ControlError::capacity;
@@ -56,7 +60,7 @@ ControlError ControlWorker::edit_local_content(ControlCommand &command, OwnedIns
   if (!withdrawing) {
     desired->flags = value.flags;
     desired->options.swap(value.options);
-    if (instance.configuration.origination->neighbors) instance.local_roots_dirty[value.level] = true;
+    if (origin.neighbors || origin.broadcast_neighbors) instance.local_roots_dirty[value.level] = true;
   }
   return ControlError::none;
 }
@@ -165,7 +169,7 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
     for (std::size_t ordinal{}; ordinal < device.circuits.size(); ++ordinal) {
       const auto &owned = device.circuits[ordinal];
       if (owned.identity.instance != index) continue;
-      if (!matches_update_instance(instance.configuration, owned.p2p().configuration(), owned.identity.interface_id))
+      if (!matches_update_instance(instance.configuration, owned.update_view(), owned.identity.interface_id))
         throw std::invalid_argument("IS-IS recovery circuit does not match its entity");
       slots.push_back(update_configuration(owned));
       bindings.push_back(ordinal);
@@ -184,9 +188,11 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
     std::size_t composition_budget{2U};
     if (!compose_local_neighbors(instance, device, index, *local, now, composition_budget))
       throw std::invalid_argument("IS-IS recovery neighbor composition refused");
-    auto budget = configuration.origination->content.active_records();
+    const auto expected = static_cast<std::size_t>(std::count_if(configuration.origination->content.records.begin(),
+        configuration.origination->content.records.end(), [&](const auto &record) { return local->contains(record.level, record.id); }));
+    auto budget = expected;
     const auto generated = local->service(*process, {}, now, scratch_, instance.observer(), budget);
-    if (generated.blocked || generated.published != configuration.origination->content.active_records() ||
+    if (generated.blocked || generated.published != expected ||
         generated.terminal != GenerationStatus::waiting) {
       static_cast<void>(gate.resource_failed(RuntimeClock::now()));
       return gate.deadline().value_or(never);

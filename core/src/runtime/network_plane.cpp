@@ -1816,7 +1816,8 @@ struct NetworkPlane::Impl {
               ingress_port, binding.identity.configuration_generation, 0U, 0U, binding.identity.instance};
           if (!matches_isis(binding, metadata, *wire)) continue;
           if (owner.isis_channels.ingress[shard].try_send({metadata.device, metadata.interface_id,
-              metadata.physical_port_ordinal, metadata.configuration_generation, 0U, 0U, metadata.instance_id}, frame)) owner.isis_worker->notify();
+              metadata.physical_port_ordinal, metadata.configuration_generation, 0U,
+              static_cast<std::uint8_t>(wire->pdu.type), metadata.instance_id}, frame)) owner.isis_worker->notify();
           else owner.egress_ring_dropped.fetch_add(1U, std::memory_order_relaxed);
         }
       }

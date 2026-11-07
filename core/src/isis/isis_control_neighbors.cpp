@@ -1,4 +1,4 @@
-// The instance pthread composes MT0 P2P links from its own accepted adjacency
+// The instance pthread composes MT0 links from its own accepted circuit
 // snapshots. Configuration owns base options and explicit metrics; no topology
 // editor, foreign database or transport owner is consulted during composition.
 
@@ -10,10 +10,12 @@
 
 namespace router::isis {
 ControlError ControlWorker::prepare_neighbor_origination(UpdateInstanceProgram &program) noexcept {
-  if (!program.origination || !program.origination->neighbors) return ControlError::none;
+  if (!program.origination || (!program.origination->neighbors && !program.origination->broadcast_neighbors))
+    return ControlError::none;
   if (program.format != packet::isis::InstanceFormat::standard || program.wire_instance)
     return ControlError::unsupported_update_instance;
-  auto &interfaces = *program.origination->neighbors;
+  std::span<P2pOriginInterface> interfaces;
+  if (program.origination->neighbors) interfaces = std::span{*program.origination->neighbors};
   if (interfaces.size() > program.maximum_circuits) return ControlError::capacity;
   std::sort(interfaces.begin(), interfaces.end(), [](const auto &a, const auto &b) {
     return a.interface_id < b.interface_id;
@@ -31,9 +33,12 @@ ControlError ControlWorker::prepare_neighbor_origination(UpdateInstanceProgram &
       required[level] += *size;
     }
   }
+  const auto lan_error = prepare_lan_origination(program, required);
+  if (lan_error != ControlError::none) return lan_error;
   std::array<bool, 2U> roots{};
   for (const auto &record : program.origination->content.records) {
-    if (record.level > 1U || record.id[6U]) return ControlError::invalid_argument;
+    if (record.level > 1U) return ControlError::invalid_argument;
+    if (record.id[6U]) continue;
     packet::isis::TlvCursor cursor(record.options);
     while (const auto option = cursor.next())
       if (option->code == 2U || option->code == 22U || option->code == 222U)
@@ -56,15 +61,16 @@ ControlError ControlWorker::prepare_neighbor_origination(UpdateInstanceProgram &
 bool ControlWorker::compose_local_neighbors(OwnedInstance &instance, const DeviceState &device,
     std::size_t index, LocalLspSet &target, RuntimeClock::time_point now, std::size_t &budget) noexcept {
   const auto &origin = *instance.configuration.origination;
-  if (!origin.neighbors) return true;
+  if (!origin.neighbors && !origin.broadcast_neighbors) return true;
   for (std::size_t level{}; level < 2U; ++level)
     if (!origin.content.levels[level]) instance.local_roots_dirty[level] = false;
   if (!instance.local_roots_dirty[0U] && !instance.local_roots_dirty[1U]) return true;
   if (!budget) return false;
   std::fill(instance.neighbor_projection.begin(), instance.neighbor_projection.end(), OwnedInstance::NeighborProjection{});
-  const auto &interfaces = *origin.neighbors;
+  const auto interfaces = origin.neighbors ? std::span<const P2pOriginInterface>{*origin.neighbors} :
+      std::span<const P2pOriginInterface>{};
   for (const auto &owned : device.circuits) {
-    if (owned.identity.instance != index) continue;
+    if (owned.identity.instance != index || owned.lan()) continue;
     const auto found = std::lower_bound(interfaces.begin(), interfaces.end(), owned.identity.interface_id,
         [](const auto &entry, auto id) { return entry.interface_id < id; });
     if (found == interfaces.end() || found->interface_id != owned.identity.interface_id) continue;
@@ -80,6 +86,7 @@ bool ControlWorker::compose_local_neighbors(OwnedInstance &instance, const Devic
       return record.level == level && !record.id[6U] && !record.id[7U];
     });
     if (root == origin.content.records.end()) { instance.status = UpdateStatus::invalid_configuration; return false; }
+    if (!compose_lan_pseudonodes(instance, device, index, level, target, now)) return false;
     packet::isis::TlvWriter writer(std::span{scratch_.options}.first(
         origin.content.levels[level]->maximum_pdu_octets - packet::isis::lsp_header_octets));
     packet::isis::TlvCursor cursor(root->options);
@@ -90,6 +97,7 @@ bool ControlWorker::compose_local_neighbors(OwnedInstance &instance, const Devic
       if (peer.up && (static_cast<std::uint8_t>(peer.usage) & (1U << level)) && interfaces[slot].levels[level])
         valid = append_p2p_origin_neighbor(writer, peer.peer, *interfaces[slot].levels[level]) && valid;
     }
+    valid = append_lan_links(instance, device, index, level, writer) && valid;
     const auto replaced = valid && cursor.valid() ? target.replace(level, root->id, root->flags, writer.bytes(), now) :
         LocalContentResult::capacity;
     if (replaced != LocalContentResult::changed && replaced != LocalContentResult::unchanged) {

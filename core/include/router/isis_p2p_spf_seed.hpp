@@ -28,7 +28,7 @@ struct SeedResult { SeedStatus status{}; std::size_t count{}; };
 [[nodiscard]] inline SeedResult p2p_spf_seeds(const LinkGraph &graph,
     std::span<const P2pSpfSeed> seeds, std::uint16_t catalog_size,
     std::uint32_t maximum_metric, std::span<SpfEdge> output) noexcept {
-  if (!graph.root() || !maximum_metric || catalog_size > device_catalog::maximum_ecmp_paths)
+  if (!graph.root() || !maximum_metric || catalog_size > routing::ShortestPaths::maximum_first_hops)
     return {SeedStatus::invalid, 0U};
   const auto target = [&](const auto &seed) {
     packet::isis::LanId id{};

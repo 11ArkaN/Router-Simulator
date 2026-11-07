@@ -1,6 +1,9 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  development.yang_default_projection:
+    status: implemented
+    source_ids: [ietf.yang.rfc7950.source_inventory]
   runtime.isis_lan_transport:
     status: partially-implemented
     source_ids: [project.runtime.isis_lan_transport]

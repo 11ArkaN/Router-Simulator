@@ -1853,6 +1853,7 @@ void isis_network_plane_route_publication_tests() {
 }
 
 void isis_network_plane_lan_tests() {
+  constexpr auto interface = lab::physical_interface_id(0U);
   for (const auto cpus : {1U, 8U}) {
     auto plane = std::make_unique<lab::NetworkPlane>(cpus);
     const std::array devices{lab::DeviceHandle{0U, 1U}, lab::DeviceHandle{1U, 1U}};
@@ -1864,7 +1865,7 @@ void isis_network_plane_lan_tests() {
       secret.fill(static_cast<std::uint8_t>(index + 11U));
       require(plane->add_router(devices[index], secret));
       auto &program = programs[index];
-      program.circuit.identity = {devices[index], 1U, 7U, 0U, 0U};
+      program.circuit.identity = {devices[index], interface, 7U, 0U, 0U};
       program.circuit.random_state = index + 51U;
       program.circuit.broadcast.emplace();
       const auto common = configuration(static_cast<std::uint8_t>(index + 1U));
@@ -1880,6 +1881,7 @@ void isis_network_plane_lan_tests() {
         entry.designated_hello_interval = 1s;
         entry.designated_holding_seconds = 3U;
         entry.limits = {4U, 3U};
+        if (index) entry.ipv4_addresses[0U] = {198U, 51U, 100U, 2U};
         entry.protocols.push_back(packet::isis::ipv6_nlpid);
         entry.ipv6_addresses.push_back(*ip::parse_ipv6(index ? "fe80::2" : "fe80::1"));
         program.circuit.broadcast->levels[level] = std::move(entry);
@@ -1891,10 +1893,29 @@ void isis_network_plane_lan_tests() {
       port.mtu = 1514U;
       port.speed_mbps = 1000U;
       port.mac = common.mac;
+      port.address = index ? 0xc6336402U : 0xc0000201U;
+      port.network = index ? 0xc6336400U : 0xc0000200U;
+      port.prefix_length = 24U;
+      port.ipv6_configured = true;
+      port.ipv6_address = *ip::parse_ipv6(index ? "2001:db8:22::2" : "2001:db8:12::1");
+      port.ipv6_network = *ip::parse_ipv6(index ? "2001:db8:22::" : "2001:db8:12::");
+      port.ipv6_link_local = *ip::parse_ipv6(index ? "fe80::2" : "fe80::1");
+      port.ipv6_prefix_length = 64U;
       require(plane->configure_port(devices[index], port));
+      auto base4 = std::make_unique<lab::routing::FibProgram>();
+      auto base6 = std::make_unique<lab::routing::Ipv6FibProgram>();
+      base4->generation = base6->generation = 1U;
+      base4->count = base6->count = 1U;
+      base4->routes[0U] = {.network = port.network, .port_ordinal = 0U, .prefix_length = 24U};
+      base6->routes[0U] = {.network = port.ipv6_network, .interface_id = interface,
+          .physical_port_ordinal = 0U, .prefix_length = 64U};
+      lab::RoutePolicyProgram policy;
+      require(plane->program_route_policy(devices[index], policy) && plane->program_fib(devices[index], *base4) &&
+          plane->program_ipv6_fib(devices[index], *base6));
     }
     require(plane->configure_link({{0U, 1U}, programs[0U].port, programs[1U].port,
         1'000'000'000U, 100ns, true}));
+    const auto original_programs = programs;
     const auto initial = plane->checkpoint();
     require(initial.has_value());
     for (std::size_t index{}; index < 2U; ++index)
@@ -1904,9 +1925,27 @@ void isis_network_plane_lan_tests() {
       require(result && result->error == ControlError::none && result->broadcast_circuit && !result->adjacency.present);
       return *result;
     };
-    const auto wait = [&](auto ready) {
+    const auto wait = [&](auto ready, std::source_location location = std::source_location::current()) {
       const auto until = RuntimeClock::now() + 8s;
-      while (!ready()) { plane->pump(); require(RuntimeClock::now() < until); }
+      while (!ready()) {
+        plane->pump();
+        if (RuntimeClock::now() < until) continue;
+        std::string detail;
+        for (std::size_t router{}; router < devices.size(); ++router) {
+          const auto state = plane->query_isis_update_instance(devices[router], 0U);
+          const auto circuit = query(router);
+          detail += " router=" + std::to_string(router) + " up=" + std::to_string(circuit.lan_up[0U]) + "," +
+              std::to_string(circuit.lan_up[1U]) + " lsp=" + std::to_string(circuit.counters.lsp_enqueued) +
+              " snp=" + std::to_string(circuit.counters.snp_enqueued);
+          if (state) for (std::size_t level_index{}; level_index < 2U; ++level_index) {
+            detail += " level=" + std::to_string(level_index) + " records=" + std::to_string(state->retained_lsps[level_index]) +
+                " purges=" + std::to_string(state->retained_purges[level_index]);
+            if (state->local_root_links[level_index]) detail += " root=" +
+                std::to_string(state->local_root_links[level_index]->narrow) + "," + std::to_string(state->local_root_links[level_index]->wide);
+          }
+        }
+        throw std::runtime_error("IS-IS LAN convergence failed at " + std::to_string(location.line()) + detail);
+      }
     };
     wait([&] {
       const auto a = query(0U), b = query(1U);
@@ -1923,12 +1962,12 @@ void isis_network_plane_lan_tests() {
     }
     const auto peer = configuration(2U).mac;
     const auto bound4 = plane->query_isis_lan_next_hop(programs[0U].circuit.identity, 1U, peer,
-        *ip::parse_ip_address("192.0.2.2"));
+        *ip::parse_ip_address("198.51.100.2"));
     const auto bound6 = plane->query_isis_lan_next_hop(programs[0U].circuit.identity, 2U, peer,
         *ip::parse_ip_address("fe80::2"));
     require(bound4 && bound6 && bound4->bound_next_hop && bound6->bound_next_hop &&
         bound4->bound_next_hop->peer.back() == 2U && bound6->bound_next_hop->level == 2U &&
-        bound6->bound_next_hop->interface == NextHopInterface{1U, 7U, 0U});
+        bound6->bound_next_hop->interface == NextHopInterface{interface, 7U, 0U});
     const auto absent = plane->query_isis_lan_next_hop(programs[0U].circuit.identity, 2U, peer,
         *ip::parse_ip_address("fe80::99"));
     require(absent && absent->error == ControlError::not_found && !absent->bound_next_hop && !plane->checkpoint());
@@ -1943,8 +1982,41 @@ void isis_network_plane_lan_tests() {
     const UpdateInstanceProgram update{programs[0U].circuit.broadcast->levels[0U]->local.system,
         3U, {level, level}, 1U, {1U, 5U, 5U, 1s, 10U, 1492U, 1U}};
     require(!plane->add_isis_update_instance(devices[0U], 0U, update) && query(0U).lan_up[0U] == 1U);
+    for (std::size_t index{}; index < devices.size(); ++index) {
+      auto active_update = update;
+      active_update.local = programs[index].circuit.broadcast->levels[0U]->local.system;
+      active_update.transmission.broadcast = BroadcastTransmissionProgram{20ms, 20ms};
+      require(plane->add_isis_update_instance(devices[index], 0U, active_update));
+    }
+    auto lan_scratch = std::make_unique<PduScratch>();
+    LspContents lan_content;
+    lan_content.header = {packet::isis::PduType::lsp_l1,
+        {1U, 2U, 3U, 4U, 5U, 1U, 0U, 0U}, 1200U, 1U, 3U};
+    const std::array<std::uint8_t, 10U> lan_options{1U, 4U, 3U, 0x49U, 0U, 1U,
+        129U, 2U, packet::isis::ipv4_nlpid, packet::isis::ipv6_nlpid};
+    lan_content.options = lan_options;
+    lan_content.maximum_pdu_octets = 1492U;
+    for (std::uint8_t level_index{}; level_index < 2U; ++level_index) {
+      lan_content.header.type = level_index ? packet::isis::PduType::lsp_l2 : packet::isis::PduType::lsp_l1;
+      const auto encoded = build_lsp_pdu(lan_content, lan_scratch->options, lan_scratch->pdu);
+      require(encoded.status == LspBuildStatus::encoded);
+      const auto result = plane->originate_isis_lsp(devices[0U], 0U, level_index, encoded.bytes);
+      require(result && result->error == ControlError::none);
+    }
+    wait([&] {
+      const auto remote = plane->query_isis_update_instance(devices[1U], 0U);
+      require(remote && remote->update_status == UpdateStatus::applied);
+      return remote->retained_lsps == std::array<std::size_t, 2U>{1U, 1U} &&
+          query(0U).flood_requests == std::array<std::size_t, 2U>{} &&
+          query(0U).counters.lsp_enqueued >= 2U && query(0U).counters.snp_enqueued && query(1U).counters.snp_enqueued;
+    });
+    for (std::uint8_t level_index{}; level_index < 2U; ++level_index) {
+      const auto retained = plane->query_isis_lsp(devices[1U], 0U, level_index, lan_content.header.id);
+      require(retained && retained->selected_lsp && retained->selected_lsp->sequence == 1U);
+    }
     const auto retired_identity = programs[0U].circuit.identity;
     programs[0U].circuit.identity.configuration_generation = 8U;
+    programs[0U].circuit.broadcast->levels[0U]->limits.neighbors = 6U;
     require(plane->replace_isis_generation(devices[0U], std::span{&programs[0U], 1U}));
     const auto stale = plane->query_isis_circuit(retired_identity);
     require(stale && stale->error == ControlError::stale_configuration);
@@ -1956,7 +2028,10 @@ void isis_network_plane_lan_tests() {
     wait([&] { return query(0U).lan_up == std::array<std::size_t, 2U>{1U, 0U} &&
         query(1U).lan_up == std::array<std::size_t, 2U>{1U, 0U}; });
     require(!query(0U).designated[1U] && !query(1U).designated[1U]);
-    for (const auto device : devices) require(plane->replace_isis_generation(device, {}));
+    for (const auto device : devices) {
+      require(plane->replace_isis_generation(device, {}));
+      require(plane->remove_isis_update_instance(device, 0U));
+    }
     // Distinct standard IIDs share their level multicast groups on one LAN
     // interface. Collision admission must read the selected medium's selector.
     std::array multiple{programs[0U], programs[0U]};
@@ -1987,6 +2062,161 @@ void isis_network_plane_lan_tests() {
       require(result && result->error == ControlError::none && result->broadcast_circuit);
     }
     require(plane->replace_isis_generation(devices[0U], {}));
+    programs = original_programs;
+    std::array<UpdateInstanceProgram, 2U> automatic_programs;
+    for (std::size_t index{}; index < devices.size(); ++index) {
+      auto automatic = update;
+      automatic.local = programs[index].circuit.broadcast->levels[0U]->local.system;
+      automatic.transmission.broadcast = BroadcastTransmissionProgram{20ms, 20ms};
+      automatic.origination.emplace();
+      automatic.origination->resource_retry = 100ms;
+      automatic.origination->broadcast_neighbors = std::vector<LanOriginInterface>{{interface, 1U, 6U,
+          {P2pOriginMetric{10U, 10U}, P2pOriginMetric{10U, 10U}}}};
+      auto &content = automatic.origination->content;
+      content.random = index + 1U;
+      content.levels = {LocalLspLevelProgram{1200U, 1492U, 10ms, 600s},
+          LocalLspLevelProgram{1200U, 1492U, 10ms, 600s}};
+      packet::isis::LspId root_id{};
+      std::copy(automatic.local.begin(), automatic.local.end(), root_id.begin());
+      content.records = {{0U, root_id, 3U, {lan_options.begin(), lan_options.end()}},
+          {1U, root_id, 3U, {lan_options.begin(), lan_options.end()}}};
+      automatic_programs[index] = automatic;
+      require(plane->add_isis_update_instance(devices[index], 0U, automatic));
+      programs[index].circuit.identity.configuration_generation = 11U;
+      require(plane->replace_isis_generation(devices[index], std::span{&programs[index], 1U}));
+    }
+    wait([&] {
+      for (const auto device : devices) {
+        const auto state = plane->query_isis_update_instance(device, 0U);
+        require(state && state->update_status == UpdateStatus::applied);
+        if (state->retained_lsps != std::array<std::size_t, 2U>{3U, 3U} ||
+            state->local_root_links[0U] != std::optional{LspLinkCounts{1U, 1U}} ||
+            state->local_root_links[1U] != std::optional{LspLinkCounts{1U, 1U}}) return false;
+      }
+      return true;
+    });
+    packet::isis::LspId first_pseudonode{1U, 2U, 3U, 4U, 5U, 2U, 1U, 0U};
+    packet::isis::LspId second_pseudonode{1U, 2U, 3U, 4U, 5U, 1U, 1U, 0U};
+    const auto first = plane->query_isis_lsp(devices[0U], 0U, 0U, first_pseudonode);
+    const auto level_two = plane->query_isis_lsp(devices[1U], 0U, 1U, second_pseudonode);
+    require(first && level_two && first->selected_lsp && level_two->selected_lsp &&
+        first->selected_lsp_links == std::optional{LspLinkCounts{2U, 2U}} &&
+        level_two->selected_lsp_links == std::optional{LspLinkCounts{2U, 2U}});
+    const auto first_sequence = first->selected_lsp->sequence;
+    // Replacing root prefix/attribute intent must retain learned LAN edges.
+    const auto &base_root = automatic_programs[0U].origination->content.records[0U];
+    auto edited_options = base_root.options;
+    edited_options.insert(edited_options.end(), {250U, 1U, 7U});
+    const auto root_before_edit = plane->query_isis_update_instance(devices[0U], 0U)->local_root_sequences[0U];
+    const auto edited_root = plane->replace_isis_local_lsp(devices[0U], 0U,
+        {0U, base_root.id, base_root.flags, edited_options});
+    require(edited_root && edited_root->error == ControlError::none &&
+        edited_root->local_content_result == LocalContentResult::changed);
+    wait([&] {
+      const auto state = plane->query_isis_update_instance(devices[0U], 0U);
+      require(state && state->update_status == UpdateStatus::applied);
+      return state->local_root_sequences[0U] > root_before_edit &&
+          state->local_root_links[0U] == std::optional{LspLinkCounts{1U, 1U}};
+    });
+    programs[1U].circuit.identity.configuration_generation = 12U;
+    programs[1U].circuit.broadcast->levels[0U]->local.priority = 0U;
+    require(plane->replace_isis_generation(devices[1U], std::span{&programs[1U], 1U}));
+    wait([&] {
+      const auto old = plane->query_isis_lsp(devices[0U], 0U, 0U, first_pseudonode);
+      const auto current = plane->query_isis_lsp(devices[1U], 0U, 0U, second_pseudonode);
+      return old && current && old->selected_lsp && current->selected_lsp &&
+          !old->selected_lsp->remaining_seconds && current->selected_lsp->remaining_seconds &&
+          current->selected_lsp_links == std::optional{LspLinkCounts{2U, 2U}};
+    });
+    programs[1U].circuit.identity.configuration_generation = 13U;
+    programs[1U].circuit.broadcast->levels[0U]->local.priority = 127U;
+    require(plane->replace_isis_generation(devices[1U], std::span{&programs[1U], 1U}));
+    wait([&] {
+      const auto renewed = plane->query_isis_lsp(devices[0U], 0U, 0U, first_pseudonode);
+      const auto retired = plane->query_isis_lsp(devices[1U], 0U, 0U, second_pseudonode);
+      return renewed && retired && renewed->selected_lsp && retired->selected_lsp &&
+          renewed->selected_lsp->remaining_seconds && renewed->selected_lsp->sequence > first_sequence &&
+          renewed->selected_lsp_links == std::optional{LspLinkCounts{2U, 2U}} && !retired->selected_lsp->remaining_seconds;
+    });
+    // The former DIS update owner is unavailable and cannot send its own
+    // withdrawal. Its Hello owner continues, so the new DIS must purge the
+    // cached foreign pseudonode itself after the priority transition.
+    require(plane->remove_isis_update_instance(devices[1U], 0U));
+    const auto abandoned = plane->query_isis_lsp(devices[0U], 0U, 0U, first_pseudonode);
+    require(abandoned && abandoned->selected_lsp && abandoned->selected_lsp->remaining_seconds);
+    programs[1U].circuit.identity.configuration_generation = 14U;
+    programs[1U].circuit.broadcast->levels[0U]->local.priority = 0U;
+    require(plane->replace_isis_generation(devices[1U], std::span{&programs[1U], 1U}));
+    wait([&] {
+      const auto old = plane->query_isis_lsp(devices[0U], 0U, 0U, first_pseudonode);
+      const auto current = plane->query_isis_lsp(devices[0U], 0U, 0U, second_pseudonode);
+      return old && current && old->selected_lsp && current->selected_lsp &&
+          !old->selected_lsp->remaining_seconds && current->selected_lsp->remaining_seconds &&
+          old->selected_lsp->sequence == abandoned->selected_lsp->sequence &&
+          old->selected_lsp->checksum == abandoned->selected_lsp->checksum;
+    });
+    for (const auto device : devices) require(plane->replace_isis_generation(device, {}));
+    require(plane->remove_isis_update_instance(devices[0U], 0U));
+    for (std::size_t index{}; index < devices.size(); ++index) {
+      auto &routed = automatic_programs[index];
+      std::array<std::uint8_t, 256U> prefix_storage{};
+      packet::isis::TlvWriter writer(prefix_storage);
+      const std::array<std::uint8_t, 4U> area{3U, 0x49U, 0U, 1U};
+      const std::array protocols{packet::isis::ipv4_nlpid, packet::isis::ipv6_nlpid};
+      require(writer.append(1U, area) && writer.append(129U, protocols) &&
+          packet::isis::encode_extended_prefix(writer,
+              {.prefix = *ip::parse_ip_prefix(index ? "198.51.100.2/32" : "192.0.2.1/32"), .metric = 5U, .sub_tlvs = {}}) &&
+          packet::isis::encode_extended_prefix(writer,
+              {.prefix = *ip::parse_ip_prefix(index ? "2001:db8:22::2/128" : "2001:db8:12::1/128"), .metric = 7U, .sub_tlvs = {}}));
+      for (auto &record : routed.origination->content.records)
+        record.options.assign(writer.bytes().begin(), writer.bytes().end());
+      for (std::size_t family{}; family < routed.routing.size(); ++family) {
+        routed.routing[family].emplace();
+        routed.routing[family]->calculation = {16U, 32U, 128U,
+            family ? packet::isis::ipv6_nlpid : packet::isis::ipv4_nlpid, PrefixCollectionBudget{8U, 128U}};
+        routed.routing[family]->preferences = {P2pRouteFamilyProgram::Preference{15U, 160U},
+            P2pRouteFamilyProgram::Preference{18U, 165U}};
+      }
+      programs[index].circuit.identity.configuration_generation = 15U;
+      require(plane->add_isis_update_instance(devices[index], 0U, routed) &&
+          plane->replace_isis_generation(devices[index], std::span{&programs[index], 1U}));
+    }
+    wait([&] {
+      for (const auto device : devices) {
+        const auto state = plane->query_isis_update_instance(device, 0U);
+        const auto snapshot = heap_router_checkpoint(*plane, device, RuntimeClock::now());
+        require(state && state->update_status == UpdateStatus::applied && snapshot);
+        if (state->route_install_status != routing::RouteInstallStatus::installed ||
+            snapshot->fib.count != 2U || snapshot->ipv6_fib.count != 2U ||
+            std::none_of(snapshot->fib.routes.begin(), snapshot->fib.routes.begin() + snapshot->fib.count,
+                [](const auto &route) { return route.source == lab::routing::RouteSource::isis && route.metric == 15U &&
+                    route.interface_generation == 15U; }) ||
+            std::none_of(snapshot->ipv6_fib.routes.begin(), snapshot->ipv6_fib.routes.begin() + snapshot->ipv6_fib.count,
+                [](const auto &route) { return route.source == lab::routing::RouteSource::isis && route.metric == 17U &&
+                    route.interface_generation == 15U && route.interface_id == interface; })) return false;
+      }
+      return true;
+    });
+    bool sent4{}, sent6{};
+    const auto replies_by = RuntimeClock::now() + 5s;
+    while (!sent4 || !sent6 || !plane->router_ping_reply(devices[0U], 771U) ||
+        !plane->router_ipv6_ping_reply(devices[0U], 772U)) {
+      plane->pump();
+      if (!sent4) sent4 = plane->start_router_ping(devices[0U], 0xc6336402U, 771U, RuntimeClock::now());
+      if (!sent6) sent6 = plane->start_router_ipv6_ping(devices[0U], *ip::parse_ipv6("2001:db8:22::2"), 772U, RuntimeClock::now());
+      require(RuntimeClock::now() < replies_by);
+    }
+    for (const auto device : devices) require(plane->remove_isis_update_instance(device, 0U));
+    const auto withdrawn_by = RuntimeClock::now() + 5s;
+    for (const auto device : devices) {
+      while (!plane->replace_isis_generation(device, {})) {
+        plane->pump(); require(RuntimeClock::now() < withdrawn_by);
+      }
+      const auto snapshot = heap_router_checkpoint(*plane, device, RuntimeClock::now());
+      require(snapshot && snapshot->fib.count == 1U && snapshot->ipv6_fib.count == 1U &&
+          snapshot->fib.routes[0U].source == lab::routing::RouteSource::connected &&
+          snapshot->ipv6_fib.routes[0U].source == lab::routing::RouteSource::connected);
+    }
     require(plane->checkpoint().has_value() && plane->restore(*initial));
   }
 }

@@ -325,6 +325,8 @@ target_link_libraries(router_device PUBLIC router_primitives router_build_option
 
 add_library(router_network STATIC
   src/isis/isis_control_lan.cpp
+  src/isis/isis_control_lan_update.cpp
+  src/isis/isis_control_lan_origin.cpp
   src/isis/isis_control_worker.cpp
   src/isis/isis_control_update.cpp
   src/isis/isis_control_update_egress.cpp
