@@ -191,14 +191,13 @@ LevelSnpResult LevelProcess::receive_snp(std::size_t circuit, std::uint64_t epoc
       result.waiting_state ? LevelStatus::capacity : LevelStatus::applied, result};
 }
 
-LevelOriginResult LevelProcess::originate(std::span<const std::uint8_t> wire,
-    RuntimeClock::time_point now, OriginPurgeReason purge, LevelObserver observer,
-    std::size_t minimum_allocation) noexcept {
-  if (!observer.event) return {LevelStatus::missing_observer, LspInstallResult::malformed};
+LevelOriginResult LevelProcess::plan_origin(const LevelOriginInput &input,
+    RuntimeClock::time_point now, OriginPlan &plan) const noexcept {
   packet::isis::DecodeError error;
-  const auto pdu = packet::isis::parse(wire, error);
+  const auto pdu = packet::isis::parse(input.wire, error);
   const auto header = pdu ? packet::isis::lsp(*pdu) : std::nullopt;
   if (!header || pdu->type != database_.type()) return {};
+  const auto purge = input.purge;
   if (purge > OriginPurgeReason::confusion ||
       (header->remaining_seconds != 0U) != (purge == OriginPurgeReason::none))
     return {LevelStatus::invalid_configuration, LspInstallResult::malformed};
@@ -215,21 +214,69 @@ LevelOriginResult LevelProcess::originate(std::span<const std::uint8_t> wire,
   }
   const auto retention = purge == OriginPurgeReason::initiated || purge == OriginPurgeReason::unknown_source
       ? std::chrono::seconds{maximum_age_} : purge_retention_;
-  const auto notification = content_event(database_.database(), *pdu, *header, now);
-  const auto result = database_.originate(wire, now, maximum_age_, retention, minimum_allocation,
-      purge == OriginPurgeReason::unknown_source || purge == OriginPurgeReason::confusion
-          ? LspPurgeAnchor::current_event : LspPurgeAnchor::preserve_expiration);
+  plan.request = {input.wire, maximum_age_, retention,
+      {LspAdmissionOrigin::originated, nullptr, nullptr, input.minimum_allocation,
+       purge == OriginPurgeReason::unknown_source || purge == OriginPurgeReason::confusion
+           ? LspPurgeAnchor::current_event : LspPurgeAnchor::preserve_expiration}};
+  plan.event = {content_event(database_.database(), *pdu, *header, now), database_.type(), header->id};
+  return {LevelStatus::applied, LspInstallResult::installed};
+}
+
+LevelOriginResult LevelProcess::origin_result(LspInstallResult result,
+    RuntimeClock::time_point now, LevelObserver observer) noexcept {
   if (result == LspInstallResult::capacity_exhausted) {
     wait(now, true, observer);
     return {LevelStatus::capacity, result};
-  }
-  if (result == LspInstallResult::installed) {
-    emit(notification, observer, header->id);
   }
   return {result == LspInstallResult::malformed ? LevelStatus::malformed :
       result == LspInstallResult::invalid_checksum || result == LspInstallResult::excessive_lifetime ||
           result == LspInstallResult::unknown_purge
           ? LevelStatus::discarded : LevelStatus::applied, result};
+}
+
+LevelOriginResult LevelProcess::originate(std::span<const std::uint8_t> wire,
+    RuntimeClock::time_point now, OriginPurgeReason purge, LevelObserver observer,
+    std::size_t minimum_allocation) noexcept {
+  if (!observer.event) return {LevelStatus::missing_observer, LspInstallResult::malformed};
+  OriginPlan plan;
+  const auto validated = plan_origin({wire, purge, minimum_allocation}, now, plan);
+  if (validated.status != LevelStatus::applied) return validated;
+  const auto &request = plan.request;
+  const auto installed = database_.originate(request.wire, now, request.maximum_age,
+      request.purge_retention, request.admission.minimum_allocation, request.admission.purge_anchor);
+  if (installed == LspInstallResult::installed) emit(plan.event.kind, observer, plan.event.id);
+  return origin_result(installed, now, observer);
+}
+
+bool LevelProcess::reserve_origin_batch(std::size_t count) noexcept {
+  if (count > origin_requests_.max_size() || count > origin_events_.max_size() ||
+      !origin_requests_.empty() || !origin_events_.empty() || !database_.reserve_origin_batch(count)) return false;
+  try { origin_requests_.reserve(count); origin_events_.reserve(count); return true; }
+  catch (const std::bad_alloc &) { return false; }
+}
+
+LevelOriginResult LevelProcess::originate_batch(std::span<const LevelOriginInput> inputs,
+    RuntimeClock::time_point now, LevelObserver observer) noexcept {
+  if (!observer.event) return {LevelStatus::missing_observer, LspInstallResult::malformed};
+  if (inputs.empty() || !origin_requests_.empty() || !origin_events_.empty()) return {};
+  if (inputs.size() > origin_requests_.capacity() || inputs.size() > origin_events_.capacity())
+    return origin_result(LspInstallResult::capacity_exhausted, now, observer);
+  struct Clear {
+    std::vector<LspInstallRequest> &requests;
+    std::vector<LevelEvent> &events;
+    ~Clear() { requests.clear(); events.clear(); }
+  } clear{origin_requests_, origin_events_};
+  for (const auto &input : inputs) {
+    OriginPlan plan;
+    const auto validated = plan_origin(input, now, plan);
+    if (validated.status != LevelStatus::applied) return validated;
+    origin_requests_.push_back(plan.request);
+    origin_events_.push_back(plan.event);
+  }
+  const auto installed = database_.originate_batch(origin_requests_, now);
+  if (installed == LspInstallResult::installed)
+    for (const auto &event : origin_events_) emit(event.kind, observer, event.id);
+  return origin_result(installed, now, observer);
 }
 
 std::optional<LevelOutputs> LevelProcess::outputs(std::size_t circuit, std::uint64_t epoch) noexcept {

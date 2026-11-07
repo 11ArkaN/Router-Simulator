@@ -63,6 +63,11 @@ struct UpdatePurgeResult {
   LevelOriginResult origin;
   LspBuildStatus composition{LspBuildStatus::invalid_header};
 };
+struct UpdatePreparedPurge {
+  UpdateStatus status{UpdateStatus::inactive};
+  LspBuild composition;
+  OriginPurgeReason reason{OriginPurgeReason::none};
+};
 struct UpdateOutputs {
   std::uint64_t synchronization_epoch{};
   LevelOutputs reservations;
@@ -193,6 +198,18 @@ public:
   [[nodiscard]] LevelOriginResult originate(std::size_t level,
       std::span<const std::uint8_t> wire, RuntimeClock::time_point now,
       OriginPurgeReason purge, LevelObserver observer, std::size_t minimum_allocation = 0U) noexcept;
+  // Cold local-content admission; reserves only bounded transaction metadata
+  // on the selected enabled level. Failure leaves protocol state unchanged.
+  [[nodiscard]] bool reserve_origin_batch(std::size_t level, std::size_t count) noexcept;
+  // Same-owner complete local fragment transaction. Every member must match
+  // this system, level and wire-instance selector before any body is admitted.
+  // Wire/key-policy validation remains with its producing local owner. Inputs
+  // remain caller-owned through return; no view crosses a shard or survives it.
+  // Any refusal preserves all bodies/flags, apart from ordinary level Waiting
+  // notification on resource exhaustion. Successful notification sees the full
+  // committed group, never an intermediate fragment set.
+  [[nodiscard]] LevelOriginResult originate_batch(std::size_t level,
+      std::span<const LevelOriginInput> inputs, RuntimeClock::time_point now, LevelObserver observer) noexcept;
   // Same-owner value projection of the earliest retained database deadline.
   // Local lifetimes remain independent of other instances and of the UI.
   // Borrowed blocked-ID spans are sorted unique and expire on return.
@@ -212,6 +229,14 @@ public:
       const packet::isis::LspId &id, TransmitAuthentication authentication,
       RuntimeClock::time_point now, std::span<std::uint8_t> option_scratch,
       std::span<std::uint8_t> pdu_scratch, LevelObserver observer) noexcept;
+  // Same-owner preparation for a withdrawn local fragment, without mutation,
+  // notification or admission. Selects initiated versus expired retention from
+  // the actual retained body. Success borrows exclusive PDU scratch until reuse;
+  // the caller must revalidate the retained header before atomic publication.
+  [[nodiscard]] UpdatePreparedPurge prepare_local_retirement(std::size_t level,
+      const packet::isis::LspId &id, TransmitAuthentication authentication,
+      RuntimeClock::time_point now, std::span<std::uint8_t> option_scratch,
+      std::span<std::uint8_t> pdu_scratch) const noexcept;
   // The parent removed this own identity from its current generated set.
   // Requires a retained live own body, preserves its sequence, and retains the
   // initiated purge for MaxAge. Required missing keys refuse before mutation.
@@ -278,6 +303,10 @@ public:
   // no old reservation may match a reconstructed output owner's first ticket.
   [[nodiscard]] std::uint64_t maximum_synchronization_epoch() const noexcept;
 private:
+  [[nodiscard]] LspBuild compose_purge(std::size_t level, const packet::isis::LspView &original,
+      std::uint8_t maximum_areas, bool instance_present, TransmitAuthentication authentication,
+      std::span<std::uint8_t> option_scratch, std::span<std::uint8_t> pdu_scratch) const noexcept;
+  [[nodiscard]] bool local_origin(std::span<const std::uint8_t> wire) const noexcept;
   enum class LevelConstruction : std::uint8_t { immediate, deferred };
   InstanceUpdateProcess(packet::isis::SystemId local, std::uint8_t maximum_areas,
       std::array<std::optional<UpdateLevelConfiguration>, 2U> levels,

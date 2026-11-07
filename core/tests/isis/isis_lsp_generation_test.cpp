@@ -119,4 +119,15 @@ void isis_lsp_generation_tests() {
   const auto stopped = first.checkpoint(refresh + 1000s);
   require(resumed.restore(stopped, rebased) && resumed.stopped() && !resumed.deadline());
 
+  LspGenerationSchedule canceled(2s, 40s, 23U, now), restored_cancel(2s, 40s, 24U, now);
+  const auto abandoned = canceled.prepare(now);
+  canceled.changed(now);
+  canceled.abandon();
+  require(!canceled.reservation() && canceled.content_pending() && !canceled.committed_sequence() &&
+      !canceled.complete(abandoned.ticket, true, now));
+  require(restored_cancel.restore(canceled.checkpoint(now), now));
+  const auto replacement = restored_cancel.prepare(now);
+  require(replacement.sequence == abandoned.sequence && replacement.ticket != abandoned.ticket &&
+      restored_cancel.complete(replacement.ticket, true, now));
+
 }

@@ -122,7 +122,11 @@ void isis_checkpoint_barrier_tests() {
   capture.checkpoint_barrier_epoch = barrier.checkpoint_barrier_epoch;
   capture.checkpoint_now_nanoseconds = -1;
   require(command(capture).error == ControlError::invalid_argument && captured.version == 9U);
-  capture.checkpoint_now_nanoseconds = RuntimeClock::now().time_since_epoch().count();
+  // Use the owner's acknowledged sample, independently of the caller clock.
+  // Negative and future explicit anchors still fail the strict owner checks.
+  capture.checkpoint_now_nanoseconds = RuntimeClock::time_point::max().time_since_epoch().count();
+  require(command(capture).error == ControlError::invalid_argument && captured.version == 9U);
+  capture.checkpoint_now_nanoseconds = barrier.checkpoint_anchor_nanoseconds;
   require(command(capture).error == ControlError::none && captured.version == 1U &&
       captured.barrier_epoch == barrier.checkpoint_barrier_epoch && captured.active_circuits == 1U &&
       captured.devices.size() == 1U && captured.devices[0U].circuits.size() == 1U &&
@@ -299,7 +303,7 @@ void isis_checkpoint_barrier_tests() {
   const auto lan_barrier = command(begin);
   require(lan_barrier.error == ControlError::none);
   capture.checkpoint_barrier_epoch = lan_barrier.checkpoint_barrier_epoch;
-  capture.checkpoint_now_nanoseconds = RuntimeClock::now().time_since_epoch().count();
+  capture.checkpoint_now_nanoseconds = lan_barrier.checkpoint_anchor_nanoseconds;
   require(command(capture).error == ControlError::none && captured.devices[0U].circuits.size() == 1U &&
       std::holds_alternative<LanPairCheckpoint>(captured.devices[0U].circuits[0U].medium));
   restore.checkpoint_barrier_epoch = lan_barrier.checkpoint_barrier_epoch;

@@ -49,6 +49,11 @@ struct LspLinkCounts {
 [[nodiscard]] bool append_lan_pseudonode_neighbors(packet::isis::TlvWriter &writer,
     packet::isis::SystemId local, std::span<const packet::isis::SystemId> peers,
     bool narrow) noexcept;
+// One independently packable pseudonode edge, with zero wide and optional
+// narrow metric. The DIS owner validates membership and duplicate suppression.
+// Capacity refusal preserves bytes/cursor; inputs are copied, no allocation.
+[[nodiscard]] bool append_pseudonode_origin_neighbor(packet::isis::TlvWriter &writer,
+    packet::isis::SystemId peer, bool narrow) noexcept;
 // Same-owner diagnostic projection of complete encoded neighbor options.
 // Malformed framing or entries return nullopt; no borrowed view escapes.
 [[nodiscard]] std::optional<LspLinkCounts> lsp_link_counts(std::span<const std::uint8_t> options) noexcept;

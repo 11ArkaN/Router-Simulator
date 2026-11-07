@@ -29,20 +29,31 @@ ControlError ControlWorker::edit_local_content(ControlCommand &command, OwnedIns
       if (option->code == 2U || option->code == 22U || option->code == 222U)
         return ControlError::invalid_argument;
     if (!cursor.valid()) return ControlError::invalid_argument;
-    if (!value.id[7U]) {
-      const auto &level = instance.configuration.origination->content.levels[value.level];
-      std::size_t required{};
-      if (origin.neighbors) for (const auto &entry : *origin.neighbors)
-        if (entry.levels[value.level]) required += *p2p_origin_option_octets(*entry.levels[value.level]);
-      if (origin.broadcast_neighbors) for (const auto &entry : *origin.broadcast_neighbors)
-        if (entry.levels[value.level]) required += *p2p_origin_option_octets(*entry.levels[value.level]);
-      const auto capacity = level->maximum_pdu_octets - packet::isis::lsp_header_octets;
-      if (required > capacity || value.options.size() > capacity - required) return ControlError::capacity;
-    }
     if (desired->active && desired->flags == value.flags && desired->options == value.options) {
       result.local_content_result = LocalContentResult::unchanged;
       return ControlError::none;
     }
+  }
+  const bool automatic = origin.neighbors || origin.broadcast_neighbors;
+  if (automatic && withdrawing && !desired->active) {
+    result.local_content_result = LocalContentResult::unchanged;
+    return ControlError::none;
+  }
+  if (automatic) {
+    try {
+      // Reuse cold admission against detached desired policy. The live owner
+      // and its pending encoded reservations remain unchanged on refusal.
+      auto proposed = instance.configuration;
+      for (auto &record : proposed.origination->content.records)
+        if (record.level == value.level && record.id == value.id) {
+          record.active = !withdrawing;
+          if (!withdrawing) { record.flags = value.flags; record.options = value.options; }
+        }
+      std::erase_if(proposed.origination->content.records, [](const auto &record) { return record.id[6U] != 0U; });
+      const auto admitted = prepare_neighbor_origination(proposed);
+      if (admitted != ControlError::none) return admitted;
+    } catch (const std::bad_alloc &) { return ControlError::capacity; }
+      catch (const std::length_error &) { return ControlError::capacity; }
   }
   result.local_content_result = withdrawing ? instance.local->withdraw(value.level, value.id) :
       instance.local->replace(value.level, value.id, value.flags, value.options, RuntimeClock::now());
@@ -60,8 +71,8 @@ ControlError ControlWorker::edit_local_content(ControlCommand &command, OwnedIns
   if (!withdrawing) {
     desired->flags = value.flags;
     desired->options.swap(value.options);
-    if (origin.neighbors || origin.broadcast_neighbors) instance.local_roots_dirty[value.level] = true;
   }
+  if (automatic) instance.local_roots_dirty[value.level] = true;
   return ControlError::none;
 }
 RuntimeClock::time_point ControlWorker::service_local_instance(DeviceState &device, std::size_t index,
@@ -180,6 +191,7 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
         configuration.maximum_circuits, device.update_fences[index] + 1U);
     auto local = std::make_unique<LocalLspSet>(configuration.local, configuration.maximum_areas,
         UpdateInstanceSelector{configuration.format, configuration.wire_instance}, configuration.origination->content, now);
+    if (!local->reserve_publication(*process)) throw std::invalid_argument("IS-IS fragment transaction capacity refused");
     std::vector<std::unique_ptr<UpdateEgress>> egress;
     egress.reserve(bindings.size());
     for (const auto binding : bindings)

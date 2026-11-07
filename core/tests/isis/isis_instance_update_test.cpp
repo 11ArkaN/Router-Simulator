@@ -97,6 +97,44 @@ void delivered(void *opaque, const lab::MultiDeviceFabric::Delivery &delivery) {
 void isis_instance_update_tests() {
   auto now = RuntimeClock::time_point{100s};
   {
+    auto configuration = level_configuration();
+    for (auto &level : configuration) level->authenticate_lsp = false;
+    const SystemId local{1U, 2U, 3U, 4U, 5U, 6U};
+    InstanceUpdateProcess update(local, 3U, configuration,
+        std::span<const UpdateCircuitConfiguration>{}, {InstanceFormat::standard, 0U});
+    require(update.reserve_origin_batch(0U, 2U) && !update.reserve_origin_batch(2U, 2U));
+    std::array<std::vector<std::uint8_t>, 2U> bodies;
+    for (std::size_t index{}; index < bodies.size(); ++index) {
+      bodies[index].resize(lsp_header_octets);
+      require(encode_lsp(bodies[index], {PduType::lsp_l1,
+          {1U, 2U, 3U, 4U, 5U, 6U, 0U, static_cast<std::uint8_t>(index)},
+          1200U, 1U, 3U}, {}).has_value());
+    }
+    const LevelObserver observer{nullptr, +[](void *, const LevelEvent &) noexcept {}};
+    auto foreign = bodies[1U];
+    require(encode_lsp(foreign, {PduType::lsp_l1,
+        {1U, 2U, 3U, 4U, 5U, 7U, 0U, 1U}, 1200U, 1U, 3U}, {}).has_value());
+    std::array inputs{LevelOriginInput{bodies[0U]}, LevelOriginInput{foreign}};
+    require(update.originate_batch(0U, inputs, now, observer).status == LevelStatus::invalid_configuration &&
+        !update.level(0U)->database().database().size());
+    // A foreign IID in the second member cannot publish the valid first member.
+    auto scratch = std::make_unique<PduScratch>();
+    LspContents contents;
+    contents.header = {PduType::lsp_l1, {1U, 2U, 3U, 4U, 5U, 6U, 0U, 1U}, 1200U, 1U, 3U};
+    contents.maximum_pdu_octets = 1492U;
+    const std::array<std::uint16_t, 1U> topologies{0U};
+    contents.instance = PduInstanceOption{InstanceFormat::standard, 1U, topologies};
+    const auto built = build_lsp_pdu(contents, scratch->options, scratch->pdu);
+    require(built.status == LspBuildStatus::encoded);
+    inputs[1U].wire = built.bytes;
+    require(update.originate_batch(0U, inputs, now, observer).status == LevelStatus::invalid_configuration &&
+        !update.level(0U)->database().database().size());
+    inputs[1U].wire = bodies[1U];
+    require(update.originate_batch(0U, inputs, now, observer).install == LspInstallResult::installed &&
+        update.level(0U)->database().database().size() == 2U &&
+        !update.level(1U)->database().database().size());
+  }
+  {
     // A new DIS purges all retained fragments of the previous foreign
     // pseudonode without changing sequence/checksum or another namespace.
     const packet::Mac group{1U, 0x80U, 0xc2U, 0U, 0U, 0x14U};

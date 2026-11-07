@@ -298,6 +298,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     else {
       checkpoint_barrier_started_ = RuntimeClock::now();
       result.checkpoint_barrier_epoch = checkpoint_barrier_epoch_ = ++checkpoint_barrier_counter_;
+      result.checkpoint_anchor_nanoseconds = checkpoint_barrier_started_.time_since_epoch().count();
     }
     return result;
   }

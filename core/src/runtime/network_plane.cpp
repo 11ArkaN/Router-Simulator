@@ -1447,6 +1447,7 @@ struct NetworkPlane::Impl {
   struct CheckpointQuiescence {
     Impl &owner;
     std::uint64_t isis_barrier{};
+    Clock::time_point anchor{};
     bool forwarding{}, isis_prepared{}, ospf_prepared{};
     [[nodiscard]] bool enter() noexcept {
       forwarding = true;
@@ -1456,6 +1457,7 @@ struct NetworkPlane::Impl {
       const auto result = owner.execute_isis(std::move(begin));
       if (result.error != isis::ControlError::none) return false;
       isis_barrier = result.checkpoint_barrier_epoch;
+      anchor = Clock::time_point{Clock::duration{result.checkpoint_anchor_nanoseconds}};
       return true;
     }
     ~CheckpointQuiescence() {
@@ -8235,10 +8237,11 @@ std::optional<NetworkPlaneCheckpoint>
 NetworkPlane::checkpoint(Clock::time_point now) {
   Impl::CheckpointQuiescence barrier{*impl_};
   if (!barrier.enter()) return std::nullopt;
-  // All IS-IS packet owners have acknowledged before this real-time anchor.
-  // Empty protocol state needs no image and preserves the existing explicit
-  // caller clock contract for non-protocol forwarding fixtures.
-  const auto anchor = Clock::now();
+  // All forwarding owners stopped before the protocol owner sampled its
+  // acknowledged anchor. Reusing that sample avoids comparing independently
+  // rounded browser clocks across pthreads. Empty protocol state preserves the
+  // existing explicit caller clock contract for forwarding fixtures.
+  const auto anchor = barrier.anchor;
   auto isis_state = impl_->capture_isis_checkpoint(barrier.isis_barrier, anchor);
   if (!isis_state) return std::nullopt;
   const bool has_isis = !isis_state->control.devices.empty() || !isis_state->installed.empty() ||
@@ -8431,7 +8434,7 @@ bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
     return false;
   Impl::CheckpointQuiescence barrier{*impl_};
   if (!barrier.enter()) return false;
-  const auto protocol_anchor = Clock::now();
+  const auto protocol_anchor = barrier.anchor;
   if (state.isis) now = protocol_anchor;
   std::array<bool, device_catalog::maximum_routers> router_seen{};
   std::array<bool, device_catalog::maximum_hosts> host_seen{};

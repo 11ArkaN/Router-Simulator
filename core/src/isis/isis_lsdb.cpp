@@ -1,7 +1,9 @@
 // Owner-local LSDB storage, recency and lifetime projection. Sorted metadata
 // has one reserved allocation; PDU vectors preserve exact accepted bytes.
 // A growing replacement stages one PDU before swapping, so peak allocation
-// includes one additional maximum PDU beyond the retained-byte budget.
+// includes staged growing PDUs beyond the final retained-byte budget. Local
+// multi-fragment admission reserves metadata cold and commits all bodies before
+// its level owner publishes any of their flooding flags.
 // Source: iso.10589.2002.lsdb
 
 #include "router/isis_lsdb.hpp"
@@ -99,14 +101,14 @@ std::optional<LspDeadline> LinkStateDatabase::next_deadline(std::optional<LspDea
   return result;
 }
 
-LspInstallResult LinkStateDatabase::install(std::span<const std::uint8_t> wire,
-    RuntimeClock::time_point now, std::uint16_t maximum_age, std::chrono::seconds purge_retention,
-    LspAdmission admission) noexcept {
+LspInstallResult LinkStateDatabase::plan_install(const LspInstallRequest &request,
+    RuntimeClock::time_point now, PreparedInstall &prepared) const noexcept {
   using Result = LspInstallResult;
+  const auto &admission = request.admission;
   packet::isis::DecodeError error{};
-  const auto pdu = packet::isis::parse(wire, error);
-  if (!pdu || pdu->type != type_ || admission.origin > LspAdmissionOrigin::originated || purge_retention.count() < 0 ||
-      purge_retention.count() > std::numeric_limits<std::uint16_t>::max() || admission.minimum_allocation > 65535U ||
+  const auto pdu = packet::isis::parse(request.wire, error);
+  if (!pdu || pdu->type != type_ || admission.origin > LspAdmissionOrigin::originated || request.purge_retention.count() < 0 ||
+      request.purge_retention.count() > std::numeric_limits<std::uint16_t>::max() || admission.minimum_allocation > 65535U ||
       (admission.minimum_allocation && admission.origin != LspAdmissionOrigin::originated) ||
       admission.purge_anchor > LspPurgeAnchor::current_event ||
       (admission.purge_anchor != LspPurgeAnchor::preserve_expiration &&
@@ -114,66 +116,132 @@ LspInstallResult LinkStateDatabase::install(std::span<const std::uint8_t> wire,
   auto header = packet::isis::lsp(*pdu);
   if (!header || !header->sequence) return Result::malformed;
   if (!header->checksum) header->remaining_seconds = 0U;
-  if (header->remaining_seconds > maximum_age) return Result::excessive_lifetime;
+  if (header->remaining_seconds > request.maximum_age) return Result::excessive_lifetime;
   if (header->remaining_seconds && !packet::isis::valid_lsp_checksum(*pdu)) return Result::invalid_checksum;
-  auto entry = std::lower_bound(records_.begin(), records_.end(), header->id,
+  const auto entry = std::lower_bound(records_.begin(), records_.end(), header->id,
       [](const Record &record, const auto &key) { return record.header.id < key; });
-  const bool exists = entry != records_.end() && entry->header.id == header->id;
+  prepared.exists = entry != records_.end() && entry->header.id == header->id;
   auto purge_became_zero = now;
-  if (exists) {
+  if (prepared.exists) {
     const auto effective = view(*entry, now).header;
     const auto comparison = compare_lsp_headers(*header, effective);
     if (comparison == LspRecency::older) return Result::older;
-    // Aging changes effective lifetime without rewriting authenticated bytes.
-    // A same-sequence purge must still replace an aged active body so the
-    // process can flood its finalized purge and eventually retire the record.
+    // An aged active body still needs its finalized same-sequence purge.
     const bool aged_body = !effective.remaining_seconds && !entry->purge_installed &&
                            header->sequence == effective.sequence && !header->remaining_seconds;
     if (comparison == LspRecency::identical && !aged_body) return Result::identical;
     if (comparison == LspRecency::confusion) return Result::confusion;
     if (aged_body && admission.purge_anchor == LspPurgeAnchor::preserve_expiration)
       purge_became_zero = after(entry->installed_at, std::chrono::seconds(entry->header.remaining_seconds));
-  } else {
-    if (!header->remaining_seconds && admission.origin == LspAdmissionOrigin::received) return Result::unknown_purge;
-    if (records_.size() == limits_.records) return Result::capacity_exhausted;
+  } else if (!header->remaining_seconds && admission.origin == LspAdmissionOrigin::received) {
+    return Result::unknown_purge;
   }
-  const auto old_allocation = exists ? entry->bytes.capacity() : 0U;
-  const auto retained_other = allocated_octets_ - old_allocation;
-  const auto allocation = std::max({pdu->bytes.size(), limits_.minimum_pdu_allocation, admission.minimum_allocation});
-  const bool reuse = exists && allocation <= entry->bytes.capacity();
-  if (!reuse && allocation > limits_.allocated_pdu_octets - retained_other)
-    return Result::capacity_exhausted;
-  if (!exists && admission.reserve_metadata && !admission.reserve_metadata(admission.context, *header))
-    return Result::capacity_exhausted;
-  std::vector<std::uint8_t> staged;
-  if (!reuse) {
-    try {
-      staged.reserve(allocation);
-      staged.assign(pdu->bytes.begin(), pdu->bytes.end());
-    }
-    catch (const std::bad_alloc &) { return Result::capacity_exhausted; }
-    if (staged.capacity() > limits_.allocated_pdu_octets - retained_other) return Result::capacity_exhausted;
-  }
-  if (!exists) entry = records_.insert(entry, Record{});
-  if (reuse) {
-    // Growing within retained capacity initializes the new elements before
-    // copying, otherwise resize would overwrite the accepted suffix. Aliased
-    // input cannot extend beyond the old size. Shrinking follows the copy so
-    // a borrowed input slice remains alive throughout the move.
-    if (pdu->bytes.size() > entry->bytes.size()) entry->bytes.resize(pdu->bytes.size());
-    std::memmove(entry->bytes.data(), pdu->bytes.data(), pdu->bytes.size());
-    entry->bytes.resize(pdu->bytes.size());
-  } else entry->bytes.swap(staged);
-  if (!header->remaining_seconds) {
+  prepared.header = *header;
+  prepared.wire = pdu->bytes;
+  prepared.retire_at = after(purge_became_zero, request.purge_retention);
+  prepared.old_allocation = prepared.exists ? entry->bytes.capacity() : 0U;
+  prepared.allocation = std::max({pdu->bytes.size(), limits_.minimum_pdu_allocation, admission.minimum_allocation});
+  prepared.reuse = prepared.exists && prepared.allocation <= prepared.old_allocation;
+  return Result::installed;
+}
+
+bool LinkStateDatabase::stage_install(PreparedInstall &prepared) noexcept {
+  if (prepared.reuse) return true;
+  try {
+    prepared.staged.reserve(prepared.allocation);
+    prepared.staged.assign(prepared.wire.begin(), prepared.wire.end());
+    prepared.allocation = prepared.staged.capacity();
+    return true;
+  } catch (const std::bad_alloc &) { return false; }
+}
+
+void LinkStateDatabase::commit_install(PreparedInstall &prepared, RuntimeClock::time_point now) noexcept {
+  auto entry = std::lower_bound(records_.begin(), records_.end(), prepared.header.id,
+      [](const Record &record, const auto &key) { return record.header.id < key; });
+  if (!prepared.exists) entry = records_.insert(entry, Record{});
+  if (prepared.reuse) {
+    // Resize before growth-copy, after shrink-copy. Single admission permits
+    // an aliased retained slice; batch admission requires disjoint owned wire.
+    if (prepared.wire.size() > entry->bytes.size()) entry->bytes.resize(prepared.wire.size());
+    std::memmove(entry->bytes.data(), prepared.wire.data(), prepared.wire.size());
+    entry->bytes.resize(prepared.wire.size());
+  } else entry->bytes.swap(prepared.staged);
+  if (!prepared.header.remaining_seconds) {
     entry->bytes[10U] = 0U;
     entry->bytes[11U] = 0U;
   }
-  entry->header = *header;
+  entry->header = prepared.header;
   entry->installed_at = now;
-  entry->purge_installed = header->remaining_seconds == 0U;
+  entry->purge_installed = prepared.header.remaining_seconds == 0U;
   entry->expiration_notified = false;
-  entry->retire_at = after(purge_became_zero, purge_retention);
-  allocated_octets_ = retained_other + entry->bytes.capacity();
+  entry->retire_at = prepared.retire_at;
+  allocated_octets_ = allocated_octets_ - prepared.old_allocation + entry->bytes.capacity();
+}
+
+LspInstallResult LinkStateDatabase::install(std::span<const std::uint8_t> wire,
+    RuntimeClock::time_point now, std::uint16_t maximum_age, std::chrono::seconds purge_retention,
+    LspAdmission admission) noexcept {
+  using Result = LspInstallResult;
+  PreparedInstall prepared;
+  const auto planned = plan_install({wire, maximum_age, purge_retention, admission}, now, prepared);
+  if (planned != Result::installed) return planned;
+  if ((!prepared.exists && records_.size() == limits_.records) ||
+      (!prepared.reuse && prepared.allocation > limits_.allocated_pdu_octets - (allocated_octets_ - prepared.old_allocation)))
+    return Result::capacity_exhausted;
+  if (!prepared.exists && admission.reserve_metadata &&
+      !admission.reserve_metadata(admission.context, prepared.header)) return Result::capacity_exhausted;
+  if (!stage_install(prepared) || (!prepared.reuse &&
+      prepared.allocation > limits_.allocated_pdu_octets - (allocated_octets_ - prepared.old_allocation)))
+    return Result::capacity_exhausted;
+  commit_install(prepared, now);
+  return Result::installed;
+}
+
+bool LinkStateDatabase::reserve_origin_batch(std::size_t count) noexcept {
+  if (count > limits_.records || count > origin_preparation_.max_size() || !origin_preparation_.empty()) return false;
+  try { origin_preparation_.reserve(count); return true; }
+  catch (const std::bad_alloc &) { return false; }
+}
+
+LspInstallResult LinkStateDatabase::install_origin_batch(
+    std::span<const LspInstallRequest> requests, RuntimeClock::time_point now) noexcept {
+  using Result = LspInstallResult;
+  if (requests.empty() || !origin_preparation_.empty()) return Result::malformed;
+  if (requests.size() > limits_.records || requests.size() > origin_preparation_.capacity()) return Result::capacity_exhausted;
+  struct Clear {
+    std::vector<PreparedInstall> &values;
+    ~Clear() { values.clear(); }
+  } clear{origin_preparation_};
+  std::size_t added{}, released{}, replacement{};
+  for (const auto &request : requests) {
+    if (request.admission.origin != LspAdmissionOrigin::originated) return Result::malformed;
+    auto &prepared = origin_preparation_.emplace_back();
+    const auto planned = plan_install(request, now, prepared);
+    if (planned != Result::installed) return planned;
+    for (auto previous = origin_preparation_.begin(); previous != origin_preparation_.end() - 1; ++previous)
+      if (previous->header.id == prepared.header.id) return Result::malformed;
+    added += !prepared.exists;
+    released += prepared.old_allocation;
+    const auto allocation = prepared.reuse ? prepared.old_allocation : prepared.allocation;
+    if (allocation > limits_.allocated_pdu_octets - replacement) return Result::capacity_exhausted;
+    replacement += allocation;
+  }
+  if (added > limits_.records - records_.size() ||
+      replacement > limits_.allocated_pdu_octets - (allocated_octets_ - released)) return Result::capacity_exhausted;
+  for (std::size_t index{}; index < requests.size(); ++index) {
+    auto &prepared = origin_preparation_[index];
+    const auto &admission = requests[index].admission;
+    if (!prepared.exists && admission.reserve_metadata &&
+        !admission.reserve_metadata(admission.context, prepared.header)) return Result::capacity_exhausted;
+    if (!stage_install(prepared)) return Result::capacity_exhausted;
+    const auto actual = prepared.reuse ? prepared.old_allocation : prepared.allocation;
+    const auto expected = prepared.reuse ? prepared.old_allocation :
+        std::max({prepared.wire.size(), limits_.minimum_pdu_allocation, admission.minimum_allocation});
+    if (actual - expected > limits_.allocated_pdu_octets - replacement) return Result::capacity_exhausted;
+    replacement += actual - expected;
+  }
+  if (replacement > limits_.allocated_pdu_octets - (allocated_octets_ - released)) return Result::capacity_exhausted;
+  for (auto &prepared : origin_preparation_) commit_install(prepared, now);
   return Result::installed;
 }
 

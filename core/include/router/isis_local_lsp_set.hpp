@@ -18,6 +18,10 @@ struct LocalLspContent {
   bool active{true};
   bool operator==(const LocalLspContent &) const = default;
 };
+struct LocalLspFragment {
+  std::uint8_t number{}, flags{};
+  std::span<const std::uint8_t> options;
+};
 struct LocalLspLevelProgram {
   std::uint16_t maximum_age{}, maximum_pdu_octets{};
   std::chrono::microseconds minimum_interval{}, refresh_interval{};
@@ -57,7 +61,8 @@ struct LocalLspSetCheckpoint {
 class LocalLspSet final {
 public:
   // Cold construction validates unique local IDs, levels, framing and explicit
-  // intervals, then reserves each semantic buffer before publication. Programs
+  // intervals, then reserves semantic and preparation buffers before publication.
+  // Area Addresses are legal only in non-pseudonode fragment zero. Programs
   // contain local semantic records only, never received foreign bytes. The update
   // owner and all authentication leases outlive synchronous service calls.
   LocalLspSet(packet::isis::SystemId local, std::uint8_t maximum_areas,
@@ -69,6 +74,16 @@ public:
   // not regenerate an LSP. Configuration owner validates semantic TLV values.
   [[nodiscard]] LocalContentResult replace(std::size_t level, const packet::isis::LspId &id,
       std::uint8_t flags, std::span<const std::uint8_t> options, RuntimeClock::time_point now) noexcept;
+  // Same-owner complete semantic replacement for one seven-octet source ID.
+  // Inputs are strictly ordered fragment numbers and must start at zero when
+  // nonempty. Every identity/buffer is cold-reserved. Absent active fragments
+  // become pending purges; the ordinary root family cannot become empty.
+  // Preflight checks the entire set before changing content or schedules.
+  // No allocation/callback and no wire publication. Caller inputs are disjoint
+  // from private storage and expire on return. Generation publishes separately.
+  [[nodiscard]] LocalContentResult replace_fragments(std::size_t level,
+      const packet::isis::LanId &source, std::span<const LocalLspFragment> fragments,
+      RuntimeClock::time_point now) noexcept;
   // Withdraws a reserved non-root identity. Its current body is purged with
   // unchanged sequence and MaxAge retention; an already expired body follows
   // ordinary expiration. Root 00 cannot be withdrawn while its level exists.
@@ -77,6 +92,12 @@ public:
   [[nodiscard]] LocalContentResult withdraw(std::size_t level, const packet::isis::LspId &id) noexcept;
   // Current-set membership is independent of retention in the local LSDB.
   [[nodiscard]] bool contains(std::size_t level, const packet::isis::LspId &id) const noexcept;
+  // Same-owner current semantic projection for stable fragment placement.
+  // Missing/withdrawn identities return nullopt. Option bytes borrow private
+  // storage until the next mutation of this owner; never retain or send them
+  // across shards. This view has no encoded authentication or received data.
+  [[nodiscard]] std::optional<LocalLspFragment> fragment(std::size_t level,
+      const packet::isis::LspId &id) const noexcept;
   // Last publication result, or nullopt for an identity outside reserved slots.
   // Value projection only; no semantic content or key reference escapes.
   [[nodiscard]] std::optional<UpdateStatus> last_error(std::size_t level,
@@ -97,7 +118,12 @@ public:
   // Retry only after an actual storage/key-policy event. No timer polling of
   // failed publication. Existing pending content and sequence floors survive.
   void retry(std::size_t level) noexcept;
-  // Bounded round-robin publication runs on the instance shard. Root zero
+  // Cold control-owner preparation before publishing or restoring this local
+  // catalog. Reserves update transaction metadata for the largest family in
+  // each enabled level. Refusal changes no semantic or protocol state.
+  [[nodiscard]] bool reserve_publication(InstanceUpdateProcess &update) const noexcept;
+  // Bounded round-robin publication runs on the instance shard. Cold
+  // reserve_publication() must precede grouped publication. Root zero
   // reserves its full effective originating buffer inside the existing LSDB
   // budget. Keys are borrowed for this call; scratch is exclusively reused.
   // A terminal result REQUIRES parent entity-wide shutdown and cooldown before
@@ -119,9 +145,26 @@ private:
     LspGenerationSchedule generation;
     UpdateStatus last_error{UpdateStatus::applied};
     bool retirement_pending{}, retirement_blocked{};
+    // Derived encoded preparation, owned only by this control shard. Capacity
+    // is reserved cold; pending sequence/ticket remains in generation state.
+    // No authentication lease survives encoding. Restore rebuilds these bytes.
+    std::vector<std::uint8_t> prepared;
+    OriginPurgeReason prepared_reason{OriginPurgeReason::none};
     Entry(LocalLspContent value, const LocalLspLevelProgram &program,
         std::uint64_t random, RuntimeClock::time_point now);
   };
+  [[nodiscard]] LspBuild compose(const Entry &entry, std::uint32_t sequence,
+      std::span<const std::uint8_t> options, std::uint8_t flags,
+      std::optional<AuthenticationKey> key, PduScratch &scratch) const noexcept;
+  void service_retained(InstanceUpdateProcess &update, Entry &entry,
+      TransmitAuthentication authentication, RuntimeClock::time_point now,
+      PduScratch &scratch, LevelObserver observer, std::size_t &budget, LocalGenerationResult &result) noexcept;
+  void service_overload(InstanceUpdateProcess &update, std::size_t level,
+      TransmitAuthentication authentication, RuntimeClock::time_point now,
+      PduScratch &scratch, LevelObserver observer, std::size_t &budget, LocalGenerationResult &result) noexcept;
+  [[nodiscard]] bool service_family(InstanceUpdateProcess &update, std::size_t index,
+      std::array<TransmitAuthentication, 2U> authentication, RuntimeClock::time_point now,
+      PduScratch &scratch, LevelObserver observer, std::size_t &budget, LocalGenerationResult &result) noexcept;
   [[nodiscard]] Entry *find(std::size_t level, const packet::isis::LspId &id) noexcept;
   packet::isis::SystemId local_;
   std::uint8_t maximum_areas_{};

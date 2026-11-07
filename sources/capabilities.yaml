@@ -1,6 +1,9 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  runtime.isis_atomic_fragment_origin:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.atomic_fragment_origin]
   runtime.prepared_protocol_restore:
     status: partially-implemented
     source_ids: [project.runtime.prepared_protocol_restore]

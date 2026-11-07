@@ -420,6 +420,25 @@ UpdatePurgeResult InstanceUpdateProcess::finalize_expiration(std::size_t level,
   return publish_purge(level, stored->header, stored->pdu.maximum_area_addresses, selected->present,
       authentication, now, option_scratch, pdu_scratch, OriginPurgeReason::lifetime_expired, observer);
 }
+UpdatePreparedPurge InstanceUpdateProcess::prepare_local_retirement(std::size_t level,
+    const packet::isis::LspId &id, TransmitAuthentication authentication,
+    RuntimeClock::time_point now, std::span<std::uint8_t> option_scratch,
+    std::span<std::uint8_t> pdu_scratch) const noexcept {
+  if (level >= levels_.size() || !levels_[level] || !std::equal(local_.begin(), local_.end(), id.begin()))
+    return {UpdateStatus::invalid_configuration, {}, OriginPurgeReason::none};
+  const auto stored = levels_[level]->database().database().find(id, now);
+  if (!stored || stored->purge_installed) return {};
+  packet::isis::InstanceError error{};
+  const auto selected = packet::isis::select_instance(stored->pdu, selector_.format, false, error);
+  if (!selected || selected->instance != selector_.wire_instance) return {UpdateStatus::instance, {}, OriginPurgeReason::none};
+  if (authentication.required && !authentication.key) return {UpdateStatus::authentication, {}, OriginPurgeReason::none};
+  const auto built = compose_purge(level, stored->header, stored->pdu.maximum_area_addresses,
+      selected->present, authentication, option_scratch, pdu_scratch);
+  const auto status = built.status == LspBuildStatus::encoded ? UpdateStatus::applied :
+      built.status == LspBuildStatus::capacity ? UpdateStatus::capacity :
+      built.status == LspBuildStatus::authentication ? UpdateStatus::authentication : UpdateStatus::invalid_configuration;
+  return {status, built, stored->header.remaining_seconds ? OriginPurgeReason::initiated : OriginPurgeReason::lifetime_expired};
+}
 UpdatePurgeResult InstanceUpdateProcess::initiate_local_purge(std::size_t level,
     const packet::isis::LspId &id, TransmitAuthentication authentication,
     RuntimeClock::time_point now, std::span<std::uint8_t> option_scratch,
@@ -486,11 +505,9 @@ UpdatePurgeResult InstanceUpdateProcess::finalize_confusion(std::size_t level,
   return publish_purge(level, stored->header, stored->pdu.maximum_area_addresses, selected->present,
       authentication, now, option_scratch, pdu_scratch, OriginPurgeReason::confusion, observer);
 }
-UpdatePurgeResult InstanceUpdateProcess::publish_purge(std::size_t level, const packet::isis::LspView &original,
-    std::uint8_t maximum_areas, bool instance_present, TransmitAuthentication authentication, RuntimeClock::time_point now,
-    std::span<std::uint8_t> option_scratch, std::span<std::uint8_t> pdu_scratch,
-    OriginPurgeReason reason, LevelObserver observer) noexcept {
-  if (authentication.required && !authentication.key) return {UpdateStatus::authentication, {}, LspBuildStatus::invalid_header};
+LspBuild InstanceUpdateProcess::compose_purge(std::size_t level, const packet::isis::LspView &original,
+    std::uint8_t maximum_areas, bool instance_present, TransmitAuthentication authentication,
+    std::span<std::uint8_t> option_scratch, std::span<std::uint8_t> pdu_scratch) const noexcept {
   PurgeContents contents;
   contents.type = level ? packet::isis::PduType::lsp_l2 : packet::isis::PduType::lsp_l1;
   contents.original = original;
@@ -503,7 +520,16 @@ UpdatePurgeResult InstanceUpdateProcess::publish_purge(std::size_t level, const 
   if (instance_present && !(contents.rules == PurgeRules::authentication_only && !selector_.wire_instance)) contents.instance = PduInstanceOption{selector_.format, selector_.wire_instance,
       selector_.format == packet::isis::InstanceFormat::standard ? std::span<const std::uint16_t>(topology) :
           std::span<const std::uint16_t>{}};
-  const auto built = build_purge_pdu(contents, option_scratch, pdu_scratch);
+  return build_purge_pdu(contents, option_scratch, pdu_scratch);
+}
+
+UpdatePurgeResult InstanceUpdateProcess::publish_purge(std::size_t level, const packet::isis::LspView &original,
+    std::uint8_t maximum_areas, bool instance_present, TransmitAuthentication authentication, RuntimeClock::time_point now,
+    std::span<std::uint8_t> option_scratch, std::span<std::uint8_t> pdu_scratch,
+    OriginPurgeReason reason, LevelObserver observer) noexcept {
+  if (authentication.required && !authentication.key) return {UpdateStatus::authentication, {}, LspBuildStatus::invalid_header};
+  const auto built = compose_purge(level, original, maximum_areas, instance_present,
+      authentication, option_scratch, pdu_scratch);
   if (built.status != LspBuildStatus::encoded) {
     const auto status = built.status == LspBuildStatus::capacity ? UpdateStatus::capacity :
         built.status == LspBuildStatus::authentication ? UpdateStatus::authentication : UpdateStatus::invalid_configuration;
@@ -535,21 +561,40 @@ std::uint64_t InstanceUpdateProcess::maximum_synchronization_epoch() const noexc
   return result;
 }
 
-LevelOriginResult InstanceUpdateProcess::originate(std::size_t level,
-    std::span<const std::uint8_t> wire, RuntimeClock::time_point now,
-    OriginPurgeReason purge, LevelObserver observer, std::size_t minimum_allocation) noexcept {
-  if (level >= levels_.size() || !levels_[level] || purge > OriginPurgeReason::initiated)
-    return {LevelStatus::invalid_configuration, LspInstallResult::malformed};
+bool InstanceUpdateProcess::local_origin(std::span<const std::uint8_t> wire) const noexcept {
   packet::isis::DecodeError error{};
   const auto pdu = packet::isis::parse(wire, error);
   const auto header = pdu ? packet::isis::lsp(*pdu) : std::nullopt;
   if (!header || !std::equal(local_.begin(), local_.end(), header->id.begin()))
-    return {LevelStatus::invalid_configuration, LspInstallResult::malformed};
+    return false;
   packet::isis::InstanceError instance_error{};
   const auto instance = packet::isis::select_instance(*pdu, selector_.format, false, instance_error);
   if (!instance || instance->instance != selector_.wire_instance ||
       (selector_.format == packet::isis::InstanceFormat::standard && selector_.wire_instance && !instance->topology_zero))
+    return false;
+  return true;
+}
+
+LevelOriginResult InstanceUpdateProcess::originate(std::size_t level,
+    std::span<const std::uint8_t> wire, RuntimeClock::time_point now,
+    OriginPurgeReason purge, LevelObserver observer, std::size_t minimum_allocation) noexcept {
+  if (level >= levels_.size() || !levels_[level] || purge > OriginPurgeReason::initiated || !local_origin(wire))
     return {LevelStatus::invalid_configuration, LspInstallResult::malformed};
   return levels_[level]->originate(wire, now, purge, observer, minimum_allocation);
 }
+
+bool InstanceUpdateProcess::reserve_origin_batch(std::size_t level, std::size_t count) noexcept {
+  return level < levels_.size() && levels_[level] && levels_[level]->reserve_origin_batch(count);
+}
+
+LevelOriginResult InstanceUpdateProcess::originate_batch(std::size_t level,
+    std::span<const LevelOriginInput> inputs, RuntimeClock::time_point now, LevelObserver observer) noexcept {
+  if (level >= levels_.size() || !levels_[level])
+    return {LevelStatus::invalid_configuration, LspInstallResult::malformed};
+  for (const auto &input : inputs)
+    if (input.purge > OriginPurgeReason::initiated || !local_origin(input.wire))
+      return {LevelStatus::invalid_configuration, LspInstallResult::malformed};
+  return levels_[level]->originate_batch(inputs, now, observer);
+}
+
 } // namespace router::isis

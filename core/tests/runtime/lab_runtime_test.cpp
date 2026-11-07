@@ -5397,6 +5397,8 @@ void lab_runtime_tests() {
           "restored runtime rejected the matching project vault material");
   require(restored.import_checkpoint(owned),
           "protocol 4 checkpoint import rejected a valid value graph");
+  require(!restored.export_checkpoint().empty(),
+          "restored runtime could not export its next recovery checkpoint");
   // Snapshot is backed by LabRuntime's reusable response buffer just like
   // terminal output. Own it before issuing any session command, otherwise a
   // later response aliases and overwrites the JSON under test.
@@ -5620,6 +5622,20 @@ void ospf_flap_recovery_tests() {
           "flap fixture never converged its initial adjacency: r1=" +
           execute("flap-1", "show router ospf neighbor") +
           " r2=" + execute("flap-2", "show router ospf neighbor"));
+  }
+  {
+    const auto checkpoint = runtime.export_checkpoint();
+    require(!checkpoint.empty(), "converged P2P runtime checkpoint was empty");
+    const std::vector<std::uint8_t> saved{checkpoint.begin(), checkpoint.end()};
+    auto recovered = std::make_unique<LabRuntime>();
+    require(recovered->initialize_secret_vault(project_key, project_context) &&
+                recovered->import_checkpoint(saved),
+            "converged P2P runtime checkpoint could not restore fresh owners");
+    for (unsigned capture = 0; capture < 100U; ++capture) {
+      require(!recovered->export_checkpoint().empty(),
+              "converged P2P restore could not publish a recovery checkpoint");
+      std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
   }
   configure("flap-1", "configure router interface to-r2 shutdown");
   for (unsigned attempt = 0; attempt < 120U; ++attempt) {

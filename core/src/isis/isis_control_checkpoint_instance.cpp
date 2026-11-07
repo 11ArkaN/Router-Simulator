@@ -57,7 +57,7 @@ std::unique_ptr<ControlWorker::OwnedInstance> ControlWorker::restore_checkpoint_
     if (saved.local) {
       result->local = LocalLspSet::restore_checkpoint(*saved.local, policy.local, policy.maximum_areas, selector,
           policy.origination->content, now);
-      if (!result->local) return nullptr;
+      if (!result->local || !result->local->reserve_publication(*result->process)) return nullptr;
     }
     const auto restore_decision = [](const auto &image, const auto &program) {
       return P2pRouteDecision::restore_checkpoint(image,

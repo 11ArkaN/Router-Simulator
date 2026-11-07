@@ -50,6 +50,11 @@ add_library(router_primitives STATIC
   src/isis/isis_ethernet.cpp
   src/isis/isis_hello_builder.cpp
   src/isis/isis_snp_builder.cpp
+  src/isis/isis_local_fragment_service.cpp
+  src/isis/isis_control_fragment_origin.cpp
+  src/isis/isis_origin_fragment_workspace.cpp
+  src/isis/isis_fragment_composition.cpp
+  src/isis/isis_fragment_plan.cpp
   src/isis/isis_lsp_builder.cpp
   src/isis/isis_database_validation.cpp
   src/isis/isis_lsp_generation.cpp
@@ -636,6 +641,11 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_authentication_test.cpp
     tests/isis/isis_instance_tlv_test.cpp
     tests/isis/isis_lsdb_test.cpp
+    tests/isis/isis_lsdb_batch_test.cpp
+    tests/isis/isis_level_batch_test.cpp
+    tests/isis/isis_fragment_plan_test.cpp
+    tests/isis/isis_local_fragment_test.cpp
+    tests/isis/isis_control_fragment_test.cpp
     tests/isis/isis_lsdb_checkpoint_test.cpp
     tests/isis/isis_adjacency_test.cpp
     tests/isis/isis_p2p_adjacency_test.cpp

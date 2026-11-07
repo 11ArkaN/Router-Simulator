@@ -43,6 +43,14 @@ std::optional<std::size_t> lan_pseudonode_option_octets(std::size_t peer_count, 
   if (peer_count >= std::numeric_limits<std::size_t>::max() / edge_octets) return std::nullopt;
   return (peer_count + 1U) * edge_octets;
 }
+bool append_pseudonode_origin_neighbor(packet::isis::TlvWriter &writer,
+    packet::isis::SystemId peer, bool narrow) noexcept {
+  const auto size = lan_pseudonode_option_octets(0U, narrow);
+  if (!size || writer.available() < *size) return false;
+  packet::isis::LanId id{};
+  std::copy(peer.begin(), peer.end(), id.begin());
+  return append_neighbor(writer, id, 0U, narrow ? std::optional<std::uint8_t>{std::uint8_t{0U}} : std::nullopt);
+}
 bool append_lan_pseudonode_neighbors(packet::isis::TlvWriter &writer,
     packet::isis::SystemId local, std::span<const packet::isis::SystemId> peers,
     bool narrow) noexcept {
@@ -50,13 +58,8 @@ bool append_lan_pseudonode_neighbors(packet::isis::TlvWriter &writer,
   if (!size || writer.available() < *size || !std::is_sorted(peers.begin(), peers.end()) ||
       std::adjacent_find(peers.begin(), peers.end()) != peers.end() ||
       std::binary_search(peers.begin(), peers.end(), local)) return false;
-  const auto append = [&](const packet::isis::SystemId &system) {
-    packet::isis::LanId id{};
-    std::copy(system.begin(), system.end(), id.begin());
-    return append_neighbor(writer, id, 0U, narrow ? std::optional<std::uint8_t>{0U} : std::nullopt);
-  };
-  if (!append(local)) return false;
-  for (const auto &peer : peers) if (!append(peer)) return false;
+  if (!append_pseudonode_origin_neighbor(writer, local, narrow)) return false;
+  for (const auto &peer : peers) if (!append_pseudonode_origin_neighbor(writer, peer, narrow)) return false;
   return true;
 }
 std::optional<LspLinkCounts> lsp_link_counts(std::span<const std::uint8_t> options) noexcept {

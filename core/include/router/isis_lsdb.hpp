@@ -71,6 +71,14 @@ struct LspAdmission {
   LspPurgeAnchor purge_anchor{LspPurgeAnchor::preserve_expiration};
 };
 
+struct LspInstallRequest {
+  std::span<const std::uint8_t> wire;
+  std::uint16_t maximum_age{};
+  std::chrono::seconds purge_retention{};
+  LspAdmission admission{LspAdmissionOrigin::originated, nullptr, nullptr, 0U,
+      LspPurgeAnchor::preserve_expiration};
+};
+
 struct StoredLspView {
   packet::isis::PduView pdu;
   packet::isis::LspView header;
@@ -111,6 +119,26 @@ public:
   [[nodiscard]] LspInstallResult install(std::span<const std::uint8_t> wire,
       RuntimeClock::time_point now, std::uint16_t maximum_age,
       std::chrono::seconds purge_retention, LspAdmission admission = {}) noexcept;
+
+  // Immutable resource projection on the owning shard, without allocation.
+  [[nodiscard]] std::size_t record_limit() const noexcept { return limits_.records; }
+
+  // Cold same-owner admission reserves transaction metadata, bounded by the
+  // repository record limit. False preserves live records; spare capacity can
+  // remain after allocation refusal. No encoded PDU storage is reserved here.
+  [[nodiscard]] bool reserve_origin_batch(std::size_t count) noexcept;
+  // Synchronous same-owner local origination. The complete distinct-ID batch
+  // must be newer and fit both record and retained-byte budgets. Preparation
+  // stages growing PDU buffers and metadata callbacks before any mutation;
+  // commit allocates nothing. Any refusal preserves all live records and views.
+  // Inputs and callback staging remain caller-owned, disjoint from repository
+  // bytes, and valid through return. Callbacks cannot publish or reenter this
+  // owner. Empty, duplicate-ID or received batches are malformed. Insufficient
+  // cold transaction capacity returns capacity_exhausted. Identical/older or
+  // confused members refuse the whole batch with that exact result.
+  // The enclosing level sets every affected SRM flag only after this succeeds.
+  [[nodiscard]] LspInstallResult install_origin_batch(
+      std::span<const LspInstallRequest> requests, RuntimeClock::time_point now) noexcept;
 
   // Views borrow repository bytes until the next mutation. Effective lifetime
   // is a value projection using owner-local steady time; encoded bytes remain
@@ -167,11 +195,26 @@ private:
     RuntimeClock::time_point retire_at{};
     bool purge_installed{}, expiration_notified{};
   };
+  struct PreparedInstall {
+    packet::isis::LspView header;
+    std::span<const std::uint8_t> wire;
+    RuntimeClock::time_point retire_at{};
+    std::size_t old_allocation{}, allocation{};
+    bool exists{}, reuse{};
+    std::vector<std::uint8_t> staged;
+  };
+  [[nodiscard]] LspInstallResult plan_install(const LspInstallRequest &request,
+      RuntimeClock::time_point now, PreparedInstall &prepared) const noexcept;
+  [[nodiscard]] static bool stage_install(PreparedInstall &prepared) noexcept;
+  void commit_install(PreparedInstall &prepared, RuntimeClock::time_point now) noexcept;
   [[nodiscard]] StoredLspView view(const Record &record, RuntimeClock::time_point now) const noexcept;
   packet::isis::PduType type_;
   LsdbLimits limits_;
   std::vector<Record> records_;
   std::size_t allocated_octets_{};
+  // Derived transaction scratch, empty outside synchronous admission. Only
+  // local owners reserve it; checkpoints retain policy and encoded records.
+  std::vector<PreparedInstall> origin_preparation_;
 };
 
 } // namespace router::isis

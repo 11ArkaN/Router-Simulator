@@ -20,7 +20,6 @@ ControlError ControlWorker::prepare_neighbor_origination(UpdateInstanceProgram &
   std::sort(interfaces.begin(), interfaces.end(), [](const auto &a, const auto &b) {
     return a.interface_id < b.interface_id;
   });
-  std::array<std::size_t, 2U> required{};
   for (std::size_t index{}; index < interfaces.size(); ++index) {
     const auto &entry = interfaces[index];
     if (!entry.interface_id || (index && interfaces[index - 1U].interface_id == entry.interface_id) ||
@@ -28,12 +27,9 @@ ControlError ControlWorker::prepare_neighbor_origination(UpdateInstanceProgram &
     for (std::size_t level{}; level < 2U; ++level) if (entry.levels[level]) {
       const auto size = p2p_origin_option_octets(*entry.levels[level]);
       if (!size || !program.levels[level]) return ControlError::invalid_argument;
-      // Bound before addition, independent of a possibly hostile input count.
-      if (*size > packet::maximum_frame_octets - required[level]) return ControlError::capacity;
-      required[level] += *size;
     }
   }
-  const auto lan_error = prepare_lan_origination(program, required);
+  const auto lan_error = prepare_lan_origination(program);
   if (lan_error != ControlError::none) return lan_error;
   std::array<bool, 2U> roots{};
   for (const auto &record : program.origination->content.records) {
@@ -50,13 +46,13 @@ ControlError ControlWorker::prepare_neighbor_origination(UpdateInstanceProgram &
         level->maximum_pdu_octets < packet::isis::lsp_header_octets)
       return ControlError::invalid_argument;
     const auto capacity = level->maximum_pdu_octets - packet::isis::lsp_header_octets;
-    if (required[record.level] > capacity || record.options.size() > capacity - required[record.level])
+    if (record.options.size() > capacity)
       return ControlError::capacity;
     roots[record.level] = true;
   }
   for (std::size_t level{}; level < 2U; ++level)
     if (program.levels[level] && !roots[level]) return ControlError::invalid_argument;
-  return ControlError::none;
+  return prepare_fragment_origination(program);
 }
 bool ControlWorker::compose_local_neighbors(OwnedInstance &instance, const DeviceState &device,
     std::size_t index, LocalLspSet &target, RuntimeClock::time_point now, std::size_t &budget) noexcept {
@@ -87,19 +83,30 @@ bool ControlWorker::compose_local_neighbors(OwnedInstance &instance, const Devic
     });
     if (root == origin.content.records.end()) { instance.status = UpdateStatus::invalid_configuration; return false; }
     if (!compose_lan_pseudonodes(instance, device, index, level, target, now)) return false;
-    packet::isis::TlvWriter writer(std::span{scratch_.options}.first(
-        origin.content.levels[level]->maximum_pdu_octets - packet::isis::lsp_header_octets));
-    packet::isis::TlvCursor cursor(root->options);
-    bool valid = true;
-    while (const auto option = cursor.next()) valid = writer.append(option->code, option->value) && valid;
+    if (!instance.fragment_workspace) { instance.status = UpdateStatus::invalid_configuration; return false; }
+    auto &workspace = *instance.fragment_workspace;
+    workspace.reset();
+    std::uint64_t metadata{};
+    bool valid{true};
+    for (const auto &record : origin.content.records)
+      if (record.level == level && !record.id[6U] && record.active && !record.options.empty())
+        valid = workspace.add_options({0U, metadata++}, record.options, record.id[7U], !record.id[7U]) && valid;
+    packet::isis::LanId source{};
+    std::copy_n(root->id.begin(), source.size(), source.begin());
     for (std::size_t slot{}; slot < interfaces.size(); ++slot) {
       const auto &peer = instance.neighbor_projection[slot];
-      if (peer.up && (static_cast<std::uint8_t>(peer.usage) & (1U << level)) && interfaces[slot].levels[level])
-        valid = append_p2p_origin_neighbor(writer, peer.peer, *interfaces[slot].levels[level]) && valid;
+      if (peer.up && (static_cast<std::uint8_t>(peer.usage) & (1U << level)) && interfaces[slot].levels[level]) {
+        packet::isis::LanId neighbor{};
+        std::copy(peer.peer.begin(), peer.peer.end(), neighbor.begin());
+        valid = workspace.add_link({1U, interfaces[slot].interface_id}, neighbor, *interfaces[slot].levels[level],
+            OriginFragmentWorkspace::previous_link(target, level, source, neighbor, 256U)) && valid;
+      }
     }
-    valid = append_lan_links(instance, device, index, level, writer) && valid;
-    const auto replaced = valid && cursor.valid() ? target.replace(level, root->id, root->flags, writer.bytes(), now) :
-        LocalContentResult::capacity;
+    valid = append_lan_links(instance, device, index, level, workspace, target) && valid;
+    std::array<std::uint8_t, 256U> slot_scratch{};
+    const auto slots = local_fragment_slots(origin.content, level, source, slot_scratch);
+    const auto replaced = valid ? workspace.compose(target, level, source, root->flags, slots,
+        origin.content.levels[level]->maximum_pdu_octets - packet::isis::lsp_header_octets, now) : LocalContentResult::capacity;
     if (replaced != LocalContentResult::changed && replaced != LocalContentResult::unchanged) {
       instance.status = UpdateStatus::invalid_configuration;
       return false;

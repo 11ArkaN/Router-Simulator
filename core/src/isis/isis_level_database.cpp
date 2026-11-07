@@ -8,6 +8,8 @@
 #include <new>
 #include <utility>
 #include <stdexcept>
+#include <type_traits>
+#include <exception>
 
 namespace router::isis {
 
@@ -18,6 +20,7 @@ LevelDatabase::LevelDatabase(packet::isis::PduType type, LsdbLimits limits,
   if (maximum_circuits_ < circuits.size() || maximum_circuits_ > circuits_.max_size())
     throw std::invalid_argument("IS-IS circuit slot budget cannot contain its initial generation");
   records_.reserve(limits.records);
+  static_assert(std::is_nothrow_move_constructible_v<Record> && std::is_nothrow_move_assignable_v<Record>);
   for (auto &circuit : circuits_) circuit.srm = circuit.ssn = false;
 }
 
@@ -68,6 +71,64 @@ LspInstallResult LevelDatabase::originate(std::span<const std::uint8_t> wire,
     RuntimeClock::time_point now, std::uint16_t maximum_age,
     std::chrono::seconds purge_retention, std::size_t minimum_allocation, LspPurgeAnchor anchor) noexcept {
   return admit(wire, std::nullopt, now, maximum_age, purge_retention, minimum_allocation, anchor).install;
+}
+
+bool LevelDatabase::reserve_origin_batch(std::size_t count) noexcept {
+  if (count > maximum_records_ || count > origin_requests_.max_size() || count > origin_records_.max_size() ||
+      !origin_requests_.empty() || !origin_records_.empty()) return false;
+  try {
+    origin_requests_.reserve(count);
+    origin_records_.reserve(count);
+    return database_.reserve_origin_batch(count);
+  } catch (const std::bad_alloc &) { return false; }
+}
+
+LspInstallResult LevelDatabase::originate_batch(
+    std::span<const LspInstallRequest> requests, RuntimeClock::time_point now) noexcept {
+  using Result = LspInstallResult;
+  if (requests.empty() || !origin_requests_.empty() || !origin_records_.empty()) return Result::malformed;
+  if (requests.size() > maximum_records_ || requests.size() > origin_requests_.capacity() || requests.size() > origin_records_.capacity())
+    return Result::capacity_exhausted;
+  struct Clear {
+    std::vector<LspInstallRequest> &requests;
+    std::vector<Record> &records;
+    ~Clear() { requests.clear(); records.clear(); }
+  } clear{origin_requests_, origin_records_};
+  for (const auto &request : requests) {
+    if (request.admission.origin != LspAdmissionOrigin::originated || request.admission.reserve_metadata)
+      return Result::malformed;
+    auto &prepared = origin_requests_.emplace_back(request);
+    prepared.admission.context = this;
+    prepared.admission.reserve_metadata = +[](void *context, const packet::isis::LspView &header) noexcept {
+      auto &owner = *static_cast<LevelDatabase *>(context);
+      const auto index = owner.position(header.id);
+      if (index < owner.records_.size() && owner.records_[index].id == header.id) return true;
+      if (owner.origin_records_.size() == owner.maximum_records_ - owner.records_.size()) return false;
+      try { owner.origin_records_.push_back({header.id, owner.circuits_, false}); return true; }
+      catch (const std::bad_alloc &) { return false; }
+    };
+  }
+  const auto installed = database_.install_origin_batch(origin_requests_, now);
+  if (installed != Result::installed) return installed;
+  for (auto &record : origin_records_)
+    records_.insert(records_.begin() + position(record.id), std::move(record));
+  // No callback, packet service or decision notification can observe the
+  // intermediate iterations. All storage and membership were proved above.
+  for (const auto &request : origin_requests_) {
+    packet::isis::DecodeError error{};
+    const auto pdu = packet::isis::parse(request.wire, error);
+    const auto header = pdu ? packet::isis::lsp(*pdu) : std::nullopt;
+    if (!header) std::terminate();
+    const auto index = position(header->id);
+    if (index >= records_.size() || records_[index].id != header->id) std::terminate();
+    auto &record = records_[index];
+    record.placeholder = false;
+    for (auto &circuit : record.circuits) {
+      circuit.srm = circuit.eligible;
+      circuit.ssn = false;
+    }
+  }
+  return Result::installed;
 }
 
 LevelReceiveResult LevelDatabase::admit(std::span<const std::uint8_t> wire,

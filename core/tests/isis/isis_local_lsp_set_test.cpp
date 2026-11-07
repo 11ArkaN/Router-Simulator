@@ -32,6 +32,7 @@ void isis_lan_pseudonode_lifecycle_tests() {
   program.records = {{0U, root, 3U, {}}, {1U, root, 3U, {}},
       {0U, pseudonode, 3U, {}, false}, {1U, pseudonode, 3U, {}, false}};
   LocalLspSet current(local, 3U, {InstanceFormat::standard, 0U}, std::move(program), now);
+  require(current.reserve_publication(update));
   const LevelObserver observer{nullptr, +[](void *, const LevelEvent &) noexcept {}};
   auto scratch = std::make_unique<PduScratch>();
   std::array<std::uint8_t, 256U> options{};
@@ -106,6 +107,7 @@ void isis_local_lsp_set_tests() {
   const std::vector<std::uint8_t> area{1U, 4U, 3U, 0x49U, 0U, 1U};
   program.records = {{0U, root, 3U, area}, {1U, root, 3U, area}};
   LocalLspSet current(local, 3U, {InstanceFormat::standard, 0U}, std::move(program), now);
+  require(current.reserve_publication(update));
   unsigned notifications{};
   const LevelObserver observer{&notifications, +[](void *context, const LevelEvent &) noexcept {
     ++*static_cast<unsigned *>(context);
@@ -178,13 +180,29 @@ void isis_local_lsp_retirement_tests() {
   const std::vector<std::uint8_t> options{8U, 0U};
   program.records = {{0U, root, 1U, options}, {0U, fragment, 1U, options, false}};
   require(program.active_records() == 1U);
+  // ISO 7.3.4.3 and 7.3.8 keep Area Addresses out of ordinary fragments
+  // and pseudonodes, including cold-reserved identities and replacements.
+  const std::vector<std::uint8_t> area{1U, 4U, 3U, 0x49U, 0U, 1U};
+  for (const auto pseudonode : {false, true}) {
+    auto invalid = program;
+    invalid.records[1U].id[6U] = pseudonode ? 4U : 0U;
+    invalid.records[1U].id[7U] = pseudonode ? 0U : 1U;
+    invalid.records[1U].options = area;
+    bool rejected{};
+    try { LocalLspSet refused(local, 3U, {InstanceFormat::standard, 0U}, std::move(invalid), now); }
+    catch (const std::invalid_argument &) { rejected = true; }
+    require(rejected);
+  }
   LocalLspSet current(local, 3U, {InstanceFormat::standard, 0U}, program, now);
+  require(current.reserve_publication(update));
   const LevelObserver observer{nullptr, +[](void *, const LevelEvent &) noexcept {}};
   auto scratch = std::make_unique<PduScratch>();
   const auto publish = [&](RuntimeClock::time_point time, std::array<TransmitAuthentication, 2U> keys = {},
       std::size_t work = 2U) { return current.service(update, keys, time, *scratch, observer, work); };
   const auto stored = [&](RuntimeClock::time_point time) { return update.level(0U)->database().database().find(fragment, time); };
   require(publish(now).published == 1U && !current.contains(0U, fragment) && !stored(now));
+  require(current.replace(0U, fragment, 1U, area, now) == LocalContentResult::invalid &&
+      !current.contains(0U, fragment));
   require(current.withdraw(0U, root) == LocalContentResult::invalid &&
       current.withdraw(0U, fragment) == LocalContentResult::unchanged);
   require(current.replace(0U, fragment, 1U, options, now + 1s) == LocalContentResult::changed &&
@@ -213,6 +231,7 @@ void isis_local_lsp_retirement_tests() {
   InstanceUpdateProcess expired_update(local, 3U, {level, std::nullopt}, {}, {InstanceFormat::standard, 0U});
   program.records[1U].active = true;
   LocalLspSet expired(local, 3U, {InstanceFormat::standard, 0U}, program, now);
+  require(expired.reserve_publication(expired_update));
   std::size_t work{2U};
   require(expired.service(expired_update, {}, now, *scratch, observer, work).published == 2U);
   LspContents aged;

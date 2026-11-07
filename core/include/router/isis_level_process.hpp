@@ -57,7 +57,8 @@ struct LevelObserver {
   // Synchronous same-owner notification. database_refreshed changes retained
   // wire/lifetime state without requesting a decision for identical contents.
   // Mark origination/SPF work for actual changes or validation completion here;
-  // never reenter this owner or retain borrowed packet and database views.
+  // may inspect completed const projections synchronously, but must never enter
+  // another mutable operation or retain borrowed packet and database views.
   void (*event)(void *, const LevelEvent &) noexcept{};
 };
 enum class LevelStatus : std::uint8_t {
@@ -78,6 +79,11 @@ struct LevelOriginResult {
   LspInstallResult install{LspInstallResult::malformed};
 };
 enum class OriginPurgeReason : std::uint8_t { none, lifetime_expired, initiated, unknown_source, confusion };
+struct LevelOriginInput {
+  std::span<const std::uint8_t> wire;
+  OriginPurgeReason purge{OriginPurgeReason::none};
+  std::size_t minimum_allocation{};
+};
 struct LevelOutputs {
   SnpExchange &snp;
   LspExchange &lsp;
@@ -140,6 +146,16 @@ public:
   [[nodiscard]] LevelOriginResult originate(std::span<const std::uint8_t> wire,
       RuntimeClock::time_point now, OriginPurgeReason purge, LevelObserver observer,
       std::size_t minimum_allocation = 0U) noexcept;
+  // Cold instance preparation reserves bounded transaction metadata only.
+  // False preserves protocol state; spare reserved capacity can remain.
+  [[nodiscard]] bool reserve_origin_batch(std::size_t count) noexcept;
+  // Same validation and purge rules as originate(), with distinct stable input
+  // IDs and caller-owned disjoint wire. All bodies and SRM flags commit before
+  // any observer event. Any member refusal preserves the complete old set;
+  // capacity refusal still enters the level's ordinary Waiting State. No
+  // transaction scratch or borrowed input remains after this synchronous call.
+  [[nodiscard]] LevelOriginResult originate_batch(std::span<const LevelOriginInput> inputs,
+      RuntimeClock::time_point now, LevelObserver observer) noexcept;
   // Borrowed coordinators stay on this shard and must not survive a circuit
   // transition. The parent supplies source-backed deadlines and dispatches
   // only encoded frames; actual receipts return to these exact reservations.
@@ -197,6 +213,11 @@ private:
   void emit(LevelEventKind event, LevelObserver observer,
       std::optional<packet::isis::LspId> id = std::nullopt) noexcept;
   void wait(RuntimeClock::time_point now, bool restart, LevelObserver observer) noexcept;
+  struct OriginPlan { LspInstallRequest request; LevelEvent event; };
+  [[nodiscard]] LevelOriginResult plan_origin(const LevelOriginInput &input,
+      RuntimeClock::time_point now, OriginPlan &plan) const noexcept;
+  [[nodiscard]] LevelOriginResult origin_result(LspInstallResult result,
+      RuntimeClock::time_point now, LevelObserver observer) noexcept;
   LevelDatabase database_;
   TransientAcknowledgements acknowledgements_;
   std::vector<Circuit> circuits_;
@@ -204,5 +225,9 @@ private:
   std::chrono::seconds purge_retention_, waiting_time_;
   RuntimeClock::time_point waiting_until_{};
   bool waiting_{}, waiting_timer_expired_{};
+  // Derived, cold-reserved transaction metadata. Empty outside origination;
+  // restored local policy reconstructs this capacity before publication.
+  std::vector<LspInstallRequest> origin_requests_;
+  std::vector<LevelEvent> origin_events_;
 };
 } // namespace router::isis

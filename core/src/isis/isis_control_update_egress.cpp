@@ -157,7 +157,11 @@ RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
     contents.header.maximum_area_addresses = instance.configuration.maximum_areas;
     contents.source = configuration.mac;
     contents.destination = owned.destinations.levels[level];
-    contents.maximum_pdu_octets = maximum_pdu;
+    // ISO 10589 7.3.15.3 and 7.3.17 bound locally generated SNPs by the
+    // originating level buffer. Foreign LSP flooding retains its port/MRU cap.
+    const auto &origin = instance.configuration.origination;
+    contents.maximum_pdu_octets = origin && origin->content.levels[level] ?
+        std::min(maximum_pdu, static_cast<std::size_t>(origin->content.levels[level]->maximum_pdu_octets)) : maximum_pdu;
     const std::array<std::uint16_t, 1U> topology{0U};
     if (owned.wire_instance || (owned.format == packet::isis::InstanceFormat::legacy_2009 && configuration.emit_instance))
       contents.instance = PduInstanceOption{owned.format, owned.wire_instance,

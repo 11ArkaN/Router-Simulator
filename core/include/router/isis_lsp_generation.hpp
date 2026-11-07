@@ -48,6 +48,16 @@ public:
   // event through retry(). Stale tickets cannot affect another reservation.
   [[nodiscard]] bool complete(std::uint64_t ticket, bool installed,
       RuntimeClock::time_point now) noexcept;
+  // Same-owner semantic invalidation before publication. An abandoned ticket
+  // cannot commit; no sequence, spacing timer or refresh entropy is consumed.
+  void abandon() noexcept { pending_.reset(); changed_during_pending_ = false; dirty_ = true; blocked_ = false; }
+  // Preserve deferred semantic work after an independent retained-body refresh.
+  // No outstanding reservation may survive this same-owner refusal fence.
+  void defer() noexcept { abandon(); blocked_ = true; }
+  [[nodiscard]] RuntimeClock::time_point refresh_deadline() const noexcept { return refresh_at_; }
+  [[nodiscard]] std::optional<LspGeneration> reservation() const noexcept { return pending_; }
+  [[nodiscard]] bool content_pending() const noexcept { return dirty_; }
+  [[nodiscard]] std::uint32_t sequence_floor() const noexcept { return observed_ > committed_ ? observed_ : committed_; }
   void retry() noexcept { blocked_ = false; }
   // No deadline while reserved, resource-blocked or stopped by exhaustion.
   [[nodiscard]] std::optional<RuntimeClock::time_point> deadline() const noexcept;

@@ -9,6 +9,7 @@
 #include "router/isis_lan_circuit_pair.hpp"
 #include "router/isis_local_lsp_set.hpp"
 #include "router/isis_neighbor_origination.hpp"
+#include "router/isis_origin_fragment_workspace.hpp"
 #include "router/isis_p2p_decision.hpp"
 #include "router/isis_next_hop.hpp"
 #include "router/route_publication.hpp"
@@ -254,6 +255,10 @@ struct ControlResult {
   // A nonzero value reports protocol-owner quiescence only. The result ring's
   // release/acquire acknowledgement publishes all prior protocol state writes.
   std::uint64_t checkpoint_barrier_epoch{};
+  // On successful barrier acquisition, the protocol owner samples this anchor
+  // after stopping service. Reuse it for joined capture/restore: independent
+  // browser performance clocks can differ even after an acknowledged handoff.
+  std::int64_t checkpoint_anchor_nanoseconds{};
   ControlError error{ControlError::none};
   P2pSnapshot adjacency{};
   bool broadcast_circuit{};
@@ -352,6 +357,8 @@ private:
     // Fixed slots follow sorted configured interface IDs. This owner rewrites
     // the projection only while composing dirty roots; it contains no pointers.
     std::vector<NeighborProjection> neighbor_projection;
+    // Derived composition buffers, rebuilt cold from the recorded catalog.
+    std::unique_ptr<OriginFragmentWorkspace> fragment_workspace;
     // One scratch catalog, owned by this instance control shard. Cold reserve
     // covers its largest configured LAN. Sorting/deduplication never allocates.
     std::vector<packet::isis::SystemId> lan_projection;
@@ -398,6 +405,9 @@ private:
         local = std::make_unique<LocalLspSet>(configuration.local, configuration.maximum_areas,
             UpdateInstanceSelector{configuration.format, configuration.wire_instance},
             configuration.origination->content, RuntimeClock::now());
+        if (process && !local->reserve_publication(*process)) throw std::invalid_argument("IS-IS fragment transaction capacity refused");
+        if (configuration.origination->neighbors || configuration.origination->broadcast_neighbors)
+          fragment_workspace = make_fragment_workspace(configuration);
         reset_validation(RuntimeClock::now());
         if (configuration.origination->neighbors)
           neighbor_projection.resize(configuration.origination->neighbors->size());
@@ -610,13 +620,14 @@ private:
   // Cold validation shares normal admission policy and prepares automatic
   // identities in the caller-owned program. Failure publishes no live state.
   [[nodiscard]] ControlError validate_update_program(UpdateInstanceProgram &program) const noexcept;
+  [[nodiscard]] static std::unique_ptr<OriginFragmentWorkspace> make_fragment_workspace(const UpdateInstanceProgram &program);
+  [[nodiscard]] static ControlError prepare_fragment_origination(UpdateInstanceProgram &program) noexcept;
   [[nodiscard]] static ControlError prepare_neighbor_origination(UpdateInstanceProgram &program) noexcept;
-  [[nodiscard]] static ControlError prepare_lan_origination(UpdateInstanceProgram &program,
-      std::array<std::size_t, 2U> &root_octets) noexcept;
+  [[nodiscard]] static ControlError prepare_lan_origination(UpdateInstanceProgram &program) noexcept;
   [[nodiscard]] bool compose_lan_pseudonodes(OwnedInstance &instance, const DeviceState &device,
       std::size_t index, std::size_t level, LocalLspSet &target, RuntimeClock::time_point now) noexcept;
   [[nodiscard]] static bool append_lan_links(const OwnedInstance &instance, const DeviceState &device,
-      std::size_t index, std::size_t level, packet::isis::TlvWriter &writer) noexcept;
+      std::size_t index, std::size_t level, OriginFragmentWorkspace &workspace, const LocalLspSet &target) noexcept;
   [[nodiscard]] bool compose_local_neighbors(OwnedInstance &instance, const DeviceState &device,
       std::size_t index, LocalLspSet &target, RuntimeClock::time_point now, std::size_t &budget) noexcept;
   [[nodiscard]] static std::optional<std::size_t> catalog_budget(const LocalOriginProgram &origin) noexcept;

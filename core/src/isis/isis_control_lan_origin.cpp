@@ -21,8 +21,7 @@ bool accepted(LocalContentResult result) noexcept {
   return result == LocalContentResult::changed || result == LocalContentResult::unchanged;
 }
 }
-ControlError ControlWorker::prepare_lan_origination(UpdateInstanceProgram &program,
-    std::array<std::size_t, 2U> &root_octets) noexcept {
+ControlError ControlWorker::prepare_lan_origination(UpdateInstanceProgram &program) noexcept {
   auto &origin = *program.origination;
   // Automatic ownership accepts no caller-supplied pseudonode records.
   if (std::any_of(origin.content.records.begin(), origin.content.records.end(), [](const auto &record) { return record.id[6U] != 0U; }))
@@ -53,18 +52,25 @@ ControlError ControlWorker::prepare_lan_origination(UpdateInstanceProgram &progr
         const auto link = p2p_origin_option_octets(*entry.levels[level]);
         const auto space = lan_pseudonode_option_octets(entry.maximum_neighbors, entry.levels[level]->narrow.has_value());
         if (!link || !space || !program.levels[level] || !origin.content.levels[level]) return ControlError::invalid_argument;
-        if (*link > packet::maximum_frame_octets - root_octets[level]) return ControlError::capacity;
-        root_octets[level] += *link;
         const auto &limit = *origin.content.levels[level];
-        if (limit.maximum_pdu_octets < packet::isis::lsp_header_octets ||
-            *space > limit.maximum_pdu_octets - packet::isis::lsp_header_octets ||
-            ++counts[level] > program.levels[level]->database.records) return ControlError::capacity;
+        if (limit.maximum_pdu_octets <= packet::isis::lsp_header_octets) return ControlError::capacity;
+        const auto edge = *lan_pseudonode_option_octets(0U, entry.levels[level]->narrow.has_value());
+        const auto per_fragment = (limit.maximum_pdu_octets - packet::isis::lsp_header_octets) / edge;
+        if (!per_fragment) return ControlError::capacity;
+        const auto fragments = ((*space / edge) - 1U) / per_fragment + 1U;
+        if (fragments > 256U || counts[level] > program.levels[level]->database.records ||
+            fragments > program.levels[level]->database.records - counts[level]) return ControlError::capacity;
+        counts[level] += fragments;
         const auto root = std::find_if(records.begin(), records.end(), [&](const auto &record) {
           return record.level == level && !record.id[6U] && !record.id[7U];
         });
         if (root == records.end()) return ControlError::invalid_argument;
-        records.push_back({static_cast<std::uint8_t>(level), pseudonode_id(program.local, entry.circuit),
-            static_cast<std::uint8_t>(root->flags & 3U), {}, false});
+        const auto flags = static_cast<std::uint8_t>(root->flags & 3U);
+        for (std::size_t fragment{}; fragment < fragments; ++fragment) {
+          auto id = pseudonode_id(program.local, entry.circuit);
+          id[7U] = static_cast<std::uint8_t>(fragment);
+          records.push_back({static_cast<std::uint8_t>(level), id, flags, {}, false});
+        }
       }
     }
     origin.content.records.swap(records);
@@ -77,6 +83,7 @@ bool ControlWorker::compose_lan_pseudonodes(OwnedInstance &instance, const Devic
     std::size_t index, std::size_t level, LocalLspSet &target, RuntimeClock::time_point now) noexcept {
   const auto &origin = *instance.configuration.origination;
   if (!origin.broadcast_neighbors) return true;
+  if (!instance.fragment_workspace) { instance.status = UpdateStatus::invalid_configuration; return false; }
   for (const auto &entry : *origin.broadcast_neighbors) if (entry.levels[level]) {
     instance.lan_projection.clear();
     const auto found = std::find_if(device.circuits.begin(), device.circuits.end(), [&](const auto &owned) {
@@ -99,8 +106,28 @@ bool ControlWorker::compose_lan_pseudonodes(OwnedInstance &instance, const Devic
     const auto id = pseudonode_id(instance.configuration.local, entry.circuit);
     const auto reserved = std::find_if(origin.content.records.begin(), origin.content.records.end(),
         [&](const auto &record) { return record.level == level && record.id == id; });
-    if (reserved == origin.content.records.end() || !accepted(synchronize_lan_pseudonode(target, level, id,
-        reserved->flags, !peers.empty() && role && role->local, peers, entry.levels[level]->narrow.has_value(), scratch_.options, now))) {
+    if (reserved == origin.content.records.end()) { instance.status = UpdateStatus::invalid_configuration; return false; }
+    auto &workspace = *instance.fragment_workspace;
+    workspace.reset();
+    packet::isis::LanId source{};
+    std::copy_n(id.begin(), source.size(), source.begin());
+    bool valid{true};
+    if (!peers.empty() && role && role->local) {
+      const auto append = [&](const packet::isis::SystemId &peer) {
+        std::uint64_t key{};
+        for (const auto octet : peer) key = (key << 8U) | octet;
+        packet::isis::LanId neighbor{};
+        std::copy(peer.begin(), peer.end(), neighbor.begin());
+        return workspace.add_pseudonode_link({3U, key}, peer, entry.levels[level]->narrow.has_value(),
+            OriginFragmentWorkspace::previous_link(target, level, source, neighbor, 256U));
+      };
+      valid = append(instance.configuration.local);
+      for (const auto &peer : peers) valid = append(peer) && valid;
+    }
+    std::array<std::uint8_t, 256U> slot_scratch{};
+    const auto slots = local_fragment_slots(origin.content, level, source, slot_scratch);
+    if (!valid || !accepted(workspace.compose(target, level, source, reserved->flags, slots,
+        origin.content.levels[level]->maximum_pdu_octets - packet::isis::lsp_header_octets, now))) {
       instance.status = UpdateStatus::invalid_configuration; return false;
     }
   }
@@ -108,7 +135,7 @@ bool ControlWorker::compose_lan_pseudonodes(OwnedInstance &instance, const Devic
 }
 
 bool ControlWorker::append_lan_links(const OwnedInstance &instance, const DeviceState &device,
-    std::size_t index, std::size_t level, packet::isis::TlvWriter &writer) noexcept {
+    std::size_t index, std::size_t level, OriginFragmentWorkspace &workspace, const LocalLspSet &target) noexcept {
   const auto &origin = *instance.configuration.origination;
   if (!origin.broadcast_neighbors) return true;
   for (const auto &entry : *origin.broadcast_neighbors) if (entry.levels[level]) {
@@ -118,7 +145,10 @@ bool ControlWorker::append_lan_links(const OwnedInstance &instance, const Device
     const auto *broadcast = found == device.circuits.end() ? nullptr : found->lan();
     const auto *circuit = broadcast ? broadcast->at(level) : nullptr;
     const auto role = circuit && circuit->operational() ? circuit->designated() : std::nullopt;
-    if (role && role->lan[6U] && !append_lan_origin_neighbor(writer, role->lan, *entry.levels[level])) return false;
+    packet::isis::LanId source{};
+    std::copy(instance.configuration.local.begin(), instance.configuration.local.end(), source.begin());
+    if (role && role->lan[6U] && !workspace.add_link({2U, entry.interface_id}, role->lan, *entry.levels[level],
+        OriginFragmentWorkspace::previous_link(target, level, source, role->lan, 256U))) return false;
   }
   return true;
 }

@@ -88,6 +88,20 @@ public:
   [[nodiscard]] bool circuit(std::size_t index, bool broadcast, bool eligible,
       bool flood_all) noexcept;
 
+  // Cold owner preparation for a bounded local fragment transaction. Capacity
+  // is derived from reserved local IDs, never a new advertised platform limit.
+  // Refusal changes no protocol state; already reserved spare storage may stay.
+  [[nodiscard]] bool reserve_origin_batch(std::size_t count) noexcept;
+  // Same owner, distinct local IDs and stable disjoint encoded inputs. Each
+  // request supplies its validated lifetime, purge retention and allocation
+  // floor; metadata callbacks must be absent because this owner stages flags.
+  // Refusal preserves bodies, placeholders and all SRM/SSN. Success installs
+  // every body before setting every affected eligible SRM and clearing SSN in
+  // one uninterrupted owner turn, as required by ISO 10589 7.3.4.4.
+  [[nodiscard]] LspInstallResult originate_batch(
+      std::span<const LspInstallRequest> requests, RuntimeClock::time_point now) noexcept;
+
+
   // Receipt header identifies the exact queued version. A delayed completion
   // for a superseded LSP cannot clear the replacement's flooding obligation.
   // The enclosing instance rejects stale circuit epochs before calling here.
@@ -186,6 +200,10 @@ private:
   std::vector<Record> records_;
   std::size_t maximum_records_{};
   std::size_t maximum_circuits_{};
+  // Derived synchronous transaction staging. Empty outside originate_batch;
+  // only new identities allocate flag arrays, which then become live storage.
+  std::vector<LspInstallRequest> origin_requests_;
+  std::vector<Record> origin_records_;
 };
 
 } // namespace router::isis

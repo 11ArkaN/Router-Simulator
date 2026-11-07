@@ -9,12 +9,13 @@
 
 namespace router::isis {
 namespace {
-bool valid_content(std::size_t level, std::uint8_t flags, std::span<const std::uint8_t> options) noexcept {
+bool valid_content(std::size_t level, const packet::isis::LspId &id, std::uint8_t flags, std::span<const std::uint8_t> options) noexcept {
   const auto type = flags & 3U;
   if (level > 1U || (type != 1U && type != 3U) || (level && type != 3U)) return false;
   packet::isis::TlvCursor cursor(options);
   while (const auto option = cursor.next())
-    if (option->code == 7U || option->code == 10U || option->code == 13U) return false;
+    if (option->code == 7U || option->code == 10U || option->code == 13U ||
+        (option->code == 1U && (id[6U] || id[7U]))) return false;
   return cursor.valid();
 }
 }
@@ -25,6 +26,7 @@ LocalLspSet::Entry::Entry(LocalLspContent value, const LocalLspLevelProgram &pro
     std::uint64_t random, RuntimeClock::time_point now)
     : content{value.level, value.id, value.flags, {}, value.active},
       generation(program.minimum_interval, program.refresh_interval, random, now) {
+  prepared.reserve(program.maximum_pdu_octets);
   content.options.reserve(program.maximum_pdu_octets - packet::isis::lsp_header_octets);
   content.options.assign(value.options.begin(), value.options.end());
 }
@@ -44,7 +46,7 @@ LocalLspSet::LocalLspSet(packet::isis::SystemId local, std::uint8_t maximum_area
   std::array<bool, 2U> roots{};
   entries_.reserve(program.records.size());
   for (auto &content : program.records) {
-    if (!valid_content(content.level, content.flags, content.options) || !levels_[content.level] ||
+    if (!valid_content(content.level, content.id, content.flags, content.options) || !levels_[content.level] ||
         !std::equal(local_.begin(), local_.end(), content.id.begin()) ||
         content.options.size() > levels_[content.level]->maximum_pdu_octets - packet::isis::lsp_header_octets ||
         find(content.level, content.id))
@@ -69,6 +71,15 @@ bool LocalLspSet::contains(std::size_t level, const packet::isis::LspId &id) con
     return entry.content.active && entry.content.level == level && entry.content.id == id;
   });
 }
+std::optional<LocalLspFragment> LocalLspSet::fragment(std::size_t level, const packet::isis::LspId &id) const noexcept {
+  const auto entry = std::lower_bound(entries_.begin(), entries_.end(), id,
+      [level](const auto &value, const auto &key) {
+        return value.content.level != level ? value.content.level < level : value.content.id < key;
+      });
+  if (entry == entries_.end() || entry->content.level != level || entry->content.id != id || !entry->content.active)
+    return std::nullopt;
+  return LocalLspFragment{id[7U], entry->content.flags, entry->content.options};
+}
 std::optional<UpdateStatus> LocalLspSet::last_error(std::size_t level, const packet::isis::LspId &id) const noexcept {
   for (const auto &entry : entries_)
     if (entry.content.level == level && entry.content.id == id) return entry.last_error;
@@ -83,7 +94,7 @@ LocalContentResult LocalLspSet::replace(std::size_t level, const packet::isis::L
     std::uint8_t flags, std::span<const std::uint8_t> options, RuntimeClock::time_point now) noexcept {
   auto *entry = find(level, id);
   if (!entry) return LocalContentResult::missing;
-  if (!valid_content(level, flags, options)) return LocalContentResult::invalid;
+  if (!valid_content(level, id, flags, options)) return LocalContentResult::invalid;
   if (options.size() > levels_[level]->maximum_pdu_octets - packet::isis::lsp_header_octets)
     return LocalContentResult::capacity;
   if (entry->content.active && entry->content.flags == flags && std::ranges::equal(entry->content.options, options))
@@ -94,15 +105,55 @@ LocalContentResult LocalLspSet::replace(std::size_t level, const packet::isis::L
   entry->content.flags = flags;
   entry->content.active = true;
   entry->retirement_pending = entry->retirement_blocked = false;
+  entry->prepared.clear();
+  entry->generation.abandon();
   entry->generation.changed(now);
   entry->generation.retry();
   return LocalContentResult::changed;
+}
+LocalContentResult LocalLspSet::replace_fragments(std::size_t level,
+    const packet::isis::LanId &source, std::span<const LocalLspFragment> fragments,
+    RuntimeClock::time_point now) noexcept {
+  if (level >= levels_.size() || !levels_[level] ||
+      !std::equal(local_.begin(), local_.end(), source.begin()) ||
+      (fragments.empty() && !source[6U]) || (!fragments.empty() && fragments.front().number))
+    return LocalContentResult::invalid;
+  packet::isis::LspId id{};
+  std::copy(source.begin(), source.end(), id.begin());
+  if (!find(level, id)) return LocalContentResult::missing;
+  for (std::size_t index{}; index < fragments.size(); ++index) {
+    const auto &fragment = fragments[index];
+    id[7U] = fragment.number;
+    const auto *entry = find(level, id);
+    if (!entry) return LocalContentResult::missing;
+    if ((index && fragments[index - 1U].number >= fragment.number) ||
+        !valid_content(level, id, fragment.flags, fragment.options)) return LocalContentResult::invalid;
+    if (fragment.options.size() > levels_[level]->maximum_pdu_octets - packet::isis::lsp_header_octets)
+      return LocalContentResult::capacity;
+  }
+  bool changed{};
+  // All calls below operate within capacities checked above and cannot refuse.
+  // Missing inputs are withdrawn in the same owner turn, without observers.
+  for (const auto &fragment : fragments) {
+    id[7U] = fragment.number;
+    changed = replace(level, id, fragment.flags, fragment.options, now) == LocalContentResult::changed || changed;
+  }
+  for (auto &entry : entries_) {
+    if (entry.content.level != level || !std::equal(source.begin(), source.end(), entry.content.id.begin())) continue;
+    const auto found = std::lower_bound(fragments.begin(), fragments.end(), entry.content.id[7U],
+        [](const auto &fragment, std::uint8_t number) { return fragment.number < number; });
+    if (found == fragments.end() || found->number != entry.content.id[7U])
+      changed = withdraw(level, entry.content.id) == LocalContentResult::changed || changed;
+  }
+  return changed ? LocalContentResult::changed : LocalContentResult::unchanged;
 }
 LocalContentResult LocalLspSet::withdraw(std::size_t level, const packet::isis::LspId &id) noexcept {
   auto *entry = find(level, id);
   if (!entry) return LocalContentResult::missing;
   if (!id[6U] && !id[7U]) return LocalContentResult::invalid;
   if (!entry->content.active) return LocalContentResult::unchanged;
+  entry->prepared.clear();
+  entry->generation.abandon();
   entry->content.active = false;
   entry->retirement_pending = true;
   entry->retirement_blocked = false;
@@ -112,6 +163,8 @@ bool LocalLspSet::require_after(std::size_t level, const packet::isis::LspId &id
     std::uint32_t sequence, RuntimeClock::time_point now) noexcept {
   auto *entry = find(level, id);
   if (!entry) return false;
+  entry->prepared.clear();
+  entry->generation.abandon();
   entry->generation.require_after(sequence, now);
   return true;
 }
@@ -129,9 +182,29 @@ LocalContentResult LocalLspSet::waiting_overload(std::size_t level, bool enabled
   auto *entry = find(level, root);
   if (!entry) return LocalContentResult::missing;
   waiting_overload_[level] = enabled;
+  entry->prepared.clear();
+  entry->generation.abandon();
   entry->generation.changed(now);
   entry->generation.retry();
   return LocalContentResult::changed;
+}
+LspBuild LocalLspSet::compose(const Entry &entry, std::uint32_t sequence,
+    std::span<const std::uint8_t> options, std::uint8_t flags,
+    std::optional<AuthenticationKey> key, PduScratch &scratch) const noexcept {
+  const auto level = entry.content.level;
+  LspContents contents;
+  contents.header = {level ? packet::isis::PduType::lsp_l2 : packet::isis::PduType::lsp_l1,
+      entry.content.id, levels_[level]->maximum_age, sequence, flags, maximum_areas_};
+  if (waiting_overload_[level] && !entry.content.id[6U] && !entry.content.id[7U]) contents.header.flags |= 4U;
+  contents.options = options;
+  contents.authentication = key;
+  contents.maximum_pdu_octets = levels_[level]->maximum_pdu_octets;
+  const std::array<std::uint16_t, 1U> topology{0U};
+  if (selector_.wire_instance || selector_.format == packet::isis::InstanceFormat::legacy_2009)
+    contents.instance = PduInstanceOption{selector_.format, selector_.wire_instance,
+        selector_.format == packet::isis::InstanceFormat::standard ? std::span<const std::uint16_t>(topology) :
+            std::span<const std::uint16_t>{}};
+  return build_lsp_pdu(contents, scratch.options, scratch.pdu);
 }
 LocalGenerationResult LocalLspSet::service(InstanceUpdateProcess &update,
     std::array<TransmitAuthentication, 2U> authentication, RuntimeClock::time_point now,
@@ -139,15 +212,23 @@ LocalGenerationResult LocalLspSet::service(InstanceUpdateProcess &update,
   LocalGenerationResult result;
   result.terminal = terminal_;
   if (terminal_ != GenerationStatus::waiting) return result;
-  const std::array<std::uint16_t, 1U> topology{0U};
+  std::array<bool, 512U> inspected{}, grouped{};
   for (std::size_t offset{}; offset < entries_.size(); ++offset) {
     auto &entry = entries_[(first_ + offset) % entries_.size()];
     const auto level = entry.content.level;
+    const auto family = level * 256U + entry.content.id[6U];
+    if (!inspected[family]) {
+      inspected[family] = true;
+      grouped[family] = service_family(update, (first_ + offset) % entries_.size(),
+          authentication, now, scratch, observer, budget, result);
+      if (terminal_ != GenerationStatus::waiting) return result;
+    }
+    if (grouped[family] && ((entry.content.active && entry.generation.content_pending()) || entry.retirement_pending)) continue;
     const auto *owner = update.level(level);
     if (owner) {
       const auto current = owner->database().database().find(entry.content.id, now);
-      if (current && current->header.sequence > entry.generation.committed_sequence())
-        entry.generation.require_after(current->header.sequence, now);
+      if (current && current->header.sequence > entry.generation.sequence_floor())
+        static_cast<void>(require_after(level, entry.content.id, current->header.sequence, now));
     }
     if (!entry.content.active) {
       const auto current = owner ? owner->database().database().find(entry.content.id, now) : std::nullopt;
@@ -193,19 +274,7 @@ LocalGenerationResult LocalLspSet::service(InstanceUpdateProcess &update,
       const auto &key = authentication[level];
       if (!key.required || key.key) {
         const auto &program = *levels_[level];
-        LspContents contents;
-        contents.header = {level ? packet::isis::PduType::lsp_l2 : packet::isis::PduType::lsp_l1,
-            entry.content.id, program.maximum_age, generation.sequence, entry.content.flags, maximum_areas_};
-        if (waiting_overload_[level] && !entry.content.id[6U] && !entry.content.id[7U])
-          contents.header.flags |= 4U; // ISO LSP Database Overload bit, independent of the configured flag.
-        contents.options = entry.content.options;
-        contents.authentication = key.key;
-        contents.maximum_pdu_octets = program.maximum_pdu_octets;
-        if (selector_.wire_instance || selector_.format == packet::isis::InstanceFormat::legacy_2009)
-          contents.instance = PduInstanceOption{selector_.format, selector_.wire_instance,
-              selector_.format == packet::isis::InstanceFormat::standard ? std::span<const std::uint16_t>(topology) :
-                  std::span<const std::uint16_t>{}};
-        built = build_lsp_pdu(contents, scratch.options, scratch.pdu);
+        built = compose(entry, generation.sequence, entry.content.options, entry.content.flags, key.key, scratch);
         if (built.status == LspBuildStatus::encoded)
           origin = update.originate(level, built.bytes, now, OriginPurgeReason::none, observer,
               !entry.content.id[6U] && !entry.content.id[7U] ? program.maximum_pdu_octets : 0U);
