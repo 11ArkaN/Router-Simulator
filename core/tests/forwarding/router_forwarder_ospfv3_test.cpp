@@ -84,11 +84,11 @@ void router_forwarder_ospfv3_multicast_tests() {
     forwarder->service_ipv6_maintenance(
         &emitted, collect, dad_origin + std::chrono::seconds{turn});
   require(forwarder->ipv6_address_state(
-              physical_interface_id(second_port.ordinal),
+              second_port.ordinal,
               second_port.ipv6_link_local) &&
               forwarder
                       ->ipv6_address_state(
-                          physical_interface_id(second_port.ordinal),
+                          second_port.ordinal,
                           second_port.ipv6_link_local)
                       ->state == Ipv6DadState::preferred,
           "OSPFv3 scoped-unicast fixture used a tentative link-local source");

@@ -1,0 +1,13 @@
+schema_version: 1
+identifier: ISO/IEC 10589:2002(E)
+edition: 2
+publication_date: "2002-11-15"
+source_url: https://www.iso.org/standard/30932.html
+acquisition: user_provided_pdf
+bytes: 1797021
+sha256: c799bfb14ccad385408de872791a56fe59e86719338d11165ed9fd5c2600dc05
+pdf_pages: 210
+numbered_pages: 201
+annexes: [A, B, C, D, E, F, G, H, I, J]
+normative_annexes: [A, E, G, H, I, J]
+redistributed: false

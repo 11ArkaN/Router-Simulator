@@ -170,7 +170,7 @@ void dhcpv6_cli_configuration_tests() {
   // Classic documents no shutdown command for the local DHCPv6 server and
   // no drain command for the pool prefix: drain is an MD-CLI boolean leaf.
   // MD-CLI keeps admin-state, exercised here without a classic mirror.
-  for (const auto rejected :
+  for (const auto rejected_form :
        {"configure router dhcp6 local-dhcp-server access shutdown",
         "configure router dhcp6 local-dhcp-server access no shutdown",
         "configure router dhcp6 local-dhcp-server access pool users prefix "
@@ -179,7 +179,7 @@ void dhcpv6_cli_configuration_tests() {
         "2001:db8:100::/56 no drain"})
     require(!router::cli_detail::parse_command(CliEngine::classic,
                                                MdCliWorkflow::operational,
-                                               rejected),
+                                               rejected_form),
             "classic DHCPv6 accepted an undocumented shutdown or drain form");
   edit(md, md_entropy, CliEngine::md,
        "configure router \"Base\" dhcp-server dhcpv6 access admin-state "

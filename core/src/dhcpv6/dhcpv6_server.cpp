@@ -428,12 +428,13 @@ bool Server::validate_checkpoint(const ServerCheckpoint &state) noexcept {
   if (!state.configured || state.decline_hold_seconds < 0)
     return false;
   try {
-    Server staged;
-    return staged.configure(
+    // Lease capacity is owner state, not a nested checkpoint call-frame cost.
+    auto staged = std::make_unique<Server>();
+    return staged->configure(
                state.configuration, state.address_pools, state.prefix_pools,
                std::chrono::seconds{state.decline_hold_seconds}) &&
-           staged.leases_.validate_checkpoint(state.leases) &&
-           staged.leases_.validate_failover_checkpoint(
+           staged->leases_.validate_checkpoint(state.leases) &&
+           staged->leases_.validate_failover_checkpoint(
                state.failover_bindings);
   } catch (...) {
     return false;
@@ -444,16 +445,16 @@ bool Server::restore(const ServerCheckpoint &state, Clock::time_point now) noexc
   if (!validate_checkpoint(state))
     return false;
   try {
-    Server staged;
-    if (!staged.configure(
+    auto staged = std::make_unique<Server>();
+    if (!staged->configure(
             state.configuration, state.address_pools, state.prefix_pools,
             std::chrono::seconds{state.decline_hold_seconds}) ||
-        !staged.leases_.restore(state.leases, now) ||
-        !staged.leases_.restore_failover_checkpoint(
+        !staged->leases_.restore(state.leases, now) ||
+        !staged->leases_.restore_failover_checkpoint(
             state.failover_bindings))
       return false;
-    staged.statistics_ = state.statistics;
-    *this = std::move(staged);
+    staged->statistics_ = state.statistics;
+    *this = std::move(*staged);
     return true;
   } catch (...) {
     return false;

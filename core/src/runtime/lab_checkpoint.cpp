@@ -1,4 +1,4 @@
-// ABI 7 codec implementation. Decoding creates a detached value graph. The
+// ABI 9 codec implementation. Decoding creates a detached value graph. The
 // supervisor performs cross-owner validation and atomic commit only afterwards.
 
 #include "router/lab_checkpoint.hpp"
@@ -14,11 +14,11 @@
 #include <string>
 #include <type_traits>
 
-namespace router::lab::checkpoint_v7 {
+namespace router::lab::checkpoint_v9 {
 namespace {
 
 inline constexpr std::array<std::uint8_t, 8> magic{'R', 'S', 'L', 'A',
-                                                   'B', '0', '7', 0};
+                                                   'B', '0', '9', 0};
 inline constexpr std::size_t maximum_checkpoint_bytes =
     device_catalog::wasm_initial_memory_bytes;
 
@@ -318,6 +318,10 @@ void route(Writer &out, const routing::Route &value) {
   // longer describe the protocol generation that produced it.
   out.integer(value.ospf_path_type);
   out.integer(value.protocol_instance);
+  out.integer(value.interface_id);
+  out.integer(value.isis_path_type);
+  out.integer(value.isis_rank);
+  out.integer(value.interface_generation);
 }
 
 bool route(Reader &in, routing::Route &value) noexcept {
@@ -325,10 +329,18 @@ bool route(Reader &in, routing::Route &value) noexcept {
          in.integer(value.port_ordinal) && in.integer(value.prefix_length) &&
          in.integer(value.preference) && in.integer(value.metric) &&
          in.integer(value.source) &&
-         value.source <= routing::RouteSource::ospf3 &&
+         value.source <= routing::RouteSource::isis &&
          in.boolean(value.local_system) && in.integer(value.ospf_path_type) &&
          value.ospf_path_type <= routing::OspfPathType::nssa_type_2 &&
-         in.integer(value.protocol_instance);
+         in.integer(value.protocol_instance) && in.integer(value.interface_id) &&
+         in.integer(value.isis_path_type) && in.integer(value.isis_rank) &&
+         in.integer(value.interface_generation) &&
+         routing::valid_route_path(value.source, value.ospf_path_type,
+             value.isis_path_type, value.isis_rank, false) &&
+         (value.source != routing::RouteSource::isis ||
+          (value.interface_id && value.interface_generation &&
+           value.protocol_instance <= device_catalog::isis_instance_last &&
+           value.preference >= 1U && value.preference <= 255U));
 }
 
 void fib(Writer &out, const routing::FibProgram &value) {
@@ -368,6 +380,9 @@ void ipv6_route(Writer &out, const routing::Ipv6Route &value) {
   out.integer(value.source);
   out.integer(value.ospf_path_type);
   out.integer(value.protocol_instance);
+  out.integer(value.isis_path_type);
+  out.integer(value.isis_rank);
+  out.integer(value.interface_generation);
 }
 
 bool ipv6_route(Reader &in, routing::Ipv6Route &value) noexcept {
@@ -376,10 +391,18 @@ bool ipv6_route(Reader &in, routing::Ipv6Route &value) noexcept {
          in.integer(value.physical_port_ordinal) &&
          in.integer(value.prefix_length) && in.integer(value.preference) &&
          in.integer(value.metric) && in.integer(value.source) &&
-         value.source <= routing::RouteSource::ospf3 &&
+         value.source <= routing::RouteSource::isis &&
          in.integer(value.ospf_path_type) &&
          value.ospf_path_type <= routing::OspfPathType::nssa_type_2 &&
-         in.integer(value.protocol_instance);
+         in.integer(value.protocol_instance) &&
+         in.integer(value.isis_path_type) && in.integer(value.isis_rank) &&
+         in.integer(value.interface_generation) &&
+         routing::valid_route_path(value.source, value.ospf_path_type,
+             value.isis_path_type, value.isis_rank, true) &&
+         (value.source != routing::RouteSource::isis ||
+          (value.interface_id && value.interface_generation &&
+           value.protocol_instance <= device_catalog::isis_instance_last &&
+           value.preference >= 1U && value.preference <= 255U));
 }
 
 void ipv6_fib(Writer &out, const routing::Ipv6FibProgram &value) {
@@ -730,12 +753,14 @@ void connected(Writer &out, const routing::ConnectedInput &value) {
   out.integer(value.port_ordinal);
   out.integer(value.prefix_length);
   out.boolean(value.local_system);
+  out.integer(value.interface_id);
+  out.integer(value.interface_generation);
 }
 
 bool connected(Reader &in, routing::ConnectedInput &value) noexcept {
   return in.boolean(value.configured) && in.boolean(value.operational) &&
          in.integer(value.network) && in.integer(value.port_ordinal) &&
-         in.integer(value.prefix_length) && in.boolean(value.local_system);
+         in.integer(value.prefix_length) && in.boolean(value.local_system) && in.integer(value.interface_id) && in.integer(value.interface_generation);
 }
 
 void static_route(Writer &out, const routing::StaticInput &value) {
@@ -753,13 +778,14 @@ void ipv6_connected(Writer &out, const routing::Ipv6ConnectedInput &value) {
   out.integer(value.interface_id);
   out.integer(value.physical_port_ordinal);
   out.integer(value.prefix_length);
+  out.integer(value.interface_generation);
 }
 
 bool ipv6_connected(Reader &in, routing::Ipv6ConnectedInput &value) noexcept {
   return in.boolean(value.configured) && in.boolean(value.operational) &&
          ipv6(in, value.network) && in.integer(value.interface_id) &&
          in.integer(value.physical_port_ordinal) &&
-         in.integer(value.prefix_length);
+         in.integer(value.prefix_length) && in.integer(value.interface_generation);
 }
 
 void ipv6_static_route(Writer &out, const routing::Ipv6StaticInput &value) {
@@ -1087,7 +1113,7 @@ bool named_mld_import_policies(
       if (route_source_present) {
         entry.route_source.emplace();
         if (!in.integer(*entry.route_source) ||
-            *entry.route_source > routing::RouteSource::ospf3)
+            *entry.route_source > routing::RouteSource::isis)
           return false;
       } else {
         entry.route_source.reset();
@@ -8852,7 +8878,6 @@ bool pki_configuration(Reader &in, pki::Configuration &state) {
     return false;
   state.common_name_lists.resize(size);
   for (auto &list : state.common_name_lists) {
-    std::uint32_t entry_count{};
     if (!in.string(list.name, 32U) ||
         !count(in, entry_count, pki::maximum_common_names_per_list))
       return false;
@@ -10227,4 +10252,4 @@ decode(std::span<const std::uint8_t> bytes) {
   }
 }
 
-} // namespace router::lab::checkpoint_v7
+} // namespace router::lab::checkpoint_v9

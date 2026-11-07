@@ -4,6 +4,7 @@
 // live state by normalization, migration or a hidden default topology.
 
 import {
+  LAB_RUNTIME_PROTOCOL,
   createEmptyProjectV4,
   parseLabProjectV4,
   parseTerminalPresentationV2,
@@ -386,7 +387,7 @@ export function createProjectManifestV4(project: LabProjectV4,
   return {
     mode: "project",
     formatVersion: 4,
-    checkpointAbi: 7,
+    checkpointAbi: LAB_RUNTIME_PROTOCOL.checkpointAbi,
     project: parseLabProjectV4(project),
     ...(capture?.length ? { captureBase64: base64(capture) } : {})
   };
@@ -399,7 +400,7 @@ export function createCheckpointManifestV4(project: LabProjectV4,
   return {
     mode: "checkpoint",
     formatVersion: 4,
-    checkpointAbi: 7,
+    checkpointAbi: LAB_RUNTIME_PROTOCOL.checkpointAbi,
     project: parseLabProjectV4(project),
     checkpointBase64: base64(checkpoint),
     ...(capture?.length ? { captureBase64: base64(capture) } : {}),
@@ -418,7 +419,7 @@ export function parseNetsimV4(text: string): {
   // before project replay, leaving the active Worker and project untouched.
   const decoded = JSON.parse(text) as Partial<ProjectManifestV4>;
   if (!decoded || typeof decoded !== "object" || decoded.formatVersion !== 4 ||
-      decoded.checkpointAbi !== 7 ||
+      decoded.checkpointAbi !== LAB_RUNTIME_PROTOCOL.checkpointAbi ||
       (decoded.mode !== "project" && decoded.mode !== "checkpoint")) {
     throw new Error("The .netsim manifest format is not supported");
   }

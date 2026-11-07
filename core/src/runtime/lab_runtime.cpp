@@ -867,23 +867,23 @@ std::optional<std::vector<routing::RoutePolicyProgram>> compile_route_policy(
             .set_metric_type = entry.set_metric_type,
             .set_tag = entry.set_route_tag};
         if (destinations) {
-          const auto &entry = destinations->prefixes[term];
+          const auto &prefix_entry = destinations->prefixes[term];
           output.destination =
               routing::PolicyPrefix{.ipv6 =
-                                        entry.prefix.network.family ==
+                                        prefix_entry.prefix.network.family ==
                                         ip::AddressFamily::ipv6,
-                                    .length = entry.prefix.length};
+                                    .length = prefix_entry.prefix.length};
           if (output.destination->ipv6) {
-            output.destination->ipv6_network = entry.prefix.network.bytes;
+            output.destination->ipv6_network = prefix_entry.prefix.network.bytes;
           } else {
             output.destination->ipv4_network =
-                static_cast<std::uint32_t>(entry.prefix.network.bytes[0U])
+                static_cast<std::uint32_t>(prefix_entry.prefix.network.bytes[0U])
                     << 24U |
-                static_cast<std::uint32_t>(entry.prefix.network.bytes[1U])
+                static_cast<std::uint32_t>(prefix_entry.prefix.network.bytes[1U])
                     << 16U |
-                static_cast<std::uint32_t>(entry.prefix.network.bytes[2U])
+                static_cast<std::uint32_t>(prefix_entry.prefix.network.bytes[2U])
                     << 8U |
-                entry.prefix.network.bytes[3U];
+                prefix_entry.prefix.network.bytes[3U];
           }
         }
         compiled.push_back(std::move(output));
@@ -1048,6 +1048,7 @@ route_policy_source(std::string_view text) noexcept {
     return routing::RouteSource::ospf;
   if (text == "ospf3")
     return routing::RouteSource::ospf3;
+  if (text == "isis") return routing::RouteSource::isis;
   return std::nullopt;
 }
 
@@ -6045,6 +6046,9 @@ md_policy_configuration_info(const Configuration &configuration,
             case routing::RouteSource::ospf3:
               out << "ospf3\n";
               break;
+            case routing::RouteSource::isis:
+              out << "isis\n";
+              break;
             }
           }
         }
@@ -8700,6 +8704,8 @@ route_policy_source_text(routing::RouteSource source) noexcept {
     return "ospf";
   case routing::RouteSource::ospf3:
     return "ospf3";
+  case routing::RouteSource::isis:
+    return "isis";
   }
   return {};
 }
@@ -10214,7 +10220,7 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
   // is reprogrammed only when its owner was actually removed by hardware.
   const auto operational =
       applied ? supervisor_.router_operational_state(router_intent.handle)
-              : std::nullopt;
+              : nullptr;
   const auto live_port = [&](std::string_view id) -> const ForwardPort * {
     if (!operational || !inventory)
       return nullptr;
@@ -11142,7 +11148,7 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
             const auto calculated_metric =
                 ospf_interface.cost != 0U
                     ? ospf_interface.cost
-                    : std::clamp<std::uint32_t>(
+                    : std::clamp<std::uint64_t>(
                           instance.reference_bandwidth_kbps /
                               (static_cast<std::uint64_t>(port->speed_mbps) *
                                1000U),
@@ -14504,6 +14510,10 @@ std::string LabRuntime::session_state(std::string_view session_id) const {
 
 std::string LabRuntime::execute_session(std::string_view session_id,
                                         std::string_view input) {
+  const auto inline_input = cli_detail::trim(input);
+  if (!inline_input.starts_with("//") || inline_input.size() <= 2U)
+    return execute_session_command(session_id, input);
+
   auto *terminal = session(session_id);
   if (!terminal)
     return {};
@@ -14544,10 +14554,10 @@ std::string LabRuntime::execute_session(std::string_view session_id,
   // presentation-only DeviceState view would therefore render empty or reject
   // otherwise supported operational reports.
   //
-  // Execute the foreign line recursively through this same router-bound
+  // Execute the foreign line through this same router-bound
   // session. The leading slash makes the command absolute in the target
-  // engine, so its saved context cannot qualify the command. Recursion is
-  // bounded to one level because the rewritten input cannot begin with `//`.
+  // engine, so its saved context cannot qualify the command. The normal
+  // command handler runs once; its rewritten input cannot begin with `//`.
   // The session remains bound to the same DeviceHandle throughout, which is
   // the key invariant preventing an inline engine command from observing
   // another router.
@@ -14569,9 +14579,9 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       const auto target_prompt = cli_prompt(view, terminal->cli);
 
       auto foreign_output =
-          execute_session(session_id, "/" + std::string{foreign_input});
+          execute_session_command(session_id, "/" + std::string{foreign_input});
 
-      // execute_session appends the versioned terminal-state netstrings used
+      // The command handler appends the versioned terminal-state netstrings used
       // by the browser bridge. That transport suffix belongs only to the outer
       // request. Remove the exact current suffix before composing the visible
       // inline transcript, rather than parsing or guessing its byte lengths.
@@ -14580,7 +14590,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
         foreign_output.resize(foreign_output.size() - foreign_state.size());
 
       // The target prompt is displayed before the absolute command in Nokia's
-      // inline transcript. The recursive execution also appends that prompt,
+      // inline transcript. The command handler also appends that prompt,
       // so remove only the exact suffix to avoid duplicating it or trimming
       // command output that happens to contain prompt-like text.
       const auto returned_prompt = cli_prompt(view, terminal->cli);
@@ -14598,7 +14608,7 @@ std::string LabRuntime::execute_session(std::string_view session_id,
       const auto visible_target_prompt = target_prompt.starts_with('\n')
                                              ? target_prompt.substr(1U)
                                              : target_prompt;
-      // The recursive report owns no knowledge of the outer inline-engine
+      // The command report owns no knowledge of the outer inline-engine
       // transcript. Separate its last row from CLI #2051 or #2052 even when
       // the formatter intentionally omitted a final newline before its prompt.
       if (!foreign_output.empty() && foreign_output.back() != '\n')
@@ -14609,6 +14619,42 @@ std::string LabRuntime::execute_session(std::string_view session_id,
              cli_prompt(view, terminal->cli) + session_state(session_id);
     }
   }
+
+  return execute_session_command(session_id, input);
+}
+
+std::string LabRuntime::execute_session_command(std::string_view session_id,
+                                        std::string_view input) {
+  auto *terminal = session(session_id);
+  if (!terminal)
+    return {};
+  const auto *session_record = supervisor_.sessions().get(terminal->handle);
+  const auto *device = session_record
+                           ? supervisor_.devices().get(session_record->device)
+                           : nullptr;
+  // Configuration commands below update the selected router's canonical
+  // intent only after the owning supervisor accepts the same mutation. Keep a
+  // mutable pointer here instead of casting away constness at each commit.
+  auto *intent = device ? router(device->node_id) : nullptr;
+  if (!session_record || !device || !intent)
+    return {};
+  if (terminal->ping.active)
+    return "MINOR: CLI #2069: Operation not allowed - another command is in "
+           "progress" +
+           session_state(session_id);
+  // Shared global candidate edits can be made by another terminal. Refresh
+  // prompt markers before interpreting this input so the next command and its
+  // exit policy observe the router-owned datastore, not a stale session copy.
+  if (const auto status = supervisor_.session_status(terminal->handle)) {
+    terminal->cli.candidate_dirty = status->candidate_dirty;
+    terminal->cli.candidate_outdated = status->baseline_outdated;
+  }
+  // This view supplies only prompt identity to the reusable CLI state machine.
+  // Product configuration remains in RouterIntent and RuntimeSupervisor.
+  DeviceState view;
+  view.configuration.running.system_name.fill('\0');
+  std::copy(device->system_name.begin(), device->system_name.end(),
+            view.configuration.running.system_name.begin());
 
   const auto initialize_candidate = [&](CandidateMode mode) {
     if (mode == CandidateMode::private_candidate) {
@@ -24681,6 +24727,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               return "OSPF";
             case routing::RouteSource::ospf3:
               return "OSPF3";
+            case routing::RouteSource::isis:
+              return "IS-IS";
             }
             return "";
           };
@@ -24983,6 +25031,8 @@ std::string LabRuntime::execute_session(std::string_view session_id,
               return "OSPF";
             case routing::RouteSource::ospf3:
               return "OSPF3";
+            case routing::RouteSource::isis:
+              return "IS-IS";
             }
             return "LOCAL";
           };
@@ -25079,8 +25129,6 @@ std::string LabRuntime::execute_session(std::string_view session_id,
           }
         }
       } else {
-        using enum cli_schema::CommandId;
-        const auto id = parsed->spec->id;
         const bool static_report = id == show_router_static_arp ||
                                    id == show_router_static_arp_interface ||
                                    id == show_router_static_arp_address ||
@@ -25247,9 +25295,9 @@ std::string LabRuntime::poll_session(std::string_view session_id) {
       const auto variance = std::max(0.0L, mean_square - mean * mean);
       statistics +=
           "round-trip min = " +
-          ping_milliseconds(ping.rtt_min_microseconds) +
+          ping_milliseconds(static_cast<long double>(ping.rtt_min_microseconds)) +
           "ms, avg = " + ping_milliseconds(mean) +
-          "ms, max = " + ping_milliseconds(ping.rtt_max_microseconds) +
+          "ms, max = " + ping_milliseconds(static_cast<long double>(ping.rtt_max_microseconds)) +
           "ms, stddev = " + ping_milliseconds(std::sqrt(variance)) + "ms\n";
     }
     return statistics;
@@ -25302,7 +25350,7 @@ std::string LabRuntime::poll_session(std::string_view session_id) {
         " bytes from " + destination +
         ": icmp_seq=" + std::to_string(ping.sequence) +
         " ttl=" + std::to_string(received_ttl) +
-        " time=" + ping_milliseconds(elapsed_microseconds) + "ms.\n";
+        " time=" + ping_milliseconds(static_cast<long double>(elapsed_microseconds)) + "ms.\n";
     if (ping.sent == ping.requested)
       output += finish();
     else {
@@ -26639,12 +26687,9 @@ void LabRuntime::publish_telemetry() noexcept {
   telemetry_.abi_version = telemetry_page_v6_abi;
   telemetry_.status = 1;
   // The browser Worker owns primary control, NetworkPlaneWorker owns the link
-  // domain, OSPF owns protocol state, and larger hosts add generated control
+  // domain, OSPF and IS-IS own protocol state, and larger hosts add control
   // and forwarding pthreads. Telemetry reports only owners that actually
   // exist, never unused Emscripten pool capacity.
-  telemetry_.worker_count =
-      static_cast<std::uint32_t>(3U + (secondary_control_ ? 1U : 0U) +
-                                 supervisor_.forwarding_owner_count());
   auto control = static_cast<std::uint64_t>(
       std::hash<std::thread::id>{}(std::this_thread::get_id()));
   for (auto &worker : telemetry_.workers)
@@ -26689,6 +26734,13 @@ void LabRuntime::publish_telemetry() noexcept {
       .running = static_cast<std::uint8_t>(ospf_owner_id != 0),
       .thread_id = ospf_owner_id,
   };
+  const auto isis_owner_id = supervisor_.isis_owner_thread_id();
+  telemetry_.workers[directory++] = {
+      .role = static_cast<std::uint8_t>(WorkerRoleV6::isis),
+      .shard_index = 0,
+      .running = static_cast<std::uint8_t>(isis_owner_id != 0),
+      .thread_id = isis_owner_id,
+  };
   for (std::size_t index = 0; index < supervisor_.forwarding_owner_count();
        ++index) {
     const auto owner_id = supervisor_.forwarding_owner_thread_id(index);
@@ -26700,6 +26752,7 @@ void LabRuntime::publish_telemetry() noexcept {
         .turns = supervisor_.forwarding_owner_turns(index),
     };
   }
+  telemetry_.worker_count = static_cast<std::uint32_t>(directory);
   telemetry_.device_count = static_cast<std::uint32_t>(routers_.size());
   telemetry_.session_count = static_cast<std::uint32_t>(sessions_.size());
   telemetry_.captured_frames = supervisor_.captured_frames();
@@ -27610,12 +27663,12 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
     checkpoint_bytes_.clear();
     return {};
   }
-  checkpoint_bytes_ = checkpoint_v7::encode(*checkpoint);
+  checkpoint_bytes_ = checkpoint_v9::encode(*checkpoint);
   return checkpoint_bytes_;
 }
 
 bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
-  auto checkpoint = checkpoint_v7::decode(bytes);
+  auto checkpoint = checkpoint_v9::decode(bytes);
   if (!checkpoint)
     return false;
   try {

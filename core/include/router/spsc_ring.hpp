@@ -1,3 +1,7 @@
+// One producer publishes trivial values to one consumer through a bounded FIFO.
+// Slot bytes become visible through release/acquire indices; dependencies point
+// only to standard value/atomic types. Full publication never overwrites input.
+
 #pragma once
 
 #include <array>
@@ -5,6 +9,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <type_traits>
+#include <span>
+#include <vector>
 
 namespace router {
 
@@ -40,6 +46,44 @@ public:
     // additional ownership path for the slot bytes.
     return tail_.load(std::memory_order_relaxed) ==
            head_.load(std::memory_order_acquire);
+  }
+
+  // Consumer only, without popping, clearing or retaining a slot reference.
+  // Snapshot the producer head with acquire; until this consumer advances tail,
+  // the producer cannot reuse any visited slot. Later publications are outside
+  // this bounded snapshot. The nonthrowing predicate must not mutate this ring
+  // or retain its input. No extra observer or consumer ownership is introduced.
+  template <typename Predicate>
+  [[nodiscard]] bool consumer_any(Predicate &&predicate) const noexcept {
+    static_assert(std::is_nothrow_invocable_r_v<bool, Predicate, const T &>);
+    const auto tail = tail_.load(std::memory_order_relaxed);
+    const auto head = head_.load(std::memory_order_acquire);
+    for (auto index = tail; index != head; index = increment(index))
+      if (predicate(slots_[index])) return true;
+    return false;
+  }
+
+  // Persistence coordinator only after both owners release-acknowledged a
+  // barrier and before either resumes. That acknowledgement, not these index
+  // loads, permits inspecting producer/consumer state together. Returns owned
+  // FIFO values, may throw on allocation and never consumes or clears a slot.
+  [[nodiscard]] std::vector<T> checkpoint_quiescent() const {
+    const auto tail = tail_.load(std::memory_order_relaxed);
+    const auto head = head_.load(std::memory_order_relaxed);
+    std::vector<T> result;
+    result.reserve(head >= tail ? head - tail : Capacity - tail + head);
+    for (auto index = tail; index != head; index = increment(index)) result.push_back(slots_[index]);
+    return result;
+  }
+  // Same quiescent coordinator; all old borrowed references must be abandoned.
+  // Refuses an oversized FIFO before mutation. No allocation. The coordinator
+  // publishes restored ownership before resuming either producer or consumer.
+  [[nodiscard]] bool restore_quiescent(std::span<const T> values) noexcept {
+    if (values.size() >= Capacity) return false;
+    for (std::size_t index{}; index < values.size(); ++index) spsc_copy(slots_[index], values[index]);
+    tail_.store(0U, std::memory_order_relaxed);
+    head_.store(values.size(), std::memory_order_release);
+    return true;
   }
 
   [[nodiscard]] bool full() const noexcept {

@@ -1,24 +1,72 @@
-// Multi-device connected and static route selection. Each router runs this
+// Multi-device connected, static and protocol route selection. Each router runs this
 // independently from its local configuration and never inspects the lab graph.
 
 #include "router/multi_device_routing.hpp"
 
 #include <algorithm>
 #include <tuple>
+#include <type_traits>
+#include <climits>
+#include <iterator>
 
 namespace router::lab::routing {
 namespace {
 
-[[nodiscard]] constexpr bool is_ospf(RouteSource source) noexcept {
-  return source == RouteSource::ospf || source == RouteSource::ospf3;
+
+// Two immutable owner-retained protocol generations share one bounded input
+// view. No concatenation, allocation or pointer subtraction crosses arenas.
+// The caller keeps both spans alive throughout the synchronous rebuild.
+template <typename Entry>
+struct DynamicView {
+  std::span<const Entry> first, second;
+  [[nodiscard]] std::size_t size() const noexcept { return first.size() + second.size(); }
+  [[nodiscard]] const Entry &operator[](std::size_t index) const noexcept {
+    return index < first.size() ? first[index] : second[index - first.size()];
+  }
+  struct Iterator {
+    using iterator_category = std::forward_iterator_tag;
+    using value_type = Entry;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const Entry *;
+    using reference = const Entry &;
+    const DynamicView *view{};
+    std::size_t index{};
+    reference operator*() const noexcept { return (*view)[index]; }
+    pointer operator->() const noexcept { return &**this; }
+    Iterator &operator++() noexcept { ++index; return *this; }
+    Iterator operator++(int) noexcept { auto old = *this; ++*this; return old; }
+    bool operator==(const Iterator &) const = default;
+  };
+  Iterator begin() const noexcept { return {this, 0U}; }
+  Iterator end() const noexcept { return {this, size()}; }
+};
+
+template <typename RouteValue>
+[[nodiscard]] constexpr std::uint16_t default_preference(const RouteValue &route) noexcept {
+  switch (route.source) {
+  case RouteSource::connected: return 0U;
+  case RouteSource::static_route: return 5U;
+  case RouteSource::ospf:
+  case RouteSource::ospf3:
+    return route.ospf_path_type == OspfPathType::intra_area ||
+        route.ospf_path_type == OspfPathType::inter_area ? 10U : 150U;
+  case RouteSource::isis:
+    switch (route.isis_path_type) {
+    case IsisPathType::level1_internal: return 15U;
+    case IsisPathType::level2_internal: return 18U;
+    case IsisPathType::level1_external: return 160U;
+    case IsisPathType::level2_external: return 165U;
+    case IsisPathType::none: return 255U;
+    }
+  }
+  return 255U;
 }
 
-[[nodiscard]] constexpr bool valid_dynamic(RouteSource source,
-                                           OspfPathType path_type) noexcept {
-  // This boundary currently admits only implemented OSPF publishers. A future
-  // protocol must receive its own source identity and selection rules instead
-  // of reusing an ambiguous dynamic marker.
-  return is_ospf(source) && path_type != OspfPathType::none;
+template <typename RouteValue>
+[[nodiscard]] constexpr bool secondary_metric(const RouteValue &route) noexcept {
+  return route.ospf_path_type == OspfPathType::external_type_2 ||
+      route.ospf_path_type == OspfPathType::nssa_type_2 ||
+      (std::is_integral_v<decltype(route.network)> && route.source == RouteSource::isis && route.isis_rank >= 3U);
 }
 
 [[nodiscard]] constexpr std::uint8_t
@@ -43,10 +91,10 @@ path_rank(OspfPathType path_type) noexcept {
 template <typename RouteValue>
 [[nodiscard]] constexpr bool selection_less(const RouteValue &left,
                                             const RouteValue &right) noexcept {
-  if (left.preference != right.preference)
-    return left.preference < right.preference;
-  if (left.source != right.source)
-    return left.source < right.source;
+  if (left.source != right.source) return left.source < right.source;
+  if (left.preference != right.preference) return left.preference < right.preference;
+  if (left.source == RouteSource::isis && left.isis_rank != right.isis_rank)
+    return left.isis_rank < right.isis_rank;
   if (path_rank(left.ospf_path_type) != path_rank(right.ospf_path_type))
     return path_rank(left.ospf_path_type) < path_rank(right.ospf_path_type);
   if (left.metric != right.metric)
@@ -55,10 +103,7 @@ template <typename RouteValue>
   // equal Type 2 routes. It is harmlessly zero for non-OSPF and non-Type-2
   // candidates, whose complete cost is already stored in metric.
   if constexpr (requires { left.internal_metric; }) {
-    const bool type_two =
-        left.ospf_path_type == OspfPathType::external_type_2 ||
-        left.ospf_path_type == OspfPathType::nssa_type_2;
-    if (type_two && left.internal_metric != right.internal_metric)
+    if (secondary_metric(left) && left.internal_metric != right.internal_metric)
       return left.internal_metric < right.internal_metric;
   }
   if (left.protocol_instance != right.protocol_instance)
@@ -72,17 +117,148 @@ template <typename RouteValue>
   return !selection_less(left, right) && !selection_less(right, left);
 }
 
+// Compare protocols only after each protocol has selected its own winning
+// paths. The default preference table applies to different protocols, not to
+// competing paths inside one protocol. Equal protocol paths share one minimum
+// default priority so mixed internal/external provenance cannot create a
+// non-transitive sort comparator or split their ECMP membership.
+template <typename RouteValue>
+std::size_t select_routes(std::span<RouteValue> rows, std::uint16_t width) noexcept {
+  std::sort(rows.begin(), rows.end(), [](const auto &left, const auto &right) {
+    if (left.network != right.network) return left.network < right.network;
+    if (left.prefix_length != right.prefix_length) return left.prefix_length > right.prefix_length;
+    if (left.source != right.source) return left.source < right.source;
+    if (!same_selection_class(left, right)) return selection_less(left, right);
+    if (left.next_hop != right.next_hop) return left.next_hop < right.next_hop;
+    if constexpr (requires { left.port_ordinal; })
+      return std::tie(left.port_ordinal, left.interface_id) < std::tie(right.port_ordinal, right.interface_id);
+    else return left.interface_id < right.interface_id;
+  });
+  std::size_t written{};
+  for (std::size_t begin{}; begin < rows.size();) {
+    auto end = begin + 1U;
+    while (end < rows.size() && rows[end].network == rows[begin].network &&
+        rows[end].prefix_length == rows[begin].prefix_length) ++end;
+    auto best_begin = begin, best_end = begin;
+    auto best_key = std::tuple{UINT16_MAX, UINT16_MAX, RouteSource::isis};
+    for (auto source = begin; source < end;) {
+      auto source_end = source + 1U;
+      while (source_end < end && rows[source_end].source == rows[source].source) ++source_end;
+      auto equal_end = source + 1U;
+      auto priority = default_preference(rows[source]);
+      while (equal_end < source_end && same_selection_class(rows[equal_end], rows[source])) {
+        priority = std::min(priority, default_preference(rows[equal_end]));
+        ++equal_end;
+      }
+      const auto key = std::tuple{rows[source].preference, priority, rows[source].source};
+      if (key < best_key) { best_key = key; best_begin = source; best_end = equal_end; }
+      source = source_end;
+    }
+    for (auto index = best_begin; index < best_end && index - best_begin < width; ++index)
+      rows[written++] = rows[index];
+    begin = end;
+  }
+  return written;
+}
+
+template <typename Entry, typename Eligible>
+const Entry *best_dynamic_route(DynamicView<Entry> input, std::span<const bool> selected_isis,
+    Eligible eligible) noexcept {
+  constexpr auto sources = static_cast<std::size_t>(RouteSource::isis) + 1U;
+  std::array<const Entry *, sources> best{};
+  std::array<std::uint16_t, sources> priority{};
+  for (std::size_t index{}; index < input.size(); ++index) {
+    const auto &entry = input[index];
+    if (!entry.configured || !entry.operational || entry.loop_free_alternate ||
+        (entry.source == RouteSource::isis && !selected_isis[index]) || !eligible(entry)) continue;
+    const auto source = static_cast<std::size_t>(entry.source);
+    auto &selected = best[source];
+    if (!selected || entry.prefix_length > selected->prefix_length ||
+        (entry.prefix_length == selected->prefix_length && selection_less(entry, *selected))) {
+      selected = &entry;
+      priority[source] = default_preference(entry);
+    } else if (entry.prefix_length == selected->prefix_length && same_selection_class(entry, *selected))
+      priority[source] = std::min(priority[source], default_preference(entry));
+  }
+  const Entry *selected{};
+  auto selected_key = std::tuple{INT_MAX, UINT16_MAX, UINT16_MAX, RouteSource::isis};
+  for (std::size_t source{}; source < best.size(); ++source) if (best[source]) {
+    const auto &entry = *best[source];
+    const auto key = std::tuple{-static_cast<int>(entry.prefix_length), entry.preference, priority[source], entry.source};
+    if (key < selected_key) { selected_key = key; selected = &entry; }
+  }
+  return selected;
+}
+
+// Prune structured IS-IS distances before global preference. Combining both
+// orders in one comparator would create cycles across protocol candidates.
+// Fixed index scratch bounds memory and avoids quadratic prefix comparisons.
+template <typename Entry>
+[[nodiscard]] auto isis_distance_key(const Entry &entry) noexcept {
+  const auto secondary = std::is_integral_v<decltype(entry.network)> && entry.isis_rank >= 3U
+      ? entry.internal_metric : 0U;
+  return std::tuple{entry.isis_rank, entry.metric, secondary};
+}
+template <typename Entry>
+[[nodiscard]] auto isis_prefix_key(const Entry &entry) noexcept {
+  if constexpr (std::is_integral_v<decltype(entry.network)>)
+    return std::tuple{entry.network & prefix_mask(entry.prefix_length), entry.prefix_length, entry.protocol_instance};
+  else return std::tuple{entry.network, entry.prefix_length, entry.protocol_instance};
+}
+template <typename Entry>
+void select_isis_distances(DynamicView<Entry> input, std::span<bool> selected) noexcept {
+  static_assert(device_catalog::maximum_dynamic_routes_per_router <= UINT16_MAX);
+  std::array<std::uint16_t, device_catalog::maximum_dynamic_routes_per_router> indices{};
+  std::size_t count{};
+  for (std::size_t index{}; index < input.size(); ++index)
+    if (input[index].source == RouteSource::isis && input[index].configured &&
+        input[index].operational && !input[index].loop_free_alternate)
+      indices[count++] = static_cast<std::uint16_t>(index);
+  std::sort(indices.begin(), indices.begin() + count, [&](auto left, auto right) {
+    const auto a = isis_prefix_key(input[left]), b = isis_prefix_key(input[right]);
+    return a != b ? a < b : isis_distance_key(input[left]) < isis_distance_key(input[right]);
+  });
+  for (std::size_t begin{}; begin < count;) {
+    auto end = begin + 1U;
+    const auto key = isis_prefix_key(input[indices[begin]]);
+    const auto distance = isis_distance_key(input[indices[begin]]);
+    selected[indices[begin]] = true;
+    while (end < count && isis_prefix_key(input[indices[end]]) == key) {
+      selected[indices[end]] = isis_distance_key(input[indices[end]]) == distance;
+      ++end;
+    }
+    begin = end;
+  }
+}
+
+template <typename Program, typename Entry>
+void compile_routes(Program &output, std::uint64_t generation,
+    std::span<const Entry> primary, std::span<const Entry> repairs, bool reset_unused = true) noexcept {
+  output.generation = generation;
+  output.count = static_cast<std::uint16_t>(primary.size());
+  output.loop_free_alternate_count = static_cast<std::uint16_t>(repairs.size());
+  if (reset_unused) std::fill(output.routes.begin(), output.routes.end(), Entry{});
+  std::copy(primary.begin(), primary.end(), output.routes.begin());
+  std::copy(repairs.begin(), repairs.end(), output.routes.begin() + primary.size());
+}
 } // namespace
 
 bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
                          std::span<const StaticInput> statics,
-                         std::span<const DynamicInput> dynamic,
-                         std::uint16_t maximum_ecmp_paths) noexcept {
+                         std::span<const DynamicInput> primary_dynamic,
+                         std::uint16_t maximum_ecmp_paths,
+                         std::span<const DynamicInput> additional_dynamic) noexcept {
+  const DynamicView<DynamicInput> dynamic{primary_dynamic, additional_dynamic};
   std::array<Route, device_catalog::maximum_fib_routes_per_router> next{};
   std::array<Route, device_catalog::maximum_fib_routes_per_router>
       next_alternates{};
   std::size_t next_count{};
   std::size_t next_alternate_count{};
+  if (primary_dynamic.size() > device_catalog::maximum_dynamic_routes_per_router ||
+      additional_dynamic.size() > device_catalog::maximum_dynamic_routes_per_router - primary_dynamic.size()) {
+    last_rebuild_valid_ = false;
+    return false;
+  }
 
   // Validate every configured prefix before selecting anything. A malformed
   // transaction cannot withdraw the old FIB partially and then fail halfway.
@@ -108,8 +284,11 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
   for (const auto &entry : dynamic)
     if (entry.configured &&
         (entry.prefix_length > 32U ||
+         (entry.source == RouteSource::isis && (!entry.interface_id || !entry.interface_generation ||
+          entry.protocol_instance > device_catalog::isis_instance_last ||
+          entry.preference == 0U || entry.preference > 255U)) ||
          entry.port_ordinal >= device_catalog::maximum_ports_per_router ||
-         !valid_dynamic(entry.source, entry.ospf_path_type))) {
+         (!dynamic_source(entry.source) || !valid_route_path(entry.source, entry.ospf_path_type, entry.isis_path_type, entry.isis_rank, false)))) {
       last_rebuild_valid_ = false;
       return false;
     }
@@ -131,13 +310,17 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
         .preference = 0U,
         .metric = 0U,
         .source = RouteSource::connected,
-        .local_system = entry.local_system};
+        .local_system = entry.local_system, .interface_id = entry.interface_id,
+        .interface_generation = entry.interface_generation};
   }
 
+  std::array<bool, device_catalog::maximum_dynamic_routes_per_router> selected_isis{};
+  select_isis_distances(dynamic, std::span{selected_isis}.first(dynamic.size()));
   // Dynamic candidates are already resolved to a physical adjacency by their
   // protocol owner. Keeping that publication separate from static intent is
   // what lets indirect resolution exclude static-to-static recursion.
-  for (const auto &entry : dynamic) {
+  for (std::size_t dynamic_index{}; dynamic_index < dynamic.size(); ++dynamic_index) {
+      const auto &entry = dynamic[dynamic_index];
     if (!entry.configured || !entry.operational ||
         entry.loop_free_alternate)
       continue;
@@ -145,11 +328,11 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
     // to the ASBR. The FIB does not need that second control-plane quantity,
     // so discard only dominated Type 2 candidates before creating compact FIB
     // rows. Equal internal costs remain available for ECMP.
-    const bool type_two =
-        entry.ospf_path_type == OspfPathType::external_type_2 ||
-        entry.ospf_path_type == OspfPathType::nssa_type_2;
+    if (entry.source == RouteSource::isis &&
+        !selected_isis[dynamic_index]) continue;
+    const bool type_two = secondary_metric(entry);
     const bool dominated =
-        type_two &&
+        type_two && entry.source != RouteSource::isis &&
         std::any_of(dynamic.begin(), dynamic.end(), [&](const auto &other) {
           return other.configured && other.operational &&
                  !other.loop_free_alternate &&
@@ -158,6 +341,7 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
                  other.preference == entry.preference &&
                  other.source == entry.source &&
                  other.ospf_path_type == entry.ospf_path_type &&
+                 other.isis_path_type == entry.isis_path_type && other.isis_rank == entry.isis_rank &&
                  other.protocol_instance == entry.protocol_instance &&
                  other.metric == entry.metric &&
                  other.internal_metric < entry.internal_metric;
@@ -178,7 +362,10 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
         .source = entry.source,
         .local_system = false,
         .ospf_path_type = entry.ospf_path_type,
-        .protocol_instance = entry.protocol_instance};
+        .protocol_instance = entry.protocol_instance,
+        .interface_id = entry.interface_id,
+        .isis_path_type = entry.isis_path_type, .isis_rank = entry.isis_rank,
+        .interface_generation = entry.interface_generation};
   }
 
   // Backup candidates never participate in primary RIB selection or indirect
@@ -197,6 +384,7 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
                  candidate.prefix_length == entry.prefix_length &&
                  candidate.source == entry.source &&
                  candidate.ospf_path_type == entry.ospf_path_type &&
+                 candidate.isis_path_type == entry.isis_path_type && candidate.isis_rank == entry.isis_rank &&
                  candidate.protocol_instance == entry.protocol_instance;
         });
     if (primary == next.begin() + next_count)
@@ -215,16 +403,19 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
         .source = entry.source,
         .local_system = false,
         .ospf_path_type = entry.ospf_path_type,
-        .protocol_instance = entry.protocol_instance};
+        .protocol_instance = entry.protocol_instance,
+        .interface_id = entry.interface_id,
+        .isis_path_type = entry.isis_path_type, .isis_rank = entry.isis_rank,
+        .interface_generation = entry.interface_generation};
   }
   std::sort(
       next_alternates.begin(),
       next_alternates.begin() + next_alternate_count,
       [](const Route &left, const Route &right) {
         return std::tie(left.network, left.prefix_length, left.next_hop,
-                        left.port_ordinal) <
+                        left.port_ordinal, left.interface_id) <
                std::tie(right.network, right.prefix_length, right.next_hop,
-                        right.port_ordinal);
+                        right.port_ordinal, right.interface_id);
       });
   next_alternate_count = static_cast<std::size_t>(std::distance(
       next_alternates.begin(),
@@ -234,7 +425,7 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
                     return left.network == right.network &&
                            left.prefix_length == right.prefix_length &&
                            left.next_hop == right.next_hop &&
-                           left.port_ordinal == right.port_ordinal;
+                           left.port_ordinal == right.port_ordinal && left.interface_id == right.interface_id;
                   })));
 
   for (const auto &entry : statics) {
@@ -269,37 +460,29 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
           .preference = 5U,
           .metric = 1U,
           .source = RouteSource::static_route,
-          .local_system = false};
+          .local_system = false, .interface_id = resolution->interface_id,
+          .interface_generation = resolution->interface_generation};
       continue;
     }
 
     // Find the best dynamic route covering the indirect address. Prefix
     // length wins first, then protocol preference and metric. Every equal
     // resolved path is expanded into the static route's own ECMP candidates.
-    const DynamicInput *best{};
-    for (const auto &candidate : dynamic) {
-      if (!candidate.configured || !candidate.operational)
-        continue;
-      if (candidate.loop_free_alternate)
-        continue;
-      const auto mask = prefix_mask(candidate.prefix_length);
-      if ((entry.next_hop & mask) != (candidate.network & mask))
-        continue;
-      if (!best || candidate.prefix_length > best->prefix_length ||
-          (candidate.prefix_length == best->prefix_length &&
-           (candidate.preference < best->preference ||
-            (candidate.preference == best->preference &&
-             candidate.metric < best->metric))))
-        best = &candidate;
-    }
+    const auto *best = best_dynamic_route(dynamic, std::span<const bool>{selected_isis}.first(dynamic.size()),
+        [&](const auto &candidate) {
+          const auto mask = prefix_mask(candidate.prefix_length);
+          return (entry.next_hop & mask) == (candidate.network & mask);
+        });
     if (!best)
       continue;
-    for (const auto &candidate : dynamic) {
+    for (std::size_t dynamic_index{}; dynamic_index < dynamic.size(); ++dynamic_index) {
+      const auto &candidate = dynamic[dynamic_index];
+      if (candidate.source == RouteSource::isis &&
+          !selected_isis[dynamic_index]) continue;
       if (!candidate.configured || !candidate.operational ||
           candidate.loop_free_alternate ||
           candidate.prefix_length != best->prefix_length ||
-          candidate.preference != best->preference ||
-          candidate.metric != best->metric)
+          !same_selection_class(candidate, *best))
         continue;
       const auto mask = prefix_mask(candidate.prefix_length);
       if ((entry.next_hop & mask) != (candidate.network & mask))
@@ -316,49 +499,12 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
           .preference = 5U,
           .metric = 1U,
           .source = RouteSource::static_route,
-          .local_system = false};
+          .local_system = false, .interface_id = candidate.interface_id,
+          .interface_generation = candidate.interface_generation};
     }
   }
 
-  // Sorting implements the documented lowest-next-hop fallback when ECMP is
-  // disabled. It also makes flow-to-path mapping independent of CLI insertion
-  // order. Only candidates with the winning protocol, preference and metric
-  // survive for each prefix, capped by the router-wide ECMP setting.
-  std::sort(next.begin(), next.begin() + next_count,
-            [](const Route &left, const Route &right) {
-              if (left.network != right.network)
-                return left.network < right.network;
-              if (left.prefix_length != right.prefix_length)
-                return left.prefix_length > right.prefix_length;
-              if (!same_selection_class(left, right))
-                return selection_less(left, right);
-              if (left.next_hop != right.next_hop)
-                return left.next_hop < right.next_hop;
-              return left.port_ordinal < right.port_ordinal;
-            });
-  // Compact the sorted candidate array in place. A second maximum-sized array
-  // would double the control-shard stack cost for no ownership benefit. The
-  // write cursor never overtakes the read cursor, so unread candidates remain
-  // intact while losing paths are discarded.
-  std::size_t selected_count{};
-  for (std::size_t begin{}; begin < next_count;) {
-    std::size_t end = begin + 1U;
-    while (end < next_count && next[end].network == next[begin].network &&
-           next[end].prefix_length == next[begin].prefix_length)
-      ++end;
-    const auto &winner = next[begin];
-    std::uint16_t paths{};
-    for (std::size_t index = begin;
-         index < end && paths < maximum_ecmp_paths; ++index) {
-      const auto &candidate = next[index];
-      if (!same_selection_class(candidate, winner))
-        break;
-      next[selected_count++] = candidate;
-      ++paths;
-    }
-    begin = end;
-  }
-  next_count = selected_count;
+  next_count = select_routes(std::span{next}.first(next_count), maximum_ecmp_paths);
 
   // Primary selection may have chosen connected or static after the backup
   // candidates were staged. Compact again against the final winner so an LFA
@@ -373,6 +519,7 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
                  candidate.prefix_length == alternate.prefix_length &&
                  candidate.source == alternate.source &&
                  candidate.ospf_path_type == alternate.ospf_path_type &&
+                 candidate.isis_path_type == alternate.isis_path_type && candidate.isis_rank == alternate.isis_rank &&
                  candidate.protocol_instance ==
                      alternate.protocol_instance;
         });
@@ -392,33 +539,12 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
       next_count != count_ ||
       next_alternate_count != loop_free_alternate_count_ ||
       !std::equal(next.begin(), next.begin() + next_count, routes_.begin(),
-                  [](const Route &left, const Route &right) {
-                    return left.network == right.network &&
-                           left.next_hop == right.next_hop &&
-                           left.port_ordinal == right.port_ordinal &&
-                           left.prefix_length == right.prefix_length &&
-                           left.preference == right.preference &&
-                           left.metric == right.metric &&
-                           left.source == right.source &&
-                           left.local_system == right.local_system &&
-                           left.ospf_path_type == right.ospf_path_type &&
-                           left.protocol_instance == right.protocol_instance;
-                  }) ||
+                  [](const Route &left, const Route &right) { return left == right; }) ||
       !std::equal(
           next_alternates.begin(),
           next_alternates.begin() + next_alternate_count,
           loop_free_alternates_.begin(),
-          [](const Route &left, const Route &right) {
-            return left.network == right.network &&
-                   left.next_hop == right.next_hop &&
-                   left.port_ordinal == right.port_ordinal &&
-                   left.prefix_length == right.prefix_length &&
-                   left.preference == right.preference &&
-                   left.metric == right.metric &&
-                   left.source == right.source &&
-                   left.ospf_path_type == right.ospf_path_type &&
-                   left.protocol_instance == right.protocol_instance;
-          });
+          [](const Route &left, const Route &right) { return left == right; });
   if (changed) {
     // Publish the complete selected value only after all capacity and semantic
     // checks succeeded. Trailing entries are cleared for deterministic dumps.
@@ -433,16 +559,14 @@ bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
 }
 
 FibProgram RouteTable::compile(std::uint64_t generation) const noexcept {
-  FibProgram result{.generation = generation,
-                    .count = count_,
-                    .loop_free_alternate_count =
-                        loop_free_alternate_count_};
-  // A full value copy is the versioned control-to-forwarding boundary. It
-  // cannot retain RIB references that control mutates on the next transaction.
-  std::copy_n(routes_.begin(), count_, result.routes.begin());
-  std::copy_n(loop_free_alternates_.begin(), loop_free_alternate_count_,
-              result.routes.begin() + count_);
-  return result;
+  FibProgram output;
+  compile_routes(output, generation, std::span{routes_}.first(count_),
+      std::span{loop_free_alternates_}.first(loop_free_alternate_count_), false);
+  return output;
+}
+void RouteTable::compile_into(FibProgram &output, std::uint64_t generation) const noexcept {
+  compile_routes(output, generation, std::span{routes_}.first(count_),
+      std::span{loop_free_alternates_}.first(loop_free_alternate_count_));
 }
 
 bool lookup(const FibProgram &fib, std::uint32_t destination, Route &selected,
@@ -507,8 +631,10 @@ bool Ipv6RouteTable::rebuild(
     std::span<const Ipv6ConnectedInput> connected,
     std::span<const Ipv6StaticInput> statics,
     std::span<const Ipv6ConnectedInput> additional_connected,
-    std::span<const Ipv6DynamicInput> dynamic,
-    std::uint16_t maximum_ecmp_paths) noexcept {
+    std::span<const Ipv6DynamicInput> primary_dynamic,
+    std::uint16_t maximum_ecmp_paths,
+    std::span<const Ipv6DynamicInput> additional_dynamic) noexcept {
+  const DynamicView<Ipv6DynamicInput> dynamic{primary_dynamic, additional_dynamic};
   // One bounded primary generation remains automatic storage. Repairs are
   // staged later in their existing owner array only after every fallible
   // primary calculation has succeeded. This avoids both the former second
@@ -518,6 +644,11 @@ bool Ipv6RouteTable::rebuild(
              device_catalog::maximum_fib_routes_per_router> next{};
   std::size_t next_count{};
   std::size_t next_alternate_count{};
+  if (primary_dynamic.size() > device_catalog::maximum_dynamic_routes_per_router ||
+      additional_dynamic.size() > device_catalog::maximum_dynamic_routes_per_router - primary_dynamic.size()) {
+    last_rebuild_valid_ = false;
+    return false;
+  }
 
   // Reject non-canonical networks and invalid lengths before considering route
   // activity. Silent normalization would make CLI info differ from the key
@@ -571,14 +702,16 @@ bool Ipv6RouteTable::rebuild(
   }
   for (const auto &entry : dynamic) {
     if (entry.configured &&
-        (entry.interface_id == 0U ||
+        ((entry.source == RouteSource::isis && (!entry.interface_generation ||
+          entry.protocol_instance > device_catalog::isis_instance_last ||
+          entry.preference == 0U || entry.preference > 255U)) || entry.interface_id == 0U ||
          entry.physical_port_ordinal >=
              device_catalog::maximum_ports_per_router ||
          entry.prefix_length > ip::ipv6_address_bits ||
          ip::mask(entry.network, entry.prefix_length) != entry.network ||
          ip::is_unspecified(entry.next_hop) ||
          ip::is_multicast(entry.next_hop) ||
-         !valid_dynamic(entry.source, entry.ospf_path_type))) {
+         (!dynamic_source(entry.source) || !valid_route_path(entry.source, entry.ospf_path_type, entry.isis_path_type, entry.isis_rank, true)))) {
       last_rebuild_valid_ = false;
       return false;
     }
@@ -597,7 +730,8 @@ bool Ipv6RouteTable::rebuild(
                                      .prefix_length = entry.prefix_length,
                                      .preference = 0U,
                                      .metric = 0U,
-                                     .source = RouteSource::connected};
+                                     .source = RouteSource::connected,
+                                     .interface_generation = entry.interface_generation};
     }
     return true;
   };
@@ -607,15 +741,18 @@ bool Ipv6RouteTable::rebuild(
     return false;
   }
 
-  for (const auto &entry : dynamic) {
+  std::array<bool, device_catalog::maximum_dynamic_routes_per_router> selected_isis{};
+  select_isis_distances(dynamic, std::span{selected_isis}.first(dynamic.size()));
+  for (std::size_t dynamic_index{}; dynamic_index < dynamic.size(); ++dynamic_index) {
+      const auto &entry = dynamic[dynamic_index];
     if (!entry.configured || !entry.operational ||
         entry.loop_free_alternate)
       continue;
-    const bool type_two =
-        entry.ospf_path_type == OspfPathType::external_type_2 ||
-        entry.ospf_path_type == OspfPathType::nssa_type_2;
+    if (entry.source == RouteSource::isis &&
+        !selected_isis[dynamic_index]) continue;
+    const bool type_two = secondary_metric(entry);
     const bool dominated =
-        type_two &&
+        type_two && entry.source != RouteSource::isis &&
         std::any_of(dynamic.begin(), dynamic.end(), [&](const auto &other) {
           return other.configured && other.operational &&
                  !other.loop_free_alternate &&
@@ -624,6 +761,7 @@ bool Ipv6RouteTable::rebuild(
                  other.preference == entry.preference &&
                  other.source == entry.source &&
                  other.ospf_path_type == entry.ospf_path_type &&
+                 other.isis_path_type == entry.isis_path_type && other.isis_rank == entry.isis_rank &&
                  other.protocol_instance == entry.protocol_instance &&
                  other.metric == entry.metric &&
                  other.internal_metric < entry.internal_metric;
@@ -644,7 +782,9 @@ bool Ipv6RouteTable::rebuild(
         .metric = entry.metric,
         .source = entry.source,
         .ospf_path_type = entry.ospf_path_type,
-        .protocol_instance = entry.protocol_instance};
+        .protocol_instance = entry.protocol_instance,
+        .isis_path_type = entry.isis_path_type, .isis_rank = entry.isis_rank,
+        .interface_generation = entry.interface_generation};
   }
 
   for (const auto &entry : statics) {
@@ -694,41 +834,30 @@ bool Ipv6RouteTable::rebuild(
           .prefix_length = entry.prefix_length,
           .preference = 5U,
           .metric = 1U,
-          .source = RouteSource::static_route};
+          .source = RouteSource::static_route,
+          .interface_generation = resolution->interface_generation};
       continue;
     }
 
     // Link-local indirect addresses are not meaningful without a scoped
     // protocol resolver. The configured zone is used to constrain dynamic
     // candidates exactly as it constrains direct Neighbor Discovery.
-    const Ipv6DynamicInput *best{};
-    for (const auto &candidate : dynamic) {
-      if (!candidate.configured || !candidate.operational)
-        continue;
-      if (candidate.loop_free_alternate)
-        continue;
-      if (ip::is_link_local(entry.next_hop) &&
-          candidate.interface_id != entry.outgoing_interface_id)
-        continue;
-      const ip::Ipv6Prefix candidate_prefix{candidate.network,
-                                             candidate.prefix_length};
-      if (!ip::contains(candidate_prefix, entry.next_hop))
-        continue;
-      if (!best || candidate.prefix_length > best->prefix_length ||
-          (candidate.prefix_length == best->prefix_length &&
-           (candidate.preference < best->preference ||
-            (candidate.preference == best->preference &&
-             candidate.metric < best->metric))))
-        best = &candidate;
-    }
+    const auto *best = best_dynamic_route(dynamic, std::span<const bool>{selected_isis}.first(dynamic.size()),
+        [&](const auto &candidate) {
+          if (ip::is_link_local(entry.next_hop) && candidate.interface_id != entry.outgoing_interface_id)
+            return false;
+          return ip::contains(ip::Ipv6Prefix{candidate.network, candidate.prefix_length}, entry.next_hop);
+        });
     if (!best)
       continue;
-    for (const auto &candidate : dynamic) {
+    for (std::size_t dynamic_index{}; dynamic_index < dynamic.size(); ++dynamic_index) {
+      const auto &candidate = dynamic[dynamic_index];
+      if (candidate.source == RouteSource::isis &&
+          !selected_isis[dynamic_index]) continue;
       if (!candidate.configured || !candidate.operational ||
           candidate.loop_free_alternate ||
           candidate.prefix_length != best->prefix_length ||
-          candidate.preference != best->preference ||
-          candidate.metric != best->metric ||
+          !same_selection_class(candidate, *best) ||
           (ip::is_link_local(entry.next_hop) &&
            candidate.interface_id != entry.outgoing_interface_id))
         continue;
@@ -748,49 +877,12 @@ bool Ipv6RouteTable::rebuild(
           .prefix_length = entry.prefix_length,
           .preference = 5U,
           .metric = 1U,
-          .source = RouteSource::static_route};
+          .source = RouteSource::static_route,
+          .interface_generation = candidate.interface_generation};
     }
   }
 
-  const auto address_less = [](const ip::Ipv6 &left,
-                               const ip::Ipv6 &right) noexcept {
-    return std::lexicographical_compare(left.begin(), left.end(), right.begin(),
-                                        right.end());
-  };
-  std::sort(next.begin(), next.begin() + next_count,
-            [&](const Ipv6Route &left, const Ipv6Route &right) {
-              if (left.network != right.network)
-                return address_less(left.network, right.network);
-              if (left.prefix_length != right.prefix_length)
-                return left.prefix_length > right.prefix_length;
-              if (!same_selection_class(left, right))
-                return selection_less(left, right);
-              if (left.next_hop != right.next_hop)
-                return address_less(left.next_hop, right.next_hop);
-              return left.interface_id < right.interface_id;
-            });
-  // IPv6 routes are larger values than IPv4 routes. In-place compaction keeps
-  // a rebuild bounded to one scratch array and avoids stack growth as hardware
-  // profiles expose more physical ports.
-  std::size_t selected_count{};
-  for (std::size_t begin{}; begin < next_count;) {
-    std::size_t end = begin + 1U;
-    while (end < next_count && next[end].network == next[begin].network &&
-           next[end].prefix_length == next[begin].prefix_length)
-      ++end;
-    const auto &winner = next[begin];
-    std::uint16_t paths{};
-    for (std::size_t index = begin;
-         index < end && paths < maximum_ecmp_paths; ++index) {
-      const auto &candidate = next[index];
-      if (!same_selection_class(candidate, winner))
-        break;
-      next[selected_count++] = candidate;
-      ++paths;
-    }
-    begin = end;
-  }
-  next_count = selected_count;
+  next_count = select_routes(std::span{next}.first(next_count), maximum_ecmp_paths);
 
   // All validation and primary resolution has completed. Reusing the table's
   // repair owner is now non-fallible: every accepted dynamic row was validated
@@ -813,7 +905,9 @@ bool Ipv6RouteTable::rebuild(
         .metric = entry.metric,
         .source = entry.source,
         .ospf_path_type = entry.ospf_path_type,
-        .protocol_instance = entry.protocol_instance};
+        .protocol_instance = entry.protocol_instance,
+        .isis_path_type = entry.isis_path_type, .isis_rank = entry.isis_rank,
+        .interface_generation = entry.interface_generation};
   }
   std::sort(
       next_alternates.begin(),
@@ -845,6 +939,7 @@ bool Ipv6RouteTable::rebuild(
                  candidate.prefix_length == alternate.prefix_length &&
                  candidate.source == alternate.source &&
                  candidate.ospf_path_type == alternate.ospf_path_type &&
+                 candidate.isis_path_type == alternate.isis_path_type && candidate.isis_rank == alternate.isis_rank &&
                  candidate.protocol_instance ==
                      alternate.protocol_instance;
         });
@@ -862,19 +957,7 @@ bool Ipv6RouteTable::rebuild(
       next_alternate_count != previous_alternate_count ||
       next_alternate_count != 0U ||
       !std::equal(next.begin(), next.begin() + next_count, routes_.begin(),
-                  [](const Ipv6Route &left, const Ipv6Route &right) {
-                    return left.network == right.network &&
-                           left.next_hop == right.next_hop &&
-                           left.interface_id == right.interface_id &&
-                           left.physical_port_ordinal ==
-                               right.physical_port_ordinal &&
-                           left.prefix_length == right.prefix_length &&
-                           left.preference == right.preference &&
-                           left.metric == right.metric &&
-                           left.source == right.source &&
-                           left.ospf_path_type == right.ospf_path_type &&
-                           left.protocol_instance == right.protocol_instance;
-                  });
+                  [](const Ipv6Route &left, const Ipv6Route &right) { return left == right; });
   if (changed) {
     routes_ = next;
     count_ = static_cast<std::uint16_t>(next_count);
@@ -886,14 +969,14 @@ bool Ipv6RouteTable::rebuild(
 }
 
 Ipv6FibProgram Ipv6RouteTable::compile(std::uint64_t generation) const noexcept {
-  Ipv6FibProgram result{.generation = generation,
-                        .count = count_,
-                        .loop_free_alternate_count =
-                            loop_free_alternate_count_};
-  std::copy_n(routes_.begin(), count_, result.routes.begin());
-  std::copy_n(loop_free_alternates_.begin(), loop_free_alternate_count_,
-              result.routes.begin() + count_);
-  return result;
+  Ipv6FibProgram output;
+  compile_routes(output, generation, std::span{routes_}.first(count_),
+      std::span{loop_free_alternates_}.first(loop_free_alternate_count_), false);
+  return output;
+}
+void Ipv6RouteTable::compile_into(Ipv6FibProgram &output, std::uint64_t generation) const noexcept {
+  compile_routes(output, generation, std::span{routes_}.first(count_),
+      std::span{loop_free_alternates_}.first(loop_free_alternate_count_));
 }
 
 bool lookup(const Ipv6FibProgram &fib, const ip::Ipv6 &destination,
@@ -952,6 +1035,24 @@ bool lookup_loop_free_alternate(const Ipv6FibProgram &fib,
     return false;
   selected = *equal[flow_hash % equal_count];
   return true;
+}
+
+bool RouteTable::same_selection(const RouteTable &other) const noexcept {
+  return count_ == other.count_ &&
+      loop_free_alternate_count_ == other.loop_free_alternate_count_ &&
+      std::equal(routes_.begin(), routes_.begin() + count_, other.routes_.begin()) &&
+      std::equal(loop_free_alternates_.begin(),
+                 loop_free_alternates_.begin() + loop_free_alternate_count_,
+                 other.loop_free_alternates_.begin());
+}
+
+bool Ipv6RouteTable::same_selection(const Ipv6RouteTable &other) const noexcept {
+  return count_ == other.count_ &&
+      loop_free_alternate_count_ == other.loop_free_alternate_count_ &&
+      std::equal(routes_.begin(), routes_.begin() + count_, other.routes_.begin()) &&
+      std::equal(loop_free_alternates_.begin(),
+                 loop_free_alternates_.begin() + loop_free_alternate_count_,
+                 other.loop_free_alternates_.begin());
 }
 
 } // namespace router::lab::routing

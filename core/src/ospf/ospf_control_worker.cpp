@@ -39,10 +39,13 @@ ControlWorker::ControlWorker(ControlChannels &channels,
       forwarding_shards_(std::clamp<std::size_t>(
           forwarding_shards, 1U,
           device_catalog::high_forwarding_shards)),
-      output_scratch_(device_catalog::ospf_work_budget_packets),
-      thread_([this] { run(); }) {}
+      output_scratch_(device_catalog::ospf_work_budget_packets) {
+  thread_ = std::thread([this] { run(); });
+}
 
-ControlWorker::~ControlWorker() {
+ControlWorker::~ControlWorker() { stop(); }
+
+void ControlWorker::stop() noexcept {
   stop_requested_.store(true, std::memory_order_release);
   notify();
   if (thread_.joinable())
@@ -50,6 +53,7 @@ ControlWorker::~ControlWorker() {
 }
 
 bool ControlWorker::submit(const ControlCommand &command) noexcept {
+  if (stop_requested_.load(std::memory_order_acquire)) return false;
   if (!commands_.try_push(command))
     return false;
   notify();
@@ -71,6 +75,29 @@ void ControlWorker::notify() noexcept {
   wait_condition_.notify_one();
 }
 
+bool ControlWorker::prepare_external_generation(std::size_t device) noexcept {
+  auto &prepared = prepared_external_[device];
+  if (prepared) return true;
+  auto &staged = external_staging_[device];
+  if (!staged || staged->size() != expected_external_staging_[device])
+    return false;
+  try {
+    const auto &processes = processes_[device];
+    std::vector<std::vector<CoordinatorAdvertisement>> replacement(processes.size());
+    for (const auto &external : *staged) {
+      const auto owner = std::find_if(processes.begin(), processes.end(),
+          [&](const auto &candidate) { return candidate.identity == external.process; });
+      if (owner == processes.end()) return false;
+      replacement[static_cast<std::size_t>(std::distance(processes.begin(), owner))]
+          .push_back(external.external_route);
+    }
+    prepared.emplace(std::move(replacement));
+    return true;
+  } catch (const std::bad_alloc &) {
+    return false;
+  }
+}
+
 ControlResult ControlWorker::apply(const ControlCommand &command) noexcept {
   ControlResult result{.id = command.id};
   // Shutdown is worker-scoped and intentionally carries no router identity.
@@ -80,6 +107,12 @@ ControlResult ControlWorker::apply(const ControlCommand &command) noexcept {
     stop_requested_.store(true, std::memory_order_release);
     return result;
   }
+  // A snapshot or restore cannot cross an unpublished RIB/export transaction.
+  if ((command.kind == ControlCommandKind::checkpoint ||
+       command.kind == ControlCommandKind::restore_checkpoint) &&
+      std::any_of(prepared_external_.begin(), prepared_external_.end(),
+                  [](const auto &prepared) { return prepared.has_value(); }))
+    return result;
   if (command.kind == ControlCommandKind::checkpoint) {
     auto *destination = reinterpret_cast<ControlWorkerCheckpoint *>(
         command.checkpoint_transfer);
@@ -201,6 +234,11 @@ ControlResult ControlWorker::apply(const ControlCommand &command) noexcept {
   }
   if (!command.process.device ||
       command.process.device.index >= processes_.size())
+    return result;
+  if (prepared_external_[command.process.device.index] &&
+      command.kind != ControlCommandKind::prepare_external_generation &&
+      command.kind != ControlCommandKind::commit_external_generation &&
+      command.kind != ControlCommandKind::abort_external_generation)
     return result;
   auto &device_processes = processes_[command.process.device.index];
   const auto found = std::find_if(
@@ -382,42 +420,25 @@ ControlResult ControlWorker::apply(const ControlCommand &command) noexcept {
     }
     return result;
   }
+  case ControlCommandKind::prepare_external_generation:
+    result.success = prepare_external_generation(command.process.device.index);
+    return result;
   case ControlCommandKind::commit_external_generation: {
-    auto &staged = external_staging_[command.process.device.index];
-    if (!staged ||
-        staged->size() !=
-            expected_external_staging_[command.process.device.index])
-      return result;
-    try {
-      std::vector<std::vector<CoordinatorAdvertisement>> replacement(
-          device_processes.size());
-      for (const auto &external : *staged) {
-        const auto owner = std::find_if(
-            device_processes.begin(), device_processes.end(),
-            [&](const auto &candidate) {
-              return candidate.identity == external.process;
-            });
-        if (owner == device_processes.end()) {
-          staged.reset();
-          return result;
-        }
-        replacement[static_cast<std::size_t>(
-                        std::distance(device_processes.begin(), owner))]
-            .push_back(external.external_route);
-      }
-      for (std::size_t index{}; index < device_processes.size(); ++index)
-        device_processes[index].external_routes.swap(replacement[index]);
-      route_coordination_pending_[command.process.device.index] = true;
-      staged.reset();
-      result.success = true;
-    } catch (const std::bad_alloc &) {
-      // Live advertisements remain untouched until every replacement vector
-      // has been built. The next RIB generation retries the exact transaction.
-      staged.reset();
-    }
+    const auto device = command.process.device.index;
+    if (!prepare_external_generation(device)) return result;
+    auto &replacement = *prepared_external_[device];
+    // Preparation pinned the process layout. Swaps and destruction cannot
+    // fail, so a network owner may now commit after its FIB was installed.
+    for (std::size_t index{}; index < device_processes.size(); ++index)
+      device_processes[index].external_routes.swap(replacement[index]);
+    route_coordination_pending_[device] = true;
+    prepared_external_[device].reset();
+    external_staging_[device].reset();
+    result.success = true;
     return result;
   }
   case ControlCommandKind::abort_external_generation:
+    prepared_external_[command.process.device.index].reset();
     external_staging_[command.process.device.index].reset();
     result.success = true;
     return result;
@@ -880,7 +901,7 @@ bool ControlWorker::publish(OwnedProcess &owner,
        .physical_port_ordinal = output.physical_port_ordinal},
       frame);
   if (published && channels_.egress_wakeup)
-    channels_.egress_wakeup(channels_.egress_wakeup_context);
+    channels_.egress_wakeup(channels_.egress_wakeup_context, shard);
   return published;
 }
 

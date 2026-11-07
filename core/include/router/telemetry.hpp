@@ -58,7 +58,8 @@ enum class WorkerRoleV6 : std::uint8_t {
   forwarding = 2,
   link = 3,
   forwarding_link = 4,
-  ospf = 5
+  ospf = 5,
+  isis = 6
 };
 
 struct alignas(32) WorkerTelemetryV6 {

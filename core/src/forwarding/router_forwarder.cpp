@@ -5,11 +5,13 @@
 #include "router/router_forwarder.hpp"
 
 #include "router/ipv6_extension.hpp"
+#include "router/isis_ethernet.hpp"
 #include "router/ipv6_source_selection.hpp"
 #include "router/sha256.hpp"
 #include "router/udp_packet.hpp"
 
 #include <algorithm>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <new>
@@ -3222,6 +3224,7 @@ void RouterForwarder::remove_port(std::uint16_t ordinal) noexcept {
   // observe a half-removed interface generation.
   ospf_v2_punt_[ordinal] = false;
   ospf_v3_punt_[ordinal] = false;
+  isis_groups_[ordinal].clear();
   ipv6_reachable_times_[ordinal] = {};
   ipv6_redirect_limiters_[ordinal] = {};
   ipv4_redirect_limiters_[ordinal] = {};
@@ -3813,7 +3816,7 @@ void RouterForwarder::checkpoint(RouterForwarderCheckpoint &state,
   state.dhcpv4_leasequery_listener = dhcpv4_leasequery_listener_;
   state.dhcpv4_leasequery_sessions.reserve(
       dhcpv4_leasequery_sessions_.size());
-  const auto remaining = [now](Clock::time_point deadline) {
+  const auto leasequery_remaining = [now](Clock::time_point deadline) {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
                deadline > now ? deadline - now : Clock::duration::zero())
         .count();
@@ -3833,9 +3836,9 @@ void RouterForwarder::checkpoint(RouterForwarderCheckpoint &state,
          .address_cursor = session.address_cursor,
          .revision_cursor = session.revision_cursor,
          .scan_revision_target = session.scan_revision_target,
-         .data_remaining_nanoseconds = remaining(session.data_deadline),
+         .data_remaining_nanoseconds = leasequery_remaining(session.data_deadline),
          .keepalive_remaining_nanoseconds =
-             remaining(session.keepalive_deadline),
+             leasequery_remaining(session.keepalive_deadline),
          .first_reply = session.first_reply,
          .catch_up_complete = session.catch_up_complete,
          .done = session.done});
@@ -5126,53 +5129,17 @@ bool RouterForwarder::restore(const RouterForwarderCheckpoint &state,
   return true;
 }
 
+bool RouterForwarder::accepts_fib(const routing::FibProgram &program) const noexcept {
+  if (program.generation < fib_.generation || program.count > program.routes.size() ||
+      program.count + program.loop_free_alternate_count > program.routes.size()) return false;
+  return program.generation != fib_.generation || !fib_.generation ||
+      (program.count == fib_.count && program.loop_free_alternate_count == fib_.loop_free_alternate_count &&
+       std::equal(program.routes.begin(), program.routes.begin() + program.count + program.loop_free_alternate_count,
+                  fib_.routes.begin()));
+}
 bool RouterForwarder::program_fib(const routing::FibProgram &program) noexcept {
-  // Equal generation is idempotent. Older generations are stale shard messages
-  // and cannot replace forwarding state selected later by control.
-  if (program.generation < fib_.generation ||
-      program.count > program.routes.size() ||
-      program.count + program.loop_free_alternate_count >
-          program.routes.size())
-    return false;
-  if (program.generation == fib_.generation && fib_.generation) {
-    // Reusing a generation with different bytes would make stale-message
-    // ordering ambiguous. Accept only an exact idempotent replay.
-    const auto same = [](const auto &left, const auto &right) {
-      return left.network == right.network &&
-             left.next_hop == right.next_hop &&
-             left.port_ordinal == right.port_ordinal &&
-             left.prefix_length == right.prefix_length &&
-             left.preference == right.preference &&
-             left.metric == right.metric &&
-             left.source == right.source &&
-             left.local_system == right.local_system &&
-             left.ospf_path_type == right.ospf_path_type &&
-             left.protocol_instance == right.protocol_instance;
-    };
-    if (program.count != fib_.count ||
-        program.loop_free_alternate_count !=
-            fib_.loop_free_alternate_count ||
-        !std::equal(program.routes.begin(),
-                    program.routes.begin() + program.count, fib_.routes.begin(),
-                    same) ||
-        !std::equal(program.routes.begin() + program.count,
-                    program.routes.begin() + program.count +
-                        program.loop_free_alternate_count,
-                    fib_.routes.begin() + fib_.count, same))
-      return false;
-    return true;
-  }
-  const auto same_route = [](const auto &left, const auto &right) {
-    return left.network == right.network &&
-           left.next_hop == right.next_hop &&
-           left.port_ordinal == right.port_ordinal &&
-           left.prefix_length == right.prefix_length &&
-           left.preference == right.preference &&
-           left.metric == right.metric && left.source == right.source &&
-           left.local_system == right.local_system &&
-           left.ospf_path_type == right.ospf_path_type &&
-           left.protocol_instance == right.protocol_instance;
-  };
+  if (!accepts_fib(program)) return false;
+  if (program.generation == fib_.generation && fib_.generation) return true;
   std::array<Clock::time_point,
              device_catalog::maximum_fib_routes_per_router>
       installed{};
@@ -5180,7 +5147,7 @@ bool RouterForwarder::program_fib(const routing::FibProgram &program) noexcept {
   for (std::size_t next{}; next < program.count; ++next) {
     const auto prior = std::find_if(
         fib_.routes.begin(), fib_.routes.begin() + fib_.count,
-        [&](const auto &route) { return same_route(route, program.routes[next]); });
+        [&](const auto &route) { return route == program.routes[next]; });
     installed[next] =
         prior == fib_.routes.begin() + fib_.count
             ? now
@@ -5192,50 +5159,17 @@ bool RouterForwarder::program_fib(const routing::FibProgram &program) noexcept {
   return true;
 }
 
-bool RouterForwarder::program_ipv6_fib(
-    const routing::Ipv6FibProgram &program) noexcept {
-  if (program.generation < ipv6_fib_.generation ||
-      program.count > program.routes.size() ||
-      program.count + program.loop_free_alternate_count >
-          program.routes.size())
-    return false;
-  if (program.generation == ipv6_fib_.generation && ipv6_fib_.generation) {
-    const auto same = [](const auto &left, const auto &right) {
-      return left.network == right.network &&
-             left.next_hop == right.next_hop &&
-             left.interface_id == right.interface_id &&
-             left.physical_port_ordinal == right.physical_port_ordinal &&
-             left.prefix_length == right.prefix_length &&
-             left.preference == right.preference &&
-             left.metric == right.metric &&
-             left.source == right.source &&
-             left.ospf_path_type == right.ospf_path_type &&
-             left.protocol_instance == right.protocol_instance;
-    };
-    if (program.count != ipv6_fib_.count ||
-        program.loop_free_alternate_count !=
-            ipv6_fib_.loop_free_alternate_count ||
-        !std::equal(
-            program.routes.begin(), program.routes.begin() + program.count,
-            ipv6_fib_.routes.begin(), same) ||
-        !std::equal(program.routes.begin() + program.count,
-                    program.routes.begin() + program.count +
-                        program.loop_free_alternate_count,
-                    ipv6_fib_.routes.begin() + ipv6_fib_.count, same))
-      return false;
-    return true;
-  }
-  const auto same_route = [](const auto &left, const auto &right) {
-    return left.network == right.network &&
-           left.next_hop == right.next_hop &&
-           left.interface_id == right.interface_id &&
-           left.physical_port_ordinal == right.physical_port_ordinal &&
-           left.prefix_length == right.prefix_length &&
-           left.preference == right.preference &&
-           left.metric == right.metric && left.source == right.source &&
-           left.ospf_path_type == right.ospf_path_type &&
-           left.protocol_instance == right.protocol_instance;
-  };
+bool RouterForwarder::accepts_ipv6_fib(const routing::Ipv6FibProgram &program) const noexcept {
+  if (program.generation < ipv6_fib_.generation || program.count > program.routes.size() ||
+      program.count + program.loop_free_alternate_count > program.routes.size()) return false;
+  return program.generation != ipv6_fib_.generation || !ipv6_fib_.generation ||
+      (program.count == ipv6_fib_.count && program.loop_free_alternate_count == ipv6_fib_.loop_free_alternate_count &&
+       std::equal(program.routes.begin(), program.routes.begin() + program.count + program.loop_free_alternate_count,
+                  ipv6_fib_.routes.begin()));
+}
+bool RouterForwarder::program_ipv6_fib(const routing::Ipv6FibProgram &program) noexcept {
+  if (!accepts_ipv6_fib(program)) return false;
+  if (program.generation == ipv6_fib_.generation && ipv6_fib_.generation) return true;
   std::array<Clock::time_point,
              device_catalog::maximum_fib_routes_per_router>
       installed{};
@@ -5244,7 +5178,7 @@ bool RouterForwarder::program_ipv6_fib(
     const auto prior = std::find_if(
         ipv6_fib_.routes.begin(),
         ipv6_fib_.routes.begin() + ipv6_fib_.count,
-        [&](const auto &route) { return same_route(route, program.routes[next]); });
+        [&](const auto &route) { return route == program.routes[next]; });
     installed[next] =
         prior == ipv6_fib_.routes.begin() + ipv6_fib_.count
             ? now
@@ -5253,6 +5187,17 @@ bool RouterForwarder::program_ipv6_fib(
   }
   ipv6_fib_ = program;
   ipv6_route_installed_at_ = installed;
+  return true;
+}
+
+bool RouterForwarder::program_fibs(const routing::FibProgram *ipv4,
+    const routing::Ipv6FibProgram *ipv6) noexcept {
+  if ((!ipv4 && !ipv6) || (ipv4 && (!ipv4->generation || !accepts_fib(*ipv4))) ||
+      (ipv6 && (!ipv6->generation || !accepts_ipv6_fib(*ipv6)))) return false;
+  // Both inputs remain immutable and no packet/callback turn can interleave.
+  // A refusal after this preflight would violate this owner's invariants.
+  if (ipv4 && !program_fib(*ipv4)) std::terminate();
+  if (ipv6 && !program_ipv6_fib(*ipv6)) std::terminate();
   return true;
 }
 
@@ -7842,6 +7787,22 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
     drop(ForwardDrop::malformed);
     return;
   }
+  // Native Base-router IS-IS is not IP traffic. Validate its LLC selector and
+  // port-local multicast membership before handing the original bytes to CPM.
+  // Detailed PDU acceptance stays with the protocol owner, including malformed
+  // IS-IS headers that must increment its own error/event counters. A tagged
+  // service attachment cannot inherit this native port's protocol membership.
+  if (!service_ingress && !ethernet->vlan_tag_count && !isis_groups_[ingress_port].empty()) {
+    const auto llc = packet::parse_llc_ui(frame.view());
+    if (llc && llc->destination_sap == packet::isis::iso_network_sap &&
+        llc->source_sap == packet::isis::iso_network_sap && !llc->payload.empty() &&
+        llc->payload.front() == packet::isis::discriminator &&
+        std::binary_search(isis_groups_[ingress_port].begin(), isis_groups_[ingress_port].end(),
+                            ethernet->destination)) {
+      if (punt_observer) punt_observer(punt_context, ingress_port, frame);
+      return;
+    }
+  }
   std::optional<packet::Ipv6View> ipv6;
   bool layer_two_local =
       packet::ethernet_for_local(ethernet->destination, ingress->mac);
@@ -8560,7 +8521,7 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
               !blackhole) {
             const auto offset =
                 static_cast<std::size_t>(quoted->upper_layer_offset);
-            const auto local_port = read_network_u16(icmp->data, offset);
+            const auto quoted_local_port = read_network_u16(icmp->data, offset);
             const auto remote_port =
                 read_network_u16(icmp->data, offset + 2U);
             bool accepted{};
@@ -8568,7 +8529,7 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
                 packet::ipv6_next_header_udp) {
               accepted = udp_.report_ipv6_error(
                   quoted->source, quoted->destination, route.interface_id,
-                  local_port, remote_port, kind, icmp->type, icmp->code,
+                  quoted_local_port, remote_port, kind, icmp->type, icmp->code,
                   icmp->parameter);
             } else if (tcp_ && icmp->data.size() >= offset + 8U) {
               const auto sequence =
@@ -8578,7 +8539,7 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
                   icmp->data[offset + 7U];
               accepted = tcp_->report_ipv6_error(
                   quoted->source, quoted->destination, route.interface_id,
-                  local_port, remote_port, sequence, kind, icmp->type,
+                  quoted_local_port, remote_port, sequence, kind, icmp->type,
                   icmp->code, icmp->parameter);
             }
             if (accepted &&

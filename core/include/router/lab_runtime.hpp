@@ -540,6 +540,11 @@ private:
   [[nodiscard]] std::string session_state(std::string_view session_id) const;
   [[nodiscard]] std::string execute_session(std::string_view session_id,
                                             std::string_view input);
+  // Same owner, already selected CLI engine. Inline foreign prefixes are
+  // handled by the bounded wrapper before this larger command frame exists.
+  [[nodiscard]] std::string execute_session_command(std::string_view session_id,
+                                                    std::string_view input);
+
   [[nodiscard]] std::string poll_session(std::string_view session_id);
   [[nodiscard]] std::string complete_session(std::string_view session_id,
                                              std::string_view input,

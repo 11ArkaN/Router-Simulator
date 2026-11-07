@@ -82,17 +82,11 @@ bool checkpoint_validation::base_fib_preserved(
       // routes are owned and validated by the network-plane checkpoint below,
       // so rebuilding only the base RIB cannot legitimately be byte-equal to
       // a selected FIB that contains converged dynamic routes. Require every
-      // independently rebuilt base route and permit only typed OSPF additions.
+      // independently rebuilt base route and permit only typed protocol additions.
       if (base.generation != selected.generation ||
           base.count > selected.count)
         return false;
-      const auto equal_route = [](const auto &a, const auto &b) {
-        return a.network == b.network && a.next_hop == b.next_hop &&
-               a.port_ordinal == b.port_ordinal &&
-               a.prefix_length == b.prefix_length &&
-               a.preference == b.preference && a.metric == b.metric &&
-               a.source == b.source && a.local_system == b.local_system;
-      };
+      const auto equal_route = [](const auto &a, const auto &b) { return a == b; };
       const auto selected_end =
           selected.routes.begin() + selected.count;
       for (auto route = base.routes.begin();
@@ -106,6 +100,7 @@ bool checkpoint_validation::base_fib_preserved(
           selected.routes.begin(), selected_end, [&](const auto &route) {
             return route.source == routing::RouteSource::ospf ||
                    route.source == routing::RouteSource::ospf3 ||
+                   route.source == routing::RouteSource::isis ||
                    std::find_if(base.routes.begin(),
                                 base.routes.begin() + base.count,
                                 [&](const auto &candidate) {
@@ -123,14 +118,7 @@ bool checkpoint_validation::base_fib_preserved(
       if (base.generation != selected.generation ||
           base.count > selected.count)
         return false;
-      const auto equal_route = [](const auto &a, const auto &b) {
-        return a.network == b.network && a.next_hop == b.next_hop &&
-               a.interface_id == b.interface_id &&
-               a.physical_port_ordinal == b.physical_port_ordinal &&
-               a.prefix_length == b.prefix_length &&
-               a.preference == b.preference && a.metric == b.metric &&
-               a.source == b.source;
-      };
+      const auto equal_route = [](const auto &a, const auto &b) { return a == b; };
       const auto selected_end =
           selected.routes.begin() + selected.count;
       for (auto route = base.routes.begin();
@@ -144,6 +132,7 @@ bool checkpoint_validation::base_fib_preserved(
           selected.routes.begin(), selected_end, [&](const auto &route) {
             return route.source == routing::RouteSource::ospf ||
                    route.source == routing::RouteSource::ospf3 ||
+                   route.source == routing::RouteSource::isis ||
                    std::find_if(base.routes.begin(),
                                 base.routes.begin() + base.count,
                                 [&](const auto &candidate) {

@@ -2,8 +2,8 @@
 // substituting IndexedDB or OPFS behavior with product-side mocks.
 
 import { describe, expect, it } from "vitest";
-import { createEmptyProjectV4, createRouterProjectV4 } from "@router-simulator/contracts";
-import referenceManifest from "../../../examples/four-router-reference.netsim?raw";
+import { LAB_RUNTIME_PROTOCOL, createEmptyProjectV4, createRouterProjectV4 } from "@router-simulator/contracts";
+import referenceManifest from "./fixtures/four-router-reference.netsim.json?raw";
 import { createCheckpointManifestV4, createProjectManifestV4,
   parseNetsimV4, projectCheckpointNameV4, protectNetsimV4,
   unprotectNetsimV4 } from "./persistence";
@@ -69,6 +69,10 @@ describe("netsim manifest format 4", () => {
 
   it("rejects stale formats and non-canonical binary payloads", () => {
     const manifest = createCheckpointManifestV4(project(), Uint8Array.of(1));
+    expect(manifest.checkpointAbi).toBe(LAB_RUNTIME_PROTOCOL.checkpointAbi);
+    for (const checkpointAbi of [7, 8])
+      expect(() => parseNetsimV4(JSON.stringify({ ...manifest, checkpointAbi })))
+        .toThrow("not supported");
     expect(() => parseNetsimV4(JSON.stringify({ ...manifest, formatVersion: 1 })))
       .toThrow("not supported");
     expect(() => parseNetsimV4(JSON.stringify({ ...manifest,
