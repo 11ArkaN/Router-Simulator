@@ -106,7 +106,7 @@ void lan_spf_inputs() {
     return static_cast<std::uint32_t>(found - graph.nodes().begin());
   };
   const std::array<P2pSpfSeed, 1U> dis_only{{{{1U, 2U, 3U, 4U, 5U, 3U}, 10U, 0U}}};
-  const std::array lans{LanSpfCircuit{101U, pn, 10U, 0U}};
+  const std::array lans{LanSpfCircuit{101U, pn, 10U, std::uint16_t{0U}}};
   SpfInput input(8U, 32U);
   SpfCalculator spf(8U, 32U, MetricStyle::wide);
   require(input.rebuild(graph, dis_only, 2U, maximum_link_metric - 1U, lans) &&
@@ -129,6 +129,31 @@ void lan_spf_inputs() {
       f.now, lans) == DecisionStatus::applied && decision.first_hop(b, 0U) == 1U &&
       decision.prefixes().size() == 1U && decision.prefixes()[0U].prefix == v6.prefix &&
       decision.distance_to_prefix(0U) == std::optional{PrefixDistance{0U, 17U, 0U}});
+  const auto decision_saved = decision.checkpoint();
+  const DecisionConfiguration expected_decision{8U, 32U, 64U, MetricStyle::wide, PrefixCollectionBudget{4U, 64U}};
+  auto restored_decision = P2pRouteDecision::restore_checkpoint(decision_saved, expected_decision);
+  require(restored_decision && restored_decision->cost(b) == 10U && restored_decision->first_hop(b, 0U) == 1U &&
+      restored_decision->prefixes()[0U] == decision.prefixes()[0U] &&
+      restored_decision->distance_to_prefix(0U) == decision.distance_to_prefix(0U));
+  for (unsigned invalid{}; invalid < 11U; ++invalid) {
+    auto bad = decision_saved;
+    switch (invalid) {
+      case 0U: ++bad.version; break;
+      case 1U: ++bad.configuration.links; break;
+      case 2U: bad.identities.pop_back(); break;
+      case 3U: bad.identities[1U] = bad.identities[0U]; break;
+      case 4U: bad.paths.vertices[1U].first_hops[0U] |= 4U; break;
+      case 5U: bad.prefixes.reset(); break;
+      case 6U: bad.prefixes->entries[0U].origin[0U] ^= 1U; break;
+      case 7U: bad.prefixes->entries[0U].prefix.length = 129U; break;
+      case 8U: bad.prefixes->entries[0U].attributes_offset = 1U; break;
+      case 9U: bad.prefixes->attributes.push_back(1U); break;
+      default: bad.prefixes->entries[0U].level = 0U; break;
+    }
+    require(!P2pRouteDecision::restore_checkpoint(bad, expected_decision) && restored_decision->first_hop(b, 0U) == 1U);
+  }
+  require(restored_decision->calculate(f.database, selection, dis_only, 2U, f.now, lans) == DecisionStatus::applied &&
+      restored_decision->distance_to_prefix(0U) == PrefixDistance{0U, 15U, 0U});
   const std::vector<SpfEdge> saved(input.edges().begin(), input.edges().end());
   const auto unchanged = [&] {
     return std::equal(saved.begin(), saved.end(), input.edges().begin(), input.edges().end(),
@@ -136,9 +161,9 @@ void lan_spf_inputs() {
           return left.target_vertex == right.target_vertex && left.cost == right.cost && left.first_hop == right.first_hop;
         });
   };
-  const std::array invalid_token{LanSpfCircuit{101U, pn, 10U, 1U}};
-  const std::array invalid_metric{LanSpfCircuit{101U, pn, 11U, 0U}};
-  const std::array unsorted{lans[0U], LanSpfCircuit{100U, pn, 10U, 0U}};
+  const std::array invalid_token{LanSpfCircuit{101U, pn, 10U, std::uint16_t{1U}}};
+  const std::array invalid_metric{LanSpfCircuit{101U, pn, 11U, std::uint16_t{0U}}};
+  const std::array unsorted{lans[0U], LanSpfCircuit{100U, pn, 10U, std::uint16_t{0U}}};
   require(!input.rebuild(graph, dis_only, 2U, maximum_link_metric - 1U, invalid_token) && unchanged() &&
       !input.rebuild(graph, dis_only, 2U, maximum_link_metric - 1U, invalid_metric) && unchanged() &&
       !input.rebuild(graph, dis_only, 2U, maximum_link_metric - 1U, unsorted) && unchanged());
@@ -253,6 +278,10 @@ void isis_link_graph_tests() {
   auto missing_root = selected;
   missing_root.local = node(4U);
   require(decision.calculate(f.database, missing_root, {}, 0U, f.now) == DecisionStatus::applied && !decision.cost(a));
+  const auto missing_saved = decision.checkpoint();
+  require(missing_saved.identities.empty() && missing_saved.paths.vertices.empty());
+  auto missing_restored = P2pRouteDecision::restore_checkpoint(missing_saved, {8U, 16U, 64U, MetricStyle::wide, {}});
+  require(missing_restored && !missing_restored->cost(a) && !missing_restored->cost(c));
   f.now += 2s;
   require(graph.rebuild(f.database, selected, f.now) == LinkGraphStatus::applied &&
       graph.nodes().size() == 2U && graph.links().size() == 2U);
@@ -493,6 +522,13 @@ void isis_link_graph_tests() {
       atomic_prefixes.now) == DecisionStatus::applied && prefix_decision.prefixes().size() == 1U &&
       prefix_decision.prefixes()[0U].level == 1U &&
       prefix_decision.distance_to_prefix(0U) == PrefixDistance{2U, 35U, 0U});
+  const auto retained_prefixes = prefix_decision.checkpoint();
+  const DecisionConfiguration prefix_policy{8U, 16U, 32U, MetricStyle::wide, PrefixCollectionBudget{1U, 6U}};
+  auto prefix_restored = P2pRouteDecision::restore_checkpoint(retained_prefixes, prefix_policy);
+  require(prefix_restored && std::ranges::equal(prefix_restored->prefix_attributes(0U), prefix_decision.prefix_attributes(0U)));
+  auto bad_attributes = retained_prefixes;
+  bad_attributes.prefixes->attributes[1U] = 255U;
+  require(!P2pRouteDecision::restore_checkpoint(bad_attributes, prefix_policy));
   std::array<std::uint8_t, 64U> hello_storage{};
   TlvWriter hello_writer(hello_storage);
   const std::array<std::uint8_t, 1U> hello_protocols{ipv4_nlpid};
@@ -572,10 +608,15 @@ void isis_link_graph_tests() {
   require(graph.rebuild(atomic_prefixes.database, selected, atomic_prefixes.now) == LinkGraphStatus::applied);
   ExtendedPrefixSet transaction(4U, 32U);
   require(transaction.rebuild(atomic_prefixes.database, graph, atomic_prefixes.now) == PrefixSetStatus::applied);
+  const auto before_prepared = transaction.checkpoint();
   atomic_prefixes.install(b, replaced_prefix, 3U, 4U, 1U);
   require(graph.rebuild(atomic_prefixes.database, selected, atomic_prefixes.now) == LinkGraphStatus::applied &&
       transaction.prepare(atomic_prefixes.database, graph, atomic_prefixes.now) == PrefixSetStatus::applied &&
       transaction.attributes(0U)[5U] == 42U);
+  bool prepared_capture_refused{};
+  try { static_cast<void>(transaction.checkpoint()); }
+  catch (const std::invalid_argument &) { prepared_capture_refused = true; }
+  require(prepared_capture_refused && !transaction.restore(before_prepared) && transaction.attributes(0U)[5U] == 42U);
   transaction.abort();
   require(!transaction.commit() && transaction.attributes(0U)[5U] == 42U);
   require(transaction.prepare(atomic_prefixes.database, graph, atomic_prefixes.now) == PrefixSetStatus::applied &&

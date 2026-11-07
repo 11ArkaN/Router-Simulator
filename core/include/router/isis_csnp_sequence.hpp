@@ -14,6 +14,11 @@ struct CompleteSnpBatch {
   packet::isis::LspId last{};
   std::size_t count{};
 };
+struct CompleteSnpSequenceCheckpoint {
+  std::uint32_t version{1U};
+  packet::isis::LspId first{}, pending_last{};
+  bool active{}, pending{}, repeat{};
+};
 class CompleteSnpSequence final {
 public:
   // Initialization or the effective CSNP timer requests a complete sequence.
@@ -33,6 +38,22 @@ public:
   [[nodiscard]] bool complete(bool enqueued) noexcept;
   // Circuit Down revokes the outer epoch before clearing this local state.
   void reset() noexcept;
+  // Same circuit owner, after the encoded pending batch is captured by its
+  // transport coordinator. Copies only contiguous-range progress and repeat
+  // intent. Invalid version or impossible scalar state refuses without mutation.
+  [[nodiscard]] CompleteSnpSequenceCheckpoint checkpoint() const noexcept {
+    return {1U, first_, pending_last_, active_, pending_, repeat_};
+  }
+  [[nodiscard]] bool restore(const CompleteSnpSequenceCheckpoint &saved) noexcept {
+    if (saved.version != 1U || (!saved.active && (saved.pending || saved.repeat ||
+        saved.first != packet::isis::LspId{})) || (saved.pending && saved.pending_last < saved.first)) return false;
+    first_ = saved.first;
+    pending_last_ = saved.pending_last;
+    active_ = saved.active;
+    pending_ = saved.pending;
+    repeat_ = saved.repeat;
+    return true;
+  }
   [[nodiscard]] bool active() const noexcept { return active_; }
   [[nodiscard]] bool pending() const noexcept { return pending_; }
 private:

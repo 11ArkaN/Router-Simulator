@@ -24,6 +24,16 @@ struct AcknowledgementSelection {
   std::size_t count{};
   std::optional<packet::isis::LspId> cursor;
 };
+struct TransientAcknowledgementCheckpointEntry {
+  std::size_t circuit{};
+  TransientAcknowledgement acknowledgement;
+};
+struct TransientAcknowledgementsCheckpoint {
+  std::uint32_t version{1U};
+  std::size_t capacity{};
+  std::uint64_t next_ticket{};
+  std::vector<TransientAcknowledgementCheckpointEntry> entries;
+};
 class TransientAcknowledgements final {
 public:
   // Capacity is an emulator budget, not a vendor scale claim. All metadata
@@ -49,6 +59,18 @@ public:
   [[nodiscard]] bool complete(std::size_t circuit, std::uint64_t ticket, bool enqueued) noexcept;
   // Circuit Down invalidates pending obligations before its slot is reused.
   [[nodiscard]] std::size_t clear_circuit(std::size_t circuit) noexcept;
+  // Same owner, no mutation between related snapshot checks. Tests one exact
+  // pending obligation without returning a borrowed record or allocating.
+  [[nodiscard]] bool contains(std::size_t circuit, const TransientAcknowledgement &entry) const noexcept;
+  // Same level owner after matching pending output is captured. Returns owned
+  // obligations and the exhaustion high water; allocation failure propagates.
+  [[nodiscard]] TransientAcknowledgementsCheckpoint checkpoint() const;
+  // Same quiesced owner, matching construction capacity and actual stable-slot
+  // count. Rejects invalid versions, order, duplicate tickets/obligations and
+  // non-purge entries before replacing anything. False preserves all state;
+  // success requires coordinated restoration of pending SNP tickets.
+  [[nodiscard]] bool restore(const TransientAcknowledgementsCheckpoint &checkpoint,
+      std::size_t circuit_count) noexcept;
   [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
   [[nodiscard]] std::uint64_t next_ticket() const noexcept { return next_ticket_; }
 private:

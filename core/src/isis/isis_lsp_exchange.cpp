@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <utility>
 
 namespace router::isis {
 LspExchange::LspExchange(LevelDatabase &database, std::size_t circuit, std::uint64_t epoch)
@@ -51,6 +52,21 @@ LspReceipt LspExchange::complete(std::uint64_t epoch, std::uint64_t ticket,
     bool enqueued, RuntimeClock::time_point now) noexcept {
   if (!transmission_.complete(epoch, ticket)) return {};
   return {true, database_.complete(pending_, circuit_, false, enqueued, now)};
+}
+LspExchangeCheckpoint LspExchange::checkpoint() const noexcept {
+  return {1U, database_.type(), circuit_, transmission_.checkpoint(),
+      transmission_.pending() ? std::optional{pending_} : std::nullopt};
+}
+bool LspExchange::restore(const LspExchangeCheckpoint &saved) noexcept {
+  if (saved.version != 1U || saved.database_type != database_.type() || saved.circuit != circuit_ ||
+      saved.pending.has_value() != (saved.transmission.pending != 0U) ||
+      (saved.pending && (!saved.pending->sequence || (saved.pending->remaining_seconds && !saved.pending->checksum))))
+    return false;
+  protocol::TransmissionWindow transmission(transmission_.epoch());
+  if (!transmission.restore(saved.transmission)) return false;
+  transmission_ = std::move(transmission);
+  pending_ = saved.pending.value_or(packet::isis::LspView{});
+  return true;
 }
 void LspExchange::cancel() noexcept { transmission_.cancel(); }
 bool LspExchange::replace_epoch(std::uint64_t epoch) noexcept { return transmission_.replace(epoch); }

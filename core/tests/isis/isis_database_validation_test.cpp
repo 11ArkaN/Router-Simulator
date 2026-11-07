@@ -39,6 +39,9 @@ void isis_database_validation_tests() {
   require(scan.service(database, due - 1us, budget).status == DatabaseValidationStatus::waiting && budget == 1U);
   const auto first = scan.service(database, due, budget);
   require(first.status == DatabaseValidationStatus::more && first.checked == 1U && !budget);
+  const auto partial = scan.checkpoint(due);
+  DatabaseValidation resumed_scan(10s, 99U, now);
+  require(resumed_scan.restore(partial, due));
   install(1U, 1200U, due);
   install(4U, 0U, due);
   require(database.retire_purge(id(4U), due));
@@ -50,6 +53,14 @@ void isis_database_validation_tests() {
   const auto corrupt = scan.service(database, due, budget);
   require(corrupt.status == DatabaseValidationStatus::corrupted && corrupt.corrupted == id(6U) &&
       corrupt.checked == 1U && !scan.deadline());
+  budget = 1U;
+  const auto resumed_corrupt = resumed_scan.service(database, due, budget);
+  require(resumed_corrupt.status == DatabaseValidationStatus::corrupted && resumed_corrupt.corrupted == id(6U));
+  const auto terminal = resumed_scan.checkpoint(due);
+  const auto rebased = RuntimeClock::time_point{9000s};
+  require(scan.restore(terminal, rebased) && !scan.deadline());
+  budget = 8U;
+  require(scan.service(database, rebased, budget).status == DatabaseValidationStatus::corrupted && budget == 8U);
   *fault ^= 1U;
   budget = 8U;
   require(scan.service(database, due + 100s, budget).status == DatabaseValidationStatus::corrupted && budget == 8U);
@@ -78,4 +89,30 @@ void isis_database_validation_tests() {
   try { DatabaseValidation invalid(1s, 0U, now); }
   catch (const std::invalid_argument &) { rejected = true; }
   require(rejected);
+  const auto scheduled = empty_scan.checkpoint(now + 1s);
+  for (unsigned invalid{}; invalid < 7U; ++invalid) {
+    auto bad = scheduled;
+    switch (invalid) {
+      case 0U: ++bad.version; break;
+      case 1U: bad.interval += 1us; break;
+      case 2U: bad.random = 0U; break;
+      case 3U: bad.due_nanoseconds = 1000000001LL; break;
+      case 4U: bad.scanning = true; break;
+      case 5U: bad.cursor = id(2U); break;
+      default: bad.corrupted = true; break;
+    }
+    const auto before = empty_scan.deadline();
+    require(!empty_scan.restore(bad, now + 1s) && empty_scan.deadline() == before);
+  }
+  require(!empty_scan.restore(scheduled, RuntimeClock::time_point::max()));
+  DatabaseValidation rebased_scan(1s, 71U, rebased);
+  require(rebased_scan.restore(scheduled, rebased));
+  for (unsigned iteration{}; iteration < 6U; ++iteration) {
+    const auto a = *empty_scan.deadline(), b = *rebased_scan.deadline();
+    require(a - (now + 1s) == b - rebased);
+    budget = 0U;
+    require(empty_scan.service(empty, a, budget).status == DatabaseValidationStatus::complete &&
+        rebased_scan.service(empty, b, budget).status == DatabaseValidationStatus::complete);
+  }
+
 }

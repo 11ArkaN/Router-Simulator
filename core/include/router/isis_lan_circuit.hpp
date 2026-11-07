@@ -29,6 +29,16 @@ struct LanCircuitObserver {
 enum class LanCircuitReceive : std::uint8_t {
   accepted, discarded, malformed, instance, authentication, area, capacity, missing_observer
 };
+struct LanCircuitCheckpoint {
+  std::uint32_t version{1U};
+  LanCircuitConfiguration configuration;
+  LanSetCheckpoint neighbors;
+  HelloScheduleCheckpoint hello;
+  std::int64_t election_nanoseconds{};
+  std::optional<DisSelection> designated;
+  packet::isis::LanId advertised_lan{};
+  bool election_started{}, operational{};
+};
 class LanCircuit final {
 public:
   using Clock = HelloSchedule::Clock;
@@ -63,6 +73,13 @@ public:
   [[nodiscard]] const LanCircuitConfiguration &configuration() const noexcept { return configuration_; }
   [[nodiscard]] const LanAdjacencySet &neighbors() const noexcept { return neighbors_; }
   [[nodiscard]] std::optional<DisSelection> designated() const noexcept { return designated_; }
+  // Same LAN level owner after transport quiescence. Capture owns accepted
+  // peers and relative timers and can throw allocation/clock errors. Restore
+  // checks immutable configuration, election and Hello role together before
+  // publishing a fresh heap owner. No observer events occur during transfer.
+  [[nodiscard]] LanCircuitCheckpoint checkpoint(Clock::time_point now) const;
+  [[nodiscard]] static std::unique_ptr<LanCircuit> restore_checkpoint(const LanCircuitCheckpoint &saved,
+      LanCircuitConfiguration expected, Clock::time_point now) noexcept;
 private:
   [[nodiscard]] bool valid_observer(LanCircuitObserver observer) const noexcept;
   void elect(Clock::time_point now, LanCircuitObserver observer) noexcept;

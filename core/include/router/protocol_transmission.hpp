@@ -10,6 +10,12 @@
 #include <stdexcept>
 
 namespace router::protocol {
+// Owned transfer value for one quiesced protocol owner. The enclosing barrier
+// must capture matching queued frames/receipts before any ticket is restored.
+struct TransmissionWindowCheckpoint {
+  std::uint32_t version{1U};
+  std::uint64_t epoch{}, next_ticket{}, pending{};
+};
 class TransmissionWindow final {
 public:
   // Epoch and ticket high-water marks are nonzero checkpoint-owned values.
@@ -45,6 +51,24 @@ public:
     if (epoch <= epoch_) return false;
     epoch_ = epoch;
     cancel();
+    return true;
+  }
+  // Same owner. Value snapshot retains exhaustion and the exact outstanding
+  // receipt identity. It contains no frame, key or pointer and allocates nothing.
+  [[nodiscard]] TransmissionWindowCheckpoint checkpoint() const noexcept {
+    return {1U, epoch_, next_ticket_, pending_};
+  }
+  [[nodiscard]] static bool valid_checkpoint(const TransmissionWindowCheckpoint &saved) noexcept {
+    return saved.version == 1U && saved.epoch && saved.next_ticket &&
+        (!saved.pending || saved.pending == saved.next_ticket - 1U);
+  }
+  // Same quiesced owner; the construction epoch must match. The caller restores
+  // all corresponding transport state under one barrier, preventing ticket
+  // replay. Invalid version/high water/epoch returns false without mutation.
+  [[nodiscard]] bool restore(const TransmissionWindowCheckpoint &saved) noexcept {
+    if (!valid_checkpoint(saved) || saved.epoch != epoch_) return false;
+    next_ticket_ = saved.next_ticket;
+    pending_ = saved.pending;
     return true;
   }
   [[nodiscard]] std::uint64_t epoch() const noexcept { return epoch_; }

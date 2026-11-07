@@ -1,6 +1,24 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  persistence.isis_decision_checkpoint:
+    status: partially-implemented
+    source_ids: [project.isis.decision_checkpoint]
+  persistence.isis_circuit_checkpoint:
+    status: partially-implemented
+    source_ids: [project.isis.circuit_checkpoint]
+  persistence.isis_instance_checkpoint:
+    status: partially-implemented
+    source_ids: [project.isis.instance_checkpoint]
+  persistence.isis_level_checkpoint:
+    status: partially-implemented
+    source_ids: [project.isis.level_checkpoint]
+  persistence.isis_reservation_checkpoint:
+    status: partially-implemented
+    source_ids: [project.isis.reservation_checkpoint]
+  persistence.isis_lsdb_checkpoint:
+    status: partially-implemented
+    source_ids: [project.isis.lsdb_checkpoint]
   development.yang_default_projection:
     status: implemented
     source_ids: [ietf.yang.rfc7950.source_inventory]

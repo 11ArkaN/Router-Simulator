@@ -25,6 +25,17 @@ struct SnpCompletion {
   std::size_t retired{};
   std::size_t superseded{};
 };
+struct SnpExchangeCheckpoint {
+  std::uint32_t version{1U};
+  packet::isis::PduType database_type{};
+  std::size_t circuit{}, entry_capacity{};
+  protocol::TransmissionWindowCheckpoint transmission;
+  CompleteSnpSequenceCheckpoint complete;
+  std::optional<SnpEmission> pending_emission;
+  std::optional<packet::isis::LspId> partial_cursor, acknowledgement_cursor, pending_cursor;
+  std::vector<packet::isis::SnpEntry> entries;
+  std::vector<TransientAcknowledgement> acknowledgements;
+};
 class SnpExchange final {
 public:
   // All state uses this control owner's affinity. A valid stable circuit and
@@ -55,6 +66,15 @@ public:
   // Parent completed circuit Down and revoked the old forwarding projection.
   // A strictly newer configuration epoch clears transient circuit obligations.
   [[nodiscard]] bool replace_epoch(std::uint64_t epoch) noexcept;
+  // Same circuit owner under the transport snapshot barrier. Only pending
+  // prefixes are copied; unused composition scratch is omitted. Returns owned
+  // values and propagates allocation failure without changing the exchange.
+  [[nodiscard]] SnpExchangeCheckpoint checkpoint() const;
+  // Restore the level database and transient acknowledgements first. Requires
+  // matching level, slot, epoch and entry capacity; outstanding transient tickets
+  // must still exist, while ordinary LSP versions may be superseded. All checks
+  // precede nonthrowing copies into cold-sized buffers. False changes nothing.
+  [[nodiscard]] bool restore(const SnpExchangeCheckpoint &checkpoint) noexcept;
   [[nodiscard]] bool pending() const noexcept { return transmission_.pending(); }
 private:
   LevelDatabase &database_;

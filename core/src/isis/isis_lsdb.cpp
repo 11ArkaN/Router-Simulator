@@ -24,7 +24,12 @@ namespace {
 [[nodiscard]] std::uint16_t remaining(const packet::isis::LspView &header,
     RuntimeClock::time_point installed, RuntimeClock::time_point now) noexcept {
   if (now <= installed) return header.remaining_seconds;
-  const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - installed).count();
+  // Unsigned subtraction represents even a distance spanning both signed
+  // clock endpoints. Compare whole seconds before narrowing the difference.
+  const auto ticks = static_cast<std::uint64_t>(now.time_since_epoch().count()) -
+      static_cast<std::uint64_t>(installed.time_since_epoch().count());
+  const auto elapsed = ticks / static_cast<std::uint64_t>(
+      std::chrono::duration_cast<RuntimeClock::duration>(std::chrono::seconds{1}).count());
   return elapsed >= header.remaining_seconds ? 0U :
       static_cast<std::uint16_t>(header.remaining_seconds - elapsed);
 }

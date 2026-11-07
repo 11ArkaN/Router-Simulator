@@ -23,6 +23,7 @@ struct DistancePolicy {
   std::uint32_t maximum_edge{};
   bool saturate{};
   bool settle_once{};
+  bool operator==(const DistancePolicy &) const = default;
 };
 inline constexpr std::uint16_t no_first_hop = 0xffffU;
 inline constexpr std::size_t first_hop_word_count =
@@ -49,6 +50,17 @@ struct SpfEdge {
   std::uint16_t first_hop{no_first_hop};
 };
 
+struct ShortestPathCheckpoint {
+  std::uint32_t distance{unreachable_distance};
+  std::array<std::uint64_t, first_hop_word_count> first_hops{};
+};
+struct ShortestPathsCheckpoint {
+  std::uint32_t version{1U};
+  DistancePolicy policy;
+  std::size_t maximum_vertices{}, maximum_pending_candidates{};
+  std::uint16_t first_hop_count{};
+  std::vector<ShortestPathCheckpoint> vertices;
+};
 class ShortestPaths {
 public:
   // Token storage capacity is distinct from the selected ECMP width. Callers
@@ -84,6 +96,12 @@ public:
   [[nodiscard]] std::optional<std::uint16_t>
   first_hop(std::size_t vertex, std::size_t ordinal) const noexcept;
 
+  // Same calculation owner between synchronous calculate calls. Capture owns
+  // only the last published result and can throw on allocation. Restore checks
+  // policy, resource bounds, distance values and token bits before allocation-
+  // free replacement in existing cold capacity. Scratch/heap work is omitted.
+  [[nodiscard]] ShortestPathsCheckpoint checkpoint() const;
+  [[nodiscard]] bool restore(const ShortestPathsCheckpoint &saved) noexcept;
 private:
   using FirstHopBits =
       std::array<std::uint64_t, first_hop_word_count>;

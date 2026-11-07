@@ -17,6 +17,13 @@ struct LspTransmission {
   std::uint64_t ticket{};
 };
 struct LspReceipt { bool accepted{}; bool current_version{}; };
+struct LspExchangeCheckpoint {
+  std::uint32_t version{1U};
+  packet::isis::PduType database_type{};
+  std::size_t circuit{};
+  protocol::TransmissionWindowCheckpoint transmission;
+  std::optional<packet::isis::LspView> pending;
+};
 class LspExchange final {
 public:
   // Database outlives this same-shard owner. Circuit slots are stable and epoch
@@ -38,6 +45,13 @@ public:
   // until peer SNP acceptance. No caller may apply effects after false.
   [[nodiscard]] LspReceipt complete(std::uint64_t epoch, std::uint64_t ticket,
       bool enqueued, RuntimeClock::time_point now) noexcept;
+  // Same circuit owner; the enclosing barrier separately captures queued
+  // encoded frames and receipts. Idle scratch is omitted. No allocation occurs.
+  [[nodiscard]] LspExchangeCheckpoint checkpoint() const noexcept;
+  // Same quiesced owner with matching level, slot and epoch. The pending LSP
+  // may legitimately have been superseded or retired in the LSDB. Structural
+  // validation precedes mutation; false preserves the reservation and SRM.
+  [[nodiscard]] bool restore(const LspExchangeCheckpoint &checkpoint) noexcept;
   [[nodiscard]] bool pending() const noexcept { return transmission_.pending(); }
   void cancel() noexcept;
   [[nodiscard]] bool replace_epoch(std::uint64_t epoch) noexcept;

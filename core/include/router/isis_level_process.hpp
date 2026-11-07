@@ -8,8 +8,42 @@
 #include "router/isis_lsp_exchange.hpp"
 #include "router/isis_snp_exchange.hpp"
 
+#include <memory>
+
 namespace router::isis {
-struct LevelCircuitConfiguration { bool broadcast{}; std::uint64_t epoch{}; };
+struct LevelCircuitConfiguration {
+  bool broadcast{};
+  std::uint64_t epoch{};
+  bool operator==(const LevelCircuitConfiguration &) const = default;
+};
+struct LevelProcessConfiguration {
+  packet::isis::PduType level{};
+  LsdbLimits database;
+  std::size_t acknowledgement_capacity{};
+  std::uint16_t maximum_age{};
+  std::chrono::seconds purge_retention{}, waiting_time{};
+  std::size_t maximum_circuits{};
+  bool operator==(const LevelProcessConfiguration &) const = default;
+};
+struct LevelCircuitProgram {
+  LevelCircuitConfiguration configuration;
+  std::size_t snp_entry_capacity{};
+};
+struct LevelCircuitCheckpoint {
+  LevelCircuitConfiguration configuration;
+  bool eligible{}, designated{}, activated{};
+  SnpExchangeCheckpoint snp;
+  LspExchangeCheckpoint lsp;
+};
+struct LevelProcessCheckpoint {
+  std::uint32_t version{1U};
+  LevelProcessConfiguration configuration;
+  LevelDatabaseCheckpoint database;
+  TransientAcknowledgementsCheckpoint acknowledgements;
+  std::vector<LevelCircuitCheckpoint> circuits;
+  std::optional<std::int64_t> waiting_nanoseconds;
+  bool waiting{}, waiting_timer_expired{};
+};
 enum class LevelEventKind : std::uint8_t {
   database_changed, circuit_changed, overload_entered, overload_recovered, validation_completed, database_corrupted, database_refreshed
 };
@@ -130,6 +164,19 @@ public:
   // Once an expired timer waits solely for a resource event, no past deadline
   // is exposed to the enclosing worker's sleep predicate.
   [[nodiscard]] std::optional<RuntimeClock::time_point> waiting_deadline() const noexcept;
+  // Same level owner under the shared transport barrier. Captures databases,
+  // reservations, activation fences and Waiting state as owned relative values.
+  // Allocation/clock failures propagate without changing the live level.
+  [[nodiscard]] LevelProcessCheckpoint checkpoint(RuntimeClock::time_point now) const;
+  // Caller supplies profile-validated policy and parent-validated stable slot
+  // bindings, including their current synchronization epochs. Returns a fresh
+  // heap owner only after complete validation. Its exchange references bind to
+  // its own stable databases; no live owner is mutated or moved on refusal.
+  // nullptr reports malformed state, mismatched policy or allocation failure.
+  // The enclosing coordinator must publish all restored owners atomically.
+  [[nodiscard]] static std::unique_ptr<LevelProcess> restore_checkpoint(
+      const LevelProcessCheckpoint &checkpoint, LevelProcessConfiguration expected,
+      std::span<const LevelCircuitProgram> circuits, RuntimeClock::time_point now) noexcept;
   [[nodiscard]] const LevelDatabase &database() const noexcept { return database_; }
   [[nodiscard]] std::size_t transient_acknowledgements() const noexcept {
     return acknowledgements_.size();

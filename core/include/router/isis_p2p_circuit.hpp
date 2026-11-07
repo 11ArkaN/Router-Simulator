@@ -9,6 +9,8 @@
 #include "router/isis_neighbor_attributes.hpp"
 #include "router/isis_p2p_adjacency.hpp"
 
+#include <memory>
+
 namespace router::isis {
 
 struct P2pCircuitConfiguration : CircuitHelloConfiguration {
@@ -34,6 +36,14 @@ enum class CircuitReceive : std::uint8_t {
   missing_observer, address_family
 };
 
+struct P2pCircuitCheckpoint {
+  std::uint32_t version{1U};
+  P2pCircuitConfiguration configuration;
+  P2pAdjacencyCheckpoint adjacency;
+  HelloScheduleCheckpoint hello;
+  std::vector<std::uint8_t> peer_attributes;
+  bool operational{};
+};
 class PointToPointCircuit final {
 public:
   using Clock = HelloSchedule::Clock;
@@ -75,6 +85,13 @@ public:
   // or generation replacement; no forwarding or UI owner may retain the view.
   [[nodiscard]] const P2pCircuitConfiguration &configuration() const noexcept { return configuration_; }
 
+  // Same circuit owner after transport quiescence. Capture owns non-secret
+  // peer attributes and timers, and can throw allocation/clock errors. Restore
+  // requires identical effective configuration and publishes a fresh heap owner
+  // only after all nested values pass validation; refusal emits no events.
+  [[nodiscard]] P2pCircuitCheckpoint checkpoint(Clock::time_point now) const;
+  [[nodiscard]] static std::unique_ptr<PointToPointCircuit> restore_checkpoint(const P2pCircuitCheckpoint &saved,
+      P2pCircuitConfiguration expected, Clock::time_point now) noexcept;
 private:
   void event(const P2pSnapshot &before, P2pUpdate update,
       std::span<const std::uint8_t> previous, void *context,

@@ -51,7 +51,8 @@ LanUpdate LanAdjacency::receive(const packet::isis::PduView &pdu,
   const bool was_up = state_.present && state_.state == LanState::up;
   state_ = {peer_, peer_mac_, hello->designated_id, hello->priority,
              seen_local ? LanState::up : LanState::initializing, true};
-  holding_deadline_ = now + std::chrono::seconds(hello->holding_seconds);
+  const auto holding = std::chrono::duration_cast<Clock::duration>(std::chrono::seconds(hello->holding_seconds));
+  holding_deadline_ = now > Clock::time_point::max() - holding ? Clock::time_point::max() : now + holding;
   if (seen_local && !was_up) return {LanOutcome::up, LanReason::none, true};
   if (!seen_local && was_up) return {LanOutcome::down, LanReason::one_way, true};
   return {seen_local ? LanOutcome::accepted : LanOutcome::initializing, LanReason::none, true};

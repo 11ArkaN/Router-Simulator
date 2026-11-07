@@ -43,11 +43,46 @@ void isis_p2p_adjacency_tests() {
             a.outbound_three_way().neighbor_system == system_b &&
             a.outbound_three_way().neighbor_circuit == 1002U,
           "IS-IS first three-way Hello incorrectly raised ISO adjacency");
+  PointToPointAdjacency restored_a(local_a);
+  const auto rebased = PointToPointAdjacency::Clock::time_point{9000s};
+  const auto initializing_saved = a.checkpoint(now + 500ms);
+  require(restored_a.restore(initializing_saved, rebased) && !restored_a.ready() &&
+      restored_a.deadline() == rebased + 29500ms, "IS-IS initializing checkpoint lost fractional holding time");
   result = b.receive(hello_a, mac_a, true, true, option(encoded, a.outbound_three_way()), now);
   require(result.outcome == P2pOutcome::up && b.ready() && result.forwarding_readiness_changed,
           "IS-IS peer did not recognize its echoed three-way identity");
   result = a.receive(hello_b, mac_b, true, true, option(encoded, b.outbound_three_way()), now);
   require(result.outcome == P2pOutcome::up && a.ready(), "IS-IS three-way handshake did not converge");
+  require(restored_a.receive(hello_b, mac_b, true, true, option(encoded, b.outbound_three_way()), rebased).outcome ==
+      P2pOutcome::up && restored_a.ready(), "IS-IS restored initializing handshake did not converge");
+  const auto accepted_saved = a.checkpoint(now + 1500ms);
+  require(restored_a.restore(accepted_saved, rebased), "IS-IS Up checkpoint refused");
+  for (unsigned invalid{}; invalid < 10U; ++invalid) {
+    auto bad = accepted_saved;
+    switch (invalid) {
+      case 0U: ++bad.version; break;
+      case 1U: ++bad.local.extended_circuit; break;
+      case 2U: bad.state.usage = Levels::none; break;
+      case 3U: bad.state.three_way = static_cast<ThreeWayState>(3U); break;
+      case 4U: bad.state.three_way = ThreeWayState::down; break;
+      case 5U: bad.state.iso_up = false; break;
+      case 6U: bad.state.present = false; break;
+      case 7U: bad.holding_nanoseconds.reset(); break;
+      case 8U: bad.holding_nanoseconds = 65535000000001LL; break;
+      default: bad.state.uses_three_way = false; break;
+    }
+    require(!restored_a.restore(bad, rebased) && restored_a.ready() &&
+        restored_a.deadline() == rebased + 28500ms, "IS-IS malformed P2P checkpoint mutated live state");
+  }
+  require(!restored_a.restore(accepted_saved, PointToPointAdjacency::Clock::time_point::max()),
+      "IS-IS P2P holding restore overflow accepted");
+  require(restored_a.expire(rebased + 28499ms).outcome == P2pOutcome::discarded &&
+      restored_a.expire(rebased + 28500ms).reason == P2pReason::holding_expired,
+      "IS-IS restored holding expiry changed");
+  require(restored_a.restore(a.checkpoint(now + 31s), rebased) &&
+      restored_a.expire(rebased).reason == P2pReason::holding_expired, "IS-IS due holding time resurrected");
+  const auto empty_saved = restored_a.checkpoint(rebased);
+  require(restored_a.restore(empty_saved, rebased) && !restored_a.deadline(), "IS-IS empty P2P restore failed");
   const auto holding = a.deadline();
   auto wrong = b.outbound_three_way();
   wrong.neighbor_circuit = 999U;
@@ -101,4 +136,9 @@ void isis_p2p_adjacency_tests() {
               option(encoded, {ThreeWayState::down, 1002U, std::nullopt, std::nullopt}), now).outcome == P2pOutcome::initializing &&
             initializing.expire(now + 30s).outcome == P2pOutcome::down,
           "IS-IS initializing adjacency survived holding expiry");
+  PointToPointAdjacency near_limit(local_a);
+  require(near_limit.receive(hello_b, mac_b, true, true, std::nullopt,
+      PointToPointAdjacency::Clock::time_point::max() - 1s).holding_refreshed &&
+      near_limit.deadline() == PointToPointAdjacency::Clock::time_point::max(), "IS-IS P2P holding clock wrapped");
+
 }

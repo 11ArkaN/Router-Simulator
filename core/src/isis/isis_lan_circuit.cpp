@@ -8,14 +8,23 @@
 #include <stdexcept>
 
 namespace router::isis {
+namespace {
+LanCircuit::Clock::time_point election_after(LanCircuit::Clock::time_point now,
+    std::chrono::microseconds interval) noexcept {
+  const auto duration = std::chrono::duration_cast<LanCircuit::Clock::duration>(interval * 2);
+  return now > LanCircuit::Clock::time_point::max() - duration ? LanCircuit::Clock::time_point::max() : now + duration;
+}
+}
 LanCircuit::LanCircuit(LanCircuitConfiguration configuration, std::uint64_t random_state,
     Clock::time_point now)
     : configuration_(std::move(configuration)),
       neighbors_(configuration_.type, configuration_.mac, configuration_.limits, configuration_.peer_attribute_octets),
       hello_(configuration_.hello_interval, true, false, random_state, now),
-      election_ready_(now + 2 * configuration_.hello_interval) {
+      election_ready_(now) {
   const auto level = configuration_.type == packet::isis::PduType::lan_hello_l1 ? 1U : 2U;
-  if (!configuration_.holding_seconds || !configuration_.designated_holding_seconds ||
+  if (configuration_.hello_interval > std::chrono::duration_cast<std::chrono::microseconds>(Clock::duration::max()) / 2 ||
+      configuration_.designated_hello_interval > std::chrono::duration_cast<std::chrono::microseconds>(Clock::duration::max()) ||
+      !configuration_.holding_seconds || !configuration_.designated_holding_seconds ||
       configuration_.designated_hello_interval <= std::chrono::microseconds::zero() ||
       !configuration_.maximum_area_addresses || !configuration_.maximum_pdu_octets ||
       (static_cast<unsigned>(configuration_.levels) & level) == 0U ||
@@ -26,6 +35,7 @@ LanCircuit::LanCircuit(LanCircuitConfiguration configuration, std::uint64_t rand
       (configuration_.emit_instance && !configuration_.instance_format) ||
       (!configuration_.emit_instance && configuration_.wire_instance))
     throw std::invalid_argument("Invalid IS-IS LAN circuit configuration");
+  election_ready_ = election_after(now, configuration_.hello_interval);
   areas_.reserve(configuration_.areas.size());
   for (const auto &area : configuration_.areas) {
     if (!area.length || area.length > area.bytes.size())
@@ -202,7 +212,7 @@ bool LanCircuit::down(LanCircuitObserver observer) noexcept {
 bool LanCircuit::up(Clock::time_point now) noexcept {
   if (operational_) return false;
   hello_ = HelloSchedule(configuration_.hello_interval, true, false, hello_.random_state(), now);
-  election_ready_ = now + 2 * configuration_.hello_interval;
+  election_ready_ = election_after(now, configuration_.hello_interval);
   election_started_ = false;
   std::copy(configuration_.local.system.begin(), configuration_.local.system.end(), advertised_lan_.begin());
   advertised_lan_.back() = configuration_.local.circuit;

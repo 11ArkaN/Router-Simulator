@@ -26,6 +26,24 @@ struct LsdbLimits {
   // Caller-selected per-record reservation for mandatory future purge options.
   // This is emulator storage, not a protocol MTU or a platform default.
   std::size_t minimum_pdu_allocation{};
+  bool operator==(const LsdbLimits &) const = default;
+};
+
+// Owned same-instance transfer values. Exact wire can contain authentication
+// fields; the enclosing coordinator must protect secret-bearing serialization.
+// No pointer, clock epoch or key lease crosses this boundary.
+struct LspRecordCheckpoint {
+  std::vector<std::uint8_t> bytes;
+  std::size_t allocation{};
+  std::int64_t age_nanoseconds{};
+  std::optional<std::int64_t> retirement_nanoseconds;
+  bool expiration_notified{};
+};
+struct LsdbCheckpoint {
+  std::uint32_t version{1U};
+  packet::isis::PduType type{};
+  LsdbLimits limits;
+  std::vector<LspRecordCheckpoint> records;
 };
 
 enum class LspInstallResult : std::uint8_t {
@@ -126,6 +144,18 @@ public:
   // authenticated purge construction, flooding and replacement path.
   [[nodiscard]] bool retire_purge(const packet::isis::LspId &id,
                                   RuntimeClock::time_point now) noexcept;
+  // Same instance owner, now not before any retained installation. Copies
+  // exact bytes and relative nanosecond ages/retention, including unfinalized
+  // expirations. Throws invalid_argument for an unrepresentable clock offset;
+  // allocation failure propagates before an owned snapshot is returned.
+  [[nodiscard]] LsdbCheckpoint checkpoint(RuntimeClock::time_point now) const;
+  // Same owner. Snapshot version, level and limits must match this repository;
+  // maximum_age comes from its resolved level policy. Validates every record,
+  // checksum, notification state, order, age and allocation before one swap.
+  // False preserves bytes, buffers and deadlines for invalid input or resource
+  // refusal. Success invalidates borrowed views and freezes time while absent.
+  [[nodiscard]] bool restore(const LsdbCheckpoint &checkpoint,
+      RuntimeClock::time_point now, std::uint16_t maximum_age) noexcept;
   [[nodiscard]] std::size_t size() const noexcept { return records_.size(); }
   [[nodiscard]] std::size_t allocated_octets() const noexcept { return allocated_octets_; }
 

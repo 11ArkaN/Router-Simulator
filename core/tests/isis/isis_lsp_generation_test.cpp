@@ -74,4 +74,49 @@ void isis_lsp_generation_tests() {
     catch (const std::invalid_argument &) { rejected = true; }
     require(rejected);
   }
+  // A pending publication survives a different host epoch, including content
+  // changed after reservation. Future refresh draws must remain identical.
+  LspGenerationSchedule live(2s, 40s, 17U, now), resumed(2s, 40s, 99U, now);
+  const auto reserved = live.prepare(now);
+  live.require_after(50U, now + 500ms);
+  const auto saved = live.checkpoint(now + 1s);
+  const auto rebased = RuntimeClock::time_point{9000s};
+  require(resumed.restore(saved, rebased) && !resumed.deadline());
+  for (unsigned invalid{}; invalid < 13U; ++invalid) {
+    auto bad = saved;
+    switch (invalid) {
+      case 0U: bad.version = 2U; break;
+      case 1U: bad.minimum += 1us; break;
+      case 2U: bad.refresh += 1us; break;
+      case 3U: bad.random = 0U; break;
+      case 4U: bad.changed_nanoseconds = 1; break;
+      case 5U: bad.refresh_nanoseconds = 40000000001LL; break;
+      case 6U: bad.hold_nanoseconds = 2000000001LL; break;
+      case 7U: bad.pending.reset(); break;
+      case 8U: bad.pending->status = GenerationStatus::waiting; break;
+      case 9U: bad.pending->ticket = 0U; break;
+      case 10U: bad.pending->sequence = 0U; break;
+      case 11U: bad.blocked = true; break;
+      default: bad.stopped = true; break;
+    }
+    require(!resumed.restore(bad, rebased) && !resumed.deadline() && !resumed.committed_sequence());
+  }
+  require(!resumed.restore(saved, RuntimeClock::time_point::max()));
+  require(live.complete(reserved.ticket, true, now + 1s) && resumed.complete(reserved.ticket, true, rebased));
+  for (unsigned iteration{}; iteration < 12U; ++iteration) {
+    const auto a = *live.deadline(), b = *resumed.deadline();
+    require(a - (now + 1s) == b - rebased);
+    const auto left = live.prepare(a), right = resumed.prepare(b);
+    require(left.status == right.status && left.sequence == right.sequence && left.ticket == right.ticket);
+    const bool installed = iteration != 2U;
+    require(live.complete(left.ticket, installed, a) && resumed.complete(right.ticket, installed, b));
+    if (!installed) {
+      const auto waiting = live.checkpoint(a);
+      require(resumed.restore(waiting, b) && resumed.blocked() && !resumed.deadline());
+      live.retry(); resumed.retry();
+    }
+  }
+  const auto stopped = first.checkpoint(refresh + 1000s);
+  require(resumed.restore(stopped, rebased) && resumed.stopped() && !resumed.deadline());
+
 }

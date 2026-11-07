@@ -89,6 +89,38 @@ void isis_lan_adjacency_set_tests() {
   input.source.back() = 2U;
   require(set.receive(hello(wire, input, local, 2U), second, now, &trace, observe) == LanSetResult::accepted,
           "IS-IS LAN set did not fill its second reserved slot");
+  const auto saved_set = set.checkpoint(now + 500ms);
+  const auto rebased = LanAdjacencySet::Clock::time_point{9000s};
+  auto restored_set = LanAdjacencySet::restore_checkpoint(saved_set, PduType::lan_hello_l1, local, {2U, 2U}, 512U, rebased);
+  require(restored_set && restored_set->size() == 2U && restored_set->deadline() == rebased + 2500ms &&
+      restored_set->find(first)->areas.front().view().back() == 1U &&
+      restored_set->find(second)->areas.front().view().back() == 2U, "IS-IS LAN set restore lost owned areas or holding time");
+  for (unsigned invalid{}; invalid < 11U; ++invalid) {
+    auto bad = saved_set;
+    switch (invalid) {
+      case 0U: ++bad.version; break;
+      case 1U: bad.type = PduType::lan_hello_l2; break;
+      case 2U: ++bad.local[0U]; break;
+      case 3U: ++bad.limits.neighbors; break;
+      case 4U: ++bad.maximum_attribute_octets; break;
+      case 5U: bad.peers.push_back(bad.peers.front()); break;
+      case 6U: bad.peers[1U] = bad.peers[0U]; break;
+      case 7U: bad.peers[0U].attributes = {10U, 1U, 7U}; break;
+      case 8U: bad.peers[0U].attributes = {1U, 1U, 0U}; break;
+      case 9U: bad.peers[0U].adjacency.state.present = false; break;
+      default: bad.peers[0U].adjacency.holding_nanoseconds.reset(); break;
+    }
+    require(!LanAdjacencySet::restore_checkpoint(bad, PduType::lan_hello_l1, local, {2U, 2U}, 512U, rebased) &&
+        restored_set->size() == 2U && trace.count == 2U, "IS-IS bad LAN set transfer mutated live state or emitted events");
+  }
+  Trace resumed_trace{restored_set.get(), third};
+  require(!restored_set->expire_one(rebased + 2499ms, &resumed_trace, observe) &&
+      restored_set->expire_one(rebased + 2500ms, &resumed_trace, observe) && resumed_trace.events[0U].before == first &&
+      resumed_trace.events[0U].old_suffix == 1U && restored_set->expire_one(rebased + 2500ms, &resumed_trace, observe) &&
+      !restored_set->size(), "IS-IS restored LAN set expiration lost ordering or old attributes");
+  require(restored_set->receive(hello(wire, input, local, 7U, 2U, true), second, rebased + 3s,
+      &resumed_trace, observe) == LanSetResult::accepted && restored_set->find(second)->areas.size() == 2U,
+      "IS-IS restored LAN set lost future admission capacity");
   input.source.back() = 3U;
   require(set.receive(hello(wire, input, local, 3U, 1U, true), third, now + 1s, &trace, observe) == LanSetResult::accepted &&
             !set.find(first) && set.find(second) && set.find(third) && trace.ordered && trace.count == 4U &&

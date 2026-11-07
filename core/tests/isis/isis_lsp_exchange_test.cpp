@@ -85,4 +85,36 @@ void isis_lsp_exchange_tests() {
   require(sent.status == LspEmissionStatus::encoded);
   const auto purge = parse_ethernet_pdu(frame.view(), error);
   require(purge && lsp(purge->pdu)->remaining_seconds == 0U);
+  const auto saved = lan.checkpoint();
+  require(saved.pending && saved.pending->sequence == 4U && !saved.pending->remaining_seconds);
+  const auto epoch = now + 500s;
+  LevelDatabase restored_database(PduType::lsp_l1, {4U, 1024U}, circuits);
+  require(restored_database.restore(database.checkpoint(now), epoch, 1200U));
+  LspExchange restored(restored_database, 0U, 8U);
+  require(restored.restore(saved) && restored.pending());
+  const auto refused = [&](auto invalid) {
+    require(!restored.restore(invalid) && restored.checkpoint().transmission.pending == saved.transmission.pending &&
+        restored.checkpoint().transmission.next_ticket == saved.transmission.next_ticket &&
+        restored.checkpoint().pending->sequence == saved.pending->sequence);
+  };
+  auto invalid = saved;
+  invalid.version = 2U; refused(invalid);
+  invalid = saved; invalid.database_type = PduType::lsp_l2; refused(invalid);
+  invalid = saved; invalid.circuit = 1U; refused(invalid);
+  invalid = saved; invalid.transmission.epoch = 7U; refused(invalid);
+  invalid = saved; invalid.transmission.next_ticket = 0U; refused(invalid);
+  invalid = saved; invalid.pending.reset(); refused(invalid);
+  invalid = saved; invalid.pending->sequence = 0U; refused(invalid);
+  invalid = saved; invalid.pending->remaining_seconds = 1U; invalid.pending->checksum = 0U; refused(invalid);
+  const auto newer = encode_lsp(bytes, {PduType::lsp_l1, id, 1200U, 5U, 3U}, {});
+  require(newer && restored_database.originate(*newer, epoch, 1200U, 60s) == LspInstallResult::installed &&
+      restored.restore(saved));
+  const auto superseded = restored.complete(8U, saved.transmission.pending, true, epoch);
+  require(superseded.accepted && !superseded.current_version && restored_database.flags(id, 0U)->srm &&
+      !restored.complete(8U, saved.transmission.pending, true, epoch).accepted);
+  const auto resumed_send = restored.prepare(id, source, destination, 1492U, 1U, frame, *scratch, epoch);
+  require(resumed_send.status == LspEmissionStatus::encoded && resumed_send.ticket == saved.transmission.next_ticket);
+  restored.cancel();
+  const auto idle = restored.checkpoint();
+  require(!idle.pending && !idle.transmission.pending && restored.restore(idle));
 }

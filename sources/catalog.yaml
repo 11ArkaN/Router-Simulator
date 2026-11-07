@@ -1,5 +1,89 @@
 schema_version: 1
 records:
+  - id: project.isis.decision_checkpoint
+    kind: local-routing-decision-checkpoint
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-snapshot-policy-and-iso-iec-standard
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/isis-implementation-plan.md#13-projekty-i-checkpointy
+    section: Plan 13.2, published decision continuity; ISO 10589 Annex C
+    rfc_refs: [RFC5305, RFC5308]
+    yang_path: null
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/shortest_paths.hpp, core/src/forwarding/shortest_paths_checkpoint.cpp, core/include/router/isis_prefix_set.hpp, core/src/isis/isis_prefix_checkpoint.cpp, core/include/router/isis_p2p_decision.hpp, core/src/isis/isis_decision_checkpoint.cpp]
+    tests: [core/tests/isis/isis_spf_test.cpp, core/tests/isis/isis_link_graph_test.cpp]
+    status: experimental
+    notes: Published calculation snapshots preserve finite distance policy, reachability and exact first-hop token bits independently of relaxation scratch. Prefix snapshots preserve ordered advertisements, raw sub-TLV bytes and ignored-option counts within matching cold capacities. Decision restoration joins sorted identities, published costs and matching prefix origins in a fresh owner; it never substitutes a recalculation from a newer LSDB. Missing-root decisions omit inaccessible old calculator bytes. Route binding catalogs, generation receipts and whole-runtime integration remain pending.
+  - id: project.isis.circuit_checkpoint
+    kind: local-routing-circuit-checkpoint
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-snapshot-policy-and-iso-iec-standard
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/isis-implementation-plan.md#13-projekty-i-checkpointy
+    section: Plan 13.2, frozen protocol time; ISO 10589 8.2.5, 8.4 and 10.1
+    rfc_refs: [RFC5303, RFC5309]
+    yang_path: null
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/isis_hello_schedule.hpp, core/src/isis/isis_hello_schedule.cpp, core/src/isis/isis_hello_checkpoint.cpp, core/include/router/isis_p2p_adjacency.hpp, core/include/router/isis_lan_adjacency.hpp, core/src/isis/isis_adjacency_checkpoint.cpp, core/src/isis/isis_p2p_adjacency.cpp, core/src/isis/isis_lan_adjacency.cpp, core/include/router/isis_lan_adjacency_set.hpp, core/src/isis/isis_lan_set_checkpoint.cpp, core/include/router/isis_p2p_circuit.hpp, core/src/isis/isis_p2p_circuit_checkpoint.cpp, core/include/router/isis_lan_circuit.hpp, core/src/isis/isis_lan_circuit.cpp, core/src/isis/isis_lan_circuit_checkpoint.cpp, core/include/router/isis_lan_circuit_pair.hpp, core/src/isis/isis_lan_pair_checkpoint.cpp, core/include/router/isis_broadcast_scan.hpp, core/src/isis/isis_broadcast_checkpoint.cpp]
+    tests: [core/tests/isis/isis_hello_schedule_test.cpp, core/tests/isis/isis_p2p_adjacency_test.cpp, core/tests/isis/isis_lan_adjacency_test.cpp, core/tests/isis/isis_lan_adjacency_set_test.cpp, core/tests/isis/isis_p2p_circuit_test.cpp, core/tests/isis/isis_lan_circuit_test.cpp, core/tests/isis/isis_broadcast_scan_test.cpp]
+    status: experimental
+    notes: Relative timer snapshots preserve Hello random continuation, pending output and spacing, negotiated ISO and three-way state, accepted peer identity and fractional holding time. Timer additions saturate rather than wrap near host clock exhaustion. The LAN collection restores sorted unique peers with cold-reserved attribute and area capacity, reconstructs areas from normal validated retained TLVs and rejects unknown or authentication TLVs. P2P restoration joins immutable configuration, accepted non-secret attributes and operational state without replaying a Hello or emitting events. LAN level restoration cross-checks accepted families and areas, election delay, actual same-circuit DIS selection, advertised LAN ID and effective Hello role. Down state retains its prior scheduler until normal reactivation. The interface pair restores both levels together with their shared immutable identity. The broadcast single-LSP scan retains its random stream, pending reservation and physical-success backlog spacing. Interface transport reservation joins and whole-runtime integration remain pending.
+  - id: project.isis.instance_checkpoint
+    kind: local-routing-instance-checkpoint
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-snapshot-policy-and-iso-iec-standard
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/isis-implementation-plan.md#13-projekty-i-checkpointy
+    section: Plan 13.2, owner continuity; ISO 10589 7.3.5, 7.3.6 and 7.3.15
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/isis_instance_update.hpp, core/src/isis/isis_instance_update.cpp, core/src/isis/isis_instance_update_checkpoint.cpp, core/include/router/isis_lsp_generation.hpp, core/src/isis/isis_lsp_generation_checkpoint.cpp, core/include/router/isis_local_lsp_set.hpp, core/src/isis/isis_local_lsp_set_checkpoint.cpp, core/include/router/isis_sequence_recovery.hpp, core/include/router/isis_database_validation.hpp, core/src/isis/isis_recovery_checkpoint.cpp]
+    tests: [core/tests/isis/isis_instance_update_test.cpp, core/tests/isis/isis_instance_checkpoint_test.cpp, core/tests/isis/isis_lsp_generation_test.cpp, core/tests/isis/isis_local_lsp_checkpoint_test.cpp, core/tests/isis/isis_sequence_recovery_test.cpp, core/tests/isis/isis_database_validation_test.cpp]
+    status: experimental
+    notes: Versioned instance snapshots join both independent level owners, accepted peer catalogs, stable slots, synchronization epochs and admission counters. Restore validates parent policy and bindings before publishing a fresh owner without constructing disposable levels. Inactive levels can retain a previous medium until reactivation. The effective purge reservation uses the normal constructor policy. Local generation snapshots preserve relative refresh and hold-down timers, independent random state, observed sequence floors, pending tickets and blocked or exhausted work. Semantic snapshots retain reserved identities, withdrawn pseudonodes, retirement work, overload projections and round-robin progress. Recovery snapshots preserve effective cooldown/retry policy and terminal clock saturation; integrity scans retain their ordered identity cursor, random continuation and latched corruption. Whole-runtime capture, protected persistence and transport barrier integration remain pending.
+  - id: project.isis.level_checkpoint
+    kind: local-routing-level-checkpoint
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-snapshot-policy-and-iso-iec-standard
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/isis-implementation-plan.md#13-projekty-i-checkpointy
+    section: Plan 13.2, stable owner restoration; ISO 10589 7.3.1, Waiting State and circuit activation
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/isis_level_process.hpp, core/src/isis/isis_level_process_checkpoint.cpp, core/include/router/isis_level_database.hpp, core/src/isis/isis_level_database.cpp]
+    tests: [core/tests/isis/isis_level_process_test.cpp, core/tests/isis/isis_level_process_checkpoint_test.cpp]
+    status: experimental
+    notes: A level checkpoint joins its policy, stable circuit epochs, eligibility, DIS and prior-activation fences, databases, exact reservations and relative Waiting timer. Restore validates caller-supplied policy and parent bindings and constructs a fresh stable heap owner. Databases and transient obligations restore before their borrowing exchanges; failed preparation destroys only the unpublished candidate. Cold slot capacity is prepared once before coordinators are built, including heterogeneous per-slot SNP entry budgets. Tests destroy the original before resuming pending LSP/partial-SNP/transient receipts, retain fractional Waiting time and event-driven overload recovery, preserve required fresh epochs after Down, and reject nested corruption without changing a live owner. Circuit/Hello, whole-runtime barrier and codec integration remain pending.
+  - id: project.isis.reservation_checkpoint
+    kind: local-routing-reservation-checkpoint
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-snapshot-policy-and-iso-iec-standard
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/isis-implementation-plan.md#13-projekty-i-checkpointy
+    section: Plan 13.2, pending transmission continuity; ISO 10589 7.3.15 through 7.3.17
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/protocol_transmission.hpp, core/include/router/isis_csnp_sequence.hpp, core/include/router/isis_lsp_exchange.hpp, core/src/isis/isis_lsp_exchange.cpp, core/include/router/isis_snp_exchange.hpp, core/src/isis/isis_snp_exchange_checkpoint.cpp, core/include/router/isis_transient_acknowledgements.hpp, core/src/isis/isis_transient_acknowledgements_checkpoint.cpp]
+    tests: [core/tests/runtime/protocol_transmission_test.cpp, core/tests/isis/isis_csnp_sequence_test.cpp, core/tests/isis/isis_lsp_exchange_test.cpp, core/tests/isis/isis_transient_acknowledgements_test.cpp, core/tests/isis/isis_snp_checkpoint_test.cpp]
+    status: experimental
+    notes: Versioned same-owner values preserve circuit epochs, exact pending transmission tickets, exhaustion high water, contiguous CSNP progress and repeat requests. Pending ordinary LSP versions may legitimately be superseded or absent; restored receipts retain their normal version checks. Unknown-purge snapshots validate ordered obligations and unique tickets and identities using bounded index scratch. SNP restoration requires matching construction budgets and exact transient-ticket presence, copies only pending prefixes into cold-sized buffers, and omits unused composition scratch. Encoded complete SNP sequences match across restore after refusal and repeated requests. Partial and transient tests preserve cyclic cursor progress, superseded-version behavior and one-time retirement. The enclosing transport barrier must capture matching frames/receipts and restore all owners together. Active protocol persistence and structural codec integration remain pending.
+  - id: project.isis.lsdb_checkpoint
+    kind: local-routing-state-checkpoint
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: project-snapshot-policy-and-iso-iec-standard
+    source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/isis-implementation-plan.md#13-projekty-i-checkpointy
+    section: Plan 13.2, active protocol continuity; ISO 10589 7.3.16, aging and purge retention
+    rfc_refs: []
+    yang_path: null
+    last_verified_at: 2026-11-07
+    implementation: [core/include/router/isis_checkpoint_time.hpp, core/include/router/isis_lsdb.hpp, core/src/isis/isis_lsdb.cpp, core/src/isis/isis_lsdb_checkpoint.cpp, core/include/router/isis_level_database.hpp, core/src/isis/isis_level_database_checkpoint.cpp]
+    tests: [core/tests/isis/isis_lsdb_test.cpp, core/tests/isis/isis_lsdb_checkpoint_test.cpp, core/tests/isis/isis_level_database_test.cpp, core/tests/isis/isis_level_database_checkpoint_test.cpp]
+    status: experimental
+    notes: Same-owner versioned transfer values retain exact wire, allocation reservations, fractional installation ages, unfinalized expiry notifications and relative purge retirement. Restore validates level, limits, record order, identities, active checksums, timestamps and byte budgets before one atomic repository swap. Refusal preserves buffers and deadlines. Integer nanosecond conversion checks both signed clock endpoints; lifetime projection avoids signed subtraction overflow for long-expired records. The enclosing coordinator must protect secret-bearing wire and synchronize all owners before persisted serialization. The level snapshot also retains stable circuit slots, SRM/SSN and zero-sequence request metadata. Strict ordered identity matching proves every real LSP has exactly one metadata record and no placeholder shadows encoded state. Metadata allocations and cross-checks complete before the nested LSDB commits; only nonthrowing vector swaps follow. Active protocol barriers, remaining owners and the structural codec are not integrated yet.
   - id: project.runtime.isis_lan_transport
     kind: local-protocol-lan-transport-ownership
     release: 26.7.R1

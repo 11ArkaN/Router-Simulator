@@ -93,4 +93,34 @@ void isis_spf_tests() {
   try { router::routing::ShortestPaths invalid(1U, 1U, {0xffffffffU, 1U, true}); }
   catch (const std::invalid_argument &) { rejected = true; }
   require(rejected, "Shared SPF accepted a finite cap equal to its unreachable sentinel");
+  const auto published = wide.checkpoint();
+  SpfCalculator restored(259U, 1024U, MetricStyle::wide);
+  require(restored.restore(published) && restored.cost(3U) == 15U && restored.first_hop_count(3U) == 2U &&
+      restored.first_hop(3U, 0U) == 0U && restored.first_hop(3U, 1U) == 1U,
+      "IS-IS published SPF checkpoint lost exact tokens");
+  for (unsigned invalid{}; invalid < 9U; ++invalid) {
+    auto bad = published;
+    switch (invalid) {
+      case 0U: ++bad.version; break;
+      case 1U: ++bad.maximum_vertices; break;
+      case 2U: ++bad.maximum_pending_candidates; break;
+      case 3U: bad.policy.settle_once = false; break;
+      case 4U: bad.first_hop_count = 0U; break;
+      case 5U: bad.vertices[1U].distance = bad.policy.maximum_distance + 1U; break;
+      case 6U: bad.vertices[1U].first_hops[0U] |= 4U; break;
+      case 7U: bad.vertices[1U].distance = router::routing::unreachable_distance; break;
+      default: bad.vertices[0U].distance = 1U; break;
+    }
+    require(!restored.restore(bad) && restored.cost(3U) == 15U && restored.first_hop_count(3U) == 2U,
+        "IS-IS invalid SPF transfer mutated published results");
+  }
+  require(restored.calculate(0U, diamond_vertices, diamond_edges, 2U) && restored.cost(4U) == 15U,
+      "IS-IS restored SPF lost reusable work capacity");
+  const auto ospf_saved = ospf.checkpoint();
+  router::ospf::SpfCalculator restored_ospf(3U, 4U);
+  require(restored_ospf.restore(ospf_saved) && !restored_ospf.reachable(2U) &&
+      restored_ospf.cost(1U) == router::ospf::ls_infinity - 1U, "Shared SPF restore changed OSPF distance policy");
+  require(restored.restore(SpfCalculator(259U, 1024U, MetricStyle::wide).checkpoint()) && !restored.vertex_count(),
+      "IS-IS empty SPF transfer retained old results");
+
 }

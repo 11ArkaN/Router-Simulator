@@ -26,8 +26,17 @@ struct LanSnapshot {
   std::uint8_t priority{};
   LanState state{LanState::initializing};
   bool present{};
+  bool operator==(const LanSnapshot &) const = default;
 };
 
+struct LanAdjacencyCheckpoint {
+  std::uint32_t version{1U};
+  packet::isis::PduType type{};
+  packet::isis::SystemId peer{};
+  packet::Mac peer_mac{}, local_mac{};
+  LanSnapshot state;
+  std::optional<std::int64_t> holding_nanoseconds;
+};
 class LanAdjacency final {
 public:
   using Clock = std::chrono::steady_clock;
@@ -50,6 +59,11 @@ public:
   [[nodiscard]] LanSnapshot snapshot() const noexcept { return state_; }
   [[nodiscard]] std::optional<Clock::time_point> deadline() const noexcept;
 
+  // Same LAN level owner; no allocation. Capture throws on clock-range failure.
+  // Restore requires the same immutable binding and validates state/timer before
+  // mutation. No adjacency event is synthesized by either transfer operation.
+  [[nodiscard]] LanAdjacencyCheckpoint checkpoint(Clock::time_point now) const;
+  [[nodiscard]] bool restore(const LanAdjacencyCheckpoint &saved, Clock::time_point now) noexcept;
 private:
   [[nodiscard]] LanUpdate remove(LanReason reason) noexcept;
   packet::isis::PduType type_;

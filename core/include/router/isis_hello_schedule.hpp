@@ -8,6 +8,13 @@
 
 namespace router::isis {
 
+struct HelloScheduleCheckpoint {
+  std::uint32_t version{1U};
+  std::chrono::microseconds interval{};
+  std::int64_t periodic_nanoseconds{}, last_sent_nanoseconds{};
+  std::uint64_t random{};
+  bool broadcast{}, designated{}, sent{}, dirty{}, pending{};
+};
 class HelloSchedule final {
 public:
   using Clock = std::chrono::steady_clock;
@@ -40,6 +47,12 @@ public:
   [[nodiscard]] std::uint64_t random_state() const noexcept { return random_; }
   [[nodiscard]] bool pending() const noexcept { return pending_; }
 
+  // Same circuit control owner after transport quiescence. Capture throws on
+  // unrepresentable relative time; no allocation. Restore requires matching
+  // effective interval, medium and DIS role and mutates only after validation.
+  // Pending output must have a matching restored transmission reservation.
+  [[nodiscard]] HelloScheduleCheckpoint checkpoint(Clock::time_point now) const;
+  [[nodiscard]] bool restore(const HelloScheduleCheckpoint &saved, Clock::time_point now) noexcept;
 private:
   void restart(Clock::time_point now) noexcept;
   std::chrono::microseconds interval_;

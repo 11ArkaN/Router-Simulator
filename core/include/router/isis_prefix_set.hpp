@@ -15,7 +15,10 @@
 #include <stdexcept>
 
 namespace router::isis {
-struct PrefixCollectionBudget { std::size_t records{}, attributes{}; };
+struct PrefixCollectionBudget {
+  std::size_t records{}, attributes{};
+  bool operator==(const PrefixCollectionBudget &) const = default;
+};
 struct PrefixAdvertisement {
   packet::isis::LspId origin{};
   ip::IpPrefix prefix{};
@@ -24,8 +27,16 @@ struct PrefixAdvertisement {
   bool down{}, external{};
   std::uint32_t attributes_offset{};
   std::uint16_t attributes_size{};
+  bool operator==(const PrefixAdvertisement &) const = default;
 };
 enum class PrefixSetStatus : std::uint8_t { applied, invalid_selection, malformed_database, capacity };
+struct PrefixSetCheckpoint {
+  std::uint32_t version{1U};
+  PrefixCollectionBudget budget;
+  std::vector<PrefixAdvertisement> entries;
+  std::vector<std::uint8_t> attributes;
+  std::size_t ignored{};
+};
 class ExtendedPrefixSet final {
 public:
   // Cold allocations only. Explicit emulator budgets count advertisements and
@@ -134,6 +145,12 @@ public:
     return std::span{published_.attributes}.subspan(entry.attributes_offset, entry.attributes_size);
   }
   [[nodiscard]] std::size_t ignored_options() const noexcept { return published_.ignored; }
+  // Same instance owner with no prepared transaction. Capture owns the exact
+  // published order/attributes and can throw allocation or invalid_argument.
+  // Restore validates all bounds and framing before allocation-free replacement;
+  // an existing prepared transaction refuses without mutation.
+  [[nodiscard]] PrefixSetCheckpoint checkpoint() const;
+  [[nodiscard]] bool restore(const PrefixSetCheckpoint &saved) noexcept;
 private:
   struct Generation {
     std::vector<PrefixAdvertisement> entries;

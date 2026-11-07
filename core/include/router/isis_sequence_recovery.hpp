@@ -8,6 +8,12 @@
 
 namespace router::isis {
 struct SequenceLevelLifetime { std::uint16_t maximum_age{}, zero_age_lifetime{}; };
+struct SequenceRecoveryCheckpoint {
+  std::uint32_t version{1U};
+  RuntimeClock::duration cooldown{}, resource_retry{};
+  std::optional<std::int64_t> due_nanoseconds;
+  bool disabled{}, saturated{};
+};
 class SequenceRecovery final {
 public:
   // Explicit effective lifetimes for enabled levels and an emulator resource
@@ -28,6 +34,11 @@ public:
   [[nodiscard]] bool disabled() const noexcept { return disabled_; }
   // Saturation cannot permit immediate restart at clock exhaustion.
   [[nodiscard]] std::optional<RuntimeClock::time_point> deadline() const noexcept;
+  // Same control owner; no allocation or borrowed state. Capture can throw on
+  // clock-range failure. Restore requires matching effective lifetime/retry
+  // policy and preserves terminal clock saturation across host-epoch changes.
+  [[nodiscard]] SequenceRecoveryCheckpoint checkpoint(RuntimeClock::time_point now) const;
+  [[nodiscard]] bool restore(const SequenceRecoveryCheckpoint &saved, RuntimeClock::time_point now) noexcept;
 private:
   void wait(RuntimeClock::time_point now, RuntimeClock::duration duration) noexcept;
   RuntimeClock::duration cooldown_, resource_retry_;

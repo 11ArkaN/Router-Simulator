@@ -88,4 +88,30 @@ void isis_csnp_sequence_tests() {
   contents.maximum_pdu_octets = csnp_header_octets;
   encode(batch);
   require(sequence.complete(true) && !sequence.active());
+  CompleteSnpSequence original, resumed;
+  original.request();
+  require(original.prepare(database, entries, now).status == CompleteSnpStatus::prepared);
+  original.request();
+  const auto saved = original.checkpoint();
+  require(resumed.restore(saved) && resumed.pending() && resumed.active());
+  const auto refused = [&](auto invalid) {
+    require(!resumed.restore(invalid) && resumed.checkpoint().first == saved.first &&
+        resumed.checkpoint().pending_last == saved.pending_last && resumed.checkpoint().repeat);
+  };
+  auto invalid = saved;
+  invalid.version = 2U; refused(invalid);
+  invalid = saved; invalid.active = false; refused(invalid);
+  invalid = saved; invalid.first = maximum; invalid.pending_last = {}; refused(invalid);
+  require(original.complete(false) && resumed.complete(false));
+  std::array<SnpEntry, 1U> replay{};
+  unsigned batches{};
+  while (original.active()) {
+    const auto left = original.prepare(database, entries, now);
+    const auto right = resumed.prepare(database, replay, now);
+    require(left.status == CompleteSnpStatus::prepared && right.status == left.status && left.first == right.first &&
+        left.last == right.last && left.count == right.count && entries == replay);
+    require(original.complete(true) && resumed.complete(true) && original.active() == resumed.active());
+    require(++batches <= 6U);
+  }
+  require(batches == 6U && !resumed.pending());
 }

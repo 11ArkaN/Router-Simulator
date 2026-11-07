@@ -74,4 +74,50 @@ void isis_transient_acknowledgements_tests() {
   TransientAcknowledgements exhausted(1U, std::numeric_limits<std::uint64_t>::max());
   require(exhausted.admit(0U, purge).status == AcknowledgementAdmission::ticket_exhausted &&
       exhausted.size() == 0U);
+  {
+    TransientAcknowledgements original(4U, 7U), resumed(4U);
+    SnpEntry old_purge{0U, {1U, 0U, 0U, 0U, 0U, 1U, 0U, 0U}, 11U, 22U};
+    auto other_purge = old_purge;
+    other_purge.id[0U] = 2U;
+    require(original.admit(1U, old_purge).ticket == 7U && original.admit(0U, other_purge).ticket == 8U);
+    ++old_purge.sequence;
+    require(original.admit(1U, old_purge).ticket == 9U);
+    const auto saved = original.checkpoint();
+    require(resumed.restore(saved, 2U) && resumed.next_ticket() == 10U && resumed.size() == 3U);
+    std::array<TransientAcknowledgement, 4U> selected_entries{};
+    require(resumed.select(1U, std::nullopt, selected_entries).count == 1U && selected_entries[0U].ticket == 7U);
+    require(resumed.complete(1U, 7U, false) && resumed.complete(1U, 7U, true) &&
+        !resumed.complete(1U, 7U, true) && !resumed.complete(1U, 8U, true) && resumed.complete(0U, 8U, true));
+    require(resumed.select(1U, std::nullopt, selected_entries).count == 1U && selected_entries[0U].ticket == 9U);
+    other_purge.id[0U] = 3U;
+    require(resumed.admit(0U, other_purge).ticket == 10U);
+    const auto baseline = resumed.checkpoint();
+    const auto refused = [&](auto invalid) {
+      require(!resumed.restore(invalid, 2U));
+      const auto after = resumed.checkpoint();
+      require(after.next_ticket == baseline.next_ticket && after.entries.size() == baseline.entries.size());
+      for (std::size_t index{}; index < after.entries.size(); ++index)
+        require(after.entries[index].circuit == baseline.entries[index].circuit &&
+            after.entries[index].acknowledgement.ticket == baseline.entries[index].acknowledgement.ticket &&
+            after.entries[index].acknowledgement.entry == baseline.entries[index].acknowledgement.entry);
+    };
+    auto invalid = saved;
+    invalid.version = 2U; refused(invalid);
+    invalid = saved; invalid.capacity = 3U; refused(invalid);
+    invalid = saved; invalid.next_ticket = 0U; refused(invalid);
+    invalid = saved; invalid.entries[0U].circuit = 2U; refused(invalid);
+    invalid = saved; invalid.entries[0U].acknowledgement.entry.remaining_seconds = 1U; refused(invalid);
+    invalid = saved; invalid.entries[0U].acknowledgement.ticket = 0U; refused(invalid);
+    invalid = saved; invalid.entries[0U].acknowledgement.ticket = saved.next_ticket; refused(invalid);
+    invalid = saved; invalid.entries[0U].acknowledgement.ticket = invalid.entries[1U].acknowledgement.ticket; refused(invalid);
+    invalid = saved; invalid.entries[2U].acknowledgement.entry = invalid.entries[1U].acknowledgement.entry; refused(invalid);
+    invalid = saved; std::swap(invalid.entries[0U], invalid.entries[1U]); refused(invalid);
+    invalid = saved; invalid.entries.push_back(saved.entries[0U]); invalid.entries.push_back(saved.entries[1U]); refused(invalid);
+    require(!resumed.restore(saved, 1U) && resumed.next_ticket() == baseline.next_ticket);
+    auto exhausted_state = saved;
+    exhausted_state.entries.clear();
+    exhausted_state.next_ticket = std::numeric_limits<std::uint64_t>::max();
+    require(resumed.restore(exhausted_state, 2U) &&
+        resumed.admit(0U, old_purge).status == AcknowledgementAdmission::ticket_exhausted);
+  }
 }

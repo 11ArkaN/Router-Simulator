@@ -72,6 +72,35 @@ void isis_broadcast_scan_tests() {
   BroadcastScan boundary(100ms, 1U, BroadcastScan::Clock::time_point::max() - 1us);
   require(boundary.deadline(false) == BroadcastScan::Clock::time_point::max() &&
       !boundary.begin(BroadcastScan::Clock::time_point::max(), 1U, false));
+  BroadcastScan live(100ms, 71U, start), resumed(100ms, 99U, start);
+  const auto first_output = live.deadline(false);
+  require(live.begin(first_output, 13U, true).has_value() && live.complete(true, first_output));
+  const auto next_output = live.deadline(false);
+  require(live.begin(next_output, 13U, false).has_value());
+  const auto saved = live.checkpoint(next_output + 10ms);
+  const auto rebased = BroadcastScan::Clock::time_point{9000s};
+  require(resumed.restore(saved, rebased) && resumed.deadline(false) == BroadcastScan::Clock::time_point::max());
+  for (unsigned invalid{}; invalid < 5U; ++invalid) {
+    auto bad = saved;
+    switch (invalid) {
+      case 0U: ++bad.version; break;
+      case 1U: bad.interval += 1us; break;
+      case 2U: bad.random = 0U; break;
+      case 3U: bad.periodic_nanoseconds = 100000001LL; break;
+      default: bad.last_sent_nanoseconds = 1; break;
+    }
+    require(!resumed.restore(bad, rebased) && resumed.deadline(false) == BroadcastScan::Clock::time_point::max());
+  }
+  require(!resumed.restore(saved, BroadcastScan::Clock::time_point::max()));
+  require(live.complete(false, next_output + 10ms) && resumed.complete(false, rebased));
+  for (unsigned iteration{}; iteration < 20U; ++iteration) {
+    const bool backlog = iteration % 3U == 0U;
+    const auto a = live.deadline(backlog), b = resumed.deadline(backlog);
+    require(a - (next_output + 10ms) == b - rebased);
+    const auto live_choice = live.begin(a, 13U, backlog), resumed_choice = resumed.begin(b, 13U, backlog);
+    require(live_choice == resumed_choice && live_choice.has_value() && live.random_state() == resumed.random_state());
+    require(live.complete(true, a) && resumed.complete(true, b));
+  }
   using namespace router::isis;
   using namespace router::packet::isis;
   const std::array circuits{FloodCircuit{true, true, false, false}};

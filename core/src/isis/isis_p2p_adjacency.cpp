@@ -100,7 +100,8 @@ P2pUpdate PointToPointAdjacency::receive(const packet::isis::HelloView &hello,
     state_.neighbor_extended_circuit = decode_three_way(*option)->local_circuit;
     if (handshake.action == ThreeWayAction::up) state_.iso_up = true;
   }
-  holding_deadline_ = now + std::chrono::seconds(hello.holding_seconds);
+  const auto holding = std::chrono::duration_cast<Clock::duration>(std::chrono::seconds(hello.holding_seconds));
+  holding_deadline_ = now > Clock::time_point::max() - holding ? Clock::time_point::max() : now + holding;
   const auto outcome = legacy ? (iso.action == P2pAction::up ? P2pOutcome::up : P2pOutcome::accepted) :
       handshake.action == ThreeWayAction::up ? P2pOutcome::up :
       handshake.action == ThreeWayAction::initialize ? P2pOutcome::initializing : P2pOutcome::accepted;

@@ -53,10 +53,15 @@ add_library(router_primitives STATIC
   src/isis/isis_lsp_builder.cpp
   src/isis/isis_database_validation.cpp
   src/isis/isis_lsp_generation.cpp
+  src/isis/isis_lsp_generation_checkpoint.cpp
+  src/isis/isis_prefix_checkpoint.cpp
+  src/isis/isis_decision_checkpoint.cpp
   src/isis/isis_local_lsp_set.cpp
+  src/isis/isis_local_lsp_set_checkpoint.cpp
   src/isis/isis_neighbor_origination.cpp
   src/isis/isis_lan_origination.cpp
   src/isis/isis_sequence_recovery.cpp
+  src/isis/isis_recovery_checkpoint.cpp
   src/isis/isis_purge_options.cpp
   src/isis/isis_purge_builder.cpp
   src/forwarding/llc_packet.cpp
@@ -71,23 +76,36 @@ add_library(router_primitives STATIC
   src/isis/isis_authentication.cpp
   src/isis/isis_instance_tlv.cpp
   src/isis/isis_lsdb.cpp
+  src/isis/isis_lsdb_checkpoint.cpp
   src/isis/isis_level_database.cpp
+  src/isis/isis_level_database_checkpoint.cpp
   src/isis/isis_transient_acknowledgements.cpp
+  src/isis/isis_transient_acknowledgements_checkpoint.cpp
   src/isis/isis_csnp_sequence.cpp
   src/isis/isis_snp_exchange.cpp
+  src/isis/isis_snp_exchange_checkpoint.cpp
   src/isis/isis_lsp_exchange.cpp
   src/isis/isis_level_process.cpp
+  src/isis/isis_level_process_checkpoint.cpp
   src/isis/isis_instance_update.cpp
+  src/isis/isis_instance_update_checkpoint.cpp
   src/isis/isis_adjacency.cpp
   src/isis/isis_p2p_adjacency.cpp
+  src/isis/isis_adjacency_checkpoint.cpp
   src/isis/isis_p2p_circuit.cpp
+  src/isis/isis_p2p_circuit_checkpoint.cpp
   src/isis/isis_lan_circuit_pair.cpp
+  src/isis/isis_lan_pair_checkpoint.cpp
   src/isis/isis_lan_circuit.cpp
+  src/isis/isis_lan_circuit_checkpoint.cpp
   src/isis/isis_lan_adjacency.cpp
   src/isis/isis_lan_adjacency_set.cpp
+  src/isis/isis_lan_set_checkpoint.cpp
   src/isis/isis_broadcast_scan.cpp
+  src/isis/isis_broadcast_checkpoint.cpp
   src/isis/isis_jitter.cpp
   src/isis/isis_hello_schedule.cpp
+  src/isis/isis_hello_checkpoint.cpp
   src/isis/isis_flooding.cpp
     src/dns/dns_packet.cpp
     src/dns/dns_svcb.cpp
@@ -197,6 +215,7 @@ add_library(router_primitives STATIC
   src/ospf/ospf_process_output.cpp
   src/ospf/ospf_route_calculator.cpp
   src/forwarding/shortest_paths.cpp
+  src/forwarding/shortest_paths_checkpoint.cpp
   src/ospf/ospf_topology.cpp
   src/forwarding/route_policy.cpp
   src/forwarding/packet.cpp
@@ -582,6 +601,7 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_database_validation_test.cpp
     tests/isis/isis_lsp_generation_test.cpp
     tests/isis/isis_local_lsp_set_test.cpp
+    tests/isis/isis_local_lsp_checkpoint_test.cpp
     tests/isis/isis_sequence_recovery_test.cpp
     tests/isis/isis_purge_options_test.cpp
     tests/isis/isis_purge_builder_test.cpp
@@ -605,6 +625,7 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_authentication_test.cpp
     tests/isis/isis_instance_tlv_test.cpp
     tests/isis/isis_lsdb_test.cpp
+    tests/isis/isis_lsdb_checkpoint_test.cpp
     tests/isis/isis_adjacency_test.cpp
     tests/isis/isis_p2p_adjacency_test.cpp
     tests/isis/isis_lan_adjacency_test.cpp
@@ -618,13 +639,17 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_hello_schedule_test.cpp
     tests/isis/isis_flooding_test.cpp
     tests/isis/isis_level_database_test.cpp
+    tests/isis/isis_level_database_checkpoint_test.cpp
     tests/isis/isis_snp_receive_test.cpp
     tests/isis/isis_transient_acknowledgements_test.cpp
     tests/isis/isis_csnp_sequence_test.cpp
     tests/isis/isis_snp_exchange_test.cpp
+    tests/isis/isis_snp_checkpoint_test.cpp
     tests/isis/isis_lsp_exchange_test.cpp
     tests/isis/isis_level_process_test.cpp
+    tests/isis/isis_level_process_checkpoint_test.cpp
     tests/isis/isis_instance_update_test.cpp
+    tests/isis/isis_instance_checkpoint_test.cpp
     tests/security/digest_test.cpp
     tests/runtime/capture_store_test.cpp
     tests/dhcpv4/dhcpv4_client_test.cpp

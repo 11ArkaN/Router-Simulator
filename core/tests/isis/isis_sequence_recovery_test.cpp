@@ -31,4 +31,31 @@ void isis_sequence_recovery_tests() {
   try { SequenceRecovery invalid({}, 100ms); }
   catch (const std::invalid_argument &) { empty_rejected = true; }
   require(empty_rejected);
+  SequenceRecovery resumed({SequenceLevelLifetime{1200U, 60U}, SequenceLevelLifetime{1400U, 60U}}, 100ms);
+  const auto rebased = RuntimeClock::time_point{9000s};
+  require(resumed.restore(recovery.checkpoint(RuntimeClock::time_point::max()), rebased) &&
+      resumed.disabled() && !resumed.deadline() && !resumed.ready(rebased + 10000s));
+  SequenceRecovery waiting({SequenceLevelLifetime{1200U, 60U}, SequenceLevelLifetime{1400U, 60U}}, 100ms);
+  require(waiting.begin(now));
+  const auto saved = waiting.checkpoint(now + 500500ms);
+  require(resumed.restore(saved, rebased) && resumed.deadline() == rebased + 959500ms);
+  for (unsigned invalid{}; invalid < 6U; ++invalid) {
+    auto bad = saved;
+    switch (invalid) {
+      case 0U: ++bad.version; break;
+      case 1U: bad.cooldown += 1ns; break;
+      case 2U: bad.resource_retry += 1ns; break;
+      case 3U: bad.disabled = false; break;
+      case 4U: bad.saturated = true; break;
+      default: bad.due_nanoseconds = 1460000000001LL; break;
+    }
+    require(!resumed.restore(bad, rebased) && resumed.deadline() == rebased + 959500ms);
+  }
+  require(!resumed.restore(saved, RuntimeClock::time_point::max()));
+  require(resumed.resource_failed(rebased + 959500ms));
+  const auto retried = resumed.checkpoint(rebased + 959550ms);
+  require(waiting.restore(retried, now) && waiting.deadline() == now + 50ms &&
+      waiting.recovered(now + 50ms));
+  require(resumed.restore(waiting.checkpoint(now + 50ms), rebased) && !resumed.disabled());
+
 }

@@ -13,6 +13,15 @@ struct LspGeneration {
   std::uint32_t sequence{};
   std::uint64_t ticket{};
 };
+struct LspGenerationCheckpoint {
+  std::uint32_t version{1U};
+  std::chrono::microseconds minimum{}, refresh{};
+  std::uint64_t random{}, tickets{};
+  std::uint32_t committed{}, observed{};
+  std::int64_t refresh_nanoseconds{}, changed_nanoseconds{}, hold_nanoseconds{};
+  std::optional<LspGeneration> pending;
+  bool dirty{}, changed_during_pending{}, blocked{}, stopped{};
+};
 class LspGenerationSchedule final {
 public:
   // Effective intervals and a nonzero independent PRNG seed are mandatory.
@@ -48,6 +57,12 @@ public:
   // Sequence failure is metadata work, independent of publication credits,
   // authentication availability and minimum spacing between generated PDUs.
   [[nodiscard]] bool sequence_exhaustion_due(RuntimeClock::time_point now) const noexcept;
+  // Same-owner transfer after transport quiescence. Relative nanoseconds freeze
+  // elapsed time while absent. Capture throws invalid_argument for a clock
+  // distance outside the transfer range. Restore requires identical intervals,
+  // validates all fields before mutation and allocates no memory.
+  [[nodiscard]] LspGenerationCheckpoint checkpoint(RuntimeClock::time_point now) const;
+  [[nodiscard]] bool restore(const LspGenerationCheckpoint &saved, RuntimeClock::time_point now) noexcept;
 private:
   std::chrono::microseconds minimum_, refresh_;
   std::uint64_t random_{}, tickets_{};

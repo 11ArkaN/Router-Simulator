@@ -19,10 +19,12 @@ struct UpdateLevelConfiguration {
   bool authenticate_lsp{}, authenticate_csnp{}, authenticate_psnp{};
   // No implicit compatibility choice: construction rejects an unresolved policy.
   PurgeRules purge_rules{PurgeRules::unspecified};
+  bool operator==(const UpdateLevelConfiguration &) const = default;
 };
 struct UpdateInstanceSelector {
   packet::isis::InstanceFormat format{static_cast<packet::isis::InstanceFormat>(255U)};
   std::uint16_t wire_instance{};
+  bool operator==(const UpdateInstanceSelector &) const = default;
 };
 struct UpdateCircuitConfiguration {
   std::uint64_t configuration_epoch{};
@@ -35,6 +37,7 @@ struct UpdateCircuitConfiguration {
   // Broadcast peer capacity is an explicit emulator budget, per level.
   bool broadcast{};
   std::size_t neighbor_capacity{};
+  bool operator==(const UpdateCircuitConfiguration &) const = default;
 };
 enum class UpdateStatus : std::uint8_t {
   applied, invalid_circuit, stale_configuration, invalid_event, epoch_exhausted,
@@ -72,6 +75,32 @@ struct UpdateCircuitAdmission {
   std::uint64_t configuration_epoch{};
   std::uint64_t ticket{};
   std::optional<UpdateCircuitConfiguration> previous_configuration{};
+};
+struct InstanceUpdateConfiguration {
+  packet::isis::SystemId local{};
+  std::uint8_t maximum_areas{};
+  std::array<std::optional<UpdateLevelConfiguration>, 2U> levels;
+  UpdateInstanceSelector selector;
+  std::size_t maximum_circuits{};
+  std::uint64_t initial_synchronization_epoch{};
+  bool operator==(const InstanceUpdateConfiguration &) const = default;
+};
+struct InstanceCircuitCheckpoint {
+  UpdateCircuitConfiguration configuration;
+  std::array<std::uint64_t, 2U> synchronization_epochs{};
+  std::array<bool, 2U> activated{};
+  bool configured{}, admission_pending{};
+  std::uint64_t admission_ticket{};
+  Levels active{Levels::none};
+  packet::Mac peer{};
+  std::array<std::vector<packet::Mac>, 2U> lan_peers;
+};
+struct InstanceUpdateCheckpoint {
+  std::uint32_t version{1U};
+  InstanceUpdateConfiguration configuration;
+  std::array<std::optional<LevelProcessCheckpoint>, 2U> levels;
+  std::vector<InstanceCircuitCheckpoint> circuits;
+  std::uint64_t admission_counter{};
 };
 class InstanceUpdateProcess final {
 public:
@@ -230,12 +259,32 @@ public:
   // Borrowers may prepare/complete/cancel output, never replace its epoch.
   [[nodiscard]] std::optional<UpdateOutputs> outputs(std::size_t circuit,
       std::size_t level) noexcept;
+  // Same instance owner under the coordinated transport barrier. Returns owned
+  // level state, peer catalogs, stable-slot bindings and admission/synchronization
+  // high water. A cold committed circuit may still carry a pending admission
+  // marker until its first event; that marker is retained. Allocation and clock
+  // failures propagate without changing the instance.
+  [[nodiscard]] InstanceUpdateCheckpoint checkpoint(RuntimeClock::time_point now) const;
+  // Parent supplies validated policy and every stable slot, including retired
+  // bindings. Prepared configuration transactions must be handled by the parent
+  // barrier. Returns a fully restored fresh heap owner, or nullptr on invalid
+  // state/policy/resource refusal. No current owner or observer is touched.
+  [[nodiscard]] static std::unique_ptr<InstanceUpdateProcess> restore_checkpoint(
+      const InstanceUpdateCheckpoint &checkpoint, InstanceUpdateConfiguration expected,
+      std::span<const UpdateCircuitConfiguration> circuits, RuntimeClock::time_point now) noexcept;
   [[nodiscard]] const LevelProcess *level(std::size_t index) const noexcept;
   // Same-owner value projection for entity replacement. The parent preserves
   // this fence outside the entity and starts its successor strictly above it;
   // no old reservation may match a reconstructed output owner's first ticket.
   [[nodiscard]] std::uint64_t maximum_synchronization_epoch() const noexcept;
 private:
+  enum class LevelConstruction : std::uint8_t { immediate, deferred };
+  InstanceUpdateProcess(packet::isis::SystemId local, std::uint8_t maximum_areas,
+      std::array<std::optional<UpdateLevelConfiguration>, 2U> levels,
+      std::span<const UpdateCircuitConfiguration> circuits, UpdateInstanceSelector selector,
+      std::size_t maximum_circuits, std::uint64_t initial_synchronization_epoch, LevelConstruction construction);
+  [[nodiscard]] static LsdbLimits effective_limits(const UpdateLevelConfiguration &level,
+      UpdateInstanceSelector selector, std::size_t maximum_circuits);
   enum class LocalCopyAcceptance : std::uint8_t { none, retained, retired_purge };
   [[nodiscard]] UpdatePurgeResult publish_purge(std::size_t level,
       const packet::isis::LspView &original, std::uint8_t maximum_areas, bool instance_present,

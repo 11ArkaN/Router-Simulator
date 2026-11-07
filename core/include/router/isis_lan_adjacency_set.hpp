@@ -7,6 +7,7 @@
 #include "router/isis_adjacency.hpp"
 #include "router/isis_lan_peer.hpp"
 
+#include <memory>
 #include <vector>
 
 namespace router::isis {
@@ -32,6 +33,18 @@ enum class LanSetResult : std::uint8_t {
   accepted, discarded, malformed, capacity_refused, memory_refused, missing_observer
 };
 
+struct LanPeerCheckpoint {
+  LanAdjacencyCheckpoint adjacency;
+  std::vector<std::uint8_t> attributes;
+};
+struct LanSetCheckpoint {
+  std::uint32_t version{1U};
+  packet::isis::PduType type{};
+  packet::Mac local{};
+  LanSetLimits limits;
+  std::size_t maximum_attribute_octets{};
+  std::vector<LanPeerCheckpoint> peers;
+};
 class LanAdjacencySet final {
 public:
   using Clock = LanAdjacency::Clock;
@@ -76,6 +89,15 @@ public:
   [[nodiscard]] std::optional<Clock::time_point> deadline() const noexcept;
   [[nodiscard]] std::size_t size() const noexcept { return peers_.size(); }
 
+  // Same LAN level owner after quiescence. Snapshots own selected non-secret
+  // attributes; area projections are rebuilt from those same TLVs. Capture can
+  // throw allocation/clock errors. Restore validates caller policy, ordered
+  // identities and every nested timer before publishing a fresh heap owner.
+  // Refusal returns null and emits no observer events.
+  [[nodiscard]] LanSetCheckpoint checkpoint(Clock::time_point now) const;
+  [[nodiscard]] static std::unique_ptr<LanAdjacencySet> restore_checkpoint(const LanSetCheckpoint &saved,
+      packet::isis::PduType type, packet::Mac local, LanSetLimits limits,
+      std::size_t attribute_octets, Clock::time_point now) noexcept;
 private:
   struct Peer {
     LanAdjacency adjacency;

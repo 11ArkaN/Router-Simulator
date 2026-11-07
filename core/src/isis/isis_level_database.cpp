@@ -21,16 +21,20 @@ LevelDatabase::LevelDatabase(packet::isis::PduType type, LsdbLimits limits,
   for (auto &circuit : circuits_) circuit.srm = circuit.ssn = false;
 }
 
+bool LevelDatabase::reserve_circuit_capacity(std::size_t count) noexcept {
+  if (count > maximum_circuits_) return false;
+  try {
+    circuits_.reserve(count);
+    for (auto &record : records_) record.circuits.reserve(count);
+    return true;
+  } catch (const std::bad_alloc &) { return false; }
+    catch (const std::length_error &) { return false; }
+}
+
 std::optional<std::size_t> LevelDatabase::admit_circuit(bool broadcast) noexcept {
   if (circuits_.size() == maximum_circuits_) return std::nullopt;
   const auto index = circuits_.size();
-  try {
-    // Complete every possible allocation before changing a vector length.
-    // Retained LSP bytes and existing SRM/SSN are never part of this mutation.
-    circuits_.reserve(index + 1U);
-    for (auto &record : records_) record.circuits.reserve(index + 1U);
-  } catch (const std::bad_alloc &) { return std::nullopt; }
-    catch (const std::length_error &) { return std::nullopt; }
+  if (!reserve_circuit_capacity(index + 1U)) return std::nullopt;
   const FloodCircuit value{broadcast, false, false, false};
   circuits_.push_back(value);
   for (auto &record : records_) record.circuits.push_back(value);

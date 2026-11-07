@@ -20,6 +20,7 @@ struct LocalLspContent {
 struct LocalLspLevelProgram {
   std::uint16_t maximum_age{}, maximum_pdu_octets{};
   std::chrono::microseconds minimum_interval{}, refresh_interval{};
+  bool operator==(const LocalLspLevelProgram &) const = default;
 };
 struct LocalLspProgram {
   std::array<std::optional<LocalLspLevelProgram>, 2U> levels;
@@ -32,6 +33,23 @@ enum class LocalContentResult : std::uint8_t { unchanged, changed, missing, inva
 struct LocalGenerationResult {
   std::optional<RuntimeClock::time_point> deadline;
   std::size_t published{}, blocked{};
+  GenerationStatus terminal{GenerationStatus::waiting};
+};
+struct LocalLspEntryCheckpoint {
+  LocalLspContent content;
+  LspGenerationCheckpoint generation;
+  UpdateStatus last_error{UpdateStatus::applied};
+  bool retirement_pending{}, retirement_blocked{};
+};
+struct LocalLspSetCheckpoint {
+  std::uint32_t version{1U};
+  packet::isis::SystemId local{};
+  std::uint8_t maximum_areas{};
+  UpdateInstanceSelector selector;
+  std::array<std::optional<LocalLspLevelProgram>, 2U> levels;
+  std::array<bool, 2U> waiting_overload{};
+  std::vector<LocalLspEntryCheckpoint> entries;
+  std::size_t first{};
   GenerationStatus terminal{GenerationStatus::waiting};
 };
 class LocalLspSet final {
@@ -85,6 +103,14 @@ public:
   [[nodiscard]] LocalGenerationResult service(InstanceUpdateProcess &update,
       std::array<TransmitAuthentication, 2U> authentication, RuntimeClock::time_point now,
       PduScratch &scratch, LevelObserver observer, std::size_t &budget) noexcept;
+  // Same instance shard after quiescence. Capture owns semantic bytes and
+  // relative schedules; allocation/clock failures throw. Restore checks the
+  // caller's policy and reserved identities before publishing a fresh owner.
+  // Refusal returns null without touching any existing owner or update process.
+  [[nodiscard]] LocalLspSetCheckpoint checkpoint(RuntimeClock::time_point now) const;
+  [[nodiscard]] static std::unique_ptr<LocalLspSet> restore_checkpoint(const LocalLspSetCheckpoint &saved,
+      packet::isis::SystemId local, std::uint8_t maximum_areas, UpdateInstanceSelector selector,
+      LocalLspProgram expected, RuntimeClock::time_point now) noexcept;
 private:
   struct Entry {
     LocalLspContent content;

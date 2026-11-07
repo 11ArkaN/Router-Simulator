@@ -5,6 +5,7 @@
 #include "router/isis_p2p_circuit.hpp"
 #include "router/multi_device_fabric.hpp"
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <stdexcept>
@@ -104,6 +105,40 @@ void isis_p2p_circuit_tests() {
     peer_address = addresses.next() == std::optional<packet::Ipv4>{{192U, 0U, 2U, 2U}};
   }
   require(attributes.valid() && peer_address);
+  const auto rebased = PointToPointCircuit::Clock::time_point{9000s};
+  const auto saved = a.checkpoint(context.now);
+  auto restored = PointToPointCircuit::restore_checkpoint(saved, configuration(1U), rebased);
+  require(restored && restored->adjacency() == a.adjacency() &&
+      std::ranges::equal(restored->peer_attributes(), a.peer_attributes()));
+  for (unsigned invalid{}; invalid < 8U; ++invalid) {
+    auto bad = saved;
+    switch (invalid) {
+      case 0U: ++bad.version; break;
+      case 1U: ++bad.configuration.holding_seconds; break;
+      case 2U: bad.operational = false; break;
+      case 3U: bad.peer_attributes = {10U, 1U, 7U}; break;
+      case 4U: bad.peer_attributes = {1U, 1U, 0U}; break;
+      case 5U: bad.peer_attributes.clear(); break;
+      case 6U: bad.adjacency.local.extended_circuit = 999U; break;
+      default: bad.hello.interval = 0us; break;
+    }
+    require(!PointToPointCircuit::restore_checkpoint(bad, configuration(1U), rebased) && restored->adjacency().iso_up);
+  }
+  Events restored_events;
+  require(!restored->expire(rebased + 2999ms, &restored_events, event) &&
+      restored->expire(rebased + 3s, &restored_events, event) && restored_events.down == 1U &&
+      restored_events.old_attributes_preserved);
+  require(restored->down(&restored_events, event));
+  const auto down_saved = restored->checkpoint(rebased + 3s);
+  restored = PointToPointCircuit::restore_checkpoint(down_saved, configuration(1U), rebased);
+  require(restored && !restored->operational() && restored->up(rebased));
+  auto pending_frame = std::make_unique<packet::Frame>();
+  require(restored->hello(*pending_frame, key, *scratch, rebased) == HelloBuildResult::encoded);
+  const auto pending_saved = restored->checkpoint(rebased);
+  restored.reset();
+  restored = PointToPointCircuit::restore_checkpoint(pending_saved, configuration(1U), rebased);
+  require(restored && restored->hello_pending() && restored->complete_hello(true, rebased) &&
+      !restored->complete_hello(true, rebased));
   const auto last_received = context.now;
   require(a.receive(last, std::nullopt, last_received + 1s, &context.events[0U], event) == CircuitReceive::authentication);
   auto wrong = last;

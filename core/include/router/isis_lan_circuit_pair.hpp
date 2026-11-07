@@ -11,6 +11,10 @@ struct LanCircuitProgram {
   std::array<std::optional<LanCircuitConfiguration>, 2U> levels;
   bool operator==(const LanCircuitProgram &) const = default;
 };
+struct LanPairCheckpoint {
+  std::uint32_t version{1U};
+  std::array<std::optional<LanCircuitCheckpoint>, 2U> levels;
+};
 class LanCircuitPair final {
 public:
   // At least one resolved level and explicit L1/L2 update groups are required.
@@ -33,6 +37,13 @@ public:
   [[nodiscard]] Levels levels() const noexcept;
   // Compare complete effective values without copying or resetting live state.
   [[nodiscard]] bool matches(const LanCircuitProgram &program) const noexcept;
+  // Same interface control owner after transport quiescence. Capture can throw
+  // allocation/clock errors. Restore validates the shared immutable identity and
+  // both independent level states before publishing a fresh aggregate; refusal
+  // emits no events and cannot change a live pair.
+  [[nodiscard]] LanPairCheckpoint checkpoint(LanCircuit::Clock::time_point now) const;
+  [[nodiscard]] static std::unique_ptr<LanCircuitPair> restore_checkpoint(const LanPairCheckpoint &saved,
+      LanCircuitProgram expected, LanCircuit::Clock::time_point now) noexcept;
 private:
   std::array<std::optional<LanCircuit>, 2U> circuits_;
 };

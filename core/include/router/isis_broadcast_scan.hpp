@@ -20,6 +20,14 @@ struct BroadcastSelection {
   BroadcastScanStatus status{BroadcastScanStatus::idle};
   std::optional<BroadcastCandidate> candidate{};
 };
+struct BroadcastScanCheckpoint {
+  std::uint32_t version{1U};
+  std::chrono::microseconds interval{};
+  std::int64_t periodic_nanoseconds{};
+  std::optional<std::int64_t> last_sent_nanoseconds;
+  std::uint64_t random{};
+  bool pending{};
+};
 class BroadcastScan final {
 public:
   using Clock = std::chrono::steady_clock;
@@ -55,6 +63,12 @@ public:
   // Same owner; pending output waits for its receipt instead of spinning.
   [[nodiscard]] Clock::time_point deadline(bool ingress_pending) const noexcept;
   [[nodiscard]] std::uint64_t random_state() const noexcept { return random_; }
+  // Same interface owner after transport quiescence. Capture throws on clock
+  // range failure; restore requires the same effective scan interval and checks
+  // all fields before mutation, without allocation. The parent must restore a
+  // matching selected LSP reservation whenever pending is true.
+  [[nodiscard]] BroadcastScanCheckpoint checkpoint(Clock::time_point now) const;
+  [[nodiscard]] bool restore(const BroadcastScanCheckpoint &saved, Clock::time_point now) noexcept;
 private:
   std::chrono::microseconds interval_;
   Clock::time_point periodic_{};

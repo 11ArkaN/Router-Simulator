@@ -13,6 +13,14 @@ struct DatabaseValidationResult {
   std::optional<packet::isis::LspId> corrupted;
   std::size_t checked{};
 };
+struct DatabaseValidationCheckpoint {
+  std::uint32_t version{1U};
+  std::chrono::microseconds interval{};
+  std::uint64_t random{};
+  std::int64_t due_nanoseconds{};
+  std::optional<packet::isis::LspId> cursor;
+  bool scanning{}, corrupted{};
+};
 class DatabaseValidation final {
 public:
   // A positive effective maximum generation interval and independent nonzero
@@ -29,6 +37,12 @@ public:
   [[nodiscard]] DatabaseValidationResult service(const LinkStateDatabase &database,
       RuntimeClock::time_point now, std::size_t &budget) noexcept;
   [[nodiscard]] std::optional<RuntimeClock::time_point> deadline() const noexcept;
+  // Same level owner. Capture owns relative time and value cursor, throwing
+  // only on clock-range failure. Restore requires the construction interval,
+  // checks before mutation and allocates nothing. The cursor need not still
+  // exist in the restored LSDB because deletion during a scan is legitimate.
+  [[nodiscard]] DatabaseValidationCheckpoint checkpoint(RuntimeClock::time_point now) const;
+  [[nodiscard]] bool restore(const DatabaseValidationCheckpoint &saved, RuntimeClock::time_point now) noexcept;
 private:
   std::chrono::microseconds interval_;
   std::uint64_t random_;

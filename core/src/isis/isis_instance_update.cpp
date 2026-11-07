@@ -50,6 +50,14 @@ InstanceUpdateProcess::InstanceUpdateProcess(packet::isis::SystemId local,
     std::span<const UpdateCircuitConfiguration> circuits, UpdateInstanceSelector selector,
     std::size_t maximum_circuits,
     std::uint64_t initial_synchronization_epoch)
+    : InstanceUpdateProcess(local, maximum_areas, std::move(levels), circuits, selector,
+          maximum_circuits, initial_synchronization_epoch, LevelConstruction::immediate) {}
+
+InstanceUpdateProcess::InstanceUpdateProcess(packet::isis::SystemId local,
+    std::uint8_t maximum_areas,
+    std::array<std::optional<UpdateLevelConfiguration>, 2U> levels,
+    std::span<const UpdateCircuitConfiguration> circuits, UpdateInstanceSelector selector,
+    std::size_t maximum_circuits, std::uint64_t initial_synchronization_epoch, LevelConstruction construction)
     : local_(local), selector_(selector), maximum_areas_(maximum_areas), configuration_(std::move(levels)),
       maximum_circuits_(maximum_circuits ? maximum_circuits : circuits.size()),
       initial_synchronization_epoch_(initial_synchronization_epoch) {
@@ -60,36 +68,45 @@ InstanceUpdateProcess::InstanceUpdateProcess(packet::isis::SystemId local,
   if (maximum_circuits_ < circuits.size() || maximum_circuits_ > circuits_.max_size())
     throw std::invalid_argument("Invalid IS-IS update circuit capacity");
   circuits_.reserve(circuits.size());
-  std::vector<LevelCircuitConfiguration> slots(circuits.size(), {false, initial_synchronization_epoch});
+  std::vector<LevelCircuitConfiguration> slots;
+  if (construction == LevelConstruction::immediate)
+    slots.assign(circuits.size(), {false, initial_synchronization_epoch});
   for (const auto &circuit : circuits) {
     if (!valid_circuit(circuit, configuration_, selector_))
       throw std::invalid_argument("Invalid IS-IS update circuit generation");
     circuits_.push_back(make_circuit(circuit, initial_synchronization_epoch));
-    slots[circuits_.size() - 1U].broadcast = circuit.broadcast;
+    if (construction == LevelConstruction::immediate) slots[circuits_.size() - 1U].broadcast = circuit.broadcast;
   }
   for (std::size_t index{}; index < levels_.size(); ++index) {
     if (!configuration_[index]) continue;
     const auto &value = *configuration_[index];
-    if (value.purge_rules > PurgeRules::registry_6233 ||
-        value.receive_pdu_octets < packet::isis::lsp_header_octets || value.receive_pdu_octets > 65535U ||
-        (maximum_circuits_ && !value.snp_entry_capacity))
-      throw std::invalid_argument("Invalid IS-IS receive PDU budget");
-    auto limits = value.database;
-    const auto iid = selector_.wire_instance ? 6U : selector_.format == packet::isis::InstanceFormat::legacy_2009 ? 4U : 0U;
-    // A full LSDB must still finalize every admitted expired LSP. Reserve the
-    // mandatory purge envelope up front, including the maximum TLV-width key
-    // when authentication is enabled. Key leases remain caller-owned.
-    const auto mandatory = packet::isis::lsp_header_octets + iid +
-        (value.purge_rules == PurgeRules::registry_6233 ? 9U : 0U);
-    if (value.receive_pdu_octets < mandatory ||
-        (selector_.wire_instance && value.purge_rules == PurgeRules::authentication_only))
-      throw std::invalid_argument("IS-IS purge policy does not fit the instance envelope");
-    const auto purge_reserve = mandatory + (value.authenticate_lsp ? 257U : 0U);
-    limits.minimum_pdu_allocation = std::max(limits.minimum_pdu_allocation, purge_reserve);
+    const auto limits = effective_limits(value, selector_, maximum_circuits_);
+    if (construction == LevelConstruction::deferred) continue;
     levels_[index] = std::make_unique<LevelProcess>(index ? packet::isis::PduType::lsp_l2 :
         packet::isis::PduType::lsp_l1, limits, slots, value.acknowledgement_capacity,
         value.snp_entry_capacity, value.maximum_age, value.purge_retention, value.waiting_time, maximum_circuits_);
   }
+}
+
+LsdbLimits InstanceUpdateProcess::effective_limits(const UpdateLevelConfiguration &value,
+    UpdateInstanceSelector selector, std::size_t maximum_circuits) {
+  if (value.purge_rules > PurgeRules::registry_6233 ||
+      value.receive_pdu_octets < packet::isis::lsp_header_octets || value.receive_pdu_octets > 65535U ||
+      (maximum_circuits && !value.snp_entry_capacity))
+    throw std::invalid_argument("Invalid IS-IS receive PDU budget");
+  auto limits = value.database;
+  const auto iid = selector.wire_instance ? 6U : selector.format == packet::isis::InstanceFormat::legacy_2009 ? 4U : 0U;
+  // A full LSDB must still finalize every admitted expired LSP. Reserve the
+  // mandatory purge envelope up front, including the maximum TLV-width key
+  // when authentication is enabled. Key leases remain caller-owned.
+  const auto mandatory = packet::isis::lsp_header_octets + iid +
+      (value.purge_rules == PurgeRules::registry_6233 ? 9U : 0U);
+  if (value.receive_pdu_octets < mandatory ||
+      (selector.wire_instance && value.purge_rules == PurgeRules::authentication_only))
+    throw std::invalid_argument("IS-IS purge policy does not fit the instance envelope");
+  const auto purge_reserve = mandatory + (value.authenticate_lsp ? 257U : 0U);
+  limits.minimum_pdu_allocation = std::max(limits.minimum_pdu_allocation, purge_reserve);
+  return limits;
 }
 
 UpdateCircuitAdmission InstanceUpdateProcess::admit_circuit(UpdateCircuitConfiguration configuration) noexcept {

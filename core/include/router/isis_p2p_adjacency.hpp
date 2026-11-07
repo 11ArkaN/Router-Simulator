@@ -43,8 +43,15 @@ struct P2pSnapshot {
   bool present{};
   bool iso_up{};
   bool uses_three_way{};
+  bool operator==(const P2pSnapshot &) const = default;
 };
 
+struct P2pAdjacencyCheckpoint {
+  std::uint32_t version{1U};
+  P2pLocal local;
+  P2pSnapshot state;
+  std::optional<std::int64_t> holding_nanoseconds;
+};
 class PointToPointAdjacency final {
 public:
   using Clock = std::chrono::steady_clock;
@@ -77,6 +84,11 @@ public:
   // identity only when both peer fields are known in Initializing or Up.
   [[nodiscard]] ThreeWayOption outbound_three_way() const noexcept;
 
+  // Same circuit owner; no allocation. Capture throws on clock-range failure.
+  // Restore validates immutable identity, state shape and relative holding time
+  // before mutation. A due-but-unserviced adjacency remains due after restore.
+  [[nodiscard]] P2pAdjacencyCheckpoint checkpoint(Clock::time_point now) const;
+  [[nodiscard]] bool restore(const P2pAdjacencyCheckpoint &saved, Clock::time_point now) noexcept;
 private:
   [[nodiscard]] P2pUpdate remove(P2pReason reason) noexcept;
   P2pLocal local_;

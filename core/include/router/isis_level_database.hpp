@@ -26,6 +26,21 @@ struct SnpBatchResult {
   std::size_t confusions{};
 };
 
+// Same-owner transfer values join encoded LSDB records to their stable circuit
+// slots and zero-sequence request metadata. Nested wire needs protected export.
+struct LevelFloodRecordCheckpoint {
+  packet::isis::LspId id{};
+  std::vector<FloodCircuit> circuits;
+  bool placeholder{};
+};
+struct LevelDatabaseCheckpoint {
+  std::uint32_t version{1U};
+  LsdbCheckpoint database;
+  std::size_t maximum_circuits{};
+  std::vector<FloodCircuit> circuits;
+  std::vector<LevelFloodRecordCheckpoint> records;
+};
+
 class LevelDatabase final {
 public:
   // Circuit positions are stable for this aggregate's lifetime. Replacing a
@@ -38,6 +53,10 @@ public:
   // slot count; otherwise the explicit emulator budget bounds future slots.
   // New slots start Down with no flood obligations. Allocation failure preserves
   // lengths and contents, although already reserved capacity may remain.
+  // Same-owner cold preparation for a complete slot set. Checks the configured
+  // ceiling and reserves every metadata vector without publishing a slot or
+  // changing flags. Refusal may retain spare capacity but no logical mutation.
+  [[nodiscard]] bool reserve_circuit_capacity(std::size_t count) noexcept;
   [[nodiscard]] std::optional<std::size_t> admit_circuit(bool broadcast) noexcept;
   [[nodiscard]] bool circuit_capacity_available() const noexcept {
     return circuits_.size() < maximum_circuits_;
@@ -117,6 +136,17 @@ public:
       const packet::isis::LspId &id, RuntimeClock::time_point now) const noexcept;
   [[nodiscard]] std::optional<packet::isis::SnpEntry> snp_entry_at(
       std::size_t index, RuntimeClock::time_point now) const noexcept;
+  // Same owner, quiesced exchange coordinators. Copies the complete LSDB,
+  // stable circuit slots, SRM/SSN and placeholders. Allocation/clock failures
+  // propagate without changing the level; no borrowed packet view is returned.
+  [[nodiscard]] LevelDatabaseCheckpoint checkpoint(RuntimeClock::time_point now) const;
+  // Same owner. Requires matching slot count, media and construction budgets.
+  // Validates all metadata and stages every allocation before the nested LSDB
+  // commit; subsequent vector swaps cannot fail. False preserves the complete
+  // level for malformed/capacity/clock input. Success invalidates borrowed views;
+  // coordinator references to this LevelDatabase object remain valid.
+  [[nodiscard]] bool restore(const LevelDatabaseCheckpoint &checkpoint,
+      RuntimeClock::time_point now, std::uint16_t maximum_age) noexcept;
   [[nodiscard]] std::size_t size() const noexcept { return records_.size(); }
   [[nodiscard]] packet::isis::PduType type() const noexcept { return type_; }
   // Same-owner circuit-wide media/eligibility projection. Per-LSP SRM/SSN

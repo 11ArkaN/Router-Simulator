@@ -54,6 +54,31 @@ void isis_lan_adjacency_tests() {
   require(update.outcome == LanOutcome::up && neighbor.snapshot().state == LanState::up &&
             neighbor.snapshot().advertised_lan == input.designated_id,
           "IS-IS LAN did not recognize two-way MAC reporting or changed reported DIS");
+  const auto rebased = LanAdjacency::Clock::time_point{9000s};
+  const auto up_saved = neighbor.checkpoint(now + 1500ms);
+  LanAdjacency restored(PduType::lan_hello_l1, peer, peer_mac, local_mac);
+  require(restored.restore(up_saved, rebased) && restored.snapshot() == neighbor.snapshot() &&
+      restored.deadline() == rebased + 2500ms, "IS-IS LAN Up restore lost holding state");
+  for (unsigned invalid{}; invalid < 10U; ++invalid) {
+    auto bad = up_saved;
+    switch (invalid) {
+      case 0U: ++bad.version; break;
+      case 1U: bad.type = PduType::lan_hello_l2; break;
+      case 2U: ++bad.peer[0U]; break;
+      case 3U: ++bad.local_mac[0U]; break;
+      case 4U: ++bad.state.system[0U]; break;
+      case 5U: bad.state.priority = 128U; break;
+      case 6U: bad.state.state = static_cast<LanState>(2U); break;
+      case 7U: bad.state.present = false; break;
+      case 8U: bad.holding_nanoseconds.reset(); break;
+      default: bad.holding_nanoseconds = 65535000000001LL; break;
+    }
+    require(!restored.restore(bad, rebased) && restored.snapshot() == neighbor.snapshot(),
+        "IS-IS bad LAN checkpoint mutated live state");
+  }
+  require(!restored.restore(up_saved, LanAdjacency::Clock::time_point::max()), "IS-IS LAN holding restore overflow accepted");
+  require(restored.expire(rebased + 2499ms).outcome == LanOutcome::discarded &&
+      restored.expire(rebased + 2500ms).reason == LanReason::holding_expired, "IS-IS restored LAN expiry changed");
   input.priority = 127U;
   input.designated_id.back() = 99U;
   update = neighbor.receive(hello(wire, input, local), peer_mac, now + 1500ms);
@@ -65,6 +90,13 @@ void isis_lan_adjacency_tests() {
             neighbor.snapshot().present && neighbor.snapshot().state == LanState::initializing &&
             neighbor.deadline() == now + 5s,
           "IS-IS LAN one-way loss deleted rather than initialized its adjacency");
+  require(restored.restore(neighbor.checkpoint(now + 2500ms), rebased) &&
+      restored.snapshot().state == LanState::initializing && restored.deadline() == rebased + 2500ms,
+      "IS-IS one-way LAN restore lost initializing state");
+  require(restored.restore(neighbor.checkpoint(now + 6s), rebased) &&
+      restored.expire(rebased).reason == LanReason::holding_expired,
+      "IS-IS due LAN holding state resurrected");
+  require(restored.restore(restored.checkpoint(rebased), rebased) && !restored.deadline(), "IS-IS absent LAN restore failed");
   const auto deadline = neighbor.deadline();
   update = neighbor.receive(hello(wire, input, local, true), peer_mac, now + 4s);
   require(update.reason == LanReason::malformed && !update.holding_refreshed && neighbor.deadline() == deadline,

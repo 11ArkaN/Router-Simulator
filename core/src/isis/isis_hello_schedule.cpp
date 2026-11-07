@@ -8,24 +8,35 @@
 #include <stdexcept>
 
 namespace router::isis {
+namespace {
+HelloSchedule::Clock::time_point after(HelloSchedule::Clock::time_point now,
+    std::chrono::microseconds interval) noexcept {
+  const auto duration = std::chrono::duration_cast<HelloSchedule::Clock::duration>(interval);
+  return now > HelloSchedule::Clock::time_point::max() - duration ? HelloSchedule::Clock::time_point::max() : now + duration;
+}
+bool valid_interval(std::chrono::microseconds value) noexcept {
+  return value.count() > 0 && value <=
+      std::chrono::duration_cast<std::chrono::microseconds>(HelloSchedule::Clock::duration::max());
+}
+}
 
 HelloSchedule::HelloSchedule(std::chrono::microseconds effective_interval,
     bool broadcast, bool designated, std::uint64_t random_state, Clock::time_point now)
     : interval_(effective_interval), random_(random_state), broadcast_(broadcast),
       designated_(designated) {
-  if (interval_.count() <= 0 || !random_ || (designated && !broadcast))
+  if (!valid_interval(interval_) || !random_ || (designated && !broadcast))
     throw std::invalid_argument("Invalid IS-IS Hello schedule");
   restart(now);
 }
 
 void HelloSchedule::restart(Clock::time_point now) noexcept {
   const auto period = designated_ ? interval_ : *jittered_interval(interval_, random_);
-  periodic_ = now + period;
+  periodic_ = after(now, period);
 }
 
 bool HelloSchedule::role(std::chrono::microseconds effective_interval,
     bool designated, Clock::time_point now) noexcept {
-  if (effective_interval.count() <= 0 || (designated && !broadcast_)) return false;
+  if (!valid_interval(effective_interval) || (designated && !broadcast_)) return false;
   if (interval_ != effective_interval || designated_ != designated) {
     interval_ = effective_interval;
     designated_ = designated;
@@ -41,7 +52,7 @@ bool HelloSchedule::begin(Clock::time_point now) noexcept {
     dirty_ = true;
   }
   if (pending_ || !dirty_ ||
-      (broadcast_ && sent_ && now < last_sent_ + std::chrono::seconds{1})) return false;
+      (broadcast_ && sent_ && now < after(last_sent_, std::chrono::seconds{1}))) return false;
   dirty_ = false;
   pending_ = true;
   return true;
@@ -62,7 +73,7 @@ HelloSchedule::Clock::time_point HelloSchedule::deadline() const noexcept {
   // timer visible so a delayed receipt does not stop periodic continuation.
   if (pending_ || !dirty_) return periodic_;
   if (!broadcast_ || !sent_) return Clock::time_point::min();
-  return std::min(periodic_, last_sent_ + std::chrono::seconds{1});
+  return std::min(periodic_, after(last_sent_, std::chrono::seconds{1}));
 }
 
 } // namespace router::isis

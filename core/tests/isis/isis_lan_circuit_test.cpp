@@ -82,14 +82,14 @@ void synchronize(Events &events) noexcept {
   const auto unique_end = std::unique(system_peers.begin(), system_peers.end());
   std::array<std::uint8_t, 256U> options{};
   events.update_ok = events.update_ok && accepted(synchronize_lan_pseudonode(*events.origin,
-      0U, events.pseudonode, 3U, count && selected && selected->local,
+      0U, events.pseudonode, std::uint8_t{3U}, count && selected && selected->local,
       std::span<const packet::isis::SystemId>(system_peers.begin(), unique_end), true, options, events.now));
   packet::isis::TlvWriter writer(options);
   packet::isis::TlvCursor base(events.base);
   while (const auto option = base.next()) events.update_ok = events.update_ok && writer.append(option->code, option->value);
-  if (selected) events.update_ok = events.update_ok && append_lan_origin_neighbor(writer, selected->lan, {10U, 10U});
+  if (selected) events.update_ok = events.update_ok && append_lan_origin_neighbor(writer, selected->lan, {10U, std::uint8_t{10U}});
   events.update_ok = events.update_ok && base.valid() && accepted(events.origin->replace(0U,
-      events.root, 3U, writer.bytes(), events.now));
+      events.root, std::uint8_t{3U}, writer.bytes(), events.now));
 }
 void peer(void *opaque, const LanPeerEvent &value) noexcept {
   auto &events = *static_cast<Events *>(opaque);
@@ -173,7 +173,7 @@ void isis_lan_circuit_tests() {
     const UpdateCircuitConfiguration binding{7U, Levels::level1, false,
         packet::isis::InstanceFormat::standard, 0U,
         {local.hello_destination, local.hello_destination}, true, 4U};
-    context.updates[index] = std::make_unique<InstanceUpdateProcess>(local.local.system, 3U,
+    context.updates[index] = std::make_unique<InstanceUpdateProcess>(local.local.system, std::uint8_t{3U},
         std::array<std::optional<UpdateLevelConfiguration>, 2U>{level, {}}, std::array{binding},
         UpdateInstanceSelector{packet::isis::InstanceFormat::standard, 0U});
     context.events[index].circuit = context.circuits[index];
@@ -186,8 +186,8 @@ void isis_lan_circuit_tests() {
     LocalLspProgram origin;
     origin.levels[0U] = LocalLspLevelProgram{1200U, 256U, 1s, 40s};
     origin.random = index + 19U;
-    origin.records = {{0U, events.root, 3U, events.base}, {0U, events.pseudonode, 3U, {}, false}};
-    context.origins[index] = std::make_unique<LocalLspSet>(local.local.system, 3U,
+    origin.records = {{0U, events.root, 3U, events.base}, {0U, events.pseudonode, std::uint8_t{3U}, {}, false}};
+    context.origins[index] = std::make_unique<LocalLspSet>(local.local.system, std::uint8_t{3U},
         UpdateInstanceSelector{packet::isis::InstanceFormat::standard, 0U}, std::move(origin), start);
     events.origin = context.origins[index].get();
     context.scans[index] = std::make_unique<BroadcastScan>(100ms, index + 41U, start);
@@ -466,6 +466,26 @@ void isis_lan_circuit_pair_tests() {
   require(pair.levels() == Levels::both && pair.at(0U) && pair.at(1U) && !pair.at(2U) && pair.matches(program));
   require(pair.at(0U)->configuration().hello_interval == 1s && pair.at(1U)->configuration().hello_interval == 2s &&
       pair.common().local.system == configuration(1U).local.system);
+  const LanCircuitObserver snapshot_quiet{nullptr, +[](void *, const LanPeerEvent &) noexcept {},
+      +[](void *, const std::optional<DisSelection> &, const std::optional<DisSelection> &) noexcept {}};
+  auto snapshot_scratch = std::make_unique<PduScratch>();
+  auto snapshot_frame = std::make_unique<packet::Frame>();
+  require(pair.at(0U)->hello(*snapshot_frame, {}, *snapshot_scratch, start, snapshot_quiet) == HelloBuildResult::encoded &&
+      pair.at(1U)->hello(*snapshot_frame, {}, *snapshot_scratch, start, snapshot_quiet) == HelloBuildResult::encoded);
+  const auto pair_saved = pair.checkpoint(start + 500ms);
+  const auto pair_rebased = RuntimeClock::time_point{9000s};
+  auto restored_pair = LanCircuitPair::restore_checkpoint(pair_saved, program, pair_rebased);
+  require(restored_pair && restored_pair->matches(program) && restored_pair->at(0U)->hello_pending() &&
+      restored_pair->at(1U)->hello_pending());
+  auto bad_pair = pair_saved;
+  bad_pair.levels[1U]->hello.random = 0U;
+  require(!LanCircuitPair::restore_checkpoint(bad_pair, program, pair_rebased));
+  bad_pair = pair_saved;
+  bad_pair.levels[1U].reset();
+  require(!LanCircuitPair::restore_checkpoint(bad_pair, program, pair_rebased));
+  require(restored_pair->at(0U)->complete_hello(true, pair_rebased) && restored_pair->at(1U)->hello_pending() &&
+      restored_pair->at(1U)->complete_hello(false, pair_rebased));
+  require(pair.at(0U)->complete_hello(false, start + 500ms) && pair.at(1U)->complete_hello(false, start + 500ms));
   auto changed = program;
   changed.levels[1U]->holding_seconds = 7U;
   require(!pair.matches(changed));
@@ -500,6 +520,9 @@ void isis_lan_circuit_pair_tests() {
   LanCircuitPair l2(changed, 5U, start);
   const LanCircuitPair &view = l2;
   require(l2.levels() == Levels::level2 && !view.at(0U) && view.at(1U) && !view.at(2U) && l2.matches(changed));
+  const auto l2_saved = l2.checkpoint(start);
+  auto restored_l2 = LanCircuitPair::restore_checkpoint(l2_saved, changed, pair_rebased);
+  require(restored_l2 && !restored_l2->at(0U) && restored_l2->at(1U));
   Events restart_events;
   restart_events.circuit = pair.at(0U);
   const LanCircuitObserver restart_observer{&restart_events, peer, designated};
@@ -524,4 +547,73 @@ void isis_lan_circuit_pair_tests() {
       pair.at(0U)->complete_hello(true, resumed));
   pair.at(0U)->service(resumed + 1s, 4U, restart_observer);
   require(!pair.at(0U)->designated() && restart_events.changes == 0U);
+}
+
+void isis_lan_circuit_checkpoint_tests() {
+  using namespace router;
+  using namespace router::isis;
+  using namespace std::chrono_literals;
+  const auto now = RuntimeClock::time_point{100s}, rebased = RuntimeClock::time_point{9000s};
+  for (const bool local_dis : {false, true}) {
+    auto local_configuration = configuration(1U);
+    if (local_dis) local_configuration.local.priority = 127U;
+    auto original = std::make_unique<LanCircuit>(local_configuration, 17U, now);
+    LanCircuit remote(configuration(2U), 19U, now);
+    const LanCircuitObserver quiet{nullptr, +[](void *, const LanPeerEvent &) noexcept {},
+        +[](void *, const std::optional<DisSelection> &, const std::optional<DisSelection> &) noexcept {}};
+    auto scratch = std::make_unique<PduScratch>();
+    auto frame = std::make_unique<packet::Frame>();
+    require(remote.hello(*frame, {}, *scratch, now, quiet) == HelloBuildResult::encoded && remote.complete_hello(true, now));
+    require(original->receive(*frame, {}, now, quiet) == LanCircuitReceive::accepted);
+    const auto initial = original->checkpoint(now + 500ms);
+    auto resumed = LanCircuit::restore_checkpoint(initial, local_configuration, rebased);
+    require(resumed && !resumed->designated() && resumed->neighbors().size() == 1U);
+    require(original->hello(*frame, {}, *scratch, now, quiet) == HelloBuildResult::encoded &&
+        original->complete_hello(true, now) && remote.receive(*frame, {}, now, quiet) == LanCircuitReceive::accepted);
+    require(remote.hello(*frame, {}, *scratch, now + 1s, quiet) == HelloBuildResult::encoded &&
+        remote.complete_hello(true, now + 1s) && original->receive(*frame, {}, now + 1s, quiet) == LanCircuitReceive::accepted);
+    original->service(now + 2s, 4U, quiet);
+    require(original->designated() && original->designated()->local == local_dis);
+    require(original->hello(*frame, {}, *scratch, now + 2500ms, quiet) == HelloBuildResult::encoded);
+    const auto saved = original->checkpoint(now + 2500ms);
+    resumed = LanCircuit::restore_checkpoint(saved, local_configuration, rebased);
+    require(resumed && resumed->hello_pending() && resumed->designated() == original->designated());
+    original.reset();
+    for (unsigned invalid{}; invalid < 11U; ++invalid) {
+      auto bad = saved;
+      switch (invalid) {
+        case 0U: ++bad.version; break;
+        case 1U: ++bad.configuration.local.priority; break;
+        case 2U: bad.election_nanoseconds = 1; break;
+        case 3U: bad.election_started = false; break;
+        case 4U: bad.designated.reset(); break;
+        case 5U: bad.advertised_lan[0U] ^= 1U; break;
+        case 6U: bad.hello.designated = !bad.hello.designated; break;
+        case 7U: bad.operational = false; break;
+        case 8U: bad.neighbors.peers[0U].attributes = {10U, 1U, 7U}; break;
+        case 9U: bad.neighbors.peers[0U].attributes.clear(); break;
+        default: bad.neighbors.peers[0U].adjacency.state.state = LanState::initializing; break;
+      }
+      require(!LanCircuit::restore_checkpoint(bad, local_configuration, rebased) && resumed->hello_pending());
+    }
+    require(resumed->complete_hello(true, rebased) && !resumed->complete_hello(true, rebased));
+    resumed->service(rebased + 1499ms, 4U, quiet);
+    require(resumed->neighbors().size() == 1U);
+    resumed->service(rebased + 1500ms, 4U, quiet);
+    require(!resumed->neighbors().size() && !resumed->designated());
+    require(resumed->down(quiet));
+    auto down = resumed->checkpoint(rebased + 1500ms);
+    resumed = LanCircuit::restore_checkpoint(down, local_configuration, rebased);
+    require(resumed && !resumed->operational() && resumed->up(rebased) && !resumed->designated());
+    require(resumed->hello(*frame, {}, *scratch, rebased, quiet) == HelloBuildResult::encoded);
+  }
+  auto impossible = configuration(1U);
+  impossible.hello_interval = std::chrono::microseconds::max();
+  bool rejected{};
+  try { LanCircuit invalid(impossible, 1U, now); }
+  catch (const std::invalid_argument &) { rejected = true; }
+  require(rejected);
+  LanCircuit near_limit(configuration(1U), 7U, RuntimeClock::time_point::max() - 1s);
+  const auto captured = near_limit.checkpoint(RuntimeClock::time_point::max() - 1s);
+  require(captured.election_nanoseconds == 1000000000LL);
 }
