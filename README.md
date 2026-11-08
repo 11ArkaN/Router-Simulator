@@ -28,6 +28,8 @@ The Workspace sidebar includes a Demos tab with ready-to-run labs. The current c
 
 Routers and hosts are dragged onto the canvas, and a link picks its physical ports when you connect it. A new host is created immediately with a cryptographically generated locally administered unicast MAC address, the catalog-defined 1500-byte host MTU and no IPv4 address. Static addressing or DHCP can be selected later in the Inspector. Device positions and attached links follow the pointer continuously during a drag, while the durable project coordinate is written once when the device is dropped. Device and link graphics remain visually stable while they are hovered or selected. The built-in black theme is declared to the browser before styles load, so native controls and accessibility extensions recognize that the page is already dark. The topology, inspector, sidebar and terminal panels resize on desktop. The terminal recalculates its row and column geometry from the available panel rectangle, so long prompts reflow instead of being clipped when neighboring panels change width. Below 900px the sidebar folds into a drawer and the inspector into an overlay.
 
+The router terminal shows its prompt again after a completed or cancelled ping. MD-CLI and classic CLI retain their respective prompts and working contexts.
+
 ## Architecture
 
 The packet runtime is written in C++20 and compiled with Emscripten to WebAssembly. It runs outside the React thread and requires pthreads with shared WebAssembly memory.

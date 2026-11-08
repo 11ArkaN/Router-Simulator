@@ -781,6 +781,7 @@ export class MultiRouterRuntimeClient {
 
   async terminalExecute(sessionId: string, input: string): Promise<string> {
     let response = terminalSuffix(await this.executeSession(sessionId, input));
+    const asynchronous = response.state.banner === "pending";
     let output = response.output;
     while (response.state.banner === "pending") {
       // Polling only transfers completed terminal output. All send intervals,
@@ -791,7 +792,10 @@ export class MultiRouterRuntimeClient {
         LAB_RUNTIME_PROTOCOL.session_poll, [sessionId]).then(expectSuccess));
       output += response.output;
     }
-    return output;
+    // Completed poll output carries the prompt only in its state suffix.
+    // Synchronous replies already include it in output. Use the final owner's
+    // prompt once, without inspecting opaque command output for matching text.
+    return output + (asynchronous ? response.state.prompt : "");
   }
 
   cancelSession(sessionId: string) {
