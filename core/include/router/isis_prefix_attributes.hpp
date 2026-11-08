@@ -48,4 +48,18 @@ struct PrefixAttributeFlags {
 // ID when present; this codec owns neither originating identity nor LSDB state.
 [[nodiscard]] std::optional<ip::IpAddress> prefix_source_router_id(TlvView option) noexcept;
 [[nodiscard]] bool encode_prefix_source_router_id(TlvWriter &writer, const ip::IpAddress &address) noexcept;
+struct PrefixMetadata {
+  std::optional<PrefixAttributeFlags> flags;
+  std::optional<ip::IpAddress> source_ipv4, source_ipv6;
+  std::optional<std::uint32_t> first_tag32;
+  std::optional<std::uint64_t> first_tag64;
+};
+// Ordered sub-TLV bytes may be concatenated RFC 9885 parts. The first valid
+// occurrence supplies flags and each source ID; invalid individual values and
+// unknown attributes are ignored. The first tag of each width is preserved,
+// including zero as no-tag, without falling through to a later tag.
+// No allocation or borrowed result. Invalid prefix context or malformed framing
+// returns nullopt. TE-ID consistency and policy actions remain owner decisions.
+[[nodiscard]] std::optional<PrefixMetadata> prefix_metadata(const ip::IpPrefix &prefix,
+    std::span<const std::uint8_t> attributes) noexcept;
 } // namespace router::packet::isis

@@ -13,6 +13,11 @@ struct RootPrefix {
   // Transitional output is explicit. The caller resolves narrow metrics;
   // composition never clips a wide metric into a six-bit value.
   std::optional<std::uint8_t> narrow;
+  // Borrowed complete prefix sub-TLVs, copied into owned wire records before
+  // return. External IPv4 classification follows RFC 7794 X; IPv6 uses the
+  // fixed reachability flag supplied separately by the originating owner.
+  std::span<const std::uint8_t> attributes{};
+  bool external_ipv6{};
 };
 struct RootContentInput {
   packet::isis::SystemId local;

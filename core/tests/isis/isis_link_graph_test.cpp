@@ -38,7 +38,8 @@ LspId identity(LanId id, std::uint8_t fragment = 0U) {
   return result;
 }
 struct Fixture {
-  LinkStateDatabase database{PduType::lsp_l1, {16U, 32768U}};
+  explicit Fixture(LsdbLimits limits = {16U, 32768U}) : database(PduType::lsp_l1, limits) {}
+  LinkStateDatabase database;
   std::unique_ptr<PduScratch> scratch{std::make_unique<PduScratch>()};
   RuntimeClock::time_point now{};
   void install(LanId id, std::span<const std::uint8_t> options, std::uint8_t flags = 3U,
@@ -209,9 +210,163 @@ void lan_spf_inputs() {
   require(input.rebuild(graph, direct, 2U, maximum_link_metric - 1U, lans) &&
       spf.calculate(*graph.root(), input.vertices(), input.edges(), 2U) && spf.cost(vertex(c)) == 17U);
 }
+void multipart_links() {
+  const auto a = node(1U), b = node(2U);
+  Fixture f;
+  const std::array reverse{ExtendedNeighbor{a, 20U, {}}};
+  f.install(b, options(reverse));
+  const std::array<std::uint8_t, 10U> id_one{4U, 8U, 0U, 0U, 0U, 1U, 0U, 0U, 0U, 7U};
+  const std::array<std::uint8_t, 10U> id_two{4U, 8U, 0U, 0U, 0U, 2U, 0U, 0U, 0U, 8U};
+  const std::array first{ExtendedNeighbor{b, 30U, id_one}}, later{ExtendedNeighbor{b, 1U, id_one}};
+  // Arrival order does not choose which fragment supplies the fixed metric.
+  f.install(a, options(later), 3U, 1U, 2U); f.install(a, options(first));
+  LinkGraph graph(2U, 16U);
+  const LinkGraphSelection selected{a, 0U, ipv4_nlpid, GraphMetricStyle::wide};
+  require(graph.rebuild(f.database, selected, f.now) == LinkGraphStatus::applied && arc(graph, a, b, 30U));
+  const std::array parallel{ExtendedNeighbor{b, 10U, id_two}};
+  f.install(a, options(parallel), 3U, 1U, 3U);
+  require(graph.rebuild(f.database, selected, f.now) == LinkGraphStatus::applied && arc(graph, a, b, 10U));
+  const std::array unusable{ExtendedNeighbor{b, maximum_link_metric, id_one}};
+  f.install(a, options(unusable), 3U, 2U);
+  require(graph.rebuild(f.database, selected, f.now) == LinkGraphStatus::applied && arc(graph, a, b, 10U));
+  f.install(a, {}, 3U, 2U, 3U);
+  require(graph.rebuild(f.database, selected, f.now) == LinkGraphStatus::applied &&
+      !arc(graph, a, b, 1U) && graph.links().size() == 1U && arc(graph, b, a, 20U));
+  std::array<std::uint8_t, 128U> left{}, right{};
+  const std::array<std::uint8_t, 4U> local_one{192U, 0U, 2U, 1U}, local_two{192U, 0U, 2U, 3U}, peer{192U, 0U, 2U, 2U};
+  TlvWriter left_v4(left), right_v4(right);
+  require(left_v4.append(6U, local_one) && left_v4.append(6U, local_two) && left_v4.append(8U, peer) &&
+      right_v4.append(8U, peer) && right_v4.append(6U, local_two) && right_v4.append(6U, local_one));
+  const std::array v4_first{ExtendedNeighbor{b, 50U, left_v4.bytes()}}, v4_later{ExtendedNeighbor{b, 1U, right_v4.bytes()}};
+  f.install(a, options(v4_first), 3U, 3U); f.install(a, options(v4_later), 3U, 2U, 2U);
+  require(graph.rebuild(f.database, selected, f.now) == LinkGraphStatus::applied && arc(graph, a, b, 50U));
+  const auto global_one = *ip::parse_ipv6("2001:db8::1"), global_two = *ip::parse_ipv6("2001:db8::3"), peer6 = *ip::parse_ipv6("2001:db8::2");
+  TlvWriter left_v6(left), right_v6(right);
+  require(left_v6.append(12U, global_one) && left_v6.append(12U, global_two) && left_v6.append(13U, peer6) &&
+      right_v6.append(13U, peer6) && right_v6.append(12U, global_two) && right_v6.append(12U, global_one) && right_v6.append(12U, global_one));
+  const std::array v6_first{ExtendedNeighbor{b, 60U, left_v6.bytes()}}, v6_later{ExtendedNeighbor{b, 1U, right_v6.bytes()}};
+  f.install(a, options(v6_first), 3U, 4U); f.install(a, options(v6_later), 3U, 3U, 2U);
+  require(graph.rebuild(f.database, selected, f.now) == LinkGraphStatus::applied && arc(graph, a, b, 60U));
+}
+void multipart_prefixes() {
+  const auto a = node(1U), b = node(2U);
+  const LinkGraphSelection selected{a, 0U, ipv4_nlpid, GraphMetricStyle::wide};
+  const auto prefix = *ip::parse_ip_prefix("192.0.2.0/24");
+  const auto other = *ip::parse_ip_prefix("192.0.3.0/24");
+  const std::array<std::uint8_t, 6U> tag{1U, 4U, 0U, 0U, 0U, 42U};
+  const std::array<std::uint8_t, 10U> wide_tag{2U, 8U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 7U};
+  const std::array<std::uint8_t, 4U> unknown{250U, 2U, 0xabU, 0xcdU};
+  Fixture f;
+  f.install(a, options({})); f.install(b, options({}));
+  std::array<std::uint8_t, 1492U> buffer{};
+  TlvWriter high(buffer);
+  require(encode_extended_prefix(high, {prefix, 2U, false, false, true, unknown}) &&
+      encode_extended_prefix(high, {other, 9U, false, false, true, wide_tag}));
+  f.install(b, high.bytes(), 3U, 1U, 3U);
+  TlvWriter low(buffer);
+  require(encode_extended_prefix(low, {prefix, 50U, true, false, true, tag}) &&
+      encode_extended_prefix(low, {other, 7U, false, false, true, unknown}) &&
+      encode_extended_prefix(low, {prefix, 1U, false, false, true, wide_tag}));
+  f.install(b, low.bytes(), 3U, 1U, 1U);
+  LinkGraph graph(2U, 1U);
+  ExtendedPrefixSet collected(16U, 2048U);
+  require(graph.rebuild(f.database, selected, f.now) == LinkGraphStatus::applied &&
+      collected.rebuild(f.database, graph, f.now) == PrefixSetStatus::applied && collected.entries().size() == 2U);
+  require(collected.entries()[0U].origin == identity(b, 1U) && collected.entries()[0U].metric == 50U &&
+      collected.entries()[0U].down && collected.entries()[1U].metric == 7U && collected.attributes(0U).size() == 20U);
+  std::vector<std::uint8_t> expected(tag.begin(), tag.end());
+  expected.insert(expected.end(), wide_tag.begin(), wide_tag.end());
+  expected.insert(expected.end(), unknown.begin(), unknown.end());
+  require(std::ranges::equal(collected.attributes(0U), expected));
+  packet::isis::SystemId peer{};
+  std::copy_n(b.begin(), peer.size(), peer.begin());
+  const std::array seeds{P2pSpfSeed{peer, 10U, 0U}};
+  P2pRouteDecision decision(2U, 4U, 8U, MetricStyle::wide, PrefixCollectionBudget{16U, 2048U});
+  require(decision.calculate(f.database, selected, seeds, 1U, f.now) == DecisionStatus::applied &&
+      decision.prefixes().size() == 2U && decision.distance_to_prefix(0U) == PrefixDistance{2U, 60U, 0U} &&
+      std::ranges::equal(decision.prefix_attributes(0U), expected));
+  const auto saved = collected.checkpoint();
+  ExtendedPrefixSet restored(16U, 2048U);
+  require(saved.version == 2U && restored.restore(saved) && std::ranges::equal(restored.attributes(0U), expected));
+  auto invalid = saved; invalid.version = 1U;
+  require(!restored.restore(invalid) && std::ranges::equal(restored.attributes(0U), expected));
+  invalid = saved; invalid.entries[1U].prefix = invalid.entries[0U].prefix;
+  require(!restored.restore(invalid) && restored.entries().size() == 2U);
+  // A later cheap part must not resurrect a prefix whose first metric is unusable.
+  TlvWriter unusable(buffer);
+  require(encode_extended_prefix(unusable, {prefix, maximum_path_metric + 1U, false, false, false, {}}));
+  f.install(b, unusable.bytes(), 3U, 2U, 1U);
+  require(graph.rebuild(f.database, selected, f.now) == LinkGraphStatus::applied &&
+      collected.rebuild(f.database, graph, f.now) == PrefixSetStatus::applied && collected.entries().size() == 1U &&
+      collected.entries()[0U].prefix == other);
+  TlvWriter empty_parts(buffer);
+  require(encode_extended_prefix(empty_parts, {prefix, 100U, true, false, false, {}}) &&
+      encode_extended_prefix(empty_parts, {prefix, 1U, false, false, false, {}}));
+  f.install(b, empty_parts.bytes(), 3U, 3U, 1U);
+  require(graph.rebuild(f.database, selected, f.now) == LinkGraphStatus::applied &&
+      collected.rebuild(f.database, graph, f.now) == PrefixSetStatus::applied &&
+      collected.entries()[0U].metric == 100U && collected.entries()[0U].down && collected.attributes(0U).size() == unknown.size());
+  Fixture mt;
+  const std::array topology{TopologyComponent{2U, false, false}};
+  mt.install(a, options({}, topology)); mt.install(b, options({}, topology));
+  const auto v6 = *ip::parse_ip_prefix("2001:db8::/64");
+  TlvWriter mt_parts(buffer);
+  require(encode_mt_prefix(mt_parts, 2U, {v6, 70U, true, true, true, tag}) &&
+      encode_mt_prefix(mt_parts, 2U, {v6, 1U, false, false, true, wide_tag}));
+  mt.install(b, mt_parts.bytes(), 3U, 1U, 1U);
+  require(graph.rebuild(mt.database, {a, 2U, ipv6_nlpid, GraphMetricStyle::wide}, mt.now) == LinkGraphStatus::applied &&
+      collected.rebuild(mt.database, graph, mt.now) == PrefixSetStatus::applied && collected.entries().size() == 1U &&
+      collected.entries()[0U].metric == 70U && collected.entries()[0U].external && collected.entries()[0U].down &&
+      collected.attributes(0U).size() == tag.size() + wide_tag.size());
+  ExtendedPrefixSet recovered_v6(16U, 2048U);
+  require(recovered_v6.restore(collected.checkpoint()) && recovered_v6.entries()[0U].external);
+  const std::array<std::uint8_t, 3U> external_flags{4U, 1U, 0x80U}, internal_flags{4U, 1U, 0U};
+  TlvWriter external_parts(buffer);
+  require(encode_extended_prefix(external_parts, {prefix, 25U, false, false, true, external_flags}) &&
+      encode_extended_prefix(external_parts, {prefix, 1U, false, false, true, internal_flags}));
+  f.install(b, external_parts.bytes(), 3U, 4U, 1U);
+  require(graph.rebuild(f.database, selected, f.now) == LinkGraphStatus::applied &&
+      collected.rebuild(f.database, graph, f.now) == PrefixSetStatus::applied && collected.entries()[0U].external &&
+      decision.calculate(f.database, selected, seeds, 1U, f.now) == DecisionStatus::applied &&
+      decision.prefixes()[0U].external && decision.distance_to_prefix(0U) == PrefixDistance{0U, 35U, 0U});
+  auto saved_external = collected.checkpoint();
+  require(restored.restore(saved_external) && restored.entries()[0U].external);
+  saved_external.entries[0U].external = false;
+  require(!restored.restore(saved_external) && restored.entries()[0U].external);
+  const std::array<std::uint8_t, 2U> empty_flags{4U, 0U};
+  TlvWriter zero_flags(buffer);
+  require(encode_extended_prefix(zero_flags, {prefix, 25U, false, false, true, empty_flags}) &&
+      encode_extended_prefix(zero_flags, {prefix, 1U, false, false, true, external_flags}));
+  f.install(b, zero_flags.bytes(), 3U, 5U, 1U);
+  require(graph.rebuild(f.database, selected, f.now) == LinkGraphStatus::applied &&
+      collected.rebuild(f.database, graph, f.now) == PrefixSetStatus::applied && !collected.entries()[0U].external);
+  // Combined attributes may exceed one wire TLV. The per-object host field is
+  // still bounded; overflow must preserve the complete previously joined image.
+  Fixture large({128U, 200000U});
+  large.install(a, options({})); large.install(b, options({}));
+  std::array<std::uint8_t, 246U> attributes{};
+  attributes.fill(99U); attributes[0U] = 250U; attributes[1U] = 244U;
+  TlvWriter parts(buffer);
+  for (unsigned part{}; part < 4U; ++part)
+    require(encode_extended_prefix(parts, {prefix, 5U, false, false, true, attributes}));
+  const std::vector<std::uint8_t> body(parts.bytes().begin(), parts.bytes().end());
+  for (std::uint8_t fragment = 1U; fragment <= 66U; ++fragment) large.install(b, body, 3U, 1U, fragment);
+  ExtendedPrefixSet joined(300U, 80000U);
+  require(graph.rebuild(large.database, selected, large.now) == LinkGraphStatus::applied &&
+      joined.rebuild(large.database, graph, large.now) == PrefixSetStatus::applied && joined.entries().size() == 1U &&
+      joined.attributes(0U).size() == 64944U);
+  ExtendedPrefixSet recovered(300U, 80000U);
+  require(recovered.restore(joined.checkpoint()) && recovered.attributes(0U).size() == 64944U);
+  large.install(b, body, 3U, 1U, 67U);
+  require(graph.rebuild(large.database, selected, large.now) == LinkGraphStatus::applied &&
+      joined.rebuild(large.database, graph, large.now) == PrefixSetStatus::capacity &&
+      joined.attributes(0U).size() == 64944U && joined.entries()[0U].metric == 5U);
+}
 }
 void isis_link_graph_tests() {
   lan_spf_inputs();
+  multipart_links();
+  multipart_prefixes();
   for (const auto budget : {std::size_t{}, std::numeric_limits<std::size_t>::max()}) {
     bool refused{};
     try { LinkGraph invalid(budget, 1U); } catch (const std::invalid_argument &) { refused = true; }
@@ -405,8 +560,9 @@ void isis_link_graph_tests() {
   require(collected.rebuild(prefixes.database, graph, prefixes.now) == PrefixSetStatus::applied &&
       collected.entries().size() == 1U && collected.entries()[0U].origin == identity(b, 1U) &&
       collected.entries()[0U].prefix == advertised.prefix && collected.entries()[0U].metric == 5U &&
-      collected.entries()[0U].down && collected.attributes(0U).size() == 6U &&
-      std::equal(collected.attributes(0U).begin(), collected.attributes(0U).end(), attributes.begin()));
+      collected.entries()[0U].down && collected.attributes(0U).size() == 12U &&
+      std::equal(collected.attributes(0U).begin(), collected.attributes(0U).begin() + 6U, attributes.begin()) &&
+      std::equal(collected.attributes(0U).begin() + 6U, collected.attributes(0U).end(), attributes.begin()));
   // Collection owns attributes, so subsequent LSDB replacement cannot alter it.
   auto replaced_prefix = valid_prefix;
   replaced_prefix.back() = 99U;

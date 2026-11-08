@@ -4,6 +4,7 @@
 #include "router/isis_root_content.hpp"
 #include "router/isis_fragment_plan.hpp"
 #include "router/isis_narrow_reachability.hpp"
+#include "router/isis_prefix_attributes.hpp"
 #include <algorithm>
 #include <array>
 #include <type_traits>
@@ -76,11 +77,15 @@ RootContentResult prepare_root_content(const RootContentInput &input,
     const bool ipv6 = prefix.prefix.network.family == ip::AddressFamily::ipv6;
     if ((index && input.prefixes[index - 1U].prefix >= prefix.prefix) ||
         (ipv6 ? !input.ipv6 : !input.ipv4) || (prefix.narrow && (ipv6 || *prefix.narrow > 63U))) return {};
+    const auto metadata = wire::prefix_metadata(prefix.prefix, prefix.attributes);
+    if (!metadata || (!ipv6 && prefix.external_ipv6)) return {};
     if (!add(false, [&](auto &writer) {
-        if (!wire::encode_extended_prefix(writer, {prefix.prefix, prefix.metric, false, false, false, {}})) return false;
+        if (!wire::encode_extended_prefix(writer, {prefix.prefix, prefix.metric, false,
+            prefix.external_ipv6, !prefix.attributes.empty(), prefix.attributes})) return false;
         if (!prefix.narrow) return true;
         wire::NarrowIpv4 narrow;
         narrow.metrics.metric = *prefix.narrow;
+        narrow.external_reachability = metadata->flags && metadata->flags->external;
         std::copy_n(prefix.prefix.network.bytes.begin(), 4U, narrow.address.begin());
         for (std::size_t bit{}; bit < prefix.prefix.length; ++bit)
           narrow.mask[bit / 8U] |= static_cast<std::uint8_t>(0x80U >> (bit % 8U));

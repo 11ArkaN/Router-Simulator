@@ -2,6 +2,7 @@
 // codecs validate their own values without rejecting the enclosing live LSP.
 
 #include "router/isis_purge_options.hpp"
+#include "router/generated_isis_tlv_registry.hpp"
 
 #include <array>
 #include <stdexcept>
@@ -11,6 +12,15 @@
 void isis_purge_options_tests() {
   using namespace router;
   using namespace router::isis;
+  namespace wire = router::packet::isis;
+  static_assert(wire::multipart_applicability(wire::MultipartContext::tlv, 135U) == wire::MultipartApplicability::allowed);
+  static_assert(wire::multipart_applicability(wire::MultipartContext::tlv, 137U) == wire::MultipartApplicability::disallowed);
+  static_assert(wire::multipart_applicability(wire::MultipartContext::tlv, 136U) == wire::MultipartApplicability::unknown);
+  static_assert(wire::multipart_applicability(wire::MultipartContext::prefix, 1U) == wire::MultipartApplicability::allowed);
+  static_assert(wire::multipart_applicability(wire::MultipartContext::router_capability, 1U) == wire::MultipartApplicability::disallowed);
+  static_assert(wire::multipart_applicability(wire::MultipartContext::neighbor, 6U) == wire::MultipartApplicability::disallowed);
+  static_assert(wire::multipart_applicability(wire::MultipartContext::router_capability, 30U) == wire::MultipartApplicability::disallowed);
+  static_assert(wire::multipart_applicability(static_cast<wire::MultipartContext>(255U), 1U) == wire::MultipartApplicability::unknown);
   const auto require = [](bool value, std::source_location location = std::source_location::current()) {
     if (!value) throw std::runtime_error("IS-IS purge options failed at " + std::to_string(location.line()));
   };
@@ -20,12 +30,12 @@ void isis_purge_options_tests() {
     require(validate_purge_options(bytes, PurgeRules::authentication_only) ==
         (code == 10U ? PurgeValidation::accepted : PurgeValidation::prohibited_option));
   }
-  for (const auto code : {0U, 1U, 8U, 22U, 28U, 42U, 66U, 133U, 211U, 242U, 251U}) {
+  for (const auto code : {0U, 1U, 8U, 22U, 26U, 28U, 29U, 42U, 66U, 133U, 211U, 242U, 251U}) {
     const std::array bytes{std::uint8_t{13U}, std::uint8_t{0U}, static_cast<std::uint8_t>(code), std::uint8_t{0U}};
     require(validate_purge_options(bytes, PurgeRules::registry_6233) == PurgeValidation::prohibited_option);
     require(validate_purge_options(bytes, PurgeRules::iso_10589) == PurgeValidation::accepted);
   }
-  for (const auto code : {26U, 65U, 67U, 136U, 146U, 255U}) {
+  for (const auto code : {30U, 65U, 67U, 136U, 146U, 255U}) {
     const std::array bytes{static_cast<std::uint8_t>(code), std::uint8_t{0U}, std::uint8_t{13U}, std::uint8_t{0U}};
     require(validate_purge_options(std::span(bytes).first(2U), PurgeRules::registry_6233) ==
         PurgeValidation::unknown_without_poi);

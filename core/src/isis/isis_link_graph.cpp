@@ -61,7 +61,8 @@ auto pair_key(const LinkArc &arc) noexcept { return std::pair{arc.source, arc.ta
 LinkGraph::LinkGraph(std::size_t maximum_nodes, std::size_t maximum_links)
     : maximum_nodes_(maximum_nodes), maximum_links_(maximum_links) {
   if (!maximum_nodes || !maximum_links || maximum_nodes > std::numeric_limits<std::uint32_t>::max() ||
-      maximum_links > std::numeric_limits<std::uint32_t>::max() ||
+      maximum_links > std::numeric_limits<std::uint32_t>::max() / packet::isis::maximum_neighbor_key_octets ||
+      maximum_links > keys_.max_size() / packet::isis::maximum_neighbor_key_octets ||
       maximum_nodes > published_.nodes.max_size() || maximum_links > candidates_.max_size())
     throw std::invalid_argument("Invalid IS-IS link graph budget");
   for (auto *generation : {&published_, &working_}) {
@@ -69,6 +70,7 @@ LinkGraph::LinkGraph(std::size_t maximum_nodes, std::size_t maximum_links)
     generation->links.reserve(maximum_links);
   }
   candidates_.reserve(maximum_links);
+  keys_.reserve(maximum_links * packet::isis::maximum_neighbor_key_octets);
 }
 LinkGraphStatus LinkGraph::rebuild(const LinkStateDatabase &database,
     const LinkGraphSelection &selection, RuntimeClock::time_point now) noexcept {
@@ -83,6 +85,7 @@ LinkGraphStatus LinkGraph::rebuild(const LinkStateDatabase &database,
   working_.root.reset();
   working_.ignored = 0U;
   candidates_.clear();
+  keys_.clear();
   for (std::size_t index{}; index < database.size(); ++index) {
     const auto record = database.at(index, now);
     if (!record || record->header.id[7U] || !record->header.remaining_seconds ||
@@ -123,13 +126,16 @@ LinkGraphStatus LinkGraph::rebuild(const LinkStateDatabase &database,
       const bool narrow = !selection.topology && links.code == 2U && selection.metrics != GraphMetricStyle::wide;
       if (!narrow && (links.code != 22U || selection.metrics == GraphMetricStyle::narrow)) continue;
       const auto before = candidates_.size();
+      const auto keys_before = keys_.size();
       bool valid{true}, capacity{};
-      const auto append = [&](const auto &entry, std::uint32_t metric) {
+      const auto append = [&](const auto &entry, std::uint32_t metric, std::span<const std::uint8_t> key = {}) {
         if (pseudonode && metric) { valid = false; return; }
         const auto target = find(entry.id);
         if (!target) return;
         if (candidates_.size() == maximum_links_) { capacity = true; return; }
-        candidates_.push_back({*source, *target, metric});
+        candidates_.push_back({{*source, *target, metric}, static_cast<std::uint32_t>(keys_.size()),
+            static_cast<std::uint32_t>(candidates_.size()), static_cast<std::uint16_t>(key.size()), record->header.id[7U], narrow});
+        keys_.insert(keys_.end(), key.begin(), key.end());
       };
       if (narrow) {
         packet::isis::NarrowNeighborCursor entries(links);
@@ -140,30 +146,54 @@ LinkGraphStatus LinkGraph::rebuild(const LinkStateDatabase &database,
         valid = entries.valid() && valid;
       } else {
         packet::isis::ExtendedNeighborCursor entries(links);
-        while (const auto entry = entries.next()) append(*entry, entry->metric);
+        std::array<std::uint8_t, packet::isis::maximum_neighbor_key_octets> key;
+        while (const auto entry = entries.next()) {
+          const auto size = packet::isis::normalize_neighbor_key(entry->sub_tlvs, key);
+          if (!size) { valid = false; continue; }
+          append(*entry, entry->metric, std::span{key}.first(*size));
+        }
         valid = entries.valid() && valid;
       }
       if (!valid) {
         candidates_.resize(before);
+        keys_.resize(keys_before);
         ++working_.ignored;
       } else if (capacity) return LinkGraphStatus::capacity;
     }
     if (!options.valid()) return LinkGraphStatus::malformed_database;
   }
+  const auto key_bytes = [&](const auto &entry) { return std::span{keys_}.subspan(entry.key_offset, entry.key_size); };
+  const auto object = [](const auto &entry) { return std::tuple{entry.arc.source, entry.arc.target, entry.narrow}; };
+  std::sort(candidates_.begin(), candidates_.end(), [&](const auto &a, const auto &b) {
+    if (object(a) != object(b)) return object(a) < object(b);
+    if (!std::ranges::equal(key_bytes(a), key_bytes(b)))
+      return std::lexicographical_compare(key_bytes(a).begin(), key_bytes(a).end(), key_bytes(b).begin(), key_bytes(b).end());
+    // RFC 9885 fixes a wide object's metric from its first part, independently
+    // of later cheaper parts. Narrow TLV 2 retains its separate minimum policy.
+    if (a.narrow && a.arc.metric != b.arc.metric) return a.arc.metric < b.arc.metric;
+    return std::tie(a.fragment, a.order) < std::tie(b.fragment, b.order);
+  });
+  const auto parts = std::unique(candidates_.begin(), candidates_.end(), [&](const auto &a, const auto &b) {
+    return object(a) == object(b) && std::ranges::equal(key_bytes(a), key_bytes(b));
+  });
+  candidates_.erase(parts, candidates_.end());
+  // Distinct parallel links remain independent objects until normal SPF takes
+  // the cheapest arc. Selecting an MP part must never perform this reduction.
   std::sort(candidates_.begin(), candidates_.end(), [](const auto &a, const auto &b) {
-    return std::tie(a.source, a.target, a.metric) < std::tie(b.source, b.target, b.metric);
+    return std::tie(a.arc.source, a.arc.target, a.arc.metric) < std::tie(b.arc.source, b.arc.target, b.arc.metric);
   });
   const auto unique = std::unique(candidates_.begin(), candidates_.end(), [](const auto &a, const auto &b) {
-    return pair_key(a) == pair_key(b);
+    return pair_key(a.arc) == pair_key(b.arc);
   });
   candidates_.erase(unique, candidates_.end());
-  for (const auto &arc : candidates_) {
+  for (const auto &candidate : candidates_) {
+    const auto &arc = candidate.arc;
     // Reverse presence is checked before applying overload or unreachable-cost
     // filtering. Asymmetric defined metrics are legal; the forward cost wins.
     const auto reverse_key = std::pair{arc.target, arc.source};
     const auto reverse = std::lower_bound(candidates_.begin(), candidates_.end(), reverse_key,
-        [](const auto &entry, const auto &key) { return pair_key(entry) < key; });
-    if (reverse == candidates_.end() || pair_key(*reverse) != reverse_key ||
+        [](const auto &entry, const auto &key) { return pair_key(entry.arc) < key; });
+    if (reverse == candidates_.end() || pair_key(reverse->arc) != reverse_key ||
         arc.metric == packet::isis::maximum_link_metric ||
         (working_.nodes[arc.source].overloaded && working_.root != arc.source)) continue;
     working_.links.push_back(arc);

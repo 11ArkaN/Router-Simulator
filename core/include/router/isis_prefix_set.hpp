@@ -9,12 +9,17 @@
 #include "router/isis_basic_tlvs.hpp"
 #include "router/isis_link_graph.hpp"
 #include "router/isis_multi_topology.hpp"
+#include "router/generated_isis_tlv_registry.hpp"
 
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
 
 namespace router::isis {
+static_assert(packet::isis::multipart_applicability(packet::isis::MultipartContext::tlv, 135U) == packet::isis::MultipartApplicability::allowed &&
+    packet::isis::multipart_applicability(packet::isis::MultipartContext::tlv, 235U) == packet::isis::MultipartApplicability::allowed &&
+    packet::isis::multipart_applicability(packet::isis::MultipartContext::tlv, 236U) == packet::isis::MultipartApplicability::allowed &&
+    packet::isis::multipart_applicability(packet::isis::MultipartContext::tlv, 237U) == packet::isis::MultipartApplicability::allowed);
 struct PrefixCollectionBudget {
   std::size_t records{}, attributes{};
   bool operator==(const PrefixCollectionBudget &) const = default;
@@ -31,7 +36,7 @@ struct PrefixAdvertisement {
 };
 enum class PrefixSetStatus : std::uint8_t { applied, invalid_selection, malformed_database, capacity };
 struct PrefixSetCheckpoint {
-  std::uint32_t version{1U};
+  std::uint32_t version{2U};
   PrefixCollectionBudget budget;
   std::vector<PrefixAdvertisement> entries;
   std::vector<std::uint8_t> attributes;
@@ -39,18 +44,21 @@ struct PrefixSetCheckpoint {
 };
 class ExtendedPrefixSet final {
 public:
-  // Cold allocations only. Explicit emulator budgets count advertisements and
-  // retained sub-TLV bytes, not vendor scale. Invalid budgets throw before use.
+  // Cold allocations only. Explicit emulator budgets count independently parsed
+  // advertisements before MP grouping and retained sub-TLV bytes, not vendor
+  // scale. One joined object's attribute extent is bounded by uint16_t; larger
+  // joins return capacity and retain publication. Invalid budgets throw.
   ExtendedPrefixSet(std::size_t prefixes, std::size_t attributes)
       : maximum_prefixes_(prefixes), maximum_attributes_(attributes) {
     if (!prefixes || prefixes > std::numeric_limits<std::uint32_t>::max() ||
         attributes > std::numeric_limits<std::uint32_t>::max() ||
         prefixes > published_.entries.max_size() || attributes > published_.attributes.max_size())
       throw std::invalid_argument("Invalid IS-IS prefix collection budget");
-    for (auto *generation : {&published_, &working_}) {
+    for (auto *generation : {&published_, &working_, &merged_}) {
       generation->entries.reserve(prefixes);
       generation->attributes.reserve(attributes);
     }
+    part_order_.reserve(prefixes);
   }
   // Same owner, no concurrent LSDB mutation. graph must have been successfully
   // built from this exact immutable database visit and now value. Its selection
@@ -107,9 +115,8 @@ public:
         if (!validation.valid()) { ++working_.ignored; continue; }
         packet::isis::ExtendedPrefixCursor prefixes(entries);
         while (const auto prefix = prefixes.next()) {
-          if (prefix->metric > packet::isis::maximum_path_metric ||
-              (prefix->prefix.network.family == ip::AddressFamily::ipv6 && prefix->prefix.length >= 10U &&
-               ip::is_link_local(prefix->prefix.network.bytes))) continue;
+          if (prefix->prefix.network.family == ip::AddressFamily::ipv6 && prefix->prefix.length >= 10U &&
+              ip::is_link_local(prefix->prefix.network.bytes)) continue;
           if (working_.entries.size() == maximum_prefixes_ ||
               prefix->sub_tlvs.size() > maximum_attributes_ - working_.attributes.size())
             return PrefixSetStatus::capacity;
@@ -122,8 +129,9 @@ public:
       }
       if (!options.valid()) return PrefixSetStatus::malformed_database;
     }
-    prepared_ = true;
-    return PrefixSetStatus::applied;
+    const auto merged = merge_parts();
+    prepared_ = merged == PrefixSetStatus::applied;
+    return merged;
   }
   // Sole owner only, after successful prepare and any dependent calculations.
   // False means no complete prepared generation. A successful commit expires
@@ -136,8 +144,10 @@ public:
   }
   void abort() noexcept { prepared_ = false; }
   // Views expire only at successful rebuild or destruction, on this shard.
-  // Raw sub-TLV order/bytes remain intact, including unknown attributes. Their
-  // semantic consumers must validate each known attribute independently.
+  // RFC 9885 joins parts by originating system, level and prefix. Fixed fields
+  // use the first occurrence in the lowest numbered LSP; sub-TLV bytes retain
+  // that deterministic concatenation order, including unknown attributes.
+  // Semantic consumers apply each attribute's own duplicate/conflict rules.
   [[nodiscard]] std::span<const PrefixAdvertisement> entries() const noexcept { return published_.entries; }
   [[nodiscard]] std::span<const std::uint8_t> attributes(std::size_t index) const noexcept {
     if (index >= published_.entries.size()) return {};
@@ -158,7 +168,11 @@ private:
     std::size_t ignored{};
   };
   std::size_t maximum_prefixes_{}, maximum_attributes_{};
-  Generation published_, working_;
+  Generation published_, working_, merged_;
+  // Same-owner cold-reserved indexes retain original wire order while sorting
+  // parts. Failed merge touches scratch only and cannot invalidate publication.
+  std::vector<std::uint32_t> part_order_;
+  [[nodiscard]] PrefixSetStatus merge_parts() noexcept;
   bool prepared_{};
 };
 } // namespace router::isis

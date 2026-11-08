@@ -83,6 +83,21 @@ void isis_instance_program_tests() {
       result.program->origination->broadcast_neighbors->front().circuit == 1U);
   intent = before; intent.interfaces[0U].type.reset();
   require(prepare_instance_program(intent, context).status == InstanceProgramStatus::unresolved_media);
+  intent = before;
+  InterfaceIntent loopback; loopback.name = "system"; loopback.type = ConfiguredInterfaceType::point_to_point;
+  intent.interfaces.push_back(loopback);
+  std::array expanded{bindings.front(), InstanceOriginInterface{"system", 2U, {}, 0U, 0U, true, true}};
+  context.interfaces = expanded;
+  result = prepare_instance_program(intent, context);
+  require(result.status == InstanceProgramStatus::prepared && result.program->maximum_circuits == 1U &&
+      result.program->origination->neighbors->size() == 1U);
+  expanded[1U].loopback = false;
+  require(prepare_instance_program(intent, context).status == InstanceProgramStatus::capacity);
+  expanded[1U].operational = false;
+  require(prepare_instance_program(intent, context).status == InstanceProgramStatus::prepared);
+  expanded[1U].operational = true; intent.interfaces[1U].passive = true;
+  require(prepare_instance_program(intent, context).status == InstanceProgramStatus::prepared);
+  context.interfaces = bindings;
   intent = before; context.fragments[0U] = 9U;
   require(prepare_instance_program(intent, context).status == InstanceProgramStatus::capacity);
 }

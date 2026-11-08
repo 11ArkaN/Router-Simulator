@@ -106,6 +106,48 @@ void isis_root_content_tests() {
   invalid.flags = 3U;
   require(prepare_root_content(invalid, 300U, 2U).status == RootContentStatus::prepared);
 
+  // External IPv4 attributes must agree across transitional wire formats;
+  // IPv6 externality belongs to the fixed reachability header instead.
+  const std::array<std::uint8_t, 3U> external_flags{4U, 1U, 0x80U};
+  std::array external_prefixes{RootPrefix{*ip::parse_ip_prefix("192.0.2.0/24"),
+      5U, std::uint8_t{5U}, external_flags}};
+  RootContentInput external_input;
+  external_input.local = input.local; external_input.ipv4 = true;
+  external_input.prefixes = external_prefixes;
+  const auto external_content = prepare_root_content(external_input, 100U, 1U);
+  require(external_content.status == RootContentStatus::prepared);
+  wire::TlvCursor external_cursor(external_content.records.front().options);
+  bool saw_external_wide{}, saw_external_narrow{};
+  while (const auto option = external_cursor.next()) {
+    if (option->code == 135U) {
+      wire::ExtendedPrefixCursor cursor(*option);
+      const auto value = cursor.next();
+      require(value && value->sub_tlvs.size() == external_flags.size() &&
+          std::equal(value->sub_tlvs.begin(), value->sub_tlvs.end(), external_flags.begin()));
+      saw_external_wide = true;
+    } else if (option->code == 130U) {
+      wire::NarrowIpv4Cursor cursor(*option);
+      const auto value = cursor.next();
+      require(value && value->external_reachability && value->metrics.metric == 5U);
+      saw_external_narrow = true;
+    }
+  }
+  require(external_cursor.valid() && saw_external_wide && saw_external_narrow);
+  external_prefixes[0U].external_ipv6 = true;
+  require(prepare_root_content(external_input, 100U, 1U).status == RootContentStatus::invalid);
+  external_prefixes[0U] = RootPrefix{ipv6, 5U, {}, {}, true};
+  external_input.ipv4 = false; external_input.ipv6 = true;
+  const auto external6 = prepare_root_content(external_input, 100U, 1U);
+  require(external6.status == RootContentStatus::prepared);
+  wire::TlvCursor external6_cursor(external6.records.front().options);
+  bool saw_external6{};
+  while (const auto option = external6_cursor.next()) if (option->code == 236U) {
+    wire::ExtendedPrefixCursor cursor(*option);
+    const auto value = cursor.next(); require(value && value->external);
+    saw_external6 = true;
+  }
+  require(saw_external6 && external6_cursor.valid());
+
   // A full root must survive a smaller effective budget (for authentication
   // overhead) plus a new adjacency by relocating complete movable TLVs.
   std::array<std::uint8_t, 484U> full{};

@@ -1802,11 +1802,28 @@ void isis_network_plane_route_publication_tests() {
     invalid = programs[0U];
     invalid.routing[1U]->calculation.protocol = packet::isis::ipv4_nlpid;
     require(!plane->add_isis_update_instance(devices[0U], 0U, invalid));
+    packet::isis::LspId retired_fragment{};
+    std::copy(programs[0U].local.begin(), programs[0U].local.end(), retired_fragment.begin());
+    retired_fragment[7U] = 1U;
     std::array<std::uint64_t, 2U> generations{};
     for (unsigned cycle{}; cycle < 2U; ++cycle) {
       for (std::size_t index{}; index < devices.size(); ++index) {
         circuits[index].circuit.identity.configuration_generation = 7U + cycle * 2U;
-        require(plane->add_isis_update_instance(devices[index], 0U, programs[index]) &&
+        auto initial = programs[index];
+        if (!index) {
+          // Only the first old owner advertises this extra fragment. The peer
+          // must retain its LSDB across that owner's replacement to prove wire
+          // retirement rather than losing the prefix in another local reset.
+          const std::array<std::uint8_t, 3U> external{4U, 1U, 0x80U};
+          const std::array extra{RootPrefix{*ip::parse_ip_prefix("203.0.113.0/24"), 5U, {}, external}};
+          RootContentInput root;
+          root.local = initial.local; root.flags = 3U; root.ipv4 = true; root.prefixes = extra;
+          auto content = prepare_root_content(root, 1492U - packet::isis::lsp_header_octets, 1U);
+          require(content.status == RootContentStatus::prepared && content.records.size() == 1U);
+          content.records.front().id = retired_fragment;
+          initial.origination->content.records.push_back(std::move(content.records.front()));
+        }
+        require(plane->add_isis_update_instance(devices[index], 0U, initial) &&
             plane->replace_isis_p2p_generation(devices[index], std::span{&circuits[index], 1U}));
       }
       for (unsigned phase{}; phase < 2U; ++phase) {
@@ -1824,6 +1841,21 @@ void isis_network_plane_route_publication_tests() {
                 replacement_owner->local_root_sequences[1U] > previous_owner->local_root_sequences[1U]);
             const auto withdrawn = heap_router_checkpoint(*plane, devices[index], RuntimeClock::now());
             require(withdrawn && withdrawn->fib.count == 1U && withdrawn->ipv6_fib.count == 1U);
+            if (!index) {
+              const auto cleanup_by = RuntimeClock::now() + 8s;
+              for (;;) {
+                plane->pump();
+                const auto local = plane->query_isis_lsp(devices[0U], 0U, 0U, retired_fragment);
+                const auto remote = plane->query_isis_lsp(devices[1U], 0U, 0U, retired_fragment);
+                const auto retained_peer = heap_router_checkpoint(*plane, devices[1U], RuntimeClock::now());
+                const bool purged = local && remote && local->selected_lsp && remote->selected_lsp &&
+                    !local->selected_lsp->remaining_seconds && !remote->selected_lsp->remaining_seconds;
+                if (purged && retained_peer && retained_peer->fib.count == 2U &&
+                    std::any_of(retained_peer->fib.routes.begin(), retained_peer->fib.routes.begin() + retained_peer->fib.count,
+                        [](const auto &route) { return route.source == Source::isis && route.network == 0xc0000201U; })) break;
+                require(RuntimeClock::now() < cleanup_by);
+              }
+            }
           }
         }
         const auto probe4 = static_cast<std::uint16_t>(71U + cycle * 4U + phase * 2U);
@@ -1844,6 +1876,13 @@ void isis_network_plane_route_publication_tests() {
             ready = ready && std::any_of(selected->fib.routes.begin(), selected->fib.routes.begin() + selected->fib.count,
                 [&](const auto &route) { return route.source == Source::isis && route.metric == 15U &&
                     route.interface_generation == 7U + cycle * 2U + phase && route.next_hop == (index ? 0xc0000201U : 0xc6336402U); });
+            if (!phase && index == 1U) {
+              const auto extra = plane->query_isis_lsp(devices[index], 0U, 0U, retired_fragment);
+              ready = ready && extra && extra->selected_lsp && extra->selected_lsp->remaining_seconds &&
+                  std::any_of(selected->fib.routes.begin(), selected->fib.routes.begin() + selected->fib.count,
+                      [](const auto &route) { return route.source == Source::isis && route.network == 0xcb007100U &&
+                          route.prefix_length == 24U && route.preference == 160U; });
+            }
             ready = ready && std::any_of(selected->ipv6_fib.routes.begin(), selected->ipv6_fib.routes.begin() + selected->ipv6_fib.count,
                 [&](const auto &route) { return route.source == Source::isis && route.metric == 17U &&
                     route.interface_generation == 7U + cycle * 2U + phase && route.interface_id == interface; });
@@ -1856,7 +1895,8 @@ void isis_network_plane_route_publication_tests() {
         // that an early resume is retained rather than overwritten afterwards.
         for (std::size_t sample{}; sample < 128U; ++sample) {
           const auto state = heap_router_checkpoint(*plane, devices[sample % devices.size()], RuntimeClock::now());
-          require(state && state->fib.count == 2U && state->ipv6_fib.count == 2U);
+          require(state && state->fib.count == (!phase && sample % devices.size() == 1U ? 3U : 2U) &&
+              state->ipv6_fib.count == 2U);
         }
         // Real ARP and ND resolve the bound peer; encoded requests and replies
         // traverse the configured physical link in both owner layouts.

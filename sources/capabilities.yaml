@@ -1,6 +1,12 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  routing.isis.multipart_neighbor_keys:
+    status: experimental
+    source_ids: [ietf.isis.multipart_neighbor_keys]
+  routing.isis.multipart_prefix_collection:
+    status: partially-implemented
+    source_ids: [ietf.isis.multipart_prefix_collection]
   routing.isis.instance_program:
     status: experimental
     source_ids: [nokia.sros.26_7.isis.instance_program]

@@ -5,6 +5,7 @@
 #pragma once
 
 #include "router/isis_lsdb.hpp"
+#include "router/isis_neighbor_key.hpp"
 
 namespace router::isis {
 enum class GraphMetricStyle : std::uint8_t { unresolved, narrow, wide, both_minimum };
@@ -31,6 +32,8 @@ public:
   // with eligible targets before duplicate reduction. Allocates both generations and scratch once;
   // invalid zero or unrepresentable budgets throw invalid_argument.
   LinkGraph(std::size_t maximum_nodes, std::size_t maximum_links);
+  LinkGraph(const LinkGraph &) = delete;
+  LinkGraph &operator=(const LinkGraph &) = delete;
   // Same instance shard, with no concurrent LSDB mutation. No allocation.
   // ISO 7.2.5 gates fragments on a live root, 7.2.8 gates reverse links and
   // overload transit. RFC 5120 keeps pseudonodes shared across topologies.
@@ -55,6 +58,16 @@ private:
   };
   std::size_t maximum_nodes_{}, maximum_links_{};
   Generation published_, working_;
-  std::vector<LinkArc> candidates_;
+  struct Candidate {
+    LinkArc arc;
+    std::uint32_t key_offset{}, order{};
+    std::uint16_t key_size{};
+    std::uint8_t fragment{};
+    bool narrow{};
+  };
+  std::vector<Candidate> candidates_;
+  // One cold-reserved arena holds canonical identifiers for this LSDB visit.
+  // Offsets remain local to scratch; failed options roll back both extents.
+  std::vector<std::uint8_t> keys_;
 };
 } // namespace router::isis

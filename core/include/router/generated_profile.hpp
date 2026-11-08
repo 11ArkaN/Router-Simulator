@@ -117,7 +117,7 @@ inline constexpr std::uint32_t runtime_message_abi = 4;
 inline constexpr std::uint32_t checkpoint_abi = 11;
 inline constexpr std::uint64_t profile_hash = 0x2084ffc4cd50f8b1ULL;
 inline constexpr std::uint64_t checkpoint_schema_hash = 0x80977f321f004303ULL;
-inline constexpr std::uint64_t build_hash = 0x8b11d8a810d216a4ULL;
+inline constexpr std::uint64_t build_hash = 0x428ded2db82fadfdULL;
 
 // Hardware initialization values are experimental emulator timing profiles,
 // not claims about physical platform boot guarantees.

@@ -64,6 +64,7 @@ add_library(router_primitives STATIC
   src/isis/isis_lsp_generation.cpp
   src/isis/isis_lsp_generation_checkpoint.cpp
   src/isis/isis_prefix_checkpoint.cpp
+  src/isis/isis_prefix_multipart.cpp
   src/isis/isis_decision_checkpoint.cpp
   src/isis/isis_local_lsp_set.cpp
   src/isis/isis_local_lsp_set_checkpoint.cpp
@@ -78,6 +79,7 @@ add_library(router_primitives STATIC
   src/isis/isis_prefix_attributes.cpp
   src/isis/isis_reachability.cpp
   src/isis/isis_link_graph.cpp
+  src/isis/isis_neighbor_key.cpp
   src/isis/isis_multi_topology.cpp
   src/isis/isis_basic_tlvs.cpp
   src/isis/isis_narrow_reachability.cpp
@@ -800,6 +802,7 @@ if(ROUTER_BUILD_TESTS)
     tests/ospf/ospf_spf_test.cpp
     tests/isis/isis_spf_test.cpp
     tests/isis/isis_link_graph_test.cpp
+    tests/isis/isis_neighbor_key_test.cpp
     tests/ospf/ospf_topology_test.cpp
     tests/forwarding/route_policy_test.cpp
     tests/forwarding/multi_device_fabric_test.cpp

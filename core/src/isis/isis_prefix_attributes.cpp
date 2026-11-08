@@ -65,4 +65,23 @@ bool encode_prefix_source_router_id(TlvWriter &writer, const ip::IpAddress &addr
   }
   return address.family == ip::AddressFamily::ipv6 && writer.append(12U, address.bytes);
 }
+std::optional<PrefixMetadata> prefix_metadata(const ip::IpPrefix &prefix,
+    std::span<const std::uint8_t> attributes) noexcept {
+  if (!valid_context(prefix)) return std::nullopt;
+  PrefixMetadata result;
+  TlvCursor cursor(attributes);
+  while (const auto option = cursor.next()) {
+    if (option->code == 4U && !result.flags) result.flags = prefix_attribute_flags(*option, prefix);
+    else if (option->code == 11U && !result.source_ipv4) result.source_ipv4 = prefix_source_router_id(*option);
+    else if (option->code == 12U && !result.source_ipv6) result.source_ipv6 = prefix_source_router_id(*option);
+    else if ((option->code == 1U && !result.first_tag32) || (option->code == 2U && !result.first_tag64)) {
+      AdministrativeTagCursor tags(*option);
+      if (const auto first = tags.next()) {
+        if (first->wide) result.first_tag64 = first->value;
+        else result.first_tag32 = static_cast<std::uint32_t>(first->value);
+      }
+    }
+  }
+  return cursor.valid() ? std::optional{result} : std::nullopt;
+}
 } // namespace router::packet::isis

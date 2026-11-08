@@ -96,4 +96,25 @@ void isis_prefix_attributes_tests() {
   bad_id.bytes[15U] = 1U;
   const auto identity_bytes = buffer;
   require(!encode_prefix_source_router_id(identities, bad_id) && buffer == identity_bytes);
+  TlvWriter metadata_wire(buffer);
+  require(encode_prefix_attribute_flags(metadata_wire, host4, {true, true, true}) &&
+      encode_prefix_attribute_flags(metadata_wire, host4, {}) &&
+      metadata_wire.append(11U, router6) && encode_prefix_source_router_id(metadata_wire, *id4) &&
+      metadata_wire.append(12U, router4) && encode_prefix_source_router_id(metadata_wire, *id6) &&
+      encode_administrative_tags(metadata_wire, numbers32) && encode_administrative_tags(metadata_wire, numbers64));
+  const std::array<std::uint32_t, 1U> later_tag{99U};
+  require(encode_administrative_tags(metadata_wire, later_tag));
+  const auto metadata = prefix_metadata(host4, metadata_wire.bytes());
+  require(metadata && metadata->flags == std::optional{PrefixAttributeFlags{true, true, true}} &&
+      metadata->source_ipv4 == id4 && metadata->source_ipv6 == id6 && metadata->first_tag32 == 0U &&
+      metadata->first_tag64 == 0x0102030405060708ULL);
+  const auto v6_metadata = prefix_metadata(host6, metadata_wire.bytes());
+  require(v6_metadata && v6_metadata->flags == std::optional{PrefixAttributeFlags{false, true, true}});
+  const std::array<std::uint8_t, 5U> absent_flags{4U, 0U, 4U, 1U, 0x80U};
+  require(prefix_metadata(host4, absent_flags)->flags == std::optional{PrefixAttributeFlags{}});
+  TlvWriter invalid_tag(buffer);
+  require(invalid_tag.append(1U, std::span{tags32}.first(5U)) && encode_administrative_tags(invalid_tag, later_tag) &&
+      prefix_metadata(host4, invalid_tag.bytes())->first_tag32 == 99U);
+  const std::array<std::uint8_t, 3U> malformed{11U, 4U, 192U};
+  require(!prefix_metadata(host4, malformed) && !prefix_metadata(invalid, {}));
 }

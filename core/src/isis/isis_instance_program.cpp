@@ -15,7 +15,7 @@ InstanceProgramResult prepare_instance_program(const InstanceIntent &intent,
   if (!local) return fail(Status::unresolved_identity);
   if (!context.maximum_areas || context.maximum_areas > defaults::area_addresses_maximum ||
       intent.areas.size() > context.maximum_areas || !context.maximum_circuits ||
-      context.interfaces.size() > context.maximum_circuits || context.resource_retry.count() <= 0 ||
+      context.resource_retry.count() <= 0 ||
       context.minimum_generation_interval.count() <= 0) return fail(Status::invalid_context);
   UpdateInstanceProgram program;
   program.local = *local; program.maximum_areas = context.maximum_areas;
@@ -93,6 +93,10 @@ InstanceProgramResult prepare_instance_program(const InstanceIntent &intent,
       metrics[level] = P2pOriginMetric{metric, narrow};
     }
     if (!metrics[0U] && !metrics[1U]) continue;
+    // The circuit budget counts live transport bindings, not configured
+    // passive, loopback or inactive interface entries retained in the datastore.
+    if (origin.neighbors->size() + origin.broadcast_neighbors->size() == context.maximum_circuits)
+      return fail(Status::capacity);
     if (*resolved.type == ConfiguredInterfaceType::point_to_point)
       origin.neighbors->push_back({binding.interface_id, metrics});
     else {
