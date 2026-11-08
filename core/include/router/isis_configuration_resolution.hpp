@@ -4,6 +4,18 @@
 #include "router/isis_configuration.hpp"
 #include <chrono>
 namespace router::isis {
+enum class WaitTimerKind : std::uint8_t { spf, lsp };
+struct ResolvedWaitTimer {
+  std::chrono::milliseconds maximum, initial, second;
+  bool operator==(const ResolvedWaitTimer &) const = default;
+};
+// Pure local projection. Absence uses pinned YANG defaults; explicit values
+// must fit their own leaf ranges. Classic timer granularity rounds down without
+// mutating intent or inventing relationships between independently typed leaves.
+// Zero effective durations are valid after rounding. Invalid kind/range refuses.
+// This function owns no timer, clock, allocation or adaptive scheduling state.
+[[nodiscard]] std::optional<ResolvedWaitTimer> resolve_wait_timer(WaitTimerKind,
+    const WaitTimerIntent &) noexcept;
 struct ResolvedInstanceLevel {
   bool enabled{}, wide_metrics_only{};
   std::uint32_t default_metric{};

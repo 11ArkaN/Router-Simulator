@@ -978,6 +978,12 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case isis_priority:
   case isis_csnp_interval:
   case isis_lsp_pacing:
+  case isis_spf_max_wait:
+  case isis_spf_initial_wait:
+  case isis_spf_second_wait:
+  case isis_lsp_max_wait:
+  case isis_lsp_initial_wait:
+  case isis_lsp_second_wait:
   case isis_retransmit_interval:
   case isis_lsp_lifetime:
   case isis_lsp_mtu:

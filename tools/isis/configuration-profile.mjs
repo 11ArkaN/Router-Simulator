@@ -17,7 +17,13 @@ const numeric = [
   ["retransmit_interval_seconds", "interface/retransmit-interval"],
   ["lsp_lifetime_seconds", "lsp-lifetime"],
   ["lsp_mtu_octets", "lsp-mtu-size"],
-  ["level_lsp_mtu_octets", "level/lsp-mtu-size"]
+  ["level_lsp_mtu_octets", "level/lsp-mtu-size"],
+  ["spf_max_wait_milliseconds", "timers/spf-wait/spf-max-wait"],
+  ["spf_initial_wait_milliseconds", "timers/spf-wait/spf-initial-wait"],
+  ["spf_second_wait_milliseconds", "timers/spf-wait/spf-second-wait"],
+  ["lsp_max_wait_milliseconds", "timers/lsp-wait/lsp-max-wait"],
+  ["lsp_initial_wait_milliseconds", "timers/lsp-wait/lsp-initial-wait"],
+  ["lsp_second_wait_milliseconds", "timers/lsp-wait/lsp-second-wait"]
 ];
 const fail = (message) => { throw new Error(`IS-IS configuration profile: ${message}`); };
 const statements = (node, keyword) =>

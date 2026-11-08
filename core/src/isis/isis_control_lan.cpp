@@ -127,6 +127,7 @@ void ControlWorker::circuit_down(OwnedCircuit &owned) noexcept {
   } else static_cast<void>(owned.p2p().down(&owned, event));
 }
 void ControlWorker::circuit_up(OwnedCircuit &owned, RuntimeClock::time_point now) noexcept {
+  if (!owned.carrier) return;
   if (auto *broadcast = owned.lan()) {
     for (std::size_t level{}; level < 2U; ++level)
       if (auto *circuit = broadcast->at(level)) static_cast<void>(circuit->up(now));

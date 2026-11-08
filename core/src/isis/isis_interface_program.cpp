@@ -4,12 +4,33 @@
 #include <algorithm>
 #include <limits>
 namespace router::isis {
+InterfaceUpdateResult prepare_interface_update_program(const ResolvedInterface &interface,
+    const InterfaceUpdateContext &context) noexcept {
+  using Status = InterfaceUpdateStatus;
+  if (!interface.type) return {Status::unresolved_media, {}};
+  const bool broadcast = *interface.type == ConfiguredInterfaceType::broadcast;
+  if ((*interface.type != ConfiguredInterfaceType::point_to_point && !broadcast) ||
+      !context.partial_seconds || !context.transit_seconds || !interface.retransmit_interval_seconds ||
+      !interface.csnp_interval_seconds || context.maximum_pdu_octets < packet::isis::csnp_header_octets ||
+      context.maximum_pdu_octets > packet::maximum_frame_octets - packet::ethernet_header_octets - packet::llc_ui_header_octets ||
+      (broadcast && (context.csnp_separation.count() <= 0 || context.csnp_separation > std::chrono::milliseconds{65535})))
+    return {Status::invalid_context, {}};
+  const auto interval = interface.lsp_pacing_interval_milliseconds;
+  const auto period = interval < 100U ? 100U : 1000U;
+  if (interval && period % interval) return {Status::unresolved_pacing, {}};
+  UpdateTransmissionProgram output{context.partial_seconds, interface.retransmit_interval_seconds,
+      interface.csnp_interval_seconds, std::chrono::milliseconds{period}, interval ? period / interval : 0U,
+      context.maximum_pdu_octets, context.transit_seconds};
+  if (broadcast) output.broadcast = BroadcastTransmissionProgram{
+      std::chrono::milliseconds{interval}, context.csnp_separation};
+  return {Status::prepared, output};
+}
 InterfaceProgramResult prepare_interface_program(const InstanceIntent &instance,
     const InterfaceIntent &interface, const InterfaceProgramContext &context) {
   namespace defaults = configuration_profile;
   const auto resolved = resolve_interface(instance, interface, context.default_type);
   if (!instance.admin_enabled.value_or(defaults::instance_admin_enabled_default) ||
-      !resolved.admin_enabled || !context.operational || context.loopback || instance.areas.empty())
+      !resolved.admin_enabled || context.loopback || instance.areas.empty())
     return {InterfaceProgramStatus::inactive, {}};
   std::uint8_t mask{};
   for (std::size_t level{}; level < 2U; ++level)
@@ -49,6 +70,7 @@ InterfaceProgramResult prepare_interface_program(const InstanceIntent &instance,
     hello.holding_seconds = static_cast<std::uint16_t>(timing.holding_seconds);
   };
   CircuitDefinition output;
+  output.carrier = context.operational;
   output.identity = context.identity; output.random_state = context.random;
   const auto levels = static_cast<Levels>(mask);
   if (*resolved.type == ConfiguredInterfaceType::point_to_point) {

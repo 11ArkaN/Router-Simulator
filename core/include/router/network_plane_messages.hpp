@@ -16,7 +16,7 @@ namespace router::lab {
 
 // Version 38 adds an owned IS-IS generation transfer paired with one fixed
 // command. Mixed owners must refuse rather than interpret another ring layout.
-inline constexpr std::uint32_t network_plane_message_version = 40;
+inline constexpr std::uint32_t network_plane_message_version = 42;
 
 struct NetworkDhcpv4ClientBegin {
   // RFC 2131 caps each ordinary option payload at 255 octets. Carrying the two

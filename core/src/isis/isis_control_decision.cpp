@@ -92,11 +92,17 @@ void ControlWorker::service_p2p_decision(OwnedInstance &instance, const DeviceSt
     std::size_t index, RuntimeClock::time_point now, std::size_t &budget) noexcept {
   if (!instance.configuration.origination ||
       (!instance.configuration.origination->neighbors && !instance.configuration.origination->broadcast_neighbors)) return;
+  std::array<bool, 2U> ready{true, true};
+  for (std::size_t level{}; level < 2U; ++level) if (instance.spf[level] && instance.level_decisions_pending(level)) {
+    auto &timer = *instance.spf[level];
+    if (!timer.deadline() && !timer.changed(now)) { instance.status = UpdateStatus::epoch_exhausted; return; }
+    ready[level] = timer.due(now);
+  }
   const auto calculate = [&](const P2pDecisionProgram &program, auto &decisions, auto &consumed, auto &status,
       std::array<std::uint64_t, 2U> *runs,
       std::array<std::vector<std::optional<AdjacencyNextHop>>, 2U> *bindings) {
     for (std::size_t level{}; level < 2U && budget; ++level) {
-      if (!decisions[level] || consumed[level] == instance.decision_revisions[level]) continue;
+      if (!ready[level] || !decisions[level] || consumed[level] == instance.decision_revisions[level]) continue;
       status[level] = prepare_decision_input(instance, device, index, level, program.protocol);
       if (status[level] == DecisionStatus::applied) {
         packet::isis::LanId root{};
@@ -122,5 +128,10 @@ void ControlWorker::service_p2p_decision(OwnedInstance &instance, const DeviceSt
       calculate(instance.configuration.routing[family]->calculation, owned.decisions, owned.consumed, owned.status,
           nullptr, &owned.bindings);
     }
+  // All configured families in a level share one SPF hold. Bounded partial
+  // quanta retain the same ready deadline until every revision is consumed.
+  for (std::size_t level{}; level < 2U; ++level)
+    if (instance.spf[level] && instance.spf[level]->deadline() && ready[level] && !instance.level_decisions_pending(level))
+      if (!instance.spf[level]->complete(now)) instance.status = UpdateStatus::epoch_exhausted;
 }
 } // namespace router::isis

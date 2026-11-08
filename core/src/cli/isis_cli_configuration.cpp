@@ -108,7 +108,28 @@ EditResult edit(isis::RouterConfiguration &configuration,
     // of a YANG boolean argument. Removal remains leaf-specific below.
     const auto id = command.spec->handler_id;
     const bool admin = leaf == "admin-state";
-    if (admin) {
+    if (path == "/timers") {
+      if (remove) { instance->spf_wait = {}; instance->lsp_wait = {}; }
+      accepted = true;
+    } else if (path == "/timers/spf-wait" || path == "/timers/lsp-wait") {
+      const bool spf = path == "/timers/spf-wait";
+      auto &timer = spf ? instance->spf_wait : instance->lsp_wait;
+      if (remove) { timer = {}; accepted = true; }
+      else if (engine == CliEngine::md) accepted = true;
+      else {
+        const auto maximum = argument_text(command, spf ? TokenKind::isis_spf_max_wait : TokenKind::isis_lsp_max_wait);
+        const auto initial = argument_text(command, spf ? TokenKind::isis_spf_initial_wait : TokenKind::isis_lsp_initial_wait);
+        const auto second = argument_text(command, spf ? TokenKind::isis_spf_second_wait : TokenKind::isis_lsp_second_wait);
+        accepted = scalar(timer.maximum, maximum, false) &&
+            (initial.empty() || scalar(timer.initial, initial, false)) &&
+            (second.empty() || scalar(timer.second, second, false));
+      }
+    } else if (path.starts_with("/timers/spf-wait/") || path.starts_with("/timers/lsp-wait/")) {
+      auto &timer = path.starts_with("/timers/spf-wait/") ? instance->spf_wait : instance->lsp_wait;
+      auto *target = leaf.ends_with("max-wait") ? &timer.maximum :
+          leaf.ends_with("initial-wait") ? &timer.initial : leaf.ends_with("second-wait") ? &timer.second : nullptr;
+      accepted = target && scalar(*target, value, remove);
+    } else if (admin) {
       const bool enabled = id == cli_schema::CommandId::md_isis_admin_state_enable ||
           id == cli_schema::CommandId::md_isis_interface_admin_state_enable ||
           id == cli_schema::CommandId::classic_isis_admin_state_enable ||

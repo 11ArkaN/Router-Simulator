@@ -93,6 +93,7 @@ const cppLayers = new Map([
   ["isis_spf.hpp", 0], ["ospf_spf.hpp", 0],
   ["isis_prefix_attributes.hpp", 0], ["isis_prefix_attributes.cpp", 0],
   ["isis_link_graph.hpp", 1], ["isis_link_graph.cpp", 1],
+  ["isis_spf_throttle.hpp", 0], ["isis_spf_throttle.cpp", 0],
   ["isis_neighbor_key.hpp", 0], ["isis_neighbor_key.cpp", 0],
   ["isis_next_hop.hpp", 1], ["isis_prefix_routes.hpp", 1], ["isis_rib_input.hpp", 2], ["route_input_store.hpp", 1], ["isis_p2p_spf_seed.hpp", 1], ["isis_p2p_spf_input.hpp", 1],
   ["isis_p2p_decision.hpp", 1], ["isis_prefix_set.hpp", 1], ["isis_prefix_distance.hpp", 0],

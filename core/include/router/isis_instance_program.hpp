@@ -10,7 +10,9 @@ struct InstanceOriginInterface {
   std::optional<ConfiguredInterfaceType> default_type;
   std::uint8_t circuit{};
   std::size_t maximum_neighbors{};
-  bool operational{}, loopback{};
+  // Physical carrier does not remove a configured origin binding. Actual Up
+  // adjacencies alone contribute edges; resources survive link transitions.
+  bool loopback{};
 };
 struct InstanceProgramContext {
   IdentityContext identity;

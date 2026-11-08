@@ -29,6 +29,11 @@ export interface IsisInterfaceIntent {
   lspPacingIntervalMilliseconds: number | null;
   levels: [IsisInterfaceLevelIntent, IsisInterfaceLevelIntent];
 }
+export interface IsisWaitTimerIntent {
+  maximumMilliseconds: number | null;
+  initialMilliseconds: number | null;
+  secondMilliseconds: number | null;
+}
 export interface IsisInstanceIntent {
   instance: number;
   adminEnabled: boolean | null;
@@ -42,13 +47,15 @@ export interface IsisInstanceIntent {
   levels: [IsisInstanceLevelIntent, IsisInstanceLevelIntent];
   areas: string[];
   interfaces: IsisInterfaceIntent[];
+  spfWait?: IsisWaitTimerIntent;
+  lspWait?: IsisWaitTimerIntent;
 }
 export interface RouterIsisIntent { instances: IsisInstanceIntent[] }
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
-const shape = (value: unknown, names: string): value is Record<string, unknown> =>
-  object(value) && Object.keys(value).length === names.split(" ").length &&
-  names.split(" ").every((name) => Object.hasOwn(value, name));
+const shape = (value: unknown, names: string, optional = ""): value is Record<string, unknown> =>
+  object(value) && names.split(" ").every((name) => Object.hasOwn(value, name)) &&
+  Object.keys(value).every((name) => names.split(" ").includes(name) || (optional.length > 0 && optional.split(" ").includes(name)));
 const boolean = (value: unknown) => value === null || typeof value === "boolean";
 const enumeration = (value: unknown, values: string[]) => value === null || values.includes(value as string);
 const integer = (value: unknown, minimum: number, maximum: number): value is number =>
@@ -87,14 +94,22 @@ function interfaceIntent(value: unknown): value is IsisInterfaceIntent {
     range(value.retransmitIntervalSeconds, "retransmit_interval_seconds") && range(value.lspPacingIntervalMilliseconds, "lsp_pacing_interval_milliseconds") &&
     dense(value.levels, (item) => level(item, false));
 }
+function waitTimer(value: unknown, kind: "spf" | "lsp"): value is IsisWaitTimerIntent {
+  return shape(value, "maximumMilliseconds initialMilliseconds secondMilliseconds") &&
+    range(value.maximumMilliseconds, `${kind}_max_wait_milliseconds`) &&
+    range(value.initialMilliseconds, `${kind}_initial_wait_milliseconds`) &&
+    range(value.secondMilliseconds, `${kind}_second_wait_milliseconds`);
+}
 function instanceIntent(value: unknown): value is IsisInstanceIntent {
-  if (!shape(value, "instance adminEnabled ipv4Routing ipv6Routing levelCapability systemId routerId lspLifetimeSeconds lspMtuOctets levels areas interfaces") ||
+  if (!shape(value, "instance adminEnabled ipv4Routing ipv6Routing levelCapability systemId routerId lspLifetimeSeconds lspMtuOctets levels areas interfaces", "spfWait lspWait") ||
       !integer(value.instance, profile.instance_minimum, profile.instance_maximum) ||
       !boolean(value.adminEnabled) || !boolean(value.ipv4Routing) || !enumeration(value.ipv6Routing, ["false", "native", "mt"]) ||
       !levelCapability(value.levelCapability) || !range(value.lspLifetimeSeconds, "lsp_lifetime_seconds") || !range(value.lspMtuOctets, "lsp_mtu_octets") ||
       !Array.isArray(value.levels) || value.levels.length !== 2 || !dense(value.levels, (item) => level(item, true)) ||
       !Array.isArray(value.areas) || value.areas.length > profile.area_addresses_maximum || !Array.isArray(value.interfaces) ||
-      !dense(value.interfaces, interfaceIntent)) return false;
+      !dense(value.interfaces, interfaceIntent) ||
+      (Object.hasOwn(value, "spfWait") && !waitTimer(value.spfWait, "spf")) ||
+      (Object.hasOwn(value, "lspWait") && !waitTimer(value.lspWait, "lsp"))) return false;
   if (value.systemId !== null && (typeof value.systemId !== "string" || !/^[a-f0-9]{4}\.[a-f0-9]{4}\.[a-f0-9]{4}$/i.test(value.systemId))) return false;
   if (value.routerId !== null && (typeof value.routerId !== "string" ||
       !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(value.routerId) || value.routerId.split(".").some((octet) => Number(octet) > 255))) return false;
@@ -122,7 +137,7 @@ export function encodeIsisConfigurationHex(configuration: RouterIsisIntent): str
   const vector = <T>(values: T[], write: (entry: T) => void) => { number(values.length, 4); values.forEach(write); };
   const hexBytes = (text: string) => text.match(/../g)!.map((pair) => parseInt(pair, 16));
   const string = (text: string) => { const encoded = new TextEncoder().encode(text); number(encoded.length, 2); bytes.push(...encoded); };
-  number(1, 1);
+  number(2, 1);
   vector(configuration.instances, (instance) => {
     number(instance.instance, 1); optional(instance.adminEnabled, boolean); optional(instance.ipv4Routing, boolean);
     optional(instance.ipv6Routing, (value) => number(["false", "native", "mt"].indexOf(value), 1)); levels(instance.levelCapability);
@@ -143,6 +158,11 @@ export function encodeIsisConfigurationHex(configuration: RouterIsisIntent): str
         integer(level.helloMultiplier, 1); integer(level.priority, 1); optional(level.passive, boolean);
       }
     });
+    for (const timer of [instance.spfWait, instance.lspWait]) {
+      integer(timer?.maximumMilliseconds ?? null, 4);
+      integer(timer?.initialMilliseconds ?? null, 4);
+      integer(timer?.secondMilliseconds ?? null, 4);
+    }
   });
   return bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }

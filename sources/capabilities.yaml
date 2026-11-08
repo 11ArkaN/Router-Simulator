@@ -1,6 +1,18 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  routing.isis.control_carrier:
+    status: experimental
+    source_ids: [iso.10589.2002.control_carrier]
+  routing.isis.interface_update_program:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.interface_update_program]
+  routing.isis.spf_backoff:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.spf_backoff]
+  routing.isis.wait_timer_projection:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.wait_timer_projection]
   routing.isis.multipart_neighbor_keys:
     status: experimental
     source_ids: [ietf.isis.multipart_neighbor_keys]

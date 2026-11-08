@@ -137,7 +137,8 @@ UpdateCircuitConfiguration ControlWorker::update_configuration(const OwnedCircui
 
 ControlError ControlWorker::validate_update_program(UpdateInstanceProgram &program) const noexcept {
   if (!program.maximum_circuits || program.maximum_circuits > maximum_circuits_ || !valid_transmission(program.transmission) ||
-      !valid_origination(program) || program.format > packet::isis::InstanceFormat::standard) return ControlError::invalid_argument;
+      !valid_origination(program) || (program.spf_delay && !valid_spf_delay_policy(*program.spf_delay)) ||
+      program.format > packet::isis::InstanceFormat::standard) return ControlError::invalid_argument;
   if (program.wire_instance) return ControlError::unsupported_update_instance;
   for (const auto &level : program.levels)
     if (level && (level->authenticate_lsp || level->authenticate_csnp || level->authenticate_psnp))

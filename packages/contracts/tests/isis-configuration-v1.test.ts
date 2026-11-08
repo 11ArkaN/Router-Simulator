@@ -29,6 +29,7 @@ it("identifier limits, area aliases and unsupported fields reject", () => {
   value.instances[0].areas.pop();
   expect(isRouterIsisIntent(value)).toBe(true);
   expect(isRouterIsisIntent({...value, unknown: true})).toBe(false);
+  expect(isRouterIsisIntent({...value, "": true})).toBe(false);
 });
 it("level ranges do not accept NaN, fractions or a larger numeric type", () => {
   for (const metric of [0, -1, 1.5, NaN, 16777216]) {
@@ -40,11 +41,11 @@ it("level ranges do not accept NaN, fractions or a larger numeric type", () => {
 });
 
 it("binary management payload preserves the native empty-tree golden", () => {
-  expect(encodeIsisConfigurationHex({instances: []})).toBe("0100000000");
+  expect(encodeIsisConfigurationHex({instances: []})).toBe("0200000000");
   const value = fixture();
   const instance = value.instances[0];
   instance.instance = 0; instance.adminEnabled = null;
-  expect(encodeIsisConfigurationHex(value)).toBe("0101000000" + "00".repeat(29));
+  expect(encodeIsisConfigurationHex(value)).toBe("0201000000" + "00".repeat(35));
 });
 
 it("sparse arrays cannot bypass entry validation or wire counts", () => {
@@ -55,4 +56,18 @@ it("sparse arrays cannot bypass entry validation or wire counts", () => {
   value.instances[0].areas = [];
   value.instances[0].interfaces = Array(1);
   expect(isRouterIsisIntent(value)).toBe(false);
+});
+
+it("optional wait timer intent preserves raw values and rejects invalid leaves", () => {
+  const value = fixture();
+  value.instances[0].spfWait = {maximumMilliseconds: 550, initialMilliseconds: 10, secondMilliseconds: 100000};
+  value.instances[0].lspWait = {maximumMilliseconds: 120000, initialMilliseconds: 99, secondMilliseconds: 1000};
+  expect(isRouterIsisIntent(value)).toBe(true);
+  expect(encodeIsisConfigurationHex(value)).toContain("0126020000010a00000001a0860100");
+  for (const invalid of [9, 120001, NaN, 550.5]) {
+    value.instances[0].spfWait.maximumMilliseconds = invalid;
+    expect(isRouterIsisIntent(value)).toBe(false);
+  }
+  value.instances[0].spfWait.maximumMilliseconds = 550;
+  expect(isRouterIsisIntent({...value, instances: [{...value.instances[0], spfWait: {...value.instances[0].spfWait, unknown: 1}}]})).toBe(false);
 });

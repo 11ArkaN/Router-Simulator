@@ -65,6 +65,7 @@ ControlWorkerCheckpoint ControlWorker::capture_checkpoint(RuntimeClock::time_poi
       saved.status = instance.status;
       for (std::size_t level{}; level < 2U; ++level) {
         if (instance.decisions[level]) saved.decisions[level] = instance.decisions[level]->checkpoint();
+        if (instance.spf[level]) saved.spf[level] = instance.spf[level]->checkpoint(now);
         if (instance.validation[level]) saved.validation[level] = instance.validation[level]->checkpoint(now);
       }
       for (std::size_t family{}; family < saved.families.size(); ++family) {
@@ -84,6 +85,7 @@ ControlWorkerCheckpoint ControlWorker::capture_checkpoint(RuntimeClock::time_poi
       saved.definition.identity = circuit.identity;
       saved.definition.random_state = circuit.random_state;
       saved.definition.update_transmission = circuit.update_transmission;
+      saved.definition.carrier = circuit.carrier;
       if (const auto *lan = circuit.lan()) {
         LanCircuitProgram program;
         for (std::size_t level{}; level < 2U; ++level)

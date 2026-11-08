@@ -23,6 +23,7 @@ std::unique_ptr<ControlWorker::OwnedCircuit> ControlWorker::restore_checkpoint_c
     command.broadcast = definition.broadcast;
     command.random_state = definition.random_state;
     command.update_transmission = definition.update_transmission;
+    command.carrier = definition.carrier;
     std::optional<OwnedCircuit::Medium> medium;
     if (definition.broadcast) {
       auto child = LanCircuitPair::restore_checkpoint(std::get<LanPairCheckpoint>(saved.medium), *definition.broadcast, now);
@@ -34,6 +35,12 @@ std::unique_ptr<ControlWorker::OwnedCircuit> ControlWorker::restore_checkpoint_c
       medium.emplace(std::in_place_type<PointToPointCircuit>, std::move(*child));
     }
     auto result = std::make_unique<OwnedCircuit>(command, now, std::move(medium));
+    if (!definition.carrier) {
+      if (const auto *lan = result->lan()) {
+        for (std::size_t level{}; level < 2U; ++level)
+          if (const auto *entry = lan->at(level); entry && entry->operational()) return nullptr;
+      } else if (result->p2p().operational()) return nullptr;
+    }
     if (!result->transmission.restore(saved.transmission)) return nullptr;
     if (result->lan()) {
       if (saved.transmission.pending) return nullptr;

@@ -394,39 +394,66 @@ nodes:
   - domain: configuration
     schema_id: /configure/router/isis/timers
     scope: base
-    status: pending
+    status: intent-only
+    tests:
+      - core/tests/cli/isis_cli_configuration_test.cpp
+      - core/tests/isis/isis_configuration_codec_test.cpp
   - domain: configuration
     schema_id: /configure/router/isis/timers/spf-wait
     scope: base
-    status: pending
+    status: intent-only
+    tests:
+      - core/tests/cli/isis_cli_configuration_test.cpp
+      - core/tests/isis/isis_configuration_codec_test.cpp
   - domain: configuration
     schema_id: /configure/router/isis/timers/spf-wait/spf-max-wait
     scope: base
-    status: pending
+    status: intent-only
+    tests:
+      - core/tests/cli/isis_cli_configuration_test.cpp
+      - core/tests/isis/isis_configuration_codec_test.cpp
   - domain: configuration
     schema_id: /configure/router/isis/timers/spf-wait/spf-initial-wait
     scope: base
-    status: pending
+    status: intent-only
+    tests:
+      - core/tests/cli/isis_cli_configuration_test.cpp
+      - core/tests/isis/isis_configuration_codec_test.cpp
   - domain: configuration
     schema_id: /configure/router/isis/timers/spf-wait/spf-second-wait
     scope: base
-    status: pending
+    status: intent-only
+    tests:
+      - core/tests/cli/isis_cli_configuration_test.cpp
+      - core/tests/isis/isis_configuration_codec_test.cpp
   - domain: configuration
     schema_id: /configure/router/isis/timers/lsp-wait
     scope: base
-    status: pending
+    status: intent-only
+    tests:
+      - core/tests/cli/isis_cli_configuration_test.cpp
+      - core/tests/isis/isis_configuration_codec_test.cpp
   - domain: configuration
     schema_id: /configure/router/isis/timers/lsp-wait/lsp-max-wait
     scope: base
-    status: pending
+    status: intent-only
+    tests:
+      - core/tests/cli/isis_cli_configuration_test.cpp
+      - core/tests/isis/isis_configuration_codec_test.cpp
   - domain: configuration
     schema_id: /configure/router/isis/timers/lsp-wait/lsp-initial-wait
     scope: base
-    status: pending
+    status: intent-only
+    tests:
+      - core/tests/cli/isis_cli_configuration_test.cpp
+      - core/tests/isis/isis_configuration_codec_test.cpp
   - domain: configuration
     schema_id: /configure/router/isis/timers/lsp-wait/lsp-second-wait
     scope: base
-    status: pending
+    status: intent-only
+    tests:
+      - core/tests/cli/isis_cli_configuration_test.cpp
+      - core/tests/isis/isis_configuration_codec_test.cpp
   - domain: configuration
     schema_id: /configure/router/isis/unicast-import
     scope: base

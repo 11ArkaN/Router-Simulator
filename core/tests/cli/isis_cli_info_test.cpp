@@ -23,6 +23,8 @@ void isis_cli_info_tests() {
       "configure router \"Base\" isis 127 level-capability 1/2",
       "configure router \"Base\" isis 127 system-id 0000.0000.0127",
       "configure router \"Base\" isis 127 router-id 10.0.0.127",
+      "configure router \"Base\" isis 127 timers spf-wait spf-max-wait 550",
+      "configure router \"Base\" isis 127 timers lsp-wait lsp-initial-wait 99",
       "configure router \"Base\" isis 127 level 1 default-metric 20",
       "configure router \"Base\" isis 127 level 2",
       "configure router \"Base\" isis 127 interface \"edge one\" level 1 metric 30",
@@ -55,6 +57,17 @@ void isis_cli_info_tests() {
   require(classic_leaf("ipv4-routing false") == "no ipv4-routing");
   require(classic_leaf("ipv6-routing false") == "no ipv6-routing");
   require(classic_leaf("wide-metrics-only false") == "no wide-metrics-only");
+  const std::array<std::string, 4U> timer_body{"  spf-max-wait 550", "  spf-initial-wait 10", "}", "next-sibling"};
+  const auto classic_timer = classic_timer_block("spf-wait", timer_body);
+  require(classic_timer && classic_timer->lines == 3U &&
+      classic_timer->command == "spf-wait 550 spf-initial-wait 10 spf-second-wait 1000");
+  require(!classic_timer_block("other", timer_body));
+  require(!classic_timer_block("spf-wait", std::span{timer_body}.first(2U)));
+  for (const auto &invalid : {std::array<std::string, 3U>{"spf-max-wait 550", "spf-max-wait 600", "}"},
+      std::array<std::string, 3U>{"spf-max-wait 550", "lsp-initial-wait 10", "}"},
+      std::array<std::string, 3U>{"spf-max-wait 550", "spf-initial-wait 9", "}"}})
+    require(!classic_timer_block("spf-wait", invalid));
+  require(tree.find("spf-max-wait 550") != std::string::npos && tree.find("lsp-initial-wait 99") != std::string::npos);
   auto edited = original;
   edited.instances[0U].interfaces[0U].level[0U].metric = 40U;
   auto delta = md_compare(original, edited);

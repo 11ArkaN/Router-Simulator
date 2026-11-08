@@ -1,6 +1,7 @@
 // Both generated CLI engines must converge on one intent and reject edits
 // atomically. These tests enter through the production parser, not synthetic IDs.
 #include "cli/isis_cli_configuration.hpp"
+#include <memory>
 #include <stdexcept>
 #include <string>
 namespace {
@@ -15,6 +16,25 @@ router::lab::isis_cli::EditResult apply(router::isis::RouterConfiguration &confi
 }
 }
 void isis_cli_configuration_tests() {
+  auto state = std::make_unique<router::DeviceState>();
+  for (const auto engine : {CliEngine::md, CliEngine::classic}) {
+    router::CliSession session;
+    session.engine = engine;
+    session.md_workflow = router::MdCliWorkflow::explicit_private;
+    for (const std::string group : {"spf", "lsp"})
+      for (const std::string leaf : {"max", "initial", "second"}) {
+        const auto prefix = engine == CliEngine::md
+            ? "configure router \"Base\" isis 0 timers " + group + "-wait " + group + "-" + leaf + "-wait "
+            : "configure router isis 0 timers " + group + "-wait " +
+                (leaf == "max" ? std::string{} : "1000 " + group + "-" + leaf + "-wait ");
+        const auto help = router::cli_detail::complete_command(*state, session, prefix,
+            router::CliCompletionTrigger::question);
+        require(help.find("<milliseconds>") != std::string::npos,
+            "IS-IS timer help omitted its sourced scalar parameter");
+        require(router::cli_detail::parse_command(engine, session.md_workflow, prefix + "1000").has_value(),
+            "IS-IS timer help prefix differs from executable grammar");
+      }
+  }
   std::size_t checked{};
   for (const auto &spec : router::cli_schema::commands) {
     if (spec.source_id != "nokia.sros.26_7.isis.basic_cli") continue;
@@ -51,7 +71,22 @@ void isis_cli_configuration_tests() {
       throw std::runtime_error("IS-IS surface editor rejected: " + text);
     ++checked;
   }
-  require(checked == 191U, "IS-IS surface coverage changed without test review");
+  require(checked == 233U, "IS-IS surface coverage changed without test review");
+  router::isis::RouterConfiguration timer_md, timer_classic;
+  for (const auto command : {"configure router \"Base\" isis 0 timers spf-wait spf-max-wait 550",
+      "configure router \"Base\" isis 0 timers spf-wait spf-initial-wait 10",
+      "configure router \"Base\" isis 0 timers spf-wait spf-second-wait 100000"})
+    require(apply(timer_md, CliEngine::md, command).valid, "MD timer edit rejected");
+  require(apply(timer_classic, CliEngine::classic,
+      "configure router isis timers spf-wait 550 spf-initial-wait 10 spf-second-wait 100000").valid && timer_md == timer_classic,
+      "compound classic timer differs from MD leaves");
+  require(apply(timer_classic, CliEngine::classic, "configure router isis timers no spf-wait").valid &&
+      apply(timer_md, CliEngine::md, "delete router \"Base\" isis 0 timers spf-wait").valid && timer_md == timer_classic &&
+      !timer_md.instances.front().spf_wait.maximum && !timer_md.instances.front().spf_wait.initial &&
+      !timer_md.instances.front().spf_wait.second, "whole timer removal did not restore absent leaves");
+  require(apply(timer_classic, CliEngine::classic, "configure router isis timers lsp-wait 5000 lsp-initial-wait 99").valid &&
+      apply(timer_classic, CliEngine::classic, "configure router isis no timers").valid &&
+      !timer_classic.instances.front().lsp_wait.initial, "classic no timers failed to reset both groups");
   router::isis::RouterConfiguration inverse;
   const auto disabled_ipv4 = apply(inverse, CliEngine::classic, "configure router isis 1 no ipv4-routing");
   require(disabled_ipv4.valid && disabled_ipv4.changed && inverse.instances.size() == 1U &&

@@ -122,6 +122,11 @@ std::unique_ptr<ControlWorker::OwnedInstance> ControlWorker::restore_checkpoint_
     result->expiration_revision = saved.expiration_revision;
     result->corrupted_lsp = saved.corrupted_lsp;
     result->status = saved.status;
+    for (std::size_t level{}; level < 2U; ++level) {
+      if (static_cast<bool>(result->spf[level]) != saved.spf[level].has_value()) return nullptr;
+      if (saved.spf[level] && (!result->spf[level]->restore(*saved.spf[level], now) ||
+          (saved.spf[level]->pending_nanoseconds && !result->level_decisions_pending(level)))) return nullptr;
+    }
     return result;
   } catch (const std::exception &) { return nullptr; }
 }

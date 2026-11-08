@@ -59,6 +59,10 @@ void interface(std::ostream &out, const isis::InterfaceIntent &value) {
   object.field("lspPacingIntervalMilliseconds", value.lsp_pacing_interval_milliseconds);
   object.nested("levels", [&] { array(out, value.level, [&](const auto &entry) { level(out, entry); }); }); object.finish();
 }
+void wait_timer(std::ostream &out, const isis::WaitTimerIntent &value) {
+  Object object{out}; object.field("maximumMilliseconds", value.maximum);
+  object.field("initialMilliseconds", value.initial); object.field("secondMilliseconds", value.second); object.finish();
+}
 void instance(std::ostream &out, const isis::InstanceIntent &value) {
   Object object{out}; object.field("instance", value.instance); object.field("adminEnabled", value.admin_enabled);
   object.field("ipv4Routing", value.ipv4_routing); object.field("ipv6Routing", value.ipv6_routing);
@@ -72,6 +76,8 @@ void instance(std::ostream &out, const isis::InstanceIntent &value) {
   }
   object.field("routerId", router_id); object.field("lspLifetimeSeconds", value.lsp_lifetime_seconds);
   object.field("lspMtuOctets", value.lsp_mtu_octets);
+  object.nested("spfWait", [&] { wait_timer(out, value.spf_wait); });
+  object.nested("lspWait", [&] { wait_timer(out, value.lsp_wait); });
   object.nested("levels", [&] { array(out, value.level, [&](const auto &entry) { level(out, entry); }); });
   object.nested("areas", [&] { array(out, value.areas, [&](const auto &entry) { quoted(out, isis::format_configured_area(entry)); }); });
   object.nested("interfaces", [&] { array(out, value.interfaces, [&](const auto &entry) { interface(out, entry); }); }); object.finish();

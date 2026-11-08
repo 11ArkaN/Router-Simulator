@@ -647,6 +647,9 @@ public:
 
   // Port and FIB programs replace complete owner-local projections. Neither
   // method retains a control pointer after the call or future mailbox turn.
+  // A successful port replacement also delivers its effective operational gate
+  // to every bound IS-IS circuit before acknowledgement. Network-owner affinity;
+  // no allocation or peer lookup is added to the protocol carrier transition.
   [[nodiscard]] bool configure_port(DeviceHandle device,
                                     const ForwardPort &port) noexcept;
   [[nodiscard]] bool remove_port(DeviceHandle device,

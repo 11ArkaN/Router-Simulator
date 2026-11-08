@@ -80,6 +80,7 @@ void isis_checkpoint_barrier_tests() {
   program.maximum_areas = 3U;
   program.levels = {level, level};
   program.maximum_circuits = 2U;
+  program.spf_delay = SpfDelayPolicy{10s, 1s, 1s};
   program.transmission = {1U, 1U, 10U, 10ms, 4U, 1492U, 1U};
   ControlCommand add_instance;
   add_instance.kind = ControlCommandKind::add_update_instance;
@@ -127,11 +128,12 @@ void isis_checkpoint_barrier_tests() {
   capture.checkpoint_now_nanoseconds = RuntimeClock::time_point::max().time_since_epoch().count();
   require(command(capture).error == ControlError::invalid_argument && captured.version == 9U);
   capture.checkpoint_now_nanoseconds = barrier.checkpoint_anchor_nanoseconds;
-  require(command(capture).error == ControlError::none && captured.version == 1U &&
+  require(command(capture).error == ControlError::none && captured.version == 2U &&
       captured.barrier_epoch == barrier.checkpoint_barrier_epoch && captured.active_circuits == 1U &&
       captured.devices.size() == 1U && captured.devices[0U].circuits.size() == 1U &&
       captured.devices[0U].instances.size() == 1U);
   const auto &instance_image = captured.devices[0U].instances[0U];
+  require(instance_image.spf[0U] && instance_image.spf[1U] && !instance_image.spf[0U]->pending_nanoseconds);
   require(instance_image.process && instance_image.process->levels[0U] && instance_image.process->levels[1U] &&
       instance_image.process->levels[0U]->database.database.records.size() == 1U &&
       instance_image.process->levels[0U]->database.database.records[0U].bytes == originate.local_lsp);
@@ -198,6 +200,8 @@ void isis_checkpoint_barrier_tests() {
     require(command(request).error == ControlError::invalid_argument);
   };
   refuses([](auto &image) { ++image.version; });
+  refuses([](auto &image) { image.devices[0U].instances[0U].spf[0U].reset(); });
+  refuses([](auto &image) { image.devices[0U].instances[0U].spf[0U]->next_hold = 3s; });
   refuses([](auto &image) { ++image.barrier_epoch; });
   refuses([](auto &image) { ++image.forwarding_shards; });
   refuses([](auto &image) { ++image.active_circuits; });

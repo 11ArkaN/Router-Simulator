@@ -1,6 +1,7 @@
 // IS-IS info output preserves typed list presence and explicit default leaves.
 // Formatting depends on immutable release facts, never live adjacency state.
 #include "isis_cli_info.hpp"
+#include <charconv>
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
@@ -106,6 +107,18 @@ void interface(Writer &writer, const InterfaceIntent &value, bool detail) {
   for (std::size_t index{}; index < value.level.size(); ++index) if (value.level[index].present)
     writer.block("level " + std::to_string(index + 1U), [&] { interface_level(writer, value.level[index], detail); });
 }
+bool configured(const WaitTimerIntent &value) { return value.maximum || value.initial || value.second; }
+void wait_timer(Writer &writer, const WaitTimerIntent &value, bool spf, bool detail) {
+  if (!configured(value) && !detail) return;
+  writer.block(spf ? "spf-wait" : "lsp-wait", [&] {
+    writer.optional(spf ? "spf-max-wait" : "lsp-max-wait", value.maximum,
+        spf ? defaults::spf_max_wait_milliseconds_default : defaults::lsp_max_wait_milliseconds_default, detail);
+    writer.optional(spf ? "spf-initial-wait" : "lsp-initial-wait", value.initial,
+        spf ? defaults::spf_initial_wait_milliseconds_default : defaults::lsp_initial_wait_milliseconds_default, detail);
+    writer.optional(spf ? "spf-second-wait" : "lsp-second-wait", value.second,
+        spf ? defaults::spf_second_wait_milliseconds_default : defaults::lsp_second_wait_milliseconds_default, detail);
+  });
+}
 void instance(Writer &writer, const InstanceIntent &value, bool detail) {
   writer.admin(value.admin_enabled, defaults::instance_admin_enabled_default, detail);
   writer.levels(value.levels, detail);
@@ -123,6 +136,8 @@ void instance(Writer &writer, const InstanceIntent &value, bool detail) {
   }
   writer.optional("lsp-lifetime", value.lsp_lifetime_seconds, static_cast<std::uint16_t>(defaults::lsp_lifetime_seconds_default), detail);
   writer.optional("lsp-mtu-size", value.lsp_mtu_octets, static_cast<std::uint16_t>(defaults::lsp_mtu_octets_default), detail);
+  if (detail || configured(value.spf_wait) || configured(value.lsp_wait))
+    writer.block("timers", [&] { wait_timer(writer, value.spf_wait, true, detail); wait_timer(writer, value.lsp_wait, false, detail); });
   for (const auto &area : value.areas) writer.leaf("area-address", std::string_view{format_configured_area(area)});
   for (std::size_t index{}; index < value.level.size(); ++index) if (value.level[index].present) {
     const auto &level = value.level[index];
@@ -160,6 +175,46 @@ std::string md_compare(const isis::RouterConfiguration &running, const isis::Rou
   difference(out, before, after, 1U);
   const auto body = out.str();
   return body.empty() ? body : "router \"Base\" {\n" + body + "}\n";
+}
+std::optional<ClassicTimerBlock> classic_timer_block(std::string_view group,
+    std::span<const std::string> body) {
+  if (group != "spf-wait" && group != "lsp-wait") return std::nullopt;
+  const bool spf = group == "spf-wait";
+  isis::WaitTimerIntent values;
+  std::size_t consumed{};
+  for (const auto &line : body) {
+    ++consumed;
+    const auto first = line.find_first_not_of(' ');
+    if (first == std::string::npos) continue;
+    const auto content = std::string_view{line}.substr(first);
+    if (content == "}") {
+      const auto prefix = spf ? "spf-" : "lsp-";
+      auto command = std::string{group} + ' ' + std::to_string(values.maximum.value_or(
+          spf ? defaults::spf_max_wait_milliseconds_default : defaults::lsp_max_wait_milliseconds_default));
+      command += ' ' + std::string{prefix} + "initial-wait " + std::to_string(values.initial.value_or(
+          spf ? defaults::spf_initial_wait_milliseconds_default : defaults::lsp_initial_wait_milliseconds_default));
+      command += ' ' + std::string{prefix} + "second-wait " + std::to_string(values.second.value_or(
+          spf ? defaults::spf_second_wait_milliseconds_default : defaults::lsp_second_wait_milliseconds_default));
+      return ClassicTimerBlock{std::move(command), consumed};
+    }
+    const auto separator = content.find(' ');
+    if (separator == std::string_view::npos) return std::nullopt;
+    const auto name = content.substr(0U, separator), text = content.substr(separator + 1U);
+    auto *target = name == (spf ? "spf-max-wait" : "lsp-max-wait") ? &values.maximum :
+        name == (spf ? "spf-initial-wait" : "lsp-initial-wait") ? &values.initial :
+        name == (spf ? "spf-second-wait" : "lsp-second-wait") ? &values.second : nullptr;
+    std::uint32_t value{};
+    const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
+    if (!target || target->has_value() || text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
+      return std::nullopt;
+    const auto maximum = target == &values.maximum ?
+        (spf ? defaults::spf_max_wait_milliseconds_maximum : defaults::lsp_max_wait_milliseconds_maximum) :
+        (spf ? defaults::spf_initial_wait_milliseconds_maximum : defaults::lsp_initial_wait_milliseconds_maximum);
+    const auto minimum = spf ? defaults::spf_initial_wait_milliseconds_minimum : defaults::lsp_initial_wait_milliseconds_minimum;
+    if (value < minimum || value > maximum) return std::nullopt;
+    *target = value;
+  }
+  return std::nullopt;
 }
 std::string classic_leaf(std::string_view value) {
   if (value.starts_with("area-address ")) return "area-id " + std::string{value.substr(13U)};

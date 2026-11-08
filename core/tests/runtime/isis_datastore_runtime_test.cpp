@@ -56,6 +56,16 @@ void isis_datastore_runtime_tests() {
   const auto scoped = execute("info");
   require(scoped.find("default-metric 30") != std::string::npos && scoped.find("area-address") == std::string::npos,
       "IS-IS MD info escaped its level context");
+  execute("/configure router isis 0 timers spf-wait");
+  require(execute("info").find("spf-max-wait") == std::string::npos,
+      "empty non-presence SPF context invented explicit values");
+  require(execute("info detail").find("spf-max-wait 10000") != std::string::npos,
+      "SPF detail lost its YANG default");
+  execute("spf-max-wait 550"); execute("spf-initial-wait 10"); execute("spf-second-wait 100000");
+  execute("/configure router isis 0 timers lsp-wait"); execute("lsp-initial-wait 99");
+  require(execute("info").find("lsp-initial-wait 99") != std::string::npos,
+      "LSP intent was replaced with its rounded effective delay");
+  execute("/configure router isis 0 level 1");
   execute("/configure router isis 0 admin-state enable");
   const auto compared = execute("compare");
   require(compared.find("isis 0 {") != std::string::npos &&
@@ -64,19 +74,19 @@ void isis_datastore_runtime_tests() {
   const auto image = runtime->export_checkpoint();
   require(!image.empty(), "IS-IS private candidate checkpoint failed");
   const std::vector<std::uint8_t> saved{image.begin(), image.end()};
-  auto inconsistent = checkpoint_v11::decode(saved);
+  auto inconsistent = checkpoint_v12::decode(saved);
   require(inconsistent && !inconsistent->portable_routers.empty(),
       "IS-IS datastore checkpoint could not be inspected");
   router::isis::InstanceIntent enabled;
   enabled.admin_enabled = true;
   inconsistent->portable_routers.front().isis.instances.push_back(enabled);
-  const auto inconsistent_image = checkpoint_v11::encode(*inconsistent);
+  const auto inconsistent_image = checkpoint_v12::encode(*inconsistent);
   require(!inconsistent_image.empty() && !runtime->import_checkpoint(inconsistent_image),
       "IS-IS running activation without a protocol owner was restored");
   inconsistent->portable_routers.front().isis.instances.front().admin_enabled = false;
   inconsistent->portable_routers.front().isis.instances.front().interfaces.push_back({});
   inconsistent->portable_routers.front().isis.instances.front().interfaces.back().name = "missing-base-interface";
-  const auto dangling_image = checkpoint_v11::encode(*inconsistent);
+  const auto dangling_image = checkpoint_v12::encode(*inconsistent);
   require(!dangling_image.empty() && !runtime->import_checkpoint(dangling_image),
       "IS-IS running interface without its Base interface was restored");
   require(execute("info").find("default-metric 30") != std::string::npos,
@@ -88,12 +98,36 @@ void isis_datastore_runtime_tests() {
   execute("/configure router isis 0");
   require(execute("info").find("admin-state enable") != std::string::npos,
       "IS-IS uncommitted candidate activation was lost on restore");
+  const auto restored_timers = execute("info");
+  require(restored_timers.find("spf-max-wait 550") != std::string::npos &&
+      restored_timers.find("lsp-initial-wait 99") != std::string::npos,
+      "wait timer intent was lost on candidate checkpoint restore");
   execute("admin-state disable"); execute("level 1");
   const auto before = runtime->command(message(lab_runtime_protocol::snapshot));
   require(before.find("\"isis\":{\"instances\":[]}") != std::string_view::npos, "IS-IS candidate leaked into running");
   execute("commit");
   require(runtime->command(message(lab_runtime_protocol::snapshot)).find("\"defaultMetric\":30") != std::string_view::npos,
       "IS-IS candidate did not reach running");
+  execute("exit all"); execute("quit-config");
+  execute("edit-config read-only");
+  execute("/configure router isis 0");
+  execute("level 1");
+  require(execute("info").find("default-metric 30") != std::string::npos,
+      "read-only IS-IS selection lost its existing level");
+  execute("/configure router isis 0 interface \"edge one\" level 1");
+  execute("/configure router isis 0 timers spf-wait");
+  require(execute("info").find("spf-max-wait 550") != std::string::npos,
+      "read-only IS-IS timer context is not navigable");
+  for (const std::string_view forbidden : {"spf-max-wait 550", "/delete router isis 0 timers",
+      "/configure router isis 127", "/configure router isis 0 interface missing"}) {
+    const auto refusal = runtime->command(message(lab_runtime_protocol::session_execute,
+        {"isis-console", forbidden}));
+    require(refusal.find("#2069") != std::string_view::npos,
+        "read-only IS-IS navigation allowed a write or created a missing list");
+  }
+  require(execute("info").find("spf-max-wait 550") != std::string::npos &&
+      runtime->command(message(lab_runtime_protocol::snapshot)).find("\"instance\":127") == std::string_view::npos,
+      "rejected read-only IS-IS command changed context or running state");
   execute("exit all"); execute("quit-config"); execute("//");
   require(execute("configure router isis 0").find(">isis#") != std::string::npos,
       "classic explicit IS-IS key leaked into the prompt");
@@ -118,6 +152,19 @@ void isis_datastore_runtime_tests() {
       "classic completion split a quoted interface context");
   execute("configure router isis 0");
   require(execute("info").find("area-id 49.0001") != std::string::npos, "classic IS-IS area spelling is not sourced");
+  execute("configure router isis 0 timers");
+  const auto classic_timers = execute("info");
+  require(classic_timers.find("spf-wait 550 spf-initial-wait 10 spf-second-wait 100000") != std::string::npos &&
+      classic_timers.find("lsp-wait 5000 lsp-initial-wait 99 lsp-second-wait 1000") != std::string::npos &&
+      classic_timers.find("spf-max-wait") == std::string::npos,
+      "classic timer info leaked the MD leaf hierarchy");
+  execute("lsp-wait 5000 lsp-initial-wait 109 lsp-second-wait 1000");
+  require(execute("info").find("lsp-initial-wait 109") != std::string::npos,
+      "classic compound timer did not retain the raw initial delay");
+  execute("no lsp-wait"); execute("no spf-wait");
+  require(execute("info").find("spf-wait") == std::string::npos &&
+      execute("info detail").find("spf-wait 10000 spf-initial-wait 1000 spf-second-wait 1000") != std::string::npos,
+      "classic timer reset did not restore whole-group defaults");
   execute("configure router no isis 0");
   require(runtime->command(message(lab_runtime_protocol::snapshot)).find("\"isis\":{\"instances\":[]}") != std::string_view::npos,
       "classic IS-IS subtree removal retained intent");

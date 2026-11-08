@@ -212,6 +212,85 @@
       "classic_source": "https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-a-commands-app--3.html#ai9j785edp",
       "md_remove": true,
       "classic_no": true
+    },
+    {
+      "yang_path": "/configure/router/isis/timers",
+      "md_source": "https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html#d46365",
+      "classic_source": "https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-t-commands-time-2.html#ai9j785o94",
+      "md_remove": true,
+      "classic_no": true
+    },
+    {
+      "yang_path": "/configure/router/isis/timers/spf-wait/spf-max-wait",
+      "md_source": "https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html#d46367",
+      "classic_source": "https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-s-commands-sid-3.html#ai9j785oej",
+      "md_remove": true,
+      "classic_no": false,
+      "classic_via_parent": "/configure/router/isis/timers/spf-wait"
+    },
+    {
+      "yang_path": "/configure/router/isis/timers/spf-wait/spf-initial-wait",
+      "md_source": "https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html#d46368",
+      "classic_source": "https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-s-commands-sid-3.html#ai9j785oej",
+      "md_remove": true,
+      "classic_no": false,
+      "classic_via_parent": "/configure/router/isis/timers/spf-wait"
+    },
+    {
+      "yang_path": "/configure/router/isis/timers/spf-wait/spf-second-wait",
+      "md_source": "https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html#d46369",
+      "classic_source": "https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-s-commands-sid-3.html#ai9j785oej",
+      "md_remove": true,
+      "classic_no": false,
+      "classic_via_parent": "/configure/router/isis/timers/spf-wait"
+    },
+    {
+      "yang_path": "/configure/router/isis/timers/spf-wait",
+      "md_source": "https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html#d46366",
+      "classic_source": "https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-s-commands-sid-3.html#ai9j785oej",
+      "md_remove": true,
+      "classic_no": true,
+      "classic_parameters": {
+        "isis_spf_max_wait": "/configure/router/isis/timers/spf-wait/spf-max-wait",
+        "isis_spf_initial_wait": "/configure/router/isis/timers/spf-wait/spf-initial-wait",
+        "isis_spf_second_wait": "/configure/router/isis/timers/spf-wait/spf-second-wait"
+      }
+    },
+    {
+      "yang_path": "/configure/router/isis/timers/lsp-wait/lsp-max-wait",
+      "md_source": "https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html#d46371",
+      "classic_source": "https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-l-commands-logg-3.html#ai9j785jqm",
+      "md_remove": true,
+      "classic_no": false,
+      "classic_via_parent": "/configure/router/isis/timers/lsp-wait"
+    },
+    {
+      "yang_path": "/configure/router/isis/timers/lsp-wait/lsp-initial-wait",
+      "md_source": "https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html#d46372",
+      "classic_source": "https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-l-commands-logg-3.html#ai9j785jqm",
+      "md_remove": true,
+      "classic_no": false,
+      "classic_via_parent": "/configure/router/isis/timers/lsp-wait"
+    },
+    {
+      "yang_path": "/configure/router/isis/timers/lsp-wait/lsp-second-wait",
+      "md_source": "https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html#d46373",
+      "classic_source": "https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-l-commands-logg-3.html#ai9j785jqm",
+      "md_remove": true,
+      "classic_no": false,
+      "classic_via_parent": "/configure/router/isis/timers/lsp-wait"
+    },
+    {
+      "yang_path": "/configure/router/isis/timers/lsp-wait",
+      "md_source": "https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html#d46370",
+      "classic_source": "https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-l-commands-logg-3.html#ai9j785jqm",
+      "md_remove": true,
+      "classic_no": true,
+      "classic_parameters": {
+        "isis_lsp_max_wait": "/configure/router/isis/timers/lsp-wait/lsp-max-wait",
+        "isis_lsp_initial_wait": "/configure/router/isis/timers/lsp-wait/lsp-initial-wait",
+        "isis_lsp_second_wait": "/configure/router/isis/timers/lsp-wait/lsp-second-wait"
+      }
     }
   ]
 }

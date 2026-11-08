@@ -246,6 +246,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
       replacement.random_state = entry.random_state;
       replacement.broadcast = std::move(entry.broadcast);
       replacement.update_transmission = entry.update_transmission;
+      replacement.carrier = entry.carrier;
       staged.replacements.emplace_back(replacement, now);
     }
     for (auto &replacement : staged.replacements) {
@@ -548,6 +549,8 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
       result.update_status = instance.status;
       result.update_epoch = instance.process ? instance.process->maximum_synchronization_epoch() : device.update_fences[index];
       result.decision_runs = instance.decision_runs;
+      for (std::size_t level{}; level < 2U; ++level)
+        result.spf_pending[level] = instance.spf[level] && instance.spf[level]->deadline().has_value();
       result.decision_status = instance.decision_status;
       result.database_validations = instance.database_validations;
       result.decision_revisions = instance.decision_revisions;
@@ -660,7 +663,18 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     result.active_circuits = static_cast<std::uint32_t>(active_circuits_);
     return result;
   }
+  if (command.kind == ControlCommandKind::set_circuit_carrier) {
+    if (found->carrier != command.carrier) {
+      found->carrier = command.carrier;
+      if (!command.carrier) circuit_down(*found);
+      else if (!found->update || found->update->status == UpdateStatus::applied)
+        circuit_up(*found, RuntimeClock::now());
+    }
+    result.carrier = found->carrier;
+    return result;
+  }
   if (command.kind != ControlCommandKind::query_circuit) { result.error = ControlError::invalid_argument; return result; }
+  result.carrier = found->carrier;
   result.broadcast_circuit = found->lan() != nullptr;
   if (const auto *broadcast = found->lan()) {
     for (std::size_t level{}; level < 2U; ++level) if (const auto *circuit = broadcast->at(level)) {
@@ -730,6 +744,7 @@ void ControlWorker::receive(
     if (owned.identity.interface_id != packet.metadata.interface_id ||
         owned.identity.physical_port_ordinal != packet.metadata.physical_port_ordinal ||
         owned.identity.instance != packet.metadata.instance_id) continue;
+    if (!owned.carrier) { ++owned.counters.discarded; return; }
     packet::isis::InstanceError error{};
     const auto selection = packet::isis::select_instance(wire->pdu, owned.format, owned.physical_point_to_point, error);
     const bool p2p_hello = wire->pdu.type == packet::isis::PduType::point_to_point_hello;
@@ -835,6 +850,7 @@ void ControlWorker::run() noexcept {
         for (auto &owned : device.circuits) if (owned.identity.interface_id == completion->metadata.interface_id &&
             owned.identity.physical_port_ordinal == completion->metadata.physical_port_ordinal &&
             owned.identity.instance == completion->metadata.instance_id) {
+          if (!owned.carrier) { ++owned.counters.stale_completion; continue; }
           packet::isis::InstanceError error{};
           const auto selection = packet::isis::select_instance(wire->pdu, owned.format, owned.physical_point_to_point, error);
           if (owned.destinations.select(wire->pdu.type) != wire->ethernet.destination || !selection || selection->instance != owned.wire_instance) continue;
@@ -894,6 +910,7 @@ void ControlWorker::run() noexcept {
       // decisions to the next immediate owner turn rather than reuse stale Up.
       bool adjacency_pending{};
       for (auto &owned : device.circuits) {
+        if (!owned.carrier) continue;
         if (owned.update && owned.update->status != UpdateStatus::applied) continue;
         if (auto *broadcast = owned.lan()) {
           for (std::size_t level{}; level < 2U; ++level) if (auto *circuit = broadcast->at(level)) {
@@ -913,6 +930,7 @@ void ControlWorker::run() noexcept {
       if (device.instance_count) device.first_instance = (device.first_instance + 1U) % device.instance_count;
       for (std::size_t ordinal{}; ordinal < device.circuits.size(); ++ordinal) {
         auto &owned = device.circuits[(device.first_circuit + ordinal) % device.circuits.size()];
+        if (!owned.carrier) continue;
         if (owned.update && owned.update->status != UpdateStatus::applied) {
           owned.transmission.cancel();
           circuit_down(owned);

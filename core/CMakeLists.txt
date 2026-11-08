@@ -61,6 +61,7 @@ add_library(router_primitives STATIC
   src/isis/isis_fragment_plan.cpp
   src/isis/isis_lsp_builder.cpp
   src/isis/isis_database_validation.cpp
+  src/isis/isis_spf_throttle.cpp
   src/isis/isis_lsp_generation.cpp
   src/isis/isis_lsp_generation_checkpoint.cpp
   src/isis/isis_prefix_checkpoint.cpp
@@ -626,6 +627,7 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_snp_builder_test.cpp
     tests/isis/isis_lsp_builder_test.cpp
     tests/isis/isis_database_validation_test.cpp
+    tests/isis/isis_spf_throttle_test.cpp
     tests/isis/isis_lsp_generation_test.cpp
     tests/isis/isis_local_lsp_set_test.cpp
     tests/isis/isis_local_lsp_checkpoint_test.cpp

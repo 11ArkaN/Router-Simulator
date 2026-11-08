@@ -1,4 +1,4 @@
-// The configuration control owner prepares local-only Hello programs before
+// The configuration control owner prepares local-only Hello and update programs before
 // admission. No adjacency, clock, live owner or peer information is accessed.
 #pragma once
 #include "router/isis_configuration_resolution.hpp"
@@ -22,6 +22,24 @@ struct InterfaceProgramContext {
   std::span<const packet::Ipv6> ipv6_addresses;
   bool operational{}, loopback{}, physical_point_to_point{}, padding{}, strict_adjacency_check{};
 };
+struct InterfaceUpdateContext {
+  std::uint16_t partial_seconds{}, maximum_pdu_octets{}, transit_seconds{};
+  // Explicit local transport scheduling policy, not a vendor CLI default.
+  std::chrono::microseconds csnp_separation{};
+};
+enum class InterfaceUpdateStatus : std::uint8_t { prepared, invalid_context, unresolved_media, unresolved_pacing };
+struct InterfaceUpdateResult {
+  InterfaceUpdateStatus status{InterfaceUpdateStatus::invalid_context};
+  std::optional<UpdateTransmissionProgram> program;
+};
+// Pure same-owner preparation from validated effective interface values.
+// Pacing uses the documented 100 ms or 1 s bucket. Zero blocks LSP output
+// while retaining SNP service. Nonintegral burst counts refuse pending a
+// sourced rounding rule. LAN scan spacing and CSNP separation remain distinct.
+// No allocation, peer access, clock read or publication; failure returns no program.
+[[nodiscard]] InterfaceUpdateResult prepare_interface_update_program(const ResolvedInterface &,
+    const InterfaceUpdateContext &) noexcept;
+
 enum class InterfaceProgramStatus : std::uint8_t {
   prepared, inactive, unresolved_identity, unresolved_media, invalid_context,
   unrepresentable_holding, unsupported_instance, unsupported_topology
@@ -38,6 +56,8 @@ struct InterfaceProgramResult {
 // transmission policy remain separate configuration contracts. This adapter
 // currently admits local instance zero only. Oversized hold products reject
 // explicitly instead of inventing a platform saturation or truncation rule.
+// A physically down port still prepares its configured circuit with carrier
+// false. Admission reserves state without emitting until its local port is Up.
 [[nodiscard]] InterfaceProgramResult prepare_interface_program(const InstanceIntent &,
     const InterfaceIntent &, const InterfaceProgramContext &);
 }

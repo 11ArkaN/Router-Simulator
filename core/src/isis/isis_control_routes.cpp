@@ -62,7 +62,7 @@ RuntimeClock::time_point ControlWorker::service_routes(DeviceState &device,
     for (auto &family : instance->route_families)
       for (std::size_t level{}; level < family.decisions.size(); ++level) {
         if (!family.decisions[level]) continue;
-        if (family.consumed[level] != instance->decision_revisions[level]) return now;
+        if (family.consumed[level] != instance->decision_revisions[level]) return instance->decision_deadline(now);
         if (family.status[level] != DecisionStatus::applied) {
           if (device.route_status == Status::selection_failed && instance->decision_revisions[level]) {
             family.consumed[level] = 0U;

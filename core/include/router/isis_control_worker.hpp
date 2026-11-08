@@ -11,6 +11,7 @@
 #include "router/isis_neighbor_origination.hpp"
 #include "router/isis_origin_fragment_workspace.hpp"
 #include "router/isis_p2p_decision.hpp"
+#include "router/isis_spf_throttle.hpp"
 #include "router/isis_next_hop.hpp"
 #include "router/route_publication.hpp"
 #include "router/isis_database_validation.hpp"
@@ -67,7 +68,8 @@ enum class ControlCommandKind : std::uint8_t {
   remove_circuit, query_circuit, prepare_generation, commit_generation,
   abort_generation, add_update_instance, remove_update_instance, query_update_instance, originate_lsp, shutdown,
   query_sequence_recovery, replace_local_content, withdraw_local_content, add_lan_circuit, begin_checkpoint_barrier, end_checkpoint_barrier, capture_checkpoint,
-  prepare_checkpoint_restore, commit_checkpoint_restore, abort_checkpoint_restore
+  prepare_checkpoint_restore, commit_checkpoint_restore, abort_checkpoint_restore,
+  set_circuit_carrier
 };
 // Exactly one medium is supplied. A broadcast program requires the legacy
 // P2P value to remain empty; selecting LAN never constructs a P2P state owner.
@@ -113,6 +115,9 @@ struct CircuitDefinition {
   // Cold effective interface policy overrides the experimental instance policy.
   // It shares the circuit epoch: edits cannot retain live timers/tickets.
   std::optional<UpdateTransmissionProgram> update_transmission{};
+  // Effective local port state at cold admission, independent of configured
+  // enablement. Down circuits reserve identity/resources for later link Up.
+  bool carrier{true};
   [[nodiscard]] const CircuitHelloConfiguration *common() const noexcept {
     return circuit_hello_configuration(configuration, broadcast);
   }
@@ -188,6 +193,9 @@ struct UpdateInstanceProgram {
   std::optional<LocalOriginProgram> origination{};
   std::optional<P2pDecisionProgram> decision{};
   std::array<std::optional<P2pRouteFamilyProgram>, 2U> routing{};
+  // Absent retains the explicit experimental immediate-decision policy.
+  // Canonical SR OS preparation supplies normalized source-backed SPF delays.
+  std::optional<SpfDelayPolicy> spf_delay{};
   bool operator==(const UpdateInstanceProgram &) const = default;
 };
 // Fresh owner programs transfer with a circuit generation, in sorted key order.
@@ -211,6 +219,9 @@ struct ControlCommand {
   std::uintptr_t checkpoint_transfer{};
   std::int64_t checkpoint_now_nanoseconds{};
   std::uint64_t checkpoint_source_epoch{};
+  // Local physical state, serialized by the network owner. A carrier event
+  // carries no peer data and preserves configuration identity and ticket floors.
+  bool carrier{true};
   CircuitIdentity identity;
   P2pCircuitConfiguration configuration;
   std::uint64_t random_state{};
@@ -274,6 +285,7 @@ struct ControlResult {
   std::int64_t checkpoint_anchor_nanoseconds{};
   ControlError error{ControlError::none};
   P2pSnapshot adjacency{};
+  bool carrier{true};
   bool broadcast_circuit{};
   std::array<std::size_t, 2U> lan_neighbors{}, lan_up{};
   std::array<std::optional<DisSelection>, 2U> designated{};
@@ -291,6 +303,8 @@ struct ControlResult {
   std::optional<packet::isis::LspView> selected_lsp{};
   std::optional<LspLinkCounts> selected_lsp_links{};
   std::array<std::uint64_t, 2U> decision_runs{};
+  // Immutable owner query values; no timer or clock ownership crosses shards.
+  std::array<bool, 2U> spf_pending{};
   std::array<std::optional<std::uint32_t>, 2U> selected_cost{};
   std::array<std::size_t, 2U> prefix_advertisements{};
   std::array<std::optional<PrefixDistance>, 2U> selected_prefix_distance{};
@@ -349,6 +363,7 @@ private:
       std::array<std::vector<std::optional<AdjacencyNextHop>>, 2U> bindings;
     };
     std::array<RouteFamily, 2U> route_families;
+    std::array<std::optional<SpfThrottle>, 2U> spf;
     struct DecisionInput {
       std::vector<P2pSpfSeed> seeds;
       std::vector<LanSpfCircuit> lans;
@@ -358,13 +373,23 @@ private:
     // cover configured P2P interfaces and every potential LAN adjacency, rather
     // than the requested ECMP width. No borrowed peer view survives preparation.
     DecisionInput decision_input;
-    [[nodiscard]] bool decisions_pending() const noexcept {
-      for (std::size_t level{}; level < 2U; ++level) {
-        if (decisions[level] && consumed_decision_revision[level] != decision_revisions[level]) return true;
-        for (const auto &family : route_families)
-          if (family.decisions[level] && family.consumed[level] != decision_revisions[level]) return true;
-      }
+    [[nodiscard]] bool level_decisions_pending(std::size_t level) const noexcept {
+      if (decisions[level] && consumed_decision_revision[level] != decision_revisions[level]) return true;
+      for (const auto &family : route_families)
+        if (family.decisions[level] && family.consumed[level] != decision_revisions[level]) return true;
       return false;
+    }
+    [[nodiscard]] RuntimeClock::time_point decision_deadline(RuntimeClock::time_point now) const noexcept {
+      auto due = RuntimeClock::time_point::max();
+      for (std::size_t level{}; level < 2U; ++level) if (level_decisions_pending(level))
+        due = std::min(due, spf[level] ? spf[level]->deadline().value_or(now) : now);
+      return due;
+    }
+    void reset_spf() {
+      for (std::size_t level{}; level < 2U; ++level) {
+        spf[level].reset();
+        if (configuration.levels[level] && configuration.spf_delay) spf[level].emplace(*configuration.spf_delay);
+      }
     }
     struct NeighborProjection { packet::isis::SystemId peer{}; Levels usage{Levels::none}; bool up{}; };
     // Fixed slots follow sorted configured interface IDs. This owner rewrites
@@ -389,6 +414,7 @@ private:
             configuration.local, configuration.maximum_areas, configuration.levels, circuits,
             UpdateInstanceSelector{configuration.format, configuration.wire_instance},
             configuration.maximum_circuits, epoch)) {
+      reset_spf();
       const bool routing = std::any_of(configuration.routing.begin(), configuration.routing.end(),
           [](const auto &family) { return family.has_value(); });
       if (configuration.decision || routing) {
@@ -481,6 +507,9 @@ private:
   };
   struct OwnedCircuit {
     CircuitIdentity identity;
+    // Solely the control pthread mutates this local transport gate. Recovery
+    // may restart protocol state only while the physical carrier remains up.
+    bool carrier{true};
     std::uint16_t wire_instance{};
     CircuitDestinations destinations;
     std::optional<UpdateTransmissionProgram> update_transmission;
@@ -545,6 +574,7 @@ private:
     }
     [[nodiscard]] bool matches(const CircuitDefinition &definition) const noexcept {
       if (update_transmission != definition.update_transmission) return false;
+      if (carrier != definition.carrier) return false;
       if (const auto *broadcast = lan())
         return definition.broadcast && definition.configuration == P2pCircuitConfiguration{} && broadcast->matches(*definition.broadcast);
       return !definition.broadcast && p2p().configuration() == definition.configuration;
@@ -552,6 +582,7 @@ private:
     OwnedCircuit(ControlCommand &command, PointToPointCircuit::Clock::time_point now,
         std::optional<Medium> restored = {})
         : identity(command.identity),
+          carrier(command.carrier),
           wire_instance(common(command).wire_instance),
           destinations(common(command).destinations()),
           update_transmission(command.update_transmission),
@@ -563,6 +594,7 @@ private:
               protocol::TransmissionWindow(command.identity.configuration_generation)}, random_state(command.random_state) {
       if (const auto *broadcast = lan()) for (std::size_t level{}; level < 2U; ++level)
         if (const auto *entry = broadcast->at(level)) update_peers[level].reserve(entry->configuration().limits.neighbors);
+      if (!carrier && !restored) circuit_down(*this);
     }
   };
   struct RouteStamp {

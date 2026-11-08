@@ -2,6 +2,28 @@
 // protocol runtime consumes this projection and cannot write canonical intent.
 #include "router/isis_configuration_resolution.hpp"
 namespace router::isis {
+std::optional<ResolvedWaitTimer> resolve_wait_timer(WaitTimerKind kind,
+    const WaitTimerIntent &intent) noexcept {
+  namespace facts = configuration_profile;
+  if (kind != WaitTimerKind::spf && kind != WaitTimerKind::lsp) return std::nullopt;
+  const bool spf = kind == WaitTimerKind::spf;
+  const auto maximum = intent.maximum.value_or(spf ? facts::spf_max_wait_milliseconds_default : facts::lsp_max_wait_milliseconds_default);
+  const auto initial = intent.initial.value_or(spf ? facts::spf_initial_wait_milliseconds_default : facts::lsp_initial_wait_milliseconds_default);
+  const auto second = intent.second.value_or(spf ? facts::spf_second_wait_milliseconds_default : facts::lsp_second_wait_milliseconds_default);
+  const auto valid = [](auto value, auto minimum, auto maximum_value) { return value >= minimum && value <= maximum_value; };
+  if (!valid(maximum, spf ? facts::spf_max_wait_milliseconds_minimum : facts::lsp_max_wait_milliseconds_minimum,
+          spf ? facts::spf_max_wait_milliseconds_maximum : facts::lsp_max_wait_milliseconds_maximum) ||
+      !valid(initial, spf ? facts::spf_initial_wait_milliseconds_minimum : facts::lsp_initial_wait_milliseconds_minimum,
+          spf ? facts::spf_initial_wait_milliseconds_maximum : facts::lsp_initial_wait_milliseconds_maximum) ||
+      !valid(second, spf ? facts::spf_second_wait_milliseconds_minimum : facts::lsp_second_wait_milliseconds_minimum,
+          spf ? facts::spf_second_wait_milliseconds_maximum : facts::lsp_second_wait_milliseconds_maximum)) return std::nullopt;
+  const auto rounded = [spf](std::uint32_t value) {
+    const auto granularity = spf || value >= 500U ? 100U : 10U;
+    return std::chrono::milliseconds{value / granularity * granularity};
+  };
+  return ResolvedWaitTimer{rounded(maximum), !spf && initial < 100U ? std::chrono::milliseconds{} : rounded(initial), rounded(second)};
+}
+
 ResolvedInstanceLevel resolve_instance_level(const InstanceIntent &instance, std::size_t index) noexcept {
   namespace defaults = configuration_profile;
   const auto &level = instance.level[index];

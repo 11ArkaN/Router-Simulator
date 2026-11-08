@@ -9,11 +9,14 @@ void isis_configuration_codec_tests() {
   using namespace router::isis;
   constexpr std::size_t budget = 65536U;
   RouterConfiguration value;
-  require(configuration_codec::encode(value, 5U) == std::optional{std::vector<std::uint8_t>{1U, 0U, 0U, 0U, 0U}});
+  require(configuration_codec::encode(value, 5U) == std::optional{std::vector<std::uint8_t>{2U, 0U, 0U, 0U, 0U}});
   require(!configuration_codec::encode(value, 4U));
   value.instances.emplace_back();
   auto &instance = value.instances.back();
   std::vector<std::uint8_t> empty_instance(34U); empty_instance[0U] = empty_instance[1U] = 1U;
+  const auto legacy_empty = configuration_codec::decode(empty_instance, budget);
+  require(legacy_empty && *legacy_empty == value);
+  empty_instance.resize(40U); empty_instance[0U] = 2U;
   require(configuration_codec::encode(value, budget) == std::optional{empty_instance});
   instance.instance = 127U; instance.admin_enabled = true;
   instance.ipv4_routing = false; instance.ipv6_routing = ConfiguredIpv6Routing::native;
@@ -29,6 +32,11 @@ void isis_configuration_codec_tests() {
   interface.level[1U].metric = 16777215U;
   interface.level[1U].hello_interval_seconds = std::uint16_t{20000U};
   interface.level[1U].hello_multiplier = std::uint8_t{100U};
+  auto legacy = *configuration_codec::encode(value, budget);
+  legacy.resize(legacy.size() - 6U); legacy[0U] = 1U;
+  require(*configuration_codec::decode(legacy, budget) == value);
+  instance.spf_wait = {550U, 10U, 100000U};
+  instance.lsp_wait = {120000U, 99U, 1000U};
   const auto encoded = configuration_codec::encode(value, budget);
   require(encoded.has_value());
   const auto decoded = configuration_codec::decode(*encoded, budget);

@@ -3,6 +3,7 @@
 // Generation rejection and removal are observed through immutable results.
 
 #include "router/isis_control_worker.hpp"
+#include "router/isis_control_checkpoint.hpp"
 #include "router/isis_lsp_builder.hpp"
 #include "router/isis_root_content.hpp"
 #include "router/isis_interface_program.hpp"
@@ -276,6 +277,127 @@ void isis_control_worker_tests() {
   }
 }
 
+void isis_control_carrier_tests() {
+  for (const bool broadcast : {false, true}) {
+    auto channels = std::make_unique<ControlChannels>();
+    ControlWorker worker(*channels, 1U, 1U);
+    std::uint64_t id{};
+    const auto command = [&](ControlCommand value) {
+      value.id = ++id;
+      const auto until = RuntimeClock::now() + 3s;
+      while (!worker.submit(std::move(value))) { require(RuntimeClock::now() < until); std::this_thread::yield(); }
+      ControlResult result;
+      while (!worker.read(result)) { require(RuntimeClock::now() < until); std::this_thread::yield(); }
+      require(result.id == id);
+      return result;
+    };
+    const CircuitIdentity identity{{0U, 1U}, 1U, 7U, 0U, 0U};
+    ControlCommand add;
+    add.kind = ControlCommandKind::register_device;
+    add.identity = identity;
+    require(command(add).error == ControlError::none);
+    add.kind = broadcast ? ControlCommandKind::add_lan_circuit : ControlCommandKind::add_p2p_circuit;
+    add.random_state = 19U;
+    auto hello = configuration(1U);
+    hello.hello_interval = 20ms;
+    if (broadcast) {
+      add.broadcast.emplace();
+      for (std::size_t level{}; level < 2U; ++level) {
+        LanCircuitConfiguration entry;
+        static_cast<CircuitHelloConfiguration &>(entry) = hello;
+        entry.local = {hello.local.system, hello.mac, 64U, 1U};
+        entry.levels = Levels::both;
+        entry.type = level ? packet::isis::PduType::lan_hello_l2 : packet::isis::PduType::lan_hello_l1;
+        entry.update_destinations = {packet::Mac{1U, 0x80U, 0xc2U, 0U, 0U, 0x14U},
+            packet::Mac{1U, 0x80U, 0xc2U, 0U, 0U, 0x15U}};
+        entry.hello_destination = (*entry.update_destinations)[level];
+        entry.designated_hello_interval = 10ms;
+        entry.designated_holding_seconds = 1U;
+        entry.limits = {4U, 3U};
+        add.broadcast->levels[level] = std::move(entry);
+      }
+    } else add.configuration = hello;
+    ControlCommand generation;
+    generation.kind = ControlCommandKind::prepare_generation;
+    generation.identity = identity;
+    generation.circuits.push_back({identity, add.configuration, add.random_state, add.broadcast, {}, false});
+    require(command(generation).error == ControlError::none);
+    generation.kind = ControlCommandKind::commit_generation;
+    require(command(generation).error == ControlError::none);
+    ControlCommand initial_query;
+    initial_query.kind = ControlCommandKind::query_circuit;
+    initial_query.identity = identity;
+    const auto initial = command(initial_query);
+    require(initial.error == ControlError::none && !initial.carrier && !initial.hello_pending &&
+        !channels->egress[0U].consumer_pending());
+    ControlCommand initial_up;
+    initial_up.kind = ControlCommandKind::set_circuit_carrier;
+    initial_up.identity = identity;
+    require(command(initial_up).error == ControlError::none);
+    const auto until = RuntimeClock::now() + 3s;
+    while (!channels->egress[0U].consumer_pending()) { require(RuntimeClock::now() < until); std::this_thread::yield(); }
+    const auto delayed = channels->egress[0U].try_receive();
+    require(delayed.has_value());
+    ControlCommand carrier;
+    carrier.kind = ControlCommandKind::set_circuit_carrier;
+    carrier.identity = identity;
+    carrier.carrier = false;
+    --carrier.identity.configuration_generation;
+    require(command(carrier).error == ControlError::stale_configuration);
+    carrier.identity = identity;
+    require(command(carrier).error == ControlError::none);
+    require(command(carrier).error == ControlError::none);
+    ControlCommand query;
+    query.kind = ControlCommandKind::query_circuit;
+    query.identity = identity;
+    const auto down = command(query);
+    require(!down.carrier && !down.hello_pending && !down.adjacency.iso_up);
+    ControlCommand begin;
+    begin.kind = ControlCommandKind::begin_checkpoint_barrier;
+    const auto barrier = command(begin);
+    require(barrier.error == ControlError::none);
+    auto saved = std::make_unique<ControlWorkerCheckpoint>();
+    ControlCommand capture;
+    capture.kind = ControlCommandKind::capture_checkpoint;
+    capture.checkpoint_barrier_epoch = barrier.checkpoint_barrier_epoch;
+    capture.checkpoint_now_nanoseconds = barrier.checkpoint_anchor_nanoseconds;
+    capture.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(saved.get());
+    require(command(capture).error == ControlError::none && saved->devices.size() == 1U);
+    require(saved->devices[0U].circuits.size() == 1U && !saved->devices[0U].circuits[0U].definition.carrier);
+    ControlCommand restore;
+    restore.kind = ControlCommandKind::prepare_checkpoint_restore;
+    restore.checkpoint_barrier_epoch = barrier.checkpoint_barrier_epoch;
+    restore.checkpoint_source_epoch = saved->barrier_epoch;
+    restore.checkpoint_now_nanoseconds = RuntimeClock::now().time_since_epoch().count();
+    restore.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(saved.get());
+    auto invalid = std::make_unique<ControlWorkerCheckpoint>(*saved);
+    auto &medium = invalid->devices[0U].circuits[0U].medium;
+    if (broadcast) std::get<LanPairCheckpoint>(medium).levels[0U]->operational = true;
+    else std::get<P2pCircuitCheckpoint>(medium).operational = true;
+    restore.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(invalid.get());
+    require(command(restore).error == ControlError::invalid_argument);
+    restore.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(saved.get());
+    require(command(restore).error == ControlError::none);
+    restore.kind = ControlCommandKind::commit_checkpoint_restore;
+    require(command(restore).error == ControlError::none);
+    begin.kind = ControlCommandKind::end_checkpoint_barrier;
+    begin.checkpoint_barrier_epoch = barrier.checkpoint_barrier_epoch;
+    require(command(begin).error == ControlError::none && !command(query).carrier);
+    carrier.carrier = true;
+    require(command(carrier).error == ControlError::none && command(query).carrier);
+    require(channels->egress[0U].release(delayed->handle, true));
+    worker.notify();
+    for (;;) {
+      const auto current = command(query);
+      if (current.counters.stale_completion) {
+        require(!current.counters.hello_enqueued);
+        break;
+      }
+      require(RuntimeClock::now() < until);
+    }
+  }
+}
+
 void isis_control_generation_tests() {
   auto channels = std::make_unique<ControlChannels>();
   ControlWorker worker(*channels, 1U, 3U);
@@ -491,6 +613,24 @@ void isis_network_plane_tests() {
         std::this_thread::yield();
       }
     };
+    converge();
+    // The supervisor sends the same port projection on carrier, hardware and
+    // interface administration changes. Down must synchronously invalidate Up
+    // while preserving the circuit generation, then recover on the real wire.
+    lab::ForwardPort carrier_port;
+    carrier_port.configured = true;
+    carrier_port.ordinal = 0U;
+    carrier_port.mtu = 1514U;
+    carrier_port.speed_mbps = 1000U;
+    carrier_port.mac = programs[0U].circuit.configuration.mac;
+    require(plane->configure_port(devices[0U], carrier_port));
+    const auto carrier_down = query(0U);
+    require(!carrier_down.carrier && !carrier_down.adjacency.iso_up &&
+        carrier_down.counters.adjacency_down >= 1U && !carrier_down.hello_pending);
+    require(plane->configure_port(devices[0U], carrier_port));
+    require(query(0U).counters.adjacency_down == carrier_down.counters.adjacency_down);
+    carrier_port.operational = true;
+    require(plane->configure_port(devices[0U], carrier_port) && query(0U).carrier);
     converge();
     const auto connected_image = plane->checkpoint();
     require(connected_image && connected_image->isis && plane->restore(*connected_image));
@@ -1728,6 +1868,7 @@ void isis_network_plane_route_publication_tests() {
       hello.protocols.push_back(packet::isis::ipv6_nlpid);
       hello.ipv6_addresses.push_back(*ip::parse_ipv6(index ? "fe80::2" : "fe80::1"));
       InstanceIntent intent; intent.admin_enabled = true; intent.system_id = hello.local.system;
+      intent.spf_wait = {100U, 100U, 100U};
       intent.areas = hello.areas; intent.ipv6_routing = ConfiguredIpv6Routing::native;
       InterfaceIntent attached; attached.name = "edge"; attached.type = ConfiguredInterfaceType::point_to_point;
       attached.level[0U].present = true; attached.level[0U].hello_interval_seconds = std::uint16_t{1U};
@@ -1775,7 +1916,7 @@ void isis_network_plane_route_publication_tests() {
           RootPrefix{*ip::parse_ip_prefix(index ? "2001:db8:12::2/128" : "2001:db8:12::1/128"), 7U, {}}};
       const std::array<packet::Ipv6, 1U> global_ipv6{port.ipv6_address};
       const std::array bindings{InstanceOriginInterface{"edge", interface,
-          ConfiguredInterfaceType::broadcast, hello.local.local_circuit, 8U, true, false}};
+          ConfiguredInterfaceType::broadcast, hello.local.local_circuit, 8U, false}};
       InstanceProgramContext owner_context;
       owner_context.maximum_areas = 3U; owner_context.maximum_circuits = 1U;
       owner_context.levels = {level, level}; owner_context.fragments = {1U, 1U};
@@ -2329,5 +2470,89 @@ void isis_network_plane_lan_tests() {
           snapshot->ipv6_fib.routes[0U].source == lab::routing::RouteSource::connected);
     }
     require(plane->checkpoint().has_value() && plane->restore(*initial));
+  }
+}
+
+void isis_control_spf_delay_tests() {
+  auto channels = std::make_unique<ControlChannels>();
+  auto worker = std::make_unique<ControlWorker>(*channels, 1U, 1U);
+  const CircuitIdentity identity{{0U, 1U}, 1U, 1U, 0U, 0U};
+  std::uint64_t next_id{};
+  const auto command = [&](ControlCommand request) {
+    request.id = ++next_id;
+    const auto until = RuntimeClock::now() + 3s;
+    while (!worker->submit(std::move(request))) { require(RuntimeClock::now() < until); std::this_thread::yield(); }
+    ControlResult result;
+    while (!worker->read(result)) { require(RuntimeClock::now() < until); std::this_thread::yield(); }
+    require(result.id == next_id); return result;
+  };
+  ControlCommand registration;
+  registration.kind = ControlCommandKind::register_device; registration.identity = identity;
+  require(command(registration).error == ControlError::none);
+  const UpdateLevelConfiguration level{{8U, 8192U}, 8U, 8U, 1492U,
+      1200U, 60s, 60s, false, false, false, PurgeRules::iso_10589};
+  UpdateInstanceProgram program;
+  program.local = configuration(1U).local.system; program.maximum_areas = 3U;
+  program.levels[0U] = level; program.maximum_circuits = 1U;
+  program.transmission = {2U, 5U, 10U, 1s, 1U, 1492U, 1U};
+  program.spf_delay = SpfDelayPolicy{2s, 500ms, 100ms};
+  program.decision = P2pDecisionProgram{8U, 8U, 8U, packet::isis::ipv4_nlpid, {}};
+  program.origination.emplace(); program.origination->resource_retry = 100ms;
+  program.origination->neighbors.emplace(); program.origination->content.random = 17U;
+  program.origination->content.levels[0U] = LocalLspLevelProgram{1200U, 1492U, 10ms, 600s};
+  const std::array areas{*parse_configured_area("49.0001")};
+  RootContentInput root; root.local = program.local; root.ipv4 = true; root.areas = areas;
+  auto prepared = prepare_root_content(root, 1492U - packet::isis::lsp_header_octets, 1U);
+  require(prepared.status == RootContentStatus::prepared);
+  program.origination->content.records = std::move(prepared.records);
+  ControlCommand add;
+  add.kind = ControlCommandKind::add_update_instance; add.identity = identity; add.update = program;
+  add.update->spf_delay->initial = 10ms;
+  require(command(add).error == ControlError::invalid_argument);
+  add.update = program; require(command(add).error == ControlError::none);
+  ControlCommand begin; begin.kind = ControlCommandKind::begin_checkpoint_barrier;
+  ControlCommand end; end.kind = ControlCommandKind::end_checkpoint_barrier;
+  ControlCommand capture; capture.kind = ControlCommandKind::capture_checkpoint;
+  ControlWorkerCheckpoint saved;
+  capture.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(&saved);
+  ControlResult barrier;
+  ControlCommand query; query.kind = ControlCommandKind::query_update_instance; query.identity = identity;
+  const auto armed_by = RuntimeClock::now() + 3s;
+  for (;;) {
+    const auto status = command(query);
+    require(status.error == ControlError::none && !status.decision_runs[0U]);
+    if (status.spf_pending[0U]) break;
+    require(RuntimeClock::now() < armed_by); std::this_thread::yield();
+  }
+  barrier = command(begin); require(barrier.error == ControlError::none);
+  capture.checkpoint_barrier_epoch = barrier.checkpoint_barrier_epoch;
+  capture.checkpoint_now_nanoseconds = barrier.checkpoint_anchor_nanoseconds;
+  require(command(capture).error == ControlError::none && saved.devices.size() == 1U &&
+      saved.devices[0U].instances.size() == 1U);
+  const auto &owner = saved.devices[0U].instances[0U];
+  require(owner.spf[0U] && !owner.spf[1U] && !owner.decision_runs[0U]);
+  const auto remaining = saved.devices[0U].instances[0U].spf[0U]->pending_nanoseconds;
+  require(remaining && *remaining > 0 && *remaining <= 500000000);
+  ControlCommand restore;
+  restore.kind = ControlCommandKind::prepare_checkpoint_restore;
+  restore.checkpoint_barrier_epoch = barrier.checkpoint_barrier_epoch;
+  restore.checkpoint_source_epoch = saved.barrier_epoch;
+  restore.checkpoint_now_nanoseconds = barrier.checkpoint_anchor_nanoseconds;
+  restore.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(&saved);
+  require(command(restore).error == ControlError::none);
+  restore.kind = ControlCommandKind::commit_checkpoint_restore;
+  require(command(restore).error == ControlError::none);
+  ControlWorkerCheckpoint restored;
+  capture.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(&restored);
+  require(command(capture).error == ControlError::none &&
+      restored.devices[0U].instances[0U].spf[0U]->pending_nanoseconds == remaining &&
+      !restored.devices[0U].instances[0U].decision_runs[0U]);
+  end.checkpoint_barrier_epoch = barrier.checkpoint_barrier_epoch;
+  require(command(end).error == ControlError::none);
+  const auto completed_by = RuntimeClock::now() + 3s;
+  for (;;) {
+    const auto status = command(query); require(status.error == ControlError::none && status.update_status == UpdateStatus::applied);
+    if (status.decision_runs[0U]) { require(status.decision_status[0U] == DecisionStatus::applied); break; }
+    require(RuntimeClock::now() < completed_by); std::this_thread::yield();
   }
 }

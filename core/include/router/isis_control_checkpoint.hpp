@@ -62,6 +62,7 @@ struct ControlInstanceCheckpoint {
   std::array<std::vector<packet::isis::LspId>, 2U> expiration_blocked;
   std::optional<packet::isis::LspId> corrupted_lsp;
   UpdateStatus status{UpdateStatus::applied};
+  std::array<std::optional<SpfThrottleCheckpoint>, 2U> spf;
 };
 struct ControlRouteStamp {
   std::uint64_t epoch{};
@@ -87,7 +88,7 @@ struct ControlDeviceCheckpoint {
   std::chrono::milliseconds route_retry{};
 };
 struct ControlWorkerCheckpoint {
-  std::uint32_t version{1U};
+  std::uint32_t version{2U};
   std::uint64_t barrier_epoch{};
   std::size_t forwarding_shards{}, maximum_circuits{}, active_circuits{}, first_device{};
   std::vector<ControlDeviceCheckpoint> devices;

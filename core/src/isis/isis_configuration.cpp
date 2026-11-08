@@ -138,6 +138,12 @@ ConfigurationError validate_configuration(const RouterConfiguration &configurati
     if (instance->ipv6_routing && *instance->ipv6_routing > ConfiguredIpv6Routing::multi_topology) return Error::ipv6_routing;
     if (!range(instance->lsp_lifetime_seconds, lsp_lifetime_seconds_minimum, lsp_lifetime_seconds_maximum)) return Error::lsp_lifetime;
     if (!range(instance->lsp_mtu_octets, lsp_mtu_octets_minimum, lsp_mtu_octets_maximum)) return Error::lsp_mtu;
+    if (!range(instance->spf_wait.maximum, spf_max_wait_milliseconds_minimum, spf_max_wait_milliseconds_maximum) ||
+        !range(instance->spf_wait.initial, spf_initial_wait_milliseconds_minimum, spf_initial_wait_milliseconds_maximum) ||
+        !range(instance->spf_wait.second, spf_second_wait_milliseconds_minimum, spf_second_wait_milliseconds_maximum) ||
+        !range(instance->lsp_wait.maximum, lsp_max_wait_milliseconds_minimum, lsp_max_wait_milliseconds_maximum) ||
+        !range(instance->lsp_wait.initial, lsp_initial_wait_milliseconds_minimum, lsp_initial_wait_milliseconds_maximum) ||
+        !range(instance->lsp_wait.second, lsp_second_wait_milliseconds_minimum, lsp_second_wait_milliseconds_maximum)) return Error::wait_timer;
     for (const auto &level : instance->level) {
       if (!level.present && (level.default_metric || level.lsp_mtu_octets || level.preference ||
           level.external_preference || level.wide_metrics_only)) return Error::context_presence;

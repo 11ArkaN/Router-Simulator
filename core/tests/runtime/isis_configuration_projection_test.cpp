@@ -17,6 +17,7 @@ void isis_configuration_projection_tests() {
   instance.instance = 127U; instance.admin_enabled = true; instance.ipv4_routing = false;
   instance.ipv6_routing = ConfiguredIpv6Routing::native; instance.levels = ConfiguredLevels::both;
   instance.router_id = 0xda700e05U;
+  instance.spf_wait = {550U, 10U, 100000U};
   instance.areas.push_back(*parse_configured_area("49.00.01"));
   instance.interfaces.emplace_back();
   instance.interfaces.back().name = "edge\n\"\\";
@@ -33,5 +34,7 @@ void isis_configuration_projection_tests() {
   require(text.find("\"name\":\"edge\\u000a\\\"\\\\\"") != std::string::npos);
   require(text.find("\"type\":\"point-to-point\"") != std::string::npos);
   require(text.find("\"passive\":false") != std::string::npos);
+  require(text.find("\"spfWait\":{\"maximumMilliseconds\":550,\"initialMilliseconds\":10,\"secondMilliseconds\":100000}") != std::string::npos);
+  require(text.find("\"lspWait\":{\"maximumMilliseconds\":null,\"initialMilliseconds\":null,\"secondMilliseconds\":null}") != std::string::npos);
   require(text.find('\n') == std::string::npos);
 }

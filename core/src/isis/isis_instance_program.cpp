@@ -20,6 +20,9 @@ InstanceProgramResult prepare_instance_program(const InstanceIntent &intent,
   UpdateInstanceProgram program;
   program.local = *local; program.maximum_areas = context.maximum_areas;
   program.maximum_circuits = context.maximum_circuits; program.transmission = context.transmission;
+  const auto spf = resolve_wait_timer(WaitTimerKind::spf, intent.spf_wait);
+  if (!spf) return fail(Status::invalid_context);
+  program.spf_delay = SpfDelayPolicy{spf->maximum, spf->initial, spf->second};
   program.origination.emplace();
   auto &origin = *program.origination;
   origin.resource_retry = context.resource_retry; origin.content.random = context.random;
@@ -79,7 +82,7 @@ InstanceProgramResult prepare_instance_program(const InstanceIntent &intent,
         [&](const auto &entry) { return entry.name == binding.name; });
     if (attached == intent.interfaces.end()) return fail(Status::invalid_context);
     const auto resolved = resolve_interface(intent, *attached, binding.default_type);
-    if (!resolved.admin_enabled || !binding.operational || binding.loopback) continue;
+    if (!resolved.admin_enabled || binding.loopback) continue;
     if (!resolved.type) return fail(Status::unresolved_media);
     std::array<std::optional<P2pOriginMetric>, 2U> metrics;
     for (std::size_t level{}; level < metrics.size(); ++level) {
@@ -93,8 +96,8 @@ InstanceProgramResult prepare_instance_program(const InstanceIntent &intent,
       metrics[level] = P2pOriginMetric{metric, narrow};
     }
     if (!metrics[0U] && !metrics[1U]) continue;
-    // The circuit budget counts live transport bindings, not configured
-    // passive, loopback or inactive interface entries retained in the datastore.
+    // Reserve every enabled transport, including a port whose carrier is down.
+    // Passive, loopback and administratively disabled entries consume no slot.
     if (origin.neighbors->size() + origin.broadcast_neighbors->size() == context.maximum_circuits)
       return fail(Status::capacity);
     if (*resolved.type == ConfiguredInterfaceType::point_to_point)

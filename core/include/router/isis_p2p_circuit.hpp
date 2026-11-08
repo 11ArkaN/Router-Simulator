@@ -63,8 +63,9 @@ public:
   [[nodiscard]] bool expire(Clock::time_point now,
       void *context, P2pCircuitObserver observer) noexcept;
   [[nodiscard]] bool down(void *context, P2pCircuitObserver observer) noexcept;
-  // Owner increments its circuit epoch before reactivation, invalidating all
-  // old output receipts. Restarts the local timer with retained PRNG state.
+  // Restarts the local timer with retained PRNG state. Operational recovery
+  // retains monotonically increasing receipt tickets; configuration replacement
+  // additionally requires a fresh circuit epoch in the enclosing owner.
   [[nodiscard]] bool up(Clock::time_point now) noexcept;
   [[nodiscard]] bool operational() const noexcept { return operational_; }
   [[nodiscard]] bool hello_pending() const noexcept { return hello_.pending(); }

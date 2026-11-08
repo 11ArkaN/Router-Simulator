@@ -91,5 +91,46 @@ void isis_interface_program_tests() {
   context.loopback = false; context.interface_name = "other";
   require(prepare_interface_program(instance, interface, context).status == InterfaceProgramStatus::invalid_context);
   context.interface_name = interface.name; context.operational = false;
-  require(prepare_interface_program(instance, interface, context).status == InterfaceProgramStatus::inactive);
+  const auto down = prepare_interface_program(instance, interface, context);
+  require(down.status == InterfaceProgramStatus::prepared && down.circuit && !down.circuit->carrier);
+}
+
+void isis_interface_update_program_tests() {
+  InstanceIntent instance;
+  InterfaceIntent intent; intent.name = "edge"; intent.type = ConfiguredInterfaceType::point_to_point;
+  const InterfaceUpdateContext context{2U, 1492U, 1U, 1ms};
+  auto effective = resolve_interface(instance, intent);
+  auto result = prepare_interface_update_program(effective, context);
+  require(result.status == InterfaceUpdateStatus::prepared && result.program &&
+      result.program->partial_seconds == 2U && result.program->retransmit_seconds == 5U &&
+      result.program->complete_seconds == 10U && result.program->pacing_period == 1s &&
+      result.program->pacing_burst == 10U && !result.program->broadcast);
+  struct PacingCase { std::uint16_t value; unsigned period, burst; };
+  for (const auto [value, period, burst] : {PacingCase{0U, 100U, 0U}, PacingCase{1U, 100U, 100U},
+      PacingCase{2U, 100U, 50U}, PacingCase{50U, 100U, 2U}, PacingCase{100U, 1000U, 10U},
+      PacingCase{125U, 1000U, 8U}, PacingCase{200U, 1000U, 5U}, PacingCase{1000U, 1000U, 1U}}) {
+    intent.lsp_pacing_interval_milliseconds = value;
+    for (const auto medium : {ConfiguredInterfaceType::point_to_point, ConfiguredInterfaceType::broadcast}) {
+      intent.type = medium; effective = resolve_interface(instance, intent);
+      result = prepare_interface_update_program(effective, context);
+      require(result.status == InterfaceUpdateStatus::prepared && result.program->pacing_period == std::chrono::milliseconds{period} &&
+          result.program->pacing_burst == burst && result.program->broadcast.has_value() == (medium == ConfiguredInterfaceType::broadcast));
+      if (result.program->broadcast) require(result.program->broadcast->lsp_scan_interval == std::chrono::milliseconds{value} &&
+          result.program->broadcast->csnp_separation == 1ms);
+    }
+  }
+  for (const auto value : {3U, 99U, 101U, 1001U, 65535U}) {
+    effective.lsp_pacing_interval_milliseconds = static_cast<std::uint16_t>(value);
+    result = prepare_interface_update_program(effective, context);
+    require(result.status == InterfaceUpdateStatus::unresolved_pacing && !result.program);
+  }
+  effective.lsp_pacing_interval_milliseconds = 100U;
+  auto invalid = context; invalid.partial_seconds = 0U;
+  require(prepare_interface_update_program(effective, invalid).status == InterfaceUpdateStatus::invalid_context);
+  invalid = context; invalid.csnp_separation = 0ms;
+  require(prepare_interface_update_program(effective, invalid).status == InterfaceUpdateStatus::invalid_context);
+  effective.type = ConfiguredInterfaceType::point_to_point;
+  require(prepare_interface_update_program(effective, invalid).status == InterfaceUpdateStatus::prepared);
+  effective.type.reset();
+  require(prepare_interface_update_program(effective, context).status == InterfaceUpdateStatus::unresolved_media);
 }

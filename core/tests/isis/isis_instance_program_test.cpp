@@ -19,7 +19,7 @@ void isis_instance_program_tests() {
   InterfaceIntent edge; edge.name = "edge"; edge.type = ConfiguredInterfaceType::point_to_point;
   edge.level[0U].present = true; edge.level[0U].metric = 30U;
   intent.interfaces.push_back(edge);
-  const std::array bindings{InstanceOriginInterface{"edge", 1U, {}, 1U, 8U, true, false}};
+  const std::array bindings{InstanceOriginInterface{"edge", 1U, {}, 1U, 8U, false}};
   const std::array prefixes{RootPrefix{*ip::parse_ip_prefix("192.0.2.0/24"), 20U, {}},
       RootPrefix{*ip::parse_ip_prefix("2001:db8::/64"), 25U, {}}};
   InstanceProgramContext context;
@@ -35,6 +35,7 @@ void isis_instance_program_tests() {
   auto result = prepare_instance_program(intent, context);
   require(result.status == InstanceProgramStatus::prepared && result.program && intent == before);
   require(result.program->local == *resolve_configured_system_id(intent, context.identity));
+  require(result.program->spf_delay == SpfDelayPolicy{10s, 1s, 1s});
   require(result.program->levels[0U]->maximum_age == 1201U && result.program->origination->content.levels[1U]->refresh_interval == 600500ms);
   require(result.program->origination->neighbors->size() == 1U &&
       result.program->origination->neighbors->front().levels[1U] == std::optional{P2pOriginMetric{30U, 30U}});
@@ -44,6 +45,12 @@ void isis_instance_program_tests() {
       UpdateInstanceSelector{packet::isis::InstanceFormat::standard, 0U},
       result.program->origination->content, RuntimeClock::time_point{100s});
   require(owner->contains(0U, result.program->origination->content.records.front().id));
+  intent.spf_wait = {550U, 10U, 100000U};
+  const auto timed = prepare_instance_program(intent, context);
+  require(timed.status == InstanceProgramStatus::prepared && timed.program->spf_delay == SpfDelayPolicy{500ms, 0ms, 100s});
+  intent.spf_wait.initial = 9U;
+  require(prepare_instance_program(intent, context).status == InstanceProgramStatus::invalid_context);
+  intent = before;
   intent.admin_enabled = false;
   require(prepare_instance_program(intent, context).status == InstanceProgramStatus::inactive);
   intent = before; intent.instance = 1U;
@@ -86,16 +93,16 @@ void isis_instance_program_tests() {
   intent = before;
   InterfaceIntent loopback; loopback.name = "system"; loopback.type = ConfiguredInterfaceType::point_to_point;
   intent.interfaces.push_back(loopback);
-  std::array expanded{bindings.front(), InstanceOriginInterface{"system", 2U, {}, 0U, 0U, true, true}};
+  std::array expanded{bindings.front(), InstanceOriginInterface{"system", 2U, {}, 0U, 0U, true}};
   context.interfaces = expanded;
   result = prepare_instance_program(intent, context);
   require(result.status == InstanceProgramStatus::prepared && result.program->maximum_circuits == 1U &&
       result.program->origination->neighbors->size() == 1U);
   expanded[1U].loopback = false;
   require(prepare_instance_program(intent, context).status == InstanceProgramStatus::capacity);
-  expanded[1U].operational = false;
+  intent.interfaces[1U].admin_enabled = false;
   require(prepare_instance_program(intent, context).status == InstanceProgramStatus::prepared);
-  expanded[1U].operational = true; intent.interfaces[1U].passive = true;
+  intent.interfaces[1U].admin_enabled = true; intent.interfaces[1U].passive = true;
   require(prepare_instance_program(intent, context).status == InstanceProgramStatus::prepared);
   context.interfaces = bindings;
   intent = before; context.fragments[0U] = 9U;

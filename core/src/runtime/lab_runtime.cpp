@@ -6491,7 +6491,15 @@ std::optional<std::string> md_isis_info(const isis::RouterConfiguration &configu
       (*tokens)[1U] != "router" || (*tokens)[2U] != "Base" || (*tokens)[3U] != "isis") return std::nullopt;
   const auto tree = isis_cli::md_tree(configuration, detail);
   if (tokens->size() == 4U) return tree;
-  return md_rendered_context_body(tree, *tokens, 3U);
+  const auto selected = md_rendered_context_body(tree, *tokens, 3U);
+  // Non-presence timer containers remain navigable with no explicit leaves.
+  // Ordinary info is empty there; detail still renders pinned defaults.
+  const bool timer_context = tokens->size() >= 6U && (*tokens)[5U] == "timers" &&
+      (tokens->size() == 6U || (tokens->size() == 7U &&
+          ((*tokens)[6U] == "spf-wait" || (*tokens)[6U] == "lsp-wait")));
+  if (!selected && !detail && timer_context && std::any_of(configuration.instances.begin(), configuration.instances.end(),
+      [&](const auto &instance) { return std::to_string(instance.instance) == (*tokens)[4U]; })) return std::string{};
+  return selected;
 }
 
 std::string_view
@@ -8075,6 +8083,17 @@ std::string classic_info_text(std::string_view md_text,
     if (first == std::string::npos)
       continue;
     auto content = line.substr(first);
+    const bool isis_context = md_context.starts_with("configure router \"Base\" isis") ||
+        std::any_of(container_stack.begin(), container_stack.end(), [](const auto &container) { return container.starts_with("isis "); });
+    if (isis_context && (content == "spf-wait {" || content == "lsp-wait {")) {
+      const auto converted = isis_cli::classic_timer_block(std::string_view{content}.substr(0U, content.size() - 2U),
+          std::span{rendered_lines}.subspan(line_index + 1U));
+      if (converted) {
+        md_indent(out, depth); out << converted->command << '\n';
+        line_index += converted->lines;
+        continue;
+      }
+    }
     if (content == "}") {
       if (depth)
         --depth;
@@ -8327,8 +8346,6 @@ std::string classic_info_text(std::string_view md_text,
       }
     }
 
-    const bool isis_context = md_context.starts_with("configure router \"Base\" isis") ||
-        std::any_of(container_stack.begin(), container_stack.end(), [](const auto &container) { return container.starts_with("isis "); });
     if (isis_context) content = isis_cli::classic_leaf(content);
     const bool ospf_context =
         md_context.starts_with("configure router \"Base\" ospf");
@@ -16534,10 +16551,25 @@ std::string LabRuntime::execute_session_command(std::string_view session_id,
     };
     if (mode == CandidateMode::operational ||
         mode == CandidateMode::read_only) {
-      output = "MINOR: CLI #2069: Operation not allowed - currently in " +
-               std::string{mode == CandidateMode::read_only ? "read-only"
-                                                            : "operational"} +
-               " mode";
+      bool navigated{};
+      if (mode == CandidateMode::read_only && parsed->spec->enters_context &&
+          isis_cli::is_md_command(id) && !cli_detail::removal_command(*parsed->spec)) {
+        // Complete keyed contexts also create nodes in writable workflows.
+        // Probe an owned copy: read-only selection may move the PWC only when
+        // the exact editor would preserve running, including presence bits.
+        // Scalar writes, removals and creation of absent lists stay forbidden.
+        auto selected = intent->isis;
+        const auto selection = isis_cli::edit(selected, *parsed, CliEngine::md);
+        if (selection.valid && !selection.changed) {
+          const auto context = cli_detail::canonical_command_prefix(terminal->cli, effective);
+          navigated = !context.empty() && cli_detail::enter_md_context(terminal->cli, context);
+        }
+      }
+      if (!navigated)
+        output = "MINOR: CLI #2069: Operation not allowed - currently in " +
+                 std::string{mode == CandidateMode::read_only ? "read-only"
+                                                              : "operational"} +
+                 " mode";
     } else if (id == md_commit) {
       auto backup = supervisor_.checkpoint();
       const auto committed = backup
@@ -27747,13 +27779,13 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
     checkpoint_bytes_.clear();
     return {};
   }
-  try { checkpoint_bytes_ = checkpoint_v11::encode(*checkpoint, secret_vault_ ? &*secret_vault_ : nullptr); }
+  try { checkpoint_bytes_ = checkpoint_v12::encode(*checkpoint, secret_vault_ ? &*secret_vault_ : nullptr); }
   catch (...) { checkpoint_bytes_.clear(); return {}; }
   return checkpoint_bytes_;
 }
 
 bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
-  auto checkpoint = checkpoint_v11::decode(bytes, secret_vault_ ? &*secret_vault_ : nullptr);
+  auto checkpoint = checkpoint_v12::decode(bytes, secret_vault_ ? &*secret_vault_ : nullptr);
   if (!checkpoint)
     return false;
   try {

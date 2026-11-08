@@ -16,6 +16,10 @@ enum class ConfiguredLevels : std::uint8_t { level1 = 1U, level2 = 2U, both = 3U
 enum class ConfiguredInterfaceType : std::uint8_t { point_to_point, broadcast };
 enum class ConfiguredIpv6Routing : std::uint8_t { disabled, native, multi_topology };
 
+struct WaitTimerIntent {
+  std::optional<std::uint32_t> maximum, initial, second;
+  bool operator==(const WaitTimerIntent &) const = default;
+};
 struct InterfaceLevelIntent {
   // A YANG list entry can exist with no explicit child leaves. Child values
   // require this flag too; deleting the list restores a fully absent entry.
@@ -57,6 +61,7 @@ struct InstanceIntent {
   // default. Removal restores absence; it must not write another default value.
   std::vector<NeighborArea> areas;
   std::vector<InterfaceIntent> interfaces;
+  WaitTimerIntent spf_wait, lsp_wait;
   bool operator==(const InstanceIntent &) const = default;
 };
 struct RouterConfiguration {
@@ -68,7 +73,7 @@ enum class ConfigurationError : std::uint8_t {
   duplicate_area, interface_name, duplicate_interface, interface_type,
   metric, hello_interval, hello_multiplier, priority, csnp_interval,
   retransmit_interval, lsp_pacing_interval, lsp_lifetime, lsp_mtu,
-  context_presence, preference, external_preference
+  context_presence, preference, external_preference, wait_timer
 };
 // Control-shard synchronous validation of intent only, without allocation or
 // mutation. Base-interface references and effective hardware policy belong to

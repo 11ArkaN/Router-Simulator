@@ -5213,14 +5213,33 @@ bool NetworkPlane::configure_switch_port(
 
 bool NetworkPlane::configure_port(DeviceHandle device,
                                   const ForwardPort &port) noexcept {
+  bool applied{};
   if (impl_->parallel())
-    return impl_
+    applied = impl_
         ->execute_forward({.kind = ForwardCommandKind::configure_port,
                            .device = device,
                            .port = port})
         .success;
-  auto *forwarder = impl_->router(device);
-  return forwarder && forwarder->configure_port(port);
+  else {
+    auto *forwarder = impl_->router(device);
+    applied = forwarder && forwarder->configure_port(port);
+  }
+  if (!applied) return false;
+  // The supervisor projects hardware, cable and interface administration into
+  // this same local operational bit. Serialized generation publication cannot
+  // interleave with this command, so every matching transport has a live owner.
+  // Deliver Down before acknowledging the edit, without waiting for a remote
+  // holding timer or a UI projection. Failure indicates a broken owner graph.
+  if (device.index < impl_->isis_transports.size())
+    for (const auto &binding : impl_->isis_transports[device.index])
+      if (binding.identity.device == device && binding.port.ordinal == port.ordinal) {
+        isis::ControlCommand carrier;
+        carrier.kind = isis::ControlCommandKind::set_circuit_carrier;
+        carrier.identity = binding.identity;
+        carrier.carrier = port.configured && port.operational;
+        if (impl_->execute_isis(std::move(carrier)).error != isis::ControlError::none) std::terminate();
+      }
+  return true;
 }
 
 bool NetworkPlane::remove_port(DeviceHandle device,

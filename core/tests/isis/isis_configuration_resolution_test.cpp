@@ -7,6 +7,46 @@ void require(bool value) { if (!value) throw std::runtime_error("IS-IS configura
 }
 void isis_configuration_resolution_tests() {
   using namespace router::isis;
+  using namespace std::chrono_literals;
+  require(resolve_wait_timer(WaitTimerKind::spf, {}) == ResolvedWaitTimer{10000ms, 1000ms, 1000ms});
+  require(resolve_wait_timer(WaitTimerKind::lsp, {}) == ResolvedWaitTimer{5000ms, 0ms, 1000ms});
+  for (const auto kind : {WaitTimerKind::spf, WaitTimerKind::lsp}) {
+    for (const auto invalid : {WaitTimerIntent{9U, {}, {}}, WaitTimerIntent{120001U, {}, {}},
+        WaitTimerIntent{{}, 9U, {}}, WaitTimerIntent{{}, 100001U, {}},
+        WaitTimerIntent{{}, {}, 9U}, WaitTimerIntent{{}, {}, 100001U}})
+      require(!resolve_wait_timer(kind, invalid));
+    require(resolve_wait_timer(kind, {120000U, 100000U, 100000U}) ==
+        ResolvedWaitTimer{120000ms, 100000ms, 100000ms});
+    // YANG permits these leaves independently. Rounding must not invent a
+    // cross-leaf clamp or reject an initial value greater than the maximum.
+    require(resolve_wait_timer(kind, {10U, 100000U, 100000U})->initial == 100000ms);
+  }
+  require(!resolve_wait_timer(static_cast<WaitTimerKind>(2U), {}));
+  struct TimerCase { std::uint32_t value, spf, lsp, initial; };
+  for (const auto [value, spf_ms, lsp_ms, initial_ms] : {TimerCase{10U, 0U, 10U, 0U},
+      TimerCase{99U, 0U, 90U, 0U}, TimerCase{100U, 100U, 100U, 100U},
+      TimerCase{109U, 100U, 100U, 100U}, TimerCase{499U, 400U, 490U, 490U},
+      TimerCase{500U, 500U, 500U, 500U}, TimerCase{550U, 500U, 500U, 500U},
+      TimerCase{599U, 500U, 500U, 500U}, TimerCase{600U, 600U, 600U, 600U}}) {
+    const WaitTimerIntent configured{value, value, value};
+    const auto spf = *resolve_wait_timer(WaitTimerKind::spf, configured);
+    const auto lsp = *resolve_wait_timer(WaitTimerKind::lsp, configured);
+    const auto spf_expected = std::chrono::milliseconds{spf_ms};
+    const auto lsp_expected = std::chrono::milliseconds{lsp_ms};
+    require(spf.maximum == spf_expected && spf.initial == spf_expected && spf.second == spf_expected);
+    require(lsp.maximum == lsp_expected && lsp.second == lsp_expected &&
+        lsp.initial == std::chrono::milliseconds{initial_ms});
+    require(configured.maximum == value && configured.initial == value && configured.second == value);
+  }
+  RouterConfiguration timer_configuration;
+  timer_configuration.instances.emplace_back();
+  timer_configuration.instances.front().spf_wait = {550U, 10U, 100000U};
+  require(validate_configuration(timer_configuration) == ConfigurationError::none);
+  timer_configuration.instances.front().spf_wait.second = 100001U;
+  require(validate_configuration(timer_configuration) == ConfigurationError::wait_timer);
+  timer_configuration.instances.front().spf_wait.second.reset();
+  timer_configuration.instances.front().lsp_wait.initial = 9U;
+  require(validate_configuration(timer_configuration) == ConfigurationError::wait_timer);
   InstanceIntent instance;
   InterfaceIntent interface; interface.name = "edge";
   const auto initial = resolve_interface(instance, interface);

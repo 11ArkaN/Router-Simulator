@@ -31,6 +31,27 @@ export function validateIsisCliBindings(commands, inventory, bindings, parameter
     if (key?.includes(node.name)) fail(`${binding.yang_path} is a key, not an independent command`);
     selected.set(binding.yang_path, {binding, node, rows: []});
   }
+  for (const [path, {binding, node}] of selected) {
+    if (binding.classic_parameters !== undefined) {
+      if (node.kind !== "container" || !binding.classic_parameters || Array.isArray(binding.classic_parameters) ||
+          typeof binding.classic_parameters !== "object" || !Object.keys(binding.classic_parameters).length)
+        fail(`${path} has an invalid composite parameter map`);
+      for (const [parameter, child] of Object.entries(binding.classic_parameters)) {
+        const leaf = selected.get(child);
+        if (!child.startsWith(path + "/") || child.slice(path.length + 1).includes("/") ||
+            leaf?.node.kind !== "leaf" || leaf.binding.classic_via_parent !== path ||
+            parameters[parameter]?.yang_path !== child)
+          fail(`${path} composite parameter ${parameter} lacks its exact child binding`);
+      }
+    }
+    if (binding.classic_via_parent !== undefined) {
+      const parent = selected.get(binding.classic_via_parent);
+      if (node.kind !== "leaf" || binding.classic_no || !parent?.binding.classic_no ||
+          parent.binding.classic_source !== binding.classic_source ||
+          !Object.values(parent.binding.classic_parameters ?? {}).includes(path))
+        fail(`${path} has no source-bound composite parent removal`);
+    }
+  }
   const keys = {"isis-instance": "isis_instance", "interface-name": "interface_name", "level-number": "isis_level"};
   const mdPath = (path) => {
     const tokens = ["router", '"Base"', "isis", {parameter: "isis_instance"}];
@@ -63,9 +84,13 @@ export function validateIsisCliBindings(commands, inventory, bindings, parameter
     for (const token of row.tokens) {
       if (!token.parameter || ["isis_instance", "interface_name", "isis_level"].includes(token.parameter)) continue;
       const parameter = parameters[token.parameter];
+      if (engine === "classic" && match.binding.classic_parameters &&
+          !Object.hasOwn(match.binding.classic_parameters, token.parameter))
+        fail(`${row.id} has an undeclared compound value parameter`);
       if (!parameter?.yang_path) continue;
       const source = nodes.get(parameter.yang_path);
-      if (source?.length !== 1 || !same(typeShape(source[0]), typeShape(match.node)))
+      const composite = engine === "classic" && match.binding.classic_parameters?.[token.parameter] === parameter.yang_path;
+      if (source?.length !== 1 || (!composite && !same(typeShape(source[0]), typeShape(match.node))))
         fail(`${row.id} value parameter differs from the bound YANG type`);
     }
     if (row.source_ref !== match.binding[engine + "_source"]) fail(`${row.id} uses a different engine reference`);
@@ -83,8 +108,11 @@ export function validateIsisCliBindings(commands, inventory, bindings, parameter
     match.rows.push(row);
   }
   for (const [path, {binding, rows}] of selected) {
+    const classicRows = binding.classic_via_parent ? selected.get(binding.classic_via_parent).rows : rows;
     if (!rows.some((row) => row.engines.includes("md") && literal(row.tokens[0]) === "configure") ||
-        !rows.some((row) => row.engines.includes("classic") && !row.tokens.map(literal).includes("no")))
+        !classicRows.some((row) => row.engines.includes("classic") && !row.tokens.map(literal).includes("no") &&
+          (!binding.classic_via_parent || row.tokens.some((token) =>
+            binding.classic_via_parent && selected.get(binding.classic_via_parent).binding.classic_parameters?.[token.parameter] === path))))
       fail(`${path} lacks an engine setter/context`);
     if (binding.md_remove && !rows.some((row) => row.engines.includes("md") && literal(row.tokens[0]) === "delete"))
       fail(`${path} lacks its MD removal form`);

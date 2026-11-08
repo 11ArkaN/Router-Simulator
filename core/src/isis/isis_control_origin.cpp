@@ -117,9 +117,10 @@ RuntimeClock::time_point ControlWorker::service_local_instance(DeviceState &devi
   const auto generated = instance.local->service(*instance.process, {}, now, scratch_, instance.observer(),
       composed ? budget : no_publication);
   if (generated.terminal == GenerationStatus::waiting) {
-    if (composed) service_p2p_decision(instance, device, index, now, budget);
-    if (instance.decisions_pending()) return now;
-    return composed ? std::min(validation_deadline, generated.deadline.value_or(never)) : now;
+    if (!composed) return now;
+    service_p2p_decision(instance, device, index, now, budget);
+    if (instance.status != UpdateStatus::applied) return stop_local_instance(device, index, instance.status);
+    return std::min({validation_deadline, generated.deadline.value_or(never), instance.decision_deadline(now)});
   }
   return stop_local_instance(device, index, generated.terminal == GenerationStatus::sequence_exhausted ?
       UpdateStatus::sequence_exhausted : UpdateStatus::epoch_exhausted);
@@ -175,6 +176,7 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
   instance.expiration_revision.fill(0U);
   for (auto &blocked : instance.expiration_blocked) blocked.clear();
   try {
+    instance.reset_spf();
     std::vector<UpdateCircuitConfiguration> slots;
     std::vector<std::size_t> bindings;
     for (std::size_t ordinal{}; ordinal < device.circuits.size(); ++ordinal) {
