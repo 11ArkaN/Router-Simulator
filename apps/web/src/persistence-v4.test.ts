@@ -70,7 +70,7 @@ describe("netsim manifest format 4", () => {
   it("rejects stale formats and non-canonical binary payloads", () => {
     const manifest = createCheckpointManifestV4(project(), Uint8Array.of(1));
     expect(manifest.checkpointAbi).toBe(LAB_RUNTIME_PROTOCOL.checkpointAbi);
-    for (const checkpointAbi of [7, 8, 9])
+    for (const checkpointAbi of [7, 8, 9, LAB_RUNTIME_PROTOCOL.checkpointAbi - 1])
       expect(() => parseNetsimV4(JSON.stringify({ ...manifest, checkpointAbi })))
         .toThrow("not supported");
     expect(() => parseNetsimV4(JSON.stringify({ ...manifest, formatVersion: 1 })))
@@ -93,6 +93,17 @@ describe("netsim manifest format 4", () => {
       await projectCheckpointNameV4(sameStateWithNewSaveTime));
     expect(await projectCheckpointNameV4(changedConfiguration)).not.toBe(
       await projectCheckpointNameV4(original));
+  });
+
+  it("imports configuration-only manifests across earlier runtime ABIs", () => {
+    const manifest = createProjectManifestV4(project());
+    for (const checkpointAbi of [1, 7, 8, 9, LAB_RUNTIME_PROTOCOL.checkpointAbi - 1])
+      expect(parseNetsimV4(JSON.stringify({ ...manifest, checkpointAbi }))).toEqual({ project: manifest.project });
+    for (const checkpointAbi of [0, -1, 1.5, null, "10", LAB_RUNTIME_PROTOCOL.checkpointAbi + 1])
+      expect(() => parseNetsimV4(JSON.stringify({ ...manifest, checkpointAbi }))).toThrow("not supported");
+    expect(() => parseNetsimV4(JSON.stringify({ ...manifest,
+      checkpointAbi: LAB_RUNTIME_PROTOCOL.checkpointAbi - 1, checkpointBase64: "AQ==" })))
+      .toThrow("checkpoint-only state");
   });
 
   it("imports the checked-in four-router reference project", async () => {

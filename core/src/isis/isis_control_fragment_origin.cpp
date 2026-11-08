@@ -10,6 +10,20 @@ namespace router::isis {
 std::unique_ptr<OriginFragmentWorkspace> ControlWorker::make_fragment_workspace(const UpdateInstanceProgram &program) {
   const auto &origin = *program.origination;
   auto units = origin.content.records.size();
+  // Base records may contain many independently movable TLVs. Reserving only
+  // one unit per LSP would undercount the cold workspace after splitting them.
+  for (const auto &record : origin.content.records) {
+    if (record.id[6U] || !record.active) continue;
+    packet::isis::TlvCursor cursor(record.options);
+    std::size_t count{};
+    while (cursor.next()) ++count;
+    if (!cursor.valid()) throw std::invalid_argument("Malformed IS-IS root metadata");
+    if (count > 1U) {
+      if (count - 1U > std::numeric_limits<std::size_t>::max() - units)
+        throw std::invalid_argument("IS-IS root metadata unit budget overflow");
+      units += count - 1U;
+    }
+  }
   for (const auto count : {origin.neighbors ? origin.neighbors->size() : 0U,
       origin.broadcast_neighbors ? origin.broadcast_neighbors->size() : 0U}) {
     if (count > std::numeric_limits<std::size_t>::max() - units)
@@ -72,9 +86,7 @@ ControlError ControlWorker::prepare_fragment_origination(UpdateInstanceProgram &
     packet::isis::LanId source{};
     std::copy(program.local.begin(), program.local.end(), source.begin());
     for (std::size_t level{}; level < 2U; ++level) if (origin.content.levels[level]) {
-      std::uint64_t metadata{};
-      for (const auto &record : records) if (record.level == level && !record.id[6U] && record.active && !record.options.empty())
-        if (!workspace->add_options({0U, metadata++}, record.options, record.id[7U], !record.id[7U])) return ControlError::capacity;
+      if (!workspace->add_root_options(origin.content, level)) return ControlError::capacity;
       // These sizing-only zero IDs are never admitted or emitted. Their real
       // configured metrics determine exact wide/narrow unit lengths. Actual
       // runtime units always come from this owner's accepted circuit snapshots.

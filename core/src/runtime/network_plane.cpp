@@ -1400,6 +1400,16 @@ struct NetworkPlane::Impl {
       std::span<const routing::DynamicInput> isis_ipv4,
       std::span<const routing::Ipv6DynamicInput> isis_ipv6,
       ::router::routing::RouteInstallStatus *failure = nullptr) noexcept;
+  // Serialized network owner; staging is exclusive until commit or abort.
+  // Preparation owns all fallible allocations and the OSPF external lease.
+  [[nodiscard]] bool prepare_managed_routes(DeviceHandle, RouteManagerState &,
+      std::span<const routing::DynamicInput>, std::span<const routing::Ipv6DynamicInput>,
+      std::span<const routing::DynamicInput>, std::span<const routing::Ipv6DynamicInput>,
+      std::vector<OspfExternalRouteProgram> &, bool &, ::router::routing::RouteInstallStatus *) noexcept;
+  // Quiescent forwarding uses direct owner access instead of queuing work to
+  // a paused shard. Failure aborts the prepared external lease; success consumes it.
+  [[nodiscard]] bool commit_managed_routes(DeviceHandle, RouteManagerState &,
+      std::vector<OspfExternalRouteProgram> &, bool, bool, ::router::routing::RouteInstallStatus *) noexcept;
   [[nodiscard]] bool reconcile_external_routes(
       DeviceHandle device, RouteManagerState &state,
       const routing::RouteTable &ipv4, const routing::Ipv6RouteTable &ipv6,
@@ -4720,6 +4730,20 @@ bool NetworkPlane::Impl::rebuild_managed_routes(
     std::span<const routing::DynamicInput> isis_ipv4,
     std::span<const routing::Ipv6DynamicInput> isis_ipv6,
     ::router::routing::RouteInstallStatus *failure) noexcept {
+  std::vector<OspfExternalRouteProgram> active;
+  bool prepared{};
+  return prepare_managed_routes(device, state, ipv4_dynamic, ipv6_dynamic, isis_ipv4, isis_ipv6,
+      active, prepared, failure) && commit_managed_routes(device, state, active, prepared, false, failure);
+}
+
+bool NetworkPlane::Impl::prepare_managed_routes(
+    DeviceHandle device, RouteManagerState &state,
+    std::span<const routing::DynamicInput> ipv4_dynamic,
+    std::span<const routing::Ipv6DynamicInput> ipv6_dynamic,
+    std::span<const routing::DynamicInput> isis_ipv4,
+    std::span<const routing::Ipv6DynamicInput> isis_ipv6,
+    std::vector<OspfExternalRouteProgram> &active, bool &prepared,
+    ::router::routing::RouteInstallStatus *failure) noexcept {
   if (failure) *failure = ::router::routing::RouteInstallStatus::selection_failed;
   if (!live(device) || !state.policy_configured) return false;
   auto &staged = *route_staging;
@@ -4764,15 +4788,20 @@ bool NetworkPlane::Impl::rebuild_managed_routes(
     staged.ipv4->compile_into(staged.fib, state.installed_ipv4_generation + 1U);
   if (staged.install_ipv6)
     staged.ipv6->compile_into(staged.ipv6_fib, state.installed_ipv6_generation + 1U);
-  std::vector<OspfExternalRouteProgram> active;
-  bool prepared{};
   if (!reconcile_external_routes(device, state,
           state.base_ipv4_configured ? *staged.ipv4 : *state.ipv4_rib,
           state.base_ipv6_configured ? *staged.ipv6 : *state.ipv6_rib,
           active, prepared)) return false;
+  return true;
+}
+
+bool NetworkPlane::Impl::commit_managed_routes(DeviceHandle device, RouteManagerState &state,
+    std::vector<OspfExternalRouteProgram> &active, bool prepared, bool forwarding_quiescent,
+    ::router::routing::RouteInstallStatus *failure) noexcept {
+  auto &staged = *route_staging;
   bool installed = true;
   if (staged.install_ipv4 || staged.install_ipv6) {
-    if (parallel()) {
+    if (parallel() && !forwarding_quiescent) {
       installed = execute_forward({.kind = ForwardCommandKind::program_fibs,
                                    .device = device}).success;
     } else {
@@ -5228,12 +5257,33 @@ bool NetworkPlane::remove_port(DeviceHandle device,
 
 bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     std::span<const IsisCircuitProgram> circuits) noexcept {
+  return replace_isis_generation(device, circuits, {});
+}
+
+bool NetworkPlane::replace_isis_generation(DeviceHandle device,
+    std::span<const IsisCircuitProgram> circuits,
+    std::span<const isis::NewUpdateInstance> new_instances) noexcept {
+  return replace_isis_generation(device, circuits, new_instances, {});
+}
+
+bool NetworkPlane::replace_isis_generation(DeviceHandle device,
+    std::span<const IsisCircuitProgram> circuits,
+    std::span<const isis::NewUpdateInstance> new_instances,
+    std::span<const std::uint8_t> retired_instances) noexcept {
   if (!impl_->live(device) || circuits.size() > device_catalog::maximum_routers * device_catalog::maximum_ports_per_router)
     return false;
-  if (circuits.empty() && !impl_->isis_registered[device.index]) return true;
+  if (circuits.empty() && new_instances.empty() && retired_instances.empty() && !impl_->isis_registered[device.index]) return true;
+  if (!std::is_sorted(retired_instances.begin(), retired_instances.end()) ||
+      std::adjacent_find(retired_instances.begin(), retired_instances.end()) != retired_instances.end()) return false;
+  const auto retires = [&](const auto &entry) {
+    return std::binary_search(retired_instances.begin(), retired_instances.end(), entry.protocol_instance);
+  };
+  std::vector<routing::DynamicInput> retained_ipv4;
+  std::vector<routing::Ipv6DynamicInput> retained_ipv6;
+  bool routes_changed{};
   if (const auto &manager = impl_->route_managers[device.index]) {
     const auto retained = [&](const auto &entry) {
-      return std::any_of(circuits.begin(), circuits.end(), [&](const auto &program) {
+      return retires(entry) || std::any_of(circuits.begin(), circuits.end(), [&](const auto &program) {
         const auto &identity = program.circuit.identity;
         return identity.device == device && identity.interface_id == entry.interface_id &&
             identity.configuration_generation == entry.interface_generation && identity.instance == entry.protocol_instance &&
@@ -5252,6 +5302,16 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
   std::array<bool, device_catalog::maximum_ports_per_router> affected{}, exchanged{};
   try {
     groups = std::make_unique<Groups>();
+    generation.new_instances.assign(new_instances.begin(), new_instances.end());
+    generation.retired_instances.assign(retired_instances.begin(), retired_instances.end());
+    if (!retired_instances.empty()) if (const auto &manager = impl_->route_managers[device.index]) {
+      const auto ipv4 = manager->ipv4_candidates.second();
+      const auto ipv6 = manager->ipv6_candidates.second();
+      retained_ipv4.reserve(ipv4.size()); retained_ipv6.reserve(ipv6.size());
+      for (const auto &entry : ipv4) if (!retires(entry)) retained_ipv4.push_back(entry);
+      for (const auto &entry : ipv6) if (!retires(entry)) retained_ipv6.push_back(entry);
+      routes_changed = retained_ipv4.size() != ipv4.size() || retained_ipv6.size() != ipv6.size();
+    }
     link_projection.reserve(circuits.size());
     generation.circuits.reserve(circuits.size());
     const auto &previous_bindings = impl_->isis_transports[device.index];
@@ -5329,7 +5389,21 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     discard_registration();
     return false;
   }
-  if (!impl_->pause_forwarding()) { cancel(); discard_registration(); return false; }
+  std::vector<OspfExternalRouteProgram> active_external;
+  bool external_prepared{};
+  if (routes_changed) {
+    auto &manager = *impl_->route_managers[device.index];
+    if (!impl_->prepare_managed_routes(device, manager, manager.ipv4_candidates.first(),
+        manager.ipv6_candidates.first(), retained_ipv4, retained_ipv6, active_external, external_prepared, nullptr)) {
+      cancel(); discard_registration(); return false;
+    }
+  }
+  const auto abort_routes = [&] {
+    if (external_prepared) static_cast<void>(impl_->execute_ospf({.process = {.device = device},
+        .kind = ospf::ControlCommandKind::abort_external_generation}));
+    external_prepared = false;
+  };
+  if (!impl_->pause_forwarding()) { abort_routes(); cancel(); discard_registration(); return false; }
   auto *forwarder = impl_->router(device);
   bool programmed = forwarder != nullptr;
   for (std::size_t ordinal{}; ordinal < affected.size() && programmed; ++ordinal) {
@@ -5340,7 +5414,13 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
   isis::ControlCommand commit;
   commit.kind = isis::ControlCommandKind::commit_generation;
   commit.identity.device = device;
-  if (!programmed || impl_->execute_isis(std::move(commit)).error != isis::ControlError::none) {
+  if (programmed && routes_changed) {
+    programmed = impl_->commit_managed_routes(device, *impl_->route_managers[device.index],
+        active_external, external_prepared, true, nullptr);
+    external_prepared = false;
+  }
+  if (!programmed) {
+    abort_routes();
     for (std::size_t ordinal{}; ordinal < exchanged.size(); ++ordinal)
       if (exchanged[ordinal]) static_cast<void>(forwarder->exchange_isis_punt(static_cast<std::uint16_t>(ordinal), (*groups)[ordinal]));
     cancel();
@@ -5348,10 +5428,19 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     impl_->resume_forwarding();
     return false;
   }
+  // Preparation reserves the owner commit. A refusal after the atomic FIB
+  // transaction would violate that lease and cannot be treated as a rollback.
+  if (impl_->execute_isis(std::move(commit)).error != isis::ControlError::none) std::terminate();
+  if (routes_changed) {
+    auto &manager = *impl_->route_managers[device.index];
+    if (!manager.ipv4_candidates.replace_second(retained_ipv4) ||
+        !manager.ipv6_candidates.replace_second(retained_ipv6)) std::terminate();
+  }
   // The barrier excludes packet observers. All publications are non-allocating
   // ownership swaps after the protocol owner has accepted commit.
   impl_->routers[device.index].isis_transports.swap(forwarding_projection);
   impl_->isis_transports[device.index].swap(link_projection);
+  impl_->isis_instance_count[device.index] = impl_->isis_instance_count[device.index] + new_instances.size() - retired_instances.size();
   impl_->retire_idle_isis_registration(device);
   impl_->resume_forwarding();
   return true;

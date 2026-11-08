@@ -51,6 +51,10 @@ add_library(router_primitives STATIC
   src/isis/isis_hello_builder.cpp
   src/isis/isis_snp_builder.cpp
   src/isis/isis_local_fragment_service.cpp
+  src/isis/isis_configuration_codec.cpp
+  src/isis/isis_configuration_resolution.cpp
+  src/isis/isis_configuration.cpp
+  src/isis/isis_root_content.cpp
   src/isis/isis_control_fragment_origin.cpp
   src/isis/isis_origin_fragment_workspace.cpp
   src/isis/isis_fragment_composition.cpp
@@ -403,6 +407,8 @@ add_library(router_management STATIC
   src/cli/dhcpv6_cli_configuration.cpp
   src/cli/bof_cli_configuration.cpp
   src/cli/ipsec_cli_configuration.cpp
+  src/cli/isis_cli_info.cpp
+  src/cli/isis_cli_configuration.cpp
   src/cli/ospf_cli_configuration.cpp
   src/cli/pki_cli_configuration.cpp
   src/runtime/session_workflows.cpp
@@ -414,6 +420,7 @@ target_link_libraries(router_management PUBLIC
 
 add_library(router_runtime STATIC
   src/runtime/control_projection_worker.cpp
+  src/runtime/isis_configuration_projection.cpp
   src/runtime/lab_runtime.cpp
   src/runtime/lab_checkpoint.cpp
   src/runtime/network_plane_worker.cpp
@@ -422,6 +429,7 @@ add_library(router_runtime STATIC
   src/runtime/runtime_supervisor.cpp
   src/runtime/runtime_supervisor_checkpoint.cpp
   src/runtime/runtime_supervisor_hosts.cpp
+  src/runtime/runtime_supervisor_isis.cpp
   src/runtime/runtime_supervisor_interfaces.cpp
   src/runtime/runtime_supervisor_routing.cpp
   src/runtime/runtime_supervisor_services.cpp
@@ -562,6 +570,9 @@ if(ROUTER_BUILD_TESTS)
     tests/cli/cli_test.cpp
     tests/runtime/control_projection_worker_test.cpp
     tests/ip/ip_address_test.cpp
+    tests/runtime/isis_generation_transfer_test.cpp
+    tests/runtime/isis_configuration_projection_test.cpp
+    tests/runtime/isis_datastore_runtime_test.cpp
     tests/runtime/lab_runtime_test.cpp
     tests/ip/neighbor_discovery_packet_test.cpp
     tests/forwarding/packet_test.cpp
@@ -643,8 +654,13 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_lsdb_test.cpp
     tests/isis/isis_lsdb_batch_test.cpp
     tests/isis/isis_level_batch_test.cpp
+    tests/isis/isis_configuration_codec_test.cpp
+    tests/isis/isis_configuration_resolution_test.cpp
+    tests/isis/isis_configuration_test.cpp
+    tests/isis/isis_root_content_test.cpp
     tests/isis/isis_fragment_plan_test.cpp
     tests/isis/isis_local_fragment_test.cpp
+    tests/isis/isis_instance_generation_test.cpp
     tests/isis/isis_control_fragment_test.cpp
     tests/isis/isis_lsdb_checkpoint_test.cpp
     tests/isis/isis_adjacency_test.cpp
@@ -722,6 +738,8 @@ if(ROUTER_BUILD_TESTS)
     tests/cli/dhcpv4_cli_configuration_test.cpp
     tests/cli/dhcpv6_cli_configuration_test.cpp
     tests/cli/bof_cli_configuration_test.cpp
+    tests/cli/isis_cli_info_test.cpp
+    tests/cli/isis_cli_configuration_test.cpp
     tests/cli/ospf_cli_configuration_test.cpp
     tests/ospf/ospf_area_coordinator_test.cpp
     tests/ip/ipv6_path_mtu_test.cpp

@@ -86,11 +86,7 @@ bool ControlWorker::compose_local_neighbors(OwnedInstance &instance, const Devic
     if (!instance.fragment_workspace) { instance.status = UpdateStatus::invalid_configuration; return false; }
     auto &workspace = *instance.fragment_workspace;
     workspace.reset();
-    std::uint64_t metadata{};
-    bool valid{true};
-    for (const auto &record : origin.content.records)
-      if (record.level == level && !record.id[6U] && record.active && !record.options.empty())
-        valid = workspace.add_options({0U, metadata++}, record.options, record.id[7U], !record.id[7U]) && valid;
+    bool valid = workspace.add_root_options(origin.content, level);
     packet::isis::LanId source{};
     std::copy_n(root->id.begin(), source.size(), source.begin());
     for (std::size_t slot{}; slot < interfaces.size(); ++slot) {

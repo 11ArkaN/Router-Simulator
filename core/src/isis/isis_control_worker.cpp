@@ -89,6 +89,50 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
   const auto &definitions = command.circuits;
   if (definitions.size() > maximum_circuits_ ||
       active_circuits_ - device.circuits.size() > maximum_circuits_ - definitions.size()) return ControlError::capacity;
+  for (std::size_t ordinal{}; ordinal < command.retired_instances.size(); ++ordinal) {
+    const auto index = command.retired_instances[ordinal];
+    if (index >= device.instances.size() || (ordinal && command.retired_instances[ordinal - 1U] >= index))
+      return ControlError::invalid_argument;
+    if (!device.instances[index]) return ControlError::not_found;
+    if (std::any_of(command.new_instances.begin(), command.new_instances.end(),
+        [index](const auto &entry) { return entry.instance == index; }) ||
+        std::any_of(definitions.begin(), definitions.end(),
+        [index](const auto &entry) { return entry.identity.instance == index; })) return ControlError::invalid_argument;
+  }
+  std::unique_ptr<DeviceState> additions;
+  if (!command.new_instances.empty()) {
+    if (command.new_instances.size() > device.instances.size() - device.instance_count) return ControlError::capacity;
+    try {
+      additions = std::make_unique<DeviceState>();
+      additions->handle = device.handle;
+      additions->active = true;
+      additions->update_fences = device.update_fences;
+      std::optional<std::uint8_t> previous;
+      for (auto &entry : command.new_instances) {
+        const auto index = entry.instance;
+        if (index >= device.instances.size() || (previous && index <= *previous)) return ControlError::invalid_argument;
+        previous = index;
+        if (device.instances[index] || std::any_of(device.circuits.begin(), device.circuits.end(),
+            [&](const auto &circuit) { return circuit.identity.instance == index; })) return ControlError::already_exists;
+        const auto &gate = device.sequence_recovery[index];
+        if (gate && gate->disabled() && !gate->ready(RuntimeClock::now())) return ControlError::sequence_cooldown;
+        ControlCommand prepare;
+        prepare.identity.device = device.handle;
+        prepare.identity.instance = index;
+        prepare.update = std::move(entry.program);
+        const auto error = add_update_instance(prepare, *additions);
+        if (error != ControlError::none) return error;
+      }
+    } catch (const std::bad_alloc &) { return ControlError::capacity; }
+      catch (const std::exception &) { return ControlError::construction_failed; }
+  }
+  // Candidate pointers remain heap-stable when their registry moves into the
+  // prepared generation. No live owner can observe or service these instances.
+  auto *candidate_instances = additions.get();
+  const auto selected_instance = [&](std::size_t index) -> std::unique_ptr<OwnedInstance> & {
+    if (candidate_instances && candidate_instances->instances[index]) return candidate_instances->instances[index];
+    return device.instances[index];
+  };
   const auto key = [](const CircuitIdentity &value) { return std::pair{value.interface_id, value.instance}; };
   for (std::size_t index{}; index < definitions.size(); ++index) {
     const auto &entry = definitions[index];
@@ -102,7 +146,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
     if (!common || (entry.broadcast && entry.configuration != P2pCircuitConfiguration{})) return ControlError::invalid_argument;
     if (entry.update_transmission && !valid_medium_transmission(*entry.update_transmission, entry.update_view()))
       return ControlError::invalid_argument;
-    if (const auto &instance = device.instances[identity.instance]) {
+    if (const auto &instance = selected_instance(identity.instance)) {
       const auto view = entry.update_view();
       const auto &transmission = entry.update_transmission.value_or(instance->configuration.transmission);
       if (!valid_medium_transmission(transmission, view)) return ControlError::unsupported_update_medium;
@@ -136,7 +180,9 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
   }
   try {
     PreparedGeneration staged;
+    staged.additions = std::move(additions);
     staged.device = device.handle;
+    staged.retired_instances = std::move(command.retired_instances);
     staged.output.reserve(definitions.size());
     staged.plan.reserve(definitions.size());
     staged.keep.resize(device.circuits.size());
@@ -184,7 +230,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
       staged.replacements.emplace_back(replacement, now);
     }
     for (auto &replacement : staged.replacements) {
-      auto &instance = device.instances[replacement.identity.instance];
+      auto &instance = selected_instance(replacement.identity.instance);
       if (!instance) continue;
       if (requires_reconstruction(instance->status)) {
         // Disabled bindings carry configuration only. Fresh level slots are
@@ -264,6 +310,18 @@ void ControlWorker::commit_generation(DeviceState &device) noexcept {
     staged.output.push_back(std::move(selection.retained ? device.circuits[selection.index] : staged.replacements[selection.index]));
   active_circuits_ = active_circuits_ - device.circuits.size() + staged.output.size();
   device.circuits.swap(staged.output);
+  // Every circuit attached to a retired owner was excluded and retired above.
+  // Remove only after the live circuit vector stops borrowing that owner.
+  for (const auto index : staged.retired_instances) remove_update_instance(device, index);
+  if (staged.additions) {
+    for (std::size_t ordinal{}; ordinal < staged.additions->instance_count; ++ordinal) {
+      const auto index = staged.additions->instance_order[ordinal];
+      if (device.instances[index]) std::terminate();
+      device.instances[index] = std::move(staged.additions->instances[index]);
+      device.sequence_recovery[index] = std::move(staged.additions->sequence_recovery[index]);
+      device.instance_order[device.instance_count++] = index;
+    }
+  }
   if (device.first_circuit >= device.circuits.size()) device.first_circuit = 0U;
   prepared_.reset();
 }

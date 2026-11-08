@@ -144,7 +144,8 @@ function mergeRuntimeRouter(project: LabProjectV4,
       // The control owner projects canonical configuration, never inferred
       // operational routes or adjacencies. Terminal commits can therefore be
       // persisted without the browser reconstructing protocol intent.
-      ospf: structuredClone(runtimeRouter.ospf)
+      ospf: structuredClone(runtimeRouter.ospf),
+      isis: structuredClone(runtimeRouter.isis)
     }
   };
   return { ...project, routers: project.routers.map((item) =>

@@ -5,6 +5,7 @@
 #pragma once
 
 #include "router/bof_autoconfigure.hpp"
+#include "router/isis_configuration.hpp"
 #include "router/dhcpv4_configuration.hpp"
 #include "router/dhcpv6_configuration.hpp"
 #include "router/ipsec_configuration.hpp"
@@ -493,6 +494,7 @@ struct PortableConfigurationCheckpoint {
   dhcpv4::configuration::RouterConfiguration dhcpv4_servers;
   dhcpv6::configuration::RouterConfiguration dhcpv6_servers;
   ospf::RouterConfiguration ospf;
+  isis::RouterConfiguration isis;
   std::array<PortableCardConfigurationCheckpoint,
              device_catalog::maximum_card_slots>
       cards;
@@ -530,6 +532,7 @@ struct PortableRouterIntentCheckpoint {
   dhcpv4::configuration::RouterConfiguration dhcpv4_servers;
   dhcpv6::configuration::RouterConfiguration dhcpv6_servers;
   ospf::RouterConfiguration ospf;
+  isis::RouterConfiguration isis;
   PortableConfigurationCheckpoint global_candidate;
   bool global_candidate_initialized{};
   std::array<bool, device_catalog::maximum_ports_per_router>
@@ -813,6 +816,10 @@ public:
   [[nodiscard]] bool
   configure_ies_services(DeviceHandle device,
                          const service::Configuration &configuration) noexcept;
+  // Control owner only. The complete circuit set and sorted new instance keys
+  // move across an owned SPSC channel. Success acknowledges the network and
+  // protocol owner commit; failure publishes no partial configuration.
+  [[nodiscard]] bool admit_isis_generation(NetworkIsisGeneration &&) noexcept;
   // DHCPv6 relay configuration originates in the service configuration owner,
   // but its UDP socket, return-path lookup and counters belong to the selected
   // router forwarding shard. This method resolves the stable hardware port,

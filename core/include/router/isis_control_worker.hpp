@@ -190,6 +190,12 @@ struct UpdateInstanceProgram {
   std::array<std::optional<P2pRouteFamilyProgram>, 2U> routing{};
   bool operator==(const UpdateInstanceProgram &) const = default;
 };
+// New instance ownership is transferred with a circuit generation. Keys are
+// sorted and absent from the live registry and its transport-only circuits.
+struct NewUpdateInstance {
+  std::uint8_t instance{};
+  UpdateInstanceProgram program;
+};
 struct ControlCommand {
   std::uint64_t id{};
   ControlCommandKind kind{ControlCommandKind::query_worker};
@@ -215,6 +221,10 @@ struct ControlCommand {
   // ring. Prepare allocates before publication; commit preserves unchanged
   // epochs and consumes no heap storage. Abort leaves every live circuit intact.
   std::vector<CircuitDefinition> circuits;
+  std::vector<NewUpdateInstance> new_instances;
+  // Sorted live keys withdrawn by this complete generation. No candidate
+  // circuit or new owner may reference these keys. Prepare never detaches them.
+  std::vector<std::uint8_t> retired_instances;
   // Experimental update admission supplies all effective values and budgets.
   // Raw local PDUs already passed the originator's sequence and key policy.
   std::optional<UpdateInstanceProgram> update;
@@ -596,6 +606,10 @@ private:
     PreparedGeneration(PreparedGeneration &&) noexcept = default;
     PreparedGeneration(const PreparedGeneration &) = delete;
     ~PreparedGeneration();
+    // Declared before dependents so candidate instances outlive circuit and
+    // reservation destruction on both cancellation and successful commit.
+    std::unique_ptr<DeviceState> additions;
+    std::vector<std::uint8_t> retired_instances;
     struct UpdateReservation { OwnedInstance *instance{}; UpdateCircuitAdmission admission; };
     std::vector<UpdateReservation> update_reservations;
     bool committed{};

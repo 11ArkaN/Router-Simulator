@@ -59,11 +59,11 @@ const cppBoolean = (value) => value ? "true" : "false";
 // make hardware validation appear authoritative while accepting combinations
 // that never existed in one SR OS image.
 if (catalog.release !== "26.7.R1") fail("release must match the pinned baseline");
-if (protocol.version !== 4 || protocol.snapshot_abi !== 9 ||
+if (protocol.version !== 4 || protocol.snapshot_abi !== 10 ||
     protocol.telemetry_abi !== 6 ||
-    protocol.checkpoint_abi !== 10 ||
-    !protocol.operations || checkpoint.version !== 10)
-  fail("runtime protocol 4, snapshot ABI 9, telemetry ABI 6 and checkpoint schema 10 are required");
+    protocol.checkpoint_abi !== 11 ||
+    !protocol.operations || checkpoint.version !== 11)
+  fail("runtime protocol 4, snapshot ABI 10, telemetry ABI 6 and checkpoint schema 11 are required");
 for (const [name, value] of Object.entries(catalog.limits ?? {})) exactInteger(value, `limits.${name}`, 1);
 if (catalog.limits.routers !== 16 ||
     catalog.limits.sr_routers !== 16 ||

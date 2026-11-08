@@ -423,7 +423,10 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
       // Once older disk rows exist, reaching the beginning of xterm's bounded
       // cache continues into the virtual transcript instead of ending history.
       // No React update occurs during ordinary scrolling inside the hot window.
-      if (position === 0 && archive.lineCount > terminal.buffer.active.length) {
+      // clear() and a fit with no scrollback also report position zero. Only
+      // a nonempty hot scrollback can cross into older archived rows here.
+      if (position === 0 && terminal.buffer.active.baseY > 0 &&
+          archive.lineCount > terminal.buffer.active.length) {
         setHistoryBoundaryRows(terminal.buffer.active.length);
         setHistoryOpen(true);
       }
@@ -520,7 +523,11 @@ export function TerminalPanel({ ready, systemName, historyKey, historyStorage, e
           className={tab.id === activeTab ? "terminal-tab active" : "terminal-tab"}
           key={tab.id}><button onClick={() => selectTab?.(tab.id)}><i className="dot-good" />{tab.label}</button><button aria-label={`Close ${tab.label}`} onClick={() => closeTab?.(tab.id)}><X size={14} /></button></div>) : <div className="terminal-tab active"><button><i className="dot-good" />{systemName} console</button></div>}{newTab && <button className="terminal-new-tab" title="New router terminal" aria-label="New router terminal" onClick={newTab}><Plus size={16} /></button>}</div>
         <div className="terminal-actions">
-          <button title="Clear visible terminal" aria-label="Clear visible terminal" onClick={() => terminalRef.current?.clear()}><Eraser size={16} /></button>
+          <button title="Clear visible terminal" aria-label="Clear visible terminal" onClick={() => {
+            setHistoryOpen(false);
+            terminalRef.current?.clear();
+            terminalRef.current?.focus();
+          }}><Eraser size={16} /></button>
           <button title="Terminal settings" aria-label="Terminal settings" className={settingsOpen ? "active" : ""} onClick={() => setSettingsOpen((value) => !value)}><Settings2 size={16} /></button>
           <button title="Fullscreen console" aria-label="Fullscreen console" onClick={() => void (document.fullscreenElement ? document.exitFullscreen() : panelRef.current?.requestFullscreen())}><Maximize2 size={15} /></button>
           <button title="Close console" aria-label="Close console" onClick={close}><X size={16} /></button>

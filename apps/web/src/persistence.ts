@@ -415,11 +415,18 @@ export function parseNetsimV4(text: string): {
   capture?: Uint8Array;
   terminalPresentation?: TerminalPresentationV2;
 } {
-  // No raw-project or previous-manifest branch exists. Unsupported bytes stop
-  // before project replay, leaving the active Worker and project untouched.
-  const decoded = JSON.parse(text) as Partial<ProjectManifestV4>;
+  // Structural state requires the exact ABI. Configuration-only manifests
+  // contain no runtime image; their project schema is validated independently.
+  // Future ABIs and malformed envelopes still refuse before project replay.
+  const decoded = JSON.parse(text) as Partial<Omit<ProjectManifestV4, "checkpointAbi">> &
+    { checkpointAbi?: unknown };
+  const abi = decoded?.checkpointAbi;
+  const compatibleAbi = decoded?.mode === "checkpoint"
+    ? abi === LAB_RUNTIME_PROTOCOL.checkpointAbi
+    : typeof abi === "number" && Number.isSafeInteger(abi) &&
+      abi > 0 && abi <= LAB_RUNTIME_PROTOCOL.checkpointAbi;
   if (!decoded || typeof decoded !== "object" || decoded.formatVersion !== 4 ||
-      decoded.checkpointAbi !== LAB_RUNTIME_PROTOCOL.checkpointAbi ||
+      !compatibleAbi ||
       (decoded.mode !== "project" && decoded.mode !== "checkpoint")) {
     throw new Error("The .netsim manifest format is not supported");
   }

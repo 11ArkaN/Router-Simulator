@@ -1439,7 +1439,7 @@ std::string classic_context_marker(std::string_view path) {
   std::string token;
   std::string result;
   bool skip_key = false;
-  while (tokens >> token) {
+  while (tokens >> std::quoted(token)) {
     if (skip_key) {
       skip_key = false;
       continue;
@@ -1449,6 +1449,12 @@ std::string classic_context_marker(std::string_view path) {
     else if (token == "interface") {
       token = "if";
       skip_key = true;
+    } else if (token == "isis" || token == "level") {
+      // Classic IS-IS permits the zero-instance spelling without an explicit
+      // key. Skip a numeric key only when present, preserving its next child.
+      tokens >> std::ws;
+      const auto next = tokens.peek();
+      skip_key = next >= '0' && next <= '9';
     } else if (token == "card" || token == "mda" || token == "port" ||
                token == "ospf" || token == "ospf3" || token == "area") {
       // Classic prompts name a keyed configuration node but do not append its

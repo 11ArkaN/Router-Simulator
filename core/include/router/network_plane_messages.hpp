@@ -7,16 +7,16 @@
 #include "router/generated_device_catalog.hpp"
 #include "router/network_plane.hpp"
 #include "router/spsc_ring.hpp"
+#include "router/owned_spsc_channel.hpp"
 
 #include <cstdint>
 #include <variant>
 
 namespace router::lab {
 
-// Version 37 adds the complete DHCPv4 client status to synchronous query
-// results. An older worker would interpret the shorter result envelope with
-// the wrong offsets, so the ABI handshake must reject a mixed build.
-inline constexpr std::uint32_t network_plane_message_version = 37;
+// Version 38 adds an owned IS-IS generation transfer paired with one fixed
+// command. Mixed owners must refuse rather than interpret another ring layout.
+inline constexpr std::uint32_t network_plane_message_version = 39;
 
 struct NetworkDhcpv4ClientBegin {
   // RFC 2131 caps each ordinary option payload at 255 octets. Carrying the two
@@ -340,7 +340,8 @@ enum class NetworkCommandKind : std::uint8_t {
   prepare_router_checkpoint,
   prepare_checkpoint,
   restore_checkpoint,
-  shutdown
+  shutdown,
+  admit_isis_generation
 };
 
 struct NetworkCommand {
@@ -453,6 +454,16 @@ struct NetworkResult {
   ospf::ControlResult ospf{};
 };
 
+// Producer owns these allocations before publication; the network consumer
+// exclusively owns the received lease until return. command_id is assigned
+// by submit_isis_generation and binds this value to its fixed command.
+struct NetworkIsisGeneration {
+  std::uint64_t command_id{};
+  DeviceHandle device{};
+  std::vector<IsisCircuitProgram> circuits;
+  std::vector<isis::NewUpdateInstance> new_instances;
+  std::vector<std::uint8_t> retired_instances;
+};
 struct NetworkPlaneChannels {
   // Capacity includes one deliberately unused SpscRing slot. Generated values
   // are emulator resources and not protocol or vendor scaling claims.
@@ -460,6 +471,11 @@ struct NetworkPlaneChannels {
       commands;
   SpscRing<NetworkResult, device_catalog::network_result_ring_entries> results;
   SpscRing<NetworkSigningVaultInitialize, 2U> signing_vault;
+  // Producer: serialized datastore control. Consumer: network pthread. Eight
+  // owned slots use FIFO release/acquire handles and return credits. A full
+  // channel refuses before consuming caller values or publishing its command.
+  // Network publication ends the lease before its synchronous result is sent.
+  protocol::OwnedSpscChannel<NetworkIsisGeneration, device_catalog::isis_control_generation_slots> isis_generations;
 };
 
 } // namespace router::lab

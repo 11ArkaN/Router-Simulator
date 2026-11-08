@@ -4,6 +4,7 @@
 
 #include "router/isis_control_worker.hpp"
 #include "router/isis_lsp_builder.hpp"
+#include "router/isis_root_content.hpp"
 #include "router/isis_rib_input.hpp"
 #include "router/multi_device_fabric.hpp"
 #include "router/network_plane.hpp"
@@ -1760,18 +1761,21 @@ void isis_network_plane_route_publication_tests() {
       auto &local = program.origination->content;
       local.random = index + 1U;
       local.levels = {LocalLspLevelProgram{1200U, 1492U, 10ms, 1s}, LocalLspLevelProgram{1200U, 1492U, 10ms, 1s}};
-      std::array<std::uint8_t, 256U> storage{};
-      packet::isis::TlvWriter writer(storage);
-      const std::array<std::uint8_t, 4U> area{3U, 0x49U, 0U, 1U};
-      require(writer.append(1U, area) && writer.append(129U, hello.protocols));
-      require(packet::isis::encode_extended_prefix(writer,
-          {.prefix = *ip::parse_ip_prefix(index ? "198.51.100.2/32" : "192.0.2.1/32"), .metric = 5U, .sub_tlvs = {}}) &&
-          packet::isis::encode_extended_prefix(writer,
-          {.prefix = *ip::parse_ip_prefix(index ? "2001:db8:12::2/128" : "2001:db8:12::1/128"), .metric = 7U, .sub_tlvs = {}}));
-      packet::isis::LspId root{};
-      std::copy(program.local.begin(), program.local.end(), root.begin());
-      const std::vector<std::uint8_t> options(writer.bytes().begin(), writer.bytes().end());
-      local.records = {{0U, root, 3U, options}, {1U, root, 3U, options}};
+      const std::array prefixes{
+          RootPrefix{*ip::parse_ip_prefix(index ? "198.51.100.2/32" : "192.0.2.1/32"), 5U, {}},
+          RootPrefix{*ip::parse_ip_prefix(index ? "2001:db8:12::2/128" : "2001:db8:12::1/128"), 7U, {}}};
+      const std::array<packet::Ipv6, 1U> global_ipv6{port.ipv6_address};
+      RootContentInput root;
+      root.local = program.local; root.flags = 3U; root.ipv4 = root.ipv6 = true;
+      root.areas = hello.areas; root.prefixes = prefixes;
+      root.ipv4_addresses = hello.ipv4_addresses; root.ipv6_addresses = global_ipv6;
+      root.hostname = index ? "R2" : "R1";
+      for (std::size_t selected{}; selected < 2U; ++selected) {
+        root.level = static_cast<std::uint8_t>(selected);
+        auto prepared = prepare_root_content(root, 1492U - packet::isis::lsp_header_octets, 1U);
+        require(prepared.status == RootContentStatus::prepared);
+        for (auto &record : prepared.records) local.records.push_back(std::move(record));
+      }
       for (std::size_t family{}; family < program.routing.size(); ++family) {
         program.routing[family].emplace();
         auto &route = *program.routing[family];
@@ -1844,17 +1848,16 @@ void isis_network_plane_route_publication_tests() {
       }
       for (std::size_t index{}; index < devices.size(); ++index) {
         generations[index] = plane->query_isis_update_instance(devices[index], 0U)->route_installed_generation;
-        require(plane->remove_isis_update_instance(devices[index], 0U));
+        const std::array<std::uint8_t, 1U> missing{1U};
+        require(!plane->replace_isis_generation(devices[index], std::span{&circuits[index], 1U}, {}, missing));
+        const auto unchanged = heap_router_checkpoint(*plane, devices[index], RuntimeClock::now());
+        require(unchanged && unchanged->fib.count == 2U && unchanged->ipv6_fib.count == 2U &&
+            plane->query_isis_update_instance(devices[index], 0U)->error == ControlError::none);
+        const std::array<std::uint8_t, 1U> retired{0U};
+        require(plane->replace_isis_generation(devices[index], {}, {}, retired));
       }
-      const auto withdrawn = RuntimeClock::now() + 5s;
-      std::array<bool, 2U> removed{};
-      for (;;) {
-        plane->pump();
-        for (std::size_t index{}; index < devices.size(); ++index) if (!removed[index])
-          removed[index] = plane->replace_isis_p2p_generation(devices[index], {});
-        if (removed[0U] && removed[1U]) break;
-        require(RuntimeClock::now() < withdrawn);
-      }
+      // The synchronous retirement receipt already covers both FIB families;
+      // no pump or asynchronous withdrawal retry is needed before inspection.
       for (const auto device : devices) {
         const auto selected = heap_router_checkpoint(*plane, device, RuntimeClock::now());
         require(selected && selected->fib.count == 1U && selected->ipv6_fib.count == 1U &&

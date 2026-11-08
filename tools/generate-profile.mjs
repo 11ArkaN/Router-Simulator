@@ -6,6 +6,9 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { parse } from "yaml";
+import { commandHandlers } from "./cli-command-aliases.mjs";
+import { validateIsisCliBindings } from "./isis/cli-source-bindings.mjs";
+import { configurationParameterRanges } from "./isis/configuration-profile.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const profileDirectory = resolve(root, "profiles");
@@ -431,6 +434,18 @@ for (const kind of parameterKinds) {
       `${kind}: continues_context_key must be boolean`,
     );
   }
+  const values = cliSchema.parameters[kind].values;
+  if (values !== undefined && (!Array.isArray(values) || !values.length ||
+      values.some((value) => typeof value !== "string" || !value.length || /\s/.test(value)) ||
+      new Set(values).size !== values.length)) {
+    throw new Error(`${kind}: parameter keywords must be unique nonempty tokens`);
+  }
+  const canonical = cliSchema.parameters[kind].canonical_values;
+  if (canonical !== undefined && (!values || !Array.isArray(canonical) || canonical.length !== values.length ||
+      canonical.some((value) => typeof value !== "string" || !value.length || /\s/.test(value)) ||
+      new Set(canonical).size !== canonical.length)) {
+    throw new Error(`${kind}: canonical keywords must map every spelling exactly once`);
+  }
 }
 // Command IDs and token counts become enum and array extents. Validate them
 // before template emission so malformed YAML cannot yield partial C++ syntax.
@@ -522,6 +537,11 @@ for (const command of cliSchema.commands ?? []) {
 if (cliSchema.release !== profile.release) {
   throw new Error(`CLI schema ${cliSchema.release} does not match profile ${profile.release}`);
 }
+const handlers = commandHandlers(cliSchema.commands);
+const isisInventory = JSON.parse(readFileSync(resolve(root, "schemas/cli/isis-26.7.R1-inventory.json"), "utf8"));
+const integerParameterRanges = configurationParameterRanges(cliSchema.parameters, isisInventory);
+validateIsisCliBindings(cliSchema.commands, isisInventory,
+  JSON.parse(readFileSync(resolve(root, "schemas/cli/isis-26.7.R1-command-bindings.json"), "utf8")), cliSchema.parameters);
 
 const cppToken = (token) => {
   if (typeof token === "string") {
@@ -561,7 +581,7 @@ const cliRows = cliSchema.commands.map((command) => {
         ["md_compare", "md_commit", "md_discard"].includes(command.id)));
   const tokens = command.tokens.map(cppToken);
   while (tokens.length < maximumTokens) tokens.push("{}");
-  return `    {CommandId::${command.id}, ${mask}, ${modifierMask}, ${entersContext}, ${configurationCommand}, ${command.tokens.length}, ${contextTokenCount}, {{${tokens.join(", ")}}}, "${command.source_id}"}`;
+  return `    {CommandId::${command.id}, ${mask}, ${modifierMask}, ${entersContext}, ${configurationCommand}, ${command.tokens.length}, ${contextTokenCount}, {{${tokens.join(", ")}}}, "${command.source_id}", CommandId::${handlers.get(command.id)}, ${JSON.stringify(command.yang_path ?? "")}}`;
 }).join(",\n");
 
 const cliHeader = `#pragma once
@@ -572,6 +592,7 @@ const cliHeader = `#pragma once
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 namespace router::cli_schema {
@@ -584,6 +605,43 @@ enum class TokenKind : std::uint8_t {
   literal,
 ${parameterKinds.map((kind) => `  ${kind}`).join(",\n")}
 };
+
+${parameterKinds.filter((kind) => cliSchema.parameters[kind].values).map((kind) =>
+  `inline constexpr std::array<std::string_view, ${cliSchema.parameters[kind].values.length}> ${kind}_values{{${quoted(cliSchema.parameters[kind].values)}}};`).join("\n")}
+${parameterKinds.filter((kind) => cliSchema.parameters[kind].canonical_values).map((kind) =>
+  `inline constexpr std::array<std::string_view, ${cliSchema.parameters[kind].canonical_values.length}> ${kind}_canonical_values{{${quoted(cliSchema.parameters[kind].canonical_values)}}};`).join("\n")}
+// Enumerated parameter spellings are release grammar, shared by execution,
+// canonical argument projection and completion without per-token heap state.
+[[nodiscard]] inline std::span<const std::string_view> parameter_values(TokenKind kind) noexcept {
+  switch (kind) {
+${parameterKinds.filter((kind) => cliSchema.parameters[kind].values).map((kind) =>
+  `  case TokenKind::${kind}: return ${kind}_values;`).join("\n")}
+  default: return {};
+  }
+}
+
+[[nodiscard]] inline std::string_view parameter_canonical_value(TokenKind kind, std::string_view spelling) noexcept {
+  switch (kind) {
+${parameterKinds.filter((kind) => cliSchema.parameters[kind].canonical_values).map((kind) =>
+  `  case TokenKind::${kind}:
+    for (std::size_t index{}; index < ${kind}_values.size(); ++index)
+      if (${kind}_values[index] == spelling) return ${kind}_canonical_values[index];
+    return {};`).join("\n")}
+  default: return spelling;
+  }
+}
+
+struct IntegerParameterRange {
+  std::uint64_t minimum{}, maximum{};
+  bool constrained{};
+};
+[[nodiscard]] inline constexpr IntegerParameterRange parameter_integer_range(TokenKind kind) noexcept {
+  switch (kind) {
+${[...integerParameterRanges].map(([kind, range]) =>
+  `  case TokenKind::${kind}: return {${range.minimum}ULL, ${range.maximum}ULL, true};`).join("\n")}
+  default: return {};
+  }
+}
 
 enum class OutputModifier : std::uint8_t {
   detail = 1U << 0U
@@ -614,6 +672,11 @@ struct CommandSpec {
   std::uint8_t context_token_count{};
   std::array<TokenSpec, maximum_tokens> tokens{};
   std::string_view source_id{};
+  // Alternate sourced grammar rows share one handler without changing their
+  // own syntax, engine membership or context-navigation metadata.
+  CommandId handler_id{};
+  // Canonical source node lets protocol editors share both engine spellings.
+  std::string_view yang_path{};
 };
 
 inline constexpr std::array<CommandSpec, ${cliSchema.commands.length}> commands{{

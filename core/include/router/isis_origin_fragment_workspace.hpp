@@ -26,6 +26,11 @@ public:
   // latch the first refusal; no local protocol/configuration state changes.
   [[nodiscard]] bool add_options(FragmentUnitId key, std::span<const std::uint8_t> options,
       std::optional<std::uint8_t> previous, bool root_only) noexcept;
+  // Adds active non-pseudonode base content as individual complete TLVs.
+  // Only Area Addresses are pinned to zero; movable root metadata/prefixes
+  // retain their previous fragment where possible. Program storage outlives
+  // compose/reset. Domain zero is reserved for these generated metadata keys.
+  [[nodiscard]] bool add_root_options(const LocalLspProgram &program, std::size_t level) noexcept;
   [[nodiscard]] bool add_link(FragmentUnitId key, packet::isis::LanId neighbor,
       const P2pOriginMetric &metric, std::optional<std::uint8_t> previous) noexcept;
   [[nodiscard]] bool add_pseudonode_link(FragmentUnitId key, packet::isis::SystemId peer,

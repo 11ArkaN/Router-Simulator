@@ -11,6 +11,10 @@
 #include "cli/ies_cli_configuration.hpp"
 #include "cli/ipsec_cli_configuration.hpp"
 #include "cli/ospf_cli_configuration.hpp"
+#include "cli/isis_cli_configuration.hpp"
+#include "cli/isis_cli_info.hpp"
+#include "isis_configuration_projection.hpp"
+#include "router/isis_configuration_codec.hpp"
 #include "cli/pki_cli_configuration.hpp"
 #include "router/cli.hpp"
 #include "router/dns_master_file.hpp"
@@ -2416,7 +2420,7 @@ bool classic_configuration_command(cli_schema::CommandId id) noexcept {
     return true;
   if (dhcpv6_cli::is_classic_command(id))
     return true;
-  if (ospf_cli::is_classic_command(id))
+  if (isis_cli::is_classic_command(id) || ospf_cli::is_classic_command(id))
     return true;
   if (ipsec_cli::is_classic_command(id))
     return true;
@@ -6480,6 +6484,16 @@ md_ospf_info(const ospf::RouterConfiguration &configuration,
   return md_rendered_context_body(out.str(), *tokens, 3U);
 }
 
+std::optional<std::string> md_isis_info(const isis::RouterConfiguration &configuration,
+                                         std::string_view path, bool detail) {
+  const auto tokens = md_context_tokens(path);
+  if (!tokens || tokens->size() < 4U || (*tokens)[0U] != "configure" ||
+      (*tokens)[1U] != "router" || (*tokens)[2U] != "Base" || (*tokens)[3U] != "isis") return std::nullopt;
+  const auto tree = isis_cli::md_tree(configuration, detail);
+  if (tokens->size() == 4U) return tree;
+  return md_rendered_context_body(tree, *tokens, 3U);
+}
+
 std::string_view
 router_preference_text(packet::nd::RouterPreference preference) noexcept {
   switch (preference) {
@@ -7528,6 +7542,7 @@ md_base_configuration_info(const Configuration &configuration,
       md_indent(out, depth);
       out << "}\n";
     }
+    md_append_indented(out, isis_cli::md_tree(configuration.isis, detail), depth);
     for (const auto &instance : configuration.ospf.instances) {
       md_indent(out, depth);
       out << (instance.address_family == ospf::AddressFamily::ipv4 ? "ospf "
@@ -7895,6 +7910,20 @@ md_path_from_classic(std::string_view classic_path) {
     return std::nullopt;
 
   std::ostringstream out;
+  if (tokens->size() >= 3U && (*tokens)[0U] == "configure" &&
+      (*tokens)[1U] == "router" && (*tokens)[2U] == "isis") {
+    out << "configure router \"Base\" isis ";
+    unsigned key{};
+    const bool explicit_key = tokens->size() > 3U && decimal((*tokens)[3U], key);
+    out << (explicit_key ? key : 0U);
+    for (std::size_t index = explicit_key ? 4U : 3U; index < tokens->size(); ++index) {
+      const auto &token = (*tokens)[index];
+      out << ' ';
+      if (token.find(' ') != std::string::npos) out << std::quoted(token);
+      else out << token;
+    }
+    return out.str();
+  }
   if (tokens->size() >= 3U && (*tokens)[0] == "configure" &&
       (*tokens)[1] == "router" && (*tokens)[2] == "dhcp6") {
     // Classic collapses the MD router list key and renames the server
@@ -8298,6 +8327,9 @@ std::string classic_info_text(std::string_view md_text,
       }
     }
 
+    const bool isis_context = md_context.starts_with("configure router \"Base\" isis") ||
+        std::any_of(container_stack.begin(), container_stack.end(), [](const auto &container) { return container.starts_with("isis "); });
+    if (isis_context) content = isis_cli::classic_leaf(content);
     const bool ospf_context =
         md_context.starts_with("configure router \"Base\" ospf");
     if (ospf_context && content.starts_with("keychain "))
@@ -8641,6 +8673,8 @@ classic_configuration_info(const Configuration &configuration,
         md_keychain_configuration_info(configuration.ospf, *md_path, detail);
   if (!rendered)
     rendered = md_ospf_info(configuration.ospf, *md_path, detail);
+  if (!rendered)
+    rendered = md_isis_info(configuration.isis, *md_path, detail);
   if (!rendered)
     rendered =
         md_dhcp_server_configuration_info(configuration, *md_path, detail);
@@ -9093,6 +9127,7 @@ LabRuntime::running_configuration(const RouterIntent &router_intent) const {
   value.dhcpv4_servers = router_intent.dhcpv4_servers;
   value.dhcpv6_servers = router_intent.dhcpv6_servers;
   value.ospf = router_intent.ospf;
+  value.isis = router_intent.isis;
   value.ports = router_intent.ports;
   value.interfaces = router_intent.interfaces;
   value.routes = router_intent.routes;
@@ -9170,6 +9205,7 @@ LabRuntime::portable_configuration(const ConfigurationIntent &source) const {
   target.dhcpv4_servers = source.dhcpv4_servers;
   target.dhcpv6_servers = source.dhcpv6_servers;
   target.ospf = source.ospf;
+  target.isis = source.isis;
   for (std::size_t card = 0; card < source.cards.size(); ++card) {
     target.cards[card].provisioned = source.cards[card].provisioned;
     target.cards[card].admin_enabled = source.cards[card].admin_enabled;
@@ -9469,7 +9505,16 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
                                  value.mld_import_policies)) {
     return false;
   }
-  if (!value.mld.valid() ||
+  // Running intent cannot claim an enabled instance without a corresponding
+  // prepared protocol generation. Inactive configuration owns no live entity.
+  if (std::any_of(value.isis.instances.begin(), value.isis.instances.end(),
+      [](const auto &instance) { return instance.admin_enabled.value_or(false); })) return false;
+  for (const auto &instance : value.isis.instances)
+    for (const auto &attached : instance.interfaces)
+      if (std::none_of(value.interfaces.begin(), value.interfaces.end(),
+          [&](const auto &base) { return base.name == attached.name; })) return false;
+  if (isis::validate_configuration(value.isis) != isis::ConfigurationError::none ||
+      !value.mld.valid() ||
       ospf::validate(value.ospf, true) !=
           ospf::ConfigurationStatus::valid ||
       tls_profile::validate(value.tls) ||
@@ -12127,6 +12172,7 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
   router_intent.dhcpv4_servers = value.dhcpv4_servers;
   router_intent.dhcpv6_servers = value.dhcpv6_servers;
   router_intent.ospf = value.ospf;
+  router_intent.isis = value.isis;
   return true;
 }
 
@@ -12192,6 +12238,7 @@ bool LabRuntime::create_router(std::span<const std::string_view> fields) {
                         .dhcpv4_servers = {},
                         .dhcpv6_servers = {},
                         .ospf = {},
+                        .isis = {},
                         .global_candidate = {},
                         .global_candidate_initialized = false,
                         .port_seen_operational = {},
@@ -12252,6 +12299,7 @@ bool LabRuntime::create_dhcp_server(
                         .dhcpv4_servers = {},
                         .dhcpv6_servers = {},
                         .ospf = {},
+                        .isis = {},
                         .global_candidate = {},
                         .global_candidate_initialized = false,
                         .port_seen_operational = {},
@@ -13070,6 +13118,18 @@ bool LabRuntime::replace_router_configuration(
       instance.areas.push_back(std::move(area));
     }
     next.ospf.instances.push_back(std::move(instance));
+  }
+  // Protocol-4 payloads without the optional IS-IS suffix can only address an
+  // already empty IS-IS domain. They must not erase an unrepresentable tree.
+  if (payload.empty()) {
+    if (!next.isis.instances.empty()) return false;
+  } else {
+    std::vector<std::uint8_t> isis_bytes;
+    if (!next_netstring(payload, value) ||
+        !hexadecimal_octets_vector(value, isis_bytes, device_catalog::wasm_initial_memory_bytes, 5U)) return false;
+    auto isis_intent = isis::configuration_codec::decode(isis_bytes, device_catalog::wasm_initial_memory_bytes);
+    if (!isis_intent) return false;
+    next.isis = std::move(*isis_intent);
   }
   // Exact exhaustion rejects appended fields from a newer or corrupted
   // payload instead of silently applying only the prefix understood here.
@@ -14692,6 +14752,7 @@ std::string LabRuntime::execute_session_command(std::string_view session_id,
         intent->ies = state.ies;
         intent->bof_autoconfigure = state.bof_autoconfigure;
         intent->ospf = state.ospf;
+        intent->isis = state.isis;
         intent->ports = state.ports;
         intent->interfaces = state.interfaces;
         intent->routes = state.routes;
@@ -16307,6 +16368,8 @@ std::string LabRuntime::execute_session_command(std::string_view session_id,
     if (!rendered)
       rendered = md_ospf_info(selected.ospf, path, detail);
     if (!rendered)
+      rendered = md_isis_info(selected.isis, path, detail);
+    if (!rendered)
       rendered = md_dhcp_server_configuration_info(selected, path, detail);
     if (!rendered)
       rendered = md_dhcpv6_configuration_info(selected.dhcpv6_servers, path,
@@ -16529,6 +16592,7 @@ std::string LabRuntime::execute_session_command(std::string_view session_id,
       }
       if (candidate->mld != running.mld)
         comparison << "~ router \"Base\" mld\n";
+      comparison << isis_cli::md_compare(running.isis, candidate->isis);
       // Policy objects live outside the router MLD subtree. Report their
       // candidate delta separately so an operator can review a policy edit
       // even before it is attached to an interface.
@@ -16662,7 +16726,11 @@ std::string LabRuntime::execute_session_command(std::string_view session_id,
                   return ospf_cli::edit(candidate->ospf, *parsed,
                                         CliEngine::md, &secrets);
                 }();
-      if (ipsec_edit.recognized) {
+      const auto isis_edit = isis_cli::edit(candidate->isis, *parsed, CliEngine::md);
+      if (isis_edit.recognized) {
+        valid = isis_edit.valid;
+        instance = std::to_string(isis_edit.instance);
+      } else if (ipsec_edit.recognized) {
         valid = ipsec_edit.valid;
         instance = ipsec_edit.instance;
       } else if (tls_edit.recognized) {
@@ -18543,6 +18611,12 @@ std::string LabRuntime::execute_session_command(std::string_view session_id,
         auto next = before_running;
         applied = edit_dhcpv6_interface_server(next, id) &&
                   apply_configuration(*intent, next);
+      } else if (applied && isis_cli::is_classic_command(id)) {
+        auto next = before_running;
+        const auto edited = isis_cli::edit(next.isis, *parsed, CliEngine::classic);
+        applied = edited.recognized && edited.valid &&
+            (!edited.changed || apply_configuration(*intent, next));
+        instance = std::to_string(edited.instance);
       } else if (applied && ospf_cli::is_classic_command(id)) {
         auto next = before_running;
         OspfVaultSink ospf_secrets{
@@ -25466,6 +25540,8 @@ std::string LabRuntime::complete_session(std::string_view session_id,
                 input.front() == '\\'))
           ? input.front()
           : '\0';
+  if (absolute_marker != '\0')
+    input.remove_prefix(1U);
 
   // Completion follows the saved terminal context just like execution. Keep
   // genuine root commands such as compare, show and configure unprefixed, but
@@ -25481,15 +25557,15 @@ std::string LabRuntime::complete_session(std::string_view session_id,
   // literal starts with an empty string, so treating that as a root keyword
   // silently replaced interface-local help with the global command list.
   // Require at least one operator-owned byte before checking root commands.
-  const bool root_command =
-      !first.empty() &&
+  const bool root_command = absolute_marker != '\0' ||
+      (!first.empty() &&
       std::any_of(cli_schema::commands.begin(), cli_schema::commands.end(),
                   [&](const auto &spec) {
                     return (spec.engine_mask & mask) && spec.token_count &&
                            spec.tokens[0].kind ==
                                cli_schema::TokenKind::literal &&
                            spec.tokens[0].display.starts_with(first);
-                  });
+                  }));
   const bool md_root_default =
       root_command && terminal->cli.engine == CliEngine::md;
   if (md_root_default) {
@@ -25513,29 +25589,11 @@ std::string LabRuntime::complete_session(std::string_view session_id,
     input = effective_storage;
   }
 
-  // Completion tokenization intentionally accepts only the CLI's ASCII word
-  // separator. Execution remains the authority for quoting and validation;
-  // this path merely derives candidates from generated schema rows.
-  std::vector<std::string_view> tokens;
-  std::size_t cursor{};
-  while (cursor < input.size()) {
-    while (cursor < input.size() &&
-           (input[cursor] == ' ' || input[cursor] == '\t'))
-      ++cursor;
-    const auto begin = cursor;
-    while (cursor < input.size() && input[cursor] != ' ' &&
-           input[cursor] != '\t')
-      ++cursor;
-    if (begin != cursor)
-      tokens.push_back(input.substr(begin, cursor - begin));
-  }
-  const bool trailing =
-      !input.empty() && (input.back() == ' ' || input.back() == '\t');
-  const auto completed = trailing         ? tokens.size()
-                         : tokens.empty() ? 0U
-                                          : tokens.size() - 1U;
-  const auto partial =
-      trailing || tokens.empty() ? std::string_view{} : tokens.back();
+  const auto line = cli_detail::tokenize_completion_line(input, terminal->cli.engine);
+  if (!line.valid) return {};
+  const auto tokens = std::span{line.tokens}.first(line.count);
+  const auto completed = line.trailing_space ? tokens.size() : tokens.empty() ? 0U : tokens.size() - 1U;
+  const auto partial = line.trailing_space || tokens.empty() ? std::string_view{} : tokens.back();
   const auto engine_mask = mask;
   const bool configuring = terminal->cli.engine == CliEngine::classic ||
                            session_record->mode != CandidateMode::operational;
@@ -25702,7 +25760,8 @@ std::string LabRuntime::complete_session(std::string_view session_id,
              ipsec_cli::is_classic_command(id) || tls_cli::is_md_command(id) ||
              tls_cli::is_classic_command(id) || pki_cli::is_md_command(id) ||
              pki_cli::is_classic_command(id) || md_mld_configuration_command(id) ||
-             classic_mld_configuration_command(id);
+             classic_mld_configuration_command(id) ||
+             isis_cli::is_classic_command(id);
     }
   };
   for (const auto &spec : cli_schema::commands) {
@@ -25725,8 +25784,29 @@ std::string LabRuntime::complete_session(std::string_view session_id,
     if (!prefix_matches)
       continue;
     const auto &next = spec.tokens[completed];
+    // Generated YANG enumerations must reach the product terminal as well as
+    // the standalone parser. Keep the canonical classic spellings supplied by
+    // the schema instead of maintaining another completion vocabulary.
+    const auto values = cli_schema::parameter_values(next.kind);
+    if (!values.empty()) {
+      for (const auto value : values)
+        add(value);
+      continue;
+    }
     using enum cli_schema::TokenKind;
     switch (next.kind) {
+    case isis_instance: {
+      const auto &configuration =
+          terminal->cli.engine == CliEngine::classic ? intent->isis
+          : session_record->mode == CandidateMode::private_candidate
+              ? terminal->private_candidate.isis
+              : intent->global_candidate.isis;
+      for (const auto &instance : configuration.instances)
+        add(std::to_string(instance.instance));
+      if (trigger == "question")
+        add(next.display);
+      break;
+    }
     case literal:
       add(next.display);
       break;
@@ -26451,6 +26531,9 @@ std::string LabRuntime::snapshot() {
       json_ospf_configuration(out, intent->ospf);
     else
       out << "{\"instances\":[]}";
+    out << ",\"isis\":";
+    if (intent) isis_projection::write_json(out, intent->isis);
+    else out << "{\"instances\":[]}";
     out << '}';
   }
   out << "],\"hosts\":[";
@@ -27405,6 +27488,7 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
       value.dhcpv4_servers = router.dhcpv4_servers;
       value.dhcpv6_servers = router.dhcpv6_servers;
       value.ospf = router.ospf;
+      value.isis = router.isis;
       value.ports.reserve(router.ports.size());
       for (const auto &port : router.ports)
         value.ports.push_back({port.id, port.admin_enabled, port.mtu,
@@ -27663,13 +27747,13 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
     checkpoint_bytes_.clear();
     return {};
   }
-  try { checkpoint_bytes_ = checkpoint_v10::encode(*checkpoint, secret_vault_ ? &*secret_vault_ : nullptr); }
+  try { checkpoint_bytes_ = checkpoint_v11::encode(*checkpoint, secret_vault_ ? &*secret_vault_ : nullptr); }
   catch (...) { checkpoint_bytes_.clear(); return {}; }
   return checkpoint_bytes_;
 }
 
 bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
-  auto checkpoint = checkpoint_v10::decode(bytes, secret_vault_ ? &*secret_vault_ : nullptr);
+  auto checkpoint = checkpoint_v11::decode(bytes, secret_vault_ ? &*secret_vault_ : nullptr);
   if (!checkpoint)
     return false;
   try {
@@ -27751,6 +27835,7 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
       target.dhcpv4_servers = source.dhcpv4_servers;
       target.dhcpv6_servers = source.dhcpv6_servers;
       target.ospf = source.ospf;
+      target.isis = source.isis;
       for (std::size_t card = 0; card < source.cards.size(); ++card) {
         target.cards[card].provisioned = source.cards[card].provisioned;
         target.cards[card].admin_enabled = source.cards[card].admin_enabled;
@@ -27953,6 +28038,26 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
           [&](const auto &item) { return item.device == device.handle; });
       if (portable == checkpoint->portable_routers.end())
         return false;
+      // Running enabled intent requires its protocol owner in the same saved
+      // cohort. Candidates may legitimately contain an uncommitted activation.
+      // Raw protocol experiments can retain owners without managed CLI intent.
+      for (const auto &instance : portable->isis.instances) {
+        for (const auto &attached : instance.interfaces)
+          if (std::none_of(portable->interfaces.begin(), portable->interfaces.end(),
+                  [&](const auto &base) { return base.name == attached.name; }))
+            return false;
+        if (!instance.admin_enabled.value_or(false))
+          continue;
+        if (!checkpoint->network.isis)
+          return false;
+        const auto &owners = checkpoint->network.isis->control.devices;
+        const auto owner = std::find_if(owners.begin(), owners.end(),
+            [&](const auto &item) { return item.handle == device.handle && item.active; });
+        if (owner == owners.end() ||
+            std::none_of(owner->instances.begin(), owner->instances.end(),
+                [&](const auto &item) { return item.instance == instance.instance; }))
+          return false;
+      }
       RouterIntent value{
           .handle = device.handle,
           .node_id = device.node_id,
@@ -27987,6 +28092,7 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
           .dhcpv4_servers = portable->dhcpv4_servers,
           .dhcpv6_servers = portable->dhcpv6_servers,
           .ospf = portable->ospf,
+          .isis = portable->isis,
           .global_candidate = {},
           .global_candidate_initialized = false,
           .port_seen_operational = {},

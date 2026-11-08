@@ -1,6 +1,7 @@
 // Project format 5 stores portable dual-stack multi-device intent. This module owns all
 // structural validation and has no browser, persistence or runtime dependency.
 
+import { isRouterIsisIntent, type RouterIsisIntent } from "./isis-configuration-v1";
 import { PROFILE_CATALOG, PROFILE_CATALOG_COMPILED } from "./generated-device-catalog";
 import { LAB_RUNTIME_PROTOCOL } from "./generated-lab-runtime-protocol";
 import { dnssecAlgorithms } from "./generated-dnssec-policy";
@@ -69,6 +70,8 @@ export interface RouterRunningIntent {
   }>;
   policyOptions: RouterPolicyOptionsIntent;
   ospf: RouterOspfIntent;
+  // Older portable projects omit IS-IS and retain the empty configuration.
+  isis?: RouterIsisIntent;
 }
 
 export type RoutePolicyAction =
@@ -1583,6 +1586,11 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
         prior = entry.number;
       }
     }
+    assert(router.running.isis === undefined || isRouterIsisIntent(router.running.isis),
+      `${router.id} IS-IS configuration is invalid`);
+    for (const instance of router.running.isis?.instances ?? [])
+      assert(instance.interfaces.every((attached) => router.running.interfaces.some((base) => base.name === attached.name)),
+        `${router.id} IS-IS interface reference is invalid`);
     const ospfInstances = new Set<string>();
     for (const instance of router.running.ospf.instances) {
       const familyRange = instance.addressFamily === "ipv4"
@@ -1732,7 +1740,8 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
         router.running.maximumEcmpPaths === 1 &&
         router.running.policyOptions.prefixLists.length === 0 &&
         router.running.policyOptions.statements.length === 0 &&
-        router.running.ospf.instances.length === 0,
+        router.running.ospf.instances.length === 0 &&
+        (router.running.isis?.instances.length ?? 0) === 0,
       `${router.id} contains router-only configuration`);
       const names4 = new Set<string>();
       for (const server of router.dhcpv4Servers) {

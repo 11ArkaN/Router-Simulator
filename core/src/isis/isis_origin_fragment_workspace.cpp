@@ -51,6 +51,24 @@ bool OriginFragmentWorkspace::add_options(FragmentUnitId key, std::span<const st
   units_.push_back({key, options, previous, root_only});
   return true;
 }
+bool OriginFragmentWorkspace::add_root_options(const LocalLspProgram &program, std::size_t level) noexcept {
+  if (level > 1U) { error_ = LocalContentResult::invalid; return false; }
+  std::uint64_t metadata{};
+  for (const auto &record : program.records) {
+    if (record.level != level || record.id[6U] || !record.active) continue;
+    packet::isis::TlvCursor cursor(record.options);
+    std::size_t offset{};
+    while (const auto option = cursor.next()) {
+      const auto size = option->value.size() + 2U;
+      if (option->code == 1U && record.id[7U]) { error_ = LocalContentResult::invalid; return false; }
+      if (!add_options({0U, metadata++}, std::span{record.options}.subspan(offset, size),
+              record.id[7U], option->code == 1U)) return false;
+      offset += size;
+    }
+    if (!cursor.valid()) { error_ = LocalContentResult::invalid; return false; }
+  }
+  return error_ == LocalContentResult::unchanged;
+}
 bool OriginFragmentWorkspace::finish_link(FragmentUnitId key, std::size_t size,
     std::optional<std::uint8_t> previous) noexcept {
   if (!size) { error_ = LocalContentResult::invalid; return false; }

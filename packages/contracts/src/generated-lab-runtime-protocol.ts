@@ -1,9 +1,9 @@
 // Generated browser names for runtime protocol 4.
 export const LAB_RUNTIME_PROTOCOL = {
   "version": 4,
-  "snapshotAbi": 9,
+  "snapshotAbi": 10,
   "telemetryAbi": 6,
-  "checkpointAbi": 10,
+  "checkpointAbi": 11,
   "snapshot": "snapshot",
   "router_create": "router-create",
   "router_delete": "router-delete",

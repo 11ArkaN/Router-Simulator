@@ -6,6 +6,7 @@
 #pragma once
 
 #include "router/bof_autoconfigure.hpp"
+#include "router/isis_configuration.hpp"
 #include "router/control_projection_worker.hpp"
 #include "router/dhcpv4_configuration.hpp"
 #include "router/dhcpv6_configuration.hpp"
@@ -362,6 +363,7 @@ private:
     dhcpv4::configuration::RouterConfiguration dhcpv4_servers;
     dhcpv6::configuration::RouterConfiguration dhcpv6_servers;
     ospf::RouterConfiguration ospf;
+    isis::RouterConfiguration isis;
     std::array<CardConfigurationIntent, device_catalog::maximum_card_slots>
         cards;
     std::vector<PortIntent> ports;
@@ -399,6 +401,7 @@ private:
     dhcpv4::configuration::RouterConfiguration dhcpv4_servers;
     dhcpv6::configuration::RouterConfiguration dhcpv6_servers;
     ospf::RouterConfiguration ospf;
+    isis::RouterConfiguration isis;
     ConfigurationIntent global_candidate;
     bool global_candidate_initialized{};
     // Link-down alarms are transition based. These latches remember that a

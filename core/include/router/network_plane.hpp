@@ -658,10 +658,21 @@ public:
   // Admission of a new logical circuit must exceed the device's maximum retired
   // epoch. This bound survives protocol withdrawal on the same router handle.
   // Failure preserves the live generation; unchanged epochs
-  // preserve adjacency, timers and pending tickets. Active experimental IS-IS
-  // transport explicitly blocks structural checkpoint/restore until supported.
+  // preserve adjacency, timers and pending tickets. Optional new instances
+  // have sorted absent keys and no existing transport-only circuits; their
+  // databases and new circuit slots publish in the same owner transaction.
   [[nodiscard]] bool replace_isis_generation(DeviceHandle device,
       std::span<const IsisCircuitProgram> circuits) noexcept;
+  [[nodiscard]] bool replace_isis_generation(DeviceHandle device,
+      std::span<const IsisCircuitProgram> circuits,
+      std::span<const isis::NewUpdateInstance> new_instances) noexcept;
+  // Sorted explicit live retirement keys must be absent from candidate circuits
+  // and additions. Their RIB inputs, dual-family FIBs, external redistribution,
+  // protocol owners and transport bindings withdraw under one forwarding barrier.
+  [[nodiscard]] bool replace_isis_generation(DeviceHandle device,
+      std::span<const IsisCircuitProgram> circuits,
+      std::span<const isis::NewUpdateInstance> new_instances,
+      std::span<const std::uint8_t> retired_instances) noexcept;
   [[nodiscard]] bool replace_isis_p2p_generation(DeviceHandle device,
       std::span<const IsisP2pCircuitProgram> circuits) noexcept {
     return replace_isis_generation(device, circuits);

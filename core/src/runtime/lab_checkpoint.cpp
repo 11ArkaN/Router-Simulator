@@ -1,4 +1,4 @@
-// ABI 10 codec implementation. Decoding creates a detached value graph. The
+// ABI 11 codec implementation. Decoding creates a detached value graph. The
 // supervisor performs cross-owner validation and atomic commit only afterwards.
 
 #include "router/lab_checkpoint.hpp"
@@ -6,6 +6,7 @@
 #include "router/generated_device_catalog.hpp"
 #include "router/tcp_checkpoint_codec.hpp"
 #include "router/isis_checkpoint_codec.hpp"
+#include "router/isis_configuration_codec.hpp"
 #include "router/sha256.hpp"
 #include <openssl/crypto.h>
 
@@ -17,11 +18,11 @@
 #include <string>
 #include <type_traits>
 
-namespace router::lab::checkpoint_v10 {
+namespace router::lab::checkpoint_v11 {
 namespace {
 
 inline constexpr std::array<std::uint8_t, 8> magic{'R', 'S', 'L', 'A',
-                                                   'B', '1', '0', 0};
+                                                   'B', '1', '1', 0};
 inline constexpr std::size_t maximum_checkpoint_bytes =
     device_catalog::wasm_initial_memory_bytes;
 
@@ -9299,6 +9300,23 @@ bool dhcpv6_router_configuration(
          dhcpv6::configuration::Status::valid;
 }
 
+void isis_configuration(Writer &out, const isis::RouterConfiguration &value) {
+  const auto encoded = isis::configuration_codec::encode(value, maximum_checkpoint_bytes);
+  if (!encoded) throw std::invalid_argument("invalid IS-IS configuration intent");
+  out.integer<std::uint32_t>(static_cast<std::uint32_t>(encoded->size()));
+  out.octets(*encoded);
+}
+bool isis_configuration(Reader &in, isis::RouterConfiguration &value) {
+  std::uint32_t size{};
+  if (!in.integer(size) || size > maximum_checkpoint_bytes) return false;
+  const auto bytes = in.view(size);
+  if (!bytes) return false;
+  auto decoded = isis::configuration_codec::decode(*bytes, maximum_checkpoint_bytes);
+  if (!decoded) return false;
+  value = std::move(*decoded);
+  return true;
+}
+
 void ospf_configuration(Writer &out,
                         const ospf::RouterConfiguration &state) {
   // Keychains precede consumers so a hostile checkpoint cannot create an
@@ -9657,6 +9675,7 @@ void portable_router(Writer &out, const PortableRouterIntentCheckpoint &state) {
   dhcpv4_router_configuration(out, state.dhcpv4_servers);
   dhcpv6_router_configuration(out, state.dhcpv6_servers);
   ospf_configuration(out, state.ospf);
+  isis_configuration(out, state.isis);
   count(out, state.ports);
   for (const auto &port : state.ports) {
     out.string(port.id);
@@ -9729,6 +9748,7 @@ bool portable_router(Reader &in, PortableRouterIntentCheckpoint &state) {
       !dhcpv4_router_configuration(in, state.dhcpv4_servers) ||
       !dhcpv6_router_configuration(in, state.dhcpv6_servers) ||
       !ospf_configuration(in, state.ospf) ||
+      !isis_configuration(in, state.isis) ||
       !count(in, size, device_catalog::maximum_ports_per_router))
     return false;
   state.ports.resize(size);
@@ -9829,6 +9849,7 @@ void portable_configuration(Writer &out,
   dhcpv4_router_configuration(out, state.dhcpv4_servers);
   dhcpv6_router_configuration(out, state.dhcpv6_servers);
   ospf_configuration(out, state.ospf);
+  isis_configuration(out, state.isis);
   for (const auto &card : state.cards) {
     out.string(card.provisioned);
     out.boolean(card.admin_enabled);
@@ -9895,7 +9916,8 @@ bool portable_configuration(Reader &in,
       !bof_autoconfigure(in, state.bof_autoconfigure) ||
       !dhcpv4_router_configuration(in, state.dhcpv4_servers) ||
       !dhcpv6_router_configuration(in, state.dhcpv6_servers, true) ||
-      !ospf_configuration(in, state.ospf))
+      !ospf_configuration(in, state.ospf) ||
+      !isis_configuration(in, state.isis))
     return false;
   for (auto &card : state.cards) {
     if (!in.string(card.provisioned, 64) || !in.boolean(card.admin_enabled))
@@ -10323,4 +10345,4 @@ decode(std::span<const std::uint8_t> bytes, const vault::SecretVault *protector)
   }
 }
 
-} // namespace router::lab::checkpoint_v10
+} // namespace router::lab::checkpoint_v11

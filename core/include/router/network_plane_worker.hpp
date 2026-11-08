@@ -37,6 +37,10 @@ public:
   [[nodiscard]] bool
   submit_signing_vault(const NetworkCommand &command,
                        const NetworkSigningVaultInitialize &payload) noexcept;
+  // Same producer as submit(). Failure preserves the caller-owned generation;
+  // success transfers all allocations until the matching result is consumed.
+  [[nodiscard]] bool submit_isis_generation(const NetworkCommand &,
+      NetworkIsisGeneration &&) noexcept;
   [[nodiscard]] bool read(NetworkResult &result) noexcept;
   // Control may borrow the immutable export only after a prepare_capture result
   // has crossed the release/acquire response ring. The next prepare invalidates

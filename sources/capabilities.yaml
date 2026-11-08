@@ -1,6 +1,21 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  routing.isis.complete_source_coverage:
+    status: partially-implemented
+    source_ids: [project.isis.complete_source_coverage]
+  routing.isis.local_root_content:
+    status: experimental
+    source_ids: [ietf.isis.local_root_content]
+  runtime.isis_atomic_instance_admission:
+    status: experimental
+    source_ids: [project.isis.atomic_instance_admission]
+  routing.isis.basic_cli:
+    status: schema-only
+    source_ids: [nokia.sros.26_7.isis.basic_cli]
+  routing.isis.configuration_intent:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.configuration_intent]
   runtime.isis_atomic_fragment_origin:
     status: partially-implemented
     source_ids: [iso.10589.2002.atomic_fragment_origin]

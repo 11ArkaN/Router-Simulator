@@ -3,6 +3,7 @@
 
 import {
   LAB_RUNTIME_PROTOCOL,
+  encodeIsisConfigurationHex,
   PROFILE_CATALOG,
   parseLabRuntimeSnapshotV6,
   type LabProjectV4,
@@ -246,6 +247,7 @@ function routerConfigurationPayload(router:
           boolean(virtualLink.admin === "up"));
     }
   }
+  values.push(encodeIsisConfigurationHex(router.running.isis ?? {instances: []}));
   return protocolMessage(values[0], values.slice(1));
 }
 

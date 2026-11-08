@@ -1,6 +1,7 @@
-// Runtime snapshot ABI 8 for protocol 4. This validator is the browser trust
+// Runtime snapshot ABI 10 for protocol 4. This validator is the browser trust
 // boundary for C++ JSON and contains no UI defaults or selected-router state.
 
+import { isRouterIsisIntent, type RouterIsisIntent } from "./isis-configuration-v1";
 import { PROFILE_CATALOG, PROFILE_CATALOG_COMPILED } from "./generated-device-catalog";
 import { LAB_RUNTIME_PROTOCOL } from "./generated-lab-runtime-protocol";
 import { isCanonicalIpv6PrefixText, isIpv6AddressText,
@@ -54,6 +55,7 @@ export interface RuntimeRouterV6 {
     outgoingPortId: string; indirect: boolean }>;
   policyOptions: RouterPolicyOptionsIntent;
   ospf: RouterOspfIntent;
+  isis: RouterIsisIntent;
 }
 
 export interface RuntimeHostV6 {
@@ -211,7 +213,7 @@ export function parseLabRuntimeSnapshotV6(input: unknown): LabRuntimeSnapshotV6 
       router.policyOptions &&
       Array.isArray(router.policyOptions.prefixLists) &&
       Array.isArray(router.policyOptions.statements) &&
-      router.ospf && Array.isArray(router.ospf.instances),
+      router.ospf && Array.isArray(router.ospf.instances) && isRouterIsisIntent(router.isis),
     "Runtime router projection is invalid");
     const handleKey = `r:${router.handle.index}:${router.handle.generation}`;
     assert(!handles.has(handleKey), "Runtime router handle is duplicated");
