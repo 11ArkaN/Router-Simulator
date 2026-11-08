@@ -666,8 +666,9 @@ public:
   [[nodiscard]] bool replace_isis_generation(DeviceHandle device,
       std::span<const IsisCircuitProgram> circuits,
       std::span<const isis::NewUpdateInstance> new_instances) noexcept;
-  // Sorted explicit live retirement keys must be absent from candidate circuits
-  // and additions. Their RIB inputs, dual-family FIBs, external redistribution,
+  // Sorted explicit live retirement keys exclude candidate circuits unless a
+  // matching fresh owner explicitly replaces that key with fresh circuit epochs.
+  // Their RIB inputs, dual-family FIBs, external redistribution,
   // protocol owners and transport bindings withdraw under one forwarding barrier.
   [[nodiscard]] bool replace_isis_generation(DeviceHandle device,
       std::span<const IsisCircuitProgram> circuits,

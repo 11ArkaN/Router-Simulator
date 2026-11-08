@@ -11,18 +11,19 @@ ResolvedInstanceLevel resolve_instance_level(const InstanceIntent &instance, std
       level.lsp_mtu_octets.value_or(defaults::level_lsp_mtu_octets_default),
       level.preference, level.external_preference};
 }
-ResolvedInterface resolve_interface(const InstanceIntent &instance, const InterfaceIntent &interface) noexcept {
+ResolvedInterface resolve_interface(const InstanceIntent &instance, const InterfaceIntent &interface,
+    std::optional<ConfiguredInterfaceType> default_type) noexcept {
   namespace defaults = configuration_profile;
   ResolvedInterface resolved;
   resolved.admin_enabled = interface.admin_enabled.value_or(defaults::interface_admin_enabled_default);
-  resolved.type = interface.type;
+  resolved.type = interface.type ? interface.type : default_type;
   resolved.csnp_interval_seconds = interface.csnp_interval_seconds.value_or(defaults::csnp_interval_seconds_default);
   resolved.retransmit_interval_seconds = interface.retransmit_interval_seconds.value_or(defaults::retransmit_interval_seconds_default);
   resolved.lsp_pacing_interval_milliseconds = interface.lsp_pacing_interval_milliseconds.value_or(defaults::lsp_pacing_interval_milliseconds_default);
   const auto mask = configured_level_mask(instance, interface);
   for (std::size_t index{}; index < resolved.level.size(); ++index) {
     const auto &configured = interface.level[
-        interface.type == ConfiguredInterfaceType::point_to_point ? 0U : index];
+        resolved.type == ConfiguredInterfaceType::point_to_point ? 0U : index];
     auto &level = resolved.level[index];
     level.enabled = static_cast<bool>(mask & (1U << index));
     level.passive = interface.passive.value_or(defaults::interface_passive_default) ||
@@ -33,7 +34,7 @@ ResolvedInterface resolve_interface(const InstanceIntent &instance, const Interf
     level.priority = configured.priority.value_or(defaults::priority_default);
     level.nominal_holding_seconds = std::uint32_t{level.hello_interval_seconds} * level.hello_multiplier;
   }
-  if (interface.type == ConfiguredInterfaceType::point_to_point) {
+  if (resolved.type == ConfiguredInterfaceType::point_to_point) {
     const auto &hello = resolved.level[0U];
     resolved.point_to_point = ResolvedP2pHello{mask != 0U, hello.hello_interval_seconds,
         hello.hello_multiplier, hello.nominal_holding_seconds};

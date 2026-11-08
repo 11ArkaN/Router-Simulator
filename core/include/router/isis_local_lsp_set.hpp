@@ -105,6 +105,11 @@ public:
   // Committed live publication counter, retained while withdrawn; initially zero.
   [[nodiscard]] std::optional<std::uint32_t> sequence(std::size_t level,
       const packet::isis::LspId &id) const noexcept;
+  // Same instance owner, read-only and allocation-free. Includes committed and
+  // observed own sequence floors for active or reserved identities; an abandoned
+  // unpublished reservation adds no floor. Missing identities return nullopt.
+  [[nodiscard]] std::optional<std::uint32_t> sequence_floor(std::size_t level,
+      const packet::isis::LspId &id) const noexcept;
   // Parent classified a received own LSP/SNP as requiring regeneration. Unknown
   // IDs return false and remain the parent's initiated-purge responsibility.
   // A reserved withdrawn ID only remembers this floor; it emits no live LSP

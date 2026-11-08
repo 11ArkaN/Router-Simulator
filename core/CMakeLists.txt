@@ -356,6 +356,8 @@ add_library(router_network STATIC
   src/isis/isis_control_lan_update.cpp
   src/isis/isis_control_lan_origin.cpp
   src/isis/isis_control_worker.cpp
+  src/isis/isis_interface_program.cpp
+  src/isis/isis_instance_program.cpp
   src/isis/isis_control_checkpoint_capture.cpp
   src/isis/isis_control_checkpoint_instance.cpp
   src/isis/isis_control_checkpoint_circuit.cpp
@@ -658,6 +660,8 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_configuration_resolution_test.cpp
     tests/isis/isis_configuration_test.cpp
     tests/isis/isis_root_content_test.cpp
+    tests/isis/isis_interface_program_test.cpp
+    tests/isis/isis_instance_program_test.cpp
     tests/isis/isis_fragment_plan_test.cpp
     tests/isis/isis_local_fragment_test.cpp
     tests/isis/isis_instance_generation_test.cpp

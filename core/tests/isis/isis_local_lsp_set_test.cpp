@@ -145,7 +145,7 @@ void isis_local_lsp_set_tests() {
   auto missing = root;
   missing.back() = 1U;
   require(!current.contains(0U, missing) && !current.require_after(0U, missing, 9U, now) &&
-      !current.last_error(0U, missing) &&
+      !current.last_error(0U, missing) && !current.sequence_floor(0U, missing) &&
       current.replace(0U, missing, 3U, area, now) == LocalContentResult::missing);
   const std::array<std::uint8_t, 2U> poi{13U, 0U};
   require(current.replace(0U, root, 3U, poi, now) == LocalContentResult::invalid);
@@ -153,6 +153,8 @@ void isis_local_lsp_set_tests() {
   require(current.replace(0U, root, 3U, too_large, now) == LocalContentResult::capacity);
   const auto committed = current.sequence(0U, root);
   require(current.require_after(0U, root, std::numeric_limits<std::uint32_t>::max(), now + 9s));
+  require(current.sequence_floor(0U, root) == std::numeric_limits<std::uint32_t>::max() &&
+      current.sequence(0U, root) == committed);
   const auto exhausted = publish(now + 9s, {}, 0U);
   require(exhausted.terminal == GenerationStatus::sequence_exhausted && !exhausted.deadline &&
       !publish(now + 100s).published && stored(0U)->header.sequence == committed);

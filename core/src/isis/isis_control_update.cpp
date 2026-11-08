@@ -170,7 +170,8 @@ ControlError ControlWorker::validate_update_program(UpdateInstanceProgram &progr
   return ControlError::none;
 }
 
-ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceState &device) noexcept {
+ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceState &device,
+    const OwnedInstance *sequence_source) noexcept {
   const auto index = command.identity.instance;
   if (!command.update || !command.update->maximum_circuits ||
       command.update->maximum_circuits > maximum_circuits_ ||
@@ -217,6 +218,17 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
     auto instance = std::make_unique<OwnedInstance>(std::move(*command.update), slots,
         device.update_fences[index] + 1U);
     if (instance->local) {
+      // The detached owner has not published or consumed a spacing deadline.
+      // Carry matching own-ID floors before its first generation, without
+      // copying the LSDB or any received peer state into the new entity.
+      if (sequence_source && sequence_source->configuration.local == instance->configuration.local)
+        for (const auto &record : instance->configuration.origination->content.records) {
+          auto floor = sequence_source->local ? sequence_source->local->sequence_floor(record.level, record.id).value_or(0U) : 0U;
+          if (sequence_source->process) if (const auto *source_level = sequence_source->process->level(record.level))
+            if (const auto stored = source_level->database().database().find(record.id, now))
+              floor = std::max(floor, stored->header.sequence);
+          if (floor && !instance->local->require_after(record.level, record.id, floor, now)) return ControlError::update_refused;
+        }
       std::size_t composition_budget{2U};
       if (!compose_local_neighbors(*instance, device, index, *instance->local, now, composition_budget))
         return ControlError::update_refused;

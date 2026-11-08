@@ -1,5 +1,33 @@
 schema_version: 1
 records:
+  - id: nokia.sros.26_7.isis.instance_program
+    kind: routing-protocol-effective-instance-program
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: nokia-official-yang-and-protocol-standards
+    source_url: https://github.com/nokia/7x50_YangModels/blob/6656cbb0905c7b952afaa1d7c2b63aa4da6cc5f7/YANG/nokia-submodule/nokia-conf-router-isis.yang
+    section: Instance identity, enabled levels, lifetime, AF and metric projection; classic lsp-refresh ai9j785jpz half-lifetime default
+    rfc_refs: [RFC1195, RFC5301, RFC5305, RFC5308]
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-11-08
+    implementation: [core/include/router/isis_instance_program.hpp, core/src/isis/isis_instance_program.cpp]
+    tests: [core/tests/isis/isis_instance_program_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
+    status: experimental
+    notes: Detached preparation resolves local identity, level masks, lifetime, half-lifetime refresh with odd-second precision, routing families, explicit preferences, root metadata and local P2P or LAN metric reservations. The configuration owner supplies resource budgets, effective transport policy, local interface projections and selected local prefixes. Disabled families are omitted from root content and route programs; passive or inactive interfaces reserve no neighbor advertisement. Explicit interface type overrides local media defaults. Unequal global and level MTUs and unresolved transitional metrics return no program. Unit tests construct a real local LSP owner. Dual-stack physical routing and fresh-owner replacement tests compile both Hello and update programs from canonical intent. Active datastore publication and ordinary in-place edits remain separate transaction work.
+  - id: nokia.sros.26_7.isis.interface_hello_program
+    kind: routing-protocol-effective-interface-program
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: nokia-official-yang-and-protocol-standards
+    source_url: https://github.com/nokia/7x50_YangModels/blob/6656cbb0905c7b952afaa1d7c2b63aa4da6cc5f7/YANG/nokia-submodule/nokia-conf-router-isis.yang
+    section: Interface administrative and passive gates, media selection, level parameters and owned Hello preparation
+    rfc_refs: [RFC4444, RFC5303, RFC5309]
+    yang_path: /configure/router/isis/interface
+    last_verified_at: 2026-11-08
+    implementation: [core/include/router/isis_interface_program.hpp, core/src/isis/isis_interface_program.cpp, core/include/router/isis_configuration_resolution.hpp, core/src/isis/isis_configuration_resolution.cpp]
+    tests: [core/tests/isis/isis_interface_program_test.cpp, core/tests/isis/isis_configuration_resolution_test.cpp, core/tests/isis/isis_instance_generation_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
+    status: experimental
+    notes: The configuration owner supplies local media defaults, interface identity, AF policy, multicast values and resource bounds. Explicit interface type overrides the media default; P2P still selects level-1 parameters when only level 2 operates. Preparation copies all borrowed address and protocol spans, filters administrative and passive gates, and creates independent LAN level schedules with sourced DIS holding-time rounding. Loopback or inactive interfaces produce an explicit inactive result. Missing identity or media, mismatched local bindings, oversized holding products and unsupported MI/MT modes return no circuit. Real circuit-owner tests encode a prepared P2P Hello and construct the independent LAN aggregate. Atomic owner-admission and real dual-stack physical forwarding fixtures use this adapter rather than hand-assembling Hello programs. Root content, transmission policy and active datastore publication remain with the enclosing transaction.
   - id: project.isis.complete_source_coverage
     kind: routing-protocol-acceptance-ledger
     release: 26.7.R1
@@ -34,14 +62,14 @@ records:
     platforms: [browser-wasm, native-test]
     source_type: project-runtime-ownership-contract
     source_url: https://github.com/11ArkaN/Router-Simulator/blob/feat/isis-base/docs/adr/0006-control-generation-handoff.md
-    section: New IS-IS instance admission with a prepared circuit generation
+    section: Prepared IS-IS owner admission, explicit retirement and fresh-owner replacement
     rfc_refs: []
     yang_path: null
     last_verified_at: 2026-11-08
-    implementation: [core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp, core/include/router/network_plane.hpp, core/src/runtime/network_plane.cpp, core/include/router/network_plane_messages.hpp, core/include/router/network_plane_worker.hpp, core/src/runtime/network_plane_worker.cpp, core/src/runtime/runtime_supervisor_isis.cpp]
-    tests: [core/tests/isis/isis_instance_generation_test.cpp, core/tests/runtime/isis_generation_transfer_test.cpp]
+    implementation: [core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp, core/src/isis/isis_control_update.cpp, core/include/router/isis_local_lsp_set.hpp, core/src/isis/isis_local_lsp_set.cpp, core/include/router/network_plane.hpp, core/src/runtime/network_plane.cpp, core/include/router/network_plane_messages.hpp, core/include/router/network_plane_worker.hpp, core/src/runtime/network_plane_worker.cpp, core/src/runtime/runtime_supervisor_isis.cpp]
+    tests: [core/tests/isis/isis_instance_generation_test.cpp, core/tests/isis/isis_local_lsp_set_test.cpp, core/tests/isis/isis_control_worker_test.cpp, core/tests/runtime/isis_generation_transfer_test.cpp]
     status: experimental
-    notes: Sorted absent instance keys construct in a detached registry before circuit admission. Sequence cooldown and synchronization fences remain effective. Abort and invalid siblings discard every candidate; commit transfers heap-stable owners with circuit slots without allocation. The network owner updates its instance count only after the combined owner commit and publishes transport projections under its forwarding barrier. The control owner additionally stages explicit sorted retirement keys, rejects duplicate, missing or still-referenced keys, and deletes owners only after excluded circuits retire at commit. Abort preserves all live owners. The network transaction prepares route selection and external redistribution before pausing forwarding, then withdraws the selected instance candidates, both FIB families, protocol owners and transport bindings under the same barrier. Missing retirement keys preserve active routes. Existing-instance replacement remains incomplete.
+    notes: Sorted absent instance keys construct in a detached registry before circuit admission. Sequence cooldown and synchronization fences remain effective. Abort and invalid siblings discard every candidate; commit transfers heap-stable owners with circuit slots without allocation. The network owner updates its instance count only after the combined owner commit and publishes transport projections under its forwarding barrier. The control owner additionally stages explicit sorted retirement keys, rejects duplicate, missing or still-referenced keys, and deletes owners only after excluded circuits retire at commit. Abort preserves all live owners. The network transaction prepares route selection and external redistribution before pausing forwarding, then withdraws the selected instance candidates, both FIB families, protocol owners and transport bindings under the same barrier. Missing retirement keys preserve active routes. A prepared lease defers protocol packet, receipt and absolute-deadline service while retaining command handling, keeping validation and sequence floors stable through publication. Real dual-stack forwarding fixtures replace owners after routes are installed, verify immediate withdrawal, reconverge with fresh circuit generations and receive replies to unique new IPv4/IPv6 probes on one and eight shards. An explicit replacement pairs a live retirement key with a fresh owner program and fresh circuit epochs. Matching own-ID sequence floors combine accepted schedule observations and retained local LSDB counters before the new owner first publishes; an elapsed entity cooldown permits sequence restart. Candidate owners consume no additional registry key when replacing a fully occupied registry. Active datastore compilation and ordinary in-place reconfiguration remain incomplete.
   - id: nokia.sros.26_7.isis.basic_cli
     kind: routing-protocol-cli-bindings
     release: 26.7.R1

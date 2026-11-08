@@ -54,6 +54,8 @@ void isis_configuration_codec_tests();
 void isis_configuration_resolution_tests();
 void isis_configuration_tests();
 void isis_root_content_tests();
+void isis_interface_program_tests();
+void isis_instance_program_tests();
 void isis_fragment_plan_tests();
 void isis_local_fragment_tests();
 void isis_local_fragment_overload_tests();
@@ -497,6 +499,8 @@ int main() {
     isis_configuration_resolution_tests();
     isis_configuration_tests();
     isis_root_content_tests();
+    isis_interface_program_tests();
+    isis_instance_program_tests();
     isis_fragment_plan_tests();
     isis_local_fragment_tests();
     isis_local_fragment_overload_tests();

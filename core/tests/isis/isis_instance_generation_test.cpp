@@ -2,15 +2,19 @@
 // until commit. Cancellation and invalid siblings must preserve live owners.
 #include "router/isis_control_worker.hpp"
 #include "router/isis_configuration.hpp"
+#include "router/isis_interface_program.hpp"
 #include "router/isis_root_content.hpp"
 #include "router/network_plane.hpp"
 #include <memory>
 #include <stdexcept>
+#include <source_location>
 namespace {
 using namespace router;
 using namespace router::isis;
 using namespace std::chrono_literals;
-void require(bool value) { if (!value) throw std::runtime_error("IS-IS instance generation invariant"); }
+void require(bool value, std::source_location location = std::source_location::current()) {
+  if (!value) throw std::runtime_error("IS-IS instance generation invariant at " + std::to_string(location.line()));
+}
 UpdateInstanceProgram instance() {
   const UpdateLevelConfiguration level{{8U, 8192U}, 8U, 16U, 1492U, 1200U, 60s, 60s,
       false, false, false, PurgeRules::iso_10589};
@@ -30,22 +34,29 @@ UpdateInstanceProgram instance() {
   content.records = std::move(prepared.records);
   return result;
 }
+UpdateInstanceProgram restarted_instance() {
+  auto program = instance();
+  program.levels[0U]->maximum_age = 1100U;
+  program.origination->content.levels[0U]->maximum_age = 1100U;
+  program.origination->content.levels[0U]->refresh_interval = 550s;
+  return program;
+}
 CircuitDefinition circuit() {
-  CircuitDefinition result;
-  result.identity = {{0U, 1U}, 1U, 1U, 0U, 0U};
-  auto &hello = result.configuration;
-  hello.local = {instance().local, 1U, 1U, Levels::level1, true};
-  hello.mac = {2U, 0U, 0U, 0U, 0U, 1U};
-  hello.hello_destination = {1U, 0x80U, 0xc2U, 0U, 0U, 0x14U};
-  hello.areas.push_back(*parse_configured_area("49.0001"));
-  hello.protocols.push_back(packet::isis::ipv4_nlpid);
-  hello.maximum_area_addresses = 3U;
-  hello.holding_seconds = 27U;
-  hello.hello_interval = 9s;
-  hello.maximum_pdu_octets = 1492U;
-  hello.peer_attribute_octets = 512U;
-  result.random_state = 123U;
-  return result;
+  InstanceIntent intent; intent.admin_enabled = true; intent.levels = ConfiguredLevels::level1;
+  intent.system_id = instance().local; intent.areas = {*parse_configured_area("49.0001")};
+  InterfaceIntent interface; interface.name = "edge"; interface.type = ConfiguredInterfaceType::point_to_point;
+  const std::array<std::uint8_t, 1U> protocols{packet::isis::ipv4_nlpid};
+  InterfaceProgramContext context;
+  context.interface_name = interface.name; context.identity = {{0U, 1U}, 1U, 1U, 0U, 0U};
+  context.mac = {2U, 0U, 0U, 0U, 0U, 1U};
+  context.destinations = {{1U, 0x80U, 0xc2U, 0U, 0U, 0x14U},
+      {{{1U, 0x80U, 0xc2U, 0U, 0U, 0x14U}, {1U, 0x80U, 0xc2U, 0U, 0U, 0x15U}}}};
+  context.extended_circuit = 1U; context.local_circuit = 1U; context.maximum_areas = 3U;
+  context.maximum_pdu_octets = 1492U; context.peer_attribute_octets = 512U;
+  context.random = 123U; context.protocols = protocols; context.operational = true;
+  auto prepared = prepare_interface_program(intent, interface, context);
+  require(prepared.status == InterfaceProgramStatus::prepared && prepared.circuit.has_value());
+  return std::move(*prepared.circuit);
 }
 }
 void isis_instance_generation_tests() {
@@ -85,7 +96,10 @@ void isis_instance_generation_tests() {
   require(send(std::move(prepare)).error == ControlError::invalid_argument);
   require(send(scoped(ControlCommandKind::query_update_instance)).error == ControlError::not_found);
   prepare = scoped(ControlCommandKind::prepare_generation);
-  prepare.new_instances.push_back({0U, instance()});
+  auto refreshing = instance();
+  refreshing.origination->content.levels[0U]->minimum_interval = 10ms;
+  refreshing.origination->content.levels[0U]->refresh_interval = 200ms;
+  prepare.new_instances.push_back({0U, std::move(refreshing)});
   prepare.circuits.push_back(circuit());
   require(send(std::move(prepare)).error == ControlError::none);
   require(send(scoped(ControlCommandKind::commit_generation)).error == ControlError::none);
@@ -126,13 +140,63 @@ void isis_instance_generation_tests() {
   require(send(query).error == ControlError::none);
   query = scoped(ControlCommandKind::query_circuit); query.identity = circuit().identity;
   require(send(query).error == ControlError::none);
+  const auto old_instance = send(scoped(ControlCommandKind::query_update_instance));
+  prepare = scoped(ControlCommandKind::prepare_generation);
+  prepare.new_instances.push_back({0U, restarted_instance(), true});
+  require(send(std::move(prepare)).error == ControlError::invalid_argument);
+  prepare = scoped(ControlCommandKind::prepare_generation);
+  prepare.retired_instances = {0U};
+  prepare.new_instances.push_back({0U, restarted_instance()});
+  require(send(std::move(prepare)).error == ControlError::invalid_argument);
+  prepare = scoped(ControlCommandKind::prepare_generation);
+  prepare.retired_instances = {0U}; prepare.new_instances.push_back({0U, restarted_instance(), true});
+  prepare.circuits.push_back(circuit());
+  require(send(std::move(prepare)).error == ControlError::stale_configuration);
+  auto restarted_circuit = circuit(); restarted_circuit.identity.configuration_generation = 2U;
+  prepare = scoped(ControlCommandKind::prepare_generation);
+  prepare.retired_instances = {0U}; prepare.new_instances.push_back({0U, restarted_instance(), true});
+  prepare.circuits.push_back(restarted_circuit);
+  require(send(std::move(prepare)).error == ControlError::none);
+  const auto leased_sequences = send(scoped(ControlCommandKind::query_update_instance)).local_root_sequences;
+  std::this_thread::sleep_for(300ms);
+  require(send(scoped(ControlCommandKind::query_update_instance)).local_root_sequences == leased_sequences);
+  require(send(scoped(ControlCommandKind::abort_generation)).error == ControlError::none);
+  require(send(query).error == ControlError::none);
+  prepare = scoped(ControlCommandKind::prepare_generation);
+  prepare.retired_instances = {0U}; prepare.new_instances.push_back({0U, restarted_instance(), true});
+  prepare.circuits.push_back(restarted_circuit);
+  require(send(std::move(prepare)).error == ControlError::none);
+  const auto replaced_sequence = send(scoped(ControlCommandKind::query_update_instance)).local_root_sequences[0U];
+  require(send(scoped(ControlCommandKind::commit_generation)).error == ControlError::none);
+  const auto restarted = send(scoped(ControlCommandKind::query_update_instance));
+  require(restarted.error == ControlError::none && restarted.update_epoch > old_instance.update_epoch &&
+      restarted.local_root_sequences[0U] == replaced_sequence + 1U);
+  query.identity = restarted_circuit.identity;
+  require(send(query).error == ControlError::none);
   prepare = scoped(ControlCommandKind::prepare_generation);
   prepare.retired_instances = {0U};
   require(send(std::move(prepare)).error == ControlError::none);
   require(send(query).error == ControlError::none);
   require(send(scoped(ControlCommandKind::commit_generation)).error == ControlError::none);
   require(send(query).error == ControlError::not_found);
-  worker->stop();
+  worker->stop(); worker.reset();
+  channels = std::make_unique<ControlChannels>();
+  worker = std::make_unique<ControlWorker>(*channels, 1U, 8U);
+  require(send(scoped(ControlCommandKind::register_device)).error == ControlError::none);
+  for (std::size_t index{}; index <= device_catalog::isis_instance_last; ++index) {
+    auto add = scoped(ControlCommandKind::add_update_instance);
+    add.identity.instance = static_cast<std::uint8_t>(index); add.update = instance();
+    require(send(std::move(add)).error == ControlError::none);
+  }
+  prepare = scoped(ControlCommandKind::prepare_generation);
+  prepare.retired_instances = {device_catalog::isis_instance_last};
+  prepare.new_instances.push_back({device_catalog::isis_instance_last, restarted_instance(), true});
+  require(send(std::move(prepare)).error == ControlError::none);
+  require(send(scoped(ControlCommandKind::commit_generation)).error == ControlError::none);
+  query = scoped(ControlCommandKind::query_update_instance); query.identity.instance = device_catalog::isis_instance_last;
+  require(send(query).local_root_sequences[0U] == 2U);
+  require(send(scoped(ControlCommandKind::query_update_instance)).local_root_sequences[0U] == 1U);
+  worker->stop(); worker.reset(); channels.reset();
 
   auto plane = std::make_unique<lab::NetworkPlane>();
   const lab::DeviceHandle device{0U, 1U};
@@ -153,6 +217,12 @@ void isis_instance_generation_tests() {
   const auto installed = plane->query_isis_update_instance(device, 0U);
   require(installed && installed->error == ControlError::none && installed->local_root_sequences[0U] == 1U);
   require(plane->query_isis_circuit(bindings[0U].circuit.identity)->error == ControlError::none);
+  bindings[0U].circuit.identity.configuration_generation = 2U;
+  const std::array replacement{NewUpdateInstance{0U, restarted_instance(), true}};
+  const std::array<std::uint8_t, 1U> retired{0U};
+  require(plane->replace_isis_generation(device, bindings, replacement, retired));
+  require(plane->query_isis_update_instance(device, 0U)->local_root_sequences[0U] == 2U &&
+      plane->query_isis_circuit(bindings[0U].circuit.identity)->error == ControlError::none);
   const std::array empty_instance{NewUpdateInstance{1U, instance()}};
   require(plane->replace_isis_generation(device, {}, empty_instance));
   require(plane->query_isis_update_instance(device, 0U)->error == ControlError::none);

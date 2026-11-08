@@ -60,7 +60,9 @@ struct ResolvedInterface {
 // Root shutdown does not erase inherited values or per-level presence. The
 // runtime applies administrative gating separately from circuit level masks.
 [[nodiscard]] ResolvedInstanceLevel resolve_instance_level(const InstanceIntent &, std::size_t level) noexcept;
-[[nodiscard]] ResolvedInterface resolve_interface(const InstanceIntent &, const InterfaceIntent &) noexcept;
+// default_type is resolved by the local media owner; absence preserves unknown media.
+[[nodiscard]] ResolvedInterface resolve_interface(const InstanceIntent &, const InterfaceIntent &,
+    std::optional<ConfiguredInterfaceType> default_type = {}) noexcept;
 // Lifecycle selection belongs to the configuration owner before preparation.
 // Null means an absent list entry. Non-null entries share one instance key.
 // Inputs must be validated; no state changes,

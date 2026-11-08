@@ -5,6 +5,8 @@
 #include "router/isis_control_worker.hpp"
 #include "router/isis_lsp_builder.hpp"
 #include "router/isis_root_content.hpp"
+#include "router/isis_interface_program.hpp"
+#include "router/isis_instance_program.hpp"
 #include "router/isis_rib_input.hpp"
 #include "router/multi_device_fabric.hpp"
 #include "router/network_plane.hpp"
@@ -1725,8 +1727,23 @@ void isis_network_plane_route_publication_tests() {
       if (index) hello.ipv4_addresses[0U] = {198U, 51U, 100U, 2U};
       hello.protocols.push_back(packet::isis::ipv6_nlpid);
       hello.ipv6_addresses.push_back(*ip::parse_ipv6(index ? "fe80::2" : "fe80::1"));
-      circuits[index] = {{{devices[index], interface, 7U, 0U, 0U}, hello, index + 1U},
-          {lab::node(devices[index]), 0U, 1U}};
+      InstanceIntent intent; intent.admin_enabled = true; intent.system_id = hello.local.system;
+      intent.areas = hello.areas; intent.ipv6_routing = ConfiguredIpv6Routing::native;
+      InterfaceIntent attached; attached.name = "edge"; attached.type = ConfiguredInterfaceType::point_to_point;
+      attached.level[0U].present = true; attached.level[0U].hello_interval_seconds = std::uint16_t{1U};
+      InterfaceProgramContext context;
+      context.identity = {devices[index], interface, 7U, 0U, 0U}; context.interface_name = attached.name;
+      context.default_type = ConfiguredInterfaceType::broadcast;
+      context.mac = hello.mac; context.destinations = {hello.hello_destination,
+          {{{1U, 0x80U, 0xc2U, 0U, 0U, 0x14U}, {1U, 0x80U, 0xc2U, 0U, 0U, 0x15U}}}};
+      context.extended_circuit = hello.local.extended_circuit; context.local_circuit = hello.local.local_circuit;
+      context.maximum_areas = 3U; context.maximum_pdu_octets = 1492U; context.peer_attribute_octets = 512U;
+      context.random = index + 1U; context.operational = true;
+      context.protocols = hello.protocols; context.ipv4_addresses = hello.ipv4_addresses;
+      context.ipv6_addresses = hello.ipv6_addresses;
+      auto prepared_interface = prepare_interface_program(intent, attached, context);
+      require(prepared_interface.status == InterfaceProgramStatus::prepared && prepared_interface.circuit.has_value());
+      circuits[index] = {std::move(*prepared_interface.circuit), {lab::node(devices[index]), 0U, 1U}};
       lab::ForwardPort port;
       port.configured = port.operational = true;
       port.ordinal = 0U;
@@ -1752,37 +1769,31 @@ void isis_network_plane_route_publication_tests() {
       lab::RoutePolicyProgram policy;
       require(plane->program_route_policy(devices[index], policy) && plane->program_fib(devices[index], *base4) &&
           plane->program_ipv6_fib(devices[index], *base6));
-      auto &program = programs[index];
-      program = {hello.local.system, 3U, {level, level}, 1U, {1U, 5U, 5U, 1s, 10U, 1492U, 1U}};
-      program.origination.emplace();
-      program.origination->resource_retry = 100ms;
-      program.origination->neighbors = std::vector<P2pOriginInterface>{{interface,
-          {P2pOriginMetric{10U, 10U}, P2pOriginMetric{10U, 10U}}}};
-      auto &local = program.origination->content;
-      local.random = index + 1U;
-      local.levels = {LocalLspLevelProgram{1200U, 1492U, 10ms, 1s}, LocalLspLevelProgram{1200U, 1492U, 10ms, 1s}};
+      intent.interfaces.push_back(attached);
       const std::array prefixes{
           RootPrefix{*ip::parse_ip_prefix(index ? "198.51.100.2/32" : "192.0.2.1/32"), 5U, {}},
           RootPrefix{*ip::parse_ip_prefix(index ? "2001:db8:12::2/128" : "2001:db8:12::1/128"), 7U, {}}};
       const std::array<packet::Ipv6, 1U> global_ipv6{port.ipv6_address};
-      RootContentInput root;
-      root.local = program.local; root.flags = 3U; root.ipv4 = root.ipv6 = true;
-      root.areas = hello.areas; root.prefixes = prefixes;
-      root.ipv4_addresses = hello.ipv4_addresses; root.ipv6_addresses = global_ipv6;
-      root.hostname = index ? "R2" : "R1";
-      for (std::size_t selected{}; selected < 2U; ++selected) {
-        root.level = static_cast<std::uint8_t>(selected);
-        auto prepared = prepare_root_content(root, 1492U - packet::isis::lsp_header_octets, 1U);
-        require(prepared.status == RootContentStatus::prepared);
-        for (auto &record : prepared.records) local.records.push_back(std::move(record));
-      }
-      for (std::size_t family{}; family < program.routing.size(); ++family) {
-        program.routing[family].emplace();
-        auto &route = *program.routing[family];
+      const std::array bindings{InstanceOriginInterface{"edge", interface,
+          ConfiguredInterfaceType::broadcast, hello.local.local_circuit, 8U, true, false}};
+      InstanceProgramContext owner_context;
+      owner_context.maximum_areas = 3U; owner_context.maximum_circuits = 1U;
+      owner_context.levels = {level, level}; owner_context.fragments = {1U, 1U};
+      owner_context.transmission = {1U, 5U, 5U, 1s, 10U, 1492U, 1U};
+      owner_context.minimum_generation_interval = 10ms; owner_context.resource_retry = 100ms;
+      owner_context.random = index + 1U; owner_context.interfaces = bindings;
+      owner_context.ipv4_addresses = hello.ipv4_addresses; owner_context.ipv6_addresses = global_ipv6;
+      owner_context.hostname = index ? "R2" : "R1"; owner_context.prefixes = {prefixes, prefixes};
+      for (std::size_t family{}; family < owner_context.routing.size(); ++family) {
+        owner_context.routing[family].emplace();
+        auto &route = *owner_context.routing[family];
         route.calculation = {8U, 16U, 32U,
             family ? packet::isis::ipv6_nlpid : packet::isis::ipv4_nlpid, PrefixCollectionBudget{8U, 128U}};
         route.preferences = {P2pRouteFamilyProgram::Preference{15U, 160U}, P2pRouteFamilyProgram::Preference{18U, 165U}};
       }
+      auto prepared_owner = prepare_instance_program(intent, owner_context);
+      require(prepared_owner.status == InstanceProgramStatus::prepared && prepared_owner.program.has_value());
+      programs[index] = std::move(*prepared_owner.program);
     }
     require(plane->configure_link({{0U, 1U}, circuits[0U].port, circuits[1U].port, 1'000'000'000U, 100ns, true}));
     auto invalid = programs[0U];
@@ -1794,56 +1805,76 @@ void isis_network_plane_route_publication_tests() {
     std::array<std::uint64_t, 2U> generations{};
     for (unsigned cycle{}; cycle < 2U; ++cycle) {
       for (std::size_t index{}; index < devices.size(); ++index) {
-        circuits[index].circuit.identity.configuration_generation = 7U + cycle;
+        circuits[index].circuit.identity.configuration_generation = 7U + cycle * 2U;
         require(plane->add_isis_update_instance(devices[index], 0U, programs[index]) &&
             plane->replace_isis_p2p_generation(devices[index], std::span{&circuits[index], 1U}));
       }
-      const auto converged = RuntimeClock::now() + 8s;
-      for (;;) {
-        plane->pump();
-        bool ready = true;
-        for (std::size_t index{}; index < devices.size(); ++index) {
-          const auto state = plane->query_isis_update_instance(devices[index], 0U);
-          const auto selected = heap_router_checkpoint(*plane, devices[index], RuntimeClock::now());
-          require(state && state->error == ControlError::none && selected);
-          ready = ready && state->route_install_status == Install::installed && state->route_installed_generation > generations[index];
-          const auto address = *ip::parse_ipv6(index ? "2001:db8:12::2" : "2001:db8:12::1");
-          ready = ready && std::any_of(selected->ipv6_dad.begin(), selected->ipv6_dad.end(),
-              [&](const auto &dad) { return dad.interface_id == interface && dad.address == address &&
-                  dad.state == lab::Ipv6DadState::preferred; });
-          ready = ready && std::any_of(selected->fib.routes.begin(), selected->fib.routes.begin() + selected->fib.count,
-              [&](const auto &route) { return route.source == Source::isis && route.metric == 15U &&
-                  route.interface_generation == 7U + cycle && route.next_hop == (index ? 0xc0000201U : 0xc6336402U); });
-          ready = ready && std::any_of(selected->ipv6_fib.routes.begin(), selected->ipv6_fib.routes.begin() + selected->ipv6_fib.count,
-              [&](const auto &route) { return route.source == Source::isis && route.metric == 17U &&
-                  route.interface_generation == 7U + cycle && route.interface_id == interface; });
+      for (unsigned phase{}; phase < 2U; ++phase) {
+        if (phase) {
+          for (std::size_t index{}; index < devices.size(); ++index) {
+            const auto previous_owner = plane->query_isis_update_instance(devices[index], 0U);
+            require(previous_owner && previous_owner->error == ControlError::none);
+            generations[index] = previous_owner->route_installed_generation;
+            ++circuits[index].circuit.identity.configuration_generation;
+            const std::array replacement{NewUpdateInstance{0U, programs[index], true}};
+            const std::array<std::uint8_t, 1U> retired{0U};
+            require(plane->replace_isis_generation(devices[index], std::span{&circuits[index], 1U}, replacement, retired));
+            const auto replacement_owner = plane->query_isis_update_instance(devices[index], 0U);
+            require(replacement_owner && replacement_owner->local_root_sequences[0U] > previous_owner->local_root_sequences[0U] &&
+                replacement_owner->local_root_sequences[1U] > previous_owner->local_root_sequences[1U]);
+            const auto withdrawn = heap_router_checkpoint(*plane, devices[index], RuntimeClock::now());
+            require(withdrawn && withdrawn->fib.count == 1U && withdrawn->ipv6_fib.count == 1U);
+          }
         }
-        if (ready) break;
-        require(RuntimeClock::now() < converged);
-      }
-      // Back-to-back owner snapshots can resume before the forwarding pthread
-      // reaches its wait. A published pause receipt must already be armed so
-      // that an early resume is retained rather than overwritten afterwards.
-      for (std::size_t sample{}; sample < 128U; ++sample) {
-        const auto state = heap_router_checkpoint(*plane, devices[sample % devices.size()], RuntimeClock::now());
-        require(state && state->fib.count == 2U && state->ipv6_fib.count == 2U);
-      }
-      // Real ARP and ND resolve the bound peer; encoded requests and replies
-      // traverse the configured physical link in both owner layouts.
-      const auto ping_by = RuntimeClock::now() + 5s;
-      bool sent4{}, sent6{};
-      while (!sent4 || !sent6 || !plane->router_ping_reply(devices[0U], 71U) ||
-          !plane->router_ipv6_ping_reply(devices[0U], 72U)) {
-        plane->pump();
-        if (!sent4) sent4 = plane->start_router_ping(devices[0U], 0xc6336402U, 71U, RuntimeClock::now());
-        if (!sent6) sent6 = plane->start_router_ipv6_ping(devices[0U], *ip::parse_ipv6("2001:db8:12::2"), 72U, RuntimeClock::now());
-        if (RuntimeClock::now() >= ping_by) {
-          const auto state = heap_router_checkpoint(*plane, devices[0U], RuntimeClock::now());
-          throw std::runtime_error("IS-IS forwarding timeout CPUs=" + std::to_string(cpus) +
-              " cycle=" + std::to_string(cycle) + " sent4=" + std::to_string(sent4) + " sent6=" + std::to_string(sent6) +
-              " reply4=" + std::to_string(plane->router_ping_reply(devices[0U], 71U)) +
-              " reply6=" + std::to_string(plane->router_ipv6_ping_reply(devices[0U], 72U)) +
-              " drop=" + std::to_string(state ? static_cast<unsigned>(state->last_drop) : 255U));
+        const auto probe4 = static_cast<std::uint16_t>(71U + cycle * 4U + phase * 2U);
+        const auto probe6 = static_cast<std::uint16_t>(probe4 + 1U);
+        const auto converged = RuntimeClock::now() + 8s;
+        for (;;) {
+          plane->pump();
+          bool ready = true;
+          for (std::size_t index{}; index < devices.size(); ++index) {
+            const auto state = plane->query_isis_update_instance(devices[index], 0U);
+            const auto selected = heap_router_checkpoint(*plane, devices[index], RuntimeClock::now());
+            require(state && state->error == ControlError::none && selected);
+            ready = ready && state->route_install_status == Install::installed && state->route_installed_generation > generations[index];
+            const auto address = *ip::parse_ipv6(index ? "2001:db8:12::2" : "2001:db8:12::1");
+            ready = ready && std::any_of(selected->ipv6_dad.begin(), selected->ipv6_dad.end(),
+                [&](const auto &dad) { return dad.interface_id == interface && dad.address == address &&
+                    dad.state == lab::Ipv6DadState::preferred; });
+            ready = ready && std::any_of(selected->fib.routes.begin(), selected->fib.routes.begin() + selected->fib.count,
+                [&](const auto &route) { return route.source == Source::isis && route.metric == 15U &&
+                    route.interface_generation == 7U + cycle * 2U + phase && route.next_hop == (index ? 0xc0000201U : 0xc6336402U); });
+            ready = ready && std::any_of(selected->ipv6_fib.routes.begin(), selected->ipv6_fib.routes.begin() + selected->ipv6_fib.count,
+                [&](const auto &route) { return route.source == Source::isis && route.metric == 17U &&
+                    route.interface_generation == 7U + cycle * 2U + phase && route.interface_id == interface; });
+          }
+          if (ready) break;
+          require(RuntimeClock::now() < converged);
+        }
+        // Back-to-back owner snapshots can resume before the forwarding pthread
+        // reaches its wait. A published pause receipt must already be armed so
+        // that an early resume is retained rather than overwritten afterwards.
+        for (std::size_t sample{}; sample < 128U; ++sample) {
+          const auto state = heap_router_checkpoint(*plane, devices[sample % devices.size()], RuntimeClock::now());
+          require(state && state->fib.count == 2U && state->ipv6_fib.count == 2U);
+        }
+        // Real ARP and ND resolve the bound peer; encoded requests and replies
+        // traverse the configured physical link in both owner layouts.
+        const auto ping_by = RuntimeClock::now() + 5s;
+        bool sent4{}, sent6{};
+        while (!sent4 || !sent6 || !plane->router_ping_reply(devices[0U], probe4) ||
+            !plane->router_ipv6_ping_reply(devices[0U], probe6)) {
+          plane->pump();
+          if (!sent4) sent4 = plane->start_router_ping(devices[0U], 0xc6336402U, probe4, RuntimeClock::now());
+          if (!sent6) sent6 = plane->start_router_ipv6_ping(devices[0U], *ip::parse_ipv6("2001:db8:12::2"), probe6, RuntimeClock::now());
+          if (RuntimeClock::now() >= ping_by) {
+            const auto state = heap_router_checkpoint(*plane, devices[0U], RuntimeClock::now());
+            throw std::runtime_error("IS-IS forwarding timeout CPUs=" + std::to_string(cpus) +
+                " cycle=" + std::to_string(cycle) + " sent4=" + std::to_string(sent4) + " sent6=" + std::to_string(sent6) +
+                " reply4=" + std::to_string(plane->router_ping_reply(devices[0U], probe4)) +
+                " reply6=" + std::to_string(plane->router_ipv6_ping_reply(devices[0U], probe6)) +
+                " drop=" + std::to_string(state ? static_cast<unsigned>(state->last_drop) : 255U));
+          }
         }
       }
       for (std::size_t index{}; index < devices.size(); ++index) {

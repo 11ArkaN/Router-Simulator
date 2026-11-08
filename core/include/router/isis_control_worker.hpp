@@ -190,11 +190,13 @@ struct UpdateInstanceProgram {
   std::array<std::optional<P2pRouteFamilyProgram>, 2U> routing{};
   bool operator==(const UpdateInstanceProgram &) const = default;
 };
-// New instance ownership is transferred with a circuit generation. Keys are
-// sorted and absent from the live registry and its transport-only circuits.
+// Fresh owner programs transfer with a circuit generation, in sorted key order.
+// Additions require absent keys and no transport-only bindings. Replacement
+// explicitly requires a live owner plus the same key in retired_instances.
 struct NewUpdateInstance {
   std::uint8_t instance{};
   UpdateInstanceProgram program;
+  bool replace_existing{};
 };
 struct ControlCommand {
   std::uint64_t id{};
@@ -223,7 +225,8 @@ struct ControlCommand {
   std::vector<CircuitDefinition> circuits;
   std::vector<NewUpdateInstance> new_instances;
   // Sorted live keys withdrawn by this complete generation. No candidate
-  // circuit or new owner may reference these keys. Prepare never detaches them.
+  // circuit may reference a pure retirement. An explicit replacement supplies
+  // its fresh owner and fresh circuit epochs. Prepare never detaches live state.
   std::vector<std::uint8_t> retired_instances;
   // Experimental update admission supplies all effective values and budgets.
   // Raw local PDUs already passed the originator's sequence and key policy.
@@ -623,7 +626,8 @@ private:
   [[nodiscard]] ControlError prepare_generation(ControlCommand &command, DeviceState &device) noexcept;
   void commit_generation(DeviceState &device) noexcept;
   static void retire_circuit(DeviceState &device, OwnedCircuit &circuit) noexcept;
-  [[nodiscard]] ControlError add_update_instance(ControlCommand &command, DeviceState &device) noexcept;
+  [[nodiscard]] ControlError add_update_instance(ControlCommand &command, DeviceState &device,
+      const OwnedInstance *sequence_source = nullptr) noexcept;
   [[nodiscard]] static ControlError attach_update_circuit(DeviceState &device, OwnedCircuit &circuit) noexcept;
   static void remove_update_instance(DeviceState &device, std::size_t instance) noexcept;
   static UpdateCircuitConfiguration update_configuration(const OwnedCircuit &circuit) noexcept;

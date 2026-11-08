@@ -89,19 +89,27 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
   const auto &definitions = command.circuits;
   if (definitions.size() > maximum_circuits_ ||
       active_circuits_ - device.circuits.size() > maximum_circuits_ - definitions.size()) return ControlError::capacity;
+  if (std::any_of(device.instances.begin(), device.instances.end(), [](const auto &instance) {
+      return instance && instance->status != UpdateStatus::applied && !requires_reconstruction(instance->status);
+    })) return ControlError::update_refused;
   for (std::size_t ordinal{}; ordinal < command.retired_instances.size(); ++ordinal) {
     const auto index = command.retired_instances[ordinal];
     if (index >= device.instances.size() || (ordinal && command.retired_instances[ordinal - 1U] >= index))
       return ControlError::invalid_argument;
     if (!device.instances[index]) return ControlError::not_found;
-    if (std::any_of(command.new_instances.begin(), command.new_instances.end(),
-        [index](const auto &entry) { return entry.instance == index; }) ||
-        std::any_of(definitions.begin(), definitions.end(),
-        [index](const auto &entry) { return entry.identity.instance == index; })) return ControlError::invalid_argument;
+    const auto replacement = std::find_if(command.new_instances.begin(), command.new_instances.end(),
+        [index](const auto &entry) { return entry.instance == index; });
+    const bool replacing = replacement != command.new_instances.end() && replacement->replace_existing;
+    if ((replacement != command.new_instances.end() && !replacing) ||
+        (!replacing && std::any_of(definitions.begin(), definitions.end(),
+        [index](const auto &entry) { return entry.identity.instance == index; }))) return ControlError::invalid_argument;
   }
   std::unique_ptr<DeviceState> additions;
   if (!command.new_instances.empty()) {
-    if (command.new_instances.size() > device.instances.size() - device.instance_count) return ControlError::capacity;
+    if (command.new_instances.size() > device.instances.size() ||
+        static_cast<std::size_t>(std::count_if(command.new_instances.begin(), command.new_instances.end(),
+            [](const auto &entry) { return !entry.replace_existing; })) > device.instances.size() - device.instance_count)
+      return ControlError::capacity;
     try {
       additions = std::make_unique<DeviceState>();
       additions->handle = device.handle;
@@ -112,7 +120,13 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         const auto index = entry.instance;
         if (index >= device.instances.size() || (previous && index <= *previous)) return ControlError::invalid_argument;
         previous = index;
-        if (device.instances[index] || std::any_of(device.circuits.begin(), device.circuits.end(),
+        const auto &current = device.instances[index];
+        if (entry.replace_existing) {
+          if (!current || !std::binary_search(command.retired_instances.begin(), command.retired_instances.end(), index))
+            return ControlError::invalid_argument;
+          if (current->process) additions->update_fences[index] = std::max(additions->update_fences[index],
+              current->process->maximum_synchronization_epoch());
+        } else if (current || std::any_of(device.circuits.begin(), device.circuits.end(),
             [&](const auto &circuit) { return circuit.identity.instance == index; })) return ControlError::already_exists;
         const auto &gate = device.sequence_recovery[index];
         if (gate && gate->disabled() && !gate->ready(RuntimeClock::now())) return ControlError::sequence_cooldown;
@@ -120,7 +134,8 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         prepare.identity.device = device.handle;
         prepare.identity.instance = index;
         prepare.update = std::move(entry.program);
-        const auto error = add_update_instance(prepare, *additions);
+        const auto *sequence_source = entry.replace_existing && !(gate && gate->disabled()) ? current.get() : nullptr;
+        const auto error = add_update_instance(prepare, *additions, sequence_source);
         if (error != ControlError::none) return error;
       }
     } catch (const std::bad_alloc &) { return ControlError::capacity; }
@@ -132,6 +147,9 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
   const auto selected_instance = [&](std::size_t index) -> std::unique_ptr<OwnedInstance> & {
     if (candidate_instances && candidate_instances->instances[index]) return candidate_instances->instances[index];
     return device.instances[index];
+  };
+  const auto replacing = [&](std::size_t index) {
+    return candidate_instances && candidate_instances->instances[index] && device.instances[index];
   };
   const auto key = [](const CircuitIdentity &value) { return std::pair{value.interface_id, value.instance}; };
   for (std::size_t index{}; index < definitions.size(); ++index) {
@@ -203,6 +221,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         if (entry.identity.configuration_generation < current.identity.configuration_generation)
           return ControlError::stale_configuration;
         if (entry.identity.configuration_generation == current.identity.configuration_generation) {
+          if (replacing(entry.identity.instance)) return ControlError::stale_configuration;
           if (entry.identity != current.identity || !current.matches(entry))
             return ControlError::stale_configuration;
           staged.keep[*old] = 1U;
@@ -244,13 +263,13 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
       const auto old = std::find_if(device.circuits.begin(), device.circuits.end(), [&](const auto &current) {
         return same_circuit(current.identity, replacement.identity);
       });
-      if (old != device.circuits.end() && old->lan() && replacement.lan() &&
+      if (old != device.circuits.end() && old->update == instance.get() && old->lan() && replacement.lan() &&
           old->identity.physical_port_ordinal == replacement.identity.physical_port_ordinal &&
           old->wire_instance == replacement.wire_instance && old->format == replacement.format) {
         for (std::size_t level{}; level < 2U; ++level)
           replacement.previous_dis[level].remote = old->previous_dis[level].remote;
       }
-      if (old != device.circuits.end() && old->update) {
+      if (old != device.circuits.end() && old->update == instance.get()) {
         const auto reserved = instance->process->prepare_rebind_circuit(old->update_slot,
             update_configuration(replacement));
         if (reserved != UpdateStatus::applied)
@@ -786,9 +805,11 @@ void ControlWorker::run() noexcept {
       if (stop_.load(std::memory_order_acquire)) break;
     }
     if (stop_.load(std::memory_order_acquire)) break;
-    if (checkpoint_barrier_epoch_) {
-      // Command/result handling remains live, but neither protocol direction,
-      // route receipts nor any timer is touched after the barrier acknowledgement.
+    if (checkpoint_barrier_epoch_ || prepared_) {
+      // Command/result handling remains live. A prepared generation also leases
+      // every sequence floor and validation result until commit or abort. Defer
+      // protocol directions, route receipts and absolute-deadline service so
+      // refresh or ingress cannot invalidate that lease after acknowledgement.
       // A coalesced notification causes at most one extra paused command turn.
       std::unique_lock lock(wait_mutex_);
       wait_condition_.wait(lock, [&] {

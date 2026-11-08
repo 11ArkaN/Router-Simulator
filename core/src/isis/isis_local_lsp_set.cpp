@@ -90,6 +90,11 @@ std::optional<std::uint32_t> LocalLspSet::sequence(std::size_t level, const pack
     if (entry.content.level == level && entry.content.id == id) return entry.generation.committed_sequence();
   return std::nullopt;
 }
+std::optional<std::uint32_t> LocalLspSet::sequence_floor(std::size_t level, const packet::isis::LspId &id) const noexcept {
+  for (const auto &entry : entries_)
+    if (entry.content.level == level && entry.content.id == id) return entry.generation.sequence_floor();
+  return std::nullopt;
+}
 LocalContentResult LocalLspSet::replace(std::size_t level, const packet::isis::LspId &id,
     std::uint8_t flags, std::span<const std::uint8_t> options, RuntimeClock::time_point now) noexcept {
   auto *entry = find(level, id);

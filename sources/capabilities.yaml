@@ -1,6 +1,12 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  routing.isis.instance_program:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.instance_program]
+  routing.isis.interface_hello_program:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.interface_hello_program]
   routing.isis.complete_source_coverage:
     status: partially-implemented
     source_ids: [project.isis.complete_source_coverage]
