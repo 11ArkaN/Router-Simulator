@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: nokia.sros.26_7.isis.administrative_gate
+    kind: routing-protocol-local-administrative-lifecycle
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: nokia-official-cli
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-s-commands-segm-2.html#ai9j785n6o
+    section: IS-IS shutdown retains configuration and statistics while disabling contained operational entities
+    rfc_refs: []
+    yang_path: /configure/router/isis/admin-state
+    last_verified_at: 2026-11-08
+    implementation: [core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp, core/src/runtime/network_plane.cpp, core/src/runtime/network_plane_worker.cpp, core/src/isis/isis_control_update.cpp, core/src/isis/isis_control_lan.cpp, core/src/isis/isis_control_origin.cpp, core/src/isis/isis_control_routes.cpp, core/src/isis/isis_control_update_egress.cpp, core/include/router/isis_control_checkpoint.hpp, core/src/isis/isis_control_checkpoint_capture.cpp, core/src/isis/isis_control_checkpoint_instance.cpp, core/src/isis/isis_control_checkpoint_circuit.cpp]
+    tests: [core/tests/isis/isis_control_worker_test.cpp, core/tests/isis/isis_checkpoint_barrier_test.cpp]
+    status: experimental
+    notes: The control pthread owns an administrative gate independent of physical carrier. Detached generation admission applies the initial gate before binding circuits. Disable dispatches circuit Down, cancels Hello reservations and suppresses ingress, origination, SPF and egress without replacing configuration, databases, sequence floors or cumulative counters. Local LSP lifetimes continue to age against the owner's monotonic clock. Enable respects carrier and recovery gates and uses actual wire negotiation. Checkpoint images retain the administrative gate and reject operational circuit children under a disabled owner. The network transaction retains circuit epochs and counters, withdraws disabled instance routes in both families under the forwarding barrier, and reserves a synchronous route generation to fence older queued publications. First or re-added circuit bindings read the local owner gate even without a previous transport. P2P and LAN media start Down under a disabled owner regardless of carrier. Restoration derives transport gates from the persisted owner. Canonical datastore activation remains pending.
   - id: iso.10589.2002.control_carrier
     kind: routing-protocol-local-circuit-lifecycle
     release: 26.7.R1

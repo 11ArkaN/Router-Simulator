@@ -69,7 +69,7 @@ enum class ControlCommandKind : std::uint8_t {
   abort_generation, add_update_instance, remove_update_instance, query_update_instance, originate_lsp, shutdown,
   query_sequence_recovery, replace_local_content, withdraw_local_content, add_lan_circuit, begin_checkpoint_barrier, end_checkpoint_barrier, capture_checkpoint,
   prepare_checkpoint_restore, commit_checkpoint_restore, abort_checkpoint_restore,
-  set_circuit_carrier
+  set_circuit_carrier, set_update_admin_state
 };
 // Exactly one medium is supplied. A broadcast program requires the legacy
 // P2P value to remain empty; selecting LAN never constructs a P2P state owner.
@@ -205,6 +205,16 @@ struct NewUpdateInstance {
   std::uint8_t instance{};
   UpdateInstanceProgram program;
   bool replace_existing{};
+  // Detached owner starts with this local administrative gate before any circuit binds.
+  bool admin_enabled{true};
+};
+// The serialized configuration owner transfers sorted, unique local instance
+// edits to the control pthread through the command SPSC lease. The receiver
+// exclusively owns their storage; invalid keys or exhausted epochs refuse
+// preparation without changing live state. Capacity is the local instance range.
+struct UpdateAdminState {
+  std::uint8_t instance{};
+  bool enabled{};
 };
 struct ControlCommand {
   std::uint64_t id{};
@@ -223,6 +233,9 @@ struct ControlCommand {
   // carries no peer data and preserves configuration identity and ticket floors.
   bool carrier{true};
   CircuitIdentity identity;
+  // set_update_admin_state selects an existing instance on this device.
+  // This gate is independent of every circuit's local physical carrier.
+  bool admin_enabled{true};
   P2pCircuitConfiguration configuration;
   std::uint64_t random_state{};
   std::optional<LanCircuitProgram> broadcast{};
@@ -235,6 +248,10 @@ struct ControlCommand {
   // epochs and consumes no heap storage. Abort leaves every live circuit intact.
   std::vector<CircuitDefinition> circuits;
   std::vector<NewUpdateInstance> new_instances;
+  std::vector<UpdateAdminState> administrative;
+  // Serialized RIB high water. Preparation reserves a strictly newer local
+  // publication for synchronous administrative withdrawal of both families.
+  std::uint64_t route_generation_floor{};
   // Sorted live keys withdrawn by this complete generation. No candidate
   // circuit may reference a pure retirement. An explicit replacement supplies
   // its fresh owner and fresh circuit epochs. Prepare never detaches live state.
@@ -286,6 +303,7 @@ struct ControlResult {
   ControlError error{ControlError::none};
   P2pSnapshot adjacency{};
   bool carrier{true};
+  bool admin_enabled{true};
   bool broadcast_circuit{};
   std::array<std::size_t, 2U> lan_neighbors{}, lan_up{};
   std::array<std::optional<DisSelection>, 2U> designated{};
@@ -309,6 +327,8 @@ struct ControlResult {
   std::array<std::size_t, 2U> prefix_advertisements{};
   std::array<std::optional<PrefixDistance>, 2U> selected_prefix_distance{};
   std::array<DecisionStatus, 2U> decision_status{DecisionStatus::invalid, DecisionStatus::invalid};
+  // Administrative prepare returns its reserved synchronous publication key;
+  // ordinary queries report the actual published and installed high water.
   std::uint64_t route_published_generation{}, route_installed_generation{};
   bool route_withdrawal_pending{};
   ::router::routing::RouteInstallStatus route_install_status{::router::routing::RouteInstallStatus::pending};
@@ -348,6 +368,10 @@ public:
 private:
   struct OwnedInstance {
     UpdateInstanceProgram configuration;
+    // The control pthread retains configuration, LSDBs, sequence floors and
+    // counters while administratively down. Local lifetime aging continues;
+    // origination, SPF, ingress and circuit output require this gate.
+    bool admin_enabled{true};
     // The stable shell outlives a disabled process. Reconstruction can release
     // the old databases before allocating fresh storage within the same budget.
     std::unique_ptr<InstanceUpdateProcess> process;
@@ -645,6 +669,8 @@ private:
     // reservation destruction on both cancellation and successful commit.
     std::unique_ptr<DeviceState> additions;
     std::vector<std::uint8_t> retired_instances;
+    std::vector<UpdateAdminState> administrative;
+    std::uint64_t route_commit_generation{};
     struct UpdateReservation { OwnedInstance *instance{}; UpdateCircuitAdmission admission; };
     std::vector<UpdateReservation> update_reservations;
     bool committed{};
@@ -657,6 +683,7 @@ private:
   };
   [[nodiscard]] ControlError prepare_generation(ControlCommand &command, DeviceState &device) noexcept;
   void commit_generation(DeviceState &device) noexcept;
+  void set_admin_state(DeviceState &device, OwnedInstance &instance, bool enabled) noexcept;
   static void retire_circuit(DeviceState &device, OwnedCircuit &circuit) noexcept;
   [[nodiscard]] ControlError add_update_instance(ControlCommand &command, DeviceState &device,
       const OwnedInstance *sequence_source = nullptr) noexcept;

@@ -673,10 +673,14 @@ public:
   // matching fresh owner explicitly replaces that key with fresh circuit epochs.
   // Their RIB inputs, dual-family FIBs, external redistribution,
   // protocol owners and transport bindings withdraw under one forwarding barrier.
+  // Sorted administrative edits retain their owners and circuit epochs. They
+  // require a configured RIB policy and reserve a synchronous publication key
+  // that fences every older queued generation before forwarding resumes.
   [[nodiscard]] bool replace_isis_generation(DeviceHandle device,
       std::span<const IsisCircuitProgram> circuits,
       std::span<const isis::NewUpdateInstance> new_instances,
-      std::span<const std::uint8_t> retired_instances) noexcept;
+      std::span<const std::uint8_t> retired_instances,
+      std::span<const isis::UpdateAdminState> administrative = {}) noexcept;
   [[nodiscard]] bool replace_isis_p2p_generation(DeviceHandle device,
       std::span<const IsisP2pCircuitProgram> circuits) noexcept {
     return replace_isis_generation(device, circuits);

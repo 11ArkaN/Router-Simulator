@@ -30,7 +30,7 @@ bool ControlWorker::complete_update(OwnedCircuit &owned,
     const protocol::PacketChannel<device_catalog::isis_packet_ring_frames, true>::Completion &receipt,
     const packet::isis::PduView &pdu, RuntimeClock::time_point now) noexcept {
   const auto level = update_level(pdu.type);
-  if (!level || !owned.update || !owned.update_egress || owned.update->status != UpdateStatus::applied) return false;
+  if (!level || !owned.update || !owned.update->admin_enabled || !owned.update_egress || owned.update->status != UpdateStatus::applied) return false;
   auto output = owned.update->process->outputs(owned.update_slot, *level);
   if (!output || output->synchronization_epoch != receipt.metadata.protocol_epoch) return false;
   auto &egress = *owned.update_egress;
@@ -89,7 +89,7 @@ bool ControlWorker::complete_update(OwnedCircuit &owned,
 RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
     RuntimeClock::time_point now, std::size_t &budget) noexcept {
   auto deadline = RuntimeClock::time_point::max();
-  if (!owned.update || !owned.update_egress || owned.update->status != UpdateStatus::applied) return deadline;
+  if (!owned.update || !owned.update->admin_enabled || !owned.update_egress || owned.update->status != UpdateStatus::applied) return deadline;
   auto &instance = *owned.update;
   auto &egress = *owned.update_egress;
   const auto &program = egress.program;

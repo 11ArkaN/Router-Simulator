@@ -80,6 +80,7 @@ RuntimeClock::time_point ControlWorker::service_local_instance(DeviceState &devi
   auto &instance = *device.instances[index];
   auto &gate = device.sequence_recovery[index];
   const auto never = RuntimeClock::time_point::max();
+  if (!instance.admin_enabled) return never;
   if (requires_reconstruction(instance.status)) {
     if (!gate) { instance.status = UpdateStatus::invalid_configuration; return never; }
     if (!gate->ready(now)) return gate->deadline().value_or(never);

@@ -46,7 +46,8 @@ void ControlWorker::classify_lan_backlog() noexcept {
   bool active{};
   for (auto &device : devices_) for (auto &owned : device.circuits) {
     owned.queued_lsp = false;
-    active = active || (owned.lan() && owned.update && owned.update->status == UpdateStatus::applied);
+    active = active || (owned.carrier && owned.lan() && owned.update &&
+        owned.update->admin_enabled && owned.update->status == UpdateStatus::applied);
   }
   if (!active) return;
   for (std::size_t shard{}; shard < forwarding_shards_; ++shard)
@@ -127,7 +128,7 @@ void ControlWorker::circuit_down(OwnedCircuit &owned) noexcept {
   } else static_cast<void>(owned.p2p().down(&owned, event));
 }
 void ControlWorker::circuit_up(OwnedCircuit &owned, RuntimeClock::time_point now) noexcept {
-  if (!owned.carrier) return;
+  if (!owned.carrier || (owned.update && !owned.update->admin_enabled)) return;
   if (auto *broadcast = owned.lan()) {
     for (std::size_t level{}; level < 2U; ++level)
       if (auto *circuit = broadcast->at(level)) static_cast<void>(circuit->up(now));

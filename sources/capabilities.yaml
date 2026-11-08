@@ -1,6 +1,9 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  routing.isis.administrative_gate:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.administrative_gate, iso.10589.2002.runtime_update]
   routing.isis.control_carrier:
     status: experimental
     source_ids: [iso.10589.2002.control_carrier]

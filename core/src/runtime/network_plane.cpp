@@ -549,6 +549,8 @@ struct IsisTransportBinding {
   bool physical_point_to_point{};
   isis::Levels levels{isis::Levels::none};
   bool broadcast{};
+  // Local administrative projection; no remote state is carried.
+  bool admin_enabled{true};
 };
 
 // Borrowed same-owner projections only. Both forwarding and link owners retain
@@ -556,7 +558,7 @@ struct IsisTransportBinding {
 [[nodiscard]] bool matches_isis(const IsisTransportBinding &binding,
     const IsisEgressChannel::Metadata &metadata,
     const packet::isis::EthernetPduView &wire) noexcept {
-  if (binding.identity.device != metadata.device || binding.identity.interface_id != metadata.interface_id ||
+  if (!binding.admin_enabled || binding.identity.device != metadata.device || binding.identity.interface_id != metadata.interface_id ||
       binding.identity.configuration_generation != metadata.configuration_generation ||
       binding.identity.instance != metadata.instance_id ||
       binding.identity.physical_port_ordinal != metadata.physical_port_ordinal ||
@@ -4474,10 +4476,13 @@ std::unique_ptr<NetworkPlane::Impl::PreparedIsisCheckpoint> NetworkPlane::Impl::
       if (circuit == device->circuits.end()) return nullptr;
       const auto *configuration = circuit->definition.common();
       if (!configuration) return nullptr;
+      const auto instance = std::find_if(device->instances.begin(), device->instances.end(),
+          [&](const auto &entry) { return entry.instance == port.identity.instance; });
+      const bool admin_enabled = instance == device->instances.end() || instance->admin_enabled;
       result->links[device->handle.index].push_back({circuit->definition.identity, port.port, configuration->destinations(),
           configuration->instance_format.value_or(packet::isis::InstanceFormat::standard), configuration->wire_instance,
           !circuit->definition.broadcast && circuit->definition.configuration.physical_point_to_point,
-          circuit->definition.levels(), circuit->definition.broadcast.has_value()});
+          circuit->definition.levels(), circuit->definition.broadcast.has_value(), admin_enabled});
     }
     isis::ControlCommand prepare;
     prepare.kind = isis::ControlCommandKind::prepare_checkpoint_restore;
@@ -5288,14 +5293,23 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
 bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     std::span<const IsisCircuitProgram> circuits,
     std::span<const isis::NewUpdateInstance> new_instances,
-    std::span<const std::uint8_t> retired_instances) noexcept {
+    std::span<const std::uint8_t> retired_instances,
+    std::span<const isis::UpdateAdminState> administrative) noexcept {
   if (!impl_->live(device) || circuits.size() > device_catalog::maximum_routers * device_catalog::maximum_ports_per_router)
     return false;
-  if (circuits.empty() && new_instances.empty() && retired_instances.empty() && !impl_->isis_registered[device.index]) return true;
+  if (circuits.empty() && new_instances.empty() && retired_instances.empty() && administrative.empty() && !impl_->isis_registered[device.index]) return true;
   if (!std::is_sorted(retired_instances.begin(), retired_instances.end()) ||
       std::adjacent_find(retired_instances.begin(), retired_instances.end()) != retired_instances.end()) return false;
+  if (!administrative.empty() && (!impl_->route_managers[device.index] ||
+      !impl_->route_managers[device.index]->policy_configured)) return false;
+  for (std::size_t index{}; index < administrative.size(); ++index)
+    if (administrative[index].instance > device_catalog::isis_instance_last ||
+        (index && administrative[index - 1U].instance >= administrative[index].instance)) return false;
   const auto retires = [&](const auto &entry) {
-    return std::binary_search(retired_instances.begin(), retired_instances.end(), entry.protocol_instance);
+    return std::binary_search(retired_instances.begin(), retired_instances.end(), entry.protocol_instance) ||
+        std::any_of(administrative.begin(), administrative.end(), [&](const auto &edit) {
+          return edit.instance == entry.protocol_instance && !edit.enabled;
+        });
   };
   std::vector<routing::DynamicInput> retained_ipv4;
   std::vector<routing::Ipv6DynamicInput> retained_ipv6;
@@ -5323,7 +5337,9 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     groups = std::make_unique<Groups>();
     generation.new_instances.assign(new_instances.begin(), new_instances.end());
     generation.retired_instances.assign(retired_instances.begin(), retired_instances.end());
-    if (!retired_instances.empty()) if (const auto &manager = impl_->route_managers[device.index]) {
+    generation.administrative.assign(administrative.begin(), administrative.end());
+    if (!administrative.empty()) generation.route_generation_floor = impl_->route_managers[device.index]->isis_generation;
+    if (!retired_instances.empty() || !administrative.empty()) if (const auto &manager = impl_->route_managers[device.index]) {
       const auto ipv4 = manager->ipv4_candidates.second();
       const auto ipv6 = manager->ipv6_candidates.second();
       retained_ipv4.reserve(ipv4.size()); retained_ipv6.reserve(ipv6.size());
@@ -5334,6 +5350,7 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     link_projection.reserve(circuits.size());
     generation.circuits.reserve(circuits.size());
     const auto &previous_bindings = impl_->isis_transports[device.index];
+    std::array<std::optional<bool>, device_catalog::isis_instance_last + 1U> owner_gates{};
     const auto identity_key = [](const isis::CircuitIdentity &identity) { return std::pair{identity.interface_id, identity.instance}; };
     std::vector<std::size_t> previous_order;
     previous_order.reserve(previous_bindings.size());
@@ -5348,6 +5365,7 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
       if (!common) return false;
       const auto &configuration = *common;
       if (!program.port || program.port.node != node(device) || identity.device != device ||
+          identity.instance > device_catalog::isis_instance_last ||
           program.port.ordinal != identity.physical_port_ordinal || program.port.ordinal >= groups->size() ||
           !configuration.destinations().valid()) return false;
       const auto old = std::lower_bound(previous_order.begin(), previous_order.end(), identity_key(identity), [&](auto index, auto key) {
@@ -5356,11 +5374,30 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
       if (old != previous_order.end() && identity_key(previous_bindings[*old].identity) == identity_key(identity) &&
           identity.configuration_generation == previous_bindings[*old].identity.configuration_generation &&
           program.port != previous_bindings[*old].port) return false;
+      bool admin_enabled{};
+      const auto fresh = std::find_if(new_instances.begin(), new_instances.end(),
+          [&](const auto &entry) { return entry.instance == identity.instance; });
+      if (fresh != new_instances.end()) admin_enabled = fresh->admin_enabled;
+      else {
+        auto &gate = owner_gates[identity.instance];
+        if (!gate) {
+          // A disabled owner may precede its first circuit, or survive removal
+          // of its last one. Absence of a transport is not an enabled default.
+          const auto owner = query_isis_update_instance(device, identity.instance);
+          if (owner && owner->error != isis::ControlError::none && owner->error != isis::ControlError::not_found)
+            return false;
+          gate = owner && owner->error == isis::ControlError::none ? owner->admin_enabled : true;
+        }
+        admin_enabled = *gate;
+      }
+      const auto edit = std::find_if(administrative.begin(), administrative.end(),
+          [&](const auto &entry) { return entry.instance == identity.instance; });
+      if (edit != administrative.end()) admin_enabled = edit->enabled;
       generation.circuits.push_back(definition);
       link_projection.push_back({identity, program.port, configuration.destinations(),
           configuration.instance_format.value_or(packet::isis::InstanceFormat::standard),
           configuration.wire_instance, !definition.broadcast && definition.configuration.physical_point_to_point,
-          definition.levels(), definition.broadcast.has_value()});
+          definition.levels(), definition.broadcast.has_value(), admin_enabled});
       const auto destinations = configuration.destinations();
       if (!definition.broadcast) (*groups)[program.port.ordinal].push_back(destinations.hello);
       for (std::size_t level{}; level < destinations.levels.size(); ++level)
@@ -5404,7 +5441,8 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     abort.identity.device = device;
     static_cast<void>(impl_->execute_isis(std::move(abort)));
   };
-  if (impl_->execute_isis(std::move(generation)).error != isis::ControlError::none) {
+  const auto prepared_owner = impl_->execute_isis(std::move(generation));
+  if (prepared_owner.error != isis::ControlError::none) {
     discard_registration();
     return false;
   }
@@ -5454,6 +5492,11 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     auto &manager = *impl_->route_managers[device.index];
     if (!manager.ipv4_candidates.replace_second(retained_ipv4) ||
         !manager.ipv6_candidates.replace_second(retained_ipv6)) std::terminate();
+  }
+  if (!administrative.empty()) {
+    // The prepared owner reserved this synchronous RIB generation. All older
+    // channel publications now fail the same installed high-water check.
+    impl_->route_managers[device.index]->isis_generation = prepared_owner.route_published_generation;
   }
   // The barrier excludes packet observers. All publications are non-allocating
   // ownership swaps after the protocol owner has accepted commit.
@@ -6182,7 +6225,7 @@ bool NetworkPlane::program_route_policy(
     const auto &bindings = impl_->isis_transports[device.index];
     return std::any_of(bindings.begin(), bindings.end(), [&](const auto &binding) {
       const auto &identity = binding.identity;
-      return identity.device == device && identity.instance == entry.protocol_instance &&
+      return binding.admin_enabled && identity.device == device && identity.instance == entry.protocol_instance &&
           identity.interface_id == entry.interface_id && identity.configuration_generation == entry.interface_generation &&
           identity.physical_port_ordinal == physical_route_port(entry);
     });

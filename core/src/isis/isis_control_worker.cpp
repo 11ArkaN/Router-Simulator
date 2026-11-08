@@ -104,6 +104,16 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         (!replacing && std::any_of(definitions.begin(), definitions.end(),
         [index](const auto &entry) { return entry.identity.instance == index; }))) return ControlError::invalid_argument;
   }
+  for (std::size_t ordinal{}; ordinal < command.administrative.size(); ++ordinal) {
+    const auto index = command.administrative[ordinal].instance;
+    if (index >= device.instances.size() || !device.instances[index] ||
+        (ordinal && command.administrative[ordinal - 1U].instance >= index) ||
+        std::binary_search(command.retired_instances.begin(), command.retired_instances.end(), index))
+      return ControlError::invalid_argument;
+  }
+  const auto route_floor = std::max(device.route_generation, command.route_generation_floor);
+  if (!command.administrative.empty() && route_floor == std::numeric_limits<std::uint64_t>::max())
+    return ControlError::epoch_exhausted;
   std::unique_ptr<DeviceState> additions;
   if (!command.new_instances.empty()) {
     if (command.new_instances.size() > device.instances.size() ||
@@ -134,6 +144,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         prepare.identity.device = device.handle;
         prepare.identity.instance = index;
         prepare.update = std::move(entry.program);
+        prepare.admin_enabled = entry.admin_enabled;
         const auto *sequence_source = entry.replace_existing && !(gate && gate->disabled()) ? current.get() : nullptr;
         const auto error = add_update_instance(prepare, *additions, sequence_source);
         if (error != ControlError::none) return error;
@@ -201,6 +212,8 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
     staged.additions = std::move(additions);
     staged.device = device.handle;
     staged.retired_instances = std::move(command.retired_instances);
+    staged.administrative = std::move(command.administrative);
+    if (!staged.administrative.empty()) staged.route_commit_generation = route_floor + 1U;
     staged.output.reserve(definitions.size());
     staged.plan.reserve(definitions.size());
     staged.keep.resize(device.circuits.size());
@@ -252,6 +265,9 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
     for (auto &replacement : staged.replacements) {
       auto &instance = selected_instance(replacement.identity.instance);
       if (!instance) continue;
+      // Only the detached medium changes here. A prepared rebind may still
+      // borrow the live owner's old slot, so do not attach it before Down.
+      if (!instance->admin_enabled) circuit_down(replacement);
       if (requires_reconstruction(instance->status)) {
         // Disabled bindings carry configuration only. Fresh level slots are
         // assigned together when the complete entity is reconstructed.
@@ -342,6 +358,17 @@ void ControlWorker::commit_generation(DeviceState &device) noexcept {
       device.instance_order[device.instance_count++] = index;
     }
   }
+  for (const auto &edit : staged.administrative)
+    set_admin_state(device, *device.instances[edit.instance], edit.enabled);
+  if (staged.route_commit_generation) {
+    // The network owner has committed the matching dual-family RIB under its
+    // forwarding barrier. Older queued receipts cannot acknowledge this key.
+    device.route_generation = device.route_installed = staged.route_commit_generation;
+    device.route_pending = 0U;
+    device.installed_routes = {};
+    device.route_status = ::router::routing::RouteInstallStatus::installed;
+    device.route_retry_at = {};
+  }
   if (device.first_circuit >= device.circuits.size()) device.first_circuit = 0U;
   prepared_.reset();
 }
@@ -355,6 +382,16 @@ void ControlWorker::retire_circuit(DeviceState &device, OwnedCircuit &circuit) n
             circuit.identity.configuration_generation) != UpdateStatus::applied) std::terminate();
     circuit.update = nullptr;
   }
+}
+
+void ControlWorker::set_admin_state(DeviceState &device, OwnedInstance &instance, bool enabled) noexcept {
+  if (instance.admin_enabled == enabled) return;
+  instance.admin_enabled = enabled;
+  for (auto &circuit : device.circuits) if (circuit.update == &instance) {
+    if (!enabled) circuit_down(circuit);
+    else if (instance.status == UpdateStatus::applied) circuit_up(circuit, RuntimeClock::now());
+  }
+  if (enabled) instance.local_roots_dirty.fill(true);
 }
 
 ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
@@ -498,6 +535,8 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
   }
   if (command.kind == ControlCommandKind::prepare_generation) {
     result.error = prepare_generation(command, device);
+    if (result.error == ControlError::none && prepared_->route_commit_generation)
+      result.route_published_generation = prepared_->route_commit_generation;
     return result;
   }
   if (command.kind == ControlCommandKind::remove_device) {
@@ -512,6 +551,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
   if (command.kind == ControlCommandKind::add_update_instance ||
       command.kind == ControlCommandKind::remove_update_instance ||
       command.kind == ControlCommandKind::query_update_instance ||
+      command.kind == ControlCommandKind::set_update_admin_state ||
       command.kind == ControlCommandKind::originate_lsp ||
       command.kind == ControlCommandKind::replace_local_content ||
       command.kind == ControlCommandKind::withdraw_local_content) {
@@ -523,13 +563,18 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     else if (command.kind == ControlCommandKind::remove_update_instance) remove_update_instance(device, index);
     else {
       auto &instance = *device.instances[index];
+      if (command.kind == ControlCommandKind::set_update_admin_state) {
+        set_admin_state(device, instance, command.admin_enabled);
+        result.admin_enabled = instance.admin_enabled;
+        return result;
+      }
       if (command.kind == ControlCommandKind::replace_local_content ||
           command.kind == ControlCommandKind::withdraw_local_content) {
         result.error = edit_local_content(command, instance, result);
         return result;
       }
       if (command.kind == ControlCommandKind::originate_lsp) {
-        if (instance.status != UpdateStatus::applied || !instance.process || instance.local)
+        if (!instance.admin_enabled || instance.status != UpdateStatus::applied || !instance.process || instance.local)
           result.error = ControlError::update_refused;
         else {
           packet::isis::DecodeError decode{};
@@ -547,6 +592,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
         }
       }
       result.update_status = instance.status;
+      result.admin_enabled = instance.admin_enabled;
       result.update_epoch = instance.process ? instance.process->maximum_synchronization_epoch() : device.update_fences[index];
       result.decision_runs = instance.decision_runs;
       for (std::size_t level{}; level < 2U; ++level)
@@ -675,6 +721,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
   }
   if (command.kind != ControlCommandKind::query_circuit) { result.error = ControlError::invalid_argument; return result; }
   result.carrier = found->carrier;
+  result.admin_enabled = !found->update || found->update->admin_enabled;
   result.broadcast_circuit = found->lan() != nullptr;
   if (const auto *broadcast = found->lan()) {
     for (std::size_t level{}; level < 2U; ++level) if (const auto *circuit = broadcast->at(level)) {
@@ -744,7 +791,7 @@ void ControlWorker::receive(
     if (owned.identity.interface_id != packet.metadata.interface_id ||
         owned.identity.physical_port_ordinal != packet.metadata.physical_port_ordinal ||
         owned.identity.instance != packet.metadata.instance_id) continue;
-    if (!owned.carrier) { ++owned.counters.discarded; return; }
+    if (!owned.carrier || (owned.update && !owned.update->admin_enabled)) { ++owned.counters.discarded; return; }
     packet::isis::InstanceError error{};
     const auto selection = packet::isis::select_instance(wire->pdu, owned.format, owned.physical_point_to_point, error);
     const bool p2p_hello = wire->pdu.type == packet::isis::PduType::point_to_point_hello;
@@ -850,7 +897,7 @@ void ControlWorker::run() noexcept {
         for (auto &owned : device.circuits) if (owned.identity.interface_id == completion->metadata.interface_id &&
             owned.identity.physical_port_ordinal == completion->metadata.physical_port_ordinal &&
             owned.identity.instance == completion->metadata.instance_id) {
-          if (!owned.carrier) { ++owned.counters.stale_completion; continue; }
+          if (!owned.carrier || (owned.update && !owned.update->admin_enabled)) { ++owned.counters.stale_completion; continue; }
           packet::isis::InstanceError error{};
           const auto selection = packet::isis::select_instance(wire->pdu, owned.format, owned.physical_point_to_point, error);
           if (owned.destinations.select(wire->pdu.type) != wire->ethernet.destination || !selection || selection->instance != owned.wire_instance) continue;
@@ -911,6 +958,7 @@ void ControlWorker::run() noexcept {
       bool adjacency_pending{};
       for (auto &owned : device.circuits) {
         if (!owned.carrier) continue;
+        if (owned.update && !owned.update->admin_enabled) continue;
         if (owned.update && owned.update->status != UpdateStatus::applied) continue;
         if (auto *broadcast = owned.lan()) {
           for (std::size_t level{}; level < 2U; ++level) if (auto *circuit = broadcast->at(level)) {
@@ -923,7 +971,7 @@ void ControlWorker::run() noexcept {
       if (adjacency_pending) deadline = std::min(deadline, now);
       for (std::size_t ordinal{}; ordinal < device.instance_count; ++ordinal) {
         const auto index = device.instance_order[(device.first_instance + ordinal) % device.instance_count];
-        if (!adjacency_pending)
+        if (!adjacency_pending && device.instances[index]->admin_enabled)
           deadline = std::min(deadline, service_local_instance(device, index, now, generation_budget));
         deadline = std::min(deadline, service_update_lifetimes(*device.instances[index], now, lifetime_budget));
       }
@@ -931,6 +979,7 @@ void ControlWorker::run() noexcept {
       for (std::size_t ordinal{}; ordinal < device.circuits.size(); ++ordinal) {
         auto &owned = device.circuits[(device.first_circuit + ordinal) % device.circuits.size()];
         if (!owned.carrier) continue;
+        if (owned.update && !owned.update->admin_enabled) continue;
         if (owned.update && owned.update->status != UpdateStatus::applied) {
           owned.transmission.cancel();
           circuit_down(owned);

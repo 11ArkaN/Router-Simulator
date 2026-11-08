@@ -37,7 +37,7 @@ RuntimeClock::time_point ControlWorker::service_routes(DeviceState &device,
   auto retry = std::chrono::milliseconds::max();
   for (std::size_t index{}; index < device.instances.size(); ++index) {
     const auto &instance = device.instances[index];
-    if (!instance) continue;
+    if (!instance || !instance->admin_enabled) continue;
     std::uint8_t families{};
     for (std::size_t family{}; family < instance->configuration.routing.size(); ++family)
       if (instance->configuration.routing[family]) families |= static_cast<std::uint8_t>(1U << family);
@@ -58,7 +58,7 @@ RuntimeClock::time_point ControlWorker::service_routes(DeviceState &device,
   // Every enabled family and level belongs to this exact local revision. A
   // failed calculation preserves the installed generation and retries only
   // at the explicitly configured emulator resource-recovery period.
-  for (auto &instance : device.instances) if (instance && instance->status == UpdateStatus::applied) {
+  for (auto &instance : device.instances) if (instance && instance->admin_enabled && instance->status == UpdateStatus::applied) {
     for (auto &family : instance->route_families)
       for (std::size_t level{}; level < family.decisions.size(); ++level) {
         if (!family.decisions[level]) continue;
@@ -87,7 +87,7 @@ RuntimeClock::time_point ControlWorker::service_routes(DeviceState &device,
   Status failure = Status::pending;
   for (std::size_t index{}; index < device.instances.size() && failure == Status::pending; ++index) {
     const auto &instance = device.instances[index];
-    if (!instance || instance->status != UpdateStatus::applied) continue;
+    if (!instance || !instance->admin_enabled || instance->status != UpdateStatus::applied) continue;
     for (std::size_t family{}; family < instance->configuration.routing.size() && failure == Status::pending; ++family) {
       const auto &program = instance->configuration.routing[family];
       if (!program) continue;

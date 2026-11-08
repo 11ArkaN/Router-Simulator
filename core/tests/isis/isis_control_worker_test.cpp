@@ -278,7 +278,7 @@ void isis_control_worker_tests() {
 }
 
 void isis_control_carrier_tests() {
-  for (const bool broadcast : {false, true}) {
+  for (const bool broadcast : {false, true}) for (const bool initial_carrier : {false, true}) {
     auto channels = std::make_unique<ControlChannels>();
     ControlWorker worker(*channels, 1U, 1U);
     std::uint64_t id{};
@@ -317,27 +317,68 @@ void isis_control_carrier_tests() {
         add.broadcast->levels[level] = std::move(entry);
       }
     } else add.configuration = hello;
+    ControlCommand add_owner;
+    add_owner.kind = ControlCommandKind::add_update_instance;
+    add_owner.identity = identity;
+    const UpdateLevelConfiguration level{{8U, 8192U}, 8U, 128U, 1492U,
+        1200U, 60s, 60s, false, false, false, PurgeRules::iso_10589};
+    add_owner.update = UpdateInstanceProgram{hello.local.system, 3U, {level, level},
+        1U, {1U, 5U, 5U, 1s, 10U, 1492U, 1U}};
+    if (broadcast) add_owner.update->transmission.broadcast = BroadcastTransmissionProgram{100ms, 1ms};
     ControlCommand generation;
     generation.kind = ControlCommandKind::prepare_generation;
     generation.identity = identity;
-    generation.circuits.push_back({identity, add.configuration, add.random_state, add.broadcast, {}, false});
+    generation.new_instances.push_back({identity.instance, *add_owner.update, false, false});
+    generation.circuits.push_back({identity, add.configuration, add.random_state, add.broadcast, {}, initial_carrier});
     require(command(generation).error == ControlError::none);
     generation.kind = ControlCommandKind::commit_generation;
     require(command(generation).error == ControlError::none);
+    ControlCommand cold_begin;
+    cold_begin.kind = ControlCommandKind::begin_checkpoint_barrier;
+    const auto cold_barrier = command(cold_begin);
+    require(cold_barrier.error == ControlError::none);
+    auto cold_image = std::make_unique<ControlWorkerCheckpoint>();
+    ControlCommand cold_capture;
+    cold_capture.kind = ControlCommandKind::capture_checkpoint;
+    cold_capture.checkpoint_barrier_epoch = cold_barrier.checkpoint_barrier_epoch;
+    cold_capture.checkpoint_now_nanoseconds = cold_barrier.checkpoint_anchor_nanoseconds;
+    cold_capture.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(cold_image.get());
+    require(command(cold_capture).error == ControlError::none);
+    const auto &cold_medium = cold_image->devices[0U].circuits[0U].medium;
+    if (broadcast) require(!std::get<LanPairCheckpoint>(cold_medium).levels[0U]->operational &&
+        !std::get<LanPairCheckpoint>(cold_medium).levels[1U]->operational);
+    else require(!std::get<P2pCircuitCheckpoint>(cold_medium).operational);
+    cold_begin.kind = ControlCommandKind::end_checkpoint_barrier;
+    cold_begin.checkpoint_barrier_epoch = cold_barrier.checkpoint_barrier_epoch;
+    require(command(cold_begin).error == ControlError::none);
+    ControlCommand initial_down;
+    initial_down.kind = ControlCommandKind::set_circuit_carrier;
+    initial_down.identity = identity; initial_down.carrier = false;
+    require(command(initial_down).error == ControlError::none);
     ControlCommand initial_query;
     initial_query.kind = ControlCommandKind::query_circuit;
     initial_query.identity = identity;
     const auto initial = command(initial_query);
-    require(initial.error == ControlError::none && !initial.carrier && !initial.hello_pending &&
+    require(initial.error == ControlError::none && !initial.admin_enabled && !initial.carrier && !initial.hello_pending &&
         !channels->egress[0U].consumer_pending());
     ControlCommand initial_up;
     initial_up.kind = ControlCommandKind::set_circuit_carrier;
     initial_up.identity = identity;
     require(command(initial_up).error == ControlError::none);
+    require(!command(initial_query).hello_pending && !command(initial_query).admin_enabled);
+    ControlCommand enable_initial;
+    enable_initial.kind = ControlCommandKind::set_update_admin_state;
+    enable_initial.identity = identity;
+    require(command(enable_initial).error == ControlError::none);
     const auto until = RuntimeClock::now() + 3s;
     while (!channels->egress[0U].consumer_pending()) { require(RuntimeClock::now() < until); std::this_thread::yield(); }
     const auto delayed = channels->egress[0U].try_receive();
     require(delayed.has_value());
+    ControlCommand admin;
+    admin.kind = ControlCommandKind::set_update_admin_state;
+    admin.identity = identity;
+    admin.admin_enabled = false;
+    require(command(admin).error == ControlError::none && !command(admin).admin_enabled);
     ControlCommand carrier;
     carrier.kind = ControlCommandKind::set_circuit_carrier;
     carrier.identity = identity;
@@ -364,6 +405,7 @@ void isis_control_carrier_tests() {
     capture.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(saved.get());
     require(command(capture).error == ControlError::none && saved->devices.size() == 1U);
     require(saved->devices[0U].circuits.size() == 1U && !saved->devices[0U].circuits[0U].definition.carrier);
+    require(saved->devices[0U].instances.size() == 1U && !saved->devices[0U].instances[0U].admin_enabled);
     ControlCommand restore;
     restore.kind = ControlCommandKind::prepare_checkpoint_restore;
     restore.checkpoint_barrier_epoch = barrier.checkpoint_barrier_epoch;
@@ -385,6 +427,9 @@ void isis_control_carrier_tests() {
     require(command(begin).error == ControlError::none && !command(query).carrier);
     carrier.carrier = true;
     require(command(carrier).error == ControlError::none && command(query).carrier);
+    require(!command(query).admin_enabled && !command(query).hello_pending);
+    admin.admin_enabled = true;
+    require(command(admin).error == ControlError::none && command(query).admin_enabled);
     require(channels->egress[0U].release(delayed->handle, true));
     worker.notify();
     for (;;) {
@@ -1061,6 +1106,32 @@ void isis_control_update_tests() {
     require(command(std::move(invalid)).error == (wrong_system ? ControlError::invalid_argument : ControlError::already_exists));
     require(query(0U, true).retained_lsps == std::array<std::size_t, 2U>{1U, 1U});
   }
+  const auto before_admin = query(0U, false);
+  const auto before_admin_database = query(0U, true);
+  ControlCommand admin;
+  admin.kind = ControlCommandKind::set_update_admin_state;
+  admin.identity = identities[0U];
+  admin.admin_enabled = false;
+  require(command(admin).error == ControlError::none);
+  const auto stopped = query(0U, false);
+  require(!stopped.admin_enabled && stopped.carrier && !stopped.adjacency.iso_up &&
+      stopped.counters.adjacency_up == before_admin.counters.adjacency_up &&
+      stopped.counters.hello_enqueued >= before_admin.counters.hello_enqueued);
+  require(!query(0U, true).admin_enabled &&
+      query(0U, true).retained_lsps == before_admin_database.retained_lsps &&
+      query(0U, true).update_epoch >= before_admin_database.update_epoch);
+  require(command(admin).error == ControlError::none &&
+      query(0U, false).counters.adjacency_down == stopped.counters.adjacency_down);
+  admin.admin_enabled = true;
+  require(command(admin).error == ControlError::none);
+  const auto admin_deadline = RuntimeClock::now() + 4s;
+  while (!query(0U, false).adjacency.iso_up || !query(1U, false).adjacency.iso_up) {
+    pump();
+    require(RuntimeClock::now() < admin_deadline);
+    std::this_thread::yield();
+  }
+  require(query(0U, true).retained_lsps == before_admin_database.retained_lsps &&
+      query(0U, false).counters.adjacency_up > before_admin.counters.adjacency_up);
   CircuitDefinition original{identities[0U], configuration(1U), 1U};
   CircuitDefinition added = original;
   added.identity.interface_id = 3U;
@@ -1855,6 +1926,8 @@ void isis_network_plane_route_publication_tests() {
     const std::array devices{lab::DeviceHandle{0U, 1U}, lab::DeviceHandle{1U, 1U}};
     std::array<lab::IsisP2pCircuitProgram, 2U> circuits;
     std::array<UpdateInstanceProgram, 2U> programs;
+    std::array<std::unique_ptr<lab::routing::FibProgram>, 2U> connected4;
+    std::array<std::unique_ptr<lab::routing::Ipv6FibProgram>, 2U> connected6;
     const UpdateLevelConfiguration level{{8U, 8192U}, 8U, 128U, 1492U,
         1200U, 60s, 60s, false, false, false, PurgeRules::iso_10589};
     for (std::size_t index{}; index < devices.size(); ++index) {
@@ -1910,6 +1983,8 @@ void isis_network_plane_route_publication_tests() {
       lab::RoutePolicyProgram policy;
       require(plane->program_route_policy(devices[index], policy) && plane->program_fib(devices[index], *base4) &&
           plane->program_ipv6_fib(devices[index], *base6));
+      connected4[index] = std::move(base4);
+      connected6[index] = std::move(base6);
       intent.interfaces.push_back(attached);
       const std::array prefixes{
           RootPrefix{*ip::parse_ip_prefix(index ? "198.51.100.2/32" : "192.0.2.1/32"), 5U, {}},
@@ -1964,7 +2039,34 @@ void isis_network_plane_route_publication_tests() {
           content.records.front().id = retired_fragment;
           initial.origination->content.records.push_back(std::move(content.records.front()));
         }
-        require(plane->add_isis_update_instance(devices[index], 0U, initial) &&
+        if (!cycle && !index) {
+          const std::array detached{NewUpdateInstance{0U, initial, false, false}};
+          require(plane->replace_isis_generation(devices[index], {}, detached));
+          require(plane->replace_isis_generation(devices[index], std::span{&circuits[index], 1U}));
+          require(!plane->query_isis_update_instance(devices[index], 0U)->admin_enabled);
+          const auto cold = plane->checkpoint();
+          require(cold && cold->isis && !std::get<P2pCircuitCheckpoint>(
+              cold->isis->control.devices[0U].circuits[0U].medium).operational);
+          // No prior transport exists from which to inherit this gate. Even a
+          // structurally valid newer route must refuse while its owner is off.
+          auto refused = std::make_unique<::router::routing::RouteGeneration>();
+          refused->device = devices[index]; refused->generation = 1U;
+          PrefixRouteCandidate route;
+          route.destination = *ip::parse_ip_prefix("203.0.113.0/24");
+          route.distance = {0U, 20U, 0U};
+          route.next_hop = {{interface, circuits[index].circuit.identity.configuration_generation, 0U}, {},
+              *ip::parse_ip_address("198.51.100.2"), 1U};
+          const auto ipv4 = make_ipv4_rib_input(route, 0U, 15U);
+          route.destination = *ip::parse_ip_prefix("2001:db8:100::/64");
+          route.next_hop.address = *ip::parse_ip_address("fe80::2");
+          const auto ipv6 = make_ipv6_rib_input(route, 0U, 15U);
+          require(ipv4 && ipv6);
+          refused->ipv4[0U] = *ipv4; refused->ipv6[0U] = *ipv6;
+          refused->ipv4_count = refused->ipv6_count = 1U;
+          require(plane->program_isis_routes(*refused) == Install::invalid);
+          const std::array enable{UpdateAdminState{0U, true}};
+          require(plane->replace_isis_generation(devices[index], std::span{&circuits[index], 1U}, {}, {}, enable));
+        } else require(plane->add_isis_update_instance(devices[index], 0U, initial) &&
             plane->replace_isis_p2p_generation(devices[index], std::span{&circuits[index], 1U}));
       }
       for (unsigned phase{}; phase < 2U; ++phase) {
@@ -2057,6 +2159,58 @@ void isis_network_plane_route_publication_tests() {
                 " drop=" + std::to_string(state ? static_cast<unsigned>(state->last_drop) : 255U));
           }
         }
+      }
+      // Administrative publication retains the live owner and circuit counters,
+      // withdraws both RIB families synchronously, and fences old queued output.
+      const auto before_admin = plane->query_isis_update_instance(devices[0U], 0U);
+      const auto before_circuit = plane->query_isis_circuit(circuits[0U].circuit.identity);
+      require(before_admin && before_circuit);
+      const std::array disable{UpdateAdminState{0U, false}};
+      const std::array missing_admin{UpdateAdminState{1U, false}};
+      require(!plane->replace_isis_generation(devices[0U], std::span{&circuits[0U], 1U}, {}, {}, missing_admin));
+      require(plane->query_isis_update_instance(devices[0U], 0U)->admin_enabled);
+      require(plane->replace_isis_generation(devices[0U], std::span{&circuits[0U], 1U}, {}, {}, disable));
+      const auto disabled = plane->query_isis_update_instance(devices[0U], 0U);
+      const auto disabled_circuit = plane->query_isis_circuit(circuits[0U].circuit.identity);
+      const auto withdrawn = heap_router_checkpoint(*plane, devices[0U], RuntimeClock::now());
+      require(disabled && !disabled->admin_enabled && disabled_circuit && !disabled_circuit->adjacency.iso_up &&
+          disabled_circuit->counters.adjacency_up == before_circuit->counters.adjacency_up &&
+          disabled_circuit->counters.adjacency_down == before_circuit->counters.adjacency_down + 1U &&
+          disabled->route_installed_generation > before_admin->route_published_generation &&
+          withdrawn && withdrawn->fib.count == 1U && withdrawn->ipv6_fib.count == 1U);
+      auto obsolete = std::make_unique<::router::routing::RouteGeneration>();
+      obsolete->device = devices[0U]; obsolete->generation = before_admin->route_published_generation;
+      require(plane->program_isis_routes(*obsolete) == Install::stale);
+      const auto checkpoint = plane->checkpoint();
+      require(checkpoint && plane->restore(*checkpoint));
+      // RuntimeSupervisor owns canonical policy and connected inputs. A direct
+      // NetworkPlane restore caller must replay those same local projections.
+      for (std::size_t index{}; index < devices.size(); ++index) {
+        lab::RoutePolicyProgram policy;
+        require(plane->program_route_policy(devices[index], policy) &&
+            plane->program_fib(devices[index], *connected4[index]) &&
+            plane->program_ipv6_fib(devices[index], *connected6[index]));
+      }
+      require(!plane->query_isis_update_instance(devices[0U], 0U)->admin_enabled);
+      const std::array enable{UpdateAdminState{0U, true}};
+      if (!plane->replace_isis_generation(devices[0U], std::span{&circuits[0U], 1U}, {}, {}, enable)) {
+        const auto owner = plane->query_isis_update_instance(devices[0U], 0U);
+        const auto circuit = plane->query_isis_circuit(circuits[0U].circuit.identity);
+        throw std::runtime_error("IS-IS administrative resume refused CPUs=" + std::to_string(cpus) +
+            " cycle=" + std::to_string(cycle) + " owner=" + std::to_string(owner ? static_cast<unsigned>(owner->update_status) : 255U) +
+            " carrier=" + std::to_string(circuit && circuit->carrier) +
+            " routing=" + std::to_string(owner ? static_cast<unsigned>(owner->route_install_status) : 255U));
+      }
+      const auto recovered_by = RuntimeClock::now() + 8s;
+      for (;;) {
+        plane->pump();
+        const auto current = plane->query_isis_circuit(circuits[0U].circuit.identity);
+        const auto selected = heap_router_checkpoint(*plane, devices[0U], RuntimeClock::now());
+        if (current && current->adjacency.iso_up && selected && selected->fib.count == 2U && selected->ipv6_fib.count == 2U) {
+          require(current->counters.adjacency_up > before_circuit->counters.adjacency_up);
+          break;
+        }
+        require(RuntimeClock::now() < recovered_by);
       }
       for (std::size_t index{}; index < devices.size(); ++index) {
         generations[index] = plane->query_isis_update_instance(devices[index], 0U)->route_installed_generation;

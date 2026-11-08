@@ -169,9 +169,9 @@ abi:
   telemetry: 6
   # Protocol 4 adds dual-stack host identity and rejects older field graphs.
   runtime_messages: 4
-  # ABI 12 retains per-level adaptive SPF state with protected IS-IS owners.
+  # ABI 13 retains IS-IS administrative gates and per-level adaptive SPF state.
   # Older checkpoint images are intentionally not accepted.
-  checkpoint: 12
+  checkpoint: 13
 link_defaults:
   # Propagation belongs to the cable or circuit, not to the Nokia port. The
   # project copies this value into each new physical link and may override it

@@ -218,6 +218,7 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
     }
     auto instance = std::make_unique<OwnedInstance>(std::move(*command.update), slots,
         device.update_fences[index] + 1U);
+    instance->admin_enabled = command.admin_enabled;
     if (instance->local) {
       // The detached owner has not published or consumed a spacing deadline.
       // Carry matching own-ID floors before its first generation, without
@@ -249,6 +250,9 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
       egress.push_back(std::make_unique<UpdateEgress>(*instance, device.circuits[binding].random_state, device.circuits[binding].update_transmission));
     for (std::size_t slot{}; slot < bindings.size(); ++slot) {
       auto &owned = device.circuits[bindings[slot]];
+      // A disabled detached owner does not import a transport-only Up peer.
+      // Leave the live medium untouched until every fallible projection passed.
+      if (!instance->admin_enabled) continue;
       if (auto *broadcast = owned.lan()) {
         for (std::size_t level{}; level < 2U; ++level) if (broadcast->at(level) &&
             project_lan(owned, *instance, slot, level) != UpdateStatus::applied) return ControlError::update_refused;
@@ -266,6 +270,7 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
     }
     for (std::size_t slot{}; slot < bindings.size(); ++slot) {
       auto &owned = device.circuits[bindings[slot]];
+      if (!instance->admin_enabled) circuit_down(owned);
       owned.update = instance.get();
       owned.update_slot = slot;
       owned.update_egress = std::move(egress[slot]);
@@ -311,6 +316,7 @@ ControlError ControlWorker::attach_update_circuit(DeviceState &device, OwnedCirc
   const auto admission = instance->process->admit_circuit(update_configuration(owned));
   if (admission.status != UpdateStatus::applied)
     return admission.status == UpdateStatus::capacity ? ControlError::capacity : ControlError::update_refused;
+  if (!instance->admin_enabled) circuit_down(owned);
   owned.update = instance.get();
   owned.update_slot = *admission.index;
   owned.update_egress = std::move(egress);

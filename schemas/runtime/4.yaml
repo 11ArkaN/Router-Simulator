@@ -4,12 +4,12 @@ snapshot_abi: 10
 # when offsets, widths or publication semantics change, not whenever the
 # structural runtime snapshot gains another configuration domain.
 telemetry_abi: 6
-checkpoint_abi: 12
+checkpoint_abi: 13
 # Snapshot ABI 10 adds canonical IS-IS configuration intent.
-# Checkpoint ABI 12 retains IS-IS intent and per-level adaptive SPF deadlines.
+# Checkpoint ABI 13 retains IS-IS intent, SPF deadlines and administrative gates.
 # Runtime protocol framing remains version 4 because operation messages are
 # extended independently and older project formats are intentionally rejected.
-checkpoint_layout_revision: 3
+checkpoint_layout_revision: 4
 
 # Protocol 4 routes every operation by stable project identity. The operation
 # name is the first netstring; every following field is length framed so user
