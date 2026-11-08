@@ -1,5 +1,33 @@
 schema_version: 1
 records:
+  - id: nokia.sros.26_7.isis.configuration_generation_plan
+    kind: routing-protocol-configuration-lifecycle-plan
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: nokia-official-yang
+    source_url: https://github.com/nokia/7x50_YangModels/blob/6656cbb0905c7b952afaa1d7c2b63aa4da6cc5f7/YANG/nokia-submodule/nokia-conf-router-isis.yang
+    section: Instance admin-state and source-generated auto-restart-to-modify paths
+    rfc_refs: []
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-11-08
+    implementation: [core/include/router/isis_configuration_plan.hpp, core/src/isis/isis_configuration_plan.cpp, core/include/router/isis_configuration_resolution.hpp, core/src/isis/isis_configuration_resolution.cpp]
+    tests: [core/tests/isis/isis_configuration_plan_test.cpp, core/tests/isis/isis_configuration_resolution_test.cpp]
+    status: experimental
+    notes: The allocation-free configuration-owner plan joins canonical before/after intent to sorted local owner-presence values. It distinguishes creation from resuming a retained owner, deletion from suspension, inactive intent edits from edits of retained disabled owners, source-marked active restart leaves from ordinary reconfiguration, and combined gate/configuration edits from gate-only operations. Effective identity changes participate even when the source Base identity changes without an instance leaf edit. Missing enabled owners, orphan owners, gate disagreement, duplicate owner keys and invalid intent refuse without a partial plan. The fixed result extent is the YANG key domain, not an active-process capacity. Planning never publishes, restarts or reads peer state; live reconfiguration consumers remain pending.
+  - id: nokia.sros.26_7.isis.advertise_passive_only
+    kind: routing-protocol-prefix-advertisement-policy
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: nokia-official-yang
+    source_url: https://github.com/nokia/7x50_YangModels/blob/6656cbb0905c7b952afaa1d7c2b63aa4da6cc5f7/YANG/nokia-submodule/nokia-conf-router-isis.yang
+    section: advertise-passive-only boolean and false default; exact engine anchors in command bindings
+    rfc_refs: [RFC5308]
+    yang_path: /configure/router/isis/advertise-passive-only
+    last_verified_at: 2026-11-08
+    implementation: [core/include/router/isis_local_prefix_program.hpp, core/src/isis/isis_local_prefix_program.cpp, core/include/router/isis_configuration.hpp, core/src/isis/isis_configuration_codec.cpp, core/src/cli/isis_cli_configuration.cpp, core/src/cli/isis_cli_info.cpp, core/src/runtime/isis_configuration_projection.cpp, packages/contracts/src/isis-configuration-v1.ts, schemas/cli/26.7.R1.yaml, schemas/cli/isis-26.7.R1-command-bindings.json, tools/isis/configuration-profile.mjs]
+    tests: [core/tests/isis/isis_local_prefix_program_test.cpp, tools/isis/configuration-profile.test.mjs, core/tests/isis/isis_configuration_codec_test.cpp, core/tests/cli/isis_cli_configuration_test.cpp, core/tests/cli/isis_cli_info_test.cpp, core/tests/runtime/isis_configuration_projection_test.cpp, packages/contracts/tests/isis-configuration-v1.test.ts]
+    status: experimental
+    notes: MD reference https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html#d46288 and classic reference https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-a-commands-addr-2.html#ai9j785d1m select the same pinned leaf. Both removal forms restore absence and the documented false default. Explicit MD false remains distinct. Six source-bound forms include classic omitted instance zero. Intent codec 3 appends the optional bool, reads versions 1 and 2, and rejects noncanonical bool bytes. Cold prefix preparation filters locally supplied AF projections by administration, level, family and effective passive policy. AF availability, metric resolution and inherently passive local sources remain explicit caller-owned inputs. Identical prefixes coalesce; conflicting fixed fields and exhausted per-level budgets reject without partial output. Attribute extents remain borrowed only until root composition copies them. IPv6 link-local prefix rejection follows RFC 5308 section 2. Live prefix lifecycle and enabled canonical publication remain pending.
   - id: nokia.sros.26_7.isis.administrative_gate
     kind: routing-protocol-local-administrative-lifecycle
     release: 26.7.R1
@@ -69,7 +97,7 @@ records:
     implementation: [core/include/router/isis_configuration_resolution.hpp, core/src/isis/isis_configuration_resolution.cpp, tools/isis/configuration-profile.mjs]
     tests: [core/tests/isis/isis_configuration_resolution_test.cpp, tools/isis/configuration-profile.test.mjs]
     status: experimental
-    notes: Offline generation binds all six independent timer leaf ranges and defaults to the pinned model. Pure local projection validates each explicit value before applying documented granularity. SPF rounds down to 100 milliseconds. LSP rounds down to 10 milliseconds below 500 and to 100 milliseconds at or above 500; its initial delay below 100 becomes zero. Effective zero is retained without altering canonical input or imposing undocumented cross-leaf constraints. Tests cover defaults, range boundaries, independent leaves and both granularity transitions. Canonical intent and the portable version-2 codec preserve raw optional values, with version-1 recovery supplying absent timers. MD scalar edits and classic compound commands share the same fields; whole-group removal restores absence. Adaptive scheduling, reset behavior and enabled runtime admission remain separate work.
+    notes: Offline generation binds all six independent timer leaf ranges and defaults to the pinned model. Pure local projection validates each explicit value before applying documented granularity. SPF rounds down to 100 milliseconds. LSP rounds down to 10 milliseconds below 500 and to 100 milliseconds at or above 500; its initial delay below 100 becomes zero. Effective zero is retained without altering canonical input or imposing undocumented cross-leaf constraints. Tests cover defaults, range boundaries, independent leaves and both granularity transitions. Canonical intent and the portable version-3 codec preserve raw optional values, with version-1 recovery supplying absent timers and versions 1 and 2 supplying absent advertise-passive-only intent. MD scalar edits and classic compound commands share the same fields; whole-group removal restores absence. Adaptive scheduling, reset behavior and enabled runtime admission remain separate work.
   - id: ietf.isis.multipart_neighbor_keys
     kind: routing-protocol-multipart-neighbor-key
     release: 26.7.R1
@@ -177,7 +205,7 @@ records:
     section: Exact node and engine references in isis-26.7.R1-command-bindings.json
     rfc_refs: []
     yang_path: /configure/router/isis
-    last_verified_at: 2026-11-07
+    last_verified_at: 2026-11-08
     implementation: [schemas/cli/26.7.R1.yaml, schemas/cli/isis-26.7.R1-command-bindings.json, tools/isis/cli-source-bindings.mjs, tools/cli-command-aliases.mjs, tools/generate-profile.mjs, core/src/cli/isis_cli_configuration.hpp, core/src/cli/isis_cli_configuration.cpp, core/src/cli/isis_cli_info.hpp, core/src/cli/isis_cli_info.cpp]
     tests: [tools/isis/cli-source-bindings.test.mjs, tools/isis/cli-aliases.test.mjs, core/tests/cli/isis_cli_configuration_test.cpp, core/tests/cli/isis_cli_info_test.cpp, core/tests/runtime/isis_datastore_runtime_test.cpp]
     status: schema-only

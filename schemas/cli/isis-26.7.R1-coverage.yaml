@@ -43,7 +43,10 @@ nodes:
   - domain: configuration
     schema_id: /configure/router/isis/advertise-passive-only
     scope: base
-    status: pending
+    status: intent-only
+    tests:
+      - core/tests/cli/isis_cli_configuration_test.cpp
+      - core/tests/isis/isis_configuration_codec_test.cpp
   - domain: configuration
     schema_id: /configure/router/isis/advertise-router-capability
     scope: base

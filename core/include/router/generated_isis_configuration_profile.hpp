@@ -64,6 +64,7 @@ inline constexpr std::uint32_t lsp_second_wait_milliseconds_default = 1000;
 inline constexpr bool instance_admin_enabled_default = false;
 inline constexpr bool interface_admin_enabled_default = true;
 inline constexpr bool ipv4_routing_default = true;
+inline constexpr bool advertise_passive_only_default = false;
 inline constexpr bool interface_passive_default = false;
 inline constexpr bool interface_level_passive_default = false;
 inline constexpr bool wide_metrics_only_default = false;

@@ -71,7 +71,23 @@ void isis_cli_configuration_tests() {
       throw std::runtime_error("IS-IS surface editor rejected: " + text);
     ++checked;
   }
-  require(checked == 233U, "IS-IS surface coverage changed without test review");
+  require(checked == 239U, "IS-IS surface coverage changed without test review");
+  router::isis::RouterConfiguration passive_md, passive_classic;
+  require(apply(passive_md, CliEngine::md, "configure router \"Base\" isis 0 advertise-passive-only true").valid &&
+      apply(passive_classic, CliEngine::classic, "configure router isis advertise-passive-only").valid &&
+      passive_md == passive_classic && passive_md.instances.front().advertise_passive_only == true,
+      "passive-only engines diverged");
+  require(apply(passive_md, CliEngine::md, "delete router \"Base\" isis 0 advertise-passive-only").valid &&
+      apply(passive_classic, CliEngine::classic, "configure router isis 0 no advertise-passive-only").valid &&
+      passive_md == passive_classic && !passive_md.instances.front().advertise_passive_only,
+      "passive-only removal failed to restore absence");
+  require(apply(passive_md, CliEngine::md, "configure router \"Base\" isis 0 advertise-passive-only false").valid &&
+      passive_md.instances.front().advertise_passive_only == false,
+      "explicit passive-only false lost its presence");
+  const auto passive_before = passive_md;
+  require(!router::cli_detail::parse_command(CliEngine::md, router::MdCliWorkflow::explicit_private,
+      "configure router \"Base\" isis 0 advertise-passive-only invalid") && passive_md == passive_before,
+      "invalid passive-only value mutated intent");
   router::isis::RouterConfiguration timer_md, timer_classic;
   for (const auto command : {"configure router \"Base\" isis 0 timers spf-wait spf-max-wait 550",
       "configure router \"Base\" isis 0 timers spf-wait spf-initial-wait 10",

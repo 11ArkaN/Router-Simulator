@@ -5,9 +5,9 @@
 #include <memory>
 #include <span>
 namespace router::isis::configuration_codec {
-// Version 2 appends six optional wait-timer leaves to each instance. Version 1
-// remains readable with absent timer leaves. Both use little-endian integers
-// and canonical one-byte bools,
+// Version 3 appends optional advertise-passive-only intent after version 2
+// wait timers. Versions 1 and 2 remain readable with absent new leaves. All
+// versions use little-endian integers and canonical one-byte bools,
 // presence-prefixed optional leaves, uint32 vector counts and uint16 UTF-8 byte
 // lengths. Limits are coordinator allocation guards, not SR OS platform limits.
 // Failure returns empty without changing input. Success owns all returned bytes.

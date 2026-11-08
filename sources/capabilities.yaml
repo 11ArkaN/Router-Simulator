@@ -1,6 +1,12 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  routing.isis.configuration_generation_plan:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.configuration_generation_plan]
+  routing.isis.advertise_passive_only:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.advertise_passive_only]
   routing.isis.administrative_gate:
     status: experimental
     source_ids: [nokia.sros.26_7.isis.administrative_gate, iso.10589.2002.runtime_update]

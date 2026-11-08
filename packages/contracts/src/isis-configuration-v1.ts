@@ -47,6 +47,7 @@ export interface IsisInstanceIntent {
   levels: [IsisInstanceLevelIntent, IsisInstanceLevelIntent];
   areas: string[];
   interfaces: IsisInterfaceIntent[];
+  advertisePassiveOnly?: boolean | null;
   spfWait?: IsisWaitTimerIntent;
   lspWait?: IsisWaitTimerIntent;
 }
@@ -101,8 +102,9 @@ function waitTimer(value: unknown, kind: "spf" | "lsp"): value is IsisWaitTimerI
     range(value.secondMilliseconds, `${kind}_second_wait_milliseconds`);
 }
 function instanceIntent(value: unknown): value is IsisInstanceIntent {
-  if (!shape(value, "instance adminEnabled ipv4Routing ipv6Routing levelCapability systemId routerId lspLifetimeSeconds lspMtuOctets levels areas interfaces", "spfWait lspWait") ||
+  if (!shape(value, "instance adminEnabled ipv4Routing ipv6Routing levelCapability systemId routerId lspLifetimeSeconds lspMtuOctets levels areas interfaces", "spfWait lspWait advertisePassiveOnly") ||
       !integer(value.instance, profile.instance_minimum, profile.instance_maximum) ||
+      (Object.hasOwn(value, "advertisePassiveOnly") && !boolean(value.advertisePassiveOnly)) ||
       !boolean(value.adminEnabled) || !boolean(value.ipv4Routing) || !enumeration(value.ipv6Routing, ["false", "native", "mt"]) ||
       !levelCapability(value.levelCapability) || !range(value.lspLifetimeSeconds, "lsp_lifetime_seconds") || !range(value.lspMtuOctets, "lsp_mtu_octets") ||
       !Array.isArray(value.levels) || value.levels.length !== 2 || !dense(value.levels, (item) => level(item, true)) ||
@@ -137,7 +139,7 @@ export function encodeIsisConfigurationHex(configuration: RouterIsisIntent): str
   const vector = <T>(values: T[], write: (entry: T) => void) => { number(values.length, 4); values.forEach(write); };
   const hexBytes = (text: string) => text.match(/../g)!.map((pair) => parseInt(pair, 16));
   const string = (text: string) => { const encoded = new TextEncoder().encode(text); number(encoded.length, 2); bytes.push(...encoded); };
-  number(2, 1);
+  number(3, 1);
   vector(configuration.instances, (instance) => {
     number(instance.instance, 1); optional(instance.adminEnabled, boolean); optional(instance.ipv4Routing, boolean);
     optional(instance.ipv6Routing, (value) => number(["false", "native", "mt"].indexOf(value), 1)); levels(instance.levelCapability);
@@ -163,6 +165,7 @@ export function encodeIsisConfigurationHex(configuration: RouterIsisIntent): str
       integer(timer?.initialMilliseconds ?? null, 4);
       integer(timer?.secondMilliseconds ?? null, 4);
     }
+    optional(instance.advertisePassiveOnly ?? null, boolean);
   });
   return bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }

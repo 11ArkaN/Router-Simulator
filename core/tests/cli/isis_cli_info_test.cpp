@@ -19,6 +19,7 @@ void isis_cli_info_tests() {
   for (const auto text : {
       "configure router \"Base\" isis 127 area-address[49.0001 49.0002]",
       "configure router \"Base\" isis 127 admin-state disable",
+      "configure router \"Base\" isis 127 advertise-passive-only true",
       "configure router \"Base\" isis 127 ipv6-routing native",
       "configure router \"Base\" isis 127 level-capability 1/2",
       "configure router \"Base\" isis 127 system-id 0000.0000.0127",
@@ -52,6 +53,8 @@ void isis_cli_info_tests() {
   const auto detail = md_tree(original, true);
   require(original == before && detail.find("hello-interval 9") != std::string::npos &&
       detail.find("lsp-mtu-size 1492") != std::string::npos);
+  require(classic_leaf("advertise-passive-only true") == "advertise-passive-only" &&
+      classic_leaf("advertise-passive-only false") == "no advertise-passive-only");
   require(classic_leaf("area-address 49.0001") == "area-id 49.0001");
   require(classic_leaf("level-capability 1/2") == "level-capability level-1/2");
   require(classic_leaf("ipv4-routing false") == "no ipv4-routing");

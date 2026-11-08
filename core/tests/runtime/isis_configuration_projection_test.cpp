@@ -14,6 +14,7 @@ void isis_configuration_projection_tests() {
   require(empty.str() == "{\"instances\":[]}");
   configuration.instances.emplace_back();
   auto &instance = configuration.instances.back();
+  instance.advertise_passive_only = true;
   instance.instance = 127U; instance.admin_enabled = true; instance.ipv4_routing = false;
   instance.ipv6_routing = ConfiguredIpv6Routing::native; instance.levels = ConfiguredLevels::both;
   instance.router_id = 0xda700e05U;
@@ -27,7 +28,7 @@ void isis_configuration_projection_tests() {
   std::ostringstream out;
   router::lab::isis_projection::write_json(out, configuration);
   const auto text = out.str();
-  require(text.find("\"instance\":127,\"adminEnabled\":true,\"ipv4Routing\":false") != std::string::npos);
+  require(text.find("\"instance\":127,\"adminEnabled\":true,\"advertisePassiveOnly\":true,\"ipv4Routing\":false") != std::string::npos);
   require(text.find("\"ipv6Routing\":\"native\",\"levelCapability\":\"1/2\"") != std::string::npos);
   require(text.find("\"systemId\":null,\"routerId\":\"218.112.14.5\"") != std::string::npos);
   require(text.find("\"areas\":[\"49.0001\"]") != std::string::npos);

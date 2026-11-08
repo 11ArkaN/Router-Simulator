@@ -66,6 +66,7 @@ void isis_datastore_runtime_tests() {
   require(execute("info").find("lsp-initial-wait 99") != std::string::npos,
       "LSP intent was replaced with its rounded effective delay");
   execute("/configure router isis 0 level 1");
+  execute("/configure router isis 0 advertise-passive-only true");
   execute("/configure router isis 0 admin-state enable");
   const auto compared = execute("compare");
   require(compared.find("isis 0 {") != std::string::npos &&
@@ -100,7 +101,8 @@ void isis_datastore_runtime_tests() {
       "IS-IS uncommitted candidate activation was lost on restore");
   const auto restored_timers = execute("info");
   require(restored_timers.find("spf-max-wait 550") != std::string::npos &&
-      restored_timers.find("lsp-initial-wait 99") != std::string::npos,
+      restored_timers.find("lsp-initial-wait 99") != std::string::npos &&
+      restored_timers.find("advertise-passive-only true") != std::string::npos,
       "wait timer intent was lost on candidate checkpoint restore");
   execute("admin-state disable"); execute("level 1");
   const auto before = runtime->command(message(lab_runtime_protocol::snapshot));
@@ -108,6 +110,8 @@ void isis_datastore_runtime_tests() {
   execute("commit");
   require(runtime->command(message(lab_runtime_protocol::snapshot)).find("\"defaultMetric\":30") != std::string_view::npos,
       "IS-IS candidate did not reach running");
+  require(runtime->command(message(lab_runtime_protocol::snapshot)).find("\"advertisePassiveOnly\":true") != std::string_view::npos,
+      "IS-IS passive-only policy did not reach running");
   execute("exit all"); execute("quit-config");
   execute("edit-config read-only");
   execute("/configure router isis 0");
@@ -118,7 +122,7 @@ void isis_datastore_runtime_tests() {
   execute("/configure router isis 0 timers spf-wait");
   require(execute("info").find("spf-max-wait 550") != std::string::npos,
       "read-only IS-IS timer context is not navigable");
-  for (const std::string_view forbidden : {"spf-max-wait 550", "/delete router isis 0 timers",
+  for (const std::string_view forbidden : {"/configure router isis 0 advertise-passive-only true", "spf-max-wait 550", "/delete router isis 0 timers",
       "/configure router isis 127", "/configure router isis 0 interface missing"}) {
     const auto refusal = runtime->command(message(lab_runtime_protocol::session_execute,
         {"isis-console", forbidden}));
@@ -132,6 +136,11 @@ void isis_datastore_runtime_tests() {
   require(execute("configure router isis 0").find(">isis#") != std::string::npos,
       "classic explicit IS-IS key leaked into the prompt");
   execute("configure router isis");
+  require(execute("info").find("advertise-passive-only") != std::string::npos,
+      "classic IS-IS lost the shared passive-only policy");
+  execute("no advertise-passive-only");
+  require(runtime->command(message(lab_runtime_protocol::snapshot)).find("\"advertisePassiveOnly\":null") != std::string_view::npos,
+      "classic passive-only removal did not restore absence");
   require(execute("level 1").find(">isis>level#") != std::string::npos,
       "classic IS-IS level key leaked into the prompt");
   require(complete("\\configure router isis 0 interface edge passive", "space") ==

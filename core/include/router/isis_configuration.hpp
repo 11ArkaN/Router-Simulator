@@ -62,6 +62,7 @@ struct InstanceIntent {
   std::vector<NeighborArea> areas;
   std::vector<InterfaceIntent> interfaces;
   WaitTimerIntent spf_wait, lsp_wait;
+  std::optional<bool> advertise_passive_only;
   bool operator==(const InstanceIntent &) const = default;
 };
 struct RouterConfiguration {

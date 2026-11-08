@@ -291,6 +291,13 @@
         "isis_lsp_initial_wait": "/configure/router/isis/timers/lsp-wait/lsp-initial-wait",
         "isis_lsp_second_wait": "/configure/router/isis/timers/lsp-wait/lsp-second-wait"
       }
+    },
+    {
+      "yang_path": "/configure/router/isis/advertise-passive-only",
+      "md_source": "https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html#d46288",
+      "classic_source": "https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-a-commands-addr-2.html#ai9j785d1m",
+      "md_remove": true,
+      "classic_no": true
     }
   ]
 }

@@ -184,10 +184,11 @@ EditResult edit(isis::RouterConfiguration &configuration,
       std::sort(instance->areas.begin(), instance->areas.end(), [](const auto &a, const auto &b) {
         return std::lexicographical_compare(a.view().begin(), a.view().end(), b.view().begin(), b.view().end());
       });
-    } else if (leaf == "ipv4-routing" || leaf == "passive" || leaf == "wide-metrics-only") {
+    } else if (leaf == "ipv4-routing" || leaf == "advertise-passive-only" || leaf == "passive" || leaf == "wide-metrics-only") {
       const auto boolean = engine == CliEngine::classic ? (remove ? "false" : "true") : value;
-      const bool reset = engine == CliEngine::md && remove;
+      const bool reset = remove && (engine == CliEngine::md || leaf == "advertise-passive-only");
       if (leaf == "ipv4-routing") accepted = scalar(instance->ipv4_routing, boolean, reset);
+      else if (leaf == "advertise-passive-only") accepted = scalar(instance->advertise_passive_only, boolean, reset);
       else if (leaf == "wide-metrics-only" && rl) accepted = scalar(rl->wide_metrics_only, boolean, reset);
       else if (il) accepted = scalar(il->passive, boolean, reset);
       else if (interface) accepted = scalar(interface->passive, boolean, reset);

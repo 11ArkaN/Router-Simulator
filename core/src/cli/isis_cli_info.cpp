@@ -123,6 +123,7 @@ void instance(Writer &writer, const InstanceIntent &value, bool detail) {
   writer.admin(value.admin_enabled, defaults::instance_admin_enabled_default, detail);
   writer.levels(value.levels, detail);
   writer.boolean("ipv4-routing", value.ipv4_routing, defaults::ipv4_routing_default, detail);
+  writer.boolean("advertise-passive-only", value.advertise_passive_only, defaults::advertise_passive_only_default, detail);
   if (value.ipv6_routing || detail) {
     const auto ipv6 = value.ipv6_routing.value_or(ConfiguredIpv6Routing::disabled);
     writer.leaf("ipv6-routing", std::string_view{ipv6 == ConfiguredIpv6Routing::disabled ? "false" : ipv6 == ConfiguredIpv6Routing::native ? "native" : "mt"});
@@ -222,6 +223,8 @@ std::string classic_leaf(std::string_view value) {
     const auto levels = value.substr(17U);
     return "level-capability level-" + std::string{levels};
   }
+  if (value == "advertise-passive-only true") return "advertise-passive-only";
+  if (value == "advertise-passive-only false") return "no advertise-passive-only";
   if (value == "ipv4-routing true") return "ipv4-routing";
   if (value == "ipv4-routing false") return "no ipv4-routing";
   if (value == "ipv6-routing false") return "no ipv6-routing";

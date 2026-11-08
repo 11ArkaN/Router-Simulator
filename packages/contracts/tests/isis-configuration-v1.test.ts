@@ -41,11 +41,11 @@ it("level ranges do not accept NaN, fractions or a larger numeric type", () => {
 });
 
 it("binary management payload preserves the native empty-tree golden", () => {
-  expect(encodeIsisConfigurationHex({instances: []})).toBe("0200000000");
+  expect(encodeIsisConfigurationHex({instances: []})).toBe("0300000000");
   const value = fixture();
   const instance = value.instances[0];
   instance.instance = 0; instance.adminEnabled = null;
-  expect(encodeIsisConfigurationHex(value)).toBe("0201000000" + "00".repeat(35));
+  expect(encodeIsisConfigurationHex(value)).toBe("0301000000" + "00".repeat(36));
 });
 
 it("sparse arrays cannot bypass entry validation or wire counts", () => {
@@ -70,4 +70,18 @@ it("optional wait timer intent preserves raw values and rejects invalid leaves",
   }
   value.instances[0].spfWait.maximumMilliseconds = 550;
   expect(isRouterIsisIntent({...value, instances: [{...value.instances[0], spfWait: {...value.instances[0].spfWait, unknown: 1}}]})).toBe(false);
+});
+
+it("passive-only presence is optional for older projects and remains a canonical bool", () => {
+  const value = fixture();
+  const absent = encodeIsisConfigurationHex(value);
+  for (const configured of [null, false, true]) {
+    value.instances[0].advertisePassiveOnly = configured;
+    expect(isRouterIsisIntent(value)).toBe(true);
+    expect(encodeIsisConfigurationHex(value).endsWith(configured === null ? "00" : configured ? "0101" : "0100")).toBe(true);
+  }
+  delete value.instances[0].advertisePassiveOnly;
+  expect(encodeIsisConfigurationHex(value)).toBe(absent);
+  for (const invalid of [0, 1, "false", undefined])
+    expect(isRouterIsisIntent({...value, instances: [{...value.instances[0], advertisePassiveOnly: invalid}]})).toBe(false);
 });

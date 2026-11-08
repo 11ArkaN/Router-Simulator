@@ -82,6 +82,8 @@ const cppLayers = new Map([
   ["isis_lan_circuit.hpp", 1], ["isis_lan_circuit.cpp", 1],
   ["isis_interface_program.hpp", 2], ["isis_interface_program.cpp", 2],
   ["isis_instance_program.hpp", 2], ["isis_instance_program.cpp", 2],
+  ["isis_local_prefix_program.hpp", 2], ["isis_local_prefix_program.cpp", 2],
+  ["isis_configuration_plan.hpp", 1], ["isis_configuration_plan.cpp", 1],
   ["isis_control_worker.hpp", 2], ["isis_control_worker.cpp", 2],
   ["isis_lan_adjacency.hpp", 1], ["isis_lan_adjacency.cpp", 1],
   ["isis_lan_adjacency_set.hpp", 1], ["isis_lan_adjacency_set.cpp", 1],

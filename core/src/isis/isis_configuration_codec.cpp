@@ -22,8 +22,8 @@ template<class T> requires std::is_same_v<std::remove_const_t<T>, InterfaceInten
 auto fields(T &v) { [[maybe_unused]] auto &[name, type, levels, admin_enabled, passive, csnp_interval_seconds, retransmit_interval_seconds, lsp_pacing_interval_milliseconds, level] = v;
   return std::tie(v.name, v.type, v.levels, v.admin_enabled, v.passive, v.csnp_interval_seconds, v.retransmit_interval_seconds, v.lsp_pacing_interval_milliseconds, v.level); }
 template<class T> requires std::is_same_v<std::remove_const_t<T>, InstanceIntent>
-auto fields(T &v) { [[maybe_unused]] auto &[instance, admin_enabled, ipv4_routing, ipv6_routing, levels, system_id, router_id, lsp_lifetime_seconds, lsp_mtu_octets, level, areas, interfaces, spf_wait, lsp_wait] = v;
-  return std::tie(v.instance, v.admin_enabled, v.ipv4_routing, v.ipv6_routing, v.levels, v.system_id, v.router_id, v.lsp_lifetime_seconds, v.lsp_mtu_octets, v.level, v.areas, v.interfaces, v.spf_wait, v.lsp_wait); }
+auto fields(T &v) { [[maybe_unused]] auto &[instance, admin_enabled, ipv4_routing, ipv6_routing, levels, system_id, router_id, lsp_lifetime_seconds, lsp_mtu_octets, level, areas, interfaces, spf_wait, lsp_wait, advertise_passive_only] = v;
+  return std::tie(v.instance, v.admin_enabled, v.ipv4_routing, v.ipv6_routing, v.levels, v.system_id, v.router_id, v.lsp_lifetime_seconds, v.lsp_mtu_octets, v.level, v.areas, v.interfaces, v.spf_wait, v.lsp_wait, v.advertise_passive_only); }
 template<class T> requires std::is_same_v<std::remove_const_t<T>, WaitTimerIntent>
 auto fields(T &v) { [[maybe_unused]] auto &[maximum, initial, second] = v; return std::tie(v.maximum, v.initial, v.second); }
 template<class T> requires std::is_same_v<std::remove_const_t<T>, NeighborArea>
@@ -107,6 +107,9 @@ private:
       if (version_ == 1U) return (*this)(value.instance, value.admin_enabled, value.ipv4_routing,
           value.ipv6_routing, value.levels, value.system_id, value.router_id, value.lsp_lifetime_seconds,
           value.lsp_mtu_octets, value.level, value.areas, value.interfaces);
+      if (version_ == 2U) return (*this)(value.instance, value.admin_enabled, value.ipv4_routing,
+          value.ipv6_routing, value.levels, value.system_id, value.router_id, value.lsp_lifetime_seconds,
+          value.lsp_mtu_octets, value.level, value.areas, value.interfaces, value.spf_wait, value.lsp_wait);
       return std::apply([&](auto &...member) { return (*this)(member...); }, fields(value));
     } else return std::apply([&](auto &...member) { return (*this)(member...); }, fields(value));
   }
@@ -117,14 +120,14 @@ private:
 }
 std::optional<std::vector<std::uint8_t>> encode(const RouterConfiguration &value, std::size_t maximum) noexcept {
   if (validate_configuration(value) != ConfigurationError::none) return {};
-  try { Writer writer{maximum}; if (!writer(std::uint8_t{2U}, value)) return {}; return std::move(writer.bytes); }
+  try { Writer writer{maximum}; if (!writer(std::uint8_t{3U}, value)) return {}; return std::move(writer.bytes); }
   catch (...) { return {}; }
 }
 std::unique_ptr<RouterConfiguration> decode(std::span<const std::uint8_t> bytes, std::size_t maximum) noexcept {
   if (maximum < sizeof(RouterConfiguration)) return {};
   try {
     auto value = std::make_unique<RouterConfiguration>();
-    if (bytes.empty() || (bytes.front() != 1U && bytes.front() != 2U)) return {};
+    if (bytes.empty() || (bytes.front() != 1U && bytes.front() != 2U && bytes.front() != 3U)) return {};
     Reader reader{bytes.subspan(1U), maximum - sizeof(RouterConfiguration), bytes.front()};
     if (!reader(*value) || !reader.finished() ||
         validate_configuration(*value) != ConfigurationError::none) return {};
