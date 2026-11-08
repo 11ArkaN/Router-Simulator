@@ -559,6 +559,11 @@ private:
   [[nodiscard]] bool apply_configuration(RouterIntent &router,
                                          const ConfigurationIntent &value,
                                          bool boot_effective = false);
+  // Serialized datastore transaction only. The saved cohort supplies local
+  // ownership and rollback evidence, never peer-derived configuration. Failure
+  // leaves intent unchanged; the caller restores its complete runtime backup.
+  [[nodiscard]] bool apply_isis_configuration(const RouterIntent &,
+      const ConfigurationIntent &, const RuntimeSupervisorCheckpoint &);
   [[nodiscard]] static packet::nd::RouterAdvertisementConfig
   effective_router_advertisement(const RouterAdvertisementDnsIntent &router_dns,
                                  const InterfaceIntent &interface) noexcept;

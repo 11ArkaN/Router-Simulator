@@ -1,6 +1,9 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  routing.isis.canonical_admission:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.canonical_admission, nokia.sros.26_7.isis.configuration_generation_plan, nokia.sros.26_7.isis.administrative_gate]
   routing.isis.configuration_generation_plan:
     status: experimental
     source_ids: [nokia.sros.26_7.isis.configuration_generation_plan]

@@ -428,6 +428,7 @@ target_link_libraries(router_management PUBLIC
 add_library(router_runtime STATIC
   src/runtime/control_projection_worker.cpp
   src/runtime/isis_configuration_projection.cpp
+  src/runtime/lab_runtime_isis.cpp
   src/runtime/lab_runtime.cpp
   src/runtime/lab_checkpoint.cpp
   src/runtime/network_plane_worker.cpp

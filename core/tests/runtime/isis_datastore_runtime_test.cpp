@@ -3,8 +3,10 @@
 #include "router/lab_runtime.hpp"
 #include "router/lab_checkpoint.hpp"
 #include "router/generated_lab_runtime_protocol.hpp"
+#include <algorithm>
 #include <memory>
 #include <stdexcept>
+#include <thread>
 namespace {
 using namespace router::lab;
 namespace lab_runtime_protocol = router::lab_runtime_protocol;
@@ -181,4 +183,185 @@ void isis_datastore_runtime_tests() {
   const auto inverse = runtime->command(message(lab_runtime_protocol::snapshot));
   require(inverse.find("\"instance\":1") != std::string_view::npos && inverse.find("\"ipv4Routing\":false") != std::string_view::npos,
       "classic full-path inverse did not create its required instance");
+
+  // A separate router starts its actual owner through the public candidate
+  // transaction. Explicit fixed LSP policy avoids an unsourced backoff rule.
+  runtime.reset(); runtime = std::make_unique<LabRuntime>();
+  require(runtime->initialize_secret_vault(key, context), "canonical IS-IS vault failed");
+  require(!runtime->command(message(lab_runtime_protocol::router_create, {"isis-r1", "7750-sr-1", "R1"})).starts_with("ERROR:"), "canonical router failed");
+  require(!runtime->command(message(lab_runtime_protocol::session_create, {"isis-console", "isis-r1", "operational"})).starts_with("ERROR:"), "canonical session failed");
+  execute("edit-config private");
+  execute("/configure router isis 0 area-address[49.0001]");
+  execute("/configure router isis 0 level-capability 2");
+  execute("/configure router isis 0 level 2 wide-metrics-only true");
+  execute("/configure router isis 0 advertise-passive-only true");
+  execute("/configure router isis 0 system-id 0000.0000.0001");
+  execute("/configure router isis 0 timers lsp-wait lsp-initial-wait 10");
+  execute("/configure router isis 0 timers lsp-wait lsp-second-wait 100");
+  execute("/configure router isis 0 timers lsp-wait lsp-max-wait 100");
+  execute("/configure router isis 0 admin-state enable");
+  execute("commit");
+  auto protector = router::vault::SecretVault::create(key, context, 1U);
+  require(protector.has_value(), "canonical checkpoint test protector failed");
+  const auto capture = [&] {
+    const auto bytes = runtime->export_checkpoint();
+    require(!bytes.empty(), "canonical IS-IS checkpoint export failed");
+    auto result = checkpoint_v13::decode(bytes, &*protector);
+    require(result && result->network.isis && result->network.isis->control.devices.size() == 1U &&
+        result->network.isis->control.devices[0U].instances.size() == 1U,
+        "canonical activation did not publish exactly one actual owner");
+    return result;
+  };
+  auto active = capture();
+  require(active->network.isis->control.devices[0U].instances[0U].admin_enabled &&
+      active->network.isis->control.devices[0U].instances[0U].configuration.levels[1U] &&
+      !active->network.isis->control.devices[0U].instances[0U].configuration.levels[0U],
+      "canonical level/gate projection failed");
+  const auto active_bytes = checkpoint_v13::encode(*active, &*protector);
+  active->portable_routers.front().isis.instances.front().admin_enabled = false;
+  const auto disagreed = checkpoint_v13::encode(*active, &*protector);
+  require(!disagreed.empty() && !runtime->import_checkpoint(disagreed),
+      "checkpoint restored a managed owner whose gate disagreed with running intent");
+  runtime.reset(); runtime = std::make_unique<LabRuntime>();
+  require(runtime->initialize_secret_vault(key, context) && runtime->import_checkpoint(active_bytes),
+      "canonical active checkpoint restoration failed");
+  execute("/configure router isis 0 admin-state disable"); execute("commit");
+  const auto disabled = capture();
+  require(!disabled->network.isis->control.devices[0U].instances[0U].admin_enabled,
+      "canonical shutdown lost or failed to gate its owner");
+  execute("/configure router isis 0 admin-state enable"); execute("commit");
+  require(capture()->network.isis->control.devices[0U].instances[0U].admin_enabled,
+      "canonical resume failed");
+  execute("/configure"); execute("delete router isis 0"); execute("commit");
+  const auto removed_bytes = runtime->export_checkpoint();
+  auto removed = checkpoint_v13::decode(removed_bytes, &*protector);
+  require(removed && (!removed->network.isis || std::all_of(removed->network.isis->control.devices.begin(),
+      removed->network.isis->control.devices.end(), [](const auto &device) { return device.instances.empty(); })),
+      "canonical removal retained a live instance");
+  execute("quit-config");
+  const auto operation = [&](std::string_view name, std::initializer_list<std::string_view> fields) {
+    const std::string output{runtime->command(message(name, fields))};
+    require(!output.starts_with("ERROR:"), output.c_str());
+  };
+  operation(lab_runtime_protocol::router_create, {"isis-r2", "7750-sr-1", "R2"});
+  operation(lab_runtime_protocol::session_create, {"isis-console-2", "isis-r2", "operational"});
+  for (const auto router : {"isis-r1", "isis-r2"})
+    operation(lab_runtime_protocol::port_configure, {router, "1/1/1", "1", "9212", "100000", ""});
+  operation(lab_runtime_protocol::interface_configure, {"isis-r1", "edge", "1/1/1", "10.0.12.1/30", "", "", "1"});
+  operation(lab_runtime_protocol::interface_configure, {"isis-r2", "edge", "1/1/1", "10.0.12.2/30", "", "", "1"});
+  operation(lab_runtime_protocol::interface_configure, {"isis-r1", "system", "", "10.255.0.1/32", "", "", "1"});
+  operation(lab_runtime_protocol::interface_configure, {"isis-r2", "system", "", "10.255.0.2/32", "", "", "1"});
+  operation(lab_runtime_protocol::link_create, {"isis-wire", "isis-r1", "1/1/1", "isis-r2", "1/1/1", "100", "1", "0"});
+  const auto terminal = [&](std::string_view session, std::string_view command) {
+    const std::string output{runtime->command(message(lab_runtime_protocol::session_execute, {session, command}))};
+    if (output.starts_with("ERROR:") || output.find("MINOR:") != std::string::npos || output.find("MAJOR:") != std::string::npos)
+      throw std::runtime_error("canonical wire CLI " + std::string{command} + ": " + output);
+    return output;
+  };
+  for (const auto session : {"isis-console", "isis-console-2"}) {
+    terminal(session, "edit-config private");
+    for (const auto command : {
+        "/configure router isis 0 area-address[49.0001]",
+        "/configure router isis 0 level-capability 2",
+        "/configure router isis 0 level 2 wide-metrics-only true",
+        "/configure router isis 0 advertise-passive-only true",
+        "/configure router isis 0 timers lsp-wait lsp-initial-wait 10",
+        "/configure router isis 0 timers lsp-wait lsp-second-wait 100",
+        "/configure router isis 0 timers lsp-wait lsp-max-wait 100",
+        "/configure router isis 0 interface system",
+        "/configure router isis 0 interface edge interface-type point-to-point",
+        "/configure router isis 0 interface edge level 1 hello-interval 1",
+        "/configure router isis 0 admin-state enable", "commit", "quit-config"}) terminal(session, command);
+  }
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{8};
+  std::string routes;
+  do {
+    routes = terminal("isis-console", "show router route-table");
+    if (routes.find("10.255.0.2/32") != std::string::npos) break;
+    std::this_thread::yield();
+  } while (std::chrono::steady_clock::now() < deadline);
+  require(routes.find("10.255.0.2/32") != std::string::npos,
+      "canonical CLI owners did not learn the peer System prefix over physical frames");
+  std::string ping = terminal("isis-console", "ping 10.255.0.2 count 1");
+  const auto ping_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+  while (ping.find("PING Statistics") == std::string::npos && std::chrono::steady_clock::now() < ping_deadline) {
+    ping += runtime->command(message(lab_runtime_protocol::session_poll, {"isis-console"}));
+    std::this_thread::yield();
+  }
+  require(ping.find("1 packets transmitted, 1 packets received") != std::string::npos,
+      "canonical IS-IS route did not forward a real ping");
+  const auto network_image = runtime->export_checkpoint();
+  const std::vector<std::uint8_t> network_saved{network_image.begin(), network_image.end()};
+  auto network_state = checkpoint_v13::decode(network_saved, &*protector);
+  require(network_state && network_state->network.isis && network_state->network.isis->ports.size() == 2U,
+      "canonical wire checkpoint omitted its physical bindings");
+  const auto old_epoch = network_state->network.isis->ports.front().identity.configuration_generation;
+  runtime.reset(); runtime = std::make_unique<LabRuntime>();
+  require(runtime->initialize_secret_vault(key, context) && runtime->import_checkpoint(network_saved),
+      "canonical wire checkpoint fresh-owner restoration failed");
+  terminal("isis-console", "edit-config private");
+  terminal("isis-console", "/configure router isis 0 lsp-lifetime 1201");
+  terminal("isis-console", "commit"); terminal("isis-console", "quit-config");
+  const auto restarted = checkpoint_v13::decode(runtime->export_checkpoint(), &*protector);
+  require(restarted && restarted->network.isis &&
+      restarted->network.isis->ports.front().identity.configuration_generation > old_epoch &&
+      restarted->network.isis->control.devices.front().instances.front().configuration.levels[1U]->maximum_age == 1201U,
+      "canonical restart did not replace its owner with a fresh circuit epoch");
+  terminal("isis-console-2", "//");
+  terminal("isis-console-2", "configure router isis shutdown");
+  const auto shutdown_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{8};
+  do {
+    routes = terminal("isis-console", "show router route-table");
+    if (routes.find("10.255.0.2/32") == std::string::npos) break;
+    std::this_thread::yield();
+  } while (std::chrono::steady_clock::now() < shutdown_deadline);
+  require(routes.find("10.255.0.2/32") == std::string::npos,
+      "classic shutdown did not withdraw its wire-learned route at its peer");
+  terminal("isis-console-2", "configure router isis no shutdown");
+  const auto resume_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{8};
+  do {
+    routes = terminal("isis-console", "show router route-table");
+    if (routes.find("10.255.0.2/32") != std::string::npos) break;
+    std::this_thread::yield();
+  } while (std::chrono::steady_clock::now() < resume_deadline);
+  require(routes.find("10.255.0.2/32") != std::string::npos,
+      "classic resume did not rebuild its real wire adjacency and route");
+  terminal("isis-console", "edit-config private");
+  terminal("isis-console", "/configure router isis 0 advertise-passive-only false");
+  const std::string refused{runtime->command(message(lab_runtime_protocol::session_execute, {"isis-console", "commit"}))};
+  require(refused.find("Candidate commit failed") != std::string::npos &&
+      runtime->command(message(lab_runtime_protocol::snapshot)).find("\"advertisePassiveOnly\":true") != std::string_view::npos,
+      "unsupported live policy edit succeeded or changed running intent");
+  terminal("isis-console", "discard"); terminal("isis-console", "/configure");
+  terminal("isis-console", "delete router isis 0"); terminal("isis-console", "commit");
+  terminal("isis-console", "quit-config");
+  terminal("isis-console-2", "configure router no isis");
+  terminal("isis-console-2", "//");
+  for (const auto session : {"isis-console", "isis-console-2"}) {
+    terminal(session, "edit-config private");
+    for (const auto command : {
+        "/configure router isis 0 area-address[49.0001]",
+        "/configure router isis 0 level-capability 2",
+        "/configure router isis 0 level 2 wide-metrics-only true",
+        "/configure router isis 0 advertise-passive-only true",
+        "/configure router isis 0 timers lsp-wait lsp-initial-wait 10",
+        "/configure router isis 0 timers lsp-wait lsp-second-wait 100",
+        "/configure router isis 0 timers lsp-wait lsp-max-wait 100",
+        "/configure router isis 0 interface system",
+        "/configure router isis 0 interface edge level 2 hello-interval 1",
+        "/configure router isis 0 admin-state enable", "commit", "quit-config"}) terminal(session, command);
+  }
+  const auto lan_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{8};
+  do {
+    routes = terminal("isis-console", "show router route-table");
+    if (routes.find("10.255.0.2/32") != std::string::npos) break;
+    std::this_thread::yield();
+  } while (std::chrono::steady_clock::now() < lan_deadline);
+  require(routes.find("10.255.0.2/32") != std::string::npos,
+      "canonical default Ethernet LAN did not converge after instance removal and recreation");
+  const auto lan_state = checkpoint_v13::decode(runtime->export_checkpoint(), &*protector);
+  require(lan_state && lan_state->network.isis &&
+      lan_state->network.isis->ports.front().identity.configuration_generation > old_epoch &&
+      lan_state->network.isis->control.devices.front().circuits.front().definition.broadcast.has_value(),
+      "canonical LAN admission reused a retired epoch or lost its actual broadcast medium");
 }

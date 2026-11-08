@@ -9522,10 +9522,6 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
                                  value.mld_import_policies)) {
     return false;
   }
-  // Running intent cannot claim an enabled instance without a corresponding
-  // prepared protocol generation. Inactive configuration owns no live entity.
-  if (std::any_of(value.isis.instances.begin(), value.isis.instances.end(),
-      [](const auto &instance) { return instance.admin_enabled.value_or(false); })) return false;
   for (const auto &instance : value.isis.instances)
     for (const auto &attached : instance.interfaces)
       if (std::none_of(value.interfaces.begin(), value.interfaces.end(),
@@ -12145,6 +12141,8 @@ bool LabRuntime::apply_configuration(RouterIntent &router_intent,
       }
     }
   }
+  if (applied)
+    applied = apply_isis_configuration(router_intent, value, *backup);
   if (!applied) {
     static_cast<void>(supervisor_.restore(std::move(*backup)));
     return false;
@@ -28078,17 +28076,19 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
           if (std::none_of(portable->interfaces.begin(), portable->interfaces.end(),
                   [&](const auto &base) { return base.name == attached.name; }))
             return false;
-        if (!instance.admin_enabled.value_or(false))
-          continue;
-        if (!checkpoint->network.isis)
-          return false;
-        const auto &owners = checkpoint->network.isis->control.devices;
-        const auto owner = std::find_if(owners.begin(), owners.end(),
-            [&](const auto &item) { return item.handle == device.handle && item.active; });
-        if (owner == owners.end() ||
-            std::none_of(owner->instances.begin(), owner->instances.end(),
-                [&](const auto &item) { return item.instance == instance.instance; }))
-          return false;
+        const isis::ControlInstanceCheckpoint *matched{};
+        if (checkpoint->network.isis) {
+          const auto &owners = checkpoint->network.isis->control.devices;
+          const auto owner = std::find_if(owners.begin(), owners.end(),
+              [&](const auto &item) { return item.handle == device.handle && item.active; });
+          if (owner != owners.end()) {
+            const auto entry = std::find_if(owner->instances.begin(), owner->instances.end(),
+                [&](const auto &item) { return item.instance == instance.instance; });
+            if (entry != owner->instances.end()) matched = &*entry;
+          }
+        }
+        const bool enabled = instance.admin_enabled.value_or(false);
+        if ((enabled && !matched) || (matched && matched->admin_enabled != enabled)) return false;
       }
       RouterIntent value{
           .handle = device.handle,
