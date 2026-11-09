@@ -2,6 +2,7 @@
 // Detail output shows immutable defaults without mutating the original model.
 #include "cli/isis_cli_info.hpp"
 #include "cli/isis_cli_configuration.hpp"
+#include "cli/isis_cli_operational.hpp"
 #include <sstream>
 #include <stdexcept>
 namespace {
@@ -88,5 +89,27 @@ void isis_cli_info_tests() {
   require(delta.find("-        interface \"edge one\" {") != std::string::npos);
   require(md_compare({}, original).find("+    isis 127 {") != std::string::npos);
   require(md_compare(original, {}).find("-    isis 127 {") != std::string::npos);
-
+  router::isis::AdjacencyQuery query;
+  query.device = {0U, 1U}; query.instance = 0U;
+  query.rows.push_back({{{0U, 1U}, 7U, 1U, 0U, 0U},
+      *router::isis::parse_configured_system_id("0000.0000.0002"), {}, router::isis::Levels::level2,
+      router::isis::OperationalAdjacencyState::up, std::chrono::milliseconds{2500}, {}});
+  const std::array names{InterfaceName{7U, "edge one"}};
+  auto report = adjacency_table(query, names);
+  require(report && report->find("Adjacencies : 1") != std::string::npos && report->find("edge one") != std::string::npos);
+  const auto row = [&](const std::string &text) {
+    const auto begin = text.find("0000.0000.0002");
+    require(begin != std::string::npos);
+    return text.substr(begin, text.find('\n', begin) - begin);
+  };
+  require(row(*report).ends_with('0'));
+  query.rows[0U].attributes = {229U, 2U, 0U, 2U};
+  report = adjacency_table(query, names);
+  require(report && row(*report).ends_with('2') && !row(*report).ends_with("0,2"));
+  query.rows[0U].attributes = {229U, 1U, 2U};
+  require(!adjacency_table(query, names));
+  query.rows[0U].attributes.clear();
+  require(!adjacency_table(query, {}));
+  query.version = 2U;
+  require(!adjacency_table(query, names));
 }

@@ -5,6 +5,7 @@
 #include "router/route_input_store.hpp"
 #include "router/network_transfer_checkpoint.hpp"
 #include "router/isis_runtime_checkpoint.hpp"
+#include "router/isis_operational.hpp"
 
 #include "dhcpv4/dhcpv4_endpoint_service.hpp"
 #include "dhcpv6/dhcpv6_endpoint_service.hpp"
@@ -5506,6 +5507,24 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
   impl_->retire_idle_isis_registration(device);
   impl_->resume_forwarding();
   return true;
+}
+
+std::shared_ptr<const isis::AdjacencyQuery> NetworkPlane::isis_adjacencies(DeviceHandle device,
+    std::uint8_t instance, std::size_t maximum_rows, std::size_t maximum_attribute_octets) noexcept {
+  if (!impl_->live(device) || instance > device_catalog::isis_instance_last || !maximum_rows || !maximum_attribute_octets)
+    return nullptr;
+  try {
+    auto query = std::make_shared<isis::AdjacencyQuery>();
+    query->device = device; query->instance = instance;
+    query->maximum_rows = maximum_rows; query->maximum_attribute_octets = maximum_attribute_octets;
+    if (!impl_->isis_registered[device.index]) return query;
+    isis::ControlCommand command;
+    command.kind = isis::ControlCommandKind::query_adjacencies;
+    command.identity.device = device; command.adjacency_query = query;
+    if (impl_->execute_isis(std::move(command)).error != isis::ControlError::none) return nullptr;
+    return query;
+  } catch (const std::bad_alloc &) { return nullptr; }
+    catch (const std::length_error &) { return nullptr; }
 }
 
 std::optional<isis::ControlResult> NetworkPlane::query_isis_circuit(const isis::CircuitIdentity &identity) noexcept {

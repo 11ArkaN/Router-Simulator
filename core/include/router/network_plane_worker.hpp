@@ -64,6 +64,11 @@ public:
   prepared_router_checkpoint() const noexcept {
     return prepared_router_checkpoint_.get();
   }
+  // Matching response acquire publishes immutable diagnostic storage. Each
+  // returned strong reference survives the next worker-owned query buffer.
+  [[nodiscard]] std::shared_ptr<const isis::AdjacencyQuery> prepared_isis_adjacencies() const noexcept {
+    return prepared_isis_adjacencies_;
+  }
   [[nodiscard]] bool stage_restore(NetworkPlaneCheckpoint state);
   void cancel_staged_restore() noexcept { pending_restore_.reset(); }
   [[nodiscard]] bool running() const noexcept {
@@ -106,6 +111,7 @@ private:
   NetworkPlaneChannels &channels_;
   std::unique_ptr<NetworkPlaneCheckpoint> prepared_checkpoint_;
   std::unique_ptr<RouterForwarderCheckpoint> prepared_router_checkpoint_;
+  std::shared_ptr<const isis::AdjacencyQuery> prepared_isis_adjacencies_;
   std::unique_ptr<NetworkPlaneCheckpoint> pending_restore_;
   // NetworkCommand contains the largest fixed FIB generation supported by the
   // selected hardware profile. Keeping one owner-local scratch object on the

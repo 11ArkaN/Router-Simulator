@@ -1052,6 +1052,11 @@ public:
   // or allocation refusal. No forwarding-owned address escapes this API.
   [[nodiscard]] std::unique_ptr<const RouterForwarderCheckpoint>
   router_operational_state(DeviceHandle device) noexcept;
+  // Serialized control only. Explicit cold query budgets cross a fixed SPSC
+  // command; a matching result acquire freezes the independently owned values.
+  // Null reports stale device, invalid bounds, backpressure or owner refusal.
+  [[nodiscard]] std::shared_ptr<const isis::AdjacencyQuery> isis_adjacencies(DeviceHandle,
+      std::uint8_t instance, std::uint32_t maximum_rows, std::uint32_t maximum_attribute_octets) noexcept;
   [[nodiscard]] std::uint64_t network_thread_id() const noexcept {
     return network_worker_ ? network_worker_->owner_thread_id() : 0U;
   }

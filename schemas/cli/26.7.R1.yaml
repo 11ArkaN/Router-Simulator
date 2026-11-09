@@ -754,6 +754,7 @@ literals:
   area: "Configure or select an OSPF area"
   router-id: "Configure the OSPF router identifier"
   reference-bandwidth: "Configure OSPF automatic interface costing"
+  adjacency: "Display accepted IS-IS neighbors"
   interface-type: "Configure the OSPF network type"
   point-to-point: "Use an OSPF point-to-point network"
   broadcast: "Use an OSPF broadcast network"
@@ -1315,6 +1316,8 @@ commands:
   - { id: classic_keychain_no_entry, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychain, { parameter: ospf_keychain_name }, direction, bi, no, entry, { parameter: ospf_key_id }] }
   - { id: classic_no_keychain, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, no, keychain, { parameter: ospf_keychain_name }] }
 
+  - { id: show_router_isis_adjacency, engines: [md, classic], source_id: nokia.sros.26_7.isis.operational_adjacency, tokens: [show, router, isis, adjacency] }
+  - { id: show_router_isis_instance_adjacency, engines: [md, classic], source_id: nokia.sros.26_7.isis.operational_adjacency, tokens: [show, router, isis, { parameter: isis_instance }, adjacency] }
   - { id: show_router_ospf_status, engines: [md, classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [show, router, ospf, status] }
   - { id: show_router_ospf_interface, engines: [md, classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [show, router, ospf, interface] }
   - { id: show_router_ospf_interface_named, engines: [md, classic], source_id: nokia.sros.26_7.ospf.interface_detail, tokens: [show, router, ospf, interface, { parameter: interface_name }] }

@@ -282,6 +282,16 @@ void isis_datastore_runtime_tests() {
   } while (std::chrono::steady_clock::now() < deadline);
   require(routes.find("10.255.0.2/32") != std::string::npos,
       "canonical CLI owners did not learn the peer System prefix over physical frames");
+  const auto adjacency = terminal("isis-console", "show router isis adjacency");
+  require(adjacency.find("Adjacencies : 1") != std::string::npos && adjacency.find("Up") != std::string::npos &&
+      adjacency.find("edge") != std::string::npos && adjacency.find("L2") != std::string::npos,
+      "MD adjacency report did not expose the actual P2P neighbor");
+  require(terminal("isis-console", "show router isis 0 adjacency").find("Adjacencies : 1") != std::string::npos,
+      "explicit instance adjacency report lost its local owner");
+  const std::string absent_report{runtime->command(message(lab_runtime_protocol::session_execute,
+      {"isis-console", "show router isis 127 adjacency"}))};
+  require(absent_report.find("IS-IS adjacency query failed") != std::string::npos,
+      "unconfigured instance adjacency query returned a successful empty report");
   std::string ping = terminal("isis-console", "ping 10.255.0.2 count 1");
   const auto ping_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
   while (ping.find("PING Statistics") == std::string::npos && std::chrono::steady_clock::now() < ping_deadline) {
@@ -309,6 +319,8 @@ void isis_datastore_runtime_tests() {
       "canonical restart did not replace its owner with a fresh circuit epoch");
   terminal("isis-console-2", "//");
   terminal("isis-console-2", "configure router isis shutdown");
+  require(terminal("isis-console-2", "show router isis adjacency").find("Adjacencies : 0") != std::string::npos,
+      "classic adjacency report retained a shutdown neighbor");
   const auto shutdown_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{8};
   do {
     routes = terminal("isis-console", "show router route-table");
@@ -364,4 +376,6 @@ void isis_datastore_runtime_tests() {
       lan_state->network.isis->ports.front().identity.configuration_generation > old_epoch &&
       lan_state->network.isis->control.devices.front().circuits.front().definition.broadcast.has_value(),
       "canonical LAN admission reused a retired epoch or lost its actual broadcast medium");
+  require(terminal("isis-console", "show router isis 0 adjacency").find("Adjacencies : 1") != std::string::npos,
+      "LAN adjacency report omitted its accepted level-two neighbor");
 }

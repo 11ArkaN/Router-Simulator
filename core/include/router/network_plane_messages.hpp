@@ -16,7 +16,7 @@ namespace router::lab {
 
 // Version 43 adds administrative state to owned IS-IS generation transfers.
 // Mixed owners must refuse rather than interpret another ring layout.
-inline constexpr std::uint32_t network_plane_message_version = 43;
+inline constexpr std::uint32_t network_plane_message_version = 44;
 
 struct NetworkDhcpv4ClientBegin {
   // RFC 2131 caps each ordinary option payload at 255 octets. Carrying the two
@@ -341,10 +341,13 @@ enum class NetworkCommandKind : std::uint8_t {
   prepare_checkpoint,
   restore_checkpoint,
   shutdown,
-  admit_isis_generation
+  admit_isis_generation, prepare_isis_adjacencies
 };
 
 struct NetworkCommand {
+  // Cold diagnostic resource budget. These are emulator query bounds, not
+  // router protocol capacities. A complete projection or explicit refusal.
+  struct IsisQuery { std::uint8_t instance{}; std::uint32_t rows{}, attributes{}; } isis_query{};
   // Producer: assigned control shard. Consumer: combined forwarding and link
   // shard. The fixed payload is copied into shared memory with release
   // ordering.

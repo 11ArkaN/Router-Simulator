@@ -3,6 +3,7 @@
 // Generation rejection and removal are observed through immutable results.
 
 #include "router/isis_control_worker.hpp"
+#include "router/isis_operational.hpp"
 #include "router/isis_control_checkpoint.hpp"
 #include "router/isis_lsp_builder.hpp"
 #include "router/isis_root_content.hpp"
@@ -2133,6 +2134,19 @@ void isis_network_plane_route_publication_tests() {
           if (ready) break;
           require(RuntimeClock::now() < converged);
         }
+        const auto adjacent = plane->isis_adjacencies(devices[0U], 0U, 4U, 8192U);
+        require(adjacent && adjacent->version == 1U && adjacent->rows.size() == 1U);
+        const auto retained_attributes = adjacent->rows.front().attributes;
+        for (const auto &row : adjacent->rows) {
+          require(row.circuit == circuits[0U].circuit.identity && row.system == programs[1U].local &&
+              row.state == OperationalAdjacencyState::up && row.expires_in.count() > 0 &&
+              row.usage == Levels::both);
+        }
+        require(!plane->isis_adjacencies(devices[0U], 0U, 4U, 1U) &&
+            !plane->isis_adjacencies(devices[0U], 0U, 0U, 8192U));
+        const auto after_refusal = plane->isis_adjacencies(devices[0U], 0U, 4U, 8192U);
+        require(after_refusal && after_refusal->rows.size() == 1U &&
+            adjacent->rows.front().attributes == retained_attributes);
         // Back-to-back owner snapshots can resume before the forwarding pthread
         // reaches its wait. A published pause receipt must already be armed so
         // that an early resume is retained rather than overwritten afterwards.
@@ -2366,6 +2380,14 @@ void isis_network_plane_lan_tests() {
     };
     restore_base();
     require(query(0U).lan_up[0U] == 1U && query(0U).lan_up[1U] == 1U);
+    const auto adjacent = plane->isis_adjacencies(devices[0U], 0U, 4U, 8192U);
+    require(adjacent && adjacent->rows.size() == 2U && adjacent->rows[0U].usage == Levels::level1 &&
+        adjacent->rows[1U].usage == Levels::level2);
+    for (const auto &row : adjacent->rows)
+      require(row.circuit == programs[0U].circuit.identity && row.system == configuration(2U).local.system &&
+          row.snpa == peer && row.state == OperationalAdjacencyState::up && row.expires_in.count() > 0);
+    require(!plane->isis_adjacencies(devices[0U], 0U, 1U, 8192U));
+    require(plane->isis_adjacencies(devices[0U], 0U, 4U, 8192U)->rows.size() == 2U && adjacent->rows.size() == 2U);
     const auto restored_binding = plane->query_isis_lan_next_hop(programs[0U].circuit.identity, 1U, peer,
         *ip::parse_ip_address("198.51.100.2"));
     require(restored_binding && restored_binding->bound_next_hop == bound4->bound_next_hop);

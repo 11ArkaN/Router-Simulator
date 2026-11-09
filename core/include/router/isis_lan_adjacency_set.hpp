@@ -85,6 +85,9 @@ public:
   // Views borrow until the next mutation. Queries run on the same owner only.
   [[nodiscard]] std::optional<LanPeerView> find(const packet::Mac &mac) const noexcept;
   [[nodiscard]] std::optional<LanPeerView> at(std::size_t index) const noexcept;
+  // Same-owner projection of this exact peer's timer. Missing index or timer
+  // returns nullopt; the borrowed peer position is valid only until mutation.
+  [[nodiscard]] std::optional<Clock::time_point> holding_deadline(std::size_t index) const noexcept;
   // Earliest owner-local holding deadline, or nullopt for an empty collection.
   [[nodiscard]] std::optional<Clock::time_point> deadline() const noexcept;
   [[nodiscard]] std::size_t size() const noexcept { return peers_.size(); }

@@ -360,6 +360,7 @@ add_library(router_network STATIC
   src/isis/isis_control_lan_update.cpp
   src/isis/isis_control_lan_origin.cpp
   src/isis/isis_control_worker.cpp
+  src/isis/isis_control_operational.cpp
   src/isis/isis_interface_program.cpp
   src/isis/isis_instance_program.cpp
   src/isis/isis_local_prefix_program.cpp
@@ -415,6 +416,7 @@ add_library(router_management STATIC
   src/cli/bof_cli_configuration.cpp
   src/cli/ipsec_cli_configuration.cpp
   src/cli/isis_cli_info.cpp
+  src/cli/isis_cli_operational.cpp
   src/cli/isis_cli_configuration.cpp
   src/cli/ospf_cli_configuration.cpp
   src/cli/pki_cli_configuration.cpp

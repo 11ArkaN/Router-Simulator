@@ -4,6 +4,7 @@
 
 #include "router/isis_control_worker.hpp"
 #include "router/isis_control_checkpoint.hpp"
+#include "router/isis_operational.hpp"
 
 #include <algorithm>
 #include <new>
@@ -496,6 +497,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     return result;
   }
   if (prepared_ && command.kind != ControlCommandKind::query_circuit &&
+      command.kind != ControlCommandKind::query_adjacencies &&
       command.kind != ControlCommandKind::query_update_instance &&
       command.kind != ControlCommandKind::query_sequence_recovery) {
     result.error = ControlError::generation_pending;
@@ -531,6 +533,10 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     const auto now = RuntimeClock::now();
     result.sequence_recovery_pending = std::any_of(device.sequence_recovery.begin(), device.sequence_recovery.end(),
         [&](const auto &gate) { return gate && gate->disabled() && !gate->ready(now); });
+    return result;
+  }
+  if (command.kind == ControlCommandKind::query_adjacencies) {
+    result.error = command.adjacency_query ? query_adjacencies(device, *command.adjacency_query) : ControlError::invalid_argument;
     return result;
   }
   if (command.kind == ControlCommandKind::prepare_generation) {

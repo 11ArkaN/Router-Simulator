@@ -24,6 +24,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <memory>
 #include <thread>
 #include <variant>
 #include <stdexcept>
@@ -33,6 +34,7 @@ namespace router::isis {
 struct ControlWorkerCheckpoint;
 struct ControlInstanceCheckpoint;
 struct ControlCircuitCheckpoint;
+struct AdjacencyQuery;
 
 struct ControlChannels {
   // One forwarding producer and this control consumer per ingress pair. Roles
@@ -69,7 +71,7 @@ enum class ControlCommandKind : std::uint8_t {
   abort_generation, add_update_instance, remove_update_instance, query_update_instance, originate_lsp, shutdown,
   query_sequence_recovery, replace_local_content, withdraw_local_content, add_lan_circuit, begin_checkpoint_barrier, end_checkpoint_barrier, capture_checkpoint,
   prepare_checkpoint_restore, commit_checkpoint_restore, abort_checkpoint_restore,
-  set_circuit_carrier, set_update_admin_state
+  set_circuit_carrier, set_update_admin_state, query_adjacencies
 };
 // Exactly one medium is supplied. A broadcast program requires the legacy
 // P2P value to remain empty; selecting LAN never constructs a P2P state owner.
@@ -217,6 +219,13 @@ struct UpdateAdminState {
   bool enabled{};
 };
 struct ControlCommand {
+  // One-shot cold query lease, transferred inside OwnedSpscChannel. A fresh
+  // object belongs to exactly one command and must never be resubmitted.
+  // Caller retains one
+  // strong reference but must not read or write its value until this command's
+  // matching result acquire. The IS-IS pthread is the sole writer until that
+  // release; afterward the result is immutable. A refused query has no rows.
+  std::shared_ptr<AdjacencyQuery> adjacency_query{};
   std::uint64_t id{};
   ControlCommandKind kind{ControlCommandKind::query_worker};
   // Serialized persistence coordinator. Begin requires zero and returns a new
@@ -714,6 +723,8 @@ private:
       RuntimeClock::time_point now, std::size_t &budget) noexcept;
   [[nodiscard]] ControlError edit_local_content(ControlCommand &command, OwnedInstance &instance,
       ControlResult &result) noexcept;
+  [[nodiscard]] static ControlError query_adjacencies(const DeviceState &,
+      AdjacencyQuery &) noexcept;
   [[nodiscard]] RuntimeClock::time_point stop_local_instance(DeviceState &device, std::size_t index,
       UpdateStatus reason) noexcept;
   [[nodiscard]] RuntimeClock::time_point service_local_instance(DeviceState &device, std::size_t index,

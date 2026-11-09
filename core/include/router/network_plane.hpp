@@ -687,6 +687,11 @@ public:
   }
   [[nodiscard]] std::optional<isis::ControlResult> query_isis_circuit(
       const isis::CircuitIdentity &identity) noexcept;
+  // Serialized network owner only. The protocol pthread samples all accepted
+  // neighbors for this local instance in one command. Returned storage is
+  // immutable and independently retained; null means invalid scope/capacity.
+  [[nodiscard]] std::shared_ptr<const isis::AdjacencyQuery> isis_adjacencies(DeviceHandle,
+      std::uint8_t instance, std::size_t maximum_rows, std::size_t maximum_attribute_octets) noexcept;
   // Serialized network owner. Read a selected accepted LAN Hello binding;
   // level is 1 or 2, the peer is its SNPA and the result owns all returned data.
   // Missing scope/peer/address refuses without creating ARP or ND entries.

@@ -47,6 +47,10 @@ std::optional<LanPeerView> LanAdjacencySet::at(std::size_t index) const noexcept
   return index < peers_.size() ? std::optional(view(peers_[index])) : std::nullopt;
 }
 
+std::optional<LanAdjacencySet::Clock::time_point> LanAdjacencySet::holding_deadline(std::size_t index) const noexcept {
+  return index < peers_.size() ? peers_[index].adjacency.deadline() : std::nullopt;
+}
+
 std::optional<LanAdjacencySet::Clock::time_point> LanAdjacencySet::deadline() const noexcept {
   std::optional<Clock::time_point> earliest;
   for (const auto &peer : peers_) {

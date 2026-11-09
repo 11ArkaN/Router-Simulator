@@ -13,6 +13,7 @@
 #include "cli/ospf_cli_configuration.hpp"
 #include "cli/isis_cli_configuration.hpp"
 #include "cli/isis_cli_info.hpp"
+#include "cli/isis_cli_operational.hpp"
 #include "isis_configuration_projection.hpp"
 #include "router/isis_configuration_codec.hpp"
 #include "cli/pki_cli_configuration.hpp"
@@ -23333,6 +23334,27 @@ std::string LabRuntime::execute_session_command(std::string_view session_id,
                      : "MINOR: MGMT_CORE #2203: Invalid element - currently "
                        "not allowed";
     }
+    output += cli_prompt(view, terminal->cli);
+  } else if (parsed->spec->id == cli_schema::CommandId::show_router_isis_adjacency ||
+             parsed->spec->id == cli_schema::CommandId::show_router_isis_instance_adjacency) {
+    const auto instance_text = cli_detail::argument(*parsed, cli_schema::TokenKind::isis_instance);
+    unsigned instance{};
+    std::optional<std::string> report;
+    if ((!instance_text || decimal(*instance_text, instance)) && instance <= device_catalog::isis_instance_last &&
+        std::any_of(intent->isis.instances.begin(), intent->isis.instances.end(),
+            [&](const auto &configured) { return configured.instance == instance; })) {
+      const auto projection = supervisor_.isis_adjacencies(intent->handle, static_cast<std::uint8_t>(instance), 1024U, 4U * 1024U * 1024U);
+      const auto *hardware = supervisor_.hardware(intent->handle);
+      if (projection && hardware) {
+        std::vector<isis_cli::InterfaceName> names;
+        for (const auto &interface : intent->interfaces) if (interface.port_configured)
+          if (const auto ordinal = hardware->coordinate_ordinal(interface.port_id))
+            names.push_back({physical_interface_id(*ordinal), interface.name});
+        report = isis_cli::adjacency_table(*projection, names);
+      }
+    }
+    output = report ? *report : terminal->cli.engine == CliEngine::classic ? "Error: IS-IS adjacency query failed." :
+        "MINOR: MGMT_CORE #2203: IS-IS adjacency query failed";
     output += cli_prompt(view, terminal->cli);
   } else if (router_interface_show_command(parsed->spec->id) ||
              parsed->spec->id ==

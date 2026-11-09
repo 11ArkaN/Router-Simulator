@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: nokia.sros.26_7.isis.operational_adjacency
+    kind: routing-protocol-operational-projection
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: nokia-official-doc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-a-commands.html#ai9j784jz3
+    section: IS-IS adjacency report and pinned state adjacency oper-state, usage and expires-in
+    rfc_refs: [RFC5303, RFC5120]
+    yang_path: /state/router/isis/interface/adjacency
+    last_verified_at: 2026-11-09
+    implementation: [core/include/router/isis_operational.hpp, core/src/isis/isis_control_operational.cpp, core/include/router/isis_control_worker.hpp, core/src/runtime/network_plane.cpp, core/src/runtime/network_plane_worker.cpp, core/src/runtime/runtime_supervisor_isis.cpp, core/src/cli/isis_cli_operational.hpp, core/src/cli/isis_cli_operational.cpp, core/src/runtime/lab_runtime.cpp, schemas/cli/26.7.R1.yaml]
+    tests: [core/tests/isis/isis_control_worker_test.cpp, core/tests/runtime/isis_datastore_runtime_test.cpp, core/tests/cli/isis_cli_info_test.cpp]
+    status: experimental
+    notes: A cold version-one query lease has one protocol-pthread writer until the matching response release and is immutable after its acquire. It copies accepted P2P and per-level LAN neighbor values, source-derived states, exact remaining relative holding duration and retained non-secret Hello attributes in one owner command. Row and cumulative attribute budgets refuse without partial output or protocol mutation. Separately retained results survive later queries. The pinned state model explicitly permits independent L1 and L2 adjacencies for the same peer. The initial common operational CLI report supports omitted or explicit instance and renders raw System IDs, usage, actual state, remaining whole seconds, local interface names and accepted MT membership; absent TLV 229 selects MT0, explicit membership does not imply MT0. Filters, detailed reports, persistent adjacency indices and remaining operational leaves are incomplete.
   - id: nokia.sros.26_7.isis.canonical_admission
     kind: routing-protocol-canonical-runtime-admission
     release: 26.7.R1
