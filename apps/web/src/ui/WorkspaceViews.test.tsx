@@ -119,18 +119,21 @@ describe("multi-router workspace controls", () => {
     const user = userEvent.setup();
     const toggle = vi.fn();
     const exportCapture = vi.fn();
+    const downloadCapture = vi.fn();
     const checkpoint = vi.fn();
     const selection = vi.fn();
     render(<CaptureWorkspace project={projectWithRouter()} selections={[]}
       onSelection={selection} onToggle={toggle}
-      onExport={exportCapture} onCheckpoint={checkpoint} />);
+      onExport={exportCapture} onDownload={downloadCapture} onCheckpoint={checkpoint} />);
 
     await user.click(screen.getByRole("button", { name: "Start capture" }));
     await user.click(screen.getByRole("button", { name: "Export PCAPNG" }));
+    await user.click(screen.getByRole("button", { name: "Download PCAPNG" }));
     await user.click(screen.getByRole("button", { name: "Export checkpoint" }));
     await user.click(screen.getByRole("button", { name: /CPM punt/ }));
     expect(toggle).toHaveBeenCalledOnce();
     expect(exportCapture).toHaveBeenCalledOnce();
+    expect(downloadCapture).toHaveBeenCalledOnce();
     expect(checkpoint).toHaveBeenCalledOnce();
     expect(selection).toHaveBeenCalledWith("cpm-punt", "r1", "", 0, true);
   });

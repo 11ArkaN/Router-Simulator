@@ -2837,11 +2837,11 @@ records:
     section: Section Header Block, Interface Description Block, Enhanced Packet Block, Interface Statistics Block
     rfc_refs: []
     yang_path: null
-    last_verified_at: 2026-07-23
-    implementation: [core/src/runtime/capture_store.cpp, core/src/runtime/lab_runtime.cpp, core/src/runtime/network_plane.cpp, core/src/runtime/wasm_api.cpp, apps/web/src/runtime/runtime.worker.ts, core/tools/capture_fixture.cpp, scripts/core.ps1]
-    tests: [core/tests/runtime/capture_store_test.cpp, core/tests/runtime/network_plane_test.cpp, core/tests/runtime/lab_runtime_test.cpp, core/tools/capture_fixture.cpp]
+    last_verified_at: 2026-11-09
+    implementation: [core/src/runtime/capture_store.cpp, core/src/runtime/lab_runtime.cpp, core/src/runtime/network_plane.cpp, core/src/runtime/wasm_api.cpp, apps/web/src/runtime/runtime.worker.ts, core/tools/capture_fixture.cpp, scripts/core.ps1, apps/web/src/ui/App.tsx, apps/web/src/ui/WorkspaceViews.tsx, apps/web/src/persistence.ts]
+    tests: [core/tests/runtime/capture_store_test.cpp, core/tests/runtime/network_plane_test.cpp, core/tests/runtime/lab_runtime_test.cpp, core/tools/capture_fixture.cpp, apps/web/src/ui/WorkspaceViews.test.tsx]
     status: implemented
-    notes: The forwarding owner incrementally emits named Ethernet IDBs, complete EPBs and per-interface ISBs for link, router ingress, router egress and CPM punt points. Sparse runtime identities receive section-local interface IDs. The dedicated runtime Worker drains immutable chunks into a project-scoped OPFS file, so capture duration has no fixed WebAssembly byte cap. Allocation or storage failure remains explicit and never blocks forwarding.
+    notes: The forwarding owner incrementally emits named Ethernet IDBs, complete EPBs and per-interface ISBs for link, router ingress, router egress and CPM punt points. Sparse runtime identities receive section-local interface IDs. The dedicated runtime Worker drains immutable chunks into a project-scoped OPFS file, so capture duration has no fixed WebAssembly byte cap. Allocation or storage failure remains explicit and never blocks forwarding. The UI offers the existing native save destination and an explicit browser-download action for the same immutable exported capture generation; cancelling the native dialog does not trigger a download.
   - id: iana.pcap.linktype_ethernet
     kind: capture-format
     release: current

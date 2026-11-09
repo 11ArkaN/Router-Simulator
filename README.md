@@ -151,7 +151,7 @@ A `.netsim` file has one of two modes:
 - `project` stores portable intent, topology, hardware choices, running configuration, notes, layout and an optional capture
 - `checkpoint` adds the live operational state: dual-stack RIBs and FIBs, ARP and IPv6 neighbor caches, router advertisement, Path MTU and reassembly state, MLD, DHCPv4 and DHCPv6 client state, server leases, pending offers, conflict probes, stable DUID and IAID identities, UDP and TCP sockets, the DNS resolver and DNSSEC caches, fabric link transmissions, capture selection and counters, the project secret vault, relative deadlines, counters, alarms, CLI semantics, terminal editor state, histories, queued input and pager position
 
-Packet capture is encoded incrementally as PCAPNG and appended by the runtime Worker to project-scoped OPFS. A session has no fixed 32 MiB runtime limit. Export flushes the active generation before downloading the complete file.
+Packet capture is encoded incrementally as PCAPNG and appended by the runtime Worker to project-scoped OPFS. A session has no fixed 32 MiB runtime limit. Export flushes the active generation before downloading the complete file. Export PCAPNG uses a save dialog when the browser supports it. Download PCAPNG sends the same immutable capture generation to browser downloads without opening that dialog.
 
 The Snapshots panel exports and imports protected `.checkpoint.netsim` files through the same passphrase and validated project-replacement flow as project import. A replacement runtime restores a complete checkpoint directly before any configuration replay can create a second protocol generation.
 
