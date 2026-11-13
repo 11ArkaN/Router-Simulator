@@ -15,8 +15,7 @@ std::unique_ptr<ControlWorker::OwnedInstance> ControlWorker::restore_checkpoint_
           !saved.configuration.origination))) return nullptr;
   try {
     auto configuration = saved.configuration;
-    const bool automatic = configuration.origination &&
-        (configuration.origination->neighbors || configuration.origination->broadcast_neighbors);
+    const bool automatic = configuration.origination && configuration.origination->automatic_roots();
     if (automatic) std::erase_if(configuration.origination->content.records, [](const auto &record) { return record.id[6U] != 0U; });
     if (validate_update_program(configuration) != ControlError::none) return nullptr;
     if (automatic) for (auto &record : configuration.origination->content.records) if (record.id[6U]) {

@@ -61,6 +61,7 @@ void isis_interface_update_program_tests();
 void isis_interface_program_tests();
 void isis_instance_program_tests();
 void isis_local_prefix_program_tests();
+void isis_local_prefix_catalog_tests();
 void isis_fragment_plan_tests();
 void isis_local_fragment_tests();
 void isis_local_fragment_overload_tests();
@@ -513,6 +514,7 @@ int main() {
     isis_interface_program_tests();
     isis_instance_program_tests();
     isis_local_prefix_program_tests();
+    isis_local_prefix_catalog_tests();
     isis_fragment_plan_tests();
     isis_local_fragment_tests();
     isis_local_fragment_overload_tests();

@@ -56,6 +56,7 @@ add_library(router_primitives STATIC
   src/isis/isis_configuration_plan.cpp
   src/isis/isis_configuration.cpp
   src/isis/isis_root_content.cpp
+  src/isis/isis_local_prefix_catalog.cpp
   src/isis/isis_control_fragment_origin.cpp
   src/isis/isis_origin_fragment_workspace.cpp
   src/isis/isis_fragment_composition.cpp
@@ -364,6 +365,7 @@ add_library(router_network STATIC
   src/isis/isis_interface_program.cpp
   src/isis/isis_instance_program.cpp
   src/isis/isis_local_prefix_program.cpp
+  src/isis/isis_local_prefix_catalog_program.cpp
   src/isis/isis_control_checkpoint_capture.cpp
   src/isis/isis_control_checkpoint_instance.cpp
   src/isis/isis_control_checkpoint_circuit.cpp
@@ -673,6 +675,7 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_interface_program_test.cpp
     tests/isis/isis_instance_program_test.cpp
     tests/isis/isis_local_prefix_program_test.cpp
+    tests/isis/isis_local_prefix_catalog_test.cpp
     tests/isis/isis_fragment_plan_test.cpp
     tests/isis/isis_local_fragment_test.cpp
     tests/isis/isis_instance_generation_test.cpp

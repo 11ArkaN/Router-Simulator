@@ -77,19 +77,19 @@ void isis_datastore_runtime_tests() {
   const auto image = runtime->export_checkpoint();
   require(!image.empty(), "IS-IS private candidate checkpoint failed");
   const std::vector<std::uint8_t> saved{image.begin(), image.end()};
-  auto inconsistent = checkpoint_v14::decode(saved);
+  auto inconsistent = checkpoint_v15::decode(saved);
   require(inconsistent && !inconsistent->portable_routers.empty(),
       "IS-IS datastore checkpoint could not be inspected");
   router::isis::InstanceIntent enabled;
   enabled.admin_enabled = true;
   inconsistent->portable_routers.front().isis.instances.push_back(enabled);
-  const auto inconsistent_image = checkpoint_v14::encode(*inconsistent);
+  const auto inconsistent_image = checkpoint_v15::encode(*inconsistent);
   require(!inconsistent_image.empty() && !runtime->import_checkpoint(inconsistent_image),
       "IS-IS running activation without a protocol owner was restored");
   inconsistent->portable_routers.front().isis.instances.front().admin_enabled = false;
   inconsistent->portable_routers.front().isis.instances.front().interfaces.push_back({});
   inconsistent->portable_routers.front().isis.instances.front().interfaces.back().name = "missing-base-interface";
-  const auto dangling_image = checkpoint_v14::encode(*inconsistent);
+  const auto dangling_image = checkpoint_v15::encode(*inconsistent);
   require(!dangling_image.empty() && !runtime->import_checkpoint(dangling_image),
       "IS-IS running interface without its Base interface was restored");
   require(execute("info").find("default-metric 30") != std::string::npos,
@@ -206,7 +206,7 @@ void isis_datastore_runtime_tests() {
   const auto capture = [&] {
     const auto bytes = runtime->export_checkpoint();
     require(!bytes.empty(), "canonical IS-IS checkpoint export failed");
-    auto result = checkpoint_v14::decode(bytes, &*protector);
+    auto result = checkpoint_v15::decode(bytes, &*protector);
     require(result && result->network.isis && result->network.isis->control.devices.size() == 1U &&
         result->network.isis->control.devices[0U].instances.size() == 1U,
         "canonical activation did not publish exactly one actual owner");
@@ -217,9 +217,9 @@ void isis_datastore_runtime_tests() {
       active->network.isis->control.devices[0U].instances[0U].configuration.levels[1U] &&
       !active->network.isis->control.devices[0U].instances[0U].configuration.levels[0U],
       "canonical level/gate projection failed");
-  const auto active_bytes = checkpoint_v14::encode(*active, &*protector);
+  const auto active_bytes = checkpoint_v15::encode(*active, &*protector);
   active->portable_routers.front().isis.instances.front().admin_enabled = false;
-  const auto disagreed = checkpoint_v14::encode(*active, &*protector);
+  const auto disagreed = checkpoint_v15::encode(*active, &*protector);
   require(!disagreed.empty() && !runtime->import_checkpoint(disagreed),
       "checkpoint restored a managed owner whose gate disagreed with running intent");
   runtime.reset(); runtime = std::make_unique<LabRuntime>();
@@ -234,7 +234,7 @@ void isis_datastore_runtime_tests() {
       "canonical resume failed");
   execute("/configure"); execute("delete router isis 0"); execute("commit");
   const auto removed_bytes = runtime->export_checkpoint();
-  auto removed = checkpoint_v14::decode(removed_bytes, &*protector);
+  auto removed = checkpoint_v15::decode(removed_bytes, &*protector);
   require(removed && (!removed->network.isis || std::all_of(removed->network.isis->control.devices.begin(),
       removed->network.isis->control.devices.end(), [](const auto &device) { return device.instances.empty(); })),
       "canonical removal retained a live instance");
@@ -252,6 +252,13 @@ void isis_datastore_runtime_tests() {
   operation(lab_runtime_protocol::interface_configure, {"isis-r1", "system", "", "10.255.0.1/32", "", "", "1"});
   operation(lab_runtime_protocol::interface_configure, {"isis-r2", "system", "", "10.255.0.2/32", "", "", "1"});
   operation(lab_runtime_protocol::link_create, {"isis-wire", "isis-r1", "1/1/1", "isis-r2", "1/1/1", "100", "1", "0"});
+  operation(lab_runtime_protocol::port_configure, {"isis-r1", "1/1/2", "1", "9212", "100000", ""});
+  operation(lab_runtime_protocol::interface_configure, {"isis-r1", "stub", "1/1/2", "192.0.2.1/24", "", "", "1"});
+  operation(lab_runtime_protocol::host_create, {"isis-host", "IS-IS stub host"});
+  operation(lab_runtime_protocol::host_configure, {"isis-host", "02:00:00:00:aa:01", "192.0.2.2/24", "192.0.2.1",
+      "1500", "1", "1", "stable-opaque", "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "isis-stub-wire", "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"});
+  operation(lab_runtime_protocol::link_create, {"isis-stub-wire", "isis-r1", "1/1/2", "isis-host", "eth0", "100", "1", "0"});
   const auto terminal = [&](std::string_view session, std::string_view command) {
     const std::string output{runtime->command(message(lab_runtime_protocol::session_execute, {session, command}))};
     if (output.starts_with("ERROR:") || output.find("MINOR:") != std::string::npos || output.find("MAJOR:") != std::string::npos)
@@ -265,13 +272,20 @@ void isis_datastore_runtime_tests() {
         "/configure router isis 0 level-capability 2",
         "/configure router isis 0 level 2 wide-metrics-only true",
         "/configure router isis 0 advertise-passive-only true",
+        "/configure router isis 0 timers spf-wait spf-initial-wait 100",
+        "/configure router isis 0 timers spf-wait spf-second-wait 100",
+        "/configure router isis 0 timers spf-wait spf-max-wait 100",
         "/configure router isis 0 timers lsp-wait lsp-initial-wait 10",
         "/configure router isis 0 timers lsp-wait lsp-second-wait 100",
         "/configure router isis 0 timers lsp-wait lsp-max-wait 100",
         "/configure router isis 0 interface system",
         "/configure router isis 0 interface edge interface-type point-to-point",
         "/configure router isis 0 interface edge level 1 hello-interval 1",
-        "/configure router isis 0 admin-state enable", "commit", "quit-config"}) terminal(session, command);
+        "/configure router isis 0 admin-state enable", "commit", "quit-config"}) {
+      if (std::string_view{session} == "isis-console" && std::string_view{command} == "/configure router isis 0 admin-state enable")
+        terminal(session, "/configure router isis 0 interface stub passive true");
+      terminal(session, command);
+    }
   }
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{8};
   std::string routes;
@@ -300,23 +314,76 @@ void isis_datastore_runtime_tests() {
   }
   require(ping.find("1 packets transmitted, 1 packets received") != std::string::npos,
       "canonical IS-IS route did not forward a real ping");
+  const auto await_stub = [&](bool present) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{8};
+    std::string table;
+    do {
+      table = terminal("isis-console-2", "show router route-table");
+      if ((table.find("192.0.2.0/24") != std::string::npos) == present) return;
+      std::this_thread::yield();
+    } while (std::chrono::steady_clock::now() < until);
+    throw std::runtime_error("passive interface prefix did not follow local carrier: " + table);
+  };
+  const auto ping_stub = [&] {
+    std::string output = terminal("isis-console-2", "ping 192.0.2.2 count 1");
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (output.find("PING Statistics") == std::string::npos && std::chrono::steady_clock::now() < until) {
+      output += runtime->command(message(lab_runtime_protocol::session_poll, {"isis-console-2"}));
+      std::this_thread::yield();
+    }
+    require(output.find("1 packets transmitted, 1 packets received") != std::string::npos,
+        "passive prefix did not forward a real packet through its router and host links");
+  };
+  await_stub(true); ping_stub();
+  for (const auto state : {"disable", "enable"}) {
+    terminal("isis-console", "edit-config private");
+    terminal("isis-console", std::string{"/configure port 1/1/2 admin-state "} + state);
+    terminal("isis-console", "commit"); terminal("isis-console", "quit-config");
+    await_stub(std::string_view{state} == "enable");
+    require(terminal("isis-console", "show router isis adjacency").find("Adjacencies : 1") != std::string::npos,
+        "passive port event changed an unrelated P2P adjacency");
+  }
+  ping_stub();
+  terminal("isis-console", "edit-config private");
+  terminal("isis-console", "/configure port 1/1/2 admin-state disable");
+  terminal("isis-console", "/configure router isis 0 interface edge level 1 hello-interval 2");
+  const std::string refused_port{runtime->command(message(lab_runtime_protocol::session_execute, {"isis-console", "commit"}))};
+  require(refused_port.find("Candidate commit failed") != std::string::npos,
+      "unsupported compound interface edit was accepted");
+  terminal("isis-console", "discard"); terminal("isis-console", "quit-config");
+  await_stub(true); ping_stub();
   const auto network_image = runtime->export_checkpoint();
   const std::vector<std::uint8_t> network_saved{network_image.begin(), network_image.end()};
-  auto network_state = checkpoint_v14::decode(network_saved, &*protector);
+  auto network_state = checkpoint_v15::decode(network_saved, &*protector);
   require(network_state && network_state->network.isis && network_state->network.isis->ports.size() == 2U,
       "canonical wire checkpoint omitted its physical bindings");
+  auto forged_prefix = checkpoint_v15::decode(network_saved, &*protector);
+  auto &forged_catalog = *forged_prefix->network.isis->control.devices.front().instances.front().configuration.origination->prefixes;
+  require(!forged_catalog.units.empty() && forged_catalog.units.front().options.size() > 5U,
+      "managed prefix catalog missing from the active checkpoint");
+  forged_catalog.units.front().options[5U] ^= 1U;
+  const auto forged_prefix_bytes = checkpoint_v15::encode(*forged_prefix, &*protector);
+  require(!runtime->import_checkpoint(forged_prefix_bytes), "checkpoint accepted a prefix metric inconsistent with canonical intent");
+  forged_prefix = checkpoint_v15::decode(network_saved, &*protector);
+  auto &carrier_catalog = *forged_prefix->network.isis->control.devices.front().instances.front().configuration.origination->prefixes;
+  const auto physical = std::find_if(carrier_catalog.interfaces.begin(), carrier_catalog.interfaces.end(),
+      [](const auto &entry) { return entry.physical_port.has_value(); });
+  require(physical != carrier_catalog.interfaces.end() && physical->available, "physical prefix gate missing");
+  physical->available = false;
+  const auto forged_carrier = checkpoint_v15::encode(*forged_prefix, &*protector);
+  require(!runtime->import_checkpoint(forged_carrier), "checkpoint accepted a prefix gate inconsistent with physical forwarding");
   const auto old_epoch = network_state->network.isis->ports.front().identity.configuration_generation;
   terminal("isis-console", "edit-config private");
   terminal("isis-console", "/configure router isis 0 strict-adjacency-check true");
   terminal("isis-console", "commit"); terminal("isis-console", "quit-config");
-  const auto strict_state = checkpoint_v14::decode(runtime->export_checkpoint(), &*protector);
+  const auto strict_state = checkpoint_v15::decode(runtime->export_checkpoint(), &*protector);
   require(strict_state && strict_state->network.isis &&
       strict_state->network.isis->ports.front().identity.configuration_generation == old_epoch &&
       strict_state->network.isis->control.devices.front().circuits.front().definition.configuration.strict_adjacency_check &&
       terminal("isis-console", "show router isis adjacency").find("Adjacencies : 1") != std::string::npos,
       "live strict family policy restarted a matching circuit or lost its adjacency");
   strict_state->portable_routers.front().isis.instances.front().strict_adjacency_check = false;
-  const auto inconsistent_strict = checkpoint_v14::encode(*strict_state, &*protector);
+  const auto inconsistent_strict = checkpoint_v15::encode(*strict_state, &*protector);
   require(!runtime->import_checkpoint(inconsistent_strict),
       "checkpoint accepted disagreement between running strict policy and its circuit owner");
 
@@ -333,7 +400,7 @@ void isis_datastore_runtime_tests() {
   terminal("isis-console", "/configure router isis 0 strict-adjacency-check true");
   terminal("isis-console", "/configure router isis 0 admin-state disable");
   terminal("isis-console", "commit"); terminal("isis-console", "quit-config");
-  auto combined = checkpoint_v14::decode(runtime->export_checkpoint(), &*protector);
+  auto combined = checkpoint_v15::decode(runtime->export_checkpoint(), &*protector);
   require(combined && combined->network.isis &&
       !combined->network.isis->control.devices.front().instances.front().admin_enabled &&
       combined->network.isis->control.devices.front().circuits.front().definition.configuration.strict_adjacency_check &&
@@ -342,7 +409,7 @@ void isis_datastore_runtime_tests() {
   terminal("isis-console", "edit-config private");
   terminal("isis-console", "/configure router isis 0 strict-adjacency-check false");
   terminal("isis-console", "commit"); terminal("isis-console", "quit-config");
-  combined = checkpoint_v14::decode(runtime->export_checkpoint(), &*protector);
+  combined = checkpoint_v15::decode(runtime->export_checkpoint(), &*protector);
   require(combined && combined->network.isis &&
       !combined->network.isis->control.devices.front().instances.front().admin_enabled &&
       !combined->network.isis->control.devices.front().circuits.front().definition.configuration.strict_adjacency_check,
@@ -351,7 +418,7 @@ void isis_datastore_runtime_tests() {
   terminal("isis-console", "/configure router isis 0 strict-adjacency-check true");
   terminal("isis-console", "/configure router isis 0 admin-state enable");
   terminal("isis-console", "commit"); terminal("isis-console", "quit-config");
-  combined = checkpoint_v14::decode(runtime->export_checkpoint(), &*protector);
+  combined = checkpoint_v15::decode(runtime->export_checkpoint(), &*protector);
   require(combined && combined->network.isis &&
       combined->network.isis->control.devices.front().instances.front().admin_enabled &&
       combined->network.isis->control.devices.front().circuits.front().definition.configuration.strict_adjacency_check &&
@@ -364,7 +431,7 @@ void isis_datastore_runtime_tests() {
   terminal("isis-console", "edit-config private");
   terminal("isis-console", "/configure router isis 0 lsp-lifetime 1201");
   terminal("isis-console", "commit"); terminal("isis-console", "quit-config");
-  const auto restarted = checkpoint_v14::decode(runtime->export_checkpoint(), &*protector);
+  const auto restarted = checkpoint_v15::decode(runtime->export_checkpoint(), &*protector);
   require(restarted && restarted->network.isis &&
       restarted->network.isis->ports.front().identity.configuration_generation > old_epoch &&
       restarted->network.isis->control.devices.front().instances.front().configuration.levels[1U]->maximum_age == 1201U,
@@ -392,15 +459,31 @@ void isis_datastore_runtime_tests() {
       "classic resume did not rebuild its real wire adjacency and route");
   terminal("isis-console", "edit-config private");
   terminal("isis-console", "/configure router isis 0 advertise-passive-only false");
+  terminal("isis-console", "commit"); terminal("isis-console", "quit-config");
+  const auto prefix_edit = checkpoint_v15::decode(runtime->export_checkpoint(), &*protector);
+  require(prefix_edit && prefix_edit->network.isis &&
+      prefix_edit->network.isis->ports.front().identity.configuration_generation ==
+          restarted->network.isis->ports.front().identity.configuration_generation,
+      "live passive-only policy replaced its circuit epoch");
+  const auto &edited_catalog = *prefix_edit->network.isis->control.devices.front().instances.front().configuration.origination->prefixes;
+  require(std::any_of(edited_catalog.units.begin(), edited_catalog.units.end(),
+      [](const auto &unit) { return unit.prefix == *router::ip::parse_ip_prefix("10.0.12.0/30"); }),
+      "live passive-only removal failed to add its active interface subnet");
+  await_stub(true); ping_stub();
+  terminal("isis-console", "edit-config private");
+  terminal("isis-console", "/configure router isis 0 interface edge level 1 hello-interval 2");
   const std::string refused{runtime->command(message(lab_runtime_protocol::session_execute, {"isis-console", "commit"}))};
   require(refused.find("Candidate commit failed") != std::string::npos &&
-      runtime->command(message(lab_runtime_protocol::snapshot)).find("\"advertisePassiveOnly\":true") != std::string_view::npos,
-      "unsupported live policy edit succeeded or changed running intent");
+      runtime->command(message(lab_runtime_protocol::snapshot)).find("\"advertisePassiveOnly\":false") != std::string_view::npos,
+      "unsupported live timer edit succeeded or changed running intent");
   terminal("isis-console", "discard"); terminal("isis-console", "/configure");
   terminal("isis-console", "delete router isis 0"); terminal("isis-console", "commit");
   terminal("isis-console", "quit-config");
   terminal("isis-console-2", "configure router no isis");
   terminal("isis-console-2", "//");
+  // This phase tests default Ethernet media and fresh owner identities. Keep
+  // the explicit SPF hold inside the fixture's unchanged convergence deadline;
+  // production default and exponential timing have separate timer tests.
   for (const auto session : {"isis-console", "isis-console-2"}) {
     terminal(session, "edit-config private");
     for (const auto command : {
@@ -408,6 +491,9 @@ void isis_datastore_runtime_tests() {
         "/configure router isis 0 level-capability 2",
         "/configure router isis 0 level 2 wide-metrics-only true",
         "/configure router isis 0 advertise-passive-only true",
+        "/configure router isis 0 timers spf-wait spf-initial-wait 100",
+        "/configure router isis 0 timers spf-wait spf-second-wait 100",
+        "/configure router isis 0 timers spf-wait spf-max-wait 100",
         "/configure router isis 0 timers lsp-wait lsp-initial-wait 10",
         "/configure router isis 0 timers lsp-wait lsp-second-wait 100",
         "/configure router isis 0 timers lsp-wait lsp-max-wait 100",
@@ -421,9 +507,23 @@ void isis_datastore_runtime_tests() {
     if (routes.find("10.255.0.2/32") != std::string::npos) break;
     std::this_thread::yield();
   } while (std::chrono::steady_clock::now() < lan_deadline);
-  require(routes.find("10.255.0.2/32") != std::string::npos,
-      "canonical default Ethernet LAN did not converge after instance removal and recreation");
-  const auto lan_state = checkpoint_v14::decode(runtime->export_checkpoint(), &*protector);
+  if (routes.find("10.255.0.2/32") == std::string::npos) {
+    std::string diagnostic = "canonical default Ethernet LAN did not converge after instance removal and recreation\n" + routes;
+    for (const auto session : {"isis-console", "isis-console-2"})
+      diagnostic += terminal(session, "show router isis adjacency");
+    const auto stalled = checkpoint_v15::decode(runtime->export_checkpoint(), &*protector);
+    if (stalled && stalled->network.isis)
+      for (const auto &device : stalled->network.isis->control.devices)
+        for (const auto &instance : device.instances) if (instance.spf[1U]) {
+          const auto &spf = *instance.spf[1U];
+          diagnostic += "\nSPF device=" + std::to_string(device.handle.index) +
+              " runs=" + std::to_string(instance.decision_runs[1U]) +
+              " hold-ms=" + std::to_string(spf.next_hold.count()) +
+              " pending-ns=" + (spf.pending_nanoseconds ? std::to_string(*spf.pending_nanoseconds) : "none");
+        }
+    throw std::runtime_error(diagnostic);
+  }
+  const auto lan_state = checkpoint_v15::decode(runtime->export_checkpoint(), &*protector);
   require(lan_state && lan_state->network.isis &&
       lan_state->network.isis->ports.front().identity.configuration_generation > old_epoch &&
       lan_state->network.isis->control.devices.front().circuits.front().definition.broadcast.has_value(),

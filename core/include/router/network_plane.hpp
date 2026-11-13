@@ -648,7 +648,7 @@ public:
   // Port and FIB programs replace complete owner-local projections. Neither
   // method retains a control pointer after the call or future mailbox turn.
   // A successful port replacement also delivers its effective operational gate
-  // to every bound IS-IS circuit before acknowledgement. Network-owner affinity;
+  // to every bound IS-IS circuit and local prefix source before acknowledgement. Network-owner affinity;
   // no allocation or peer lookup is added to the protocol carrier transition.
   [[nodiscard]] bool configure_port(DeviceHandle device,
                                     const ForwardPort &port) noexcept;
@@ -681,7 +681,8 @@ public:
       std::span<const isis::NewUpdateInstance> new_instances,
       std::span<const std::uint8_t> retired_instances,
       std::span<const isis::UpdateAdminState> administrative = {},
-      std::span<const isis::UpdateAdjacencyPolicy> adjacency_policies = {}) noexcept;
+      std::span<const isis::UpdateAdjacencyPolicy> adjacency_policies = {},
+      std::span<const isis::UpdatePrefixCatalog> prefix_catalogs = {}) noexcept;
   [[nodiscard]] bool replace_isis_p2p_generation(DeviceHandle device,
       std::span<const IsisP2pCircuitProgram> circuits) noexcept {
     return replace_isis_generation(device, circuits);

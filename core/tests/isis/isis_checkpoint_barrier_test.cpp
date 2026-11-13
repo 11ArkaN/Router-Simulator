@@ -128,7 +128,7 @@ void isis_checkpoint_barrier_tests() {
   capture.checkpoint_now_nanoseconds = RuntimeClock::time_point::max().time_since_epoch().count();
   require(command(capture).error == ControlError::invalid_argument && captured.version == 9U);
   capture.checkpoint_now_nanoseconds = barrier.checkpoint_anchor_nanoseconds;
-  require(command(capture).error == ControlError::none && captured.version == 3U &&
+  require(command(capture).error == ControlError::none && captured.version == 4U &&
       captured.barrier_epoch == barrier.checkpoint_barrier_epoch && captured.active_circuits == 1U &&
       captured.devices.size() == 1U && captured.devices[0U].circuits.size() == 1U &&
       captured.devices[0U].instances.size() == 1U);

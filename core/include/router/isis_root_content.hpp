@@ -19,6 +19,11 @@ struct RootPrefix {
   std::span<const std::uint8_t> attributes{};
   bool external_ipv6{};
 };
+// Same-owner semantic encoding into caller scratch. Requires a canonical local
+// prefix and complete borrowed sub-TLVs, valid only for this call. Appends wide
+// reachability and its optional narrow companion together. Failure preserves
+// the writer. No allocation, state retention, publication or shard crossing.
+[[nodiscard]] bool encode_root_prefix(packet::isis::TlvWriter &writer, const RootPrefix &prefix) noexcept;
 struct RootContentInput {
   packet::isis::SystemId local;
   std::uint8_t level{}, flags{1U};

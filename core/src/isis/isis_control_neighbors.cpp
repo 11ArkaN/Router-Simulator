@@ -10,7 +10,7 @@
 
 namespace router::isis {
 ControlError ControlWorker::prepare_neighbor_origination(UpdateInstanceProgram &program) noexcept {
-  if (!program.origination || (!program.origination->neighbors && !program.origination->broadcast_neighbors))
+  if (!program.origination || !program.origination->automatic_roots())
     return ControlError::none;
   if (program.format != packet::isis::InstanceFormat::standard || program.wire_instance)
     return ControlError::unsupported_update_instance;
@@ -37,7 +37,9 @@ ControlError ControlWorker::prepare_neighbor_origination(UpdateInstanceProgram &
     if (record.id[6U]) continue;
     packet::isis::TlvCursor cursor(record.options);
     while (const auto option = cursor.next())
-      if (option->code == 2U || option->code == 22U || option->code == 222U)
+      if (option->code == 2U || option->code == 22U || option->code == 222U ||
+          (program.origination->prefixes &&
+           (option->code == 128U || option->code == 130U || option->code == 135U || option->code == 236U)))
         return ControlError::invalid_argument;
     if (!cursor.valid()) return ControlError::invalid_argument;
     if (record.id[7U]) continue;
@@ -57,7 +59,7 @@ ControlError ControlWorker::prepare_neighbor_origination(UpdateInstanceProgram &
 bool ControlWorker::compose_local_neighbors(OwnedInstance &instance, const DeviceState &device,
     std::size_t index, LocalLspSet &target, RuntimeClock::time_point now, std::size_t &budget) noexcept {
   const auto &origin = *instance.configuration.origination;
-  if (!origin.neighbors && !origin.broadcast_neighbors) return true;
+  if (!origin.automatic_roots()) return true;
   for (std::size_t level{}; level < 2U; ++level)
     if (!origin.content.levels[level]) instance.local_roots_dirty[level] = false;
   if (!instance.local_roots_dirty[0U] && !instance.local_roots_dirty[1U]) return true;
@@ -87,6 +89,7 @@ bool ControlWorker::compose_local_neighbors(OwnedInstance &instance, const Devic
     auto &workspace = *instance.fragment_workspace;
     workspace.reset();
     bool valid = workspace.add_root_options(origin.content, level);
+    if (origin.prefixes) valid = append_local_prefix_catalog(workspace, *origin.prefixes, level) && valid;
     packet::isis::LanId source{};
     std::copy_n(root->id.begin(), source.size(), source.begin());
     for (std::size_t slot{}; slot < interfaces.size(); ++slot) {

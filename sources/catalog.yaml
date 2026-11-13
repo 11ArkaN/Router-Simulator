@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: nokia.sros.26_7.isis.local_prefix_lifecycle
+    kind: routing-protocol-local-prefix-origination
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: nokia-official-doc-and-rfc
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-p-commands-p2mp-1.html#ai9j785lgg
+    section: Passive interface reachability, inherited metrics and local subnet advertisement
+    rfc_refs: [RFC1195, RFC5305, RFC5308]
+    yang_path: /configure/router/isis/interface
+    last_verified_at: 2026-11-13
+    implementation: [core/include/router/isis_local_prefix_catalog.hpp, core/include/router/isis_local_prefix_catalog_program.hpp, core/src/isis/isis_local_prefix_catalog.cpp, core/src/isis/isis_local_prefix_catalog_program.cpp, core/src/isis/isis_root_content.cpp, core/src/isis/isis_control_worker.cpp, core/src/isis/isis_control_neighbors.cpp, core/src/isis/isis_control_fragment_origin.cpp, core/src/runtime/lab_runtime_isis.cpp, core/src/runtime/network_plane.cpp, core/src/runtime/isis_checkpoint_fields.hpp]
+    tests: [core/tests/isis/isis_local_prefix_catalog_test.cpp, core/tests/isis/isis_root_content_test.cpp, core/tests/runtime/isis_datastore_runtime_test.cpp]
+    status: experimental
+    notes: RFC 1195 sections 3.3 and 4.3 require router address metadata and advertisement of reachable local subnets. Pinned passive policy excludes protocol transmission and reception while preserving reachability. Cold preparation retains sorted owned prefix units and all eligible interface keys, coalesces identical shared prefixes and reserves the complete carrier-Up superset. Local port events update circuit and prefix gates on the same writer; dynamic LSP fragments follow existing sequence and flooding owners. Live passive-only policy changes prepare a replacement workspace before atomic publication. Checkpoint ABI 15 and control checkpoint 4 retain source gates and refuse disagreement with restored forwarding or managed intent. Public admission remains wide L2 IPv4 with fixed LSP scheduling; live Base address changes, unnumbered and unresolved System metric override precedence remain incomplete.
   - id: nokia.sros.26_7.isis.strict_adjacency_check
     kind: routing-protocol-adjacency-policy
     release: 26.7.R1

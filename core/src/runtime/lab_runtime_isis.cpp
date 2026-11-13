@@ -5,7 +5,7 @@
 #include "router/interface_identity.hpp"
 #include "router/isis_configuration_plan.hpp"
 #include "router/isis_instance_program.hpp"
-#include "router/isis_local_prefix_program.hpp"
+#include "router/isis_local_prefix_catalog_program.hpp"
 #include <algorithm>
 #include <limits>
 #include <tuple>
@@ -17,6 +17,33 @@ constexpr std::size_t circuits = 8U, neighbors = 8U, records = 128U;
 packet::Ipv4 octets(std::uint32_t value) noexcept {
   return {static_cast<std::uint8_t>(value >> 24U), static_cast<std::uint8_t>(value >> 16U),
       static_cast<std::uint8_t>(value >> 8U), static_cast<std::uint8_t>(value)};
+}
+isis::LocalIpv4PrefixCatalogResult router_prefixes(const auto &interfaces,
+    const isis::InstanceIntent &intent, const RouterHardwareInventory &hardware, const auto &ports) {
+  using namespace isis;
+  std::vector<LocalIpv4PrefixSource> sources; sources.reserve(intent.interfaces.size());
+  for (const auto &attached : intent.interfaces) {
+    const auto base = std::find_if(interfaces.begin(), interfaces.end(),
+        [&](const auto &entry) { return entry.name == attached.name; });
+    if (base == interfaces.end()) return {};
+    LocalPrefixInterface binding;
+    const bool system = base->name == "system";
+    if (system) { binding.interface_id = system_interface_id; binding.available = base->admin_enabled; }
+    else {
+      if (!base->port_configured) return {};
+      const auto ordinal = hardware.coordinate_ordinal(base->port_id);
+      if (!ordinal) return {};
+      binding.interface_id = physical_interface_id(*ordinal); binding.physical_port = *ordinal;
+      const auto port = std::find_if(ports.begin(), ports.end(),
+          [&](const auto &entry) { return entry.ordinal == *ordinal; });
+      binding.available = port != ports.end() && port->configured && port->operational;
+    }
+    sources.push_back({attached.name, binding, base->address, base->prefix_length, base->address_configured, system});
+  }
+  // A disabled instance retains the same configured catalog. Its independent
+  // administrative gate prevents publication while local carrier continues.
+  auto retained = intent; retained.admin_enabled = true;
+  return prepare_local_ipv4_prefix_catalog(retained, sources, {128U, 128U});
 }
 isis::IdentityContext identity(const auto &interfaces) noexcept {
   isis::IdentityContext result;
@@ -93,8 +120,17 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
       if (previous == before.isis.instances.end() || configured == after.isis.instances.end()) return false;
       auto compare = *previous;
       compare.strict_adjacency_check = configured->strict_adjacency_check;
+      compare.advertise_passive_only = configured->advertise_passive_only;
       compare.admin_enabled = configured->admin_enabled;
       if (compare != *configured || !retain()) return false;
+      auto prefixes = router_prefixes(after.interfaces, *configured, *hardware, operational->ports);
+      if (prefixes.status != LocalPrefixCatalogStatus::prepared || !prefixes.program) return false;
+      if (!owner) return false;
+      const auto prior = std::find_if(owner->instances.begin(), owner->instances.end(),
+          [&](const auto &entry) { return entry.instance == action.instance; });
+      if (prior == owner->instances.end() || !prior->configuration.origination) return false;
+      if (!prior->configuration.origination->prefixes || *prior->configuration.origination->prefixes != *prefixes.program)
+        generation.prefix_catalogs.push_back({action.instance, std::move(*prefixes.program)});
       generation.adjacency_policies.push_back({action.instance,
           configured->strict_adjacency_check.value_or(configuration_profile::strict_adjacency_check_default)});
       if (action.change == ConfigurationChange::suspend_and_reconfigure ||
@@ -106,7 +142,7 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
     default: return false;
     }
     if (configured == after.isis.instances.end() || action.instance ||
-        configured->levels != ConfiguredLevels::level2 || !configured->advertise_passive_only.value_or(false) ||
+        configured->levels != ConfiguredLevels::level2 ||
         !configured->ipv4_routing.value_or(configuration_profile::ipv4_routing_default) ||
         configured->ipv6_routing.value_or(ConfiguredIpv6Routing::disabled) != ConfiguredIpv6Routing::disabled ||
         !resolve_instance_level(*configured, 1U).wide_metrics_only || configured->areas.empty()) return false;
@@ -131,12 +167,6 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
       context.routing[0U]->preferences = {P2pRouteFamilyProgram::Preference{15U, 160U}, {18U, 165U}};
     }
     std::vector<InstanceOriginInterface> origins;
-    std::vector<LocalPrefixSource> sources;
-    std::vector<RootPrefix> system_prefixes;
-    std::vector<packet::Ipv4> system_addresses;
-    // Reserve before storing borrowed spans. System owns the sole prefix list
-    // in this first passive-only projection; physical passive entries refuse.
-    system_prefixes.reserve(1U); system_addresses.reserve(1U);
     std::uint8_t local_circuit{};
     for (const auto &attached : configured->interfaces) {
       const auto base = std::find_if(after.interfaces.begin(), after.interfaces.end(),
@@ -145,25 +175,22 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
       const bool system = base->name == "system";
       const auto resolved = resolve_interface(*configured, attached, ConfiguredInterfaceType::broadcast);
       if (system) {
-        // The unicast guide's System /32 advertisement has metric zero.
-        // YANG interface metrics start at one: do not mistake an inherited
-        // ordinary-interface default for this loopback's local prefix cost.
-        // Explicit override precedence needs its own sourced projection.
-        if (attached.level[1U].metric || configured->level[1U].default_metric ||
-            base->prefix_length != 32U || !base->address_configured) return false;
-        const auto address = octets(base->address);
-        system_addresses.push_back(address);
-        ip::IpAddress value; std::copy(address.begin(), address.end(), value.bytes.begin());
-        system_prefixes.push_back({{value, 32U}, 0U, {}});
         origins.push_back({attached.name, system_interface_id, {}, 0U, 0U, true});
-        sources.push_back({attached.name, {system_prefixes, system_prefixes}, base->admin_enabled, true});
         continue;
       }
-      if (resolved.level[1U].passive || !base->port_configured || !base->address_configured) return false;
-      const auto port = hardware->handle(base->port_id);
+      if (!base->port_configured || !base->address_configured) return false;
       const auto ordinal = hardware->coordinate_ordinal(base->port_id);
+      if (!ordinal) return false;
+      const bool active = resolved.admin_enabled && std::any_of(resolved.level.begin(), resolved.level.end(),
+          [](const auto &level) { return level.enabled && !level.passive; });
+      if (!active) {
+        origins.push_back({attached.name, physical_interface_id(*ordinal), ConfiguredInterfaceType::broadcast,
+            0U, neighbors, false});
+        continue;
+      }
+      const auto port = hardware->handle(base->port_id);
       const auto mac = hardware->physical_mac(base->port_id);
-      if (!port || !ordinal || !mac || local_circuit == circuits) return false;
+      if (!port || !mac || local_circuit == circuits) return false;
       ++local_circuit;
       const auto live = std::find_if(operational->ports.begin(), operational->ports.end(),
           [&](const auto &entry) { return entry.ordinal == *ordinal && entry.configured; });
@@ -182,23 +209,23 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
       hello.peer_attribute_octets = 4096U; hello.lan_neighbors = neighbors;
       hello.protocols = protocols; hello.ipv4_addresses = addresses; hello.operational = live->operational;
       hello.strict_adjacency_check = configured->strict_adjacency_check.value_or(configuration_profile::strict_adjacency_check_default);
-      const auto transmission = prepare_interface_update_program(resolved, {2U, mtu, 1U, 1ms});
       auto prepared = prepare_interface_program(*configured, attached, hello);
-      if (transmission.status != InterfaceUpdateStatus::prepared ||
-          (prepared.status != InterfaceProgramStatus::prepared && prepared.status != InterfaceProgramStatus::inactive)) return false;
+      if (prepared.status != InterfaceProgramStatus::prepared && prepared.status != InterfaceProgramStatus::inactive) return false;
       if (prepared.circuit) {
+        const auto transmission = prepare_interface_update_program(resolved, {2U, mtu, 1U, 1ms});
+        if (transmission.status != InterfaceUpdateStatus::prepared) return false;
         prepared.circuit->update_transmission = transmission.program;
         generation.circuits.push_back({std::move(*prepared.circuit), *port});
       }
       origins.push_back({attached.name, physical_interface_id(*ordinal), ConfiguredInterfaceType::broadcast,
           local_circuit, neighbors, false});
-      sources.push_back({attached.name, {}, live->operational, false});
     }
-    const auto prefixes = prepare_local_prefix_program(*configured, sources, {128U, 128U});
-    if (prefixes.status != LocalPrefixProgramStatus::prepared) return false;
-    context.interfaces = origins; context.ipv4_addresses = system_addresses; context.prefixes = {prefixes.levels[0U], prefixes.levels[1U]};
+    auto prefixes = router_prefixes(after.interfaces, *configured, *hardware, operational->ports);
+    if (prefixes.status != LocalPrefixCatalogStatus::prepared || !prefixes.program) return false;
+    context.interfaces = origins; context.ipv4_addresses = prefixes.addresses;
     auto prepared = prepare_instance_program(*configured, context);
     if (prepared.status != InstanceProgramStatus::prepared || !prepared.program) return false;
+    prepared.program->origination->prefixes = std::move(prefixes.program);
     const bool replacement = action.change == ConfigurationChange::restart;
     if (replacement) generation.retired_instances.push_back(action.instance);
     generation.new_instances.push_back({action.instance, std::move(*prepared.program), replacement, true});
@@ -211,4 +238,29 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
   });
   return supervisor_.admit_isis_generation(std::move(generation));
 }
+bool LabRuntime::validate_isis_prefix_checkpoint(const RouterIntent &router,
+    const RuntimeSupervisorCheckpoint &saved) const {
+  if (router.isis.instances.empty() || !saved.network.isis) return true;
+  const auto device = std::find_if(saved.network.isis->control.devices.begin(), saved.network.isis->control.devices.end(),
+      [&](const auto &entry) { return entry.handle == router.handle && entry.active; });
+  if (device == saved.network.isis->control.devices.end()) return true;
+  const auto hardware_image = std::find_if(saved.hardware.begin(), saved.hardware.end(),
+      [&](const auto &entry) { return entry.device == router.handle; });
+  const auto network = std::find_if(saved.network.routers.begin(), saved.network.routers.end(),
+      [&](const auto &entry) { return entry.device == router.handle; });
+  if (hardware_image == saved.hardware.end() || network == saved.network.routers.end()) return false;
+  auto hardware = std::make_unique<RouterHardwareInventory>();
+  if (!hardware->restore(*hardware_image)) return false;
+  for (const auto &intent : router.isis.instances) {
+    const auto owner = std::find_if(device->instances.begin(), device->instances.end(),
+        [&](const auto &entry) { return entry.instance == intent.instance; });
+    if (owner == device->instances.end()) continue;
+    if (!owner->configuration.origination || !owner->configuration.origination->prefixes) return false;
+    const auto expected = router_prefixes(router.interfaces, intent, *hardware, network->forwarding.ports);
+    if (expected.status != isis::LocalPrefixCatalogStatus::prepared || !expected.program ||
+        *expected.program != *owner->configuration.origination->prefixes) return false;
+  }
+  return true;
+}
+
 }

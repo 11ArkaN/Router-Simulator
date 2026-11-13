@@ -1174,4 +1174,4 @@ export const PROFILE_CATALOG_COMPILED = {
   "maximumPortsPerMda": 40
 } as const;
 export const PROFILE_CATALOG_HASH = "8f1db920cd7f8542" as const;
-export const LAB_BUILD_HASH = "0af83ae73e909050" as const;
+export const LAB_BUILD_HASH = "7506b93582a0dc5e" as const;

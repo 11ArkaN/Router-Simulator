@@ -27799,13 +27799,13 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
     checkpoint_bytes_.clear();
     return {};
   }
-  try { checkpoint_bytes_ = checkpoint_v14::encode(*checkpoint, secret_vault_ ? &*secret_vault_ : nullptr); }
+  try { checkpoint_bytes_ = checkpoint_v15::encode(*checkpoint, secret_vault_ ? &*secret_vault_ : nullptr); }
   catch (...) { checkpoint_bytes_.clear(); return {}; }
   return checkpoint_bytes_;
 }
 
 bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
-  auto checkpoint = checkpoint_v14::decode(bytes, secret_vault_ ? &*secret_vault_ : nullptr);
+  auto checkpoint = checkpoint_v15::decode(bytes, secret_vault_ ? &*secret_vault_ : nullptr);
   if (!checkpoint)
     return false;
   try {
@@ -28362,6 +28362,7 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
       value.next_facility_alarm_index = portable->next_facility_alarm_index;
       value.cleared_facility_alarms_wrapped =
           portable->cleared_facility_alarms_wrapped;
+      if (!validate_isis_prefix_checkpoint(value, *checkpoint)) return false;
       routers.push_back(std::move(value));
     }
     for (const auto &endpoint : checkpoint->hosts.entries) {

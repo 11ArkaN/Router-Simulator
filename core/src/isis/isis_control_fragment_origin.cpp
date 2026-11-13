@@ -10,6 +10,11 @@ namespace router::isis {
 std::unique_ptr<OriginFragmentWorkspace> ControlWorker::make_fragment_workspace(const UpdateInstanceProgram &program) {
   const auto &origin = *program.origination;
   auto units = origin.content.records.size();
+  if (origin.prefixes) {
+    if (origin.prefixes->units.size() > std::numeric_limits<std::size_t>::max() - units)
+      throw std::invalid_argument("IS-IS prefix unit budget overflow");
+    units += origin.prefixes->units.size();
+  }
   // Base records may contain many independently movable TLVs. Reserving only
   // one unit per LSP would undercount the cold workspace after splitting them.
   for (const auto &record : origin.content.records) {
@@ -82,11 +87,18 @@ ControlError ControlWorker::prepare_fragment_origination(UpdateInstanceProgram &
     std::sort(records.begin(), records.end(), [](const auto &a, const auto &b) {
       return a.level != b.level ? a.level < b.level : a.id < b.id;
     });
+    if (origin.prefixes) {
+      if (!valid_local_prefix_catalog(*origin.prefixes)) return ControlError::invalid_argument;
+      for (const auto &unit : origin.prefixes->units)
+        if (!program.levels[unit.level] || !origin.content.levels[unit.level]) return ControlError::invalid_argument;
+    }
     auto workspace = make_fragment_workspace(program);
     packet::isis::LanId source{};
     std::copy(program.local.begin(), program.local.end(), source.begin());
     for (std::size_t level{}; level < 2U; ++level) if (origin.content.levels[level]) {
       if (!workspace->add_root_options(origin.content, level)) return ControlError::capacity;
+      if (origin.prefixes && !append_local_prefix_catalog(*workspace, *origin.prefixes, level, true))
+        return ControlError::capacity;
       // These sizing-only zero IDs are never admitted or emitted. Their real
       // configured metrics determine exact wide/narrow unit lengths. Actual
       // runtime units always come from this owner's accepted circuit snapshots.

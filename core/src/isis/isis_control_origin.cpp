@@ -23,10 +23,12 @@ ControlError ControlWorker::edit_local_content(ControlCommand &command, OwnedIns
   });
   if (desired == records.end()) return ControlError::not_found;
   const bool withdrawing = command.kind == ControlCommandKind::withdraw_local_content;
-  if (!withdrawing && (origin.neighbors || origin.broadcast_neighbors)) {
+  if (!withdrawing && origin.automatic_roots()) {
     packet::isis::TlvCursor cursor(value.options);
     while (const auto option = cursor.next())
-      if (option->code == 2U || option->code == 22U || option->code == 222U)
+      if (option->code == 2U || option->code == 22U || option->code == 222U ||
+          (origin.prefixes &&
+           (option->code == 128U || option->code == 130U || option->code == 135U || option->code == 236U)))
         return ControlError::invalid_argument;
     if (!cursor.valid()) return ControlError::invalid_argument;
     if (desired->active && desired->flags == value.flags && desired->options == value.options) {
@@ -34,7 +36,7 @@ ControlError ControlWorker::edit_local_content(ControlCommand &command, OwnedIns
       return ControlError::none;
     }
   }
-  const bool automatic = origin.neighbors || origin.broadcast_neighbors;
+  const bool automatic = origin.automatic_roots();
   if (automatic && withdrawing && !desired->active) {
     result.local_content_result = LocalContentResult::unchanged;
     return ControlError::none;

@@ -562,6 +562,8 @@ private:
   // Serialized datastore transaction only. The saved cohort supplies local
   // ownership and rollback evidence, never peer-derived configuration. Failure
   // leaves intent unchanged; the caller restores its complete runtime backup.
+  [[nodiscard]] bool validate_isis_prefix_checkpoint(const RouterIntent &,
+      const RuntimeSupervisorCheckpoint &) const;
   [[nodiscard]] bool apply_isis_configuration(const RouterIntent &,
       const ConfigurationIntent &, const RuntimeSupervisorCheckpoint &);
   [[nodiscard]] static packet::nd::RouterAdvertisementConfig

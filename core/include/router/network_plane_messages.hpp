@@ -16,7 +16,7 @@ namespace router::lab {
 
 // Version 43 adds administrative state to owned IS-IS generation transfers.
 // Mixed owners must refuse rather than interpret another ring layout.
-inline constexpr std::uint32_t network_plane_message_version = 45;
+inline constexpr std::uint32_t network_plane_message_version = 46;
 
 struct NetworkDhcpv4ClientBegin {
   // RFC 2131 caps each ordinary option payload at 255 octets. Carrying the two
@@ -468,6 +468,7 @@ struct NetworkIsisGeneration {
   std::vector<std::uint8_t> retired_instances;
   std::vector<isis::UpdateAdminState> administrative;
   std::vector<isis::UpdateAdjacencyPolicy> adjacency_policies;
+  std::vector<isis::UpdatePrefixCatalog> prefix_catalogs;
 };
 struct NetworkPlaneChannels {
   // Capacity includes one deliberately unused SpscRing slot. Generated values

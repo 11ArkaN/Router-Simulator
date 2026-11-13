@@ -7,6 +7,7 @@
 #include "router/isis_prefix_attributes.hpp"
 #include <algorithm>
 #include <array>
+#include <exception>
 #include <type_traits>
 #include <tuple>
 namespace router::isis {
@@ -17,6 +18,35 @@ bool ordered(std::span<const Address> values) {
   return std::adjacent_find(values.begin(), values.end(),
       [](const auto &a, const auto &b) { return a >= b; }) == values.end();
 }
+}
+bool encode_root_prefix(packet::isis::TlvWriter &writer, const RootPrefix &prefix) noexcept {
+  namespace wire = packet::isis;
+  const auto family = prefix.prefix.network.family;
+  const bool ipv6 = family == ip::AddressFamily::ipv6;
+  if ((family != ip::AddressFamily::ipv4 && !ipv6) ||
+      (prefix.narrow && (ipv6 || *prefix.narrow > 63U))) return false;
+  const auto metadata = wire::prefix_metadata(prefix.prefix, prefix.attributes);
+  if (!metadata || (!ipv6 && prefix.external_ipv6)) return false;
+  std::array<std::uint8_t, 514U> bytes{};
+  wire::TlvWriter staged(bytes);
+  if (!wire::encode_extended_prefix(staged, {prefix.prefix, prefix.metric, false,
+      prefix.external_ipv6, !prefix.attributes.empty(), prefix.attributes})) return false;
+  if (prefix.narrow) {
+    wire::NarrowIpv4 narrow;
+    narrow.metrics.metric = *prefix.narrow;
+    narrow.external_reachability = metadata->flags && metadata->flags->external;
+    std::copy_n(prefix.prefix.network.bytes.begin(), 4U, narrow.address.begin());
+    for (std::size_t bit{}; bit < prefix.prefix.length; ++bit)
+      narrow.mask[bit / 8U] |= static_cast<std::uint8_t>(0x80U >> (bit % 8U));
+    if (!wire::encode_narrow_ipv4(staged, narrow)) return false;
+  }
+  // Complete framing and capacity are known before the first destination write.
+  // Exclusive caller ownership prevents an intervening cursor/capacity change.
+  if (writer.available() < staged.bytes().size()) return false;
+  wire::TlvCursor cursor(staged.bytes());
+  while (const auto option = cursor.next())
+    if (!writer.append(option->code, option->value)) std::terminate();
+  return true;
 }
 RootContentResult prepare_root_content(const RootContentInput &input,
     std::size_t semantic_octets, std::size_t fragments) {
@@ -77,20 +107,7 @@ RootContentResult prepare_root_content(const RootContentInput &input,
     const bool ipv6 = prefix.prefix.network.family == ip::AddressFamily::ipv6;
     if ((index && input.prefixes[index - 1U].prefix >= prefix.prefix) ||
         (ipv6 ? !input.ipv6 : !input.ipv4) || (prefix.narrow && (ipv6 || *prefix.narrow > 63U))) return {};
-    const auto metadata = wire::prefix_metadata(prefix.prefix, prefix.attributes);
-    if (!metadata || (!ipv6 && prefix.external_ipv6)) return {};
-    if (!add(false, [&](auto &writer) {
-        if (!wire::encode_extended_prefix(writer, {prefix.prefix, prefix.metric, false,
-            prefix.external_ipv6, !prefix.attributes.empty(), prefix.attributes})) return false;
-        if (!prefix.narrow) return true;
-        wire::NarrowIpv4 narrow;
-        narrow.metrics.metric = *prefix.narrow;
-        narrow.external_reachability = metadata->flags && metadata->flags->external;
-        std::copy_n(prefix.prefix.network.bytes.begin(), 4U, narrow.address.begin());
-        for (std::size_t bit{}; bit < prefix.prefix.length; ++bit)
-          narrow.mask[bit / 8U] |= static_cast<std::uint8_t>(0x80U >> (bit % 8U));
-        return wire::encode_narrow_ipv4(writer, narrow);
-      })) return {};
+    if (!add(false, [&](auto &writer) { return encode_root_prefix(writer, prefix); })) return {};
   }
   // IPv6 LSP address TLVs must exclude link-local addresses (RFC 5308).
   for (const auto &unit : encoded) {

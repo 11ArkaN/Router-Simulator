@@ -119,6 +119,13 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         std::binary_search(command.retired_instances.begin(), command.retired_instances.end(), index))
       return ControlError::invalid_argument;
   }
+  for (std::size_t ordinal{}; ordinal < command.prefix_catalogs.size(); ++ordinal) {
+    const auto index = command.prefix_catalogs[ordinal].instance;
+    if (index >= device.instances.size() || !device.instances[index] || !device.instances[index]->configuration.origination ||
+        (ordinal && command.prefix_catalogs[ordinal - 1U].instance >= index) ||
+        std::binary_search(command.retired_instances.begin(), command.retired_instances.end(), index))
+      return ControlError::invalid_argument;
+  }
   const auto route_floor = std::max(device.route_generation, command.route_generation_floor);
   if (!command.administrative.empty() && route_floor == std::numeric_limits<std::uint64_t>::max())
     return ControlError::epoch_exhausted;
@@ -222,6 +229,17 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
     staged.retired_instances = std::move(command.retired_instances);
     staged.administrative = std::move(command.administrative);
     staged.adjacency_policies = std::move(command.adjacency_policies);
+    staged.prefix_catalogs = std::move(command.prefix_catalogs);
+    staged.prefix_workspaces.reserve(staged.prefix_catalogs.size());
+    for (const auto &edit : staged.prefix_catalogs) {
+      const auto &current = device.instances[edit.instance]->configuration;
+      auto proposed = current;
+      proposed.origination->prefixes = edit.program;
+      const auto status = prepare_neighbor_origination(proposed);
+      if (status != ControlError::none) return status;
+      if (proposed.origination->content != current.origination->content) return ControlError::invalid_argument;
+      staged.prefix_workspaces.push_back(make_fragment_workspace(proposed));
+    }
     if (!staged.administrative.empty()) staged.route_commit_generation = route_floor + 1U;
     staged.output.reserve(definitions.size());
     staged.plan.reserve(definitions.size());
@@ -371,6 +389,15 @@ void ControlWorker::commit_generation(DeviceState &device) noexcept {
     set_admin_state(device, *device.instances[edit.instance], edit.enabled);
   for (const auto &edit : staged.adjacency_policies)
     if (set_strict_policy(device, edit.instance, edit.strict_families) != ControlError::none) std::terminate();
+  for (std::size_t index{}; index < staged.prefix_catalogs.size(); ++index) {
+    auto &edit = staged.prefix_catalogs[index];
+    auto &instance = *device.instances[edit.instance];
+    // The cold lease proved complete worst-case fragment capacity. Both swaps
+    // occur on the sole writer before service can borrow the new catalog.
+    instance.configuration.origination->prefixes = std::move(edit.program);
+    instance.fragment_workspace.swap(staged.prefix_workspaces[index]);
+    instance.local_roots_dirty.fill(true);
+  }
   if (staged.route_commit_generation) {
     // The network owner has committed the matching dual-family RIB under its
     // forwarding barrier. Older queued receipts cannot acknowledge this key.
@@ -507,6 +534,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     return result;
   }
   if (prepared_ && command.kind != ControlCommandKind::query_circuit &&
+      command.kind != ControlCommandKind::query_local_port_usage &&
       command.kind != ControlCommandKind::query_adjacencies &&
       command.kind != ControlCommandKind::query_update_instance &&
       command.kind != ControlCommandKind::query_sequence_recovery) {
@@ -533,6 +561,31 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     return result;
   }
   if (!device.active || device.handle != handle) { result.error = ControlError::stale_device; return result; }
+  if (command.kind == ControlCommandKind::set_local_port_carrier ||
+      command.kind == ControlCommandKind::query_local_port_usage) {
+    const auto port = command.identity.physical_port_ordinal;
+    const bool edit = command.kind == ControlCommandKind::set_local_port_carrier;
+    // One local port event updates every circuit and passive prefix source in
+    // this serialized turn. Protocol service cannot observe an intermediate gate.
+    for (auto &owned : device.circuits) if (owned.identity.physical_port_ordinal == port) {
+      result.local_port_in_use = true;
+      if (edit && owned.carrier != command.carrier) {
+        owned.carrier = command.carrier;
+        if (!command.carrier) circuit_down(owned);
+        else if (!owned.update || owned.update->status == UpdateStatus::applied)
+          circuit_up(owned, RuntimeClock::now());
+      }
+    }
+    for (auto &instance : device.instances)
+      if (instance && instance->configuration.origination && instance->configuration.origination->prefixes) {
+        auto &catalog = *instance->configuration.origination->prefixes;
+        result.local_port_in_use = result.local_port_in_use || std::any_of(catalog.interfaces.begin(), catalog.interfaces.end(),
+            [port](const auto &source) { return source.physical_port == port; });
+        if (edit && set_local_prefix_carrier(catalog, port, command.carrier)) instance->local_roots_dirty.fill(true);
+      }
+    result.carrier = command.carrier;
+    return result;
+  }
   result.route_published_generation = device.route_generation;
   result.route_installed_generation = device.route_installed;
   result.route_install_status = device.route_status;

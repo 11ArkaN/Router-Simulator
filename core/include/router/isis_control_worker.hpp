@@ -8,6 +8,7 @@
 #include "router/isis_broadcast_scan.hpp"
 #include "router/isis_lan_circuit_pair.hpp"
 #include "router/isis_local_lsp_set.hpp"
+#include "router/isis_local_prefix_catalog.hpp"
 #include "router/isis_neighbor_origination.hpp"
 #include "router/isis_origin_fragment_workspace.hpp"
 #include "router/isis_p2p_decision.hpp"
@@ -71,7 +72,8 @@ enum class ControlCommandKind : std::uint8_t {
   abort_generation, add_update_instance, remove_update_instance, query_update_instance, originate_lsp, shutdown,
   query_sequence_recovery, replace_local_content, withdraw_local_content, add_lan_circuit, begin_checkpoint_barrier, end_checkpoint_barrier, capture_checkpoint,
   prepare_checkpoint_restore, commit_checkpoint_restore, abort_checkpoint_restore,
-  set_circuit_carrier, set_update_admin_state, query_adjacencies
+  set_circuit_carrier, set_update_admin_state, query_adjacencies,
+  set_local_port_carrier, query_local_port_usage
 };
 // Exactly one medium is supplied. A broadcast program requires the legacy
 // P2P value to remain empty; selecting LAN never constructs a P2P state owner.
@@ -160,6 +162,12 @@ struct LocalOriginProgram {
   // capacity. The same instance owner activates them from actual Up peers/DIS;
   // caller-supplied pseudonode bodies and overlapping P2P interfaces reject.
   std::optional<std::vector<LanOriginInterface>> broadcast_neighbors{};
+  // Conditional local reachability belongs to this instance, including passive
+  // interfaces without a Hello/update transport. Availability is control-owned.
+  std::optional<LocalPrefixCatalogProgram> prefixes{};
+  [[nodiscard]] bool automatic_roots() const noexcept {
+    return neighbors || broadcast_neighbors || prefixes;
+  }
   bool operator==(const LocalOriginProgram &) const = default;
 };
 // Experimental wide MT0 decision budgets. No production routing or timer
@@ -217,6 +225,9 @@ struct NewUpdateInstance {
 // Cold root-policy edit. Configuration publishes sorted unique instance keys;
 // the control owner commits all edits only after generation preparation succeeds.
 struct UpdateAdjacencyPolicy { std::uint8_t instance{}; bool strict_families{}; };
+// Owned cold catalog transfers with its root generation. No live prefix view
+// crosses the configuration/control SPSC boundary; commit swaps reserved state.
+struct UpdatePrefixCatalog { std::uint8_t instance{}; LocalPrefixCatalogProgram program; };
 struct UpdateAdminState {
   std::uint8_t instance{};
   bool enabled{};
@@ -262,6 +273,7 @@ struct ControlCommand {
   std::vector<NewUpdateInstance> new_instances;
   std::vector<UpdateAdminState> administrative;
   std::vector<UpdateAdjacencyPolicy> adjacency_policies;
+  std::vector<UpdatePrefixCatalog> prefix_catalogs;
   // Serialized RIB high water. Preparation reserves a strictly newer local
   // publication for synchronous administrative withdrawal of both families.
   std::uint64_t route_generation_floor{};
@@ -318,6 +330,7 @@ struct ControlResult {
   bool carrier{true};
   bool admin_enabled{true};
   bool broadcast_circuit{};
+  bool local_port_in_use{};
   std::array<std::size_t, 2U> lan_neighbors{}, lan_up{};
   std::array<std::optional<DisSelection>, 2U> designated{};
   std::optional<AdjacencyNextHop> bound_next_hop{};
@@ -482,7 +495,7 @@ private:
             UpdateInstanceSelector{configuration.format, configuration.wire_instance},
             configuration.origination->content, RuntimeClock::now());
         if (process && !local->reserve_publication(*process)) throw std::invalid_argument("IS-IS fragment transaction capacity refused");
-        if (configuration.origination->neighbors || configuration.origination->broadcast_neighbors)
+        if (configuration.origination->automatic_roots())
           fragment_workspace = make_fragment_workspace(configuration);
         reset_validation(RuntimeClock::now());
         if (configuration.origination->neighbors)
@@ -683,7 +696,9 @@ private:
     std::unique_ptr<DeviceState> additions;
     std::vector<std::uint8_t> retired_instances;
     std::vector<UpdateAdminState> administrative;
-  std::vector<UpdateAdjacencyPolicy> adjacency_policies;
+    std::vector<UpdateAdjacencyPolicy> adjacency_policies;
+    std::vector<UpdatePrefixCatalog> prefix_catalogs;
+    std::vector<std::unique_ptr<OriginFragmentWorkspace>> prefix_workspaces;
     std::uint64_t route_commit_generation{};
     struct UpdateReservation { OwnedInstance *instance{}; UpdateCircuitAdmission admission; };
     std::vector<UpdateReservation> update_reservations;

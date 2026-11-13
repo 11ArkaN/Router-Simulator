@@ -4515,9 +4515,24 @@ bool NetworkPlane::Impl::stage_isis_checkpoint(PreparedIsisCheckpoint &prepared,
     const NetworkPlaneCheckpoint &source) noexcept {
   try {
     const auto &protocol = *prepared.source;
-    for (const auto &device : protocol.control.devices)
-      if (device.active && (device.handle.index >= router_candidates.size() ||
-          router_candidates[device.handle.index].generation != device.handle.generation)) return false;
+    for (const auto &device : protocol.control.devices) {
+      if (!device.active) continue;
+      if (device.handle.index >= router_candidates.size() ||
+          router_candidates[device.handle.index].generation != device.handle.generation) return false;
+      const auto router = std::find_if(source.routers.begin(), source.routers.end(),
+          [&](const auto &entry) { return entry.device == device.handle; });
+      if (router == source.routers.end()) return false;
+      for (const auto &instance : device.instances)
+        if (instance.configuration.origination && instance.configuration.origination->prefixes)
+          for (const auto &interface : instance.configuration.origination->prefixes->interfaces)
+            if (interface.physical_port) {
+              if (*interface.physical_port >= device_catalog::maximum_ports_per_router) return false;
+              const auto port = std::find_if(router->forwarding.ports.begin(), router->forwarding.ports.end(),
+                  [&](const auto &entry) { return entry.ordinal == *interface.physical_port; });
+              const bool available = port != router->forwarding.ports.end() && port->configured && port->operational;
+              if (interface.available != available) return false;
+            }
+    }
     using Groups = std::array<std::vector<packet::Mac>, device_catalog::maximum_ports_per_router>;
     for (std::size_t index{}; index < prepared.links.size(); ++index) {
       auto &target = router_candidates[index];
@@ -5249,20 +5264,27 @@ bool NetworkPlane::configure_port(DeviceHandle device,
   // interleave with this command, so every matching transport has a live owner.
   // Deliver Down before acknowledging the edit, without waiting for a remote
   // holding timer or a UI projection. Failure indicates a broken owner graph.
-  if (device.index < impl_->isis_transports.size())
-    for (const auto &binding : impl_->isis_transports[device.index])
-      if (binding.identity.device == device && binding.port.ordinal == port.ordinal) {
-        isis::ControlCommand carrier;
-        carrier.kind = isis::ControlCommandKind::set_circuit_carrier;
-        carrier.identity = binding.identity;
-        carrier.carrier = port.configured && port.operational;
-        if (impl_->execute_isis(std::move(carrier)).error != isis::ControlError::none) std::terminate();
-      }
+  if (device.index < impl_->isis_registered.size() && impl_->isis_registered[device.index]) {
+    isis::ControlCommand carrier;
+    carrier.kind = isis::ControlCommandKind::set_local_port_carrier;
+    carrier.identity.device = device;
+    carrier.identity.physical_port_ordinal = port.ordinal;
+    carrier.carrier = port.configured && port.operational;
+    if (impl_->execute_isis(std::move(carrier)).error != isis::ControlError::none) std::terminate();
+  }
   return true;
 }
 
 bool NetworkPlane::remove_port(DeviceHandle device,
                                std::uint16_t ordinal) noexcept {
+  if (device.index < impl_->isis_registered.size() && impl_->isis_registered[device.index]) {
+    isis::ControlCommand query;
+    query.kind = isis::ControlCommandKind::query_local_port_usage;
+    query.identity.device = device;
+    query.identity.physical_port_ordinal = ordinal;
+    const auto usage = impl_->execute_isis(std::move(query));
+    if (usage.error != isis::ControlError::none || usage.local_port_in_use) return false;
+  }
   // The control owner must withdraw the complete circuit generation before
   // destroying its physical port. Refuse an orphaned transport explicitly.
   if (device.index < impl_->isis_transports.size() &&
@@ -5309,10 +5331,11 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     std::span<const isis::NewUpdateInstance> new_instances,
     std::span<const std::uint8_t> retired_instances,
     std::span<const isis::UpdateAdminState> administrative,
-    std::span<const isis::UpdateAdjacencyPolicy> adjacency_policies) noexcept {
+    std::span<const isis::UpdateAdjacencyPolicy> adjacency_policies,
+    std::span<const isis::UpdatePrefixCatalog> prefix_catalogs) noexcept {
   if (!impl_->live(device) || circuits.size() > device_catalog::maximum_routers * device_catalog::maximum_ports_per_router)
     return false;
-  if (circuits.empty() && new_instances.empty() && retired_instances.empty() && administrative.empty() && adjacency_policies.empty() && !impl_->isis_registered[device.index]) return true;
+  if (circuits.empty() && new_instances.empty() && retired_instances.empty() && administrative.empty() && adjacency_policies.empty() && prefix_catalogs.empty() && !impl_->isis_registered[device.index]) return true;
   if (!std::is_sorted(retired_instances.begin(), retired_instances.end()) ||
       std::adjacent_find(retired_instances.begin(), retired_instances.end()) != retired_instances.end()) return false;
   if (!administrative.empty() && (!impl_->route_managers[device.index] ||
@@ -5354,6 +5377,7 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     generation.retired_instances.assign(retired_instances.begin(), retired_instances.end());
     generation.administrative.assign(administrative.begin(), administrative.end());
     generation.adjacency_policies.assign(adjacency_policies.begin(), adjacency_policies.end());
+    generation.prefix_catalogs.assign(prefix_catalogs.begin(), prefix_catalogs.end());
     if (!administrative.empty()) generation.route_generation_floor = impl_->route_managers[device.index]->isis_generation;
     if (!retired_instances.empty() || !administrative.empty()) if (const auto &manager = impl_->route_managers[device.index]) {
       const auto ipv4 = manager->ipv4_candidates.second();
