@@ -7,6 +7,7 @@
 #include "router/isis_level_database.hpp"
 #include "router/isis_pdu_composition.hpp"
 #include "router/protocol_transmission.hpp"
+#include "router/protocol_frame_expiry.hpp"
 
 namespace router::isis {
 enum class LspEmissionStatus : std::uint8_t {
@@ -15,6 +16,7 @@ enum class LspEmissionStatus : std::uint8_t {
 struct LspTransmission {
   LspEmissionStatus status{LspEmissionStatus::not_requested};
   std::uint64_t ticket{};
+  protocol::FrameExpiry expiry{};
 };
 struct LspReceipt { bool accepted{}; bool current_version{}; };
 struct LspExchangeCheckpoint {

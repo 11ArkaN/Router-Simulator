@@ -3,6 +3,7 @@
 // queue. Dependencies point to transport contracts and encoded packet parsing.
 
 #include "router/network_transfer_checkpoint.hpp"
+#include "router/isis_lsp_lifetime.hpp"
 #include "router/isis_ethernet.hpp"
 
 #include <algorithm>
@@ -38,6 +39,9 @@ bool valid_forward_transfers(const ForwardShardTransferCheckpoint &saved,
     if (frame.kind > ForwardTransferKind::isis_transmit || frame.source.kind > NodeKind::ethernet_switch ||
         !frame.source.generation || frame.bytes.size() > packet::maximum_frame_octets ||
         frame.ordinal >= device_catalog::maximum_ports_per_router ||
+        !isis::valid_queued_lsp_expiry(frame.bytes, frame.expiry) ||
+        (frame.expiry.offset && (static_cast<std::size_t>(frame.expiry.offset) + 1U >= frame.bytes.size() ||
+         frame.kind != ForwardTransferKind::isis_transmit)) ||
         frame.isis_receipt.has_value() != (frame.kind == ForwardTransferKind::isis_transmit)) return false;
     if (!frame.isis_receipt) continue;
     const auto &metadata = frame.isis_receipt->metadata;
@@ -53,6 +57,9 @@ bool valid_forward_transfers(const ForwardShardTransferCheckpoint &saved,
     packet::isis::EthernetDecodeError error{};
     const auto wire = packet::isis::parse_ethernet_pdu(frame.bytes, error);
     const auto original = packet::isis::parse_ethernet_pdu(slot->bytes, error);
+    if (frame.expiry.offset != slot->expiry.offset ||
+        frame.expiry.prepaid_transit_seconds != slot->expiry.prepaid_transit_seconds ||
+        frame.expiry.holding_nanoseconds != slot->expiry.holding_nanoseconds) return false;
     if (!wire || !original || wire->ethernet.source != original->ethernet.source ||
         wire->ethernet.destination != original->ethernet.destination ||
         wire->ethernet.vlan_tag_count != original->ethernet.vlan_tag_count || metadata.transmission_class != static_cast<std::uint8_t>(wire->pdu.type) ||

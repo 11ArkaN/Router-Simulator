@@ -4,6 +4,7 @@
 
 #include "router/isis_runtime_checkpoint.hpp"
 #include "router/isis_ethernet.hpp"
+#include "router/isis_lsp_lifetime.hpp"
 
 #include <algorithm>
 
@@ -93,6 +94,10 @@ bool valid_isis_runtime_links(const IsisRuntimeCheckpoint &saved) noexcept {
   for (std::size_t shard{}; shard < shards; ++shard) {
     if (!protocol::PacketChannel<device_catalog::isis_packet_ring_frames>::valid_checkpoint(saved.ingress[shard], cohort) ||
         !saved.ingress[shard].borrowed.empty() || !IsisCheckpointEgress::valid_checkpoint(saved.egress[shard], cohort)) return false;
+    for (const auto &slot : saved.egress[shard].occupied)
+      if (!isis::valid_queued_lsp_expiry(slot.bytes, slot.expiry)) return false;
+    for (const auto &slot : saved.ingress[shard].occupied)
+      if (slot.expiry.offset) return false;
     if (saved.forwarding.empty()) {
       if (!saved.egress[shard].borrowed.empty()) return false;
     } else if (!valid_forward_transfers(saved.forwarding[shard], saved.egress[shard], shard, shards, cohort)) return false;

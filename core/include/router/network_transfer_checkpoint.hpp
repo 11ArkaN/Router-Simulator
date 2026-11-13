@@ -23,6 +23,7 @@ struct ForwardTransferCheckpoint {
   PortHandle expected_port{};
   std::optional<IsisLinkReceiptCheckpoint> isis_receipt;
   std::vector<std::uint8_t> bytes;
+  protocol::FrameExpiryCheckpoint expiry{};
 };
 struct ForwardShardTransferCheckpoint {
   std::uint32_t version{1U};

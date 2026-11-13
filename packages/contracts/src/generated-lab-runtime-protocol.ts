@@ -3,7 +3,7 @@ export const LAB_RUNTIME_PROTOCOL = {
   "version": 4,
   "snapshotAbi": 10,
   "telemetryAbi": 6,
-  "checkpointAbi": 13,
+  "checkpointAbi": 14,
   "snapshot": "snapshot",
   "router_create": "router-create",
   "router_delete": "router-delete",

@@ -1,6 +1,7 @@
 // Network-plane owner implementation. Router and host stacks communicate only
 // through encoded frames admitted to MultiDeviceFabric.
 
+#include "router/isis_lsp_lifetime.hpp"
 #include "router/network_plane.hpp"
 #include "router/route_input_store.hpp"
 #include "router/network_transfer_checkpoint.hpp"
@@ -590,6 +591,7 @@ struct ForwardEgress {
   // IS-IS keeps the protocol slot borrowed until the link owner returns actual
   // physical queue admission. A forwarding-transfer enqueue is insufficient.
   IsisEgressReceipt isis_receipt{};
+  protocol::FrameExpiry expiry{};
   PortHandle expected_port{};
   packet::Frame frame{};
 };
@@ -606,6 +608,7 @@ void spsc_copy(ForwardEgress &destination,
   destination.source = source.source;
   destination.ordinal = source.ordinal;
   destination.isis_receipt = source.isis_receipt;
+  destination.expiry = source.expiry;
   destination.expected_port = source.expected_port;
   packet::copy_frame(destination.frame, source.frame);
 }
@@ -727,20 +730,23 @@ public:
   // unexpected residual ingress or rendezvous is an invariant failure, not
   // permission to discard a packet. Snapshot preserves every egress kind.
   [[nodiscard]] ForwardShardTransferCheckpoint checkpoint_transfers(std::uint64_t epoch,
-      std::optional<IsisEgressReceipt> retained) const {
+      std::optional<IsisEgressReceipt> retained, protocol::FrameExpiry::Clock::time_point expiry_anchor) const {
     if (!epoch || resume_requested_.load(std::memory_order_acquire) || !ingress_.empty() ||
         !commands_.empty() || !results_.empty()) throw std::logic_error("Forwarding transfer capture requires quiescence");
     ForwardShardTransferCheckpoint result;
     result.barrier_epoch = epoch;
     result.retained_receipt = retained;
     result.receipts = isis_receipts_.checkpoint_quiescent();
-    result.egress = egress_.checkpoint_quiescent([](const ForwardEgress &frame) {
+    result.egress = egress_.checkpoint_quiescent([expiry_anchor](const ForwardEgress &frame) {
       ForwardTransferCheckpoint value;
       value.kind = frame.kind;
       value.source = frame.source;
       value.ordinal = frame.ordinal;
       value.expected_port = frame.expected_port;
       if (frame.kind == ForwardEgressKind::isis_transmit) value.isis_receipt = frame.isis_receipt;
+      const auto expiry = frame.expiry.checkpoint(expiry_anchor);
+      if (!expiry) throw std::logic_error("Forwarding frame expiry anchor corrupted");
+      value.expiry = *expiry;
       value.bytes.assign(frame.frame.view().begin(), frame.frame.view().end());
       return value;
     });
@@ -756,7 +762,7 @@ public:
   // additionally prove each borrowed credit has exactly one external reference.
   // Payloads are constructed directly on heap, never as a batch on the stack.
   [[nodiscard]] static std::unique_ptr<PreparedTransfers> prepare_transfers(
-      const ForwardShardTransferCheckpoint &saved, std::uint64_t source_epoch) {
+      const ForwardShardTransferCheckpoint &saved, std::uint64_t source_epoch, protocol::FrameExpiry::Clock::time_point anchor) {
     if (saved.version != 1U || !source_epoch || saved.barrier_epoch != source_epoch ||
         saved.egress.size() >= device_catalog::forwarding_ring_frames ||
         saved.receipts.size() > device_catalog::isis_packet_ring_frames) return nullptr;
@@ -772,6 +778,9 @@ public:
       value.source = frame.source;
       value.ordinal = frame.ordinal;
       value.expected_port = frame.expected_port;
+      const auto expiry = protocol::FrameExpiry::restore(frame.expiry, anchor);
+      if (!expiry) return nullptr;
+      value.expiry = *expiry;
       if (frame.isis_receipt) value.isis_receipt = *frame.isis_receipt;
       value.frame.length = static_cast<std::uint16_t>(frame.bytes.size());
       std::copy(frame.bytes.begin(), frame.bytes.end(), value.frame.bytes.begin());
@@ -1138,6 +1147,7 @@ struct NetworkPlane::Impl {
     Impl *owner{};
     NodeHandle source{};
     ForwardingShardWorker *shard{};
+    protocol::FrameExpiry expiry{};
   };
 
   struct PortBinding {
@@ -1497,6 +1507,7 @@ struct NetworkPlane::Impl {
   };
   struct PreparedIsisCheckpoint {
     const IsisRuntimeCheckpoint *source{};
+    Clock::time_point expiry_anchor{};
     std::unique_ptr<::router::routing::RoutePublication::PreparedRestore> routes;
     std::vector<std::unique_ptr<ForwardingShardWorker::PreparedTransfers>> forwarding;
     std::array<std::vector<IsisTransportBinding>, device_catalog::maximum_routers> links;
@@ -1674,9 +1685,9 @@ struct NetworkPlane::Impl {
 
   [[nodiscard]] bool
   send(NodeHandle source, std::uint16_t ordinal, const packet::Frame &frame,
-       ForwardingShardWorker *source_shard = nullptr) noexcept {
+       ForwardingShardWorker *source_shard = nullptr, protocol::FrameExpiry expiry = {}) noexcept {
     if (parallel())
-      return queue_egress(source_shard, source, ordinal, frame);
+      return !expiry.offset && queue_egress(source_shard, source, ordinal, frame);
     const auto *current = binding(source, ordinal);
     // The binding includes the complete source generation. Index and ordinal
     // alone could send a delayed frame from a deleted router through a cable
@@ -1692,11 +1703,9 @@ struct NetworkPlane::Impl {
         source.index < egress_captures.size() &&
         ordinal < egress_captures[source.index].size())
       observe(egress_captures[source.index][ordinal], source, frame);
-    if (fabric->enqueue(current->link, current->endpoint, frame) !=
+    if (fabric->enqueue(current->link, current->endpoint, frame, expiry) !=
         MultiDeviceFabric::DropReason::none)
       return false;
-    observe(link_captures[current->link.index][current->endpoint],
-            current->link, frame);
     return true;
   }
 
@@ -1735,9 +1744,6 @@ struct NetworkPlane::Impl {
             fabric->enqueue_shared(current->link, current->endpoint,
                                    queued->handle) ==
             MultiDeviceFabric::DropReason::none;
-        if (admitted)
-          observe(link_captures[current->link.index][current->endpoint],
-                  current->link, *queued->frame);
         slot.forwarding->release(queued->handle);
         if (!admitted)
           ++missing_binding_dropped;
@@ -1749,12 +1755,19 @@ struct NetworkPlane::Impl {
     switch_egress_cursor = (switch_egress_cursor + 1U) % switches.size();
   }
 
+  static void transmit(void *context, const MultiDeviceFabric::Delivery &wire) {
+    auto &owner = *static_cast<Impl *>(context);
+    const auto *port = owner.binding(wire.source.node, wire.source.ordinal);
+    if (port && port->port == wire.source && port->link == wire.link)
+      owner.observe(owner.link_captures[wire.link.index][port->endpoint], wire.link, wire.frame);
+  }
+
   static bool egress(void *context, std::uint16_t ordinal,
                      const packet::Frame &frame) noexcept {
     auto &value = *static_cast<EgressContext *>(context);
     // The callback writes only to the owner-local fabric admission queue. It
     // never discovers or invokes the destination device directly.
-    return value.owner->send(value.source, ordinal, frame, value.shard);
+    return value.owner->send(value.source, ordinal, frame, value.shard, value.expiry);
   }
 
   static bool host_fragment_egress(void *context,
@@ -4312,13 +4325,14 @@ void NetworkPlane::Impl::drain_isis_egress(std::size_t shard_index, ForwardingSh
                 transfer.ordinal = ordinal;
                 transfer.expected_port = transfer_context.port;
                 transfer.isis_receipt = {transfer_context.borrowed.handle, transfer_context.borrowed.metadata, false};
+                transfer.expiry = transfer_context.borrowed.expiry;
                 packet::copy_frame(transfer.frame, frame);
                 return transfer_context.worker.emit(transfer);
               });
         } else {
           const auto *physical = binding(node(metadata.device), metadata.physical_port_ordinal);
           if (physical && physical->port == selected->port) {
-            EgressContext context{this, node(metadata.device), nullptr};
+            EgressContext context{this, node(metadata.device), nullptr, borrowed->expiry};
             enqueued = forwarder->originate_isis(metadata.physical_port_ordinal, *borrowed->frame, &context, egress);
           }
         }
@@ -4400,13 +4414,13 @@ std::unique_ptr<IsisRuntimeCheckpoint> NetworkPlane::Impl::capture_isis_checkpoi
     result->ingress.reserve(count);
     result->egress.reserve(count);
     for (std::size_t index{}; index < count; ++index) {
-      result->ingress.push_back(isis_channels.ingress[index].checkpoint_quiescent(epoch));
-      result->egress.push_back(isis_channels.egress[index].checkpoint_quiescent(epoch));
+      result->ingress.push_back(isis_channels.ingress[index].checkpoint_quiescent(epoch, anchor));
+      result->egress.push_back(isis_channels.egress[index].checkpoint_quiescent(epoch, anchor));
     }
     result->routes = isis_channels.routes->checkpoint_quiescent(epoch);
     result->forwarding.reserve(separate_forwarding_shards);
     for (std::size_t index{}; index < separate_forwarding_shards; ++index)
-      result->forwarding.push_back(forwarding_shards[index]->checkpoint_transfers(epoch, pending_isis_receipts[index]));
+      result->forwarding.push_back(forwarding_shards[index]->checkpoint_transfers(epoch, pending_isis_receipts[index], anchor));
     result->ports.reserve(result->control.active_circuits);
     for (const auto &device : isis_transports) for (const auto &binding : device)
       result->ports.push_back({binding.identity, binding.port});
@@ -4453,11 +4467,12 @@ std::unique_ptr<NetworkPlane::Impl::PreparedIsisCheckpoint> NetworkPlane::Impl::
   try {
     auto result = std::make_unique<PreparedIsisCheckpoint>();
     result->source = &source;
+    result->expiry_anchor = anchor;
     result->routes = ::router::routing::RoutePublication::prepare_restore(source.routes, source.control.barrier_epoch);
     if (!result->routes) return nullptr;
     result->forwarding.reserve(separate_forwarding_shards);
     for (const auto &image : source.forwarding) {
-      auto prepared = ForwardingShardWorker::prepare_transfers(image, source.control.barrier_epoch);
+      auto prepared = ForwardingShardWorker::prepare_transfers(image, source.control.barrier_epoch, anchor);
       if (!prepared) return nullptr;
       result->forwarding.push_back(std::move(prepared));
     }
@@ -4570,7 +4585,7 @@ void NetworkPlane::Impl::commit_isis_checkpoint(PreparedIsisCheckpoint &prepared
   const auto &source = *prepared.source;
   for (std::size_t index{}; index < source.ingress.size(); ++index)
     if (!isis_channels.ingress[index].restore_quiescent(source.ingress[index], source.control.barrier_epoch) ||
-        !isis_channels.egress[index].restore_quiescent(source.egress[index], source.control.barrier_epoch)) std::terminate();
+        !isis_channels.egress[index].restore_quiescent(source.egress[index], source.control.barrier_epoch, prepared.expiry_anchor)) std::terminate();
   if (!isis_channels.routes->commit_quiescent(*prepared.routes, source.control.barrier_epoch)) std::terminate();
   for (std::size_t index{}; index < prepared.forwarding.size(); ++index) {
     if (!forwarding_shards[index]->commit_transfers(*prepared.forwarding[index], source.control.barrier_epoch)) std::terminate();
@@ -4949,13 +4964,11 @@ void NetworkPlane::Impl::drain_forwarding_egress() noexcept {
             egress_captures[egress_frame.source.index][egress_frame.ordinal],
             egress_frame.source, egress_frame.frame);
       if (fabric->enqueue(current->link, current->endpoint,
-                          egress_frame.frame) !=
+                          egress_frame.frame, egress_frame.expiry) !=
           MultiDeviceFabric::DropReason::none) {
         if (!finish_isis(false)) break;
         continue;
       }
-      observe(link_captures[current->link.index][current->endpoint],
-              current->link, egress_frame.frame);
       if (!finish_isis(true)) break;
     }
   }
@@ -8602,6 +8615,10 @@ bool NetworkPlane::restore(const NetworkPlaneCheckpoint &state,
       !MultiDeviceFabric::validate_checkpoint(state.fabric) ||
       !CaptureStore::validate_checkpoint(state.capture))
     return false;
+  for (const auto &link : state.fabric.links)
+    for (const auto &direction : link.directions)
+      for (const auto &frame : direction.transmit)
+        if (!isis::valid_queued_lsp_expiry(frame.frame.view(), frame.expiry)) return false;
   Impl::CheckpointQuiescence barrier{*impl_};
   if (!barrier.enter()) return false;
   const auto protocol_anchor = barrier.anchor;
@@ -9400,7 +9417,7 @@ void NetworkPlane::pump(Clock::time_point now) noexcept {
     if (slot.forwarding)
       slot.forwarding->age(now);
   impl_->drain_switch_egress();
-  impl_->fabric->pump_transmit(now);
+  impl_->fabric->pump_transmit(std::max(now, Clock::now()), impl_.get(), Impl::transmit);
   // Transmission scheduling above has real execution cost. Reusing the time
   // sampled before that work would force every Ethernet frame, including a
   // 51.2 ns minimum frame at 10 Gb/s, through a condition-variable sleep even
@@ -9420,7 +9437,7 @@ void NetworkPlane::pump(Clock::time_point now) noexcept {
   if (impl_->parallel())
     impl_->drain_forwarding_egress();
   impl_->drain_switch_egress();
-  impl_->fabric->pump_transmit(Clock::now());
+  impl_->fabric->pump_transmit(Clock::now(), impl_.get(), Impl::transmit);
 }
 
 std::optional<NetworkPlane::Clock::time_point>

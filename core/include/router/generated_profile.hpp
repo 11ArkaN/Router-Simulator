@@ -114,10 +114,10 @@ inline constexpr std::size_t cli_history_entries = 50;
 inline constexpr std::uint32_t runtime_snapshot_abi = 10;
 inline constexpr std::uint32_t telemetry_abi = 6;
 inline constexpr std::uint32_t runtime_message_abi = 4;
-inline constexpr std::uint32_t checkpoint_abi = 13;
-inline constexpr std::uint64_t profile_hash = 0x4e7d7980ddf260b5ULL;
-inline constexpr std::uint64_t checkpoint_schema_hash = 0x412bd99c975bf4c0ULL;
-inline constexpr std::uint64_t build_hash = 0x540ace935e68713fULL;
+inline constexpr std::uint32_t checkpoint_abi = 14;
+inline constexpr std::uint64_t profile_hash = 0x5e5d95589ddefcabULL;
+inline constexpr std::uint64_t checkpoint_schema_hash = 0x7a3ee511869e4e79ULL;
+inline constexpr std::uint64_t build_hash = 0xfbb59ec88c57e205ULL;
 
 // Hardware initialization values are experimental emulator timing profiles,
 // not claims about physical platform boot guarantees.

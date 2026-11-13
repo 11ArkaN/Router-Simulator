@@ -12,6 +12,9 @@
 #include <utility>
 
 namespace router::lab::isis_checkpoint::detail {
+template <typename T> requires std::is_same_v<std::remove_const_t<T>, protocol::FrameExpiryCheckpoint>
+auto members(T &v) noexcept { auto &[offset, prepaid_transit_seconds, holding_nanoseconds] = v;
+  return std::tie(offset, prepaid_transit_seconds, holding_nanoseconds); }
 using Ingress = protocol::PacketChannel<device_catalog::isis_packet_ring_frames>;
 using IngressImage = Ingress::Checkpoint;
 using EgressImage = IsisCheckpointEgress::Checkpoint;
@@ -220,7 +223,7 @@ auto members(T &v) noexcept { [[maybe_unused]] auto &[network, length] = v; retu
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::lab::ForwardShardTransferCheckpoint>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[version, barrier_epoch, egress, receipts, retained_receipt] = v; return std::tie(v.version, v.barrier_epoch, v.egress, v.receipts, v.retained_receipt); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::lab::ForwardTransferCheckpoint>
-auto members(T &v) noexcept { [[maybe_unused]] auto &[kind, source, ordinal, expected_port, isis_receipt, bytes] = v; return std::tie(v.kind, v.source, v.ordinal, v.expected_port, v.isis_receipt, v.bytes); }
+auto members(T &v) noexcept { [[maybe_unused]] auto &[kind, source, ordinal, expected_port, isis_receipt, bytes, expiry] = v; return std::tie(v.kind, v.source, v.ordinal, v.expected_port, v.isis_receipt, v.bytes, v.expiry); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::lab::IsisLinkReceiptCheckpoint>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[handle, metadata, enqueued] = v; return std::tie(v.handle, v.metadata, v.enqueued); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::LsdbLimits>
@@ -238,9 +241,9 @@ auto members(T &v) noexcept { [[maybe_unused]] auto &[version, barrier_epoch, ca
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, EgressImage>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[version, barrier_epoch, capacity, with_completions, available, ready, borrowed, returned, occupied] = v; return std::tie(v.version, v.barrier_epoch, v.capacity, v.with_completions, v.available, v.ready, v.borrowed, v.returned, v.occupied); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, IngressSlot>
-auto members(T &v) noexcept { [[maybe_unused]] auto &[handle, metadata, bytes] = v; return std::tie(v.handle, v.metadata, v.bytes); }
+auto members(T &v) noexcept { [[maybe_unused]] auto &[handle, metadata, bytes, expiry] = v; return std::tie(v.handle, v.metadata, v.bytes, v.expiry); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, EgressSlot>
-auto members(T &v) noexcept { [[maybe_unused]] auto &[handle, metadata, bytes] = v; return std::tie(v.handle, v.metadata, v.bytes); }
+auto members(T &v) noexcept { [[maybe_unused]] auto &[handle, metadata, bytes, expiry] = v; return std::tie(v.handle, v.metadata, v.bytes, v.expiry); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, IngressMetadata>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[device, interface_id, physical_port_ordinal, configuration_generation, transmission_id, transmission_class, instance_id, protocol_epoch] = v; return std::tie(v.device, v.interface_id, v.physical_port_ordinal, v.configuration_generation, v.transmission_id, v.transmission_class, v.instance_id, v.protocol_epoch); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, EgressMetadata>

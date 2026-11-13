@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: iso.10589.2002.queued_lsp_lifetime
+    kind: routing-protocol-physical-transmission-lifetime
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: iso-iec-standard
+    source_url: https://www.iso.org/standard/30932.html
+    section: Clause 7.3.16.3 holding time and estimated transit reduction, clause 7.3.16.4 instance-owned purge construction
+    rfc_refs: []
+    yang_path: /configure/router/isis
+    last_verified_at: 2026-11-09
+    implementation: [core/include/router/isis_lsp_lifetime.hpp, core/include/router/protocol_frame_expiry.hpp, core/include/router/protocol_packet_channel.hpp, core/include/router/multi_device_fabric.hpp, core/include/router/packet_pool.hpp, core/src/isis/isis_lsp_exchange.cpp, core/src/isis/isis_control_update_egress.cpp, core/src/isis/isis_control_lan_update.cpp, core/src/forwarding/multi_device_fabric.cpp, core/src/runtime/network_plane.cpp, core/src/runtime/network_transfer_checkpoint.cpp, core/src/runtime/isis_checkpoint_fields.hpp, core/src/runtime/lab_checkpoint.cpp, schemas/checkpoint/14.yaml]
+    tests: [core/tests/isis/isis_lsp_exchange_test.cpp]
+    status: experimental
+    notes: The protocol producer prepays at least one transit second and attaches an immutable queue-age descriptor outside the receipt identity. The link owner exclusively rewrites the retained lifetime field at the scheduled transmit start, accounting for elapsed holding time and any additional estimated serialization and propagation duration. Expired live frames are dropped without manufacturing a purge. Link-direction capture observes the finalized transmit image after expiry reduction and excludes expired drops. Relative checkpoint age retains subsecond precision across protocol, forwarding and fabric queues without persisting a host clock epoch. The instance retains responsibility for LSDB expiration and finalized purges.
   - id: nokia.sros.26_7.isis.operational_adjacency
     kind: routing-protocol-operational-projection
     release: 26.7.R1

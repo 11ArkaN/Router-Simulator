@@ -50,7 +50,7 @@ RuntimeClock::time_point ControlWorker::emit_broadcast_lsp(OwnedCircuit &owned,
     const auto type = level ? packet::isis::PduType::lsp_l2 : packet::isis::PduType::lsp_l1;
     if (channel.try_send({owned.identity.device, owned.identity.interface_id, owned.identity.physical_port_ordinal,
         owned.identity.configuration_generation, prepared.ticket, static_cast<std::uint8_t>(type),
-        owned.identity.instance, output->synchronization_epoch}, output_)) {
+        owned.identity.instance, output->synchronization_epoch}, output_, prepared.expiry)) {
       if (channels_.egress_wakeup) channels_.egress_wakeup(channels_.egress_context, shard);
       return never;
     }

@@ -130,13 +130,14 @@ RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
       egress.complete_started[level] = true;
       egress.complete_periodic[level] = next_complete_period();
     }
-    const auto publish = [&](std::uint64_t ticket, packet::isis::PduType type) {
+    const auto publish = [&](std::uint64_t ticket, packet::isis::PduType type,
+        protocol::FrameExpiry expiry = {}) {
       --budget;
       if (broadcast && is_complete(type))
         egress.lan_csnp = UpdateEgress::LanReservation{level, output->synchronization_epoch, ticket};
       const bool published = channel.try_send({owned.identity.device, owned.identity.interface_id,
           owned.identity.physical_port_ordinal, owned.identity.configuration_generation, ticket,
-          static_cast<std::uint8_t>(type), owned.identity.instance, output->synchronization_epoch}, output_);
+          static_cast<std::uint8_t>(type), owned.identity.instance, output->synchronization_epoch}, output_, expiry);
       if (published) {
         if (channels_.egress_wakeup) channels_.egress_wakeup(channels_.egress_context, shard);
       } else if (is_lsp(type)) {
@@ -232,7 +233,7 @@ RuntimeClock::time_point ControlWorker::emit_updates(OwnedCircuit &owned,
               owned.destinations.levels[level], maximum_pdu, program.transit_seconds, output_, scratch_, now);
           if (prepared.status == LspEmissionStatus::encoded) {
             --egress.credits;
-            publish(prepared.ticket, level ? packet::isis::PduType::lsp_l2 : packet::isis::PduType::lsp_l1);
+            publish(prepared.ticket, level ? packet::isis::PduType::lsp_l2 : packet::isis::PduType::lsp_l1, prepared.expiry);
             break;
           }
           if (prepared.status == LspEmissionStatus::too_large) ++owned.counters.lsp_too_large;

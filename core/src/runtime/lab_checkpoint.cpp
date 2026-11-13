@@ -1,4 +1,4 @@
-// ABI 13 codec implementation. Decoding creates a detached value graph. The
+// ABI 14 codec implementation. Decoding creates a detached value graph. The
 // supervisor performs cross-owner validation and atomic commit only afterwards.
 
 #include "router/lab_checkpoint.hpp"
@@ -18,11 +18,11 @@
 #include <string>
 #include <type_traits>
 
-namespace router::lab::checkpoint_v13 {
+namespace router::lab::checkpoint_v14 {
 namespace {
 
 inline constexpr std::array<std::uint8_t, 8> magic{'R', 'S', 'L', 'A',
-                                                   'B', '1', '3', 0};
+                                                   'B', '1', '4', 0};
 inline constexpr std::size_t maximum_checkpoint_bytes =
     device_catalog::wasm_initial_memory_bytes;
 
@@ -5555,11 +5555,17 @@ bool switch_state(Reader &in, NetworkPlaneCheckpoint::Switch &state) {
 void fabric_frame(Writer &out, const FabricFrameCheckpoint &value) {
   out.frame(value.frame);
   out.integer(value.delivery_remaining_nanoseconds);
+  out.integer(value.expiry.offset);
+  out.integer(value.expiry.prepaid_transit_seconds);
+  out.integer(value.expiry.holding_nanoseconds);
 }
 
 bool fabric_frame(Reader &in, FabricFrameCheckpoint &value) noexcept {
   return in.frame(value.frame) &&
-         in.integer(value.delivery_remaining_nanoseconds);
+         in.integer(value.delivery_remaining_nanoseconds) &&
+         in.integer(value.expiry.offset) &&
+         in.integer(value.expiry.prepaid_transit_seconds) &&
+         in.integer(value.expiry.holding_nanoseconds);
 }
 
 void fabric_direction(Writer &out, const FabricDirectionCheckpoint &value) {
@@ -10345,4 +10351,4 @@ decode(std::span<const std::uint8_t> bytes, const vault::SecretVault *protector)
   }
 }
 
-} // namespace router::lab::checkpoint_v13
+} // namespace router::lab::checkpoint_v14

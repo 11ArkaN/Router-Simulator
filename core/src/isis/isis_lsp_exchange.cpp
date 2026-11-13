@@ -3,6 +3,7 @@
 // 7.3.17 distinguishes LAN enqueue completion from P2P peer acknowledgement.
 
 #include "router/isis_lsp_exchange.hpp"
+#include "router/isis_lsp_lifetime.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -24,9 +25,10 @@ LspTransmission LspExchange::prepare(const packet::isis::LspId &id,
   if (!flags->srm) return {};
   const auto stored = database_.database().find(id, now);
   if (!stored) return {};
-  const auto decrement = std::max<std::uint16_t>(1U, transit_seconds);
-  if (!stored->purge_installed && stored->header.remaining_seconds <= decrement)
-    return {LspEmissionStatus::purge_required};
+  const auto lifetime = lsp_transmission_lifetime(
+      stored->purge_installed ? 0U : stored->header.remaining_seconds,
+      std::chrono::nanoseconds::zero(), std::chrono::seconds{transit_seconds}, stored->purge_installed);
+  if (!lifetime) return {LspEmissionStatus::purge_required};
   const auto bytes = stored->pdu.bytes;
   if (maximum_pdu_octets < packet::isis::lsp_header_octets)
     return {LspEmissionStatus::capacity};
@@ -36,16 +38,17 @@ LspTransmission LspExchange::prepare(const packet::isis::LspId &id,
   }
   if (bytes.size() > scratch.pdu.size()) return {LspEmissionStatus::capacity};
   std::copy(bytes.begin(), bytes.end(), scratch.pdu.begin());
-  const auto lifetime = stored->purge_installed ? std::uint16_t{} :
-      static_cast<std::uint16_t>(stored->header.remaining_seconds - decrement);
-  scratch.pdu[10U] = static_cast<std::uint8_t>(lifetime >> 8U);
-  scratch.pdu[11U] = static_cast<std::uint8_t>(lifetime);
+  scratch.pdu[10U] = static_cast<std::uint8_t>(*lifetime >> 8U);
+  scratch.pdu[11U] = static_cast<std::uint8_t>(*lifetime);
   if (!packet::isis::ethernet_pdu_into(output, source, destination,
       std::span(scratch.pdu).first(bytes.size()))) return {LspEmissionStatus::capacity};
   const auto ticket = transmission_.begin();
   if (!ticket) return {LspEmissionStatus::ticket_exhausted};
   pending_ = stored->header;
-  return {LspEmissionStatus::encoded, *ticket};
+  const auto expiry = stored->purge_installed ? protocol::FrameExpiry{} : protocol::FrameExpiry{
+      static_cast<std::uint16_t>(packet::ethernet_header_octets + packet::llc_ui_header_octets + 10U),
+      std::max<std::uint16_t>(1U, transit_seconds), 0, now};
+  return {LspEmissionStatus::encoded, *ticket, expiry};
 }
 
 LspReceipt LspExchange::complete(std::uint64_t epoch, std::uint64_t ticket,

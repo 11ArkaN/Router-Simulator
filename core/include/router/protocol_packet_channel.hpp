@@ -8,6 +8,7 @@
 
 #include "router/lab_registry.hpp"
 #include "router/packet.hpp"
+#include "router/protocol_frame_expiry.hpp"
 #include "router/spsc_ring.hpp"
 #include "router/channel_checkpoint_partition.hpp"
 
@@ -66,6 +67,7 @@ public:
     Handle handle{};
     Metadata metadata{};
     const packet::Frame *frame{};
+    FrameExpiry expiry{};
   };
 
   struct Completion {
@@ -78,6 +80,7 @@ public:
     Handle handle{};
     Metadata metadata;
     std::vector<std::uint8_t> bytes;
+    FrameExpiryCheckpoint expiry{};
   };
   struct ReturnCheckpoint { Handle handle{}; bool enqueued{}; };
   struct Checkpoint {
@@ -103,8 +106,11 @@ public:
   // Producer: exactly one sending shard. Consumer: exactly one receiving
   // shard. Ordering is FIFO. Full behavior is explicit packet backpressure:
   // false leaves the frame with the producer and changes no protocol state.
+  // Optional expiry describes only a producer-authorized mutable wire field.
+  // Consumers copy it unchanged until the exclusive physical transmitter; it
+  // is not part of the credit identity or the returned admission receipt.
   [[nodiscard]] bool try_send(const Metadata &metadata,
-                              const packet::Frame &frame) noexcept {
+                              const packet::Frame &frame, FrameExpiry expiry = {}) noexcept {
     if (frame.size() > frame.bytes.size()) return false;
     reclaim();
     if (available_count_ == 0U)
@@ -112,6 +118,7 @@ public:
     const auto handle = available_[--available_count_];
     auto &slot = slots_[handle];
     slot.metadata = metadata;
+    slot.expiry = expiry;
     packet::copy_frame(slot.frame, frame);
     if (!ready_.try_push(handle)) {
       available_[available_count_++] = handle;
@@ -130,7 +137,8 @@ public:
     borrowed_[handle] = true;
     return Borrowed{.handle = handle,
                     .metadata = slot.metadata,
-                    .frame = &slot.frame};
+                    .frame = &slot.frame,
+                    .expiry = slot.expiry};
   }
 
   // Consumer returns exactly one handle after processing. A failure indicates
@@ -202,7 +210,8 @@ public:
   // and exact slot ownership; free-slot bytes are omitted. Allocation, invalid
   // epoch or corrupt internal ownership can throw. No ring message is consumed.
   // Secret-bearing wire requires protection by the enclosing persistence codec.
-  [[nodiscard]] Checkpoint checkpoint_quiescent(std::uint64_t barrier_epoch) const {
+  [[nodiscard]] Checkpoint checkpoint_quiescent(std::uint64_t barrier_epoch,
+      FrameExpiry::Clock::time_point now = FrameExpiry::Clock::now()) const {
     if (!barrier_epoch) throw std::invalid_argument("Protocol checkpoint requires a barrier epoch");
     if (available_count_ > Capacity) throw std::logic_error("Protocol checkpoint free count corrupted");
     Checkpoint result;
@@ -228,7 +237,9 @@ public:
       const auto &slot = slots_[index];
       if (slot.frame.size() > slot.frame.bytes.size()) throw std::logic_error("Protocol checkpoint frame length corrupted");
       const auto bytes = slot.frame.view();
-      result.occupied.push_back({handle, slot.metadata, {bytes.begin(), bytes.end()}});
+      const auto expiry = slot.expiry.checkpoint(now);
+      if (!expiry) throw std::logic_error("Protocol frame expiry anchor corrupted");
+      result.occupied.push_back({handle, slot.metadata, {bytes.begin(), bytes.end()}, *expiry});
     }
     if (!valid_checkpoint(result, barrier_epoch)) throw std::logic_error("Protocol checkpoint ownership corrupted");
     return result;
@@ -248,7 +259,9 @@ public:
     for (std::size_t index{}; index < saved.occupied.size(); ++index) {
       const auto &slot = saved.occupied[index];
       if (slot.handle >= Capacity || (*ownership)[slot.handle] == checkpoint::SlotRole::available || slot.bytes.size() > packet::maximum_frame_octets ||
-          (index && saved.occupied[index - 1U].handle >= slot.handle)) return false;
+          (index && saved.occupied[index - 1U].handle >= slot.handle) ||
+          !FrameExpiry::restore(slot.expiry, {}) || (slot.expiry.offset &&
+          static_cast<std::size_t>(slot.expiry.offset) + 1U >= slot.bytes.size())) return false;
     }
     // Count, ascending uniqueness and exclusion of free handles establish a
     // bijection between every occupied role and its retained metadata/frame.
@@ -258,7 +271,8 @@ public:
   // All old borrowed frame views expire. Refusal changes nothing; success uses
   // existing slots and bounded handle-only scratch with no heap allocation.
   // Resume must publish these writes before any old or new owner accesses them.
-  [[nodiscard]] bool restore_quiescent(const Checkpoint &saved, std::uint64_t expected_epoch) noexcept {
+  [[nodiscard]] bool restore_quiescent(const Checkpoint &saved, std::uint64_t expected_epoch,
+      FrameExpiry::Clock::time_point now = FrameExpiry::Clock::now()) noexcept {
     if (!valid_checkpoint(saved, expected_epoch)) return false;
     std::array<ReturnValue, Capacity> returned{};
     for (std::size_t index{}; index < saved.returned.size(); ++index) {
@@ -268,6 +282,7 @@ public:
     for (const auto &value : saved.occupied) {
       auto &slot = slots_[value.handle];
       slot.metadata = value.metadata;
+      slot.expiry = *FrameExpiry::restore(value.expiry, now);
       slot.frame.length = static_cast<std::uint16_t>(value.bytes.size());
       std::copy(value.bytes.begin(), value.bytes.end(), slot.frame.bytes.begin());
     }
@@ -289,6 +304,7 @@ private:
   using ReturnValue = std::conditional_t<WithCompletions, Returned, Handle>;
   struct Slot {
     Metadata metadata{};
+    FrameExpiry expiry{};
     packet::Frame frame{};
   };
 
