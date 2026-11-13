@@ -49,8 +49,8 @@ std::unique_ptr<ControlWorker::PreparedCheckpoint> ControlWorker::prepare_checkp
       target.route_retry_at = *retry;
       for (std::size_t instance{}; instance < target.instances.size(); ++instance) {
         const auto restore_stamp = [](const auto &image, auto &stamp) {
-          if (image.status > UpdateStatus::adjacency || image.families > 3U) return false;
-          stamp = {image.epoch, image.decision, image.status, image.families};
+          if (image.status > UpdateStatus::adjacency || image.families > 3U || (image.ignored_attached_families & ~image.families)) return false;
+          stamp = {image.epoch, image.decision, image.status, image.families, image.ignored_attached_families};
           return true;
         };
         if (!restore_stamp(source.installed_routes[instance], target.installed_routes[instance]) ||

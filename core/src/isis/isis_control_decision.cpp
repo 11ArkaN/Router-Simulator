@@ -143,14 +143,11 @@ void ControlWorker::service_p2p_decision(OwnedInstance &instance, const DeviceSt
       return !record.level && !record.id[6U] && !record.id[7U];
     });
     if (root == origin.content.records.end()) { instance.status = UpdateStatus::invalid_configuration; return; }
-    std::array<NeighborArea, 255U> areas{};
-    const auto count = collect_area_addresses(instance.process->level(0U)->database().database(),
-        *instance.decisions[0U], now, std::span{areas}.first(instance.configuration.maximum_areas));
-    if (!count) { instance.status = UpdateStatus::invalid_configuration; return; }
-    const bool attached = !origin.suppress_attached_bit && reachable_other_area(
-        instance.process->level(1U)->database().database(), *instance.decisions[1U],
-        std::span{areas}.first(*count), now);
-    const auto flags = static_cast<std::uint8_t>((root->flags & ~8U) | (attached ? 8U : 0U));
+    const auto attached = derive_area_attachment(instance.process->level(0U)->database().database(),
+        *instance.decisions[0U], instance.process->level(1U)->database().database(), *instance.decisions[1U],
+        instance.configuration.maximum_areas, origin.suppress_attached_bit, now);
+    if (!attached) { instance.status = UpdateStatus::invalid_configuration; return; }
+    const auto flags = static_cast<std::uint8_t>((root->flags & ~8U) | (*attached ? 8U : 0U));
     if (flags != root->flags) { root->flags = flags; instance.local_roots_dirty[0U] = true; }
   }
   // All configured families in a level share one SPF hold. Bounded partial

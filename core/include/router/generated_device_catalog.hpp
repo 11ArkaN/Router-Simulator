@@ -39,9 +39,9 @@ struct EthernetSwitchProfile {
 // consumes this value instead of repeating the release pin in hand-written C++.
 inline constexpr std::string_view release{"26.7.R1"};
 inline constexpr std::uint64_t catalog_hash = 0x8f1db920cd7f8542ULL;
-inline constexpr std::uint64_t checkpoint_schema_hash = 0xb984accdbc8007ecULL;
-inline constexpr std::uint64_t runtime_protocol_hash = 0xdf9db981d81233a6ULL;
-inline constexpr std::uint64_t build_hash = 0x8823c83c3d055d00ULL;
+inline constexpr std::uint64_t checkpoint_schema_hash = 0x959b9e94144b9713ULL;
+inline constexpr std::uint64_t runtime_protocol_hash = 0xf78c4c0d750b7d5aULL;
+inline constexpr std::uint64_t build_hash = 0x5121abe145bf11efULL;
 
 inline constexpr std::size_t maximum_routers = 16;
 inline constexpr std::size_t maximum_sr_routers = 16;

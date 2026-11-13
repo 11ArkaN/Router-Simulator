@@ -70,6 +70,7 @@ struct ControlRouteStamp {
   std::array<std::uint64_t, 2U> decision{};
   UpdateStatus status{UpdateStatus::inactive};
   std::uint8_t families{};
+  std::uint8_t ignored_attached_families{};
 };
 struct ControlDeviceCheckpoint {
   struct Gate { std::uint8_t instance{}; SequenceRecoveryCheckpoint state; };

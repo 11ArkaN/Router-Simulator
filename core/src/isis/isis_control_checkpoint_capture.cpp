@@ -39,7 +39,7 @@ ControlWorkerCheckpoint ControlWorker::capture_checkpoint(RuntimeClock::time_poi
     out.route_retry_at = deadline(device.route_retry_at);
     out.route_retry = device.route_retry;
     for (std::size_t index{}; index < device.instances.size(); ++index) {
-      const auto project = [](const auto &stamp) { return ControlRouteStamp{stamp.epoch, stamp.decision, stamp.status, stamp.families}; };
+      const auto project = [](const auto &stamp) { return ControlRouteStamp{stamp.epoch, stamp.decision, stamp.status, stamp.families, stamp.ignored_attached_families}; };
       out.installed_routes[index] = project(device.installed_routes[index]);
       out.pending_routes[index] = project(device.pending_routes[index]);
       if (device.sequence_recovery[index])

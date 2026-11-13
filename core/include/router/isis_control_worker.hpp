@@ -234,6 +234,10 @@ struct NewUpdateInstance {
 // Cold root-policy edit. Configuration publishes sorted unique instance keys;
 // the control owner commits all edits only after generation preparation succeeds.
 struct UpdateAdjacencyPolicy { std::uint8_t instance{}; bool strict_families{}; };
+// Configuration transfers a complete instance attachment policy through the
+// existing owned SPSC generation lease. Preparation validates sorted unique
+// keys; commit is allocation-free on the sole control writer. Abort discards it.
+struct UpdateAttachedPolicy { std::uint8_t instance{}; bool ignore{}, suppress{}; };
 // Owned cold catalog transfers with its root generation. No live prefix view
 // crosses the configuration/control SPSC boundary; commit swaps reserved state.
 struct UpdatePrefixCatalog { std::uint8_t instance{}; LocalPrefixCatalogProgram program; };
@@ -286,6 +290,7 @@ struct ControlCommand {
   std::vector<NewUpdateInstance> new_instances;
   std::vector<UpdateAdminState> administrative;
   std::vector<UpdateAdjacencyPolicy> adjacency_policies;
+  std::vector<UpdateAttachedPolicy> attached_policies;
   std::vector<UpdatePrefixCatalog> prefix_catalogs;
   std::optional<std::vector<lab::Ipv6ReadinessWatch>> local_ipv6_watches;
   // Serialized RIB high water. Preparation reserves a strictly newer local
@@ -666,6 +671,7 @@ private:
     std::array<std::uint64_t, 2U> decision{};
     UpdateStatus status{UpdateStatus::inactive};
     std::uint8_t families{};
+    std::uint8_t ignored_attached_families{};
     bool operator==(const RouteStamp &) const = default;
   };
   using RouteStamps = std::array<RouteStamp, device_catalog::isis_instance_last + 1U>;
@@ -711,6 +717,7 @@ private:
     std::vector<std::uint8_t> retired_instances;
     std::vector<UpdateAdminState> administrative;
     std::vector<UpdateAdjacencyPolicy> adjacency_policies;
+    std::vector<UpdateAttachedPolicy> attached_policies;
     std::vector<UpdatePrefixCatalog> prefix_catalogs;
     std::vector<std::unique_ptr<OriginFragmentWorkspace>> prefix_workspaces;
     std::uint64_t route_commit_generation{};

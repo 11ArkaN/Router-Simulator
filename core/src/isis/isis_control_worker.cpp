@@ -5,6 +5,7 @@
 #include "router/isis_control_worker.hpp"
 #include "router/isis_control_checkpoint.hpp"
 #include "router/isis_operational.hpp"
+#include "router/isis_area_attachment.hpp"
 
 #include <algorithm>
 #include <new>
@@ -116,6 +117,13 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
     const auto index = command.adjacency_policies[ordinal].instance;
     if (index >= device.instances.size() || !device.instances[index] ||
         (ordinal && command.adjacency_policies[ordinal - 1U].instance >= index) ||
+        std::binary_search(command.retired_instances.begin(), command.retired_instances.end(), index))
+      return ControlError::invalid_argument;
+  }
+  for (std::size_t ordinal{}; ordinal < command.attached_policies.size(); ++ordinal) {
+    const auto index = command.attached_policies[ordinal].instance;
+    if (index >= device.instances.size() || !device.instances[index] || !device.instances[index]->configuration.origination ||
+        (ordinal && command.attached_policies[ordinal - 1U].instance >= index) ||
         std::binary_search(command.retired_instances.begin(), command.retired_instances.end(), index))
       return ControlError::invalid_argument;
   }
@@ -231,6 +239,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
     staged.retired_instances = std::move(command.retired_instances);
     staged.administrative = std::move(command.administrative);
     staged.adjacency_policies = std::move(command.adjacency_policies);
+    staged.attached_policies = std::move(command.attached_policies);
     staged.prefix_catalogs = std::move(command.prefix_catalogs);
     staged.prefix_workspaces.reserve(staged.prefix_catalogs.size());
     for (const auto &edit : staged.prefix_catalogs) {
@@ -391,6 +400,28 @@ void ControlWorker::commit_generation(DeviceState &device) noexcept {
     set_admin_state(device, *device.instances[edit.instance], edit.enabled);
   for (const auto &edit : staged.adjacency_policies)
     if (set_strict_policy(device, edit.instance, edit.strict_families) != ControlError::none) std::terminate();
+  for (const auto &edit : staged.attached_policies) {
+    auto &instance = *device.instances[edit.instance];
+    for (auto &family : instance.configuration.routing) if (family) family->ignore_attached_bit = edit.ignore;
+    auto &origin = *instance.configuration.origination;
+    origin.suppress_attached_bit = edit.suppress;
+    if (origin.automatic_area_attachment) {
+      bool attached = false;
+      if (instance.process && instance.decisions[0U] && instance.decisions[1U] &&
+          instance.decision_status[0U] == DecisionStatus::applied && instance.decision_status[1U] == DecisionStatus::applied &&
+          instance.consumed_decision_revision == instance.decision_revisions) {
+        const auto derived = derive_area_attachment(instance.process->level(0U)->database().database(),
+            *instance.decisions[0U], instance.process->level(1U)->database().database(), *instance.decisions[1U],
+            instance.configuration.maximum_areas, edit.suppress, RuntimeClock::now());
+        if (!derived) std::terminate();
+        attached = *derived;
+      }
+      for (auto &record : origin.content.records) if (!record.level && !record.id[6U] && !record.id[7U]) {
+        const auto flags = static_cast<std::uint8_t>((record.flags & ~8U) | (attached ? 8U : 0U));
+        if (record.flags != flags) { record.flags = flags; instance.local_roots_dirty[0U] = true; }
+      }
+    }
+  }
   for (std::size_t index{}; index < staged.prefix_catalogs.size(); ++index) {
     auto &edit = staged.prefix_catalogs[index];
     auto &instance = *device.instances[edit.instance];

@@ -3,6 +3,7 @@
 // restore separately. No callback, origination or route publication is invoked.
 
 #include "router/isis_control_checkpoint.hpp"
+#include "router/isis_area_attachment.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -126,6 +127,49 @@ std::unique_ptr<ControlWorker::OwnedInstance> ControlWorker::restore_checkpoint_
       if (static_cast<bool>(result->spf[level]) != saved.spf[level].has_value()) return nullptr;
       if (saved.spf[level] && (!result->spf[level]->restore(*saved.spf[level], now) ||
           (saved.spf[level]->pending_nanoseconds && !result->level_decisions_pending(level)))) return nullptr;
+    }
+    if (policy.origination && policy.origination->automatic_area_attachment && saved.local && !saved.local_roots_dirty[0U]) {
+      const auto &records = policy.origination->content.records;
+      const auto root = std::find_if(records.begin(), records.end(), [](const auto &record) {
+        return !record.level && !record.id[6U] && !record.id[7U];
+      });
+      const auto &entries = saved.local->entries;
+      const auto semantic = std::find_if(entries.begin(), entries.end(), [](const auto &entry) {
+        return !entry.content.level && !entry.content.id[6U] && !entry.content.id[7U];
+      });
+      // Generation holding may retain older wire bytes, but completed semantic
+      // composition must carry the desired ATT until a new root edit is dirty.
+      if (root == records.end() || semantic == entries.end() || ((root->flags ^ semantic->content.flags) & 8U)) return nullptr;
+    }
+    // A completed diagnostic constrains desired ATT, not the last transmitted
+    // LSP: ordinary generation holding can legitimately retain older wire flags.
+    // Pending roots, SPF revisions or expiry notifications defer this check.
+    if (policy.origination && policy.origination->automatic_area_attachment &&
+        result->admin_enabled && result->status == UpdateStatus::applied && result->process && result->local) {
+      bool current = true;
+      for (std::size_t level{}; level < 2U; ++level) {
+        current = current && result->decisions[level] && !result->local_roots_dirty[level] &&
+            result->decision_status[level] == DecisionStatus::applied &&
+            result->consumed_decision_revision[level] == result->decision_revisions[level];
+        const auto *process = result->process->level(level);
+        if (!process) return nullptr;
+        const auto &database = process->database().database();
+        for (std::size_t index{}; index < database.size(); ++index) {
+          const auto record = database.at(index, now);
+          if (record && !record->header.remaining_seconds && !record->purge_installed &&
+              !record->expiration_notified) current = false;
+        }
+      }
+      if (current) {
+        const auto attached = derive_area_attachment(result->process->level(0U)->database().database(),
+            *result->decisions[0U], result->process->level(1U)->database().database(), *result->decisions[1U],
+            policy.maximum_areas, policy.origination->suppress_attached_bit, now);
+        const auto &records = policy.origination->content.records;
+        const auto root = std::find_if(records.begin(), records.end(), [](const auto &record) {
+          return !record.level && !record.id[6U] && !record.id[7U];
+        });
+        if (!attached || root == records.end() || static_cast<bool>(root->flags & 8U) != *attached) return nullptr;
+      }
     }
     return result;
   } catch (const std::exception &) { return nullptr; }

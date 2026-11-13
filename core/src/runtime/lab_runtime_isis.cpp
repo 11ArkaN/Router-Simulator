@@ -181,6 +181,8 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
       auto compare = *previous;
       compare.strict_adjacency_check = configured->strict_adjacency_check;
       compare.advertise_passive_only = configured->advertise_passive_only;
+      compare.ignore_attached_bit = configured->ignore_attached_bit;
+      compare.suppress_attached_bit = configured->suppress_attached_bit;
       compare.admin_enabled = configured->admin_enabled;
       if (compare != *configured || !retain()) return false;
       auto prefixes = router_prefixes(after.interfaces, *configured, *hardware, *operational);
@@ -191,6 +193,9 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
       if (prior == owner->instances.end() || !prior->configuration.origination) return false;
       if (!prior->configuration.origination->prefixes || *prior->configuration.origination->prefixes != *prefixes.program)
         generation.prefix_catalogs.push_back({action.instance, std::move(*prefixes.program)});
+      generation.attached_policies.push_back({action.instance,
+          configured->ignore_attached_bit.value_or(configuration_profile::ignore_attached_bit_default),
+          configured->suppress_attached_bit.value_or(configuration_profile::suppress_attached_bit_default)});
       generation.adjacency_policies.push_back({action.instance,
           configured->strict_adjacency_check.value_or(configuration_profile::strict_adjacency_check_default)});
       if (action.change == ConfigurationChange::suspend_and_reconfigure ||

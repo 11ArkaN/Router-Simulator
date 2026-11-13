@@ -468,6 +468,7 @@ struct NetworkIsisGeneration {
   std::vector<std::uint8_t> retired_instances;
   std::vector<isis::UpdateAdminState> administrative;
   std::vector<isis::UpdateAdjacencyPolicy> adjacency_policies;
+  std::vector<isis::UpdateAttachedPolicy> attached_policies;
   std::vector<isis::UpdatePrefixCatalog> prefix_catalogs;
   // Present replaces the complete local AF subscription, including an empty
   // list when retiring it. Absent preserves explicit raw AF-owner contracts.

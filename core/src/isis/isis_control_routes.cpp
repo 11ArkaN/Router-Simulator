@@ -39,14 +39,17 @@ RuntimeClock::time_point ControlWorker::service_routes(DeviceState &device,
   for (std::size_t index{}; index < device.instances.size(); ++index) {
     const auto &instance = device.instances[index];
     if (!instance || !instance->admin_enabled) continue;
-    std::uint8_t families{};
+    std::uint8_t families{}, ignored{};
     for (std::size_t family{}; family < instance->configuration.routing.size(); ++family)
-      if (instance->configuration.routing[family]) families |= static_cast<std::uint8_t>(1U << family);
+      if (instance->configuration.routing[family]) {
+        families |= static_cast<std::uint8_t>(1U << family);
+        if (instance->configuration.routing[family]->ignore_attached_bit) ignored |= static_cast<std::uint8_t>(1U << family);
+      }
     if (!families) continue;
     enabled = true;
     retry = std::min(retry, instance->configuration.origination->resource_retry);
     current[index] = {instance->process ? instance->process->maximum_synchronization_epoch() : device.update_fences[index],
-        instance->decision_revisions, instance->status, families};
+        instance->decision_revisions, instance->status, families, ignored};
   }
   if (enabled) device.route_retry = retry;
   if ((!enabled && !device.route_generation) || current == device.installed_routes) return never;

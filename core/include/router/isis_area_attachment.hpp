@@ -84,4 +84,19 @@ namespace router::isis {
   }
   return false;
 }
+// Both decisions must match their databases at now. The caller owns revision
+// validation. A missing result rejects invalid area capacity or L1 database;
+// false is a valid suppressed or unattached result. No state is modified.
+[[nodiscard]] inline std::optional<bool> derive_area_attachment(
+    const LinkStateDatabase &level1, const P2pRouteDecision &decision1,
+    const LinkStateDatabase &level2, const P2pRouteDecision &decision2,
+    std::uint8_t maximum_areas, bool suppress, RuntimeClock::time_point now) noexcept {
+  std::array<NeighborArea, 255U> areas{};
+  const auto count = collect_area_addresses(level1, decision1, now,
+      std::span{areas}.first(maximum_areas));
+  if (!count) return {};
+  return !suppress && reachable_other_area(level2, decision2,
+      std::span{areas}.first(*count), now);
+}
+
 }

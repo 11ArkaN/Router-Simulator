@@ -171,7 +171,7 @@ abi:
   runtime_messages: 4
   # ABI 14 retains protocol queue age through physical transmission.
   # Older checkpoint images are intentionally not accepted.
-  checkpoint: 17
+  checkpoint: 18
 link_defaults:
   # Propagation belongs to the cable or circuit, not to the Nokia port. The
   # project copies this value into each new physical link and may override it

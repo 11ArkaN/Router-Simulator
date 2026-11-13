@@ -2,6 +2,7 @@
 // fabric. The test thread owns only transport and observes copied LSP headers;
 // attachment never reads another router's configuration or runtime state.
 #include "router/isis_control_worker.hpp"
+#include "router/isis_control_checkpoint.hpp"
 #include "router/isis_instance_program.hpp"
 #include "router/multi_device_fabric.hpp"
 #include <memory>
@@ -92,6 +93,92 @@ void isis_area_attachment_control_tests() {
       require(second.selected_lsp && !(second.selected_lsp->flags & 8U)); break;
     }
     require(RuntimeClock::now() < until); std::this_thread::yield();
+  }
+  // Capture only a settled owner. The barrier may land between origin and
+  // diagnostic service; resume that valid intermediate state and retry.
+  std::optional<CircuitDefinition> retained;
+  const auto settled_until = RuntimeClock::now() + 3s;
+  for (;;) {
+    pump();
+    ControlCommand begin; begin.kind = ControlCommandKind::begin_checkpoint_barrier;
+    const auto barrier = command(begin); require(barrier.error == ControlError::none);
+    ControlWorkerCheckpoint image;
+    ControlCommand capture; capture.kind = ControlCommandKind::capture_checkpoint;
+    capture.checkpoint_barrier_epoch = barrier.checkpoint_barrier_epoch;
+    capture.checkpoint_now_nanoseconds = barrier.checkpoint_anchor_nanoseconds;
+    capture.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(&image);
+    require(command(capture).error == ControlError::none);
+    const auto &saved = image.devices[0U].instances[0U];
+    bool settled = true;
+    for (std::size_t level{}; level < 2U; ++level)
+      settled = settled && !saved.local_roots_dirty[level] && saved.decision_status[level] == DecisionStatus::applied &&
+          saved.consumed_decision_revision[level] == saved.decision_revisions[level];
+    if (settled) {
+      retained = image.devices[0U].circuits[0U].definition;
+      ControlCommand restore; restore.kind = ControlCommandKind::prepare_checkpoint_restore;
+      restore.checkpoint_barrier_epoch = barrier.checkpoint_barrier_epoch;
+      restore.checkpoint_source_epoch = image.barrier_epoch;
+      restore.checkpoint_now_nanoseconds = barrier.checkpoint_anchor_nanoseconds;
+      restore.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(&image);
+      image.devices[0U].installed_routes[0U].ignored_attached_families = 4U;
+      require(command(restore).error == ControlError::invalid_argument);
+      image.devices[0U].installed_routes[0U].ignored_attached_families = 0U;
+      require(command(restore).error == ControlError::none);
+      auto abort = restore; abort.kind = ControlCommandKind::abort_checkpoint_restore;
+      require(command(abort).error == ControlError::none);
+      auto &changed = image.devices[0U].instances[0U];
+      for (auto &entry : changed.local->entries)
+        if (!entry.content.level && !entry.content.id[6U] && !entry.content.id[7U]) entry.content.flags ^= 8U;
+      require(command(restore).error == ControlError::invalid_argument);
+      changed.local_roots_dirty[0U] = true;
+      require(command(restore).error == ControlError::none);
+      require(command(abort).error == ControlError::none);
+      changed.local_roots_dirty[0U] = false;
+      for (auto &entry : changed.local->entries)
+        if (!entry.content.level && !entry.content.id[6U] && !entry.content.id[7U]) entry.content.flags ^= 8U;
+      for (auto &record : changed.configuration.origination->content.records)
+        if (!record.level && !record.id[6U] && !record.id[7U]) record.flags ^= 8U;
+      for (auto &entry : changed.local->entries)
+        if (!entry.content.level && !entry.content.id[6U] && !entry.content.id[7U]) entry.content.flags ^= 8U;
+      require(command(restore).error == ControlError::invalid_argument);
+      // The same desired change is legitimate while root composition is pending.
+      // This proves rejection above comes from settled attachment coherence.
+      changed.local_roots_dirty[0U] = true;
+      require(command(restore).error == ControlError::none);
+      require(command(abort).error == ControlError::none);
+    }
+    ControlCommand end; end.kind = ControlCommandKind::end_checkpoint_barrier;
+    end.checkpoint_barrier_epoch = barrier.checkpoint_barrier_epoch;
+    require(command(end).error == ControlError::none);
+    if (settled) break;
+    require(RuntimeClock::now() < settled_until); std::this_thread::yield();
+  }
+  const auto policy = [&](bool suppress, bool commit) {
+    ControlCommand prepare; prepare.kind = ControlCommandKind::prepare_generation;
+    prepare.identity = identities[0U]; prepare.circuits.push_back(*retained);
+    prepare.attached_policies.push_back({0U, true, suppress});
+    require(command(std::move(prepare)).error == ControlError::none);
+    ControlCommand finish; finish.identity = identities[0U];
+    finish.kind = commit ? ControlCommandKind::commit_generation : ControlCommandKind::abort_generation;
+    require(command(finish).error == ControlError::none);
+  };
+  ControlCommand invalid_policy; invalid_policy.kind = ControlCommandKind::prepare_generation;
+  invalid_policy.identity = identities[0U]; invalid_policy.circuits.push_back(*retained);
+  invalid_policy.attached_policies = {{0U, true, true}, {1U, false, false}};
+  require(command(std::move(invalid_policy)).error == ControlError::invalid_argument);
+  policy(true, false);
+  require(query(0U).selected_lsp && (query(0U).selected_lsp->flags & 8U));
+  for (const bool suppress : {true, false}) {
+    policy(suppress, true);
+    const auto deadline = RuntimeClock::now() + 3s;
+    for (;;) {
+      pump(); const auto current = query(0U);
+      if (current.selected_lsp && static_cast<bool>(current.selected_lsp->flags & 8U) != suppress) break;
+      require(RuntimeClock::now() < deadline); std::this_thread::yield();
+    }
+    ControlCommand adjacency; adjacency.kind = ControlCommandKind::query_circuit; adjacency.identity = identities[0U];
+    const auto current = command(adjacency);
+    require(current.error == ControlError::none && current.adjacency.iso_up);
   }
   for (const auto &identity : identities) {
     ControlCommand down; down.kind = ControlCommandKind::set_circuit_carrier; down.identity = identity; down.carrier = false;

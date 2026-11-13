@@ -271,7 +271,7 @@ auto members(T &v) noexcept { [[maybe_unused]] auto &[handle, value] = v; return
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, RouteValue>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[routes, status] = v; return std::tie(v.routes, v.status); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::ControlRouteStamp>
-auto members(T &v) noexcept { [[maybe_unused]] auto &[epoch, decision, status, families] = v; return std::tie(v.epoch, v.decision, v.status, v.families); }
+auto members(T &v) noexcept { [[maybe_unused]] auto &[epoch, decision, status, families, ignored_attached_families] = v; return std::tie(v.epoch, v.decision, v.status, v.families, v.ignored_attached_families); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::lab::IsisInstalledRoutesCheckpoint>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[device, generation, ipv4, ipv6] = v; return std::tie(v.device, v.generation, v.ipv4, v.ipv6); }
 } // namespace router::lab::isis_checkpoint::detail

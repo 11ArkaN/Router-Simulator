@@ -163,7 +163,7 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
         std::optional<std::span<const Ipv6ReadinessWatch>> watches;
         if (generation.ipv6_watches) watches = *generation.ipv6_watches;
         result.success = plane_.replace_isis_generation(command.device, generation.circuits, generation.new_instances,
-            generation.retired_instances, generation.administrative, generation.adjacency_policies, generation.prefix_catalogs, watches);
+            generation.retired_instances, generation.administrative, generation.adjacency_policies, generation.prefix_catalogs, watches, generation.attached_policies);
       }
       if (!channels_.isis_generations.release(lease->handle)) std::terminate();
     }

@@ -170,6 +170,12 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
   // memory for two complete databases. Desired configuration stays in the shell.
   instance.local.reset();
   instance.process.reset();
+  // Attachment is derived from the destroyed L2 database. A fresh entity has
+  // no such reachability until its own diagnostics complete; retaining ATT
+  // would advertise an exit supported only by the retired owner.
+  if (instance.configuration.origination->automatic_area_attachment)
+    for (auto &record : instance.configuration.origination->content.records)
+      if (!record.level && !record.id[6U] && !record.id[7U]) record.flags &= static_cast<std::uint8_t>(~8U);
   instance.consumed_decision_revision.fill(0U);
   instance.decision_status.fill(DecisionStatus::invalid);
   for (auto &family : instance.route_families) {

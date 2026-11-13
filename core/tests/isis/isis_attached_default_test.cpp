@@ -189,6 +189,16 @@ void isis_attached_default_tests() {
   require(collect_area_addresses(merged.database, area_decision, merged.now, std::span{area_set}.first(1U)) == 1U &&
       area_set[0U] == lower);
   require(!collect_area_addresses(backbone.database, area_decision, merged.now, area_set));
+  P2pRouteDecision backbone_decision(8U, 24U, 64U, MetricStyle::wide);
+  backbone.install(b, area_options(remote, back), 3U);
+  require(backbone_decision.calculate(backbone.database, {a, 0U, std::nullopt, GraphMetricStyle::wide},
+      std::span{seeds}.first(2U), 3U, backbone.now) == DecisionStatus::applied);
+  require(derive_area_attachment(merged.database, area_decision, backbone.database,
+      backbone_decision, 2U, false, backbone.now) == true);
+  require(derive_area_attachment(merged.database, area_decision, backbone.database,
+      backbone_decision, 2U, true, backbone.now) == false);
+  require(!derive_area_attachment(merged.database, area_decision, backbone.database,
+      backbone_decision, 0U, false, backbone.now));
   // Two attached exits behind the same actual first hop produce one candidate.
   Fixture shared;
   const std::array to_b{ExtendedNeighbor{b, 5U, {}}};

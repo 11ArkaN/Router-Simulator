@@ -5424,10 +5424,11 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     std::span<const isis::UpdateAdminState> administrative,
     std::span<const isis::UpdateAdjacencyPolicy> adjacency_policies,
     std::span<const isis::UpdatePrefixCatalog> prefix_catalogs,
-    std::optional<std::span<const Ipv6ReadinessWatch>> ipv6_watches) noexcept {
+    std::optional<std::span<const Ipv6ReadinessWatch>> ipv6_watches,
+    std::span<const isis::UpdateAttachedPolicy> attached_policies) noexcept {
   if (!impl_->live(device) || circuits.size() > device_catalog::maximum_routers * device_catalog::maximum_ports_per_router)
     return false;
-  if (circuits.empty() && new_instances.empty() && retired_instances.empty() && administrative.empty() && adjacency_policies.empty() && prefix_catalogs.empty() && !ipv6_watches && !impl_->isis_registered[device.index]) return true;
+  if (circuits.empty() && new_instances.empty() && retired_instances.empty() && administrative.empty() && adjacency_policies.empty() && attached_policies.empty() && prefix_catalogs.empty() && !ipv6_watches && !impl_->isis_registered[device.index]) return true;
   std::unique_ptr<Ipv6ReadinessProjection> prepared_ipv6;
   const auto old_af_epoch = impl_->ipv6_readiness_epochs[device.index];
   const bool subscribing = ipv6_watches && !ipv6_watches->empty();
@@ -5487,6 +5488,7 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     generation.retired_instances.assign(retired_instances.begin(), retired_instances.end());
     generation.administrative.assign(administrative.begin(), administrative.end());
     generation.adjacency_policies.assign(adjacency_policies.begin(), adjacency_policies.end());
+    generation.attached_policies.assign(attached_policies.begin(), attached_policies.end());
     generation.prefix_catalogs.assign(prefix_catalogs.begin(), prefix_catalogs.end());
     if (!administrative.empty()) generation.route_generation_floor = impl_->route_managers[device.index]->isis_generation;
     if (!retired_instances.empty() || !administrative.empty()) if (const auto &manager = impl_->route_managers[device.index]) {
