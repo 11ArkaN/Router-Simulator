@@ -1,10 +1,14 @@
-// ABI 7 codec implementation. Decoding creates a detached value graph. The
+// ABI 14 codec implementation. Decoding creates a detached value graph. The
 // supervisor performs cross-owner validation and atomic commit only afterwards.
 
 #include "router/lab_checkpoint.hpp"
 
 #include "router/generated_device_catalog.hpp"
 #include "router/tcp_checkpoint_codec.hpp"
+#include "router/isis_checkpoint_codec.hpp"
+#include "router/isis_configuration_codec.hpp"
+#include "router/sha256.hpp"
+#include <openssl/crypto.h>
 
 #include <algorithm>
 #include <array>
@@ -14,11 +18,11 @@
 #include <string>
 #include <type_traits>
 
-namespace router::lab::checkpoint_v7 {
+namespace router::lab::checkpoint_v19 {
 namespace {
 
 inline constexpr std::array<std::uint8_t, 8> magic{'R', 'S', 'L', 'A',
-                                                   'B', '0', '7', 0};
+                                                   'B', '1', '6', 0};
 inline constexpr std::size_t maximum_checkpoint_bytes =
     device_catalog::wasm_initial_memory_bytes;
 
@@ -31,11 +35,17 @@ template <typename T> struct IntegerRaw<T, true> {
 
 class Writer final {
 public:
+  explicit Writer(bool sensitive = false) : sensitive_(sensitive) {}
+  ~Writer() { if (sensitive_ && !bytes_.empty()) OPENSSL_cleanse(bytes_.data(), bytes_.size()); }
+  Writer(const Writer &) = delete;
+  Writer &operator=(const Writer &) = delete;
+  [[nodiscard]] std::span<const std::uint8_t> bytes() const noexcept { return bytes_; }
   template <typename T> void integer(T value) {
     static_assert(std::is_integral_v<T> || std::is_enum_v<T>);
     using Raw = typename IntegerRaw<T>::type;
     using Unsigned = std::make_unsigned_t<Raw>;
     const auto raw = static_cast<Unsigned>(value);
+    prepare_append(sizeof(Unsigned));
     for (std::size_t byte = 0; byte < sizeof(Unsigned); ++byte)
       bytes_.push_back(static_cast<std::uint8_t>(raw >> (byte * 8U)));
   }
@@ -46,11 +56,14 @@ public:
     if (value.size() > std::numeric_limits<std::uint16_t>::max())
       throw std::length_error("checkpoint string exceeds ABI bound");
     integer<std::uint16_t>(static_cast<std::uint16_t>(value.size()));
+    prepare_append(value.size());
     bytes_.insert(bytes_.end(), value.begin(), value.end());
   }
 
   void frame(const packet::Frame &value) {
+    if (value.length > value.bytes.size()) throw std::length_error("checkpoint frame exceeds fixed capacity");
     integer<std::uint16_t>(value.length);
+    prepare_append(value.length);
     bytes_.insert(bytes_.end(), value.bytes.begin(),
                   value.bytes.begin() + value.length);
   }
@@ -58,16 +71,32 @@ public:
   // Callers write a length first for variable protocol state. This primitive
   // copies only the supplied bytes and intentionally owns no implicit bound.
   void octets(std::span<const std::uint8_t> value) {
+    prepare_append(value.size());
     bytes_.insert(bytes_.end(), value.begin(), value.end());
   }
 
   [[nodiscard]] std::vector<std::uint8_t> finish() && {
+    if (sensitive_) throw std::logic_error("protected checkpoint requires sealing before release");
     if (bytes_.size() > maximum_checkpoint_bytes)
       throw std::length_error("checkpoint exceeds fixed Wasm memory budget");
     return std::move(bytes_);
   }
 
 private:
+  void prepare_append(std::size_t count) {
+    if (count > maximum_checkpoint_bytes - bytes_.size()) throw std::length_error("checkpoint exceeds fixed Wasm memory budget");
+    if (!sensitive_ || count <= bytes_.capacity() - bytes_.size()) return;
+    // Preserve the ordinary zero-copy finish path for legacy non-IS-IS
+    // snapshots. Protected writes erase each old growth allocation before
+    // releasing it, as well as the final plaintext in the destructor.
+    std::vector<std::uint8_t> replacement;
+    const auto growth = std::min(maximum_checkpoint_bytes, std::max<std::size_t>(64U, bytes_.capacity() * 2U));
+    replacement.reserve(std::max(bytes_.size() + count, growth));
+    replacement.insert(replacement.end(), bytes_.begin(), bytes_.end());
+    if (!bytes_.empty()) OPENSSL_cleanse(bytes_.data(), bytes_.size());
+    bytes_.swap(replacement);
+  }
+  bool sensitive_{};
   std::vector<std::uint8_t> bytes_;
 };
 
@@ -318,6 +347,10 @@ void route(Writer &out, const routing::Route &value) {
   // longer describe the protocol generation that produced it.
   out.integer(value.ospf_path_type);
   out.integer(value.protocol_instance);
+  out.integer(value.interface_id);
+  out.integer(value.isis_path_type);
+  out.integer(value.isis_rank);
+  out.integer(value.interface_generation);
 }
 
 bool route(Reader &in, routing::Route &value) noexcept {
@@ -325,10 +358,18 @@ bool route(Reader &in, routing::Route &value) noexcept {
          in.integer(value.port_ordinal) && in.integer(value.prefix_length) &&
          in.integer(value.preference) && in.integer(value.metric) &&
          in.integer(value.source) &&
-         value.source <= routing::RouteSource::ospf3 &&
+         value.source <= routing::RouteSource::isis &&
          in.boolean(value.local_system) && in.integer(value.ospf_path_type) &&
          value.ospf_path_type <= routing::OspfPathType::nssa_type_2 &&
-         in.integer(value.protocol_instance);
+         in.integer(value.protocol_instance) && in.integer(value.interface_id) &&
+         in.integer(value.isis_path_type) && in.integer(value.isis_rank) &&
+         in.integer(value.interface_generation) &&
+         routing::valid_route_path(value.source, value.ospf_path_type,
+             value.isis_path_type, value.isis_rank, false) &&
+         (value.source != routing::RouteSource::isis ||
+          (value.interface_id && value.interface_generation &&
+           value.protocol_instance <= device_catalog::isis_instance_last &&
+           value.preference >= 1U && value.preference <= 255U));
 }
 
 void fib(Writer &out, const routing::FibProgram &value) {
@@ -368,6 +409,9 @@ void ipv6_route(Writer &out, const routing::Ipv6Route &value) {
   out.integer(value.source);
   out.integer(value.ospf_path_type);
   out.integer(value.protocol_instance);
+  out.integer(value.isis_path_type);
+  out.integer(value.isis_rank);
+  out.integer(value.interface_generation);
 }
 
 bool ipv6_route(Reader &in, routing::Ipv6Route &value) noexcept {
@@ -376,10 +420,18 @@ bool ipv6_route(Reader &in, routing::Ipv6Route &value) noexcept {
          in.integer(value.physical_port_ordinal) &&
          in.integer(value.prefix_length) && in.integer(value.preference) &&
          in.integer(value.metric) && in.integer(value.source) &&
-         value.source <= routing::RouteSource::ospf3 &&
+         value.source <= routing::RouteSource::isis &&
          in.integer(value.ospf_path_type) &&
          value.ospf_path_type <= routing::OspfPathType::nssa_type_2 &&
-         in.integer(value.protocol_instance);
+         in.integer(value.protocol_instance) &&
+         in.integer(value.isis_path_type) && in.integer(value.isis_rank) &&
+         in.integer(value.interface_generation) &&
+         routing::valid_route_path(value.source, value.ospf_path_type,
+             value.isis_path_type, value.isis_rank, true) &&
+         (value.source != routing::RouteSource::isis ||
+          (value.interface_id && value.interface_generation &&
+           value.protocol_instance <= device_catalog::isis_instance_last &&
+           value.preference >= 1U && value.preference <= 255U));
 }
 
 void ipv6_fib(Writer &out, const routing::Ipv6FibProgram &value) {
@@ -730,12 +782,14 @@ void connected(Writer &out, const routing::ConnectedInput &value) {
   out.integer(value.port_ordinal);
   out.integer(value.prefix_length);
   out.boolean(value.local_system);
+  out.integer(value.interface_id);
+  out.integer(value.interface_generation);
 }
 
 bool connected(Reader &in, routing::ConnectedInput &value) noexcept {
   return in.boolean(value.configured) && in.boolean(value.operational) &&
          in.integer(value.network) && in.integer(value.port_ordinal) &&
-         in.integer(value.prefix_length) && in.boolean(value.local_system);
+         in.integer(value.prefix_length) && in.boolean(value.local_system) && in.integer(value.interface_id) && in.integer(value.interface_generation);
 }
 
 void static_route(Writer &out, const routing::StaticInput &value) {
@@ -753,13 +807,14 @@ void ipv6_connected(Writer &out, const routing::Ipv6ConnectedInput &value) {
   out.integer(value.interface_id);
   out.integer(value.physical_port_ordinal);
   out.integer(value.prefix_length);
+  out.integer(value.interface_generation);
 }
 
 bool ipv6_connected(Reader &in, routing::Ipv6ConnectedInput &value) noexcept {
   return in.boolean(value.configured) && in.boolean(value.operational) &&
          ipv6(in, value.network) && in.integer(value.interface_id) &&
          in.integer(value.physical_port_ordinal) &&
-         in.integer(value.prefix_length);
+         in.integer(value.prefix_length) && in.integer(value.interface_generation);
 }
 
 void ipv6_static_route(Writer &out, const routing::Ipv6StaticInput &value) {
@@ -1087,7 +1142,7 @@ bool named_mld_import_policies(
       if (route_source_present) {
         entry.route_source.emplace();
         if (!in.integer(*entry.route_source) ||
-            *entry.route_source > routing::RouteSource::ospf3)
+            *entry.route_source > routing::RouteSource::isis)
           return false;
       } else {
         entry.route_source.reset();
@@ -5500,11 +5555,17 @@ bool switch_state(Reader &in, NetworkPlaneCheckpoint::Switch &state) {
 void fabric_frame(Writer &out, const FabricFrameCheckpoint &value) {
   out.frame(value.frame);
   out.integer(value.delivery_remaining_nanoseconds);
+  out.integer(value.expiry.offset);
+  out.integer(value.expiry.prepaid_transit_seconds);
+  out.integer(value.expiry.holding_nanoseconds);
 }
 
 bool fabric_frame(Reader &in, FabricFrameCheckpoint &value) noexcept {
   return in.frame(value.frame) &&
-         in.integer(value.delivery_remaining_nanoseconds);
+         in.integer(value.delivery_remaining_nanoseconds) &&
+         in.integer(value.expiry.offset) &&
+         in.integer(value.expiry.prepaid_transit_seconds) &&
+         in.integer(value.expiry.holding_nanoseconds);
 }
 
 void fabric_direction(Writer &out, const FabricDirectionCheckpoint &value) {
@@ -8852,7 +8913,6 @@ bool pki_configuration(Reader &in, pki::Configuration &state) {
     return false;
   state.common_name_lists.resize(size);
   for (auto &list : state.common_name_lists) {
-    std::uint32_t entry_count{};
     if (!in.string(list.name, 32U) ||
         !count(in, entry_count, pki::maximum_common_names_per_list))
       return false;
@@ -9246,6 +9306,23 @@ bool dhcpv6_router_configuration(
          dhcpv6::configuration::Status::valid;
 }
 
+void isis_configuration(Writer &out, const isis::RouterConfiguration &value) {
+  const auto encoded = isis::configuration_codec::encode(value, maximum_checkpoint_bytes);
+  if (!encoded) throw std::invalid_argument("invalid IS-IS configuration intent");
+  out.integer<std::uint32_t>(static_cast<std::uint32_t>(encoded->size()));
+  out.octets(*encoded);
+}
+bool isis_configuration(Reader &in, isis::RouterConfiguration &value) {
+  std::uint32_t size{};
+  if (!in.integer(size) || size > maximum_checkpoint_bytes) return false;
+  const auto bytes = in.view(size);
+  if (!bytes) return false;
+  auto decoded = isis::configuration_codec::decode(*bytes, maximum_checkpoint_bytes);
+  if (!decoded) return false;
+  value = std::move(*decoded);
+  return true;
+}
+
 void ospf_configuration(Writer &out,
                         const ospf::RouterConfiguration &state) {
   // Keychains precede consumers so a hostile checkpoint cannot create an
@@ -9604,6 +9681,7 @@ void portable_router(Writer &out, const PortableRouterIntentCheckpoint &state) {
   dhcpv4_router_configuration(out, state.dhcpv4_servers);
   dhcpv6_router_configuration(out, state.dhcpv6_servers);
   ospf_configuration(out, state.ospf);
+  isis_configuration(out, state.isis);
   count(out, state.ports);
   for (const auto &port : state.ports) {
     out.string(port.id);
@@ -9676,6 +9754,7 @@ bool portable_router(Reader &in, PortableRouterIntentCheckpoint &state) {
       !dhcpv4_router_configuration(in, state.dhcpv4_servers) ||
       !dhcpv6_router_configuration(in, state.dhcpv6_servers) ||
       !ospf_configuration(in, state.ospf) ||
+      !isis_configuration(in, state.isis) ||
       !count(in, size, device_catalog::maximum_ports_per_router))
     return false;
   state.ports.resize(size);
@@ -9776,6 +9855,7 @@ void portable_configuration(Writer &out,
   dhcpv4_router_configuration(out, state.dhcpv4_servers);
   dhcpv6_router_configuration(out, state.dhcpv6_servers);
   ospf_configuration(out, state.ospf);
+  isis_configuration(out, state.isis);
   for (const auto &card : state.cards) {
     out.string(card.provisioned);
     out.boolean(card.admin_enabled);
@@ -9842,7 +9922,8 @@ bool portable_configuration(Reader &in,
       !bof_autoconfigure(in, state.bof_autoconfigure) ||
       !dhcpv4_router_configuration(in, state.dhcpv4_servers) ||
       !dhcpv6_router_configuration(in, state.dhcpv6_servers, true) ||
-      !ospf_configuration(in, state.ospf))
+      !ospf_configuration(in, state.ospf) ||
+      !isis_configuration(in, state.isis))
     return false;
   for (auto &card : state.cards) {
     if (!in.string(card.provisioned, 64) || !in.boolean(card.admin_enabled))
@@ -10025,14 +10106,19 @@ bool secret_vault(Reader &in, vault::Checkpoint &state) {
 
 } // namespace
 
-std::vector<std::uint8_t> encode(const RuntimeSupervisorCheckpoint &state) {
-  Writer out;
+std::vector<std::uint8_t> encode(const RuntimeSupervisorCheckpoint &state, const vault::SecretVault *protector) {
+  const bool protected_payload = state.network.isis.has_value();
+  if (protected_payload && !protector) throw std::invalid_argument("IS-IS checkpoint requires the project vault");
+  Writer out{protected_payload};
   for (const auto byte : magic)
     out.integer(byte);
   out.integer(abi);
   out.integer(schema_hash);
   out.integer(device_catalog::catalog_hash);
   out.integer(device_catalog::build_hash);
+  out.boolean(protected_payload);
+  const auto prefix_size = out.bytes().size();
+  const auto binding = crypto::sha256(out.bytes());
   device_registry(out, state.devices);
   host_registry(out, state.hosts);
   switch_registry(out, state.switches);
@@ -10085,11 +10171,27 @@ std::vector<std::uint8_t> encode(const RuntimeSupervisorCheckpoint &state) {
   for (const auto &value : state.portable_capture_points)
     portable_capture(out, value);
   secret_vault(out, state.secret_vault);
+  out.boolean(state.network.isis.has_value());
+  if (state.network.isis) {
+    const auto encoded = isis_checkpoint::encode(*state.network.isis, *protector, binding);
+    if (!encoded || encoded->size() > std::numeric_limits<std::uint32_t>::max())
+      throw std::invalid_argument("IS-IS checkpoint graph refused protected encoding");
+    out.integer<std::uint32_t>(static_cast<std::uint32_t>(encoded->size()));
+    out.octets(*encoded);
+    auto [status, sealed] = protector->seal_isis_checkpoint(out.bytes().subspan(prefix_size), binding);
+    if (status != vault::Result::applied || sealed.size() > maximum_checkpoint_bytes - prefix_size)
+      throw std::length_error("protected checkpoint exceeds its memory bound");
+    std::vector<std::uint8_t> result;
+    result.reserve(prefix_size + sealed.size());
+    result.insert(result.end(), out.bytes().begin(), out.bytes().begin() + static_cast<std::ptrdiff_t>(prefix_size));
+    result.insert(result.end(), sealed.begin(), sealed.end());
+    return result;
+  }
   return std::move(out).finish();
 }
 
 std::unique_ptr<RuntimeSupervisorCheckpoint>
-decode(std::span<const std::uint8_t> bytes) {
+decode(std::span<const std::uint8_t> bytes, const vault::SecretVault *protector) {
   if (bytes.empty() || bytes.size() > maximum_checkpoint_bytes)
     return nullptr;
   try {
@@ -10104,6 +10206,18 @@ decode(std::span<const std::uint8_t> bytes) {
         input_profile != device_catalog::catalog_hash ||
         !in.integer(input_build) || input_build != device_catalog::build_hash)
       return nullptr;
+    bool protected_payload{};
+    if (!in.boolean(protected_payload)) return nullptr;
+    const auto prefix_size = bytes.size() - in.remaining();
+    const auto binding = crypto::sha256(bytes.first(prefix_size));
+    std::optional<vault::OpenedSecret> protected_body;
+    if (protected_payload) {
+      if (!protector) return nullptr;
+      auto [status, opened] = protector->open_isis_checkpoint(bytes.subspan(prefix_size), binding);
+      if (status != vault::Result::applied || !opened) return nullptr;
+      protected_body = std::move(opened);
+      in = Reader{protected_body->bytes()};
+    }
     auto state = std::make_unique<RuntimeSupervisorCheckpoint>();
     if (!device_registry(in, state->devices) ||
         !host_registry(in, state->hosts) ||
@@ -10215,8 +10329,18 @@ decode(std::span<const std::uint8_t> bytes) {
     for (auto &value : state->portable_capture_points)
       if (!portable_capture(in, value))
         return nullptr;
-    if (!secret_vault(in, state->secret_vault))
-      return nullptr;
+    if (!secret_vault(in, state->secret_vault)) return nullptr;
+    bool has_isis{};
+    if (!in.boolean(has_isis) || has_isis != protected_payload) return nullptr;
+    if (has_isis) {
+      std::uint32_t protocol_size{};
+      if (!in.integer(protocol_size) || !protocol_size || protocol_size > maximum_checkpoint_bytes) return nullptr;
+      const auto encoded = in.view(protocol_size);
+      if (!encoded) return nullptr;
+      auto decoded = isis_checkpoint::decode(*encoded, *protector, binding);
+      if (!decoded) return nullptr;
+      state->network.isis.emplace(std::move(*decoded));
+    }
     if (in.remaining() != 0)
       return nullptr;
     return state;
@@ -10227,4 +10351,4 @@ decode(std::span<const std::uint8_t> bytes) {
   }
 }
 
-} // namespace router::lab::checkpoint_v7
+} // namespace router::lab::checkpoint_v19

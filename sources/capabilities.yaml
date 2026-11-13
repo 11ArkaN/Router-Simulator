@@ -1,6 +1,237 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  routing.isis.selected_interlevel_projection:
+    status: experimental
+    source_ids: [ietf.isis.selected_interlevel_export]
+  routing.isis.area_address_state:
+    status: experimental
+    source_ids: [iso.10589.2002.area_addresses]
+  routing.isis.attached_default_selection:
+    status: experimental
+    source_ids: [iso.10589.2002.attached_default]
+  ipv6.local_system_delivery:
+    status: experimental
+    source_ids: [ietf.ipv6.local_system_delivery]
+  routing.isis.native_metric_binding:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.native_metric_binding]
+  routing.isis.hello_local_ipv6_assignment:
+    status: experimental
+    source_ids: [ietf.isis.hello_local_ipv6_assignment]
+  routing.isis.local_ipv6_address_content:
+    status: experimental
+    source_ids: [ietf.isis.local_ipv6_address_content]
+  routing.isis.local_af_readiness:
+    status: experimental
+    source_ids: [ietf.isis.local_af_readiness]
+  routing.isis.local_prefix_lifecycle:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.local_prefix_lifecycle]
+  routing.isis.strict_adjacency_check:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.strict_adjacency_check]
+  routing.isis.queued_lsp_lifetime:
+    status: experimental
+    source_ids: [iso.10589.2002.queued_lsp_lifetime]
+  routing.isis.operational_adjacency:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.operational_adjacency]
+  routing.isis.canonical_admission:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.canonical_admission, nokia.sros.26_7.isis.configuration_generation_plan, nokia.sros.26_7.isis.administrative_gate]
+  routing.isis.configuration_generation_plan:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.configuration_generation_plan]
+  routing.isis.advertise_passive_only:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.advertise_passive_only]
+  routing.isis.administrative_gate:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.administrative_gate, iso.10589.2002.runtime_update]
+  routing.isis.control_carrier:
+    status: experimental
+    source_ids: [iso.10589.2002.control_carrier]
+  routing.isis.interface_update_program:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.interface_update_program]
+  routing.isis.spf_backoff:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.spf_backoff]
+  routing.isis.wait_timer_projection:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.wait_timer_projection]
+  routing.isis.multipart_neighbor_keys:
+    status: experimental
+    source_ids: [ietf.isis.multipart_neighbor_keys]
+  routing.isis.multipart_prefix_collection:
+    status: partially-implemented
+    source_ids: [ietf.isis.multipart_prefix_collection]
+  routing.isis.instance_program:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.instance_program]
+  routing.isis.interface_hello_program:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.interface_hello_program]
+  routing.isis.complete_source_coverage:
+    status: partially-implemented
+    source_ids: [project.isis.complete_source_coverage]
+  routing.isis.local_root_content:
+    status: experimental
+    source_ids: [ietf.isis.local_root_content]
+  runtime.isis_atomic_instance_admission:
+    status: experimental
+    source_ids: [project.isis.atomic_instance_admission]
+  routing.isis.basic_cli:
+    status: schema-only
+    source_ids: [nokia.sros.26_7.isis.basic_cli]
+  routing.isis.configuration_intent:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.configuration_intent]
+  runtime.isis_atomic_fragment_origin:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.atomic_fragment_origin]
+  runtime.prepared_protocol_restore:
+    status: partially-implemented
+    source_ids: [project.runtime.prepared_protocol_restore]
+  persistence.isis_checkpoint_codec:
+    status: partially-implemented
+    source_ids: [project.isis.protected_checkpoint_codec, nist.project_key_vault.aes_gcm]
+  persistence.isis_runtime_checkpoint_join:
+    status: partially-implemented
+    source_ids: [project.isis.runtime_checkpoint_join]
+  persistence.isis_control_checkpoint_capture:
+    status: partially-implemented
+    source_ids: [project.isis.control_checkpoint_capture]
+  runtime.quiescent_owned_checkpoint:
+    status: partially-implemented
+    source_ids: [project.runtime.quiescent_owned_checkpoint]
+  runtime.isis_control_checkpoint_barrier:
+    status: partially-implemented
+    source_ids: [project.isis.control_checkpoint_barrier]
+  runtime.quiescent_packet_checkpoint:
+    status: partially-implemented
+    source_ids: [project.runtime.quiescent_packet_checkpoint]
+  persistence.isis_decision_checkpoint:
+    status: partially-implemented
+    source_ids: [project.isis.decision_checkpoint]
+  persistence.isis_circuit_checkpoint:
+    status: partially-implemented
+    source_ids: [project.isis.circuit_checkpoint]
+  persistence.isis_instance_checkpoint:
+    status: partially-implemented
+    source_ids: [project.isis.instance_checkpoint]
+  persistence.isis_level_checkpoint:
+    status: partially-implemented
+    source_ids: [project.isis.level_checkpoint]
+  persistence.isis_reservation_checkpoint:
+    status: partially-implemented
+    source_ids: [project.isis.reservation_checkpoint]
+  persistence.isis_lsdb_checkpoint:
+    status: partially-implemented
+    source_ids: [project.isis.lsdb_checkpoint]
+  development.yang_default_projection:
+    status: implemented
+    source_ids: [ietf.yang.rfc7950.source_inventory]
+  runtime.isis_lan_transport:
+    status: partially-implemented
+    source_ids: [project.runtime.isis_lan_transport]
+  routing.isis.lan_circuit_owner:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.lan_circuit_owner]
+  runtime.ready_frame_queries:
+    status: implemented
+    source_ids: [project.runtime.ready_frame_queries]
+  routing.isis.broadcast_scan:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.broadcast_scan]
+  runtime.forwarding_pause_receipts:
+    status: implemented
+    source_ids: [project.runtime.forwarding_pause_receipts]
+  routing.isis.route_publication:
+    status: partially-implemented
+    source_ids: [project.isis.route_publication]
+  routing.isis.rib_selection:
+    status: partially-implemented
+    source_ids: [nokia.sros.26_7.isis.shared_rib_selection]
+  persistence.checkpoint_9_route_provenance:
+    status: implemented
+    source_ids: [project.persistence.checkpoint_9_route_provenance]
+  routing.isis.prefix_next_hop_candidates:
+    status: partially-implemented
+    source_ids: [ietf.isis.prefix_next_hop_candidates]
+  routing.isis.adjacency_next_hop_binding:
+    status: partially-implemented
+    source_ids: [ietf.isis.adjacency_next_hop_binding]
+  forwarding.dual_family_fib:
+    status: partially-implemented
+    source_ids: [project.runtime.dual_family_fib]
+  runtime.control_generation_receipts:
+    status: partially-implemented
+    source_ids: [project.runtime.control_generation_handoff]
+  routing.route_publication:
+    status: partially-implemented
+    source_ids: [project.runtime.control_generation_handoff]
+  routing.isis.prefix_distance:
+    status: partially-implemented
+    source_ids: [ietf.isis.prefix_distance]
+  routing.isis.lsdb_prefix_collection:
+    status: partially-implemented
+    source_ids: [ietf.isis.lsdb_prefix_collection]
+  runtime.protocol_reservation_epochs:
+    status: implemented
+    source_ids: [project.runtime.protocol_reservation_epochs]
+  runtime.cpp_exception_handlers:
+    status: implemented
+    source_ids: [emscripten.cpp.exception_catching]
+  crypto.segmented_routing_hmac:
+    status: implemented
+    source_ids: [ietf.crypto.hmac.rfc2104]
+  routing.isis.prefix_metadata:
+    status: partially-implemented
+    source_ids: [ietf.isis.prefix_metadata]
+  routing.isis:
+    status: planned
+    source_ids: [nokia.sros.26_7.isis.yang_roots, project.runtime.isis_p2p_transport]
+  routing.isis.lan_neighbor_origination:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.lan_neighbor_origination]
+  routing.isis.p2p_neighbor_origination:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.p2p_neighbor_origination, nokia.sros.26_7.isis.yang_roots]
+  routing.isis.lsdb_link_graph:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.lsdb_link_graph]
+  routing.isis.local_lsp_composition:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.lsp_composition]
+  routing.isis.database_validation:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.database_validation]
+  routing.isis.local_lsp_withdrawal:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.local_lsp_generation]
+  routing.isis.local_lsp_generation:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.local_lsp_generation]
+  routing.isis.purge_option_policy:
+    status: partially-implemented
+    source_ids: [ietf.isis.purge_options, iana.isis.tlv_purge_registry]
+  routing.isis.expiration_purge:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.expiration_purge]
+  routing.isis.runtime_update:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.runtime_update, nokia.sros.26_7.isis.csnp_effective_period]
+  routing.isis.instance_update:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.instance_update]
+  routing.isis.decision_notifications:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.level_process, iso.10589.2002.database_validation]
+  routing.isis.level_synchronization:
+    status: partially-implemented
+    source_ids: [iso.10589.2002.level_process, iso.10589.2002.level_database_owner, iso.10589.2002.lsdb]
   cli.edit_operators:
     status: implemented
     source_ids: [nokia.sros.26_7.md_cli.delete_path, nokia.sros.26_7.classic_cli.no_forms]
@@ -186,7 +417,7 @@ features:
     source_ids: [ieee.802_3.ethernet_frame_timing]
   runtime.dynamic_shards:
     status: implemented
-    source_ids: [emscripten.pthreads.shared_memory]
+    source_ids: [emscripten.pthreads.shared_memory, project.runtime.protocol_consumer_wakeup, project.runtime.protocol_owner_shutdown]
   runtime.shared_memory_growth:
     status: implemented
     source_ids: [emscripten.shared_memory.growth, emscripten.pthreads.shared_memory]

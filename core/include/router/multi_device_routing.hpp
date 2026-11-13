@@ -39,7 +39,8 @@ enum class RouteSource : std::uint8_t {
   connected,
   static_route,
   ospf,
-  ospf3
+  ospf3,
+  isis
 };
 
 // RFC 2328 section 16.4 defines an ordering between OSPF path classes that is
@@ -54,6 +55,35 @@ enum class OspfPathType : std::uint8_t {
   nssa_type_1,
   nssa_type_2
 };
+
+// IS-IS provenance remains independent from OSPF path types. The protocol
+// owner supplies the normative prefix-distance rank before RIB selection.
+enum class IsisPathType : std::uint8_t {
+  none, level1_internal, level2_internal, level1_external, level2_external
+};
+
+// Pure provenance validation shared by RIB admission and checkpoint decoding.
+// No state or allocation. false rejects mixed protocol fields and invalid
+// family/level/class ranks before a route generation can be published.
+[[nodiscard]] constexpr bool valid_route_path(RouteSource source, OspfPathType ospf,
+    IsisPathType isis, std::uint8_t rank, bool ipv6) noexcept {
+  if (source == RouteSource::connected || source == RouteSource::static_route)
+    return ospf == OspfPathType::none && isis == IsisPathType::none && !rank;
+  if (source != RouteSource::isis)
+    return (source == RouteSource::ospf || source == RouteSource::ospf3) && ospf != OspfPathType::none &&
+        ospf <= OspfPathType::nssa_type_2 && isis == IsisPathType::none && !rank;
+  if (ospf != OspfPathType::none || isis == IsisPathType::none ||
+      isis > IsisPathType::level2_external) return false;
+  const bool level1 = isis == IsisPathType::level1_internal || isis == IsisPathType::level1_external;
+  const bool external = isis == IsisPathType::level1_external || isis == IsisPathType::level2_external;
+  if (ipv6) return level1 ? rank == 0U || rank == 3U : rank == 1U || rank == 2U;
+  return level1 ? rank == 0U || rank == 2U || (external && (rank == 3U || rank == 5U))
+                : rank == 1U || (external && rank == 4U);
+}
+
+[[nodiscard]] constexpr bool dynamic_source(RouteSource source) noexcept {
+  return source == RouteSource::ospf || source == RouteSource::ospf3 || source == RouteSource::isis;
+}
 
 struct Route {
   std::uint32_t network{};
@@ -72,6 +102,14 @@ struct Route {
   bool local_system{};
   OspfPathType ospf_path_type{OspfPathType::none};
   std::uint8_t protocol_instance{};
+
+  // Stable logical scope accompanies physical egress, including unnumbered links.
+  std::uint64_t interface_id{};
+  IsisPathType isis_path_type{IsisPathType::none};
+  std::uint8_t isis_rank{};
+  std::uint64_t interface_generation{};
+  // Complete value equality keeps generation replay checks aligned with every field.
+  bool operator==(const Route &) const = default;
 };
 
 struct ConnectedInput {
@@ -85,6 +123,8 @@ struct ConnectedInput {
   // true identifies the immutable-name `system` loopback. It is operational
   // independently of carrier and must use /32 in the SR OS 26.7 profile.
   bool local_system{};
+  std::uint64_t interface_id{};
+  std::uint64_t interface_generation{};
 };
 
 struct StaticInput {
@@ -119,6 +159,11 @@ struct DynamicInput {
   // become eligible only after forwarding observes that the primary egress is
   // unavailable, so a longer alternate cannot carry ordinary steady traffic.
   bool loop_free_alternate{};
+  // Stable logical scope accompanies physical egress, including unnumbered links.
+  std::uint64_t interface_id{};
+  IsisPathType isis_path_type{IsisPathType::none};
+  std::uint8_t isis_rank{};
+  std::uint64_t interface_generation{};
 };
 
 struct FibProgram {
@@ -135,16 +180,27 @@ struct FibProgram {
 
 class RouteTable final {
 public:
+  // Both dynamic spans are immutable owner-retained generations and share the
+  // generated total route budget. An empty span withdraws only its own input.
   // false means the selected RIB is byte-for-byte unchanged. Invalid prefix
   // lengths and capacity overflow reject the entire rebuild without mutation.
   [[nodiscard]] bool rebuild(std::span<const ConnectedInput> connected,
                              std::span<const StaticInput> statics,
                              std::span<const DynamicInput> dynamic = {},
-                             std::uint16_t maximum_ecmp_paths = 1U) noexcept;
+                             std::uint16_t maximum_ecmp_paths = 1U,
+                             std::span<const DynamicInput> additional_dynamic = {}) noexcept;
   [[nodiscard]] FibProgram compile(std::uint64_t generation) const noexcept;
+  // Same owner, exclusive caller-owned output. Copies the complete published
+  // selection and zeros unused rows without a profile-sized return temporary.
+  // No allocation, borrowing, refusal or mutation of the RIB occurs.
+  void compile_into(FibProgram &output, std::uint64_t generation) const noexcept;
+  // Primary selections only, ordered by network ascending then prefix length
+  // descending. Repair paths remain separate; the view expires on rebuild.
   [[nodiscard]] std::span<const Route> routes() const noexcept {
     return {routes_.data(), count_};
   }
+  // Same-owner comparison of complete active and repair selections.
+  [[nodiscard]] bool same_selection(const RouteTable &other) const noexcept;
   [[nodiscard]] bool last_rebuild_valid() const noexcept {
     return last_rebuild_valid_;
   }
@@ -204,6 +260,12 @@ struct Ipv6Route {
   RouteSource source{};
   OspfPathType ospf_path_type{OspfPathType::none};
   std::uint8_t protocol_instance{};
+
+  IsisPathType isis_path_type{IsisPathType::none};
+  std::uint8_t isis_rank{};
+  std::uint64_t interface_generation{};
+  // Complete value equality keeps generation replay checks aligned with every field.
+  bool operator==(const Ipv6Route &) const = default;
 };
 
 struct Ipv6ConnectedInput {
@@ -215,6 +277,7 @@ struct Ipv6ConnectedInput {
   std::uint64_t interface_id{};
   std::uint16_t physical_port_ordinal{};
   std::uint8_t prefix_length{};
+  std::uint64_t interface_generation{};
 };
 
 struct Ipv6StaticInput {
@@ -247,6 +310,9 @@ struct Ipv6DynamicInput {
   std::uint32_t tag{};
   std::uint8_t protocol_instance{};
   bool loop_free_alternate{};
+  IsisPathType isis_path_type{IsisPathType::none};
+  std::uint8_t isis_rank{};
+  std::uint64_t interface_generation{};
 };
 
 struct Ipv6FibProgram {
@@ -269,12 +335,19 @@ public:
           std::span<const Ipv6StaticInput> statics,
           std::span<const Ipv6ConnectedInput> additional_connected = {},
           std::span<const Ipv6DynamicInput> dynamic = {},
-          std::uint16_t maximum_ecmp_paths = 1U)
+          std::uint16_t maximum_ecmp_paths = 1U,
+          std::span<const Ipv6DynamicInput> additional_dynamic = {})
       noexcept;
   [[nodiscard]] Ipv6FibProgram compile(std::uint64_t generation) const noexcept;
+  // Same owner and exclusive output, as IPv4 compile_into. Unused rows are
+  // cleared so a reused transfer arena cannot expose withdrawn route values.
+  void compile_into(Ipv6FibProgram &output, std::uint64_t generation) const noexcept;
+  // Same canonical primary-only ordering and lifetime as the IPv4 view.
   [[nodiscard]] std::span<const Ipv6Route> routes() const noexcept {
     return {routes_.data(), count_};
   }
+  // Includes repair paths; staged rebuild history is deliberately irrelevant.
+  [[nodiscard]] bool same_selection(const Ipv6RouteTable &other) const noexcept;
   [[nodiscard]] bool last_rebuild_valid() const noexcept {
     return last_rebuild_valid_;
   }

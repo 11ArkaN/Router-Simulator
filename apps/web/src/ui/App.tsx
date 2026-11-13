@@ -13,6 +13,7 @@ import { ANNOTATION_LIMITS, createAnnotationV4, createEmptyProjectV4,
   type TopologyAnnotationV4 } from "@router-simulator/contracts";
 import { MultiRouterRuntimeClient, type RouterTerminalState } from "../runtime/multi-router-client";
 import { runHostPing } from "../runtime/host-ping";
+import { prepareProjectImport } from "../runtime/project-import";
 import { createUnconfiguredHost, materializeStableIidSecret } from
   "../runtime/secure-random";
 import { createCheckpointManifestV4, downloadBinary,
@@ -143,7 +144,8 @@ function mergeRuntimeRouter(project: LabProjectV4,
       // The control owner projects canonical configuration, never inferred
       // operational routes or adjacencies. Terminal commits can therefore be
       // persisted without the browser reconstructing protocol intent.
-      ospf: structuredClone(runtimeRouter.ospf)
+      ospf: structuredClone(runtimeRouter.ospf),
+      isis: structuredClone(runtimeRouter.isis)
     }
   };
   return { ...project, routers: project.routers.map((item) =>
@@ -1031,6 +1033,17 @@ export function App() {
       setOperationError(visibleFailure("operation", cause));
     }
   };
+  const downloadCaptureNow = async () => {
+    if (!runtime) return;
+    try {
+      const bytes = await runtime.exportCapture();
+      downloadBinary(`${project.name}.pcapng`, bytes,
+        "application/vnd.tcpdump.pcap");
+      setOperationError(undefined);
+    } catch (cause) {
+      setOperationError(visibleFailure("operation", cause));
+    }
+  };
   const setCaptureSelection = async (kind: CaptureKind, objectId: string,
     portId: string, direction: 0 | 1, selected: boolean) => {
     if (!runtime) return;
@@ -1125,9 +1138,10 @@ export function App() {
       importedWrappingKey = "projectWrappingKey" in decoded
         ? decoded.projectWrappingKey : undefined;
       replacement = new MultiRouterRuntimeClient();
-      let live = await replacement.applyProject(
-        decoded.project, importedWrappingKey);
-      if (decoded.checkpoint) { await replacement.importCheckpoint(decoded.checkpoint); live = await replacement.snapshot(); }
+      const live = await prepareProjectImport(replacement, decoded.project,
+        decoded.checkpoint, importedWrappingKey);
+      if (!snapshotMatchesProject(decoded.project, live))
+        throw new Error("Checkpoint belongs to a different laboratory topology");
       previous = runtimeRef.current;
       await transferCaptureStorage(previous, replacement);
       storageTransferred = true;
@@ -1206,31 +1220,10 @@ export function App() {
       setPassphraseBusy(false);
     }
   };
-  const importCheckpointFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]; event.target.value = "";
-    if (!file || !runtime) return;
-    let replacement: MultiRouterRuntimeClient | undefined;
-    try {
-      replacement = new MultiRouterRuntimeClient();
-      await replacement.applyProject(project);
-      await replacement.importCheckpoint(new Uint8Array(await file.arrayBuffer()));
-      const live = await replacement.snapshot();
-      if (!snapshotMatchesProject(project, live))
-        throw new Error("Checkpoint belongs to a different laboratory topology");
-      const previous = runtimeRef.current;
-      await transferCaptureStorage(previous, replacement);
-      runtimeRef.current = replacement;
-      setRuntime(replacement);
-      replacement = undefined;
-      setSnapshot(live);
-      setProject(mergeRuntimeProject(project, live));
-      setCaptureSelections(captureSelectionsFromSnapshot(live));
-      previous?.close();
-    }
-    catch (cause) {
-      replacement?.close();
-      setOperationError(visibleFailure("operation", cause));
-    }
+  const selectImportFile = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    void requestImport(file);
   };
 
   const resetProject = () => {
@@ -1390,7 +1383,7 @@ export function App() {
   return <main className={`app-shell ${inspectorOpen ? "" : "inspector-closed"} ${terminalOpen ? "" : "terminal-closed"} ${sidebarOpen ? "sidebar-open" : ""}`} style={shellStyle}>
     <header className="topbar"><button className="nav-toggle" aria-label="Toggle navigation" aria-expanded={sidebarOpen} onClick={() => setSidebarOpen((value) => !value)}>{sidebarOpen ? <X size={20} /> : <Menu size={20} />}</button><div className="brand-area"><button className="brand" aria-expanded={projectMenuOpen} onClick={() => setProjectMenuOpen((value) => !value)}><span className="brand-mark"><Waypoints size={17} strokeWidth={2.1} /></span><strong>Router Lab</strong><ChevronDown className="chevron" size={15} /></button>{projectMenuOpen && <div className="header-menu project-menu"><strong>{project.name}</strong><small>SR OS {PROFILE_CATALOG.release}</small>{confirmNewProject ? <div className="confirm-row"><span>Reset this lab?</span><button onClick={resetProject}>Reset</button><button onClick={() => setConfirmNewProject(false)}>Cancel</button></div> : <button onClick={() => setConfirmNewProject(true)}>New lab</button>}<button onClick={() => importRef.current?.click()}>Import project</button></div>}</div>
       <div className="top-context" aria-hidden><span className="top-context-name">{project.name}</span><span className="top-context-view">{view}</span></div>
-      <div className="top-actions"><button className="icon-action" onClick={() => { setPassphrase(""); setPassphraseConfirmation(""); setProtectedFileAction({ kind: "project" }); }}><Download size={16} /> <span>Export</span></button><div className="more-wrap"><button className="more-action" title="More project actions" aria-expanded={moreMenuOpen} onClick={() => setMoreMenuOpen((value) => !value)}><EllipsisVertical size={18} /></button>{moreMenuOpen && <div className="header-menu more-menu"><button onClick={() => { setMoreMenuOpen(false); setPassphrase(""); setPassphraseConfirmation(""); setProtectedFileAction({ kind: "checkpoint" }); }}>Export checkpoint</button><button onClick={() => navigate("settings")}>Project settings</button></div>}</div><input ref={importRef} hidden type="file" accept=".netsim,application/json" onChange={(event) => { void requestImport(event.target.files?.[0]); event.target.value = ""; }} /></div>
+      <div className="top-actions"><button className="icon-action" onClick={() => { setPassphrase(""); setPassphraseConfirmation(""); setProtectedFileAction({ kind: "project" }); }}><Download size={16} /> <span>Export</span></button><div className="more-wrap"><button className="more-action" title="More project actions" aria-expanded={moreMenuOpen} onClick={() => setMoreMenuOpen((value) => !value)}><EllipsisVertical size={18} /></button>{moreMenuOpen && <div className="header-menu more-menu"><button onClick={() => { setMoreMenuOpen(false); setPassphrase(""); setPassphraseConfirmation(""); setProtectedFileAction({ kind: "checkpoint" }); }}>Export checkpoint</button><button onClick={() => navigate("settings")}>Project settings</button></div>}</div><input ref={importRef} hidden type="file" accept=".netsim,application/json" onChange={selectImportFile} /></div>
     </header>
     {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
     <div className="workspace"><aside className="library"><div className="panel-kicker">WORKSPACE</div><nav className="side-nav"><button className={view === "topology" ? "active" : ""} onClick={() => navigate("topology")}><span><Waypoints size={18} /></span>Topology</button><button className={view === "demos" ? "active" : ""} onClick={() => navigate("demos")}><span><Rocket size={18} /></span>Demos</button><button className={view === "devices" ? "active" : ""} onClick={() => navigate("devices")}><span><Server size={18} /></span>Devices</button><button className={view === "captures" ? "active" : ""} onClick={() => navigate("captures")}><span><Radio size={18} /></span>Captures</button></nav><div className="side-divider" /><div className="panel-kicker">DEVICE PALETTE</div>
@@ -1400,7 +1393,7 @@ export function App() {
       <section><h3>MEDIA</h3><button className={`library-item ${topologyTool === "link" ? "active" : ""}`} onClick={() => { setSidebarOpen(false); setTopologyTool((current) => current === "link" ? "select" : "link"); navigate("topology"); }}><span className="mini-icon link"><Cable size={17} /></span><span><strong>Physical link</strong><small>Drag between free physical ports</small></span></button></section>
       <section><h3>ANNOTATE</h3><button className={`library-item ${topologyTool === "text" ? "active" : ""}`} onClick={() => { setSidebarOpen(false); navigate("topology"); setTopologyTool("text"); }}><span className="mini-icon"><Type size={17} /></span><span><strong>Text label</strong><small>Document addressing on the canvas</small></span></button></section><div className="side-divider" /><div className="panel-kicker">PROJECT</div><nav className="project-nav"><button className={view === "configs" ? "active" : ""} onClick={() => navigate("configs")}><SlidersHorizontal size={16} /> <span>Configuration</span></button><button className={view === "snapshots" ? "active" : ""} onClick={() => navigate("snapshots")}><Camera size={16} /> <span>Snapshots</span></button><button className={view === "notes" ? "active" : ""} onClick={() => navigate("notes")}><NotebookPen size={16} /> <span>Notes</span></button></nav><div className="side-footer"><button className={view === "settings" ? "active" : ""} onClick={() => navigate("settings")}><Settings size={18} /> <span>Settings</span></button><div className="account-wrap"><button aria-expanded={accountMenuOpen} onClick={() => setAccountMenuOpen((value) => !value)}><CircleUser size={18} /> <span>admin</span><b><ChevronDown size={14} /></b></button>{accountMenuOpen && <div className="account-menu"><strong>Local administrator</strong><small>Browser-only session</small><button onClick={() => setAccountMenuOpen(false)}>Close</button></div>}</div></div><PanelResizeHandle axis="x" className="library-resizer" defaultValue={194} direction={1} label="Resize sidebar" min={64} max={Math.max(64, window.innerWidth - 64)} value={project.layout.sidebarWidth} onChange={(value) => resizePanel("sidebarWidth", value)} /></aside>
       <section className="center-stage">{visibleMessage && <div className="runtime-error"><strong>{visibleMessageTitle}</strong><span>{visibleMessage}</span>{!runtimeError && <button onClick={() => { setOperationError(undefined); setContinuityNotice(undefined); }}>Dismiss</button>}</div>}
-        {view === "topology" ? <Topology project={project} snapshot={displaySnapshot} selected={selected} onSelect={selectDevice} onLayoutChange={updateLayout} onConnect={(first, second) => { setLinkNodes([first, second]); setLinkPorts(["", ""]); }} onDropDevice={(kind, position) => addDevice(kind, position)} onOpenHardware={() => { if (selectedRouter) setRouterTab("cards"); }} onAnnotationCreate={createAnnotation} onAnnotationMove={moveAnnotation} onAnnotationResize={resizeAnnotation} onAnnotationCommitText={commitAnnotationText} onAnnotationDelete={deleteAnnotation} tool={topologyTool} onToolChange={setTopologyTool} /> : view === "demos" ? <DemosWorkspace demos={DEMO_LAB_CATALOG} pendingDemoId={pendingDemoId} onLaunch={requestDemoLaunch} /> : view === "devices" ? <DevicesWorkspace project={project} snapshot={displaySnapshot} onInspect={selectDevice} onConsole={openConsole} /> : view === "captures" ? <CaptureWorkspace project={project} snapshot={displaySnapshot} selections={captureSelections.map((item) => item.key)} onSelection={(kind, objectId, portId, direction, value) => void setCaptureSelection(kind, objectId, portId, direction, value)} onToggle={() => void toggleCapture()} onExport={() => void exportCaptureNow()} onCheckpoint={() => { setPassphrase(""); setPassphraseConfirmation(""); setProtectedFileAction({ kind: "checkpoint" }); }} /> : view === "configs" ? <ConfigWorkspace router={selectedRouter} onChange={updateRouter} /> : view === "snapshots" ? <SnapshotWorkspace checkpointInput={checkpointRef} onExport={() => { setPassphrase(""); setPassphraseConfirmation(""); setProtectedFileAction({ kind: "checkpoint" }); }} onImport={(event) => void importCheckpointFile(event)} /> : view === "notes" ? <NotesWorkspace value={project.notes} onChange={(notes) => setProject((current) => ({ ...current, notes }))} /> : <SettingsWorkspace project={project} onChange={setProject} onResetLayout={resetLayout} />}
+        {view === "topology" ? <Topology project={project} snapshot={displaySnapshot} selected={selected} onSelect={selectDevice} onLayoutChange={updateLayout} onConnect={(first, second) => { setLinkNodes([first, second]); setLinkPorts(["", ""]); }} onDropDevice={(kind, position) => addDevice(kind, position)} onOpenHardware={() => { if (selectedRouter) setRouterTab("cards"); }} onAnnotationCreate={createAnnotation} onAnnotationMove={moveAnnotation} onAnnotationResize={resizeAnnotation} onAnnotationCommitText={commitAnnotationText} onAnnotationDelete={deleteAnnotation} tool={topologyTool} onToolChange={setTopologyTool} /> : view === "demos" ? <DemosWorkspace demos={DEMO_LAB_CATALOG} pendingDemoId={pendingDemoId} onLaunch={requestDemoLaunch} /> : view === "devices" ? <DevicesWorkspace project={project} snapshot={displaySnapshot} onInspect={selectDevice} onConsole={openConsole} /> : view === "captures" ? <CaptureWorkspace project={project} snapshot={displaySnapshot} selections={captureSelections.map((item) => item.key)} onSelection={(kind, objectId, portId, direction, value) => void setCaptureSelection(kind, objectId, portId, direction, value)} onToggle={() => void toggleCapture()} onExport={() => void exportCaptureNow()} onDownload={() => void downloadCaptureNow()} onCheckpoint={() => { setPassphrase(""); setPassphraseConfirmation(""); setProtectedFileAction({ kind: "checkpoint" }); }} /> : view === "configs" ? <ConfigWorkspace router={selectedRouter} onChange={updateRouter} /> : view === "snapshots" ? <SnapshotWorkspace checkpointInput={checkpointRef} onExport={() => { setPassphrase(""); setPassphraseConfirmation(""); setProtectedFileAction({ kind: "checkpoint" }); }} onImport={selectImportFile} /> : view === "notes" ? <NotesWorkspace value={project.notes} onChange={(notes) => setProject((current) => ({ ...current, notes }))} /> : <SettingsWorkspace project={project} onChange={setProject} onResetLayout={resetLayout} />}
       </section>
       {inspectorOpen && <Inspector selected={selected} tab={routerTab} onTabChange={setRouterTab} project={project} snapshot={displaySnapshot} updateHost={updateHost} updateDhcpServer={updateDhcpServer} updateRouter={updateRouter} setCard={setCard} setMda={setMda} setCardAdmin={setCardAdmin} setMdaAdmin={setMdaAdmin} setSwitchName={setSwitchName} setSwitchPort={setSwitchPort} setLink={(id, up) => void setLink(id, up)} updateLink={updateLink} deleteLink={deleteLink} deleteNode={deleteNode} updateAnnotation={updateAnnotation} deleteAnnotation={deleteAnnotation} ping={ping} width={project.layout.inspectorWidth} onWidthChange={(value) => resizePanel("inspectorWidth", value)} openConsole={openConsole} close={() => setInspectorOpen(false)} />}
     </div>

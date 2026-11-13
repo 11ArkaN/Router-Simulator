@@ -37,6 +37,10 @@ public:
   [[nodiscard]] bool
   submit_signing_vault(const NetworkCommand &command,
                        const NetworkSigningVaultInitialize &payload) noexcept;
+  // Same producer as submit(). Failure preserves the caller-owned generation;
+  // success transfers all allocations until the matching result is consumed.
+  [[nodiscard]] bool submit_isis_generation(const NetworkCommand &,
+      NetworkIsisGeneration &&) noexcept;
   [[nodiscard]] bool read(NetworkResult &result) noexcept;
   // Control may borrow the immutable export only after a prepare_capture result
   // has crossed the release/acquire response ring. The next prepare invalidates
@@ -59,6 +63,11 @@ public:
   [[nodiscard]] const RouterForwarderCheckpoint *
   prepared_router_checkpoint() const noexcept {
     return prepared_router_checkpoint_.get();
+  }
+  // Matching response acquire publishes immutable diagnostic storage. Each
+  // returned strong reference survives the next worker-owned query buffer.
+  [[nodiscard]] std::shared_ptr<const isis::AdjacencyQuery> prepared_isis_adjacencies() const noexcept {
+    return prepared_isis_adjacencies_;
   }
   [[nodiscard]] bool stage_restore(NetworkPlaneCheckpoint state);
   void cancel_staged_restore() noexcept { pending_restore_.reset(); }
@@ -90,6 +99,9 @@ public:
   [[nodiscard]] std::uint64_t ospf_owner_thread_id() const noexcept {
     return plane_.ospf_owner_thread_id();
   }
+  [[nodiscard]] std::uint64_t isis_owner_thread_id() const noexcept {
+    return plane_.isis_owner_thread_id();
+  }
 
 private:
   static void wake_link_owner(void *context) noexcept;
@@ -99,6 +111,7 @@ private:
   NetworkPlaneChannels &channels_;
   std::unique_ptr<NetworkPlaneCheckpoint> prepared_checkpoint_;
   std::unique_ptr<RouterForwarderCheckpoint> prepared_router_checkpoint_;
+  std::shared_ptr<const isis::AdjacencyQuery> prepared_isis_adjacencies_;
   std::unique_ptr<NetworkPlaneCheckpoint> pending_restore_;
   // NetworkCommand contains the largest fixed FIB generation supported by the
   // selected hardware profile. Keeping one owner-local scratch object on the

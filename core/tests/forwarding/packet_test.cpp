@@ -4,6 +4,7 @@
 #include "router/packet.hpp"
 #include "router/generated_profile.hpp"
 
+#include <memory>
 #include <stdexcept>
 #include <vector>
 
@@ -107,12 +108,22 @@ void ipv4_forwarded_fragmentation_tests() {
         "downstream IPv4 refragmentation restarted the incoming offset");
 }
 
-void packet_tests() {
+namespace {
+std::unique_ptr<std::optional<router::packet::FragmentBatch>> fragment_fixture(
+    const std::optional<router::packet::Frame> &routed, std::uint16_t mtu) {
+  // MSVC debug builds retain return-value temporaries until function exit.
+  // Keep the persistent maximum batch on the heap, as production owners do.
+  auto result = std::make_unique<std::optional<router::packet::FragmentBatch>>();
+  if (routed) *result = router::packet::fragment_ipv4(*routed, mtu);
+  return result;
+}
+
+// Separate codec families keep independent maximum-frame fixtures off one
+// aggregate native stack frame without changing any conformance assertion.
+void ipv6_packet_tests() {
   using namespace router::packet;
   const Mac source{0x02, 0, 0, 0, 0, 1};
   const Mac target{0x02, 0, 0, 0, 0, 2};
-  const Ipv4 source_ip{192, 0, 2, 1};
-  const Ipv4 target_ip{192, 0, 2, 2};
 
   // IPv6 Echo uses the RFC 4443 pseudo-header checksum and a 40-octet fixed
   // header. The ordinary 56-octet ping data therefore produces 118 captured
@@ -324,6 +335,15 @@ void packet_tests() {
     throw std::runtime_error("misaligned IPv6 AH was accepted");
   }
 
+}
+
+void arp_and_ipv4_packet_tests() {
+  using namespace router::packet;
+  const Mac source{0x02, 0, 0, 0, 0, 1};
+  const Mac target{0x02, 0, 0, 0, 0, 2};
+  const Ipv4 source_ip{192, 0, 2, 1};
+  const Ipv4 target_ip{192, 0, 2, 2};
+
   const auto arp = arp_request(source, source_ip, target_ip);
   if (arp.size() != 60 || arp[12] != 0x08 || arp[13] != 0x06) {
     throw std::runtime_error("ARP request encoding failed");
@@ -514,14 +534,23 @@ void packet_tests() {
         "ICMP quotation parser did not preserve the invoking IPv4 header");
   }
 
+}
+
+void ipv4_fragment_packet_tests() {
+  using namespace router::packet;
+  const Mac source{0x02, 0, 0, 0, 0, 1};
+  const Mac target{0x02, 0, 0, 0, 0, 2};
+  const Ipv4 source_ip{192, 0, 2, 1};
+  const Ipv4 target_ip{192, 0, 2, 2};
+
   // A fragmentable 1028-byte IPv4 datagram crosses a 512-byte MTU as three
   // datagrams. Non-final payloads are multiples of eight and offsets continue
   // from the original payload, while TTL was decremented only once beforehand.
   const auto fragmentable =
       icmp_echo(source, target, source_ip, target_ip, false, 12, 64, 1000, false);
   const auto routed_large = route_ipv4(fragmentable, target, source);
-  const auto fragments = routed_large ? fragment_ipv4(*routed_large, 512)
-                                      : std::nullopt;
+  const auto fragments_owner = fragment_fixture(routed_large, 512U);
+  const auto &fragments = *fragments_owner;
   if (!fragments || fragments->count != 3) {
     throw std::runtime_error("IPv4 fragmentation produced the wrong batch");
   }
@@ -538,6 +567,15 @@ void packet_tests() {
         expected_offset + (view->total_length - view->header_length) / 8U);
   }
 
+}
+
+void ipv4_jumbo_fragment_tests() {
+  using namespace router::packet;
+  const Mac source{0x02, 0, 0, 0, 0, 1};
+  const Mac target{0x02, 0, 0, 0, 0, 2};
+  const Ipv4 source_ip{192, 0, 2, 1};
+  const Ipv4 target_ip{192, 0, 2, 2};
+
   // The generated 9212-byte network MTU is a real codec bound, not only a CLI
   // validation value. At the minimum modeled MTU its payload requires 19
   // RFC 791 fragments, proving that the former four-fragment ceiling is gone.
@@ -546,15 +584,22 @@ void packet_tests() {
   const auto jumbo = icmp_echo(source, target, source_ip, target_ip, false, 13,
                                64, jumbo_payload, false);
   const auto routed_jumbo = route_ipv4(jumbo, target, source);
-  const auto jumbo_fragments =
-      routed_jumbo ? fragment_ipv4(*routed_jumbo,
-                                   minimum_network_ip_mtu)
-                   : std::nullopt;
+  const auto jumbo_fragments_owner = fragment_fixture(routed_jumbo, minimum_network_ip_mtu);
+  const auto &jumbo_fragments = *jumbo_fragments_owner;
   if (jumbo.size() != maximum_frame_octets || !jumbo_fragments ||
       jumbo_fragments->count != FragmentBatch::maximum_fragment_count) {
     throw std::runtime_error(
         "Jumbo IPv4 datagram was truncated or hit a stale fragment limit");
   }
+
+}
+
+void ipv4_streamed_fragment_tests() {
+  using namespace router::packet;
+  const Mac source{0x02, 0, 0, 0, 0, 1};
+  const Mac target{0x02, 0, 0, 0, 0, 2};
+  const Ipv4 source_ip{192, 0, 2, 1};
+  const Ipv4 target_ip{192, 0, 2, 2};
 
   // IPv4 Total Length is independent of a physical Ethernet frame. Exercise
   // the complete 65,535-octet domain so a future optimization cannot restore
@@ -645,6 +690,13 @@ void packet_tests() {
     throw std::runtime_error("IPv4 source fragmentation ignored DF");
   }
 
+}
+
+void mutated_packet_tests() {
+  using namespace router::packet;
+  const Mac source{0x02, 0, 0, 0, 0, 1};
+  const Mac target{0x02, 0, 0, 0, 0, 2};
+
   // Deterministic mutation fuzzing covers every legal frame length and random
   // byte patterns under ASAN and UBSAN in CI. Parsers may reject a candidate,
   // but no rejected length or header may read outside Frame::view or allocate
@@ -673,4 +725,15 @@ void packet_tests() {
     static_cast<void>(route_ipv6(candidate, target, source));
     static_cast<void>(fragment_ipv4(candidate, 512));
   }
+}
+
+} // namespace
+
+void packet_tests() {
+  ipv6_packet_tests();
+  arp_and_ipv4_packet_tests();
+  ipv4_fragment_packet_tests();
+  ipv4_jumbo_fragment_tests();
+  ipv4_streamed_fragment_tests();
+  mutated_packet_tests();
 }

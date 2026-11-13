@@ -81,12 +81,12 @@ type CaptureKind = "link-direction" | "router-ingress" | "router-egress" |
   "cpm-punt";
 
 export function CaptureWorkspace({ project, snapshot, selections, onSelection,
-  onToggle, onExport, onCheckpoint }: {
+  onToggle, onExport, onDownload, onCheckpoint }: {
   project: LabProjectV4; snapshot?: LabRuntimeSnapshotV6;
   selections: readonly string[];
   onSelection(kind: CaptureKind, objectId: string, portId: string,
     direction: 0 | 1, selected: boolean): void;
-  onToggle(): void; onExport(): void; onCheckpoint(): void;
+  onToggle(): void; onExport(): void; onDownload(): void; onCheckpoint(): void;
 }) {
   const active = selections.length > 0;
   const selected = (kind: CaptureKind, objectId: string, portId: string,
@@ -103,7 +103,7 @@ export function CaptureWorkspace({ project, snapshot, selections, onSelection,
   return <section className="workspace-page capture-page" aria-labelledby="capture-title">
     <header className="workspace-page-head"><div><span>PACKET OBSERVATION</span><h1 id="capture-title">Capture session</h1></div><b className={active ? "status-live" : "status-idle"}>{active ? "Recording" : "Stopped"}</b></header>
     <div className="metric-strip"><div><small>Records</small><strong>{snapshot?.capturedFrames ?? 0}</strong></div><div><small>Dropped</small><strong>{snapshot?.captureDropped ?? 0}</strong></div><div><small>Active links</small><strong>{snapshot?.activeLinks ?? 0}</strong></div></div>
-    <div className="workspace-actions"><button className="primary" onClick={onToggle}>{active ? "Stop capture" : "Start capture"}</button><button onClick={onExport}>Export PCAPNG</button><button onClick={onCheckpoint}>Export checkpoint</button></div>
+    <div className="workspace-actions"><button className="primary" onClick={onToggle}>{active ? "Stop capture" : "Start capture"}</button><button onClick={onExport}>Export PCAPNG</button><button onClick={onDownload} title="Use browser downloads">Download PCAPNG</button><button onClick={onCheckpoint}>Export checkpoint</button></div>
     <div className="capture-tree">
       <section><h2>Physical links</h2>{project.links.length ? project.links.map((link) => <div className="capture-group" key={link.id}><strong>{link.id}</strong><small>{link.endpoints[0].nodeId} / {link.endpoints[0].portId} to {link.endpoints[1].nodeId} / {link.endpoints[1].portId}</small><div>{point("First to second", "link-direction", link.id, "", 0)}{point("Second to first", "link-direction", link.id, "", 1)}</div></div>) : <p className="empty-copy">No physical links are configured.</p>}</section>
       <section><h2>Routers</h2>{project.routers.map((router) => { const live = snapshot?.routers.find((item) => item.id === router.id); return <div className="capture-group" key={router.id}><strong>{router.systemName}</strong><div>{point("CPM punt", "cpm-punt", router.id, "", 0)}</div>{live?.ports.map((port) => <div className="capture-port" key={port.id}><small>{port.id}</small><div>{point("Ingress", "router-ingress", router.id, port.id, 0)}{point("Egress", "router-egress", router.id, port.id, 0)}</div></div>)}</div>; })}</section>
@@ -196,7 +196,7 @@ export function SnapshotWorkspace({ checkpointInput, onExport, onImport }: {
   checkpointInput: RefObject<HTMLInputElement | null>; onExport(): void;
   onImport(event: ChangeEvent<HTMLInputElement>): void;
 }) {
-  return <section className="workspace-page snapshot-page" aria-labelledby="snapshot-title"><header className="workspace-page-head"><div><span>RUNTIME STATE</span><h1 id="snapshot-title">Snapshots</h1></div></header><div className="snapshot-card"><strong>Portable checkpoint</strong><p>Preserves the full multi-device runtime and user-owned topology.</p><div className="workspace-actions"><button className="primary" onClick={onExport}>Export checkpoint</button><button onClick={() => checkpointInput.current?.click()}>Import checkpoint</button></div><input ref={checkpointInput} hidden type="file" accept=".bin,.checkpoint,application/octet-stream" onChange={onImport} /></div></section>;
+  return <section className="workspace-page snapshot-page" aria-labelledby="snapshot-title"><header className="workspace-page-head"><div><span>RUNTIME STATE</span><h1 id="snapshot-title">Snapshots</h1></div></header><div className="snapshot-card"><strong>Portable checkpoint</strong><p>Preserves the full multi-device runtime and user-owned topology.</p><div className="workspace-actions"><button className="primary" onClick={onExport}>Export checkpoint</button><button onClick={() => checkpointInput.current?.click()}>Import checkpoint</button></div><input ref={checkpointInput} hidden type="file" accept=".netsim,application/json" onChange={onImport} /></div></section>;
 }
 
 export function NotesWorkspace({ value, onChange }: { value: string; onChange(value: string): void }) {

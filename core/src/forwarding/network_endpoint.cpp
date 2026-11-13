@@ -271,9 +271,11 @@ bool EndpointStack::configure(
          !stable_secret_present))))
     return false;
   std::unique_ptr<transport::tcp::TcpEndpoint> configured_tcp;
+  std::optional<transport::UdpEndpoint> configured_udp;
   try {
     configured_tcp = std::make_unique<transport::tcp::TcpEndpoint>(
         configuration.endpoint_transport_secret);
+    configured_udp.emplace();
   } catch (const std::bad_alloc &) {
     return false;
   }
@@ -323,7 +325,10 @@ bool EndpointStack::configure(
   ipv4_path_mtu_.clear();
   ipv6_reassembly_.discard_all();
   ipv6_path_mtu_.clear();
-  udp_ = transport::UdpEndpoint{};
+  // Stage every allocating transport owner before mutating interface state.
+  // Memory exhaustion must preserve the previous endpoint and return false
+  // through this noexcept boundary rather than terminate during replacement.
+  udp_ = std::move(*configured_udp);
   ike_udp_ = ikev2::UdpService{};
   tcp_ = std::move(configured_tcp);
   next_ipv4_identification_ = 1U;
@@ -1220,7 +1225,10 @@ EndpointFrames EndpointStack::service_maintenance(Clock::time_point now) noexcep
   std::array<lab::Ipv6NeighborAction,
              device_catalog::host_ipv6_work_budget_actions>
       neighbor_actions{};
-  const auto neighbor_capacity = result.frames.size() - result.count;
+  // A free output frame does not imply a matching scratch action slot. Both
+  // bounds must hold when catalog budgets differ, including an idle endpoint.
+  const auto neighbor_capacity = std::min(neighbor_actions.size(),
+                                           result.frames.size() - result.count);
   const auto neighbor_count = ipv6_neighbors_.poll(
       now, std::span<lab::Ipv6NeighborAction>{neighbor_actions}.first(
                neighbor_capacity));
@@ -1241,7 +1249,8 @@ EndpointFrames EndpointStack::service_maintenance(Clock::time_point now) noexcep
   std::array<lab::MldListenerAction,
              device_catalog::mld_work_budget_actions>
       mld_actions{};
-  const auto mld_capacity = result.frames.size() - result.count;
+  const auto mld_capacity = std::min(mld_actions.size(),
+                                      result.frames.size() - result.count);
   const auto mld_count = mld_listener_.poll(
       now, std::span<lab::MldListenerAction>{mld_actions}.first(mld_capacity));
   const auto mld_source =

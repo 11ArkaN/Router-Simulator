@@ -5,6 +5,7 @@
 #pragma once
 
 #include "router/bof_autoconfigure.hpp"
+#include "router/isis_configuration.hpp"
 #include "router/dhcpv4_configuration.hpp"
 #include "router/dhcpv6_configuration.hpp"
 #include "router/ipsec_configuration.hpp"
@@ -493,6 +494,7 @@ struct PortableConfigurationCheckpoint {
   dhcpv4::configuration::RouterConfiguration dhcpv4_servers;
   dhcpv6::configuration::RouterConfiguration dhcpv6_servers;
   ospf::RouterConfiguration ospf;
+  isis::RouterConfiguration isis;
   std::array<PortableCardConfigurationCheckpoint,
              device_catalog::maximum_card_slots>
       cards;
@@ -530,6 +532,7 @@ struct PortableRouterIntentCheckpoint {
   dhcpv4::configuration::RouterConfiguration dhcpv4_servers;
   dhcpv6::configuration::RouterConfiguration dhcpv6_servers;
   ospf::RouterConfiguration ospf;
+  isis::RouterConfiguration isis;
   PortableConfigurationCheckpoint global_candidate;
   bool global_candidate_initialized{};
   std::array<bool, device_catalog::maximum_ports_per_router>
@@ -617,7 +620,7 @@ namespace checkpoint_validation {
 
 // Preconditions: both programs passed their binary decoder and use the same
 // generation. Postcondition: true means every connected/static route rebuilt
-// by the control owner remains selected and every additional row has an OSPF
+// by the control owner remains selected and every additional row has an explicit protocol
 // owner. The function does not mutate either checkpoint image.
 [[nodiscard]] bool base_fib_preserved(
     const routing::FibProgram &base,
@@ -813,6 +816,10 @@ public:
   [[nodiscard]] bool
   configure_ies_services(DeviceHandle device,
                          const service::Configuration &configuration) noexcept;
+  // Control owner only. The complete circuit set and sorted new instance keys
+  // move across an owned SPSC channel. Success acknowledges the network and
+  // protocol owner commit; failure publishes no partial configuration.
+  [[nodiscard]] bool admit_isis_generation(NetworkIsisGeneration &&) noexcept;
   // DHCPv6 relay configuration originates in the service configuration owner,
   // but its UDP socket, return-path lookup and counters belong to the selected
   // router forwarding shard. This method resolves the stable hardware port,
@@ -1040,8 +1047,16 @@ public:
   [[nodiscard]] std::size_t captured_frames() noexcept;
   [[nodiscard]] std::uint64_t capture_dropped() noexcept;
   [[nodiscard]] std::uint64_t dropped_packets() noexcept;
-  [[nodiscard]] std::optional<RouterForwarderCheckpoint>
+  // Serialized control obtains an immutable owned copy after the network
+  // result's acquire publication. Null means stale device, preparation failure
+  // or allocation refusal. No forwarding-owned address escapes this API.
+  [[nodiscard]] std::unique_ptr<const RouterForwarderCheckpoint>
   router_operational_state(DeviceHandle device) noexcept;
+  // Serialized control only. Explicit cold query budgets cross a fixed SPSC
+  // command; a matching result acquire freezes the independently owned values.
+  // Null reports stale device, invalid bounds, backpressure or owner refusal.
+  [[nodiscard]] std::shared_ptr<const isis::AdjacencyQuery> isis_adjacencies(DeviceHandle,
+      std::uint8_t instance, std::uint32_t maximum_rows, std::uint32_t maximum_attribute_octets) noexcept;
   [[nodiscard]] std::uint64_t network_thread_id() const noexcept {
     return network_worker_ ? network_worker_->owner_thread_id() : 0U;
   }
@@ -1060,6 +1075,9 @@ public:
   }
   [[nodiscard]] std::uint64_t ospf_owner_thread_id() const noexcept {
     return network_worker_ ? network_worker_->ospf_owner_thread_id() : 0U;
+  }
+  [[nodiscard]] std::uint64_t isis_owner_thread_id() const noexcept {
+    return network_worker_ ? network_worker_->isis_owner_thread_id() : 0U;
   }
   [[nodiscard]] std::unique_ptr<RuntimeSupervisorCheckpoint> checkpoint();
   [[nodiscard]] bool restore(RuntimeSupervisorCheckpoint state);

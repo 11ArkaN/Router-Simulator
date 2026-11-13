@@ -6,6 +6,7 @@
 #pragma once
 
 #include "router/bof_autoconfigure.hpp"
+#include "router/isis_configuration.hpp"
 #include "router/control_projection_worker.hpp"
 #include "router/dhcpv4_configuration.hpp"
 #include "router/dhcpv6_configuration.hpp"
@@ -362,6 +363,7 @@ private:
     dhcpv4::configuration::RouterConfiguration dhcpv4_servers;
     dhcpv6::configuration::RouterConfiguration dhcpv6_servers;
     ospf::RouterConfiguration ospf;
+    isis::RouterConfiguration isis;
     std::array<CardConfigurationIntent, device_catalog::maximum_card_slots>
         cards;
     std::vector<PortIntent> ports;
@@ -399,6 +401,7 @@ private:
     dhcpv4::configuration::RouterConfiguration dhcpv4_servers;
     dhcpv6::configuration::RouterConfiguration dhcpv6_servers;
     ospf::RouterConfiguration ospf;
+    isis::RouterConfiguration isis;
     ConfigurationIntent global_candidate;
     bool global_candidate_initialized{};
     // Link-down alarms are transition based. These latches remember that a
@@ -540,6 +543,11 @@ private:
   [[nodiscard]] std::string session_state(std::string_view session_id) const;
   [[nodiscard]] std::string execute_session(std::string_view session_id,
                                             std::string_view input);
+  // Same owner, already selected CLI engine. Inline foreign prefixes are
+  // handled by the bounded wrapper before this larger command frame exists.
+  [[nodiscard]] std::string execute_session_command(std::string_view session_id,
+                                                    std::string_view input);
+
   [[nodiscard]] std::string poll_session(std::string_view session_id);
   [[nodiscard]] std::string complete_session(std::string_view session_id,
                                              std::string_view input,
@@ -551,6 +559,13 @@ private:
   [[nodiscard]] bool apply_configuration(RouterIntent &router,
                                          const ConfigurationIntent &value,
                                          bool boot_effective = false);
+  // Serialized datastore transaction only. The saved cohort supplies local
+  // ownership and rollback evidence, never peer-derived configuration. Failure
+  // leaves intent unchanged; the caller restores its complete runtime backup.
+  [[nodiscard]] bool validate_isis_prefix_checkpoint(const RouterIntent &,
+      const RuntimeSupervisorCheckpoint &) const;
+  [[nodiscard]] bool apply_isis_configuration(const RouterIntent &,
+      const ConfigurationIntent &, const RuntimeSupervisorCheckpoint &);
   [[nodiscard]] static packet::nd::RouterAdvertisementConfig
   effective_router_advertisement(const RouterAdvertisementDnsIntent &router_dns,
                                  const InterfaceIntent &interface) noexcept;

@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -19,15 +20,6 @@
 namespace router::cli_detail {
 namespace {
 
-struct TokenizedLine {
-  // The schema generator publishes the largest legal command width. Keeping
-  // token views in a fixed array makes parsing allocation-free and places an
-  // explicit upper bound on work for malformed terminal input.
-  std::array<std::string_view, cli_schema::maximum_tokens> tokens{};
-  std::uint8_t count{};
-  bool trailing_space{};
-  bool valid{true};
-};
 
 struct Candidate {
   // Placeholders are useful in help output but cannot replace user input.
@@ -56,13 +48,14 @@ std::string_view trim_view(std::string_view value) noexcept {
   return value;
 }
 
-TokenizedLine tokenize(std::string_view input, bool completion) {
+TokenizedLine tokenize(std::string_view input, bool completion, bool leaf_lists = false) {
   // Completion deliberately accepts an open quote. Execution does not. This
   // permits contextual help while a description is being typed without ever
   // treating incomplete text as a valid configuration value.
   TokenizedLine result;
   result.trailing_space = !input.empty() && ascii_space(input.back());
   std::size_t cursor{};
+  const auto bracket = [&](char value) { return leaf_lists && (value == '[' || value == ']'); };
   while (cursor < input.size()) {
     while (cursor < input.size() && ascii_space(input[cursor]))
       ++cursor;
@@ -74,7 +67,9 @@ TokenizedLine tokenize(std::string_view input, bool completion) {
     }
 
     const auto begin = cursor;
-    if (input[cursor] == '"') {
+    if (bracket(input[cursor])) {
+      ++cursor;
+    } else if (input[cursor] == '"') {
       ++cursor;
       while (cursor < input.size() && input[cursor] != '"')
         ++cursor;
@@ -88,11 +83,12 @@ TokenizedLine tokenize(std::string_view input, bool completion) {
       if (!result.valid)
         return result;
     } else {
-      while (cursor < input.size() && !ascii_space(input[cursor]))
+      while (cursor < input.size() && !ascii_space(input[cursor]) && !bracket(input[cursor]))
         ++cursor;
     }
     result.tokens[result.count++] = input.substr(begin, cursor - begin);
-    if (cursor < input.size() && !ascii_space(input[cursor])) {
+    if (cursor < input.size() && !ascii_space(input[cursor]) &&
+        !bracket(input[cursor]) && !bracket(input[begin])) {
       result.valid = false;
       return result;
     }
@@ -144,6 +140,18 @@ bool available(const cli_schema::CommandSpec &spec,
   return true;
 }
 
+std::optional<std::string_view> parameter_keyword(cli_schema::TokenKind kind, std::string_view value) noexcept {
+  const auto values = cli_schema::parameter_values(kind);
+  const auto exact = std::find(values.begin(), values.end(), value);
+  if (exact != values.end()) return *exact;
+  std::optional<std::string_view> result;
+  for (const auto candidate : values) if (candidate.starts_with(value)) {
+    if (result) return std::nullopt;
+    result = candidate;
+  }
+  return result;
+}
+
 bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
   // Both SR OS engines accept an unambiguous keyword abbreviation. Quoted list
   // keys and symbolic commands are values rather than abbreviable keywords.
@@ -151,6 +159,15 @@ bool accepts(const cli_schema::TokenSpec &token, std::string_view value) {
   if (token.kind != cli_schema::TokenKind::literal) {
     if (value.empty())
       return false;
+    if (!cli_schema::parameter_values(token.kind).empty())
+      return parameter_keyword(token.kind, value).has_value();
+    const auto range = cli_schema::parameter_integer_range(token.kind);
+    if (range.constrained) {
+      std::uint64_t number{};
+      const auto parsed = std::from_chars(value.data(), value.data() + value.size(), number);
+      return parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size() &&
+          number >= range.minimum && number <= range.maximum;
+    }
     using enum cli_schema::TokenKind;
     const auto decimal_text = [](std::string_view text) {
       return !text.empty() &&
@@ -757,6 +774,12 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
                           std::string_view partial,
                           std::vector<Candidate> &items, bool context) {
   using enum cli_schema::TokenKind;
+  const auto values = cli_schema::parameter_values(token.kind);
+  if (!values.empty()) {
+    for (const auto value : values)
+      add_candidate(items, std::string{value}, true, true, partial, token.description, context);
+    return;
+  }
   // Syntax is release data, while concrete identifiers come from the current
   // device model. This is the boundary that prevents canned demo commands from
   // appearing as terminal completion.
@@ -941,6 +964,31 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case ospf_ipsec_sa_outbound:
   case static_sa_key:
   case static_sa_spi:
+  case isis_instance:
+  case isis_level:
+  case isis_system_id:
+  case isis_classic_system_id:
+  case isis_area_address:
+  case isis_md_levels:
+  case isis_classic_levels:
+  case isis_interface_type:
+  case isis_metric:
+  case isis_hello_interval:
+  case isis_hello_multiplier:
+  case isis_priority:
+  case isis_csnp_interval:
+  case isis_lsp_pacing:
+  case isis_spf_max_wait:
+  case isis_spf_initial_wait:
+  case isis_spf_second_wait:
+  case isis_lsp_max_wait:
+  case isis_lsp_initial_wait:
+  case isis_lsp_second_wait:
+  case isis_retransmit_interval:
+  case isis_lsp_lifetime:
+  case isis_lsp_mtu:
+  case isis_preference:
+  case isis_boolean:
   case ospf_instance:
   case ospf_area_id:
   case ospf_transit_area_id:
@@ -1074,6 +1122,10 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
 
 } // namespace
 
+TokenizedLine tokenize_completion_line(std::string_view input, CliEngine engine) noexcept {
+  return tokenize(input, true, engine == CliEngine::md);
+}
+
 std::optional<ParsedCommand> parse_command(const DeviceState &,
                                            const CliSession &session,
                                            std::string_view input) {
@@ -1086,7 +1138,7 @@ std::optional<ParsedCommand> parse_command(CliEngine engine,
   CliSession session;
   session.engine = engine;
   session.md_workflow = workflow;
-  const auto line = tokenize(trim_view(input), false);
+  auto line = tokenize(trim_view(input), false, session.engine == CliEngine::md);
   if (!line.valid || !line.count)
     return std::nullopt;
   // Generated rows are the sole syntax catalog. Handlers receive a stable ID
@@ -1176,9 +1228,15 @@ std::optional<ParsedCommand> parse_command(CliEngine engine,
       ambiguous_at_best_specificity = true;
     }
   }
-  return match && !ambiguous_at_best_specificity
-             ? std::optional{ParsedCommand{match, line.tokens, line.count}}
-             : std::nullopt;
+  if (!match || ambiguous_at_best_specificity) return std::nullopt;
+  // Canonical enum views borrow immutable generated keyword storage. Handlers
+  // receive the same complete value whether the user typed it or its unique
+  // abbreviation; arbitrary string/key parameters retain their original views.
+  for (std::size_t index{}; index < line.count; ++index)
+    if (!cli_schema::parameter_values(match->tokens[index].kind).empty())
+      line.tokens[index] = cli_schema::parameter_canonical_value(match->tokens[index].kind,
+          *parameter_keyword(match->tokens[index].kind, line.tokens[index]));
+  return ParsedCommand{match, line.tokens, line.count};
 }
 
 std::optional<CommandFailure>
@@ -1187,7 +1245,7 @@ diagnose_command_failure(CliEngine engine, MdCliWorkflow workflow,
   CliSession session;
   session.engine = engine;
   session.md_workflow = workflow;
-  const auto line = tokenize(trim_view(input), false);
+  const auto line = tokenize(trim_view(input), false, session.engine == CliEngine::md);
   if (!line.valid || !line.count)
     return std::nullopt;
 
@@ -1254,7 +1312,7 @@ std::string complete_command(const DeviceState &state,
   auto input = raw;
   while (!input.empty() && ascii_space(input.front()))
     input.remove_prefix(1);
-  const auto line = tokenize(input, true);
+  const auto line = tokenize(input, true, session.engine == CliEngine::md);
   if (!line.valid)
     return {};
   std::size_t completed_count =
@@ -1364,7 +1422,7 @@ std::string incomplete_command_help(const DeviceState &state,
   // A syntactically valid prefix such as "ping" is incomplete, not unknown.
   // Requiring exact supplied literals prevents an arbitrary abbreviation from
   // being reported as a complete command context after Enter.
-  const auto line = tokenize(trim_view(input), false);
+  const auto line = tokenize(trim_view(input), false, session.engine == CliEngine::md);
   if (!line.valid || !line.count)
     return {};
   const auto incomplete = std::any_of(
@@ -1399,7 +1457,7 @@ bool navigable_command_prefix(const CliSession &session,
   // Navigation is legal only for an exact number of supplied context tokens.
   // A literal child proves the path names a container rather than a command
   // awaiting a scalar value such as ping's destination.
-  const auto line = tokenize(trim_view(input), false);
+  const auto line = tokenize(trim_view(input), false, session.engine == CliEngine::md);
   if (!line.valid || !line.count)
     return false;
   // `delete` and `no` are edit operators, never model containers. Their
@@ -1464,7 +1522,7 @@ bool command_prefix(const CliSession &session, std::string_view input) {
   // the required interface key and therefore it cannot yet name a container.
   // Keeping the match against generated rows prevents arbitrary text from
   // being mistaken for a child of a defaulted list key.
-  const auto line = tokenize(trim_view(input), false);
+  const auto line = tokenize(trim_view(input), false, session.engine == CliEngine::md);
   if (!line.valid || !line.count)
     return false;
   return std::any_of(
@@ -1486,7 +1544,7 @@ bool prefix_extends_into_configuration(const CliSession &session,
   // operator scan from navigable_command_prefix keeps every operator
   // placement out of the working path, while the configuration_command flag
   // keeps operational reports from becoming prompt components.
-  const auto line = tokenize(trim_view(input), false);
+  const auto line = tokenize(trim_view(input), false, session.engine == CliEngine::md);
   if (!line.valid || !line.count)
     return false;
   if (std::any_of(line.tokens.begin(), line.tokens.begin() + line.count,
@@ -1517,7 +1575,7 @@ std::string canonical_command_prefix(const CliSession &session,
   // this ordering a perfectly valid keyed container became ambiguous even
   // though both its help output and every executable descendant were present
   // in the generated schema.
-  const auto line = tokenize(trim_view(input), false);
+  const auto line = tokenize(trim_view(input), false, session.engine == CliEngine::md);
   if (!line.valid || !line.count)
     return {};
   std::string canonical;
@@ -1616,7 +1674,7 @@ std::string parent_command_prefix(const CliSession &session,
   // A context may end with a list key, for example "card 1". Removing only
   // the final token would leave an impossible "card" context. Search shorter
   // prefixes against the same generated tree and return the nearest container.
-  const auto line = tokenize(trim_view(input), false);
+  const auto line = tokenize(trim_view(input), false, session.engine == CliEngine::md);
   if (!line.valid || line.count < 2)
     return {};
   for (std::size_t count = line.count - 1; count > 0; --count) {

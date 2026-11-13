@@ -1,7 +1,9 @@
 // Project format 5 stores portable dual-stack multi-device intent. This module owns all
 // structural validation and has no browser, persistence or runtime dependency.
 
+import { isRouterIsisIntent, type RouterIsisIntent } from "./isis-configuration-v1";
 import { PROFILE_CATALOG, PROFILE_CATALOG_COMPILED } from "./generated-device-catalog";
+import { LAB_RUNTIME_PROTOCOL } from "./generated-lab-runtime-protocol";
 import { dnssecAlgorithms } from "./generated-dnssec-policy";
 
 export const LAB_PROJECT_VERSION = 5 as const;
@@ -68,11 +70,13 @@ export interface RouterRunningIntent {
   }>;
   policyOptions: RouterPolicyOptionsIntent;
   ospf: RouterOspfIntent;
+  // Older portable projects omit IS-IS and retain the empty configuration.
+  isis?: RouterIsisIntent;
 }
 
 export type RoutePolicyAction =
   "accept" | "reject" | "drop" | "next-entry" | "next-policy";
-export type RoutePolicySource = "direct" | "static" | "ospf" | "ospf3";
+export type RoutePolicySource = "direct" | "static" | "ospf" | "ospf3" | "isis";
 export type RoutePolicyMetricType = "type-1" | "type-2";
 
 export interface RouterPolicyOptionsIntent {
@@ -512,7 +516,7 @@ export interface ProjectManifestV4 {
   formatVersion: typeof LAB_MANIFEST_VERSION;
   mode: "project" | "checkpoint";
   project: LabProjectV4;
-  checkpointAbi: 7;
+  checkpointAbi: typeof LAB_RUNTIME_PROTOCOL.checkpointAbi;
   checkpointBase64?: string;
   captureBase64?: string;
   terminalPresentation?: import("./terminal-presentation-v2").TerminalPresentationV2;
@@ -1536,7 +1540,7 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
     const policyNames = new Set<string>();
     const policyActions = ["accept", "reject", "drop", "next-entry",
       "next-policy"];
-    const routeSources = ["direct", "static", "ospf", "ospf3"];
+    const routeSources = ["direct", "static", "ospf", "ospf3", "isis"];
     for (const statement of router.running.policyOptions.statements) {
       assert(statement && typeof statement.name === "string" &&
         statement.name.length > 0 && encoder.encode(statement.name).length <= 64 &&
@@ -1582,6 +1586,11 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
         prior = entry.number;
       }
     }
+    assert(router.running.isis === undefined || isRouterIsisIntent(router.running.isis),
+      `${router.id} IS-IS configuration is invalid`);
+    for (const instance of router.running.isis?.instances ?? [])
+      assert(instance.interfaces.every((attached) => router.running.interfaces.some((base) => base.name === attached.name)),
+        `${router.id} IS-IS interface reference is invalid`);
     const ospfInstances = new Set<string>();
     for (const instance of router.running.ospf.instances) {
       const familyRange = instance.addressFamily === "ipv4"
@@ -1731,7 +1740,8 @@ export function parseLabProjectV4(input: unknown): LabProjectV4 {
         router.running.maximumEcmpPaths === 1 &&
         router.running.policyOptions.prefixLists.length === 0 &&
         router.running.policyOptions.statements.length === 0 &&
-        router.running.ospf.instances.length === 0,
+        router.running.ospf.instances.length === 0 &&
+        (router.running.isis?.instances.length ?? 0) === 0,
       `${router.id} contains router-only configuration`);
       const names4 = new Set<string>();
       for (const server of router.dhcpv4Servers) {

@@ -25,7 +25,7 @@ const layout: TelemetryLayout = {
 };
 
 function snapshot(): LabRuntimeSnapshotV6 {
-  return { abiVersion: 9, protocolVersion: 4, status: "ready",
+  return { abiVersion: 10, protocolVersion: 4, status: "ready",
     dhcpServers: [],
     routers: [{ id: "r1", profileId: "7750-sr-1", chassis: "7750 SR-1",
       systemName: "R1", maximumEcmpPaths: 1,
@@ -34,7 +34,7 @@ function snapshot(): LabRuntimeSnapshotV6 {
         mtu: 9212, speedMbps: 100000, description: "" }], interfaces: [],
       staticRoutes: [], ipv6StaticRoutes: [],
       policyOptions: { prefixLists: [], statements: [] },
-      ospf: { instances: [] } }],
+      ospf: { instances: [] }, isis: { instances: [] } }],
     hosts: [], switches: [],
     links: [], sessions: [], capturePoints: [],
     activeLinks: 0, capturedFrames: 0, captureDropped: 0, droppedPackets: 0 };

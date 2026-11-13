@@ -4,7 +4,7 @@
 
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TerminalPanel } from "./TerminalPanel";
 import type { TerminalState } from "./terminal-contract";
@@ -16,6 +16,8 @@ interface RecordedTerminal {
   rows: number;
   scrolls: number;
   emit(data: string): void;
+  scroll(position: number): void;
+  buffer: { active: { length: number; baseY: number } };
 }
 
 // vi.hoisted creates the shared recorder before the static xterm import is
@@ -42,6 +44,7 @@ vi.mock("@xterm/xterm", () => ({
     rows = 24;
     scrolls = 0;
     private input: ((data: string) => void) | undefined;
+    private scrolled: ((position: number) => void) | undefined;
 
     constructor(options: Record<string, unknown>) {
       this.options = options;
@@ -59,13 +62,17 @@ vi.mock("@xterm/xterm", () => ({
       this.input = callback;
       return { dispose() {} };
     }
-    onScroll() { return { dispose() {} }; }
-    buffer = { active: { length: 24 } };
-    emit(data: string) { this.input?.(data); }
+    onScroll(callback: (position: number) => void) {
+      this.scrolled = callback;
+      return { dispose() {} };
+    }
+    buffer = { active: { length: 24, baseY: 0 } };
+    scroll(position: number) { this.scrolled?.(position); }
+    emit(data: string) { if (!this.options.disableStdin) this.input?.(data); }
     blur() {}
     focus() {}
     scrollToBottom() { ++this.scrolls; }
-    clear() {}
+    clear() { this.buffer.active = { length: 24, baseY: 0 }; this.scroll(0); }
     dispose() {}
   }
 }));
@@ -88,6 +95,41 @@ afterEach(() => {
 });
 
 describe("terminal raw-key transcript", () => {
+  it("keeps live input usable after clearing a terminal with archived history", async () => {
+    const resize = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = TestResizeObserver;
+    const execute = vi.fn(async () =>
+      Array.from({ length: 60 }, (_, index) => `output row ${index}`).join("\n") + "\nA:admin@R1# ");
+    try {
+      const view = render(<TerminalPanel ready systemName="R1" historyKey="test:clear"
+        historyStorage={historyStorage} execute={execute} complete={async (input) => input}
+        cancel={vi.fn()} state={async () => ({ engine: "md", historyRegion: "md-operational",
+          banner: "SR OS 26.7.R1", prompt: "A:admin@R1# " })}
+        height={360} onHeightChange={vi.fn()} close={vi.fn()} />);
+      await waitFor(() => expect(recorder.current?.writes.join("")).toContain("A:admin@R1# "));
+      const terminal = recorder.current!;
+      terminal.rows = 1000;
+      terminal.emit("show"); terminal.emit("\r");
+      await waitFor(() => expect(terminal.writes.join("")).toContain("output row 59"));
+      // Ordinary scrollback still opens the archived prefix and disables input
+      // while that read-only view covers the live renderer.
+      terminal.buffer.active.baseY = 1;
+      terminal.scroll(0);
+      await waitFor(() => expect(view.container.querySelector(".terminal-history")).not.toBeNull());
+      expect(terminal.options.disableStdin).toBe(true);
+      fireEvent.click(screen.getByRole("button", { name: "Clear visible terminal" }));
+      await waitFor(() => expect(view.container.querySelector(".terminal-history")).toBeNull());
+      expect(terminal.options.disableStdin).toBe(false);
+      terminal.emit("info"); terminal.emit("\r");
+      await waitFor(() => expect(execute).toHaveBeenLastCalledWith("info"));
+      fireEvent.click(screen.getByRole("button", { name: "Clear visible terminal" }));
+      expect(view.container.querySelector(".terminal-history")).toBeNull();
+      expect(terminal.options.disableStdin).toBe(false);
+    } finally {
+      globalThis.ResizeObserver = resize;
+    }
+  });
+
   it("does not repeat an MD context marker while editing one line", async () => {
     const resize = globalThis.ResizeObserver;
     globalThis.ResizeObserver = TestResizeObserver;

@@ -98,6 +98,29 @@ bool NetworkPlaneWorker::submit_signing_vault(
   return true;
 }
 
+bool NetworkPlaneWorker::submit_isis_generation(const NetworkCommand &command,
+    NetworkIsisGeneration &&generation) noexcept {
+  if (command.version != network_plane_message_version || command.kind != NetworkCommandKind::admit_isis_generation ||
+      command.device != generation.device || stop_requested_.load(std::memory_order_acquire) || channels_.commands.full()) return false;
+  const auto lease = channels_.isis_generations.acquire();
+  if (!lease) return false;
+  const auto previous_id = generation.command_id;
+  *lease->value = std::move(generation);
+  lease->value->command_id = command.id;
+  if (!channels_.isis_generations.publish(lease->handle)) {
+    generation = std::move(*lease->value);
+    generation.command_id = previous_id;
+    static_cast<void>(channels_.isis_generations.cancel(lease->handle));
+    return false;
+  }
+  // This producer alone writes the fixed-command ring. Its consumer can only
+  // release capacity between preflight and publication, so failure is a defect.
+  if (!channels_.commands.try_push(command)) std::terminate();
+  { std::lock_guard lock(wait_mutex_); }
+  wait_condition_.notify_one();
+  return true;
+}
+
 bool NetworkPlaneWorker::read(NetworkResult &result) noexcept {
   // Control is the only consumer. Acquire ordering makes the complete result
   // visible before the caller matches its monotonically assigned command ID.
@@ -133,6 +156,19 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
   if (command.version != network_plane_message_version)
     return result;
   switch (command.kind) {
+  case NetworkCommandKind::admit_isis_generation: {
+    if (const auto lease = channels_.isis_generations.receive()) {
+      const auto &generation = *lease->value;
+      if (generation.command_id == command.id && generation.device == command.device) {
+        std::optional<std::span<const Ipv6ReadinessWatch>> watches;
+        if (generation.ipv6_watches) watches = *generation.ipv6_watches;
+        result.success = plane_.replace_isis_generation(command.device, generation.circuits, generation.new_instances,
+            generation.retired_instances, generation.administrative, generation.adjacency_policies, generation.prefix_catalogs, watches, generation.attached_policies);
+      }
+      if (!channels_.isis_generations.release(lease->handle)) std::terminate();
+    }
+    break;
+  }
   case NetworkCommandKind::initialize_signing_vault: {
     NetworkSigningVaultInitialize secret;
     if (channels_.signing_vault.try_pop_and_clear(secret))
@@ -2066,6 +2102,11 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
   case NetworkCommandKind::packet_drop_count:
     result.success = true;
     result.value = plane_.dropped_packets();
+    break;
+  case NetworkCommandKind::prepare_isis_adjacencies:
+    prepared_isis_adjacencies_ = plane_.isis_adjacencies(command.device, command.isis_query.instance,
+        command.isis_query.rows, command.isis_query.attributes);
+    result.success = bool(prepared_isis_adjacencies_);
     break;
   case NetworkCommandKind::prepare_router_checkpoint:
     try {

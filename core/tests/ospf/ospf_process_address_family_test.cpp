@@ -3,6 +3,8 @@
 
 #include "ospf_process_test_support.hpp"
 
+#include <algorithm>
+
 void ospf_process_address_family_tests() {
   using namespace router;
   using namespace router::ospf;

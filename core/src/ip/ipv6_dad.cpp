@@ -83,19 +83,24 @@ bool Ipv6DadTable::configure(
                 .transmit_limit = transmit_limit,
                 .deadline = transmit_limit ? now + initial_delay
                                            : Clock::time_point::max()};
+  invalidate_readiness();
   return true;
 }
 
 void Ipv6DadTable::remove(std::uint64_t interface_id,
                           const ip::Ipv6 &address) noexcept {
-  if (auto *candidate = entry(interface_id, address))
+  if (auto *candidate = entry(interface_id, address)) {
     *candidate = {};
+    invalidate_readiness();
+  }
 }
 
 void Ipv6DadTable::remove_interface(std::uint64_t interface_id) noexcept {
   for (auto &candidate : entries_)
-    if (candidate.valid && candidate.interface_id == interface_id)
+    if (candidate.valid && candidate.interface_id == interface_id) {
       candidate = {};
+      invalidate_readiness();
+    }
 }
 
 void Ipv6DadTable::remove_physical_port(
@@ -104,8 +109,10 @@ void Ipv6DadTable::remove_physical_port(
   // This physical lifecycle operation is intentionally separate from an L3
   // interface deletion, which must not disturb sibling SAPs on the same port.
   for (auto &candidate : entries_)
-    if (candidate.valid && candidate.port_ordinal == port_ordinal)
+    if (candidate.valid && candidate.port_ordinal == port_ordinal) {
       candidate = {};
+      invalidate_readiness();
+    }
 }
 
 bool Ipv6DadTable::observe_conflict(std::uint64_t interface_id,
@@ -115,6 +122,7 @@ bool Ipv6DadTable::observe_conflict(std::uint64_t interface_id,
     return false;
   candidate->state = Ipv6DadState::duplicate;
   candidate->deadline = Clock::time_point::max();
+  invalidate_readiness();
   return true;
 }
 
@@ -122,6 +130,13 @@ bool Ipv6DadTable::preferred(std::uint64_t interface_id,
                              const ip::Ipv6 &address) const noexcept {
   const auto *candidate = entry(interface_id, address);
   return candidate && candidate->state == Ipv6DadState::preferred;
+}
+
+bool Ipv6DadTable::preferred_on_port(std::uint64_t interface_id,
+    std::uint16_t port_ordinal, const ip::Ipv6 &address) const noexcept {
+  const auto *candidate = entry(interface_id, address);
+  return candidate && candidate->port_ordinal == port_ordinal &&
+      candidate->state == Ipv6DadState::preferred;
 }
 
 std::optional<Ipv6DadSnapshot>
@@ -148,6 +163,7 @@ std::size_t Ipv6DadTable::poll(
       // the last NS, leaving time for a conflicting NA to return on the link.
       candidate.state = Ipv6DadState::preferred;
       candidate.deadline = Clock::time_point::max();
+      invalidate_readiness();
       continue;
     }
     if (written == output.size())
@@ -244,6 +260,7 @@ bool Ipv6DadTable::restore(std::span<const Ipv6DadCheckpoint> state,
                                     source.remaining_nanoseconds)
                         : Clock::time_point::max()};
   }
+  invalidate_readiness();
   return true;
 }
 

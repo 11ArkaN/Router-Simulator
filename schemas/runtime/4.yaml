@@ -1,14 +1,15 @@
 version: 4
-snapshot_abi: 9
+snapshot_abi: 10
 # Telemetry is a separate shared-memory structure. Its revision changes only
 # when offsets, widths or publication semantics change, not whenever the
 # structural runtime snapshot gains another configuration domain.
 telemetry_abi: 6
-checkpoint_abi: 8
-# ABI 8 adds canonical OSPF configuration intent to every router projection.
+checkpoint_abi: 19
+# Snapshot ABI 10 adds canonical IS-IS configuration intent.
+# Checkpoint ABI 14 retains relative protocol queue age through physical transmission.
 # Runtime protocol framing remains version 4 because operation messages are
 # extended independently and older project formats are intentionally rejected.
-checkpoint_layout_revision: 1
+checkpoint_layout_revision: 7
 
 # Protocol 4 routes every operation by stable project identity. The operation
 # name is the first netstring; every following field is length framed so user

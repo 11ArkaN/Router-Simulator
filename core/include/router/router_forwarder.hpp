@@ -21,6 +21,7 @@
 #include "router/ipv4_path_mtu.hpp"
 #include "router/ipv4_reassembly.hpp"
 #include "router/ipv6_dad.hpp"
+#include "router/ipv6_readiness_projection.hpp"
 #include "router/ipv6_fragmentation.hpp"
 #include "router/ipv6_neighbor_cache.hpp"
 #include "router/ipv6_path_mtu.hpp"
@@ -443,6 +444,28 @@ public:
   [[nodiscard]] bool configure_ospf_punt(std::uint16_t port_ordinal,
                                          bool version_two,
                                          bool version_three) noexcept;
+  // Forwarding-shard-only atomic multicast projection for one physical port.
+  // Caller supplies groups from canonical IS-IS configuration; this owner
+  // retains a copy and never reads neighbors or the protocol datastore.
+  // Empty groups disable the punt. Invalid port, unicast group or allocation
+  // failure returns false and preserves the previous projection.
+  [[nodiscard]] bool configure_isis_punt(std::uint16_t port_ordinal,
+      std::span<const packet::Mac> groups) noexcept;
+  // Same shard, or the exclusive forwarding-quiescence barrier. Input owns
+  // sorted unique multicast groups, completely allocated before commit.
+  // Success exchanges ownership with the previous projection without allocation;
+  // the returned vector permits allocation-free rollback while ports stay
+  // quiesced. Invalid port or noncanonical groups preserve both owners' values.
+  [[nodiscard]] bool exchange_isis_punt(std::uint16_t port_ordinal,
+      std::vector<packet::Mac> &groups) noexcept;
+  // Forwarding-shard-only egress of a validated IS-IS Ethernet/LLC image.
+  // Requires an operational programmed physical port and joined destination.
+  // Source MAC must equal that port's owned MAC; bytes are not rewritten.
+  // Oversized LSPs are rejected without IP fragmentation; queue refusal
+  // returns false. The
+  // caller retains input ownership and may retry through its protocol timer.
+  [[nodiscard]] bool originate_isis(std::uint16_t port_ordinal,
+      const packet::Frame &frame, void *context, EgressSink sink) noexcept;
   // The OSPF shard returns a complete local Ethernet/IP image. Multicast is
   // emitted on the configured physical interface; unicast re-enters ordinary
   // FIB and neighbor resolution so no protocol daemon learns a peer MAC.
@@ -459,6 +482,13 @@ public:
   [[nodiscard]] bool program_fib(const routing::FibProgram &program) noexcept;
   [[nodiscard]] bool
   program_ipv6_fib(const routing::Ipv6FibProgram &program) noexcept;
+  // Forwarding owner only, one uninterrupted command turn. Inputs are borrowed
+  // immutable complete RIB outputs; at least one must exist with a nonzero
+  // generation. Preflight checks counts, staleness and idempotent replay for
+  // both families before any write. False preserves both tables. No allocation
+  // or callback occurs; null selects an unchanged family, not a withdrawal.
+  [[nodiscard]] bool program_fibs(const routing::FibProgram *ipv4,
+      const routing::Ipv6FibProgram *ipv6) noexcept;
   // A complete generation is validated against currently configured physical
   // ports and then published atomically. Partial SAP programming is forbidden
   // because a packet turn must observe either the old or new service graph.
@@ -727,6 +757,14 @@ public:
                      const packet::Ipv6 &address) const noexcept {
     return ipv6_dad_.find(physical_interface_id(port_ordinal), address);
   }
+  // Same forwarding shard only. A cold-admitted subscriber receives local DAD
+  // usability values through its bounded sink. No mutable DAD storage escapes;
+  // a full channel retains publication for retry and changes no AF state.
+  [[nodiscard]] Ipv6ReadinessPublication publish_ipv6_readiness(
+      Ipv6ReadinessProjection &projection, void *context,
+      Ipv6ReadinessProjection::Sink sink) const noexcept {
+    return projection.publish(ipv6_dad_, context, sink);
+  }
   [[nodiscard]] std::size_t
   mld_group_count(std::uint16_t port_ordinal) const noexcept;
   // These owner-affine operations are exposed through the network command
@@ -758,6 +796,8 @@ public:
       std::uint16_t port_ordinal) noexcept;
 
 private:
+  [[nodiscard]] bool accepts_fib(const routing::FibProgram &program) const noexcept;
+  [[nodiscard]] bool accepts_ipv6_fib(const routing::Ipv6FibProgram &program) const noexcept;
   struct Dhcpv4ServerState;
   struct Adjacency {
     bool valid{};
@@ -856,8 +896,10 @@ private:
       const ForwardPort &egress, packet::Frame frame,
       std::uint32_t destination, void *context, EgressSink sink,
       Clock::time_point now) noexcept;
-  [[nodiscard]] bool send_ospf_ipv6_unicast(
-      const ForwardPort &egress, packet::Frame frame,
+  // Forwarding-owner only. The caller supplies a live interface and its zone;
+  // accepted packets retain that identity through ND and bounded queue retry.
+  [[nodiscard]] bool send_scoped_ipv6_unicast(
+      const ForwardPort &egress, std::uint64_t interface_id, packet::Frame frame,
       const packet::Ipv6 &destination, void *context, EgressSink sink,
       Clock::time_point now) noexcept;
   [[nodiscard]] bool
@@ -1116,6 +1158,9 @@ private:
       ipv6_route_installed_at_{};
   std::array<bool, device_catalog::maximum_ports_per_router> ospf_v2_punt_{};
   std::array<bool, device_catalog::maximum_ports_per_router> ospf_v3_punt_{};
+  // Only the forwarding owner mutates these complete port-local generations.
+  // Packet turns borrow immutable entries on that same shard, without locks.
+  std::array<std::vector<packet::Mac>, device_catalog::maximum_ports_per_router> isis_groups_{};
   std::array<Adjacency, device_catalog::arp_entries_per_router> adjacencies_{};
   // Both families share the same unresolved-frame arena, matching a physical
   // buffer resource and preventing a second 75 MiB worst-case frame envelope

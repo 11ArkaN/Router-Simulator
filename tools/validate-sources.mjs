@@ -4,10 +4,17 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import { parse } from "yaml";
+import { validateIsisCliBindings } from "./isis/cli-source-bindings.mjs";
+import { validateIsisCoverage } from "./isis/coverage.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const catalog = parse(readFileSync(resolve(root, "sources/catalog.yaml"), "utf8"));
 const capabilities = parse(readFileSync(resolve(root, "sources/capabilities.yaml"), "utf8"));
+const isisCoverage = parse(readFileSync(resolve(root, "schemas/cli/isis-26.7.R1-coverage.yaml"), "utf8"));
+validateIsisCoverage(JSON.parse(readFileSync(resolve(root, "schemas/cli/isis-26.7.R1-inventory.json"), "utf8")), isisCoverage, {
+  testExists: (path) => existsSync(resolve(root, path)),
+  capabilityImplemented: (name) => capabilities.features?.[name]?.status === "implemented"
+});
 // Every checked-in profile participates in source validation. Adding another
 // platform or release must not require editing a privileged filename here.
 const profiles = readdirSync(resolve(root, "profiles"))
@@ -26,6 +33,12 @@ const statuses = new Set([
 ]);
 const ids = new Set();
 const errors = [];
+for (const {value: schema} of cliSchemas) {
+  if (schema.release !== "26.7.R1" || !Array.isArray(schema.commands)) continue;
+  validateIsisCliBindings(schema.commands,
+    JSON.parse(readFileSync(resolve(root, "schemas/cli/isis-26.7.R1-inventory.json"), "utf8")),
+    JSON.parse(readFileSync(resolve(root, "schemas/cli/isis-26.7.R1-command-bindings.json"), "utf8")), schema.parameters);
+}
 
 for (const [index, record] of (catalog.records ?? []).entries()) {
   const label = record?.id ?? `record ${index + 1}`;

@@ -7,6 +7,11 @@
 release: 26.7.R1
 
 renderers:
+  - id: isis
+    engines: [md, classic]
+    runtime_function: md_isis_info
+    source_ids: [nokia.sros.26_7.isis.basic_cli]
+
   - id: bof
     engines: [md]
     runtime_function: md_bof_configuration_info

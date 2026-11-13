@@ -4,6 +4,7 @@
 // live state by normalization, migration or a hidden default topology.
 
 import {
+  LAB_RUNTIME_PROTOCOL,
   createEmptyProjectV4,
   parseLabProjectV4,
   parseTerminalPresentationV2,
@@ -386,7 +387,7 @@ export function createProjectManifestV4(project: LabProjectV4,
   return {
     mode: "project",
     formatVersion: 4,
-    checkpointAbi: 7,
+    checkpointAbi: LAB_RUNTIME_PROTOCOL.checkpointAbi,
     project: parseLabProjectV4(project),
     ...(capture?.length ? { captureBase64: base64(capture) } : {})
   };
@@ -399,7 +400,7 @@ export function createCheckpointManifestV4(project: LabProjectV4,
   return {
     mode: "checkpoint",
     formatVersion: 4,
-    checkpointAbi: 7,
+    checkpointAbi: LAB_RUNTIME_PROTOCOL.checkpointAbi,
     project: parseLabProjectV4(project),
     checkpointBase64: base64(checkpoint),
     ...(capture?.length ? { captureBase64: base64(capture) } : {}),
@@ -414,11 +415,18 @@ export function parseNetsimV4(text: string): {
   capture?: Uint8Array;
   terminalPresentation?: TerminalPresentationV2;
 } {
-  // No raw-project or previous-manifest branch exists. Unsupported bytes stop
-  // before project replay, leaving the active Worker and project untouched.
-  const decoded = JSON.parse(text) as Partial<ProjectManifestV4>;
+  // Structural state requires the exact ABI. Configuration-only manifests
+  // contain no runtime image; their project schema is validated independently.
+  // Future ABIs and malformed envelopes still refuse before project replay.
+  const decoded = JSON.parse(text) as Partial<Omit<ProjectManifestV4, "checkpointAbi">> &
+    { checkpointAbi?: unknown };
+  const abi = decoded?.checkpointAbi;
+  const compatibleAbi = decoded?.mode === "checkpoint"
+    ? abi === LAB_RUNTIME_PROTOCOL.checkpointAbi
+    : typeof abi === "number" && Number.isSafeInteger(abi) &&
+      abi > 0 && abi <= LAB_RUNTIME_PROTOCOL.checkpointAbi;
   if (!decoded || typeof decoded !== "object" || decoded.formatVersion !== 4 ||
-      decoded.checkpointAbi !== 7 ||
+      !compatibleAbi ||
       (decoded.mode !== "project" && decoded.mode !== "checkpoint")) {
     throw new Error("The .netsim manifest format is not supported");
   }

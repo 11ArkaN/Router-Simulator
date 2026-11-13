@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <vector>
@@ -82,8 +83,23 @@ public:
                                       const ip::Ipv6 &target) noexcept;
   [[nodiscard]] bool preferred(std::uint64_t interface_id,
                                const ip::Ipv6 &address) const noexcept;
+  // Same forwarding owner. A subscription must match the current physical
+  // binding as well as its logical interface/address key. Rebinding cannot
+  // make an obsolete subscriber observe a different port as assigned.
+  [[nodiscard]] bool preferred_on_port(std::uint64_t interface_id,
+      std::uint16_t port_ordinal, const ip::Ipv6 &address) const noexcept;
   [[nodiscard]] std::optional<Ipv6DadSnapshot>
   find(std::uint64_t interface_id, const ip::Ipv6 &address) const noexcept;
+
+  // Same forwarding owner only. Address creation/removal, readiness changes
+  // and successful restore invalidate derived AF projections. Probe progress
+  // and repeated configuration leave readiness unchanged. The revision is
+  // derived scratch, never checkpoint identity. At saturation callers must
+  // reconcile on every turn; readiness_changed enforces that without wrapping.
+  [[nodiscard]] std::uint64_t readiness_revision() const noexcept { return revision_; }
+  [[nodiscard]] bool readiness_changed(std::uint64_t observed) const noexcept {
+    return revision_ != observed || revision_ == std::numeric_limits<std::uint64_t>::max();
+  }
 
   // Due output is bounded by the caller. A full output span leaves the first
   // unhandled deadline due so backpressure never skips a required NS.
@@ -116,6 +132,10 @@ private:
                                    const ip::Ipv6 &address) const noexcept;
 
   std::array<Entry, capacity> entries_{};
+  void invalidate_readiness() noexcept {
+    if (revision_ != std::numeric_limits<std::uint64_t>::max()) ++revision_;
+  }
+  std::uint64_t revision_{1U};
 };
 
 } // namespace router::lab

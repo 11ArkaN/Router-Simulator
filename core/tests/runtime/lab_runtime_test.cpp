@@ -250,7 +250,8 @@ void dedicated_dhcp_pool_transaction_test(router::lab::LabRuntime &runtime) {
 void lab_runtime_tests() {
   using namespace router;
   using namespace router::lab;
-  LabRuntime runtime;
+  auto runtime_owner = std::make_unique<LabRuntime>();
+  auto &runtime = *runtime_owner;
   const std::array<std::uint8_t, 32U> project_key{
       0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b,
       0x3c, 0x3d, 0x3e, 0x3f, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46,
@@ -293,6 +294,14 @@ void lab_runtime_tests() {
   }
   require(owners_ready,
           "telemetry did not publish every distinct generated shard owner");
+  std::size_t isis_owners{}, ospf_owners{};
+  for (std::size_t index{}; index < expected_workers; ++index) {
+    const auto role = runtime.telemetry_page().workers[index].role;
+    isis_owners += role == static_cast<std::uint8_t>(WorkerRoleV6::isis);
+    ospf_owners += role == static_cast<std::uint8_t>(WorkerRoleV6::ospf);
+  }
+  require(isis_owners == 1U && ospf_owners == 1U,
+          "runtime startup omitted or duplicated a permanent protocol owner");
 
   output = runtime.command(
       message(lab_runtime_protocol::router_create, {"r1", "7750-sr-1", "R1"}));
@@ -3689,12 +3698,12 @@ void lab_runtime_tests() {
   const std::string static_arp_report{runtime.command(
       message(lab_runtime_protocol::session_execute,
               {"r1-console-1", "show router static-arp 192.0.2.2"}))};
-  const auto arp_report = runtime.command(
+  const std::string arp_report{runtime.command(
       message(lab_runtime_protocol::session_execute,
-              {"r1-console-1", "show router arp 192.0.2.0/30"}));
-  const auto arp_mac_report = runtime.command(
+              {"r1-console-1", "show router arp 192.0.2.0/30"}))};
+  const std::string arp_mac_report{runtime.command(
       message(lab_runtime_protocol::session_execute,
-              {"r1-console-1", "show router arp mac 02:00:00:00:00:02"}));
+              {"r1-console-1", "show router arp mac 02:00:00:00:00:02"}))};
   require(
       static_arp_report.find("192.0.2.2") != std::string_view::npos &&
           static_arp_report.find("Sta") != std::string_view::npos &&
@@ -3934,7 +3943,7 @@ void lab_runtime_tests() {
   const std::vector<std::uint8_t> owned_multi_address_checkpoint(
       multi_address_checkpoint.begin(), multi_address_checkpoint.end());
   const auto decoded_multi_address =
-      checkpoint_v7::decode(owned_multi_address_checkpoint);
+      checkpoint_v19::decode(owned_multi_address_checkpoint);
   const PortableInterfaceIntentCheckpoint *multi_address_interface{};
   if (decoded_multi_address) {
     const auto device =
@@ -5129,7 +5138,7 @@ void lab_runtime_tests() {
   const auto precommit_checkpoint = runtime.export_checkpoint();
   const std::vector<std::uint8_t> precommit_owned(precommit_checkpoint.begin(),
                                                   precommit_checkpoint.end());
-  const auto precommit_state = checkpoint_v7::decode(precommit_owned);
+  const auto precommit_state = checkpoint_v19::decode(precommit_owned);
   if (!precommit_state || precommit_state->portable_routers.size() != 1U ||
       !precommit_state->portable_routers.front().global_candidate_initialized)
     throw std::runtime_error(
@@ -5311,7 +5320,7 @@ void lab_runtime_tests() {
   const auto checkpoint = runtime.export_checkpoint();
   require(!checkpoint.empty(), "protocol 4 checkpoint export failed");
   const std::vector<std::uint8_t> owned(checkpoint.begin(), checkpoint.end());
-  const auto decoded_addresses = checkpoint_v7::decode(owned);
+  const auto decoded_addresses = checkpoint_v19::decode(owned);
   require(decoded_addresses &&
               !decoded_addresses->network.ospf.processes.empty() &&
               !decoded_addresses->network.ospf.processes.front()
@@ -5326,8 +5335,8 @@ void lab_runtime_tests() {
     decoded_addresses->network.ospf.processes.front()
         .process.interfaces.front()
         .runtime.state = ospf::InterfaceState::designated;
-    const auto elected_bytes = checkpoint_v7::encode(*decoded_addresses);
-    require(checkpoint_v7::decode(elected_bytes) != nullptr,
+    const auto elected_bytes = checkpoint_v19::encode(*decoded_addresses);
+    require(checkpoint_v19::decode(elected_bytes) != nullptr,
             "checkpoint rejected a valid OSPF Designated Router state");
   }
   const auto contains_plaintext = [&owned](std::string_view secret) {
@@ -5345,7 +5354,8 @@ void lab_runtime_tests() {
           "checkpoint serialized an IPsec or OSPF credential in plaintext");
 
   {
-    LabRuntime wrong_key_runtime;
+    auto wrong_key_runtime_owner = std::make_unique<LabRuntime>();
+    auto &wrong_key_runtime = *wrong_key_runtime_owner;
     auto wrong_key = project_key;
     wrong_key.front() ^= 0xffU;
     require(
@@ -5362,13 +5372,14 @@ void lab_runtime_tests() {
     // Flip a ciphertext byte through the public checkpoint codec so the test
     // does not depend on a private byte offset. The import must authenticate
     // the complete vault before restoring any router or terminal owner.
-    auto tampered_state = checkpoint_v7::decode(owned);
+    auto tampered_state = checkpoint_v19::decode(owned);
     require(tampered_state && !tampered_state->secret_vault.records.empty() &&
                 !tampered_state->secret_vault.records.front().sealed.empty(),
             "checkpoint fixture did not retain configured IPsec credentials");
     tampered_state->secret_vault.records.front().sealed.back() ^= 0x01U;
-    const auto tampered = checkpoint_v7::encode(*tampered_state);
-    LabRuntime tampered_runtime;
+    const auto tampered = checkpoint_v19::encode(*tampered_state);
+    auto tampered_runtime_owner = std::make_unique<LabRuntime>();
+    auto &tampered_runtime = *tampered_runtime_owner;
     require(
         tampered_runtime.initialize_secret_vault(project_key, project_context),
         "tamper fixture rejected valid project vault material");
@@ -5379,11 +5390,15 @@ void lab_runtime_tests() {
             "tampered checkpoint partially replaced runtime state");
   }
 
-  LabRuntime restored;
+  auto restored_owner = std::make_unique<LabRuntime>();
+
+  auto &restored = *restored_owner;
   require(restored.initialize_secret_vault(project_key, project_context),
           "restored runtime rejected the matching project vault material");
   require(restored.import_checkpoint(owned),
           "protocol 4 checkpoint import rejected a valid value graph");
+  require(!restored.export_checkpoint().empty(),
+          "restored runtime could not export its next recovery checkpoint");
   // Snapshot is backed by LabRuntime's reusable response buffer just like
   // terminal output. Own it before issuing any session command, otherwise a
   // later response aliases and overwrites the JSON under test.
@@ -5511,7 +5526,8 @@ void lab_runtime_tests() {
 void ospf_flap_recovery_tests() {
   using namespace router;
   using namespace router::lab;
-  LabRuntime runtime;
+  auto runtime_owner = std::make_unique<LabRuntime>();
+  auto &runtime = *runtime_owner;
   const std::array<std::uint8_t, 32U> project_key{
       0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b,
       0x3c, 0x3d, 0x3e, 0x3f, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46,
@@ -5606,6 +5622,20 @@ void ospf_flap_recovery_tests() {
           "flap fixture never converged its initial adjacency: r1=" +
           execute("flap-1", "show router ospf neighbor") +
           " r2=" + execute("flap-2", "show router ospf neighbor"));
+  }
+  {
+    const auto checkpoint = runtime.export_checkpoint();
+    require(!checkpoint.empty(), "converged P2P runtime checkpoint was empty");
+    const std::vector<std::uint8_t> saved{checkpoint.begin(), checkpoint.end()};
+    auto recovered = std::make_unique<LabRuntime>();
+    require(recovered->initialize_secret_vault(project_key, project_context) &&
+                recovered->import_checkpoint(saved),
+            "converged P2P runtime checkpoint could not restore fresh owners");
+    for (unsigned capture = 0; capture < 100U; ++capture) {
+      require(!recovered->export_checkpoint().empty(),
+              "converged P2P restore could not publish a recovery checkpoint");
+      std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
   }
   configure("flap-1", "configure router interface to-r2 shutdown");
   for (unsigned attempt = 0; attempt < 120U; ++attempt) {

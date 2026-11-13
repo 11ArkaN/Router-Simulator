@@ -1,0 +1,57 @@
+// One entity's sequence exhaustion disables every level for the longest
+// configured MaxAge+ZeroAgeLifetime. Its control owner performs circuit Down
+// and reconstructs protocol state only after this owner-local admission gate.
+
+#pragma once
+
+#include "router/isis_lsdb.hpp"
+
+namespace router::isis {
+struct SequenceLevelLifetime { std::uint16_t maximum_age{}, zero_age_lifetime{}; };
+struct SequenceRecoveryCheckpoint {
+  std::uint32_t version{1U};
+  RuntimeClock::duration cooldown{}, resource_retry{};
+  std::optional<std::int64_t> due_nanoseconds;
+  bool disabled{}, saturated{};
+};
+class SequenceRecovery final {
+public:
+  // Explicit effective lifetimes for enabled levels and an emulator resource
+  // retry interval are required. No SR OS retry default is selected. Invalid
+  // values throw before publication; the gate owns no clock or event queue.
+  SequenceRecovery(std::array<std::optional<SequenceLevelLifetime>, 2U> levels,
+      std::chrono::milliseconds resource_retry);
+  // First exhaustion starts entity-wide cooldown. Further input while disabled
+  // cannot shorten or restart it. The parent must stop all Hello/update output.
+  [[nodiscard]] bool begin(RuntimeClock::time_point now) noexcept;
+  [[nodiscard]] bool ready(RuntimeClock::time_point now) const noexcept;
+  // A failed cold reconstruction after cooldown keeps the entity disabled and
+  // defers another attempt. It never starts another protocol MaxAge period.
+  [[nodiscard]] bool resource_failed(RuntimeClock::time_point now) noexcept;
+  // Parent successfully constructed fresh independent counters and databases.
+  // Early or unsolicited completion refuses without changing the gate.
+  [[nodiscard]] bool recovered(RuntimeClock::time_point now) noexcept;
+  [[nodiscard]] bool disabled() const noexcept { return disabled_; }
+  // Saturation cannot permit immediate restart at clock exhaustion.
+  [[nodiscard]] std::optional<RuntimeClock::time_point> deadline() const noexcept;
+  // Same control owner; no allocation or borrowed state. Capture can throw on
+  // clock-range failure. Restore requires matching effective lifetime/retry
+  // policy and preserves terminal clock saturation across host-epoch changes.
+  [[nodiscard]] SequenceRecoveryCheckpoint checkpoint(RuntimeClock::time_point now) const;
+  [[nodiscard]] bool restore(const SequenceRecoveryCheckpoint &saved, RuntimeClock::time_point now) noexcept;
+  // Same owner cold restoration of a retained gate after its entity was removed.
+  // The image retains effective policy even when no level configuration remains.
+  // Validate representable wire-lifetime sums, exact duration units and timer
+  // state before returning a value; nullopt refuses without allocation.
+  [[nodiscard]] static std::optional<SequenceRecovery> restore_checkpoint(const SequenceRecoveryCheckpoint &saved,
+      RuntimeClock::time_point now) noexcept;
+private:
+  struct RestoredPolicy {};
+  SequenceRecovery(RestoredPolicy, RuntimeClock::duration cooldown, RuntimeClock::duration resource_retry) noexcept
+      : cooldown_(cooldown), resource_retry_(resource_retry) {}
+  void wait(RuntimeClock::time_point now, RuntimeClock::duration duration) noexcept;
+  RuntimeClock::duration cooldown_, resource_retry_;
+  RuntimeClock::time_point due_{};
+  bool disabled_{}, saturated_{};
+};
+} // namespace router::isis

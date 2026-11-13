@@ -2,6 +2,7 @@
 // carrier, retained absent-port links and isolated router deletion.
 
 #include "router/lab_checkpoint.hpp"
+#include "router/isis_control_worker.hpp"
 #include "router/runtime_supervisor.hpp"
 
 #include <algorithm>
@@ -1030,6 +1031,7 @@ void runtime_supervisor_tests() {
        .dhcpv4_servers = {},
        .dhcpv6_servers = {},
        .ospf = {},
+       .isis = {},
        .global_candidate = std::move(global_candidate),
        .global_candidate_initialized = true,
        .port_seen_operational = {},
@@ -1090,8 +1092,97 @@ void runtime_supervisor_tests() {
        // abort or replace it with the ordinary private MD candidate.
        .classic_policy_candidate = classic_policy_candidate,
        .classic_policy_edit_active = true});
-  const auto bytes = checkpoint_v7::encode(*checkpoint);
-  auto decoded = checkpoint_v7::decode(bytes);
+  const auto bytes = checkpoint_v19::encode(*checkpoint);
+  auto decoded = checkpoint_v19::decode(bytes);
+  {
+    auto protected_state = std::make_unique<RuntimeSupervisorCheckpoint>(*checkpoint);
+    auto channels = std::make_unique<router::isis::ControlChannels>();
+    protected_state->network.isis.emplace();
+    auto &protocol = *protected_state->network.isis;
+    protocol.control.barrier_epoch = 7U;
+    protocol.control.forwarding_shards = 1U;
+    protocol.control.maximum_circuits = 1U;
+    protocol.ingress.push_back(channels->ingress[0U].checkpoint_quiescent(7U));
+    protocol.egress.push_back(channels->egress[0U].checkpoint_quiescent(7U));
+    protocol.routes = channels->routes->checkpoint_quiescent(7U);
+    const std::string marker{"outer-checkpoint-wire-secret-4739"};
+    protected_state->portable_capture_points.push_back({.id = 99U, .kind = CapturePointKind::router_egress,
+        .object_id = marker, .port_id = {}, .direction = 0U, .selected = false});
+    std::array<std::uint8_t, 32U> key{};
+    key.fill(0x39U);
+    const std::array<std::uint8_t, 3U> context{'l', 'a', 'b'};
+    auto protector = router::vault::SecretVault::create(key, context, 1U);
+    require(protector.has_value(), "checkpoint protector creation failed");
+    bool missing_protector_refused{};
+    try { (void)checkpoint_v19::encode(*protected_state); }
+    catch (const std::invalid_argument &) { missing_protector_refused = true; }
+    require(missing_protector_refused, "active checkpoint accepted a missing protector");
+    const auto sealed = checkpoint_v19::encode(*protected_state, &*protector);
+    require(std::search(sealed.begin(), sealed.end(), marker.begin(), marker.end()) == sealed.end(),
+        "protected checkpoint exposed outer-body plaintext");
+    auto opened = checkpoint_v19::decode(sealed, &*protector);
+    require(opened && opened->network.isis &&
+        opened->network.isis->control.barrier_epoch == 7U &&
+        opened->portable_capture_points.back().object_id == marker,
+        "protected whole-laboratory checkpoint lost its outer or protocol state");
+    require(!checkpoint_v19::decode(sealed), "protected checkpoint decoded without its vault");
+    key[0U] ^= 1U;
+    auto wrong_key = router::vault::SecretVault::create(key, context, 1U);
+    require(wrong_key && !checkpoint_v19::decode(sealed, &*wrong_key),
+        "protected checkpoint accepted a different project key");
+    for (const auto offset : {std::size_t{16U}, sealed.size() / 2U, sealed.size() - 1U}) {
+      auto damaged = sealed;
+      damaged[offset] ^= 1U;
+      require(!checkpoint_v19::decode(damaged, &*protector),
+          "protected checkpoint accepted a changed header, body or tag");
+    }
+    require(!checkpoint_v19::decode(std::span{sealed}.first(sealed.size() - 1U), &*protector),
+        "protected checkpoint accepted truncation");
+  }
+  {
+    // Detached codec fixtures exercise new values without claiming an active
+    // IS-IS process checkpoint or restoring fabricated protocol ownership.
+    auto scoped = std::make_unique<RuntimeSupervisorCheckpoint>(*checkpoint);
+    require(!scoped->network.routers.empty() && !scoped->control.empty(),
+        "scoped route checkpoint fixture has no router owner");
+    auto &forwarding = scoped->network.routers.front().forwarding;
+    forwarding.fib.count = forwarding.ipv6_fib.count = 1U;
+    forwarding.fib.loop_free_alternate_count = forwarding.ipv6_fib.loop_free_alternate_count = 0U;
+    forwarding.fib.routes[0U] = {.network = 0xc6336400U, .next_hop = 0xc0000202U,
+        .port_ordinal = 1U, .prefix_length = 24U, .preference = 160U, .metric = 5U,
+        .source = routing::RouteSource::isis, .protocol_instance = 7U,
+        .interface_id = 42U, .isis_path_type = routing::IsisPathType::level1_external,
+        .isis_rank = 3U, .interface_generation = 17U};
+    forwarding.ipv6_fib.routes[0U] = {.network = *router::ip::parse_ipv6("2001:db8:1::"),
+        .next_hop = *router::ip::parse_ipv6("fe80::2"), .interface_id = 43U,
+        .physical_port_ordinal = 1U, .prefix_length = 64U, .preference = 165U,
+        .metric = 33U, .source = routing::RouteSource::isis, .protocol_instance = 8U,
+        .isis_path_type = routing::IsisPathType::level2_external,
+        .isis_rank = 2U, .interface_generation = 18U};
+    auto &control = scoped->control.front();
+    control.connected[0U].interface_id = 44U;
+    control.connected[0U].interface_generation = 19U;
+    control.ipv6_connected[0U].configured = true;
+    control.ipv6_connected[0U].interface_id = 45U;
+    control.ipv6_connected[0U].interface_generation = 20U;
+    auto restored = checkpoint_v19::decode(checkpoint_v19::encode(*scoped));
+    require(restored && restored->network.routers.front().forwarding.fib.routes[0U] == forwarding.fib.routes[0U] &&
+        restored->network.routers.front().forwarding.ipv6_fib.routes[0U] == forwarding.ipv6_fib.routes[0U] &&
+        restored->control.front().connected[0U].interface_generation == 19U &&
+        restored->control.front().connected[0U].interface_id == 44U &&
+        restored->control.front().ipv6_connected[0U].interface_generation == 20U,
+        "checkpoint lost IS-IS provenance or local interface scope");
+    forwarding.fib.routes[0U].ospf_path_type = routing::OspfPathType::intra_area;
+    require(!checkpoint_v19::decode(checkpoint_v19::encode(*scoped)),
+        "checkpoint accepted mixed IS-IS and OSPF provenance");
+    auto old_magic = bytes;
+    old_magic[6U] = '7';
+    require(!checkpoint_v19::decode(old_magic), "checkpoint accepted an obsolete magic");
+    auto old_abi = bytes;
+    old_abi[8U] = 7U;
+    require(!checkpoint_v19::decode(old_abi), "checkpoint accepted an obsolete ABI");
+  }
+
   require(decoded && bytes.size() > 64 &&
               decoded->network.hosts.front().endpoint.ipv4_reassembly.size() ==
                   1U &&
@@ -1140,7 +1231,7 @@ void runtime_supervisor_tests() {
           "checkpoint ABI 6 did not round-trip the value graph");
   auto corrupted = bytes;
   corrupted[0] ^= 0x5aU;
-  require(!checkpoint_v7::decode(corrupted),
+  require(!checkpoint_v19::decode(corrupted),
           "checkpoint ABI 6 accepted corrupted family magic");
   decoded->network.hosts.front().dns.reset();
   // The two portable entries above belong to LabRuntime in production. Remove
@@ -1319,8 +1410,8 @@ void runtime_supervisor_tests() {
   auto ies_checkpoint = runtime->checkpoint();
   require(static_cast<bool>(ies_checkpoint),
           "IES runtime checkpoint was unavailable");
-  const auto ies_checkpoint_bytes = checkpoint_v7::encode(*ies_checkpoint);
-  auto decoded_ies_checkpoint = checkpoint_v7::decode(ies_checkpoint_bytes);
+  const auto ies_checkpoint_bytes = checkpoint_v19::encode(*ies_checkpoint);
+  auto decoded_ies_checkpoint = checkpoint_v19::decode(ies_checkpoint_bytes);
   require(static_cast<bool>(decoded_ies_checkpoint),
           "IES control graph did not survive checkpoint ABI 6 encoding");
   require(decoded_ies_checkpoint->control.size() == 1U &&
@@ -1434,7 +1525,7 @@ void runtime_supervisor_tests() {
       0U, 3U, 0U, 1U, 0xdcU, 2U, 1U};
   std::copy(supervisor_server_duid.begin(), supervisor_server_duid.end(),
             server_program.configuration.duid.begin());
-  server_program.configuration.duid_octets = supervisor_server_duid.size();
+  server_program.configuration.duid_octets = static_cast<std::uint16_t>(supervisor_server_duid.size());
   const auto supervisor_pool =
       router::ip::parse_ipv6_prefix("2001:db8:dc::/64");
   require(supervisor_pool.has_value(),
@@ -1461,7 +1552,7 @@ void runtime_supervisor_tests() {
       0U, 3U, 0U, 1U, 0xdcU, 1U, 1U};
   std::copy(supervisor_client_duid.begin(), supervisor_client_duid.end(),
             client_program.configuration.duid.begin());
-  client_program.configuration.duid_octets = supervisor_client_duid.size();
+  client_program.configuration.duid_octets = static_cast<std::uint16_t>(supervisor_client_duid.size());
   client_program.configuration.identity_associations.push_back(
       {.iaid = 0xdc010001U, .kind = router::dhcpv6::LeaseKind::non_temporary});
   for (std::size_t index = 0;
@@ -1574,8 +1665,8 @@ void runtime_supervisor_tests() {
   auto dhcp_checkpoint = runtime->checkpoint();
   require(static_cast<bool>(dhcp_checkpoint),
           "threaded DHCPv6 checkpoint was unavailable");
-  const auto dhcp_checkpoint_bytes = checkpoint_v7::encode(*dhcp_checkpoint);
-  auto decoded_dhcp_checkpoint = checkpoint_v7::decode(dhcp_checkpoint_bytes);
+  const auto dhcp_checkpoint_bytes = checkpoint_v19::encode(*dhcp_checkpoint);
+  auto decoded_dhcp_checkpoint = checkpoint_v19::decode(dhcp_checkpoint_bytes);
   require(static_cast<bool>(decoded_dhcp_checkpoint),
           "DHCPv6 state did not survive checkpoint ABI 6 encoding");
   runtime.reset();

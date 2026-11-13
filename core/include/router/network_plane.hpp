@@ -17,10 +17,13 @@
 #include "router/multi_device_fabric.hpp"
 #include "router/multi_device_routing.hpp"
 #include "router/ospf_control_worker.hpp"
+#include "router/isis_control_worker.hpp"
+#include "router/isis_runtime_checkpoint.hpp"
 #include "router/ospf_process.hpp"
 #include "router/packet.hpp"
 #include "router/router_forwarder.hpp"
 #include "router/route_policy.hpp"
+#include "router/route_publication.hpp"
 #include "router/udp_transport.hpp"
 
 #include <array>
@@ -47,6 +50,17 @@ struct NetworkLinkProgram {
   std::chrono::nanoseconds propagation{};
   bool carrier{};
 };
+
+struct IsisCircuitProgram {
+  // Serialized control owns source-resolved effective configuration. The
+  // physical generation accompanies logical circuit identity so replacement
+  // hardware cannot inherit a queued frame. This experimental circuit transport
+  // program selects transport only. Update owners are admitted separately;
+  // routing and protocol checkpointing remain outside this experimental API.
+  isis::CircuitDefinition circuit;
+  PortHandle port{};
+};
+using IsisP2pCircuitProgram = IsisCircuitProgram;
 
 struct HostNetworkProgram {
   HostHandle host;
@@ -579,6 +593,9 @@ struct NetworkPlaneCheckpoint {
   // pointer into live process state and stores all deadlines as durations
   // relative to the same checkpoint instant used by forwarding and fabric.
   ospf::ControlWorkerCheckpoint ospf;
+  // Present whenever IS-IS owns semantic state or queued transport work.
+  // One protected protocol image joins packet, route and physical credits.
+  std::optional<IsisRuntimeCheckpoint> isis;
   std::vector<CapturePointProgram> capture_points;
   std::uint64_t capture_dropped{};
   // Transfer rings exist only between physical runtime owners. Their loss
@@ -630,10 +647,92 @@ public:
 
   // Port and FIB programs replace complete owner-local projections. Neither
   // method retains a control pointer after the call or future mailbox turn.
+  // A successful port replacement also delivers its effective operational gate
+  // to every bound IS-IS circuit and local prefix source before acknowledgement. Network-owner affinity;
+  // no allocation or peer lookup is added to the protocol carrier transition.
   [[nodiscard]] bool configure_port(DeviceHandle device,
                                     const ForwardPort &port) noexcept;
   [[nodiscard]] bool remove_port(DeviceHandle device,
                                  std::uint16_t ordinal) noexcept;
+  // Serialized network owner. Programs are sorted by logical interface/local
+  // instance. Prepare allocates all protocol and multicast values before the
+  // forwarding barrier. Caller never reuses an epoch for a logical circuit
+  // within a device generation, including after removal and reactivation.
+  // Admission of a new logical circuit must exceed the device's maximum retired
+  // epoch. This bound survives protocol withdrawal on the same router handle.
+  // Failure preserves the live generation; unchanged epochs
+  // preserve adjacency, timers and pending tickets. Optional new instances
+  // have sorted absent keys and no existing transport-only circuits; their
+  // databases and new circuit slots publish in the same owner transaction.
+  [[nodiscard]] bool replace_isis_generation(DeviceHandle device,
+      std::span<const IsisCircuitProgram> circuits) noexcept;
+  [[nodiscard]] bool replace_isis_generation(DeviceHandle device,
+      std::span<const IsisCircuitProgram> circuits,
+      std::span<const isis::NewUpdateInstance> new_instances) noexcept;
+  // Sorted explicit live retirement keys exclude candidate circuits unless a
+  // matching fresh owner explicitly replaces that key with fresh circuit epochs.
+  // Their RIB inputs, dual-family FIBs, external redistribution,
+  // protocol owners and transport bindings withdraw under one forwarding barrier.
+  // Sorted administrative edits retain their owners and circuit epochs. They
+  // require a configured RIB policy and reserve a synchronous publication key
+  // that fences every older queued generation before forwarding resumes.
+  [[nodiscard]] bool replace_isis_generation(DeviceHandle device,
+      std::span<const IsisCircuitProgram> circuits,
+      std::span<const isis::NewUpdateInstance> new_instances,
+      std::span<const std::uint8_t> retired_instances,
+      std::span<const isis::UpdateAdminState> administrative = {},
+      std::span<const isis::UpdateAdjacencyPolicy> adjacency_policies = {},
+      std::span<const isis::UpdatePrefixCatalog> prefix_catalogs = {},
+      std::optional<std::span<const Ipv6ReadinessWatch>> ipv6_watches = {},
+      std::span<const isis::UpdateAttachedPolicy> attached_policies = {}) noexcept;
+  [[nodiscard]] bool replace_isis_p2p_generation(DeviceHandle device,
+      std::span<const IsisP2pCircuitProgram> circuits) noexcept {
+    return replace_isis_generation(device, circuits);
+  }
+  [[nodiscard]] std::optional<isis::ControlResult> query_isis_circuit(
+      const isis::CircuitIdentity &identity) noexcept;
+  // Serialized network owner only. The protocol pthread samples all accepted
+  // neighbors for this local instance in one command. Returned storage is
+  // immutable and independently retained; null means invalid scope/capacity.
+  [[nodiscard]] std::shared_ptr<const isis::AdjacencyQuery> isis_adjacencies(DeviceHandle,
+      std::uint8_t instance, std::size_t maximum_rows, std::size_t maximum_attribute_octets) noexcept;
+  // Serialized network owner. Read a selected accepted LAN Hello binding;
+  // level is 1 or 2, the peer is its SNPA and the result owns all returned data.
+  // Missing scope/peer/address refuses without creating ARP or ND entries.
+  [[nodiscard]] std::optional<isis::ControlResult> query_isis_lan_next_hop(
+      const isis::CircuitIdentity &identity, std::uint8_t level, const packet::Mac &peer,
+      const ip::IpAddress &address) noexcept;
+  // Serialized network owner copies effective values into an owned command.
+  // Source identity, per-level budgets and transmission policy are explicit;
+  // failure leaves existing circuits and databases intact. A process without
+  // interfaces remains registered and blocks unsupported structural checkpoints.
+  // Managed physical IPv6 address catalogs require replace_isis_generation and
+  // its complete AF watch set. Direct removal refuses while that subscription
+  // is installed, so no publisher can target a retired protocol owner.
+  [[nodiscard]] bool add_isis_update_instance(DeviceHandle device, std::uint8_t instance,
+      const isis::UpdateInstanceProgram &program) noexcept;
+  [[nodiscard]] bool remove_isis_update_instance(DeviceHandle device, std::uint8_t instance) noexcept;
+  [[nodiscard]] std::optional<isis::ControlResult> query_isis_update_instance(
+      DeviceHandle device, std::uint8_t instance) noexcept;
+  // Same serialized control owner. Returns an immutable effective LSP header;
+  // missing identity reports not_found, and no LSDB/key/packet reference escapes.
+  [[nodiscard]] std::optional<isis::ControlResult> query_isis_lsp(DeviceHandle device,
+      std::uint8_t instance, std::uint8_t level, const packet::isis::LspId &id) noexcept;
+  // Transfers local semantic intent to a pre-reserved identity on the IS-IS
+  // owner. Replacement activates it; withdrawal purges a non-root body.
+  // Refusal preserves runtime and reconstruction intent. No peer state enters
+  // these calls. Missing router registration returns nullopt; owner errors and
+  // unchanged results are explicit. The input value owns its option bytes.
+  [[nodiscard]] std::optional<isis::ControlResult> replace_isis_local_lsp(DeviceHandle device,
+      std::uint8_t instance, isis::LocalLspContent content) noexcept;
+  [[nodiscard]] std::optional<isis::ControlResult> withdraw_isis_local_lsp(DeviceHandle device,
+      std::uint8_t instance, std::uint8_t level, const packet::isis::LspId &id) noexcept;
+  // Already composed local PDU bytes are copied before publication; no span or
+  // key lease is retained. The originator supplied sequence, options and purge
+  // reason. Result reports validation or admission failure explicitly.
+  [[nodiscard]] std::optional<isis::ControlResult> originate_isis_lsp(DeviceHandle device,
+      std::uint8_t instance, std::uint8_t level, std::span<const std::uint8_t> pdu,
+      isis::OriginPurgeReason purge = isis::OriginPurgeReason::none) noexcept;
   [[nodiscard]] bool
   add_ospf_process(const OspfProcessProgram &program) noexcept;
   [[nodiscard]] bool
@@ -657,6 +756,13 @@ public:
   [[nodiscard]] bool
   program_route_policy(DeviceHandle device,
                        const RoutePolicyProgram &policy) noexcept;
+  // Serialized network owner only. The protocol producer fences a complete
+  // generation against its current LSDB and accepted-Hello revisions. This
+  // consumer validates local circuit epochs, merges retained OSPF and commits
+  // both RIB/FIB families before returning installed. Failure retains the last
+  // accepted generation; no input view escapes. Empty counts withdraw IS-IS.
+  [[nodiscard]] ::router::routing::RouteInstallStatus program_isis_routes(
+      const ::router::routing::RouteGeneration &generation) noexcept;
   [[nodiscard]] std::optional<OspfRouteDiagnostics>
   ospf_route_diagnostics(DeviceHandle device) const noexcept;
   [[nodiscard]] std::optional<ospf::ControlResult>
@@ -894,6 +1000,7 @@ public:
   // The OSPF owner exists at NetworkPlane construction, before any router or
   // CLI command. Zero means its run loop has not published startup yet.
   [[nodiscard]] std::uint64_t ospf_owner_thread_id() const noexcept;
+  [[nodiscard]] std::uint64_t isis_owner_thread_id() const noexcept;
 
 private:
   // PIMPL keeps the large fixed arenas and internal endpoint stack out of every

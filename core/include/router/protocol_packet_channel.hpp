@@ -1,0 +1,339 @@
+// Shared-memory frame channel between one producer shard and one consumer
+// shard. Each instance has one fixed direction, selected by its owner aggregate.
+// Handles cross two SPSC rings while storage remains in fixed shared slots.
+// Live transport sends no pointer, vector or postMessage copy across owners.
+// Quiescent persistence transfers are owned values outside the live rings.
+
+#pragma once
+
+#include "router/lab_registry.hpp"
+#include "router/packet.hpp"
+#include "router/protocol_frame_expiry.hpp"
+#include "router/spsc_ring.hpp"
+#include "router/channel_checkpoint_partition.hpp"
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <optional>
+#include <type_traits>
+#include <algorithm>
+#include <span>
+#include <stdexcept>
+#include <vector>
+
+namespace router::protocol {
+
+template <std::size_t Capacity, bool WithCompletions = false> class PacketChannel final {
+  static_assert(Capacity > 0U);
+  static_assert(Capacity <= std::numeric_limits<std::uint32_t>::max());
+
+public:
+  using Handle = std::uint32_t;
+
+  struct Metadata {
+    lab::DeviceHandle device{};
+    std::uint64_t interface_id{};
+    std::uint16_t physical_port_ordinal{};
+    // Producer supplies the immutable circuit configuration generation. IS-IS
+    // receivers and egress consumers require a nonzero current match before
+    // using interface state; device generation alone cannot distinguish two
+    // configurations of the same live router. Zero preserves legacy users.
+    std::uint64_t configuration_generation{};
+    // Scoped to the circuit's PDU class. Forwarding returns this value without
+    // interpreting it. IS-IS requires an exact pending-ticket match, including
+    // operational cancellations that leave the configuration epoch unchanged.
+    std::uint64_t transmission_id{};
+    // Protocol-defined class disambiguates independent ticket sequences.
+    // IS-IS uses its wire PDU type; zero preserves unspecified legacy users.
+    // Delayed link-owner receipts compare this as part of the complete identity.
+    std::uint8_t transmission_class{};
+    // Local protocol instance, distinct from the wire IID. Circuits on one
+    // interface may share an epoch, PDU class and ticket number. Including this
+    // discriminator prevents a delayed receipt from releasing another instance's
+    // replacement slot. Zero preserves legacy single-instance users.
+    std::uint8_t instance_id{};
+    // Producer-owned reservation generation inside the protocol instance,
+    // independent of transport configuration. Forwarding and link owners echo
+    // this value unchanged through the same release/acquire receipt path.
+    // Guarded release compares it before returning a reused slot. Zero is valid
+    // for producers without an additional synchronization scope.
+    std::uint64_t protocol_epoch{};
+    bool operator==(const Metadata &) const = default;
+  };
+
+  struct Borrowed {
+    Handle handle{};
+    Metadata metadata{};
+    const packet::Frame *frame{};
+    FrameExpiry expiry{};
+  };
+
+  struct Completion {
+    Metadata metadata{};
+    const packet::Frame *frame{};
+    bool enqueued{};
+  };
+
+  struct SlotCheckpoint {
+    Handle handle{};
+    Metadata metadata;
+    std::vector<std::uint8_t> bytes;
+    FrameExpiryCheckpoint expiry{};
+  };
+  struct ReturnCheckpoint { Handle handle{}; bool enqueued{}; };
+  struct Checkpoint {
+    std::uint32_t version{1U};
+    std::uint64_t barrier_epoch{};
+    std::size_t capacity{Capacity};
+    bool with_completions{WithCompletions};
+    // Producer free-stack order and both ring FIFO orders are significant.
+    // Borrowed/occupied catalogs are canonical ascending handle order.
+    std::vector<Handle> available, ready, borrowed;
+    std::vector<ReturnCheckpoint> returned;
+    std::vector<SlotCheckpoint> occupied;
+  };
+
+  PacketChannel() noexcept : available_count_(Capacity) {
+    // Producer owns available_ and available_count_. Reverse order makes the
+    // first acquired slot zero and gives deterministic tests and diagnostics.
+    for (std::size_t index{}; index < Capacity; ++index)
+      available_[index] =
+          static_cast<Handle>(Capacity - index - 1U);
+  }
+
+  // Producer: exactly one sending shard. Consumer: exactly one receiving
+  // shard. Ordering is FIFO. Full behavior is explicit packet backpressure:
+  // false leaves the frame with the producer and changes no protocol state.
+  // Optional expiry describes only a producer-authorized mutable wire field.
+  // Consumers copy it unchanged until the exclusive physical transmitter; it
+  // is not part of the credit identity or the returned admission receipt.
+  [[nodiscard]] bool try_send(const Metadata &metadata,
+                              const packet::Frame &frame, FrameExpiry expiry = {}) noexcept {
+    if (frame.size() > frame.bytes.size()) return false;
+    reclaim();
+    if (available_count_ == 0U)
+      return false;
+    const auto handle = available_[--available_count_];
+    auto &slot = slots_[handle];
+    slot.metadata = metadata;
+    slot.expiry = expiry;
+    packet::copy_frame(slot.frame, frame);
+    if (!ready_.try_push(handle)) {
+      available_[available_count_++] = handle;
+      return false;
+    }
+    return true;
+  }
+
+  // The borrowed frame remains immutable until release(handle). The consumer
+  // must decode or copy retained protocol state before returning the handle.
+  [[nodiscard]] std::optional<Borrowed> try_receive() noexcept {
+    Handle handle{};
+    if (!ready_.try_pop(handle))
+      return std::nullopt;
+    const auto &slot = slots_[handle];
+    borrowed_[handle] = true;
+    return Borrowed{.handle = handle,
+                    .metadata = slot.metadata,
+                    .frame = &slot.frame,
+                    .expiry = slot.expiry};
+  }
+
+  // Consumer returns exactly one handle after processing. A failure indicates
+  // an ownership bug because the return ring has one slot for every possible
+  // borrowed packet plus the SpscRing sentinel slot.
+  [[nodiscard]] bool release(Handle handle) noexcept requires (!WithCompletions) {
+    return release_slot(handle, handle);
+  }
+
+  // Completion-enabled egress requires the consumer's actual port-queue
+  // enqueue result. Publishing into this channel is not physical transmission.
+  // The returned handle and result share one release/acquire SPSC operation.
+  [[nodiscard]] bool release(Handle handle, bool enqueued) noexcept requires WithCompletions {
+    return release_slot(handle, Returned{handle, enqueued});
+  }
+
+  // The same consumer may delegate physical admission to a separate link owner.
+  // Its immutable receipt returns full identity, not only a reusable slot index.
+  // A delayed receipt for an earlier epoch, ticket or PDU class rejects without
+  // releasing a currently borrowed replacement. No third owner reads slot state.
+  [[nodiscard]] bool release(Handle handle, const Metadata &expected,
+      bool enqueued) noexcept requires WithCompletions {
+    if (handle >= Capacity || !borrowed_[handle] || slots_[handle].metadata != expected) return false;
+    return release(handle, enqueued);
+  }
+
+  // Producer consumes each egress result before its slot can be reused. The
+  // borrowed wire view remains valid until the next try_send on this channel;
+  // process it before sending again. This call reclaims the slot and needs no
+  // further release. No pointer crosses a ring: the producer derives this view
+  // from its own fixed storage after acquiring the returned handle.
+  [[nodiscard]] std::optional<Completion> try_completion() noexcept requires WithCompletions {
+    Returned result{};
+    if (!returned_.try_pop(result)) return std::nullopt;
+    const auto &slot = slots_[result.handle];
+    available_[available_count_++] = result.handle;
+    return Completion{slot.metadata, &slot.frame, result.enqueued};
+  }
+
+  // Completion-enabled channels apply backpressure until the producer has
+  // consumed the corresponding result, even when the consumer returned a slot.
+  [[nodiscard]] std::size_t producer_available() noexcept {
+    reclaim();
+    return available_count_;
+  }
+  // Consumer-only readiness projection. It acquires the producer's published
+  // head without borrowing or returning a slot. Bounded drainers use it to
+  // continue work after a coalesced notification exceeds one service quantum.
+  [[nodiscard]] bool consumer_pending() const noexcept { return !ready_.empty(); }
+
+  // Same consumer only. Predicate views borrow initialized ready-frame bytes
+  // during this call and must not mutate this channel or retain references.
+  // Acquiring the ready-ring snapshot publishes slot metadata and frame bytes;
+  // no slot is popped, borrowed or returned, so the producer cannot reuse it.
+  // Later arrivals wait for the next query. Work is bounded by Capacity, with
+  // FIFO traversal and no allocation, packet copy or additional shared state.
+  template <typename Predicate>
+  [[nodiscard]] bool consumer_any_ready(Predicate &&predicate) const noexcept {
+    static_assert(std::is_nothrow_invocable_r_v<bool, Predicate, const Metadata &, const packet::Frame &>);
+    return ready_.consumer_any([&](const Handle &handle) noexcept {
+      const auto &slot = slots_[handle];
+      return predicate(slot.metadata, slot.frame);
+    });
+  }
+
+  // Persistence coordinator only, after producer and consumer both acknowledge
+  // quiescence through release/acquire barriers. barrier_epoch is a nonzero
+  // snapshot-cohort identity, not a clock. Capture owns occupied wire prefixes
+  // and exact slot ownership; free-slot bytes are omitted. Allocation, invalid
+  // epoch or corrupt internal ownership can throw. No ring message is consumed.
+  // Secret-bearing wire requires protection by the enclosing persistence codec.
+  [[nodiscard]] Checkpoint checkpoint_quiescent(std::uint64_t barrier_epoch,
+      FrameExpiry::Clock::time_point now = FrameExpiry::Clock::now()) const {
+    if (!barrier_epoch) throw std::invalid_argument("Protocol checkpoint requires a barrier epoch");
+    if (available_count_ > Capacity) throw std::logic_error("Protocol checkpoint free count corrupted");
+    Checkpoint result;
+    result.barrier_epoch = barrier_epoch;
+    result.available.assign(available_.begin(), available_.begin() + static_cast<std::ptrdiff_t>(available_count_));
+    result.ready = ready_.checkpoint_quiescent();
+    const auto returned = returned_.checkpoint_quiescent();
+    result.returned.reserve(returned.size());
+    for (const auto &value : returned) {
+      if constexpr (WithCompletions) result.returned.push_back({value.handle, value.enqueued});
+      else result.returned.push_back({value, false});
+    }
+    std::array<bool, Capacity> free{};
+    for (const auto handle : result.available) {
+      if (handle >= Capacity || free[handle]) throw std::logic_error("Protocol checkpoint free handles corrupted");
+      free[handle] = true;
+    }
+    result.occupied.reserve(Capacity - available_count_);
+    for (std::size_t index{}; index < Capacity; ++index) {
+      const auto handle = static_cast<Handle>(index);
+      if (borrowed_[index]) result.borrowed.push_back(handle);
+      if (free[index]) continue;
+      const auto &slot = slots_[index];
+      if (slot.frame.size() > slot.frame.bytes.size()) throw std::logic_error("Protocol checkpoint frame length corrupted");
+      const auto bytes = slot.frame.view();
+      const auto expiry = slot.expiry.checkpoint(now);
+      if (!expiry) throw std::logic_error("Protocol frame expiry anchor corrupted");
+      result.occupied.push_back({handle, slot.metadata, {bytes.begin(), bytes.end()}, *expiry});
+    }
+    if (!valid_checkpoint(result, barrier_epoch)) throw std::logic_error("Protocol checkpoint ownership corrupted");
+    return result;
+  }
+  // No owner access or allocation. Validates a complete disjoint partition and
+  // canonical occupied wire catalog. Protocol-specific metadata and matching
+  // frame/reservation identities remain the enclosing coordinator's contract.
+  [[nodiscard]] static bool valid_checkpoint(const Checkpoint &saved, std::uint64_t expected_epoch) noexcept {
+    if (!expected_epoch || saved.version != 1U || saved.barrier_epoch != expected_epoch || saved.capacity != Capacity ||
+        saved.with_completions != WithCompletions || saved.available.size() > Capacity || saved.ready.size() > Capacity ||
+        saved.borrowed.size() > Capacity || saved.returned.size() > Capacity ||
+        saved.occupied.size() != Capacity - saved.available.size()) return false;
+    const auto ownership = checkpoint::partition<Capacity>(saved.available, saved.ready, saved.borrowed, saved.returned,
+        {}, [](const ReturnCheckpoint &value) noexcept { return value.handle; });
+    if (!ownership) return false;
+    if constexpr (!WithCompletions) for (const auto &value : saved.returned) if (value.enqueued) return false;
+    for (std::size_t index{}; index < saved.occupied.size(); ++index) {
+      const auto &slot = saved.occupied[index];
+      if (slot.handle >= Capacity || (*ownership)[slot.handle] == checkpoint::SlotRole::available || slot.bytes.size() > packet::maximum_frame_octets ||
+          (index && saved.occupied[index - 1U].handle >= slot.handle) ||
+          !FrameExpiry::restore(slot.expiry, {}) || (slot.expiry.offset &&
+          static_cast<std::size_t>(slot.expiry.offset) + 1U >= slot.bytes.size())) return false;
+    }
+    // Count, ascending uniqueness and exclusion of free handles establish a
+    // bijection between every occupied role and its retained metadata/frame.
+    return true;
+  }
+  // Same quiescent coordinator, after validating all enclosing owners/channels.
+  // All old borrowed frame views expire. Refusal changes nothing; success uses
+  // existing slots and bounded handle-only scratch with no heap allocation.
+  // Resume must publish these writes before any old or new owner accesses them.
+  [[nodiscard]] bool restore_quiescent(const Checkpoint &saved, std::uint64_t expected_epoch,
+      FrameExpiry::Clock::time_point now = FrameExpiry::Clock::now()) noexcept {
+    if (!valid_checkpoint(saved, expected_epoch)) return false;
+    std::array<ReturnValue, Capacity> returned{};
+    for (std::size_t index{}; index < saved.returned.size(); ++index) {
+      if constexpr (WithCompletions) returned[index] = {saved.returned[index].handle, saved.returned[index].enqueued};
+      else returned[index] = saved.returned[index].handle;
+    }
+    for (const auto &value : saved.occupied) {
+      auto &slot = slots_[value.handle];
+      slot.metadata = value.metadata;
+      slot.expiry = *FrameExpiry::restore(value.expiry, now);
+      slot.frame.length = static_cast<std::uint16_t>(value.bytes.size());
+      std::copy(value.bytes.begin(), value.bytes.end(), slot.frame.bytes.begin());
+    }
+    borrowed_.fill(false);
+    for (const auto handle : saved.borrowed) borrowed_[handle] = true;
+    std::copy(saved.available.begin(), saved.available.end(), available_.begin());
+    available_count_ = saved.available.size();
+    // Counts were bounded above, and these trivial ring copies cannot fail.
+    static_cast<void>(ready_.restore_quiescent(saved.ready));
+    static_cast<void>(returned_.restore_quiescent(std::span{returned}.first(saved.returned.size())));
+    return true;
+  }
+
+private:
+  struct Returned {
+    Handle handle{};
+    bool enqueued{};
+  };
+  using ReturnValue = std::conditional_t<WithCompletions, Returned, Handle>;
+  struct Slot {
+    Metadata metadata{};
+    FrameExpiry expiry{};
+    packet::Frame frame{};
+  };
+
+  [[nodiscard]] bool release_slot(Handle handle, ReturnValue value) noexcept {
+    if (handle >= Capacity || !borrowed_[handle] || !returned_.try_push(value)) return false;
+    borrowed_[handle] = false;
+    return true;
+  }
+
+  void reclaim() noexcept {
+    if constexpr (!WithCompletions) {
+      Handle returned{};
+      while (returned_.try_pop(returned)) available_[available_count_++] = returned;
+    }
+  }
+
+  std::array<Slot, Capacity> slots_{};
+  // Producer publishes initialized metadata/frame bytes with release ordering;
+  // consumer acquires the ready handle before reading them. The return ring
+  // release/acquire pair prevents slot reuse until the consumer is done.
+  // Each direction has Capacity usable entries and preserves FIFO order.
+  // SpscRing reserves one element to distinguish full from empty.
+  SpscRing<Handle, Capacity + 1U> ready_;
+  SpscRing<ReturnValue, Capacity + 1U> returned_;
+  std::array<Handle, Capacity> available_{};
+  std::size_t available_count_{};
+  // Consumer alone tracks borrowed slots. Rejecting an unknown or duplicate
+  // return prevents producer free-list corruption without another atomic.
+  std::array<bool, Capacity> borrowed_{};
+};
+
+} // namespace router::protocol
