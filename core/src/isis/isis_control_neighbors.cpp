@@ -88,7 +88,14 @@ bool ControlWorker::compose_local_neighbors(OwnedInstance &instance, const Devic
     if (!instance.fragment_workspace) { instance.status = UpdateStatus::invalid_configuration; return false; }
     auto &workspace = *instance.fragment_workspace;
     workspace.reset();
-    bool valid = workspace.add_root_options(origin.content, level);
+    std::array<std::uint8_t, 257U> area_bytes{};
+    std::optional<std::span<const std::uint8_t>> area_override;
+    if (level == 1U && instance.areas) {
+      const auto size = encode_area_set_options(instance.areas->effective(), area_bytes);
+      if (!size) { instance.status = UpdateStatus::invalid_configuration; return false; }
+      area_override = std::span<const std::uint8_t>{area_bytes}.first(*size);
+    }
+    bool valid = workspace.add_root_options(origin.content, level, area_override);
     if (origin.prefixes) {
       valid = (origin.ipv6_addresses
           ? append_local_af_prefixes(workspace, *origin.prefixes, *origin.ipv6_addresses, level)

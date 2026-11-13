@@ -51,8 +51,20 @@ bool OriginFragmentWorkspace::add_options(FragmentUnitId key, std::span<const st
   units_.push_back({key, options, previous, root_only});
   return true;
 }
-bool OriginFragmentWorkspace::add_root_options(const LocalLspProgram &program, std::size_t level) noexcept {
+bool OriginFragmentWorkspace::add_root_options(const LocalLspProgram &program, std::size_t level,
+    std::optional<std::span<const std::uint8_t>> area_override) noexcept {
   if (level > 1U) { error_ = LocalContentResult::invalid; return false; }
+  if (area_override) {
+    packet::isis::TlvCursor framing(*area_override);
+    while (const auto option = framing.next()) {
+      if (option->code != 1U) { error_ = LocalContentResult::invalid; return false; }
+      packet::isis::AreaAddressCursor addresses(*option);
+      while (addresses.next()) {}
+      if (!addresses.valid()) { error_ = LocalContentResult::invalid; return false; }
+    }
+    if (!framing.valid()) { error_ = LocalContentResult::invalid; return false; }
+  }
+  bool area_added{};
   std::uint64_t metadata{};
   for (const auto &record : program.records) {
     if (record.level != level || record.id[6U] || !record.active) continue;
@@ -61,12 +73,18 @@ bool OriginFragmentWorkspace::add_root_options(const LocalLspProgram &program, s
     while (const auto option = cursor.next()) {
       const auto size = option->value.size() + 2U;
       if (option->code == 1U && record.id[7U]) { error_ = LocalContentResult::invalid; return false; }
-      if (!add_options({0U, metadata++}, std::span{record.options}.subspan(offset, size),
-              record.id[7U], option->code == 1U)) return false;
+      const auto key = metadata++;
+      if (option->code == 1U && area_override) {
+        if (!area_added && !area_override->empty() && !add_options({0U, key}, *area_override, 0U, true)) return false;
+        area_added = true;
+      } else if (!add_options({0U, key}, std::span{record.options}.subspan(offset, size),
+          record.id[7U], option->code == 1U)) return false;
       offset += size;
     }
     if (!cursor.valid()) { error_ = LocalContentResult::invalid; return false; }
   }
+  if (area_override && !area_added && !area_override->empty())
+    if (!add_options({0U, metadata}, *area_override, 0U, true)) return false;
   return error_ == LocalContentResult::unchanged;
 }
 bool OriginFragmentWorkspace::finish_link(FragmentUnitId key, std::size_t size,

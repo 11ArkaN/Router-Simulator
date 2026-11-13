@@ -18,7 +18,7 @@
 #include <string>
 #include <type_traits>
 
-namespace router::lab::checkpoint_v18 {
+namespace router::lab::checkpoint_v19 {
 namespace {
 
 inline constexpr std::array<std::uint8_t, 8> magic{'R', 'S', 'L', 'A',
@@ -10351,4 +10351,4 @@ decode(std::span<const std::uint8_t> bytes, const vault::SecretVault *protector)
   }
 }
 
-} // namespace router::lab::checkpoint_v18
+} // namespace router::lab::checkpoint_v19

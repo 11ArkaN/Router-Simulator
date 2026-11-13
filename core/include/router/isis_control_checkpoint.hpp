@@ -64,6 +64,8 @@ struct ControlInstanceCheckpoint {
   UpdateStatus status{UpdateStatus::applied};
   std::array<std::optional<SpfThrottleCheckpoint>, 2U> spf;
   bool admin_enabled{true};
+  std::optional<AreaSetCheckpoint> areas;
+  std::optional<ManualAreaDropped> last_area_drop;
 };
 struct ControlRouteStamp {
   std::uint64_t epoch{};
@@ -90,7 +92,7 @@ struct ControlDeviceCheckpoint {
   std::chrono::milliseconds route_retry{};
 };
 struct ControlWorkerCheckpoint {
-  std::uint32_t version{6U};
+  std::uint32_t version{7U};
   std::uint64_t barrier_epoch{};
   std::size_t forwarding_shards{}, maximum_circuits{}, active_circuits{}, first_device{};
   std::vector<ControlDeviceCheckpoint> devices;

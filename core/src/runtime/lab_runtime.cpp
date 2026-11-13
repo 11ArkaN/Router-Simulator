@@ -27799,13 +27799,13 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
     checkpoint_bytes_.clear();
     return {};
   }
-  try { checkpoint_bytes_ = checkpoint_v18::encode(*checkpoint, secret_vault_ ? &*secret_vault_ : nullptr); }
+  try { checkpoint_bytes_ = checkpoint_v19::encode(*checkpoint, secret_vault_ ? &*secret_vault_ : nullptr); }
   catch (...) { checkpoint_bytes_.clear(); return {}; }
   return checkpoint_bytes_;
 }
 
 bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
-  auto checkpoint = checkpoint_v18::decode(bytes, secret_vault_ ? &*secret_vault_ : nullptr);
+  auto checkpoint = checkpoint_v19::decode(bytes, secret_vault_ ? &*secret_vault_ : nullptr);
   if (!checkpoint)
     return false;
   try {
@@ -28119,6 +28119,17 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
           }
         }
         if (matched) {
+          if (!instance.areas.empty()) {
+            const auto levels = static_cast<std::uint8_t>(instance.levels.value_or(isis::ConfiguredLevels::both));
+            const bool area_owner = (levels & 1U) != 0U;
+            if (!matched->configuration.origination ||
+                matched->configuration.origination->automatic_area_set != area_owner ||
+                matched->areas.has_value() != area_owner) return false;
+            if (area_owner && (matched->areas->manual.size() != instance.areas.size() ||
+                std::any_of(instance.areas.begin(), instance.areas.end(), [&](const auto &area) {
+                  return std::find(matched->areas->manual.begin(), matched->areas->manual.end(), area) == matched->areas->manual.end();
+                }))) return false;
+          }
           const bool ignore = instance.ignore_attached_bit.value_or(isis::configuration_profile::ignore_attached_bit_default);
           for (const auto &family : matched->configuration.routing)
             if (family && family->ignore_attached_bit != ignore) return false;

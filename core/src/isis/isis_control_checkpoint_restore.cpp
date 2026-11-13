@@ -10,7 +10,7 @@
 namespace router::isis {
 std::unique_ptr<ControlWorker::PreparedCheckpoint> ControlWorker::prepare_checkpoint_restore(
     const ControlWorkerCheckpoint &saved, std::uint64_t source_epoch, RuntimeClock::time_point now) const noexcept {
-  if (saved.version != 6U || !source_epoch || saved.barrier_epoch != source_epoch ||
+  if (saved.version != 7U || !source_epoch || saved.barrier_epoch != source_epoch ||
       saved.forwarding_shards != forwarding_shards_ || saved.maximum_circuits != maximum_circuits_ ||
       saved.active_circuits > maximum_circuits_ || saved.first_device >= devices_.size() ||
       saved.devices.size() > devices_.size()) return nullptr;

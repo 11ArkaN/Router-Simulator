@@ -62,6 +62,8 @@ ControlError ControlWorker::prepare_fragment_origination(UpdateInstanceProgram &
   try {
     auto &origin = *program.origination;
     auto &records = origin.content.records;
+    const auto area_identity = make_area_set(program);
+    static_cast<void>(area_identity);
     for (std::size_t level{}; level < 2U; ++level) if (program.levels[level]) {
       std::array<bool, 256U> present{};
       std::size_t roots{}, pseudonodes{};
@@ -110,7 +112,19 @@ ControlError ControlWorker::prepare_fragment_origination(UpdateInstanceProgram &
     packet::isis::LanId source{};
     std::copy(program.local.begin(), program.local.end(), source.begin());
     for (std::size_t level{}; level < 2U; ++level) if (origin.content.levels[level]) {
-      if (!workspace->add_root_options(origin.content, level)) return ControlError::capacity;
+      std::array<std::uint8_t, 257U> area_bytes{};
+      std::array<NeighborArea, configuration_profile::area_addresses_maximum> worst_areas{};
+      std::optional<std::span<const std::uint8_t>> area_override;
+      if (level == 1U && origin.automatic_area_set) {
+        for (std::size_t index{}; index < program.maximum_areas; ++index) {
+          worst_areas[index].length = packet::isis::maximum_area_octets;
+          worst_areas[index].bytes.back() = static_cast<std::uint8_t>(index);
+        }
+        const auto size = encode_area_set_options(std::span{worst_areas}.first(program.maximum_areas), area_bytes);
+        if (!size) return ControlError::capacity;
+        area_override = std::span<const std::uint8_t>{area_bytes}.first(*size);
+      }
+      if (!workspace->add_root_options(origin.content, level, area_override)) return ControlError::capacity;
       if (origin.prefixes) {
         const bool prefixes_valid = origin.ipv6_addresses
             ? append_local_af_prefixes(*workspace, *origin.prefixes, *origin.ipv6_addresses, level, true)

@@ -2,6 +2,7 @@
 // independently from its local configuration and never inspects the lab graph.
 
 #include "router/multi_device_routing.hpp"
+#include "router/routing_selected_candidates.hpp"
 
 #include <algorithm>
 #include <tuple>
@@ -231,6 +232,20 @@ void select_isis_distances(DynamicView<Entry> input, std::span<bool> selected) n
   }
 }
 
+template <typename Entry>
+bool select_projection_candidates(std::span<const Entry> first, std::span<const Entry> second,
+    std::span<bool> output) noexcept {
+  constexpr auto capacity = device_catalog::maximum_dynamic_routes_per_router;
+  if (first.size() > capacity || second.size() > capacity - first.size() || output.size() != first.size() + second.size()) return false;
+  const DynamicView<Entry> input{first, second};
+  constexpr bool ipv6 = std::is_same_v<Entry, Ipv6DynamicInput>;
+  for (const auto &entry : input)
+    if (entry.configured && entry.source == RouteSource::isis && entry.prefix_length > (ipv6 ? 128U : 32U)) return false;
+  std::fill(output.begin(), output.end(), false);
+  select_isis_distances(input, output);
+  return true;
+}
+
 template <typename Program, typename Entry>
 void compile_routes(Program &output, std::uint64_t generation,
     std::span<const Entry> primary, std::span<const Entry> repairs, bool reset_unused = true) noexcept {
@@ -242,6 +257,11 @@ void compile_routes(Program &output, std::uint64_t generation,
   std::copy(repairs.begin(), repairs.end(), output.routes.begin() + primary.size());
 }
 } // namespace
+
+bool select_isis_candidates(std::span<const DynamicInput> first, std::span<const DynamicInput> second,
+    std::span<bool> output) noexcept { return select_projection_candidates(first, second, output); }
+bool select_isis_candidates(std::span<const Ipv6DynamicInput> first, std::span<const Ipv6DynamicInput> second,
+    std::span<bool> output) noexcept { return select_projection_candidates(first, second, output); }
 
 bool RouteTable::rebuild(std::span<const ConnectedInput> connected,
                          std::span<const StaticInput> statics,

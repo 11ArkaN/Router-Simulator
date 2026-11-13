@@ -5,7 +5,6 @@
 #include "router/isis_control_worker.hpp"
 #include "router/isis_control_checkpoint.hpp"
 #include "router/isis_operational.hpp"
-#include "router/isis_area_attachment.hpp"
 
 #include <algorithm>
 #include <new>
@@ -405,22 +404,11 @@ void ControlWorker::commit_generation(DeviceState &device) noexcept {
     for (auto &family : instance.configuration.routing) if (family) family->ignore_attached_bit = edit.ignore;
     auto &origin = *instance.configuration.origination;
     origin.suppress_attached_bit = edit.suppress;
-    if (origin.automatic_area_attachment) {
-      bool attached = false;
-      if (instance.process && instance.decisions[0U] && instance.decisions[1U] &&
-          instance.decision_status[0U] == DecisionStatus::applied && instance.decision_status[1U] == DecisionStatus::applied &&
-          instance.consumed_decision_revision == instance.decision_revisions) {
-        const auto derived = derive_area_attachment(instance.process->level(0U)->database().database(),
-            *instance.decisions[0U], instance.process->level(1U)->database().database(), *instance.decisions[1U],
-            instance.configuration.maximum_areas, edit.suppress, RuntimeClock::now());
-        if (!derived) std::terminate();
-        attached = *derived;
-      }
+    if (origin.automatic_area_attachment && edit.suppress)
       for (auto &record : origin.content.records) if (!record.level && !record.id[6U] && !record.id[7U]) {
-        const auto flags = static_cast<std::uint8_t>((record.flags & ~8U) | (attached ? 8U : 0U));
-        if (record.flags != flags) { record.flags = flags; instance.local_roots_dirty[0U] = true; }
+        if (record.flags & 8U) { record.flags &= static_cast<std::uint8_t>(~8U); instance.local_roots_dirty[0U] = true; }
       }
-    }
+    service_area_decision(instance, RuntimeClock::now());
   }
   for (std::size_t index{}; index < staged.prefix_catalogs.size(); ++index) {
     auto &edit = staged.prefix_catalogs[index];
@@ -714,6 +702,14 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
       result.database_validations = instance.database_validations;
       result.decision_revisions = instance.decision_revisions;
       result.corrupted_lsp = instance.corrupted_lsp;
+      if (instance.areas) {
+        result.areas.emplace();
+        const auto effective = instance.areas->effective();
+        std::copy(effective.begin(), effective.end(), result.areas->effective.begin());
+        result.areas->count = static_cast<std::uint8_t>(effective.size());
+        result.areas->manual_addresses_dropped = instance.areas->manual_addresses_dropped();
+        result.areas->last_drop = instance.last_area_drop;
+      }
       packet::isis::LspId root{};
       std::copy(instance.configuration.local.begin(), instance.configuration.local.end(), root.begin());
       for (std::size_t level{}; level < result.retained_lsps.size(); ++level)

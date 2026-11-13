@@ -32,9 +32,10 @@ InstanceProgramResult prepare_instance_program(const InstanceIntent &intent,
   const auto lifetime = intent.lsp_lifetime_seconds.value_or(defaults::lsp_lifetime_seconds_default);
   const auto mtu = intent.lsp_mtu_octets.value_or(defaults::lsp_mtu_octets_default);
   const auto mask = static_cast<std::uint8_t>(intent.levels.value_or(ConfiguredLevels::both));
-  origin.automatic_area_attachment = mask == 3U && context.hierarchy_decision.has_value();
+  origin.automatic_area_set = (mask & 1U) && context.hierarchy_decision.has_value();
+  origin.automatic_area_attachment = mask == 3U && origin.automatic_area_set;
   origin.suppress_attached_bit = intent.suppress_attached_bit.value_or(defaults::suppress_attached_bit_default);
-  if (origin.automatic_area_attachment) {
+  if (origin.automatic_area_set) {
     if (context.hierarchy_decision->protocol || context.hierarchy_decision->prefixes)
       return fail(Status::invalid_context);
     program.decision = context.hierarchy_decision;

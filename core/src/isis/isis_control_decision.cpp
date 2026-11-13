@@ -133,23 +133,7 @@ void ControlWorker::service_p2p_decision(OwnedInstance &instance, const DeviceSt
       calculate(instance.configuration.routing[family]->calculation, owned.decisions, owned.consumed, owned.status,
           nullptr, &owned.bindings);
     }
-  auto &origin = *instance.configuration.origination;
-  if (area_calculated && origin.automatic_area_attachment && instance.decisions[0U] && instance.decisions[1U] &&
-      instance.decision_status[0U] == DecisionStatus::applied &&
-      instance.consumed_decision_revision[0U] == instance.decision_revisions[0U] &&
-      instance.decision_status[1U] == DecisionStatus::applied &&
-      instance.consumed_decision_revision[1U] == instance.decision_revisions[1U]) {
-    auto root = std::find_if(origin.content.records.begin(), origin.content.records.end(), [](const auto &record) {
-      return !record.level && !record.id[6U] && !record.id[7U];
-    });
-    if (root == origin.content.records.end()) { instance.status = UpdateStatus::invalid_configuration; return; }
-    const auto attached = derive_area_attachment(instance.process->level(0U)->database().database(),
-        *instance.decisions[0U], instance.process->level(1U)->database().database(), *instance.decisions[1U],
-        instance.configuration.maximum_areas, origin.suppress_attached_bit, now);
-    if (!attached) { instance.status = UpdateStatus::invalid_configuration; return; }
-    const auto flags = static_cast<std::uint8_t>((root->flags & ~8U) | (*attached ? 8U : 0U));
-    if (flags != root->flags) { root->flags = flags; instance.local_roots_dirty[0U] = true; }
-  }
+  if (area_calculated) service_area_decision(instance, now);
   // All configured families in a level share one SPF hold. Bounded partial
   // quanta retain the same ready deadline until every revision is consumed.
   for (std::size_t level{}; level < 2U; ++level)

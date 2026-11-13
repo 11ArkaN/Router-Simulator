@@ -128,6 +128,39 @@ std::unique_ptr<ControlWorker::OwnedInstance> ControlWorker::restore_checkpoint_
       if (saved.spf[level] && (!result->spf[level]->restore(*saved.spf[level], now) ||
           (saved.spf[level]->pending_nanoseconds && !result->level_decisions_pending(level)))) return nullptr;
     }
+    if (static_cast<bool>(result->areas) != saved.areas.has_value()) return nullptr;
+    if (saved.areas) {
+      if (!result->areas->restore(*saved.areas)) return nullptr;
+      if (saved.last_area_drop && std::none_of(result->areas->manual().begin(), result->areas->manual().end(),
+          [&](const auto &area) { return area == saved.last_area_drop->area; })) return nullptr;
+      if (!saved.last_area_drop && result->areas->manual_addresses_dropped()) return nullptr;
+      result->last_area_drop = saved.last_area_drop;
+      if (saved.local && policy.levels[1U] && !saved.local_roots_dirty[1U]) {
+        const auto &entries = saved.local->entries;
+        const auto root = std::find_if(entries.begin(), entries.end(), [](const auto &entry) {
+          return entry.content.level == 1U && !entry.content.id[6U] && !entry.content.id[7U];
+        });
+        if (root == entries.end() || !area_set_options_match(root->content.options, result->areas->effective())) return nullptr;
+      }
+      bool current = result->admin_enabled && result->status == UpdateStatus::applied && result->process &&
+          result->decisions[0U] && result->decision_status[0U] == DecisionStatus::applied &&
+          result->consumed_decision_revision[0U] == result->decision_revisions[0U];
+      if (current) {
+        const auto &database = result->process->level(0U)->database().database();
+        for (std::size_t index{}; index < database.size(); ++index) {
+          const auto record = database.at(index, now);
+          if (record && !record->header.remaining_seconds && !record->purge_installed &&
+              !record->expiration_notified) current = false;
+        }
+        if (current) {
+          // Completed area state and transition history were committed in the
+          // same control turn as the diagnostic. Recalculation on this detached
+          // owner must neither alter the set nor generate a missing occurrence.
+          const auto checked = result->areas->recompute(database, *result->decisions[0U], now);
+          if (!checked.valid || checked.changed || checked.events) return nullptr;
+        }
+      }
+    } else if (saved.last_area_drop) return nullptr;
     if (policy.origination && policy.origination->automatic_area_attachment && saved.local && !saved.local_roots_dirty[0U]) {
       const auto &records = policy.origination->content.records;
       const auto root = std::find_if(records.begin(), records.end(), [](const auto &record) {
@@ -163,7 +196,7 @@ std::unique_ptr<ControlWorker::OwnedInstance> ControlWorker::restore_checkpoint_
       if (current) {
         const auto attached = derive_area_attachment(result->process->level(0U)->database().database(),
             *result->decisions[0U], result->process->level(1U)->database().database(), *result->decisions[1U],
-            policy.maximum_areas, policy.origination->suppress_attached_bit, now);
+            policy.maximum_areas, policy.origination->suppress_attached_bit, now, policy.local);
         const auto &records = policy.origination->content.records;
         const auto root = std::find_if(records.begin(), records.end(), [](const auto &record) {
           return !record.level && !record.id[6U] && !record.id[7U];

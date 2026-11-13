@@ -143,8 +143,11 @@ ControlError ControlWorker::validate_update_program(UpdateInstanceProgram &progr
   for (const auto &level : program.levels)
     if (level && (level->authenticate_lsp || level->authenticate_csnp || level->authenticate_psnp))
       return ControlError::unsupported_authentication;
+  if (program.origination && program.origination->automatic_area_set &&
+      (!program.levels[0U] || !program.decision || program.decision->protocol || program.decision->prefixes ||
+          program.maximum_areas > configuration_profile::area_addresses_maximum)) return ControlError::invalid_argument;
   if (program.origination && program.origination->automatic_area_attachment &&
-      (!program.levels[0U] || !program.levels[1U] || !program.decision ||
+      (!program.origination->automatic_area_set || !program.levels[0U] || !program.levels[1U] || !program.decision ||
           program.decision->protocol || program.decision->prefixes)) return ControlError::invalid_argument;
   const bool routing = std::any_of(program.routing.begin(), program.routing.end(),
       [](const auto &family) { return family.has_value(); });

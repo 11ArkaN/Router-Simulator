@@ -50,6 +50,8 @@ ControlWorkerCheckpoint ControlWorker::capture_checkpoint(RuntimeClock::time_poi
       saved.instance = static_cast<std::uint8_t>(index);
       saved.configuration = instance.configuration;
       saved.admin_enabled = instance.admin_enabled;
+      if (instance.areas) saved.areas = instance.areas->checkpoint();
+      saved.last_area_drop = instance.last_area_drop;
       if (instance.process) saved.process = instance.process->checkpoint(now);
       if (instance.local) saved.local = instance.local->checkpoint(now);
       saved.consumed_decision_revision = instance.consumed_decision_revision;

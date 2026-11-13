@@ -30,7 +30,11 @@ public:
   // Only Area Addresses are pinned to zero; movable root metadata/prefixes
   // retain their previous fragment where possible. Program storage outlives
   // compose/reset. Domain zero is reserved for these generated metadata keys.
-  [[nodiscard]] bool add_root_options(const LocalLspProgram &program, std::size_t level) noexcept;
+  // A present area override replaces all base Area Addresses options as one
+  // root-only unit; empty omits them. It borrows complete validated options
+  // until compose/reset and never changes the admitted base configuration.
+  [[nodiscard]] bool add_root_options(const LocalLspProgram &program, std::size_t level,
+      std::optional<std::span<const std::uint8_t>> area_override = {}) noexcept;
   [[nodiscard]] bool add_link(FragmentUnitId key, packet::isis::LanId neighbor,
       const P2pOriginMetric &metric, std::optional<std::uint8_t> previous) noexcept;
   [[nodiscard]] bool add_pseudonode_link(FragmentUnitId key, packet::isis::SystemId peer,

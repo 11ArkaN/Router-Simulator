@@ -352,6 +352,7 @@ add_library(router_device STATIC
   src/device/ies_service.cpp
   src/runtime/lab_registry.cpp
   src/forwarding/multi_device_routing.cpp
+  src/forwarding/isis_route_selection.cpp
   src/forwarding/routing.cpp
   src/device/router_hardware_inventory.cpp
 )
@@ -375,6 +376,8 @@ add_library(router_network STATIC
   src/isis/isis_control_update_egress.cpp
   src/isis/isis_control_update_lifetime.cpp
   src/isis/isis_control_origin.cpp
+  src/isis/isis_area_set.cpp
+  src/isis/isis_control_area.cpp
   src/isis/isis_control_decision.cpp
   src/isis/isis_control_routes.cpp
   src/isis/isis_control_neighbors.cpp
@@ -824,6 +827,8 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_link_graph_test.cpp
     tests/isis/isis_attached_default_test.cpp
   tests/isis/isis_area_attachment_control_test.cpp
+    tests/isis/isis_route_selection_test.cpp
+    tests/isis/isis_area_set_control_test.cpp
     tests/isis/isis_neighbor_key_test.cpp
     tests/ospf/ospf_topology_test.cpp
     tests/forwarding/route_policy_test.cpp

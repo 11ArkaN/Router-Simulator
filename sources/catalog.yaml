@@ -1,5 +1,33 @@
 schema_version: 1
 records:
+  - id: ietf.isis.selected_interlevel_export
+    kind: routing-protocol-selected-route-projection
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc5302.html
+    section: Section 3.3 selection of L1 routes used for forwarding before L2 export
+    rfc_refs: [RFC5302, RFC7794]
+    yang_path: /configure/router/isis/level
+    last_verified_at: 2026-11-13
+    implementation: [core/include/router/isis_selection_channel.hpp, core/include/router/isis_route_selection.hpp, core/include/router/routing_selected_candidates.hpp, core/src/forwarding/isis_route_selection.cpp, core/src/forwarding/multi_device_routing.cpp]
+    tests: [core/tests/isis/isis_route_selection_test.cpp]
+    status: experimental
+    notes: A copied versioned bitmap identifies IS-IS candidates present in committed primary RIB selections. The existing IS-IS rank, metric and secondary metric comparator is reused before matching complete forwarding identities. Retirement mappings retain original publication ordinals. Repair paths and routes displaced by other protocols are excluded. Feedback delivery and interlevel origination are not yet connected.
+  - id: iso.10589.2002.area_addresses
+    kind: routing-protocol-area-state
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: iso-standard-and-ietf-rfc
+    source_url: https://www.iso.org/standard/30932.html
+    section: ISO 10589 sections 7.1.8 and 7.2.11, LSP area-address distribution and manualAddressDroppedFromArea event; RFC 6991 counter32
+    rfc_refs: [RFC6991]
+    yang_path: /state/router/isis/statistics/manual-address-dropped-from-areas
+    last_verified_at: 2026-11-13
+    implementation: [core/include/router/isis_area_set.hpp, core/src/isis/isis_area_set.cpp, core/src/isis/isis_control_area.cpp, core/src/isis/isis_control_neighbors.cpp, core/src/isis/isis_control_checkpoint_instance.cpp, schemas/checkpoint/19.yaml]
+    tests: [core/tests/isis/isis_attached_default_test.cpp, core/tests/isis/isis_area_attachment_control_test.cpp, core/tests/isis/isis_area_set_control_test.cpp]
+    status: experimental
+    notes: The instance owner retains the numerically limited union of reachable L1 root areas. L1 LSP and Hello metadata remain manual addresses; L2 root composition replaces its Area Addresses option with the computed set. A manual address observed in the union and rejected by truncation generates one Major notification and counter32 occurrence. Repeated absence does not repeat the event; reinstatement rearms it without a Cleared notification. Missing unobserved manual addresses do not count as truncation. Fixed cold capacity supports allocation-free service and restore. The latest notification is a copied state projection rather than an event stream. Managed statistics reports and partition-area integration remain pending.
   - id: iso.10589.2002.attached_default
     kind: routing-protocol-hierarchy-default-selection
     release: 26.7.R1
@@ -10,7 +38,7 @@ records:
     rfc_refs: [RFC1195, RFC3787, RFC5120, RFC5308]
     yang_path: /configure/router/isis/ignore-attached-bit
     last_verified_at: 2026-11-13
-    implementation: [core/include/router/isis_attached_default.hpp, core/include/router/isis_graph_metadata.hpp, core/include/router/isis_area_attachment.hpp, core/src/isis/isis_control_decision.cpp, core/src/isis/isis_control_routes.cpp, core/src/isis/isis_instance_program.cpp, core/src/runtime/isis_checkpoint_fields.hpp, core/src/isis/isis_control_checkpoint_instance.cpp, core/src/isis/isis_control_worker.cpp, core/src/runtime/lab_runtime_isis.cpp, schemas/checkpoint/18.yaml]
+    implementation: [core/include/router/isis_attached_default.hpp, core/include/router/isis_graph_metadata.hpp, core/include/router/isis_area_attachment.hpp, core/src/isis/isis_control_decision.cpp, core/src/isis/isis_control_routes.cpp, core/src/isis/isis_instance_program.cpp, core/src/runtime/isis_checkpoint_fields.hpp, core/src/isis/isis_control_checkpoint_instance.cpp, core/src/isis/isis_control_worker.cpp, core/src/runtime/lab_runtime_isis.cpp, schemas/checkpoint/19.yaml]
     tests: [core/tests/isis/isis_attached_default_test.cpp, core/tests/isis/isis_area_attachment_control_test.cpp]
     status: experimental
     notes: The same-owner adapter reads only live L1 root fragments and a revision-matched completed family/topology SPF decision. It selects minimum-cost attached exits, retains ECMP, deduplicates actual first-hop tokens and preserves explicit usable L1 defaults. Local attachment selects Self without a forwarding next hop. Selected MT attachment comes from TLV 229, not the base ATT bit. Two-pass collection preserves output on malformed bindings or insufficient capacity. The route publisher adds fallback candidates to its complete revision-fenced generation. A separately budgeted family-independent decision unions reachable L1 root area lists, retains the maximum permitted numerically lowest distinct addresses and derives attachment from reachable L2 areas outside that set. The control owner regenerates its L1 root after attachment changes; suppression prevents advertisement. Encoded two-router L2-only fixtures verify attachment, suppression and withdrawal after carrier loss. Settled checkpoint restoration validates desired attachment against current diagnostic revisions while preserving pending composition, SPF and expiry states. Recovery clears attachment from retired databases. Transactional live receive and transmit policies preserve circuit identities; policy participates in route publication stamps and ABI 18. Public combined-level admission and selected-route interlevel origination remain incomplete.

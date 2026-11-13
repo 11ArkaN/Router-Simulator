@@ -194,6 +194,8 @@ public:
   // selection and zeros unused rows without a profile-sized return temporary.
   // No allocation, borrowing, refusal or mutation of the RIB occurs.
   void compile_into(FibProgram &output, std::uint64_t generation) const noexcept;
+  // Primary selections only, ordered by network ascending then prefix length
+  // descending. Repair paths remain separate; the view expires on rebuild.
   [[nodiscard]] std::span<const Route> routes() const noexcept {
     return {routes_.data(), count_};
   }
@@ -340,6 +342,7 @@ public:
   // Same owner and exclusive output, as IPv4 compile_into. Unused rows are
   // cleared so a reused transfer arena cannot expose withdrawn route values.
   void compile_into(Ipv6FibProgram &output, std::uint64_t generation) const noexcept;
+  // Same canonical primary-only ordering and lifetime as the IPv4 view.
   [[nodiscard]] std::span<const Ipv6Route> routes() const noexcept {
     return {routes_.data(), count_};
   }

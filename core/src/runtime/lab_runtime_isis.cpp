@@ -227,6 +227,8 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
     context.transmission = {2U, 5U, 10U, 100ms, 10U, mtu, 1U};
     context.minimum_generation_interval = wait->maximum; context.resource_retry = 100ms;
     context.random = epoch; context.hostname = after.system_name;
+    if (configured->levels == ConfiguredLevels::level1 || configured->levels == ConfiguredLevels::both)
+      context.hierarchy_decision = P2pDecisionProgram{64U, 256U, 512U, {}, {}};
     if (configured->ipv4_routing.value_or(configuration_profile::ipv4_routing_default)) {
       context.routing[0U].emplace();
       context.routing[0U]->calculation = {64U, 256U, 512U, packet::isis::ipv4_nlpid, PrefixCollectionBudget{128U, 4096U}};

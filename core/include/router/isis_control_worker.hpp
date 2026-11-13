@@ -19,6 +19,8 @@
 #include "router/route_publication.hpp"
 #include "router/isis_database_validation.hpp"
 #include "router/isis_sequence_recovery.hpp"
+#include "router/isis_area_set.hpp"
+#include "router/generated_isis_configuration_profile.hpp"
 #include "router/owned_spsc_channel.hpp"
 #include "router/protocol_packet_channel.hpp"
 #include "router/protocol_transmission.hpp"
@@ -171,7 +173,7 @@ struct LocalOriginProgram {
   // root owner. Forwarding AF messages are validated before editing readiness.
   std::optional<LocalIpv6AddressCatalog> ipv6_addresses{};
   // Canonical L1/L2 programs derive attachment from family-independent L2 SPF.
-  bool automatic_area_attachment{}, suppress_attached_bit{};
+  bool automatic_area_set{}, automatic_area_attachment{}, suppress_attached_bit{};
   [[nodiscard]] bool automatic_roots() const noexcept {
     return neighbors || broadcast_neighbors || prefixes || ipv6_addresses;
   }
@@ -335,6 +337,14 @@ struct CircuitCounters {
   std::uint64_t lsp_enqueued{}, lsp_refused{}, snp_enqueued{}, snp_refused{};
   std::uint64_t lsp_too_large{}, purge_pending{}, designated_changes{};
 };
+// Copied control-owner projection, not an event transfer stream. The latest
+// event remains Major after reinstatement; the counter includes every event.
+struct ControlAreaProjection {
+  std::array<NeighborArea, configuration_profile::area_addresses_maximum> effective{};
+  std::uint8_t count{};
+  std::uint32_t manual_addresses_dropped{};
+  std::optional<ManualAreaDropped> last_drop;
+};
 struct ControlResult {
   std::uint64_t id{};
   // A nonzero value reports protocol-owner quiescence only. The result ring's
@@ -363,6 +373,7 @@ struct ControlResult {
   std::array<std::optional<LspLinkCounts>, 2U> local_root_links{};
   std::array<std::uint64_t, 2U> database_validations{}, decision_revisions{};
   std::optional<packet::isis::LspId> corrupted_lsp{};
+  std::optional<ControlAreaProjection> areas{};
   std::optional<packet::isis::LspView> selected_lsp{};
   std::optional<LspLinkCounts> selected_lsp_links{};
   std::array<std::uint64_t, 2U> decision_runs{};
@@ -432,6 +443,8 @@ private:
       std::array<std::vector<std::optional<AdjacencyNextHop>>, 2U> bindings;
     };
     std::array<RouteFamily, 2U> route_families;
+    std::unique_ptr<AreaAddressSet> areas;
+    std::optional<ManualAreaDropped> last_area_drop;
     std::array<std::optional<SpfThrottle>, 2U> spf;
     struct DecisionInput {
       std::vector<P2pSpfSeed> seeds;
@@ -484,6 +497,7 @@ private:
             UpdateInstanceSelector{configuration.format, configuration.wire_instance},
             configuration.maximum_circuits, epoch)) {
       reset_spf();
+      areas = make_area_set(configuration);
       const bool routing = std::any_of(configuration.routing.begin(), configuration.routing.end(),
           [](const auto &family) { return family.has_value(); });
       if (configuration.decision || routing) {
@@ -752,6 +766,8 @@ private:
   [[nodiscard]] ControlError apply_local_ipv6_readiness(DeviceState &, const lab::Ipv6ReadinessChange &) noexcept;
   [[nodiscard]] static ControlError validate_local_af_subscription(ControlCommand &, const DeviceState &) noexcept;
   void refresh_local_ipv6_hello(DeviceState &, std::size_t instance, std::uint64_t interface_id) noexcept;
+  [[nodiscard]] static std::unique_ptr<AreaAddressSet> make_area_set(const UpdateInstanceProgram &);
+  static void service_area_decision(OwnedInstance &, RuntimeClock::time_point) noexcept;
   [[nodiscard]] static std::unique_ptr<OriginFragmentWorkspace> make_fragment_workspace(const UpdateInstanceProgram &program);
   [[nodiscard]] static ControlError prepare_fragment_origination(UpdateInstanceProgram &program) noexcept;
   [[nodiscard]] static ControlError prepare_neighbor_origination(UpdateInstanceProgram &program) noexcept;

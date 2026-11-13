@@ -54,6 +54,11 @@ ControlError ControlWorker::edit_local_content(ControlCommand &command, OwnedIns
       std::erase_if(proposed.origination->content.records, [](const auto &record) { return record.id[6U] != 0U; });
       const auto admitted = prepare_neighbor_origination(proposed);
       if (admitted != ControlError::none) return admitted;
+      if (instance.areas) {
+        const auto candidate = make_area_set(proposed);
+        if (!candidate || !std::ranges::equal(candidate->manual(), instance.areas->manual()))
+          return ControlError::unsupported_origination;
+      }
     } catch (const std::bad_alloc &) { return ControlError::capacity; }
       catch (const std::length_error &) { return ControlError::capacity; }
   }
@@ -170,6 +175,7 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
   // memory for two complete databases. Desired configuration stays in the shell.
   instance.local.reset();
   instance.process.reset();
+  if (instance.areas) instance.areas->reset_to_manual();
   // Attachment is derived from the destroyed L2 database. A fresh entity has
   // no such reachability until its own diagnostics complete; retaining ATT
   // would advertise an exit supported only by the retired owner.

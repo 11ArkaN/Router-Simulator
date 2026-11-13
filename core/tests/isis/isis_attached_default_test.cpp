@@ -3,6 +3,7 @@
 // bindings; no remote runtime or editor topology supplies routing knowledge.
 #include "router/isis_attached_default.hpp"
 #include "router/isis_area_attachment.hpp"
+#include "router/isis_area_set.hpp"
 #include "router/isis_lsp_builder.hpp"
 #include "router/isis_rib_input.hpp"
 #include <memory>
@@ -75,6 +76,7 @@ auto bindings(ip::AddressFamily family) {
 }
 }
 void isis_attached_default_tests() {
+  const packet::isis::SystemId local_system{1U, 2U, 3U, 4U, 5U, 1U};
   Fixture f;
   const auto a = node(1U), b = node(2U), c = node(3U), d = node(4U);
   const std::array local{ExtendedNeighbor{b, 10U, {}}, ExtendedNeighbor{c, 10U, {}}, ExtendedNeighbor{d, 20U, {}}};
@@ -169,11 +171,14 @@ void isis_attached_default_tests() {
         std::span{seeds}.first(2U), 3U, backbone.now) == DecisionStatus::applied);
   };
   backbone_spf();
-  require(!reachable_other_area(backbone.database, area_decision, local_areas, backbone.now));
+  require(!reachable_other_area(backbone.database, area_decision, local_areas, backbone.now, local_system));
   backbone.install(b, area_options(remote, back), 3U, 0U, 1U); backbone_spf();
-  require(reachable_other_area(backbone.database, area_decision, local_areas, backbone.now));
+  require(reachable_other_area(backbone.database, area_decision, local_areas, backbone.now, local_system));
   backbone.now += 2s; backbone_spf();
-  require(!reachable_other_area(backbone.database, area_decision, local_areas, backbone.now));
+  require(!reachable_other_area(backbone.database, area_decision, local_areas, backbone.now, local_system));
+  backbone.install(a, area_options(remote, local), 3U); backbone_spf();
+  require(!reachable_other_area(backbone.database, area_decision, local_areas, backbone.now, local_system));
+  backbone.install(a, area_options(ours, local), 3U); backbone_spf();
   Fixture merged;
   const NeighborArea lower{{0x48U}, 1U}, unreachable{{0x47U}, 1U};
   merged.install(a, area_options(ours, local), 3U);
@@ -194,11 +199,55 @@ void isis_attached_default_tests() {
   require(backbone_decision.calculate(backbone.database, {a, 0U, std::nullopt, GraphMetricStyle::wide},
       std::span{seeds}.first(2U), 3U, backbone.now) == DecisionStatus::applied);
   require(derive_area_attachment(merged.database, area_decision, backbone.database,
-      backbone_decision, 2U, false, backbone.now) == true);
+      backbone_decision, 2U, false, backbone.now, local_system) == true);
   require(derive_area_attachment(merged.database, area_decision, backbone.database,
-      backbone_decision, 2U, true, backbone.now) == false);
+      backbone_decision, 2U, true, backbone.now, local_system) == false);
   require(!derive_area_attachment(merged.database, area_decision, backbone.database,
-      backbone_decision, 0U, false, backbone.now));
+      backbone_decision, 0U, false, backbone.now, local_system));
+  const std::array manual_areas{remote, ours};
+  AreaAddressSet owned_areas(2U, manual_areas);
+  std::vector<NeighborArea> notifications;
+  notifications.reserve(4U);
+  const AreaSetObserver area_observer{&notifications, +[](void *opaque, const ManualAreaDropped &event) noexcept {
+    static_cast<std::vector<NeighborArea> *>(opaque)->push_back(event.area);
+  }};
+  const auto dropped = owned_areas.recompute(merged.database, area_decision, merged.now, area_observer);
+  require(dropped.valid && dropped.changed && dropped.events == 1U && notifications.size() == 1U &&
+      notifications.back() == remote && owned_areas.manual_addresses_dropped() == 1U);
+  require(owned_areas.recompute(merged.database, area_decision, merged.now, area_observer).events == 0U);
+  auto area_image = owned_areas.checkpoint();
+  AreaAddressSet resumed_areas(2U, manual_areas);
+  require(resumed_areas.restore(area_image) &&
+      resumed_areas.recompute(merged.database, area_decision, merged.now, area_observer).events == 0U);
+  area_image.rejected[0U] = 2U;
+  require(!resumed_areas.restore(area_image) && resumed_areas.manual_addresses_dropped() == 1U);
+  require(!owned_areas.recompute(backbone.database, area_decision, merged.now, area_observer).valid &&
+      owned_areas.manual_addresses_dropped() == 1U && notifications.size() == 1U);
+  const auto merged_spf = [&] {
+    require(area_decision.calculate(merged.database, {a, 0U, std::nullopt, GraphMetricStyle::wide},
+        std::span{seeds}.first(2U), 3U, merged.now) == DecisionStatus::applied);
+  };
+  merged.install(c, area_options(ours, back), 3U); merged_spf();
+  require(owned_areas.recompute(merged.database, area_decision, merged.now, area_observer).events == 0U &&
+      notifications.size() == 1U && owned_areas.effective().size() == 2U);
+  area_image = owned_areas.checkpoint();
+  area_image.manual_addresses_dropped = UINT32_MAX;
+  require(owned_areas.restore(area_image));
+  merged.install(c, area_options(lower, back), 3U); merged_spf();
+  require(owned_areas.recompute(merged.database, area_decision, merged.now, area_observer).events == 1U &&
+      notifications.size() == 2U && notifications.back() == remote && owned_areas.manual_addresses_dropped() == 0U);
+  owned_areas.reset_to_manual();
+  require(owned_areas.manual_addresses_dropped() == 0U && notifications.size() == 2U);
+  require(owned_areas.recompute(merged.database, area_decision, merged.now, area_observer).events == 1U &&
+      owned_areas.manual_addresses_dropped() == 1U && notifications.size() == 3U);
+  Fixture incomplete_area;
+  incomplete_area.install(a, area_options(ours, {}), 1U);
+  P2pRouteDecision incomplete_decision(8U, 24U, 64U, MetricStyle::wide);
+  require(incomplete_decision.calculate(incomplete_area.database, {a, 0U, std::nullopt, GraphMetricStyle::wide},
+      {}, 3U, incomplete_area.now) == DecisionStatus::applied);
+  AreaAddressSet missing_manual(2U, manual_areas);
+  require(missing_manual.recompute(incomplete_area.database, incomplete_decision, incomplete_area.now, area_observer).events == 0U &&
+      notifications.size() == 3U && missing_manual.manual_addresses_dropped() == 0U);
   // Two attached exits behind the same actual first hop produce one candidate.
   Fixture shared;
   const std::array to_b{ExtendedNeighbor{b, 5U, {}}};
