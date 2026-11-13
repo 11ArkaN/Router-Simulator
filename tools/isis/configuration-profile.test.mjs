@@ -14,7 +14,8 @@ test("configuration projection resolves inherited levels and selected-release de
     "csnp_interval_seconds_default = 10;", "level_lsp_mtu_octets_default = 1492;", "metric_maximum = 16777215;", "instance_maximum = 127;",
     "spf_max_wait_milliseconds_default = 10000;", "spf_initial_wait_milliseconds_default = 1000;",
     "spf_second_wait_milliseconds_default = 1000;", "lsp_max_wait_milliseconds_default = 5000;",
-    "lsp_initial_wait_milliseconds_default = 10;", "lsp_second_wait_milliseconds_default = 1000;"])
+    "lsp_initial_wait_milliseconds_default = 10;", "lsp_second_wait_milliseconds_default = 1000;", "default_ipv6_unicast_metric_default = 10;",
+    "default_ipv6_unicast_metric_minimum = 1;", "default_ipv6_unicast_metric_maximum = 16777215;"])
     assert.ok(output.includes(line), line);
 });
 test("parameter bounds remain exact and classic keywords map to YANG enum values", () => {

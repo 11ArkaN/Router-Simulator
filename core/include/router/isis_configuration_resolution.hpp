@@ -62,7 +62,7 @@ struct ResolvedInterface {
   std::uint16_t csnp_interval_seconds{}, retransmit_interval_seconds{},
       lsp_pacing_interval_milliseconds{};
   std::array<ResolvedInterfaceLevel, 2U> level;
-  // SR OS uses interface level-1 parameters on P2P regardless of operational
+  // SR OS uses interface level-1 Hello parameters on P2P regardless of operational
   // level. The common enabled gate is the complete interface level mask.
   // Absence means media type still needs resolution, or this is broadcast.
   std::optional<ResolvedP2pHello> point_to_point;

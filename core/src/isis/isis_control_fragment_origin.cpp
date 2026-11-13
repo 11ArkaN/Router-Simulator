@@ -15,6 +15,11 @@ std::unique_ptr<OriginFragmentWorkspace> ControlWorker::make_fragment_workspace(
       throw std::invalid_argument("IS-IS prefix unit budget overflow");
     units += origin.prefixes->units.size();
   }
+  if (origin.ipv6_addresses) {
+    if (origin.ipv6_addresses->units.size() > std::numeric_limits<std::size_t>::max() - units)
+      throw std::invalid_argument("IS-IS IPv6 address unit budget overflow");
+    units += origin.ipv6_addresses->units.size();
+  }
   // Base records may contain many independently movable TLVs. Reserving only
   // one unit per LSP would undercount the cold workspace after splitting them.
   for (const auto &record : origin.content.records) {
@@ -92,13 +97,28 @@ ControlError ControlWorker::prepare_fragment_origination(UpdateInstanceProgram &
       for (const auto &unit : origin.prefixes->units)
         if (!program.levels[unit.level] || !origin.content.levels[unit.level]) return ControlError::invalid_argument;
     }
+    if (origin.ipv6_addresses && (!origin.prefixes ||
+        !valid_local_ipv6_address_catalog(*origin.ipv6_addresses, *origin.prefixes))) return ControlError::invalid_argument;
+    // Managed assignment metadata has exactly one owner. Static TLV232 would
+    // bypass DAD gates, so refuse overlapping base content before publication.
+    if (origin.ipv6_addresses) for (const auto &record : records) if (!record.id[6U]) {
+      packet::isis::TlvCursor options(record.options);
+      while (const auto option = options.next()) if (option->code == 232U) return ControlError::invalid_argument;
+      if (!options.valid()) return ControlError::invalid_argument;
+    }
     auto workspace = make_fragment_workspace(program);
     packet::isis::LanId source{};
     std::copy(program.local.begin(), program.local.end(), source.begin());
     for (std::size_t level{}; level < 2U; ++level) if (origin.content.levels[level]) {
       if (!workspace->add_root_options(origin.content, level)) return ControlError::capacity;
-      if (origin.prefixes && !append_local_prefix_catalog(*workspace, *origin.prefixes, level, true))
-        return ControlError::capacity;
+      if (origin.prefixes) {
+        const bool prefixes_valid = origin.ipv6_addresses
+            ? append_local_af_prefixes(*workspace, *origin.prefixes, *origin.ipv6_addresses, level, true)
+            : append_local_prefix_catalog(*workspace, *origin.prefixes, level, true);
+        if (!prefixes_valid) return ControlError::capacity;
+        if (origin.ipv6_addresses && !append_local_ipv6_addresses(*workspace, *origin.ipv6_addresses, *origin.prefixes, true))
+          return ControlError::capacity;
+      }
       // These sizing-only zero IDs are never admitted or emitted. Their real
       // configured metrics determine exact wide/narrow unit lengths. Actual
       // runtime units always come from this owner's accepted circuit snapshots.

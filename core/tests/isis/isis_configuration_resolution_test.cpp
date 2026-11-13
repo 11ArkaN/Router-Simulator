@@ -100,12 +100,14 @@ void isis_configuration_resolution_tests() {
   const auto p2p = resolve_interface(p2p_instance, p2p_interface);
   require(p2p.point_to_point && p2p.point_to_point->enabled && !p2p.level[0U].enabled &&
       p2p.point_to_point->hello_interval_seconds == 7U &&
-      p2p.point_to_point->nominal_holding_seconds == 21U && p2p.level[1U].metric == 25U);
+      p2p.point_to_point->nominal_holding_seconds == 21U && p2p.level[1U].metric == 90U);
   p2p_interface.level[0U].metric.reset();
+  p2p_interface.level[1U].metric.reset();
   p2p_instance.level[1U].present = true;
   p2p_instance.level[1U].default_metric = 40U;
   const auto inherited_p2p = resolve_interface(p2p_instance, p2p_interface);
   require(inherited_p2p.level[1U].metric == 40U && inherited_p2p.level[0U].metric == 10U);
+  p2p_interface.level[1U].metric = 90U;
   p2p_interface.type = ConfiguredInterfaceType::broadcast;
   const auto lan = resolve_interface(p2p_instance, p2p_interface);
   require(!lan.point_to_point && lan.level[1U].hello_interval_seconds == 20U && lan.level[1U].metric == 90U);

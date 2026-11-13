@@ -129,6 +129,8 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
   const auto route_floor = std::max(device.route_generation, command.route_generation_floor);
   if (!command.administrative.empty() && route_floor == std::numeric_limits<std::uint64_t>::max())
     return ControlError::epoch_exhausted;
+  const auto af_subscription = validate_local_af_subscription(command, device);
+  if (af_subscription != ControlError::none) return af_subscription;
   std::unique_ptr<DeviceState> additions;
   if (!command.new_instances.empty()) {
     if (command.new_instances.size() > device.instances.size() ||
@@ -561,6 +563,11 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     return result;
   }
   if (!device.active || device.handle != handle) { result.error = ControlError::stale_device; return result; }
+  if (command.kind == ControlCommandKind::set_local_ipv6_readiness) {
+    result.error = command.local_ipv6_readiness
+        ? apply_local_ipv6_readiness(device, *command.local_ipv6_readiness) : ControlError::invalid_argument;
+    return result;
+  }
   if (command.kind == ControlCommandKind::set_local_port_carrier ||
       command.kind == ControlCommandKind::query_local_port_usage) {
     const auto port = command.identity.physical_port_ordinal;
@@ -582,6 +589,12 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
         result.local_port_in_use = result.local_port_in_use || std::any_of(catalog.interfaces.begin(), catalog.interfaces.end(),
             [port](const auto &source) { return source.physical_port == port; });
         if (edit && set_local_prefix_carrier(catalog, port, command.carrier)) instance->local_roots_dirty.fill(true);
+        if (edit && !command.carrier && instance->configuration.origination->ipv6_addresses &&
+            clear_local_ipv6_port(*instance->configuration.origination->ipv6_addresses, port))
+          instance->local_roots_dirty.fill(true);
+        if (edit && instance->configuration.origination->ipv6_addresses)
+          for (const auto &interface : catalog.interfaces) if (interface.physical_port == port)
+            refresh_local_ipv6_hello(device, static_cast<std::size_t>(&instance - device.instances.data()), interface.interface_id);
       }
     result.carrier = command.carrier;
     return result;

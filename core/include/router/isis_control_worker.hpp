@@ -9,6 +9,8 @@
 #include "router/isis_lan_circuit_pair.hpp"
 #include "router/isis_local_lsp_set.hpp"
 #include "router/isis_local_prefix_catalog.hpp"
+#include "router/isis_local_ipv6_address_catalog.hpp"
+#include "router/ipv6_address_readiness.hpp"
 #include "router/isis_neighbor_origination.hpp"
 #include "router/isis_origin_fragment_workspace.hpp"
 #include "router/isis_p2p_decision.hpp"
@@ -73,7 +75,7 @@ enum class ControlCommandKind : std::uint8_t {
   query_sequence_recovery, replace_local_content, withdraw_local_content, add_lan_circuit, begin_checkpoint_barrier, end_checkpoint_barrier, capture_checkpoint,
   prepare_checkpoint_restore, commit_checkpoint_restore, abort_checkpoint_restore,
   set_circuit_carrier, set_update_admin_state, query_adjacencies,
-  set_local_port_carrier, query_local_port_usage
+  set_local_port_carrier, query_local_port_usage, set_local_ipv6_readiness
 };
 // Exactly one medium is supplied. A broadcast program requires the legacy
 // P2P value to remain empty; selecting LAN never constructs a P2P state owner.
@@ -165,8 +167,11 @@ struct LocalOriginProgram {
   // Conditional local reachability belongs to this instance, including passive
   // interfaces without a Hello/update transport. Availability is control-owned.
   std::optional<LocalPrefixCatalogProgram> prefixes{};
+  // Address-specific assignment gates and immutable LSP metadata share this
+  // root owner. Forwarding AF messages are validated before editing readiness.
+  std::optional<LocalIpv6AddressCatalog> ipv6_addresses{};
   [[nodiscard]] bool automatic_roots() const noexcept {
-    return neighbors || broadcast_neighbors || prefixes;
+    return neighbors || broadcast_neighbors || prefixes || ipv6_addresses;
   }
   bool operator==(const LocalOriginProgram &) const = default;
 };
@@ -255,6 +260,10 @@ struct ControlCommand {
   // Local physical state, serialized by the network owner. A carrier event
   // carries no peer data and preserves configuration identity and ticket floors.
   bool carrier{true};
+  // The serialized network owner has already matched the installed local AF
+  // subscription generation. It forwards only an owned value, synchronously,
+  // before replacing that generation. No forwarding pointer crosses shards.
+  std::optional<lab::Ipv6ReadinessChange> local_ipv6_readiness;
   CircuitIdentity identity;
   // set_update_admin_state selects an existing instance on this device.
   // This gate is independent of every circuit's local physical carrier.
@@ -274,6 +283,7 @@ struct ControlCommand {
   std::vector<UpdateAdminState> administrative;
   std::vector<UpdateAdjacencyPolicy> adjacency_policies;
   std::vector<UpdatePrefixCatalog> prefix_catalogs;
+  std::optional<std::vector<lab::Ipv6ReadinessWatch>> local_ipv6_watches;
   // Serialized RIB high water. Preparation reserves a strictly newer local
   // publication for synchronous administrative withdrawal of both families.
   std::uint64_t route_generation_floor{};
@@ -726,6 +736,11 @@ private:
   // Cold validation shares normal admission policy and prepares automatic
   // identities in the caller-owned program. Failure publishes no live state.
   [[nodiscard]] ControlError validate_update_program(UpdateInstanceProgram &program) const noexcept;
+  // Control owner only, no allocation. AF identity is prefiltered by the network
+  // subscriber owner; this owner matches configured address/physical bindings.
+  [[nodiscard]] ControlError apply_local_ipv6_readiness(DeviceState &, const lab::Ipv6ReadinessChange &) noexcept;
+  [[nodiscard]] static ControlError validate_local_af_subscription(ControlCommand &, const DeviceState &) noexcept;
+  void refresh_local_ipv6_hello(DeviceState &, std::size_t instance, std::uint64_t interface_id) noexcept;
   [[nodiscard]] static std::unique_ptr<OriginFragmentWorkspace> make_fragment_workspace(const UpdateInstanceProgram &program);
   [[nodiscard]] static ControlError prepare_fragment_origination(UpdateInstanceProgram &program) noexcept;
   [[nodiscard]] static ControlError prepare_neighbor_origination(UpdateInstanceProgram &program) noexcept;

@@ -3,6 +3,7 @@
 
 #include "router/isis_lsp_lifetime.hpp"
 #include "router/network_plane.hpp"
+#include "router/isis_ipv6_af_binding.hpp"
 #include "router/route_input_store.hpp"
 #include "router/network_transfer_checkpoint.hpp"
 #include "router/isis_runtime_checkpoint.hpp"
@@ -628,13 +629,15 @@ public:
       std::optional<std::chrono::steady_clock::time_point> (*)(
           void *, std::size_t, std::chrono::steady_clock::time_point) noexcept;
 
+  using FlushHandler = bool (*)(void *, std::size_t) noexcept;
+
   ForwardingShardWorker(std::size_t index, void *owner,
                         CommandHandler command_handler,
                         IngressHandler ingress_handler,
-                        MaintenanceHandler maintenance_handler)
+                        MaintenanceHandler maintenance_handler, FlushHandler flush_handler)
       : index_(index), owner_(owner), command_handler_(command_handler),
         ingress_handler_(ingress_handler),
-        maintenance_handler_(maintenance_handler) {}
+        maintenance_handler_(maintenance_handler), flush_handler_(flush_handler) {}
 
   ~ForwardingShardWorker() { stop(); }
   ForwardingShardWorker(const ForwardingShardWorker &) = delete;
@@ -686,6 +689,20 @@ public:
     return consumed;
   }
 
+  // Producer: this forwarding shard; consumer: the serialized link owner.
+  // The generated result-ring bound includes one unused slot. FIFO release/
+  // acquire copies retain full AF identity. A full ring leaves the projection
+  // unacknowledged; consumption wakes this producer for its retained retry.
+  [[nodiscard]] bool emit_ipv6_readiness(const Ipv6ReadinessChange &value) noexcept {
+    if (!ipv6_readiness_.try_push(value)) return false;
+    if (link_wakeup_) link_wakeup_(link_context_);
+    return true;
+  }
+  [[nodiscard]] bool take_ipv6_readiness(Ipv6ReadinessChange &value) noexcept {
+    if (!ipv6_readiness_.try_pop(value)) return false;
+    wake_protocol(); return true;
+  }
+
   // Protocol owners and the link owner coalesce notifications into one atomic
   // predicate. This bit carries no packet data and has no queue producer role.
   void wake_protocol() noexcept {
@@ -732,7 +749,7 @@ public:
   [[nodiscard]] ForwardShardTransferCheckpoint checkpoint_transfers(std::uint64_t epoch,
       std::optional<IsisEgressReceipt> retained, protocol::FrameExpiry::Clock::time_point expiry_anchor) const {
     if (!epoch || resume_requested_.load(std::memory_order_acquire) || !ingress_.empty() ||
-        !commands_.empty() || !results_.empty()) throw std::logic_error("Forwarding transfer capture requires quiescence");
+        !commands_.empty() || !results_.empty() || !ipv6_readiness_.empty()) throw std::logic_error("Forwarding transfer capture requires quiescence");
     ForwardShardTransferCheckpoint result;
     result.barrier_epoch = epoch;
     result.retained_receipt = retained;
@@ -856,9 +873,14 @@ private:
         if (!commands_.try_pop(*pending_command))
           pending_command.reset();
       }
+      // Quiescence includes AF publication, not merely packet ingress. A full
+      // local value ring postpones the pause acknowledgement until its consumer
+      // drains it. Waiting on the ordinary producer wakeup avoids a busy loop.
+      const bool pause_blocked = pending_command && pending_command->kind == ForwardCommandKind::pause &&
+          ingress_.empty() && flush_handler_ && !flush_handler_(owner_, index_);
       if (pending_command &&
           (pending_command->kind != ForwardCommandKind::pause ||
-           ingress_.empty())) {
+           (ingress_.empty() && !pause_blocked))) {
         // Keep the payload in the optional until its handler returns. Copying
         // it to a block local previously overlapped the handler's own staging
         // frame and could exhaust the fixed pthread stack during a large
@@ -905,7 +927,7 @@ private:
       std::unique_lock lock(wait_mutex_);
       const auto ready = [&] {
         return stop_requested_.load(std::memory_order_acquire) ||
-               pending_command.has_value() || !commands_.empty() ||
+               (pending_command.has_value() && !pause_blocked) || !commands_.empty() ||
                !ingress_.empty() || protocol_work_.load(std::memory_order_acquire);
       };
       if (!ready()) {
@@ -924,11 +946,13 @@ private:
   CommandHandler command_handler_{};
   IngressHandler ingress_handler_{};
   MaintenanceHandler maintenance_handler_{};
+  FlushHandler flush_handler_{};
   SpscRing<ForwardCommand, device_catalog::network_command_ring_entries>
       commands_;
   SpscRing<ForwardResult, device_catalog::network_result_ring_entries> results_;
   SpscRing<ForwardIngress, device_catalog::forwarding_ring_frames> ingress_;
   SpscRing<ForwardEgress, device_catalog::forwarding_ring_frames> egress_;
+  SpscRing<Ipv6ReadinessChange, device_catalog::network_result_ring_entries> ipv6_readiness_;
   SpscRing<IsisEgressReceipt, device_catalog::isis_packet_ring_frames + 1U> isis_receipts_;
   std::thread thread_;
   std::mutex wait_mutex_;
@@ -951,6 +975,7 @@ struct NetworkPlane::Impl {
     // Forwarding owner only, except while its explicit quiescence barrier is
     // held. The link owner maintains a separate value projection below.
     std::vector<IsisTransportBinding> isis_transports;
+    std::unique_ptr<Ipv6ReadinessProjection> ipv6_readiness;
     // The management endpoint is a separate protocol host attached to the
     // chassis OOB port. It never enters RouterForwarder's Base FIB and cannot
     // forward transit packets between management and data-plane interfaces.
@@ -1238,6 +1263,9 @@ struct NetworkPlane::Impl {
   isis::ControlChannels isis_channels{};
   std::unique_ptr<isis::ControlWorker> isis_worker;
   std::array<std::vector<IsisTransportBinding>, device_catalog::maximum_routers> isis_transports;
+  // Sole link-owner epoch projection; forwarding receives an immutable copy in
+  // its cold publisher. Checkpoint restore reconstructs both after queue drain.
+  std::array<std::uint64_t, device_catalog::maximum_routers> ipv6_readiness_epochs{};
   std::array<bool, device_catalog::maximum_routers> isis_registered{};
   std::array<std::size_t, device_catalog::maximum_routers> isis_instance_count{};
   std::uint64_t next_isis_command_id{1U};
@@ -1349,7 +1377,7 @@ struct NetworkPlane::Impl {
     for (std::size_t index = 0; index < separate_forwarding_shards; ++index) {
       forwarding_shards[index] = std::make_unique<ForwardingShardWorker>(
           index, this, apply_forward_command, apply_forward_ingress,
-          service_forwarding);
+          service_forwarding, flush_forwarding_af);
     }
     // Protocol state has a permanent owner from runtime startup. Emscripten
     // uses a fixed pthread pool, so constructing this actor on the first OSPF
@@ -1458,6 +1486,10 @@ struct NetworkPlane::Impl {
   static std::optional<Clock::time_point>
   service_forwarding(void *context, std::size_t shard_index,
                      Clock::time_point now) noexcept;
+  static bool flush_forwarding_af(void *, std::size_t) noexcept;
+  [[nodiscard]] bool publish_combined_af() noexcept;
+  void consume_local_af(const Ipv6ReadinessChange &) noexcept;
+  void drain_local_af() noexcept;
   [[nodiscard]] ForwardResult execute_forward(const ForwardRequest &command) noexcept;
   template <typename Program>
   [[nodiscard]] ForwardResult execute_forward(const ForwardCommandValue<Program> &command) noexcept;
@@ -1513,6 +1545,7 @@ struct NetworkPlane::Impl {
     std::array<std::vector<IsisTransportBinding>, device_catalog::maximum_routers> links;
     std::array<bool, device_catalog::maximum_routers> registered{};
     std::array<std::size_t, device_catalog::maximum_routers> instances{};
+    std::array<std::uint64_t, device_catalog::maximum_routers> af_epochs{};
   };
   [[nodiscard]] IsisRuntimeCheckpoint empty_isis_checkpoint(std::uint64_t epoch) const;
   [[nodiscard]] std::unique_ptr<PreparedIsisCheckpoint> prepare_isis_checkpoint(
@@ -4149,6 +4182,48 @@ void NetworkPlane::Impl::apply_forward_ingress(
   }
 }
 
+bool NetworkPlane::Impl::flush_forwarding_af(void *context, std::size_t shard_index) noexcept {
+  auto &owner = *static_cast<Impl *>(context);
+  auto &worker = *owner.forwarding_shards[shard_index];
+  const auto sink = [](void *target, const Ipv6ReadinessChange &value) noexcept {
+    return static_cast<ForwardingShardWorker *>(target)->emit_ipv6_readiness(value);
+  };
+  bool complete = true;
+  for (std::size_t index = shard_index; index < owner.routers.size(); index += owner.separate_forwarding_shards) {
+    auto &slot = owner.routers[index];
+    if (slot.forwarder && slot.ipv6_readiness)
+      complete = slot.forwarder->publish_ipv6_readiness(*slot.ipv6_readiness, &worker, sink) !=
+          Ipv6ReadinessPublication::blocked && complete;
+  }
+  return complete;
+}
+bool NetworkPlane::Impl::publish_combined_af() noexcept {
+  const auto sink = [](void *context, const Ipv6ReadinessChange &value) noexcept {
+    static_cast<Impl *>(context)->consume_local_af(value); return true;
+  };
+  bool complete = true;
+  for (auto &slot : routers) if (slot.forwarder && slot.ipv6_readiness)
+    complete = slot.forwarder->publish_ipv6_readiness(*slot.ipv6_readiness, this, sink) !=
+        Ipv6ReadinessPublication::blocked && complete;
+  return complete;
+}
+void NetworkPlane::Impl::consume_local_af(const Ipv6ReadinessChange &change) noexcept {
+  if (!live(change.device) || change.version != 1U || !change.configuration_generation ||
+      ipv6_readiness_epochs[change.device.index] != change.configuration_generation) return;
+  isis::ControlCommand command;
+  command.kind = isis::ControlCommandKind::set_local_ipv6_readiness;
+  command.identity.device = change.device;
+  command.local_ipv6_readiness = change;
+  if (execute_isis(std::move(command)).error != isis::ControlError::none) std::terminate();
+}
+void NetworkPlane::Impl::drain_local_af() noexcept {
+  for (std::size_t index{}; index < separate_forwarding_shards; ++index) {
+    Ipv6ReadinessChange change;
+    std::size_t budget = device_catalog::network_result_ring_entries - 1U;
+    while (budget-- && forwarding_shards[index]->take_ipv6_readiness(change)) consume_local_af(change);
+  }
+}
+
 std::optional<NetworkPlane::Clock::time_point>
 NetworkPlane::Impl::service_forwarding(void *context, std::size_t shard_index,
                                        Clock::time_point now) noexcept {
@@ -4264,6 +4339,7 @@ NetworkPlane::Impl::service_forwarding(void *context, std::size_t shard_index,
   }
   if (worker.can_emit(1U) && (owner.ospf_channels.egress[shard_index].consumer_pending() ||
       owner.isis_channels.egress[shard_index].consumer_pending())) next = now;
+  static_cast<void>(flush_forwarding_af(context, shard_index));
   return next;
 }
 
@@ -4360,12 +4436,17 @@ ForwardResult NetworkPlane::Impl::execute_forward(const ForwardCommandValue<Prog
     route_staging->device = command.device;
     route_staging->command = command.id;
   }
-  if (!parallel()) return apply_forward_command(this, 0U, command);
+  if (!parallel()) {
+    const auto result = apply_forward_command(this, 0U, command);
+    static_cast<void>(publish_combined_af());
+    return result;
+  }
   const NodeHandle target =
       command.device ? node(command.device) : node(command.host);
   if (!target.generation)
     return {.id = command.id};
   auto &worker = shard(target);
+  drain_local_af();
   if (!worker.submit(command))
     return {.id = command.id};
   ForwardResult result;
@@ -4376,6 +4457,7 @@ ForwardResult NetworkPlane::Impl::execute_forward(const ForwardCommandValue<Prog
     drain_forwarding_egress();
     std::this_thread::yield();
   }
+  drain_local_af();
   return result.id == command.id ? result : ForwardResult{.id = command.id};
 }
 
@@ -4532,6 +4614,13 @@ bool NetworkPlane::Impl::stage_isis_checkpoint(PreparedIsisCheckpoint &prepared,
               const bool available = port != router->forwarding.ports.end() && port->configured && port->operational;
               if (interface.available != available) return false;
             }
+      auto watches = prepare_isis_ipv6_af_binding(device, router->forwarding);
+      if (!watches) return false;
+      if (!watches->empty()) {
+        prepared.af_epochs[device.handle.index] = 1U;
+        router_candidates[device.handle.index].ipv6_readiness = std::make_unique<Ipv6ReadinessProjection>(
+            device.handle, 1U, *watches, Ipv6DadTable::capacity);
+      }
     }
     using Groups = std::array<std::vector<packet::Mac>, device_catalog::maximum_ports_per_router>;
     for (std::size_t index{}; index < prepared.links.size(); ++index) {
@@ -4609,6 +4698,7 @@ void NetworkPlane::Impl::commit_isis_checkpoint(PreparedIsisCheckpoint &prepared
   isis_transports.swap(prepared.links);
   isis_registered = prepared.registered;
   isis_instance_count = prepared.instances;
+  ipv6_readiness_epochs = prepared.af_epochs;
   isis::ControlCommand commit;
   commit.kind = isis::ControlCommandKind::commit_checkpoint_restore;
   commit.checkpoint_barrier_epoch = barrier;
@@ -4927,6 +5017,7 @@ bool NetworkPlane::Impl::queue_egress(ForwardingShardWorker *source_shard,
 }
 
 void NetworkPlane::Impl::drain_forwarding_egress() noexcept {
+  drain_local_af();
   for (std::size_t shard_index = 0; shard_index < separate_forwarding_shards;
        ++shard_index) {
     auto &worker = *forwarding_shards[shard_index];
@@ -4991,7 +5082,7 @@ void NetworkPlane::Impl::drain_forwarding_egress() noexcept {
 
 bool NetworkPlane::Impl::pause_forwarding() noexcept {
   if (!parallel())
-    return true;
+    return publish_combined_af();
   std::array<std::uint64_t, device_catalog::high_forwarding_shards> ids{};
   for (std::size_t index = 0; index < separate_forwarding_shards; ++index) {
     ids[index] = next_forward_command_id++;
@@ -5332,10 +5423,29 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     std::span<const std::uint8_t> retired_instances,
     std::span<const isis::UpdateAdminState> administrative,
     std::span<const isis::UpdateAdjacencyPolicy> adjacency_policies,
-    std::span<const isis::UpdatePrefixCatalog> prefix_catalogs) noexcept {
+    std::span<const isis::UpdatePrefixCatalog> prefix_catalogs,
+    std::optional<std::span<const Ipv6ReadinessWatch>> ipv6_watches) noexcept {
   if (!impl_->live(device) || circuits.size() > device_catalog::maximum_routers * device_catalog::maximum_ports_per_router)
     return false;
-  if (circuits.empty() && new_instances.empty() && retired_instances.empty() && administrative.empty() && adjacency_policies.empty() && prefix_catalogs.empty() && !impl_->isis_registered[device.index]) return true;
+  if (circuits.empty() && new_instances.empty() && retired_instances.empty() && administrative.empty() && adjacency_policies.empty() && prefix_catalogs.empty() && !ipv6_watches && !impl_->isis_registered[device.index]) return true;
+  std::unique_ptr<Ipv6ReadinessProjection> prepared_ipv6;
+  const auto old_af_epoch = impl_->ipv6_readiness_epochs[device.index];
+  const bool subscribing = ipv6_watches && !ipv6_watches->empty();
+  if (subscribing && old_af_epoch == std::numeric_limits<std::uint64_t>::max()) return false;
+  // Zero has no publisher. Reusing a generation after complete retirement is
+  // safe only because pause drains its channel and destroys the old publisher.
+  const auto next_af_epoch = ipv6_watches ? (subscribing ? old_af_epoch + 1U : 0U) : old_af_epoch;
+  if (!ipv6_watches && ((old_af_epoch && (!retired_instances.empty() || !new_instances.empty())) ||
+      std::any_of(new_instances.begin(), new_instances.end(), [](const auto &entry) {
+        return entry.program.origination && entry.program.origination->ipv6_addresses &&
+            std::any_of(entry.program.origination->ipv6_addresses->units.begin(), entry.program.origination->ipv6_addresses->units.end(),
+                [](const auto &unit) { return unit.source.physical_port.has_value(); });
+      }))) return false;
+  try {
+    if (ipv6_watches && !ipv6_watches->empty())
+      prepared_ipv6 = std::make_unique<Ipv6ReadinessProjection>(device, next_af_epoch, *ipv6_watches,
+          Ipv6DadTable::capacity);
+  } catch (const std::exception &) { return false; }
   if (!std::is_sorted(retired_instances.begin(), retired_instances.end()) ||
       std::adjacent_find(retired_instances.begin(), retired_instances.end()) != retired_instances.end()) return false;
   if (!administrative.empty() && (!impl_->route_managers[device.index] ||
@@ -5387,6 +5497,7 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
       for (const auto &entry : ipv6) if (!retires(entry)) retained_ipv6.push_back(entry);
       routes_changed = retained_ipv4.size() != ipv4.size() || retained_ipv6.size() != ipv6.size();
     }
+    if (ipv6_watches) generation.local_ipv6_watches.emplace(ipv6_watches->begin(), ipv6_watches->end());
     link_projection.reserve(circuits.size());
     generation.circuits.reserve(circuits.size());
     const auto &previous_bindings = impl_->isis_transports[device.index];
@@ -5481,6 +5592,11 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     abort.identity.device = device;
     static_cast<void>(impl_->execute_isis(std::move(abort)));
   };
+  // Drain forwarding AF changes before reserving a protocol generation. Once
+  // prepared, that owner refuses ordinary edits, so leaving its AF producer
+  // running could deadlock a full AF ring at the later pause barrier.
+  if (!impl_->pause_forwarding()) { discard_registration(); return false; }
+  struct ResumeForwarding { Impl &owner; ~ResumeForwarding() { owner.resume_forwarding(); } } resume{*impl_};
   const auto prepared_owner = impl_->execute_isis(std::move(generation));
   if (prepared_owner.error != isis::ControlError::none) {
     discard_registration();
@@ -5500,7 +5616,6 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
         .kind = ospf::ControlCommandKind::abort_external_generation}));
     external_prepared = false;
   };
-  if (!impl_->pause_forwarding()) { abort_routes(); cancel(); discard_registration(); return false; }
   auto *forwarder = impl_->router(device);
   bool programmed = forwarder != nullptr;
   for (std::size_t ordinal{}; ordinal < affected.size() && programmed; ++ordinal) {
@@ -5522,7 +5637,6 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
       if (exchanged[ordinal]) static_cast<void>(forwarder->exchange_isis_punt(static_cast<std::uint16_t>(ordinal), (*groups)[ordinal]));
     cancel();
     discard_registration();
-    impl_->resume_forwarding();
     return false;
   }
   // Preparation reserves the owner commit. A refusal after the atomic FIB
@@ -5540,11 +5654,14 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
   }
   // The barrier excludes packet observers. All publications are non-allocating
   // ownership swaps after the protocol owner has accepted commit.
+  if (ipv6_watches) {
+    impl_->routers[device.index].ipv6_readiness.swap(prepared_ipv6);
+    impl_->ipv6_readiness_epochs[device.index] = next_af_epoch;
+  }
   impl_->routers[device.index].isis_transports.swap(forwarding_projection);
   impl_->isis_transports[device.index].swap(link_projection);
   impl_->isis_instance_count[device.index] = impl_->isis_instance_count[device.index] + new_instances.size() - retired_instances.size();
   impl_->retire_idle_isis_registration(device);
-  impl_->resume_forwarding();
   return true;
 }
 
@@ -5595,6 +5712,9 @@ std::optional<isis::ControlResult> NetworkPlane::query_isis_lan_next_hop(
 bool NetworkPlane::add_isis_update_instance(DeviceHandle device, std::uint8_t instance,
     const isis::UpdateInstanceProgram &program) noexcept {
   if (!impl_->live(device) || instance > device_catalog::isis_instance_last) return false;
+  if (program.origination && program.origination->ipv6_addresses &&
+      std::any_of(program.origination->ipv6_addresses->units.begin(), program.origination->ipv6_addresses->units.end(),
+          [](const auto &unit) { return unit.source.physical_port.has_value(); })) return false;
   const bool registered_here = !impl_->isis_registered[device.index];
   if (registered_here) {
     isis::ControlCommand registration;
@@ -5619,8 +5739,8 @@ bool NetworkPlane::add_isis_update_instance(DeviceHandle device, std::uint8_t in
 }
 
 bool NetworkPlane::remove_isis_update_instance(DeviceHandle device, std::uint8_t instance) noexcept {
-  if (!impl_->live(device) || !impl_->isis_registered[device.index] || instance > device_catalog::isis_instance_last)
-    return false;
+  if (!impl_->live(device) || !impl_->isis_registered[device.index] || instance > device_catalog::isis_instance_last ||
+      impl_->ipv6_readiness_epochs[device.index]) return false;
   isis::ControlCommand command;
   command.kind = isis::ControlCommandKind::remove_update_instance;
   command.identity.device = device;
@@ -9436,6 +9556,7 @@ void NetworkPlane::pump(Clock::time_point now) noexcept {
             Impl::host_fragment_admission, now));
       }
     }
+    static_cast<void>(impl_->publish_combined_af());
   }
   // FDB aging and bridge egress belong to this link-shard turn regardless of
   // whether router forwarding has separate pthread owners.

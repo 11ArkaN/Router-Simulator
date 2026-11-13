@@ -39,7 +39,7 @@ auto members(T &v) noexcept { [[maybe_unused]] auto &[version, interval, periodi
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::checkpoint_time::DeadlineCheckpoint>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[kind, nanoseconds] = v; return std::tie(v.kind, v.nanoseconds); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::CircuitHelloConfiguration>
-auto members(T &v) noexcept { [[maybe_unused]] auto &[mac, hello_destination, areas, protocols, ipv4_addresses, ipv6_addresses, topologies, instance_format, wire_instance, instance_topologies, emit_instance, padding, receive_authentication, transmit_authentication, strict_adjacency_check, maximum_area_addresses, holding_seconds, hello_interval, maximum_pdu_octets, peer_attribute_octets, update_destinations] = v; return std::tie(v.mac, v.hello_destination, v.areas, v.protocols, v.ipv4_addresses, v.ipv6_addresses, v.topologies, v.instance_format, v.wire_instance, v.instance_topologies, v.emit_instance, v.padding, v.receive_authentication, v.transmit_authentication, v.strict_adjacency_check, v.maximum_area_addresses, v.holding_seconds, v.hello_interval, v.maximum_pdu_octets, v.peer_attribute_octets, v.update_destinations); }
+auto members(T &v) noexcept { [[maybe_unused]] auto &[mac, hello_destination, areas, protocols, ipv4_addresses, ipv6_addresses, topologies, instance_format, wire_instance, instance_topologies, emit_instance, padding, receive_authentication, transmit_authentication, strict_adjacency_check, maximum_area_addresses, holding_seconds, hello_interval, maximum_pdu_octets, peer_attribute_octets, update_destinations, ipv6_addresses_ready] = v; return std::tie(v.mac, v.hello_destination, v.areas, v.protocols, v.ipv4_addresses, v.ipv6_addresses, v.topologies, v.instance_format, v.wire_instance, v.instance_topologies, v.emit_instance, v.padding, v.receive_authentication, v.transmit_authentication, v.strict_adjacency_check, v.maximum_area_addresses, v.holding_seconds, v.hello_interval, v.maximum_pdu_octets, v.peer_attribute_octets, v.update_destinations, v.ipv6_addresses_ready); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::ControlCircuitCheckpoint>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[definition, medium, transmission, lan_transmissions, counters, update_slot, queued_lsp, previous_dis, egress] = v; return std::tie(v.definition, v.medium, v.transmission, v.lan_transmissions, v.counters, v.update_slot, v.queued_lsp, v.previous_dis, v.egress); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::ControlCircuitCheckpoint::PreviousDis>
@@ -76,8 +76,14 @@ template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::is
 auto members(T &v) noexcept { [[maybe_unused]] auto &[level, prefix, options, owners] = v; return std::tie(v.level, v.prefix, v.options, v.owners); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::LocalPrefixCatalogProgram>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[version, interfaces, units] = v; return std::tie(v.version, v.interfaces, v.units); }
+template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::LocalIpv6Address>
+auto members(T &v) noexcept { [[maybe_unused]] auto &[interface_id, physical_port, address, prefix_length, preferred] = v; return std::tie(v.interface_id, v.physical_port, v.address, v.prefix_length, v.preferred); }
+template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::LocalIpv6AddressUnit>
+auto members(T &v) noexcept { [[maybe_unused]] auto &[source, metadata] = v; return std::tie(v.source, v.metadata); }
+template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::LocalIpv6AddressCatalog>
+auto members(T &v) noexcept { [[maybe_unused]] auto &[version, units] = v; return std::tie(v.version, v.units); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::LocalOriginProgram>
-auto members(T &v) noexcept { [[maybe_unused]] auto &[content, neighbors, resource_retry, broadcast_neighbors, prefixes] = v; return std::tie(v.content, v.neighbors, v.resource_retry, v.broadcast_neighbors, v.prefixes); }
+auto members(T &v) noexcept { [[maybe_unused]] auto &[content, neighbors, resource_retry, broadcast_neighbors, prefixes, ipv6_addresses] = v; return std::tie(v.content, v.neighbors, v.resource_retry, v.broadcast_neighbors, v.prefixes, v.ipv6_addresses); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::SpfDelayPolicy>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[maximum_delay, initial_delay, second_delay] = v; return std::tie(v.maximum, v.initial, v.second); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::SpfThrottleCheckpoint>

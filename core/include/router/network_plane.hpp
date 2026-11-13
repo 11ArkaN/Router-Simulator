@@ -682,7 +682,8 @@ public:
       std::span<const std::uint8_t> retired_instances,
       std::span<const isis::UpdateAdminState> administrative = {},
       std::span<const isis::UpdateAdjacencyPolicy> adjacency_policies = {},
-      std::span<const isis::UpdatePrefixCatalog> prefix_catalogs = {}) noexcept;
+      std::span<const isis::UpdatePrefixCatalog> prefix_catalogs = {},
+      std::optional<std::span<const Ipv6ReadinessWatch>> ipv6_watches = {}) noexcept;
   [[nodiscard]] bool replace_isis_p2p_generation(DeviceHandle device,
       std::span<const IsisP2pCircuitProgram> circuits) noexcept {
     return replace_isis_generation(device, circuits);
@@ -704,6 +705,9 @@ public:
   // Source identity, per-level budgets and transmission policy are explicit;
   // failure leaves existing circuits and databases intact. A process without
   // interfaces remains registered and blocks unsupported structural checkpoints.
+  // Managed physical IPv6 address catalogs require replace_isis_generation and
+  // its complete AF watch set. Direct removal refuses while that subscription
+  // is installed, so no publisher can target a retired protocol owner.
   [[nodiscard]] bool add_isis_update_instance(DeviceHandle device, std::uint8_t instance,
       const isis::UpdateInstanceProgram &program) noexcept;
   [[nodiscard]] bool remove_isis_update_instance(DeviceHandle device, std::uint8_t instance) noexcept;

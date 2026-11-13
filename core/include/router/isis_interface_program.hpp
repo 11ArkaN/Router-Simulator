@@ -21,6 +21,7 @@ struct InterfaceProgramContext {
   std::span<const packet::Ipv4> ipv4_addresses;
   std::span<const packet::Ipv6> ipv6_addresses;
   bool operational{}, loopback{}, physical_point_to_point{}, padding{}, strict_adjacency_check{};
+  bool ipv6_addresses_ready{true};
 };
 struct InterfaceUpdateContext {
   std::uint16_t partial_seconds{}, maximum_pdu_octets{}, transit_seconds{};

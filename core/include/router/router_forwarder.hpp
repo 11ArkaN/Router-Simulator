@@ -21,6 +21,7 @@
 #include "router/ipv4_path_mtu.hpp"
 #include "router/ipv4_reassembly.hpp"
 #include "router/ipv6_dad.hpp"
+#include "router/ipv6_readiness_projection.hpp"
 #include "router/ipv6_fragmentation.hpp"
 #include "router/ipv6_neighbor_cache.hpp"
 #include "router/ipv6_path_mtu.hpp"
@@ -756,6 +757,14 @@ public:
                      const packet::Ipv6 &address) const noexcept {
     return ipv6_dad_.find(physical_interface_id(port_ordinal), address);
   }
+  // Same forwarding shard only. A cold-admitted subscriber receives local DAD
+  // usability values through its bounded sink. No mutable DAD storage escapes;
+  // a full channel retains publication for retry and changes no AF state.
+  [[nodiscard]] Ipv6ReadinessPublication publish_ipv6_readiness(
+      Ipv6ReadinessProjection &projection, void *context,
+      Ipv6ReadinessProjection::Sink sink) const noexcept {
+    return projection.publish(ipv6_dad_, context, sink);
+  }
   [[nodiscard]] std::size_t
   mld_group_count(std::uint16_t port_ordinal) const noexcept;
   // These owner-affine operations are exposed through the network command
@@ -887,8 +896,10 @@ private:
       const ForwardPort &egress, packet::Frame frame,
       std::uint32_t destination, void *context, EgressSink sink,
       Clock::time_point now) noexcept;
-  [[nodiscard]] bool send_ospf_ipv6_unicast(
-      const ForwardPort &egress, packet::Frame frame,
+  // Forwarding-owner only. The caller supplies a live interface and its zone;
+  // accepted packets retain that identity through ND and bounded queue retry.
+  [[nodiscard]] bool send_scoped_ipv6_unicast(
+      const ForwardPort &egress, std::uint64_t interface_id, packet::Frame frame,
       const packet::Ipv6 &destination, void *context, EgressSink sink,
       Clock::time_point now) noexcept;
   [[nodiscard]] bool

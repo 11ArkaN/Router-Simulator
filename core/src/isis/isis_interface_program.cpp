@@ -59,6 +59,7 @@ InterfaceProgramResult prepare_interface_program(const InstanceIntent &instance,
     hello.protocols.assign(context.protocols.begin(), context.protocols.end());
     hello.ipv4_addresses.assign(context.ipv4_addresses.begin(), context.ipv4_addresses.end());
     hello.ipv6_addresses.assign(context.ipv6_addresses.begin(), context.ipv6_addresses.end());
+    hello.ipv6_addresses_ready = context.ipv6_addresses_ready;
     hello.hello_destination = context.destinations.hello;
     hello.update_destinations = context.destinations.levels;
     hello.maximum_area_addresses = context.maximum_areas;

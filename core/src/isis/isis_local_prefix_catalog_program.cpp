@@ -69,14 +69,54 @@ LocalPrefixCatalogResult prepare_local_prefix_catalog(const InstanceIntent &inte
   if (!valid_local_prefix_catalog(program)) return fail(Status::invalid_context);
   return {Status::prepared, std::move(program)};
 }
+LocalIpPrefixCatalogResult prepare_local_ip_prefix_catalog(const InstanceIntent &intent,
+    std::span<const LocalIpPrefixSource> input, std::array<std::size_t, 2U> maximum_prefixes) {
+  using Status = LocalPrefixCatalogStatus;
+  const auto fail = [](Status status) { return LocalIpPrefixCatalogResult{status, {}, {}, {}}; };
+  std::vector<std::array<std::vector<RootPrefix>, 2U>> storage(input.size());
+  std::vector<LocalPrefixSource> sources; sources.reserve(input.size());
+  std::vector<LocalPrefixInterface> bindings; bindings.reserve(input.size());
+  LocalIpPrefixCatalogResult result;
+  for (std::size_t index{}; index < input.size(); ++index) {
+    const auto &source = input[index];
+    for (auto &level : storage[index]) level.reserve(source.addresses.size());
+    for (const auto &address : source.addresses) {
+      const auto family = address.address.family;
+      if ((family != ip::AddressFamily::ipv4 && family != ip::AddressFamily::ipv6) ||
+          address.prefix_length > ip::address_bits(family)) return fail(Status::invalid_context);
+      const bool ipv6 = family == ip::AddressFamily::ipv6;
+      if (!ipv6 && std::any_of(address.address.bytes.begin() + 4U, address.address.bytes.end(),
+          [](auto byte) { return byte != 0U; })) return fail(Status::invalid_context);
+      if (ipv6 && ip::is_link_local(address.address.bytes)) continue;
+      const ip::IpPrefix prefix{ip::mask(address.address, address.prefix_length), address.prefix_length};
+      for (std::size_t level{}; level < 2U; ++level)
+        storage[index][level].push_back({prefix, address.metrics[level], {}});
+      if (ipv6) result.ipv6_addresses.push_back(address.address.bytes);
+      else {
+        packet::Ipv4 value; std::copy_n(address.address.bytes.begin(), value.size(), value.begin());
+        result.ipv4_addresses.push_back(value);
+      }
+    }
+    sources.push_back({source.interface_name, {storage[index][0U], storage[index][1U]},
+        source.binding.available, !source.binding.physical_port});
+    bindings.push_back(source.binding);
+  }
+  auto prepared = prepare_local_prefix_catalog(intent, sources, bindings, maximum_prefixes);
+  if (prepared.status != Status::prepared) return fail(prepared.status);
+  const auto unique = [](auto &addresses) {
+    std::sort(addresses.begin(), addresses.end());
+    addresses.erase(std::unique(addresses.begin(), addresses.end()), addresses.end());
+  };
+  unique(result.ipv4_addresses); unique(result.ipv6_addresses);
+  result.status = Status::prepared; result.program = std::move(prepared.program);
+  return result;
+}
 LocalIpv4PrefixCatalogResult prepare_local_ipv4_prefix_catalog(const InstanceIntent &intent,
     std::span<const LocalIpv4PrefixSource> input, std::array<std::size_t, 2U> maximum_prefixes) {
   using Status = LocalPrefixCatalogStatus;
   const auto fail = [](Status status) { return LocalIpv4PrefixCatalogResult{status, {}, {}}; };
-  std::vector<std::array<RootPrefix, 2U>> storage(input.size());
-  std::vector<LocalPrefixSource> sources; sources.reserve(input.size());
-  std::vector<LocalPrefixInterface> bindings; bindings.reserve(input.size());
-  std::vector<packet::Ipv4> addresses; addresses.reserve(input.size());
+  std::vector<LocalIpPrefixAddress> storage(input.size());
+  std::vector<LocalIpPrefixSource> sources; sources.reserve(input.size());
   for (std::size_t index{}; index < input.size(); ++index) {
     const auto &source = input[index];
     const auto attached = std::find_if(intent.interfaces.begin(), intent.interfaces.end(),
@@ -84,27 +124,22 @@ LocalIpv4PrefixCatalogResult prepare_local_ipv4_prefix_catalog(const InstanceInt
     if (attached == intent.interfaces.end() || !source.address_configured || source.prefix_length > 32U ||
         source.system == source.binding.physical_port.has_value() || (source.system && source.prefix_length != 32U))
       return fail(Status::invalid_context);
-    const packet::Ipv4 address{static_cast<std::uint8_t>(source.address >> 24U),
-        static_cast<std::uint8_t>(source.address >> 16U), static_cast<std::uint8_t>(source.address >> 8U),
-        static_cast<std::uint8_t>(source.address)};
-    addresses.push_back(address);
-    ip::IpAddress value; std::copy(address.begin(), address.end(), value.bytes.begin());
-    const ip::IpPrefix prefix{ip::mask(value, source.prefix_length), source.prefix_length};
+    storage[index].address.bytes[0U] = static_cast<std::uint8_t>(source.address >> 24U);
+    storage[index].address.bytes[1U] = static_cast<std::uint8_t>(source.address >> 16U);
+    storage[index].address.bytes[2U] = static_cast<std::uint8_t>(source.address >> 8U);
+    storage[index].address.bytes[3U] = static_cast<std::uint8_t>(source.address);
+    storage[index].prefix_length = source.prefix_length;
     const auto resolved = resolve_interface(intent, *attached);
     for (std::size_t level{}; level < 2U; ++level) {
       if (source.system && resolved.level[level].enabled &&
           (attached->level[level].metric || intent.level[level].default_metric))
         return fail(Status::unresolved_system_metric);
-      storage[index][level] = {prefix, source.system ? 0U : resolved.level[level].metric, {}};
+      storage[index].metrics[level] = source.system ? 0U : resolved.level[level].metric;
     }
-    sources.push_back({source.interface_name, {std::span{&storage[index][0U], 1U},
-        std::span{&storage[index][1U], 1U}}, source.binding.available, source.system});
-    bindings.push_back(source.binding);
+    sources.push_back({source.interface_name, source.binding, std::span{&storage[index], 1U}});
   }
-  auto prepared = prepare_local_prefix_catalog(intent, sources, bindings, maximum_prefixes);
+  auto prepared = prepare_local_ip_prefix_catalog(intent, sources, maximum_prefixes);
   if (prepared.status != Status::prepared) return fail(prepared.status);
-  std::sort(addresses.begin(), addresses.end());
-  addresses.erase(std::unique(addresses.begin(), addresses.end()), addresses.end());
-  return {Status::prepared, std::move(prepared.program), std::move(addresses)};
+  return {Status::prepared, std::move(prepared.program), std::move(prepared.ipv4_addresses)};
 }
 }

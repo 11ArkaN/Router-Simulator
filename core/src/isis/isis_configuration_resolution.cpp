@@ -50,7 +50,10 @@ ResolvedInterface resolve_interface(const InstanceIntent &instance, const Interf
     level.enabled = static_cast<bool>(mask & (1U << index));
     level.passive = interface.passive.value_or(defaults::interface_passive_default) ||
         configured.passive.value_or(defaults::interface_level_passive_default);
-    level.metric = configured.metric.value_or(resolve_instance_level(instance, index).default_metric);
+    // P2P Hello uses Level 1 timing, but metric remains level-specific. The
+    // selected-release metric reference and native IPv6 ACG show Level 2
+    // configured costs in the actual Level 2 LSP reachability.
+    level.metric = interface.level[index].metric.value_or(resolve_instance_level(instance, index).default_metric);
     level.hello_interval_seconds = configured.hello_interval_seconds.value_or(defaults::hello_interval_seconds_default);
     level.hello_multiplier = configured.hello_multiplier.value_or(defaults::hello_multiplier_default);
     level.priority = configured.priority.value_or(defaults::priority_default);

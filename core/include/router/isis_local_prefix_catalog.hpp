@@ -41,10 +41,18 @@ struct LocalPrefixCatalogProgram {
 // The caller marks its root dirty and composes before ordinary LSP service.
 [[nodiscard]] bool set_local_prefix_carrier(LocalPrefixCatalogProgram &,
     std::uint16_t port, bool available) noexcept;
+// Optional same-owner AF predicate borrowed only for the current composition.
+// It cannot publish or mutate the catalog. Empty means interface gates alone;
+// all_possible bypasses it when reserving the complete cold superset.
+struct LocalPrefixAvailability {
+  const void *context{};
+  bool (*available)(const void *, std::uint64_t, const ip::IpPrefix &) noexcept{};
+};
 // Requires a validated program. Adds immutable units to same-owner reserved scratch. Program storage
 // outlives compose/reset. all_possible admits the worst-case cold capacity;
 // ordinary composition emits each prefix once if any owner is available.
 // No allocation or protocol publication. Refusal changes only workspace scratch.
 [[nodiscard]] bool append_local_prefix_catalog(OriginFragmentWorkspace &,
-    const LocalPrefixCatalogProgram &, std::size_t level, bool all_possible = false) noexcept;
+    const LocalPrefixCatalogProgram &, std::size_t level, bool all_possible = false,
+    LocalPrefixAvailability = {}) noexcept;
 }

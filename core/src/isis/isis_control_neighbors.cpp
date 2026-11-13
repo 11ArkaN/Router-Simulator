@@ -89,7 +89,13 @@ bool ControlWorker::compose_local_neighbors(OwnedInstance &instance, const Devic
     auto &workspace = *instance.fragment_workspace;
     workspace.reset();
     bool valid = workspace.add_root_options(origin.content, level);
-    if (origin.prefixes) valid = append_local_prefix_catalog(workspace, *origin.prefixes, level) && valid;
+    if (origin.prefixes) {
+      valid = (origin.ipv6_addresses
+          ? append_local_af_prefixes(workspace, *origin.prefixes, *origin.ipv6_addresses, level)
+          : append_local_prefix_catalog(workspace, *origin.prefixes, level)) && valid;
+      if (origin.ipv6_addresses)
+        valid = append_local_ipv6_addresses(workspace, *origin.ipv6_addresses, *origin.prefixes) && valid;
+    }
     packet::isis::LanId source{};
     std::copy_n(root->id.begin(), source.size(), source.begin());
     for (std::size_t slot{}; slot < interfaces.size(); ++slot) {

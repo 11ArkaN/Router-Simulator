@@ -1,6 +1,21 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  ipv6.local_system_delivery:
+    status: experimental
+    source_ids: [ietf.ipv6.local_system_delivery]
+  routing.isis.native_metric_binding:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.native_metric_binding]
+  routing.isis.hello_local_ipv6_assignment:
+    status: experimental
+    source_ids: [ietf.isis.hello_local_ipv6_assignment]
+  routing.isis.local_ipv6_address_content:
+    status: experimental
+    source_ids: [ietf.isis.local_ipv6_address_content]
+  routing.isis.local_af_readiness:
+    status: experimental
+    source_ids: [ietf.isis.local_af_readiness]
   routing.isis.local_prefix_lifecycle:
     status: experimental
     source_ids: [nokia.sros.26_7.isis.local_prefix_lifecycle]

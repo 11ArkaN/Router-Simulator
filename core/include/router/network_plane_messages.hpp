@@ -469,6 +469,9 @@ struct NetworkIsisGeneration {
   std::vector<isis::UpdateAdminState> administrative;
   std::vector<isis::UpdateAdjacencyPolicy> adjacency_policies;
   std::vector<isis::UpdatePrefixCatalog> prefix_catalogs;
+  // Present replaces the complete local AF subscription, including an empty
+  // list when retiring it. Absent preserves explicit raw AF-owner contracts.
+  std::optional<std::vector<Ipv6ReadinessWatch>> ipv6_watches;
 };
 struct NetworkPlaneChannels {
   // Capacity includes one deliberately unused SpscRing slot. Generated values

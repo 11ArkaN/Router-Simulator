@@ -20,6 +20,18 @@
 namespace router::lab {
 namespace {
 
+// A System /128 has no carrier. The selected connected route is its
+// operational gate for both local origination and received local delivery.
+bool active_system_ipv6_destination(const routing::Ipv6FibProgram &fib,
+                                    const packet::Ipv6 &destination) noexcept {
+  return std::any_of(fib.routes.begin(), fib.routes.begin() + fib.count,
+      [&](const auto &route) {
+        return route.interface_id == system_interface_id &&
+            route.source == routing::RouteSource::connected &&
+            route.prefix_length == ip::ipv6_address_bits && route.network == destination;
+      });
+}
+
 bool authenticate_dhcpv4_failover_output(
     std::vector<std::uint8_t> &message,
     std::span<const std::uint8_t> secret) noexcept {
@@ -703,8 +715,8 @@ bool RouterForwarder::originate_ospf(
           wire, port->mac, packet::ipv6_multicast_mac(ipv6->destination));
       return emit(port_ordinal, wire, context, sink);
     }
-    return send_ospf_ipv6_unicast(
-        *port, frame, ipv6->destination, context, sink, now);
+    return send_scoped_ipv6_unicast(
+        *port, physical_interface_id(port->ordinal), frame, ipv6->destination, context, sink, now);
   }
   drop(ForwardDrop::malformed);
   return false;
@@ -760,15 +772,14 @@ bool RouterForwarder::send_ospf_ipv4_unicast(
   return false;
 }
 
-bool RouterForwarder::send_ospf_ipv6_unicast(
-    const ForwardPort &egress, packet::Frame frame,
+bool RouterForwarder::send_scoped_ipv6_unicast(
+    const ForwardPort &egress, std::uint64_t interface_id, packet::Frame frame,
     const packet::Ipv6 &destination, void *context, EgressSink sink,
     Clock::time_point now) noexcept {
-  const auto interface_id = physical_interface_id(egress.ordinal);
-  // RFC 4007 requires a zone when a link-local destination is used. The OSPF
-  // interface is that zone. A generic longest-prefix lookup over fe80::/64
-  // cannot preserve it when the router owns more than one physical link.
-  if (!egress.ipv6_configured ||
+  // RFC 4007 requires the caller's selected zone for link-local delivery.
+  // OSPF supplies its circuit; an Echo reply supplies the receiving interface.
+  // A global longest-prefix lookup cannot retain either scoped identity.
+  if (!egress.operational || !egress.ipv6_configured ||
       !ipv6_dad_.preferred(interface_id, egress.ipv6_link_local)) {
     drop(ForwardDrop::port_down);
     return false;
@@ -5314,8 +5325,9 @@ bool RouterForwarder::originate_ipv6_echo(
   // Ethernet frame, a peer or a zero-length link.
   bool preferred_local_destination{};
   if (const auto *native = native_ipv6_addresses_.owner(destination))
-    preferred_local_destination =
-        ipv6_address_preferred(native->interface_id, destination);
+    preferred_local_destination = native->interface_id == system_interface_id
+        ? active_system_ipv6_destination(ipv6_fib_, destination)
+        : ipv6_address_preferred(native->interface_id, destination);
   if (!preferred_local_destination)
     for (const auto &candidate : ports_) {
       if (!candidate.configured || !candidate.operational ||
@@ -7881,10 +7893,16 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
     // only ForwardPort's selected-primary cache would misclassify their Hop-by-
     // Hop unknown-option handling and omit their received ICMPv6 counters.
     const auto *native_owner = native_ipv6_addresses_.owner(ipv6->destination);
+    // System has no physical port. Its selected connected /128 is the local
+    // operational gate; address configuration alone must not bypass shutdown.
+    const bool system_destination_local = native_owner &&
+        native_owner->interface_id == system_interface_id &&
+        active_system_ipv6_destination(ipv6_fib_, ipv6->destination);
     const bool native_destination_local =
-        native_owner &&
-        ipv6_address_preferred(native_owner->interface_id,
-                               native_owner->address);
+        native_owner && (system_destination_local ||
+        (native_owner->interface_id != system_interface_id &&
+         ipv6_address_preferred(native_owner->interface_id,
+                                native_owner->address)));
     const bool ipv6_destination_local =
         ip::is_multicast(ipv6->destination) || native_destination_local ||
         (service_ingress &&
@@ -8384,7 +8402,7 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
         ipv6->hop_limit == 1U && ip::is_link_local(ipv6->source) &&
         (ipv6->destination == packet::ospf::all_spf_routers_v6 ||
          ipv6->destination == packet::ospf::all_dr_routers_v6);
-    if (local != ports_.end() || ingress_service_local ||
+    if (local != ports_.end() || system_destination_local || ingress_service_local ||
         relay_multicast_local || ospf_multicast_local) {
       // Multicast delivery belongs to the ingress interface. Unicast may target
       // another local address, so it retains the address-owning port for source
@@ -8457,7 +8475,11 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
             *local_frame, local_port->mac, unresolved_mac);
         if (reply) {
           count_sent_icmpv6(local_port->ordinal, *reply);
-          send_ipv6(*reply, local_ipv6->source, false, context, sink, now);
+          if (ip::is_link_local(local_ipv6->source))
+            static_cast<void>(send_scoped_ipv6_unicast(*ingress,
+                ingress_ipv6_interface_id, *reply, local_ipv6->source, context, sink, now));
+          else
+            send_ipv6(*reply, local_ipv6->source, false, context, sink, now);
         }
       } else if (icmp && icmp->type == packet::icmpv6_echo_reply_type &&
                  icmp->code == 0U) {

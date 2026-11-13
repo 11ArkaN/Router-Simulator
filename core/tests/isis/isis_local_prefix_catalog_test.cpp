@@ -166,4 +166,65 @@ void isis_local_prefix_catalog_tests() {
   ipv4_sources.back().prefix_length = 31U;
   require(prepare_local_ipv4_prefix_catalog(ipv4_intent, ipv4_sources, {4U, 4U}).status == Status::invalid_context);
 
+  InstanceIntent dual; dual.admin_enabled = true; dual.ipv6_routing = ConfiguredIpv6Routing::native;
+  dual.level[0U].present = dual.level[1U].present = true;
+  dual.level[0U].wide_metrics_only = dual.level[1U].wide_metrics_only = true;
+  dual.interfaces = {physical, logical};
+  std::vector<LocalIpPrefixAddress> edge_addresses{
+      {*ip::parse_ip_address("192.0.2.127"), 24U, {17U, 27U}},
+      {*ip::parse_ip_address("2001:db8:12::abcd"), 64U, {31U, 41U}},
+      {*ip::parse_ip_address("fe80::1"), 64U, {0U, 0U}}};
+  std::vector<LocalIpPrefixAddress> logical_addresses{
+      {*ip::parse_ip_address("2001:db8:ffff::1"), 128U, {0U, 0U}}};
+  std::array local_sources{
+      LocalIpPrefixSource{"edge", {lab::physical_interface_id(0U), std::uint16_t{0U}, true}, edge_addresses},
+      LocalIpPrefixSource{"system", {lab::system_interface_id, {}, true}, logical_addresses}};
+  auto dual_result = prepare_local_ip_prefix_catalog(dual, local_sources, {3U, 3U});
+  require(dual_result.status == Status::prepared && dual_result.program->units.size() == 6U &&
+      dual_result.ipv4_addresses == std::vector<packet::Ipv4>({{192U, 0U, 2U, 127U}}) &&
+      dual_result.ipv6_addresses.size() == 2U);
+  const auto dual_saved = *dual_result.program;
+  for (const auto &unit : dual_saved.units) {
+    packet::isis::TlvCursor options(unit.options); const auto option = options.next(); require(option.has_value());
+    packet::isis::ExtendedPrefixCursor prefixes(*option); const auto value = prefixes.next(); require(value.has_value());
+    const auto expected = unit.prefix == shared ? (unit.level ? 27U : 17U) :
+        unit.prefix == ipv6 ? (unit.level ? 41U : 31U) : 0U;
+    require(value->metric == expected && !ip::is_link_local(unit.prefix.network.bytes));
+  }
+  // Repeated addresses and several addresses in one subnet retain one unit
+  // and one interface key. Metadata remains a distinct sorted address list.
+  edge_addresses.push_back(edge_addresses[1U]);
+  edge_addresses.push_back({*ip::parse_ip_address("2001:db8:12::1"), 64U, {31U, 41U}});
+  local_sources[0U].addresses = edge_addresses;
+  dual_result = prepare_local_ip_prefix_catalog(dual, local_sources, {3U, 3U});
+  require(dual_result.status == Status::prepared && *dual_result.program == dual_saved &&
+      dual_result.ipv6_addresses.size() == 3U);
+  for (const auto &unit : dual_result.program->units) require(unit.owners.size() == 1U);
+  local_sources[0U].binding.available = local_sources[1U].binding.available = false;
+  require(prepare_local_ip_prefix_catalog(dual, local_sources, {2U, 3U}).status == Status::capacity);
+  local_sources[0U].binding.available = local_sources[1U].binding.available = true;
+  edge_addresses.back().metrics[1U] = 42U;
+  require(prepare_local_ip_prefix_catalog(dual, local_sources, {3U, 3U}).status == Status::conflicting_prefix);
+  edge_addresses.back().metrics[1U] = 41U;
+  dual.advertise_passive_only = true;
+  dual_result = prepare_local_ip_prefix_catalog(dual, local_sources, {1U, 1U});
+  require(dual_result.status == Status::prepared && dual_result.program->units.size() == 2U &&
+      dual_result.program->units.front().owners == std::vector<std::uint64_t>{lab::system_interface_id});
+  dual.advertise_passive_only = false; dual.ipv6_routing = ConfiguredIpv6Routing::disabled;
+  dual_result = prepare_local_ip_prefix_catalog(dual, local_sources, {1U, 1U});
+  require(dual_result.status == Status::prepared && dual_result.program->units.size() == 2U &&
+      dual_result.program->units.front().prefix == shared);
+  dual.ipv6_routing = ConfiguredIpv6Routing::native;
+  edge_addresses[1U].prefix_length = 129U;
+  require(prepare_local_ip_prefix_catalog(dual, local_sources, {3U, 3U}).status == Status::invalid_context);
+  edge_addresses[1U].prefix_length = 64U; edge_addresses[0U].address.bytes[4U] = 1U;
+  require(prepare_local_ip_prefix_catalog(dual, local_sources, {3U, 3U}).status == Status::invalid_context);
+  edge_addresses[0U].address.bytes[4U] = 0U;
+  edge_addresses[0U].address.family = static_cast<ip::AddressFamily>(5U);
+  require(prepare_local_ip_prefix_catalog(dual, local_sources, {3U, 3U}).status == Status::invalid_context);
+  edge_addresses.assign(1U, {*ip::parse_ip_address("fe80::2"), 64U, {0U, 0U}});
+  local_sources[0U].addresses = edge_addresses; local_sources[1U].addresses = {};
+  dual_result = prepare_local_ip_prefix_catalog(dual, local_sources, {1U, 1U});
+  require(dual_result.status == Status::prepared && dual_result.program->units.empty() &&
+      dual_result.ipv4_addresses.empty() && dual_result.ipv6_addresses.empty());
 }

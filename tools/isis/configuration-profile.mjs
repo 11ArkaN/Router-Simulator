@@ -7,6 +7,7 @@ const numeric = [
   ["instance", "isis-instance"],
   ["metric", "interface/level/metric"],
   ["default_metric", "level/default-metric"],
+  ["default_ipv6_unicast_metric", "level/default-ipv6-unicast-metric"],
   ["preference", "level/preference"],
   ["external_preference", "level/external-preference"],
   ["hello_interval_seconds", "interface/level/hello-interval"],

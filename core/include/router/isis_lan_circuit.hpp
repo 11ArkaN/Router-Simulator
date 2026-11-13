@@ -70,6 +70,13 @@ public:
   // Matching peers, timers and counters survive; mismatched peers complete Down
   // synchronously. Missing observer or malformed retained input changes nothing.
   [[nodiscard]] bool set_strict_adjacency_check(bool enabled, Clock::time_point now, LanCircuitObserver observer) noexcept;
+  // Same circuit control writer. Assignment changes advertised addresses only;
+  // NLPIDs, peers and periodic PRNG survive. Content changes request a fresh
+  // Hello through ordinary scheduling, including LAN minimum spacing.
+  [[nodiscard]] bool set_ipv6_addresses_ready(bool ready) noexcept {
+    if (configuration_.ipv6_addresses_ready == ready) return false;
+    configuration_.ipv6_addresses_ready = ready; hello_.changed(); return true;
+  }
   [[nodiscard]] bool operational() const noexcept { return operational_; }
   [[nodiscard]] Clock::time_point deadline() const noexcept;
   [[nodiscard]] bool hello_pending() const noexcept { return hello_.pending(); }

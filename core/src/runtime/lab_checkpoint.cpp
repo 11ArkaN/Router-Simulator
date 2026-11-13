@@ -18,11 +18,11 @@
 #include <string>
 #include <type_traits>
 
-namespace router::lab::checkpoint_v15 {
+namespace router::lab::checkpoint_v16 {
 namespace {
 
 inline constexpr std::array<std::uint8_t, 8> magic{'R', 'S', 'L', 'A',
-                                                   'B', '1', '5', 0};
+                                                   'B', '1', '6', 0};
 inline constexpr std::size_t maximum_checkpoint_bytes =
     device_catalog::wasm_initial_memory_bytes;
 
@@ -10351,4 +10351,4 @@ decode(std::span<const std::uint8_t> bytes, const vault::SecretVault *protector)
   }
 }
 
-} // namespace router::lab::checkpoint_v15
+} // namespace router::lab::checkpoint_v16

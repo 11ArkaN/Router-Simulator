@@ -159,8 +159,12 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
   case NetworkCommandKind::admit_isis_generation: {
     if (const auto lease = channels_.isis_generations.receive()) {
       const auto &generation = *lease->value;
-      if (generation.command_id == command.id && generation.device == command.device)
-        result.success = plane_.replace_isis_generation(command.device, generation.circuits, generation.new_instances, generation.retired_instances, generation.administrative, generation.adjacency_policies, generation.prefix_catalogs);
+      if (generation.command_id == command.id && generation.device == command.device) {
+        std::optional<std::span<const Ipv6ReadinessWatch>> watches;
+        if (generation.ipv6_watches) watches = *generation.ipv6_watches;
+        result.success = plane_.replace_isis_generation(command.device, generation.circuits, generation.new_instances,
+            generation.retired_instances, generation.administrative, generation.adjacency_policies, generation.prefix_catalogs, watches);
+      }
       if (!channels_.isis_generations.release(lease->handle)) std::terminate();
     }
     break;

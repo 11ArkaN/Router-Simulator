@@ -38,7 +38,8 @@ void isis_instance_program_tests() {
   require(result.program->spf_delay == SpfDelayPolicy{10s, 1s, 1s});
   require(result.program->levels[0U]->maximum_age == 1201U && result.program->origination->content.levels[1U]->refresh_interval == 600500ms);
   require(result.program->origination->neighbors->size() == 1U &&
-      result.program->origination->neighbors->front().levels[1U] == std::optional{P2pOriginMetric{30U, 30U}});
+      result.program->origination->neighbors->front().levels[0U] == std::optional{P2pOriginMetric{30U, 30U}} &&
+      result.program->origination->neighbors->front().levels[1U] == std::optional{P2pOriginMetric{10U, 10U}});
   require(result.program->origination->content.records.size() == 2U);
   // A real local LSP owner validates lifetime, timers and fully encoded root TLVs.
   auto owner = std::make_unique<LocalLspSet>(result.program->local, result.program->maximum_areas,

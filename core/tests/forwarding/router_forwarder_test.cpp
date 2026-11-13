@@ -513,6 +513,77 @@ void router_forwarder_tests() {
     return *parsed;
   };
   {
+    // System owns no wire. Two equal link-local peer addresses on distinct
+    // links prove that Echo replies preserve the receiving zone while
+    // global physical addresses are still tentative. A removed connected System route
+    // must stop local delivery without removing the configured address.
+    auto local_system = std::make_unique<RouterForwarder>();
+    const auto local_address = address6("2001:db8:ffff::1");
+    const auto peer_address = address6("fe80::2");
+    const packet::Mac local_mac{2U, 0U, 0U, 0U, 0U, 1U};
+    const std::array peers{packet::Mac{2U, 0U, 0U, 0U, 1U, 2U},
+                           packet::Mac{2U, 0U, 0U, 0U, 2U, 2U}};
+    for (std::uint16_t ordinal{}; ordinal < peers.size(); ++ordinal) {
+      ForwardPort port;
+      port.configured = port.operational = port.ipv6_configured = true;
+      port.ipv4_configured = false;
+      port.ordinal = ordinal; port.mtu = 1514U; port.speed_mbps = 1000U; port.mac = local_mac;
+      port.ipv6_address = address6(ordinal == 0U ? "2001:db8:1::1" : "2001:db8:2::1");
+      port.ipv6_prefix_length = 64U;
+      port.ipv6_link_local = address6("fe80::1");
+      require(local_system->configure_port(port) &&
+          local_system->install_static_ipv6_neighbor(ordinal, peer_address, peers[ordinal]),
+          "System IPv6 fixture rejected scoped neighbor");
+    }
+    const std::array addresses{
+        RouterIpv6Address{.address = address6("2001:db8:1::1"), .network = address6("2001:db8:1::"),
+          .interface_id = physical_interface_id(0U), .port_ordinal = 0U, .prefix_length = 64U},
+        RouterIpv6Address{.address = address6("2001:db8:2::1"), .network = address6("2001:db8:2::"),
+          .interface_id = physical_interface_id(1U), .port_ordinal = 1U, .prefix_length = 64U},
+        RouterIpv6Address{.address = local_address,
+          .network = local_address, .interface_id = system_interface_id,
+          .port_ordinal = system_interface_port_ordinal, .prefix_length = 128U}};
+    require(local_system->program_ipv6_addresses(addresses, checkpoint_now) ==
+        RouterIpv6AddressProgramStatus::accepted, "System IPv6 address rejected");
+    Ipv6RouteTable local_rib;
+    std::array system_connected{Ipv6ConnectedInput{.configured = true, .operational = true,
+        .network = local_address, .interface_id = system_interface_id,
+        .physical_port_ordinal = system_interface_port_ordinal, .prefix_length = 128U}};
+    require(local_rib.rebuild(system_connected, {}) && local_system->program_ipv6_fib(local_rib.compile(1U)),
+        "System IPv6 connected route rejected");
+    std::vector<Emitted> wire;
+    local_system->service_ipv6_maintenance(&wire, collect, checkpoint_now + std::chrono::seconds{2});
+    local_system->service_ipv6_maintenance(&wire, collect, checkpoint_now + std::chrono::seconds{4});
+    for (std::uint16_t ordinal{}; ordinal < peers.size(); ++ordinal) {
+      wire.clear();
+      const auto global_state = local_system->ipv6_address_state(ordinal, addresses[ordinal].address);
+      require(global_state && global_state->state == Ipv6DadState::tentative,
+          "System scoped Echo fixture completed global DAD too early");
+      const auto request = packet::icmpv6_echo(peers[ordinal], local_mac,
+          peer_address, local_address, false, 501U);
+      local_system->receive(ordinal, request, &wire, collect, checkpoint_now + std::chrono::seconds{5});
+      const auto reply = wire.empty() ? std::optional<packet::Icmpv6View>{} : packet::parse_icmpv6(wire.front().frame);
+      const auto ipv6 = wire.empty() ? std::optional<packet::Ipv6View>{} : packet::parse_ipv6(wire.front().frame);
+      const auto ethernet = wire.empty() ? std::optional<packet::EthernetView>{} : packet::parse_ethernet(wire.front().frame);
+      require(wire.size() == 1U && wire.front().port == ordinal && reply &&
+          reply->type == packet::icmpv6_echo_reply_type && ipv6 &&
+          ipv6->source == local_address && ipv6->destination == peer_address &&
+          ethernet && ethernet->destination == peers[ordinal], "System IPv6 Echo lost local delivery or receiving zone");
+    }
+    system_connected.front().operational = false;
+    require(local_rib.rebuild(system_connected, {}) && local_system->program_ipv6_fib(local_rib.compile(2U)),
+        "System IPv6 shutdown route update rejected");
+    wire.clear();
+    const auto request = packet::icmpv6_echo(peers.front(), local_mac, peer_address, local_address, false, 502U);
+    local_system->receive(0U, request, &wire, collect, checkpoint_now + std::chrono::seconds{6});
+    require(std::none_of(wire.begin(), wire.end(), [](const auto &entry) {
+      const auto icmp = packet::parse_icmpv6(entry.frame);
+      return icmp && icmp->type == packet::icmpv6_echo_reply_type;
+    }), "System IPv6 shutdown retained local Echo delivery");
+    require(!local_system->originate_ipv6_echo(local_address, 503U, &wire, collect,
+        checkpoint_now + std::chrono::seconds{6}), "System IPv6 shutdown retained local self-ping");
+  }
+  {
     // A service interface is an independent RFC 4007 zone even though its
     // packets ultimately use one physical port. Exercise the complete wire
     // boundary here: ingress starts as an encoded dot1q frame, routing and ND

@@ -40,6 +40,10 @@ struct CircuitHelloConfiguration {
   [[nodiscard]] CircuitDestinations destinations() const noexcept {
     return {hello_destination, update_destinations.value_or(std::array{hello_destination, hello_destination})};
   }
+  // The AF owner controls assignment independently of configured NLPIDs.
+  // Explicit raw circuit callers supply assigned addresses by default. Managed
+  // circuits clear this gate until local link-local DAD has completed.
+  bool ipv6_addresses_ready{true};
   bool operator==(const CircuitHelloConfiguration &) const = default;
 };
 
@@ -58,7 +62,7 @@ struct CircuitHelloConfiguration {
   contents.protocols = configuration.protocols;
   contents.topologies = configuration.topologies;
   contents.ipv4_addresses = configuration.ipv4_addresses;
-  contents.ipv6_addresses = configuration.ipv6_addresses;
+  if (configuration.ipv6_addresses_ready) contents.ipv6_addresses = configuration.ipv6_addresses;
   if (configuration.emit_instance) contents.instance = PduInstanceOption{
       configuration.instance_format.value_or(packet::isis::InstanceFormat::standard),
       configuration.wire_instance, configuration.instance_topologies};

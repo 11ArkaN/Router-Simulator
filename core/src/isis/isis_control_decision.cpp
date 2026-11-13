@@ -52,6 +52,7 @@ DecisionStatus ControlWorker::prepare_decision_input(OwnedInstance &instance, co
     const auto owned = find(entry.interface_id);
     if (owned == device.circuits.end() || owned->lan()) continue;
     const auto &circuit = owned->p2p();
+    if (family == ip::AddressFamily::ipv6 && protocol && !circuit.configuration().ipv6_addresses_ready) continue;
     const auto peer = circuit.adjacency();
     if (!peer.iso_up || !(static_cast<std::uint8_t>(peer.usage) & (1U << level)) ||
         !supports(circuit.configuration().protocols, circuit.peer_attributes())) continue;
@@ -67,6 +68,7 @@ DecisionStatus ControlWorker::prepare_decision_input(OwnedInstance &instance, co
     const auto *broadcast = owned == device.circuits.end() ? nullptr : owned->lan();
     const auto *circuit = broadcast ? broadcast->at(level) : nullptr;
     if (!circuit || !circuit->operational()) continue;
+    if (family == ip::AddressFamily::ipv6 && protocol && !circuit->configuration().ipv6_addresses_ready) continue;
     const auto role = circuit->designated();
     std::optional<std::uint16_t> designated;
     const NextHopInterface scope{owned->identity.interface_id, owned->identity.configuration_generation,

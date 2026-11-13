@@ -227,6 +227,42 @@ void strict_family_policy_tests() {
 }
 
 void isis_lan_circuit_tests() {
+  {
+    auto configured = configuration(1U);
+    configured.receive_authentication = configured.transmit_authentication = false;
+    configured.protocols.push_back(packet::isis::ipv6_nlpid);
+    configured.ipv6_addresses.push_back(*ip::parse_ipv6("fe80::1"));
+    configured.ipv6_addresses_ready = false;
+    const auto readiness_start = HelloSchedule::Clock::time_point{100s};
+    LanCircuit local(configured, 77U, readiness_start);
+    Events changes; changes.circuit = &local;
+    const LanCircuitObserver observer{&changes, peer, designated};
+    auto scratch = std::make_unique<PduScratch>();
+    packet::Frame frame;
+    const auto before = local.neighbors().size();
+    for (std::size_t turn{}; turn < 3U; ++turn) {
+      const bool assigned = turn == 1U;
+      if (turn) require(local.set_ipv6_addresses_ready(assigned));
+      require(!local.set_ipv6_addresses_ready(assigned));
+      const auto at = readiness_start + std::chrono::seconds{static_cast<std::int64_t>(turn)};
+      require(local.hello(frame, {}, *scratch, at, observer) == HelloBuildResult::encoded);
+      packet::isis::EthernetDecodeError error{};
+      const auto decoded = packet::isis::parse_ethernet_pdu(frame.view(), error);
+      require(decoded.has_value());
+      bool ipv6_protocol{}, ipv6_address{};
+      packet::isis::TlvCursor options(decoded->pdu.tlvs);
+      while (const auto option = options.next()) {
+        if (option->code == 129U) ipv6_protocol = packet::isis::supports_protocol(*option, packet::isis::ipv6_nlpid);
+        if (option->code == 232U) {
+          require(packet::isis::valid_ipv6_interface_addresses(*option, decoded->pdu.type));
+          ipv6_address = true;
+        }
+      }
+      require(options.valid() && ipv6_protocol && ipv6_address == assigned);
+      require(local.complete_hello(true, at) && local.operational());
+      require(local.neighbors().size() == before);
+    }
+  }
   strict_family_policy_tests();
   auto pool = std::make_unique<PacketPool>();
   lab::EthernetSwitch bridge(device_catalog::ethernet_switch_profiles[0U], *pool);

@@ -57,6 +57,7 @@ add_library(router_primitives STATIC
   src/isis/isis_configuration.cpp
   src/isis/isis_root_content.cpp
   src/isis/isis_local_prefix_catalog.cpp
+  src/isis/isis_local_ipv6_address_catalog.cpp
   src/isis/isis_control_fragment_origin.cpp
   src/isis/isis_origin_fragment_workspace.cpp
   src/isis/isis_fragment_composition.cpp
@@ -377,12 +378,14 @@ add_library(router_network STATIC
   src/isis/isis_control_decision.cpp
   src/isis/isis_control_routes.cpp
   src/isis/isis_control_neighbors.cpp
+  src/isis/isis_control_local_af.cpp
   src/isis/isis_control_self.cpp
   src/runtime/capture_store.cpp
   src/dhcpv4/dhcpv4_endpoint_service.cpp
   src/dhcpv6/dhcpv6_endpoint_service.cpp
   src/dns/dns_endpoint_service.cpp
   src/ip/ipv6_dad.cpp
+  src/ip/ipv6_readiness_projection.cpp
   src/ip/ipv6_destination_cache.cpp
   src/ip/ipv6_neighbor_cache.cpp
   src/ip/ipv6_host_autoconfiguration.cpp
@@ -394,6 +397,7 @@ add_library(router_network STATIC
   src/runtime/network_plane.cpp
   src/runtime/network_transfer_checkpoint.cpp
   src/runtime/isis_runtime_checkpoint.cpp
+  src/runtime/isis_ipv6_af_binding.cpp
   src/runtime/isis_checkpoint_codec.cpp
   # OSPF is a separate control pthread, but its packet channels terminate at
   # forwarding shards. Keeping the worker in the network layer preserves the
@@ -676,6 +680,9 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_instance_program_test.cpp
     tests/isis/isis_local_prefix_program_test.cpp
     tests/isis/isis_local_prefix_catalog_test.cpp
+    tests/isis/isis_local_ipv6_address_catalog_test.cpp
+    tests/isis/isis_local_ipv6_control_test.cpp
+    tests/runtime/isis_ipv6_af_binding_test.cpp
     tests/isis/isis_fragment_plan_test.cpp
     tests/isis/isis_local_fragment_test.cpp
     tests/isis/isis_instance_generation_test.cpp
@@ -745,6 +752,7 @@ if(ROUTER_BUILD_TESTS)
     tests/runtime/lab_registry_test.cpp
     tests/ip/ipv4_reassembly_test.cpp
     tests/ip/ipv6_dad_test.cpp
+    tests/ip/ipv6_readiness_projection_test.cpp
     tests/ip/ipv6_extension_test.cpp
     tests/ip/ipv6_fragmentation_test.cpp
     tests/ip/ipv6_destination_cache_test.cpp
