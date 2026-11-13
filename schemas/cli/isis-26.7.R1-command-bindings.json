@@ -305,6 +305,20 @@
       "classic_source": "https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-s-commands-stat-5.html#ai9j785or8",
       "md_remove": true,
       "classic_no": true
+    },
+    {
+      "yang_path": "/configure/router/isis/ignore-attached-bit",
+      "md_source": "https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html#d46298",
+      "classic_source": "https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-i-commands-i-co-1.html#ai9j785h7f",
+      "md_remove": true,
+      "classic_no": true
+    },
+    {
+      "yang_path": "/configure/router/isis/suppress-attached-bit",
+      "md_source": "https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html#d46323",
+      "classic_source": "https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-s-commands-stat-5.html#ai9j785owi",
+      "md_remove": true,
+      "classic_no": true
     }
   ]
 }

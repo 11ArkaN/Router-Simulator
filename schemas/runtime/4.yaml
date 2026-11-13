@@ -4,7 +4,7 @@ snapshot_abi: 10
 # when offsets, widths or publication semantics change, not whenever the
 # structural runtime snapshot gains another configuration domain.
 telemetry_abi: 6
-checkpoint_abi: 16
+checkpoint_abi: 17
 # Snapshot ABI 10 adds canonical IS-IS configuration intent.
 # Checkpoint ABI 14 retains relative protocol queue age through physical transmission.
 # Runtime protocol framing remains version 4 because operation messages are

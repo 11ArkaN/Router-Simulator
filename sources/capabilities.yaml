@@ -1,6 +1,9 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  routing.isis.attached_default_selection:
+    status: experimental
+    source_ids: [iso.10589.2002.attached_default]
   ipv6.local_system_delivery:
     status: experimental
     source_ids: [ietf.ipv6.local_system_delivery]

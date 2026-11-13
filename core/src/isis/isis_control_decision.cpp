@@ -4,6 +4,7 @@
 // Source: iso.10589.2002.lsdb_link_graph
 
 #include "router/isis_control_worker.hpp"
+#include "router/isis_area_attachment.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -100,6 +101,7 @@ void ControlWorker::service_p2p_decision(OwnedInstance &instance, const DeviceSt
     if (!timer.deadline() && !timer.changed(now)) { instance.status = UpdateStatus::epoch_exhausted; return; }
     ready[level] = timer.due(now);
   }
+  bool area_calculated{};
   const auto calculate = [&](const P2pDecisionProgram &program, auto &decisions, auto &consumed, auto &status,
       std::array<std::uint64_t, 2U> *runs,
       std::array<std::vector<std::optional<AdjacencyNextHop>>, 2U> *bindings) {
@@ -116,6 +118,7 @@ void ControlWorker::service_p2p_decision(OwnedInstance &instance, const DeviceSt
         if (status[level] == DecisionStatus::applied && bindings)
           (*bindings)[level].assign(input.bindings.begin(), input.bindings.end());
       }
+      if (runs && status[level] == DecisionStatus::applied) area_calculated = true;
       consumed[level] = instance.decision_revisions[level];
       if (runs && (*runs)[level] != std::numeric_limits<std::uint64_t>::max()) ++(*runs)[level];
       --budget;
@@ -130,6 +133,26 @@ void ControlWorker::service_p2p_decision(OwnedInstance &instance, const DeviceSt
       calculate(instance.configuration.routing[family]->calculation, owned.decisions, owned.consumed, owned.status,
           nullptr, &owned.bindings);
     }
+  auto &origin = *instance.configuration.origination;
+  if (area_calculated && origin.automatic_area_attachment && instance.decisions[0U] && instance.decisions[1U] &&
+      instance.decision_status[0U] == DecisionStatus::applied &&
+      instance.consumed_decision_revision[0U] == instance.decision_revisions[0U] &&
+      instance.decision_status[1U] == DecisionStatus::applied &&
+      instance.consumed_decision_revision[1U] == instance.decision_revisions[1U]) {
+    auto root = std::find_if(origin.content.records.begin(), origin.content.records.end(), [](const auto &record) {
+      return !record.level && !record.id[6U] && !record.id[7U];
+    });
+    if (root == origin.content.records.end()) { instance.status = UpdateStatus::invalid_configuration; return; }
+    std::array<NeighborArea, 255U> areas{};
+    const auto count = collect_area_addresses(instance.process->level(0U)->database().database(),
+        *instance.decisions[0U], now, std::span{areas}.first(instance.configuration.maximum_areas));
+    if (!count) { instance.status = UpdateStatus::invalid_configuration; return; }
+    const bool attached = !origin.suppress_attached_bit && reachable_other_area(
+        instance.process->level(1U)->database().database(), *instance.decisions[1U],
+        std::span{areas}.first(*count), now);
+    const auto flags = static_cast<std::uint8_t>((root->flags & ~8U) | (attached ? 8U : 0U));
+    if (flags != root->flags) { root->flags = flags; instance.local_roots_dirty[0U] = true; }
+  }
   // All configured families in a level share one SPF hold. Bounded partial
   // quanta retain the same ready deadline until every revision is consumed.
   for (std::size_t level{}; level < 2U; ++level)

@@ -32,6 +32,13 @@ InstanceProgramResult prepare_instance_program(const InstanceIntent &intent,
   const auto lifetime = intent.lsp_lifetime_seconds.value_or(defaults::lsp_lifetime_seconds_default);
   const auto mtu = intent.lsp_mtu_octets.value_or(defaults::lsp_mtu_octets_default);
   const auto mask = static_cast<std::uint8_t>(intent.levels.value_or(ConfiguredLevels::both));
+  origin.automatic_area_attachment = mask == 3U && context.hierarchy_decision.has_value();
+  origin.suppress_attached_bit = intent.suppress_attached_bit.value_or(defaults::suppress_attached_bit_default);
+  if (origin.automatic_area_attachment) {
+    if (context.hierarchy_decision->protocol || context.hierarchy_decision->prefixes)
+      return fail(Status::invalid_context);
+    program.decision = context.hierarchy_decision;
+  }
   for (std::size_t level{}; level < 2U; ++level) {
     const auto resolved = resolve_instance_level(intent, level);
     if (!resolved.enabled) continue;
@@ -68,6 +75,7 @@ InstanceProgramResult prepare_instance_program(const InstanceIntent &intent,
     for (std::size_t family{}; family < program.routing.size(); ++family) {
       if ((family ? !ipv6 : !ipv4) || !context.routing[family]) continue;
       if (!program.routing[family]) program.routing[family] = context.routing[family];
+      program.routing[family]->ignore_attached_bit = intent.ignore_attached_bit.value_or(defaults::ignore_attached_bit_default);
       auto &preference = program.routing[family]->preferences[level];
       if (resolved.preference) preference.internal = *resolved.preference;
       if (resolved.external_preference) preference.external = *resolved.external_preference;

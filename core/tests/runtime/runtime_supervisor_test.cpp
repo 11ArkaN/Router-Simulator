@@ -1092,8 +1092,8 @@ void runtime_supervisor_tests() {
        // abort or replace it with the ordinary private MD candidate.
        .classic_policy_candidate = classic_policy_candidate,
        .classic_policy_edit_active = true});
-  const auto bytes = checkpoint_v16::encode(*checkpoint);
-  auto decoded = checkpoint_v16::decode(bytes);
+  const auto bytes = checkpoint_v17::encode(*checkpoint);
+  auto decoded = checkpoint_v17::decode(bytes);
   {
     auto protected_state = std::make_unique<RuntimeSupervisorCheckpoint>(*checkpoint);
     auto channels = std::make_unique<router::isis::ControlChannels>();
@@ -1114,29 +1114,29 @@ void runtime_supervisor_tests() {
     auto protector = router::vault::SecretVault::create(key, context, 1U);
     require(protector.has_value(), "checkpoint protector creation failed");
     bool missing_protector_refused{};
-    try { (void)checkpoint_v16::encode(*protected_state); }
+    try { (void)checkpoint_v17::encode(*protected_state); }
     catch (const std::invalid_argument &) { missing_protector_refused = true; }
     require(missing_protector_refused, "active checkpoint accepted a missing protector");
-    const auto sealed = checkpoint_v16::encode(*protected_state, &*protector);
+    const auto sealed = checkpoint_v17::encode(*protected_state, &*protector);
     require(std::search(sealed.begin(), sealed.end(), marker.begin(), marker.end()) == sealed.end(),
         "protected checkpoint exposed outer-body plaintext");
-    auto opened = checkpoint_v16::decode(sealed, &*protector);
+    auto opened = checkpoint_v17::decode(sealed, &*protector);
     require(opened && opened->network.isis &&
         opened->network.isis->control.barrier_epoch == 7U &&
         opened->portable_capture_points.back().object_id == marker,
         "protected whole-laboratory checkpoint lost its outer or protocol state");
-    require(!checkpoint_v16::decode(sealed), "protected checkpoint decoded without its vault");
+    require(!checkpoint_v17::decode(sealed), "protected checkpoint decoded without its vault");
     key[0U] ^= 1U;
     auto wrong_key = router::vault::SecretVault::create(key, context, 1U);
-    require(wrong_key && !checkpoint_v16::decode(sealed, &*wrong_key),
+    require(wrong_key && !checkpoint_v17::decode(sealed, &*wrong_key),
         "protected checkpoint accepted a different project key");
     for (const auto offset : {std::size_t{16U}, sealed.size() / 2U, sealed.size() - 1U}) {
       auto damaged = sealed;
       damaged[offset] ^= 1U;
-      require(!checkpoint_v16::decode(damaged, &*protector),
+      require(!checkpoint_v17::decode(damaged, &*protector),
           "protected checkpoint accepted a changed header, body or tag");
     }
-    require(!checkpoint_v16::decode(std::span{sealed}.first(sealed.size() - 1U), &*protector),
+    require(!checkpoint_v17::decode(std::span{sealed}.first(sealed.size() - 1U), &*protector),
         "protected checkpoint accepted truncation");
   }
   {
@@ -1165,7 +1165,7 @@ void runtime_supervisor_tests() {
     control.ipv6_connected[0U].configured = true;
     control.ipv6_connected[0U].interface_id = 45U;
     control.ipv6_connected[0U].interface_generation = 20U;
-    auto restored = checkpoint_v16::decode(checkpoint_v16::encode(*scoped));
+    auto restored = checkpoint_v17::decode(checkpoint_v17::encode(*scoped));
     require(restored && restored->network.routers.front().forwarding.fib.routes[0U] == forwarding.fib.routes[0U] &&
         restored->network.routers.front().forwarding.ipv6_fib.routes[0U] == forwarding.ipv6_fib.routes[0U] &&
         restored->control.front().connected[0U].interface_generation == 19U &&
@@ -1173,14 +1173,14 @@ void runtime_supervisor_tests() {
         restored->control.front().ipv6_connected[0U].interface_generation == 20U,
         "checkpoint lost IS-IS provenance or local interface scope");
     forwarding.fib.routes[0U].ospf_path_type = routing::OspfPathType::intra_area;
-    require(!checkpoint_v16::decode(checkpoint_v16::encode(*scoped)),
+    require(!checkpoint_v17::decode(checkpoint_v17::encode(*scoped)),
         "checkpoint accepted mixed IS-IS and OSPF provenance");
     auto old_magic = bytes;
     old_magic[6U] = '7';
-    require(!checkpoint_v16::decode(old_magic), "checkpoint accepted an obsolete magic");
+    require(!checkpoint_v17::decode(old_magic), "checkpoint accepted an obsolete magic");
     auto old_abi = bytes;
     old_abi[8U] = 7U;
-    require(!checkpoint_v16::decode(old_abi), "checkpoint accepted an obsolete ABI");
+    require(!checkpoint_v17::decode(old_abi), "checkpoint accepted an obsolete ABI");
   }
 
   require(decoded && bytes.size() > 64 &&
@@ -1231,7 +1231,7 @@ void runtime_supervisor_tests() {
           "checkpoint ABI 6 did not round-trip the value graph");
   auto corrupted = bytes;
   corrupted[0] ^= 0x5aU;
-  require(!checkpoint_v16::decode(corrupted),
+  require(!checkpoint_v17::decode(corrupted),
           "checkpoint ABI 6 accepted corrupted family magic");
   decoded->network.hosts.front().dns.reset();
   // The two portable entries above belong to LabRuntime in production. Remove
@@ -1410,8 +1410,8 @@ void runtime_supervisor_tests() {
   auto ies_checkpoint = runtime->checkpoint();
   require(static_cast<bool>(ies_checkpoint),
           "IES runtime checkpoint was unavailable");
-  const auto ies_checkpoint_bytes = checkpoint_v16::encode(*ies_checkpoint);
-  auto decoded_ies_checkpoint = checkpoint_v16::decode(ies_checkpoint_bytes);
+  const auto ies_checkpoint_bytes = checkpoint_v17::encode(*ies_checkpoint);
+  auto decoded_ies_checkpoint = checkpoint_v17::decode(ies_checkpoint_bytes);
   require(static_cast<bool>(decoded_ies_checkpoint),
           "IES control graph did not survive checkpoint ABI 6 encoding");
   require(decoded_ies_checkpoint->control.size() == 1U &&
@@ -1665,8 +1665,8 @@ void runtime_supervisor_tests() {
   auto dhcp_checkpoint = runtime->checkpoint();
   require(static_cast<bool>(dhcp_checkpoint),
           "threaded DHCPv6 checkpoint was unavailable");
-  const auto dhcp_checkpoint_bytes = checkpoint_v16::encode(*dhcp_checkpoint);
-  auto decoded_dhcp_checkpoint = checkpoint_v16::decode(dhcp_checkpoint_bytes);
+  const auto dhcp_checkpoint_bytes = checkpoint_v17::encode(*dhcp_checkpoint);
+  auto decoded_dhcp_checkpoint = checkpoint_v17::decode(dhcp_checkpoint_bytes);
   require(static_cast<bool>(decoded_dhcp_checkpoint),
           "DHCPv6 state did not survive checkpoint ABI 6 encoding");
   runtime.reset();

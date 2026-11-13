@@ -71,7 +71,17 @@ void isis_cli_configuration_tests() {
       throw std::runtime_error("IS-IS surface editor rejected: " + text);
     ++checked;
   }
-  require(checked == 245U, "IS-IS surface coverage changed without test review");
+  require(checked == 257U, "IS-IS surface coverage changed without test review");
+  for (const auto leaf : {"ignore-attached-bit", "suppress-attached-bit"}) {
+    router::isis::RouterConfiguration md, classic;
+    require(apply(md, CliEngine::md, std::string{"configure router \"Base\" isis 0 "} + leaf + " true").valid &&
+        apply(classic, CliEngine::classic, std::string{"configure router isis "} + leaf).valid && md == classic,
+        "attached policy differs between engines");
+    require(apply(md, CliEngine::md, std::string{"delete router \"Base\" isis 0 "} + leaf).valid &&
+        apply(classic, CliEngine::classic, std::string{"configure router isis no "} + leaf).valid && md == classic &&
+        !md.instances.front().ignore_attached_bit && !md.instances.front().suppress_attached_bit,
+        "attached policy removal did not restore absence");
+  }
   router::isis::RouterConfiguration strict_md, strict_classic;
   require(apply(strict_md, CliEngine::md, "configure router \"Base\" isis 0 strict-adjacency-check true").valid &&
       apply(strict_classic, CliEngine::classic, "configure router isis strict-adjacency-check").valid &&

@@ -5,6 +5,7 @@
 // Source: iso.10589.2002.lsdb_link_graph
 
 #include "router/isis_link_graph.hpp"
+#include "router/isis_graph_metadata.hpp"
 #include "router/isis_basic_tlvs.hpp"
 #include "router/isis_multi_topology.hpp"
 #include "router/isis_narrow_reachability.hpp"
@@ -21,41 +22,7 @@ packet::isis::LanId node_id(const packet::isis::LspId &id) noexcept {
   std::copy_n(id.begin(), result.size(), result.begin());
   return result;
 }
-struct RootMetadata {
-  bool supported{}, overloaded{}, attached{}, valid{true};
-  std::size_t ignored{};
-};
-RootMetadata metadata(const StoredLspView &record, const LinkGraphSelection &selection) noexcept {
-  RootMetadata result;
-  const bool pseudonode = record.header.id[6U] != 0U;
-  result.overloaded = !selection.topology && (record.header.flags & 4U);
-  result.attached = !selection.topology && !pseudonode && (record.header.flags & 8U);
-  if (pseudonode) { result.supported = true; return result; }
-  bool advertised{}, found{}, protocol = !selection.protocol;
-  packet::isis::TlvCursor options(record.pdu.tlvs);
-  while (const auto option = options.next()) {
-    if (option->code == 129U && selection.protocol)
-      protocol = protocol || packet::isis::supports_protocol(*option, *selection.protocol);
-    if (option->code != 229U) continue;
-    packet::isis::TopologyCursor entries(*option, true);
-    bool member{}, overloaded{}, attached{};
-    while (const auto entry = entries.next()) if (entry->id == selection.topology) {
-      member = true;
-      overloaded = overloaded || entry->overloaded;
-      attached = attached || entry->attached;
-    }
-    if (!entries.valid()) { ++result.ignored; continue; }
-    advertised = true;
-    found = found || member;
-    if (selection.topology) {
-      result.overloaded = result.overloaded || overloaded;
-      result.attached = result.attached || attached;
-    }
-  }
-  result.valid = options.valid();
-  result.supported = protocol && (found || (!advertised && !selection.topology));
-  return result;
-}
+
 auto pair_key(const LinkArc &arc) noexcept { return std::pair{arc.source, arc.target}; }
 }
 LinkGraph::LinkGraph(std::size_t maximum_nodes, std::size_t maximum_links)
@@ -92,7 +59,7 @@ LinkGraphStatus LinkGraph::rebuild(const LinkStateDatabase &database,
         !record->header.sequence || !record->header.checksum) continue;
     const auto type = record->header.flags & 3U;
     if ((type != 1U && type != 3U) || (record->pdu.type == packet::isis::PduType::lsp_l2 && type != 3U)) continue;
-    const auto root = metadata(*record, selection);
+    const auto root = graph_root_metadata(*record, selection);
     if (!root.valid) return LinkGraphStatus::malformed_database;
     working_.ignored += root.ignored;
     if (!root.supported) continue;

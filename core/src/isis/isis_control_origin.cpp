@@ -123,6 +123,7 @@ RuntimeClock::time_point ControlWorker::service_local_instance(DeviceState &devi
     if (!composed) return now;
     service_p2p_decision(instance, device, index, now, budget);
     if (instance.status != UpdateStatus::applied) return stop_local_instance(device, index, instance.status);
+    if (instance.local_roots_dirty[0U] || instance.local_roots_dirty[1U]) return now;
     return std::min({validation_deadline, generated.deadline.value_or(never), instance.decision_deadline(now)});
   }
   return stop_local_instance(device, index, generated.terminal == GenerationStatus::sequence_exhausted ?

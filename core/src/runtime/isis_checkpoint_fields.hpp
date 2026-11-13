@@ -83,7 +83,7 @@ auto members(T &v) noexcept { [[maybe_unused]] auto &[source, metadata] = v; ret
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::LocalIpv6AddressCatalog>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[version, units] = v; return std::tie(v.version, v.units); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::LocalOriginProgram>
-auto members(T &v) noexcept { [[maybe_unused]] auto &[content, neighbors, resource_retry, broadcast_neighbors, prefixes, ipv6_addresses] = v; return std::tie(v.content, v.neighbors, v.resource_retry, v.broadcast_neighbors, v.prefixes, v.ipv6_addresses); }
+auto members(T &v) noexcept { [[maybe_unused]] auto &[content, neighbors, resource_retry, broadcast_neighbors, prefixes, ipv6_addresses, automatic_area_attachment, suppress_attached_bit] = v; return std::tie(v.content, v.neighbors, v.resource_retry, v.broadcast_neighbors, v.prefixes, v.ipv6_addresses, v.automatic_area_attachment, v.suppress_attached_bit); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::SpfDelayPolicy>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[maximum_delay, initial_delay, second_delay] = v; return std::tie(v.maximum, v.initial, v.second); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::SpfThrottleCheckpoint>
@@ -91,7 +91,7 @@ auto members(T &v) noexcept { [[maybe_unused]] auto &[version, policy, next_hold
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::P2pDecisionProgram>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[nodes, links, pending, protocol, prefixes] = v; return std::tie(v.nodes, v.links, v.pending, v.protocol, v.prefixes); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::P2pRouteFamilyProgram>
-auto members(T &v) noexcept { [[maybe_unused]] auto &[calculation, preferences] = v; return std::tie(v.calculation, v.preferences); }
+auto members(T &v) noexcept { [[maybe_unused]] auto &[calculation, preferences, ignore_attached_bit] = v; return std::tie(v.calculation, v.preferences, v.ignore_attached_bit); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::P2pRouteFamilyProgram::Preference>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[internal, external] = v; return std::tie(v.internal, v.external); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::UpdateInstanceProgram>

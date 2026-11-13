@@ -202,11 +202,11 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
     default: return false;
     }
     if (configured == after.isis.instances.end() || action.instance ||
-        configured->levels != ConfiguredLevels::level2 ||
+        (configured->levels != ConfiguredLevels::level1 && configured->levels != ConfiguredLevels::level2) ||
         (!configured->ipv4_routing.value_or(configuration_profile::ipv4_routing_default) &&
          configured->ipv6_routing != ConfiguredIpv6Routing::native) ||
         configured->ipv6_routing == ConfiguredIpv6Routing::multi_topology ||
-        !resolve_instance_level(*configured, 1U).wide_metrics_only || configured->areas.empty()) return false;
+        !resolve_instance_level(*configured, configured->levels == ConfiguredLevels::level1 ? 0U : 1U).wide_metrics_only || configured->areas.empty()) return false;
     const auto wait = resolve_wait_timer(WaitTimerKind::lsp, configured->lsp_wait);
     // A fixed hold policy has no unresolved adaptive growth/reset behavior.
     if (!wait || wait->initial != 0ms || wait->second != wait->maximum || wait->maximum <= 0ms) return false;

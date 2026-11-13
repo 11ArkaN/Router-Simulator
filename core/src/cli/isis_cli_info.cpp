@@ -124,6 +124,8 @@ void instance(Writer &writer, const InstanceIntent &value, bool detail) {
   writer.levels(value.levels, detail);
   writer.boolean("ipv4-routing", value.ipv4_routing, defaults::ipv4_routing_default, detail);
   writer.boolean("advertise-passive-only", value.advertise_passive_only, defaults::advertise_passive_only_default, detail);
+  writer.boolean("ignore-attached-bit", value.ignore_attached_bit, defaults::ignore_attached_bit_default, detail);
+  writer.boolean("suppress-attached-bit", value.suppress_attached_bit, defaults::suppress_attached_bit_default, detail);
   writer.boolean("strict-adjacency-check", value.strict_adjacency_check, defaults::strict_adjacency_check_default, detail);
   if (value.ipv6_routing || detail) {
     const auto ipv6 = value.ipv6_routing.value_or(ConfiguredIpv6Routing::disabled);
@@ -224,6 +226,10 @@ std::string classic_leaf(std::string_view value) {
     const auto levels = value.substr(17U);
     return "level-capability level-" + std::string{levels};
   }
+  if (value == "ignore-attached-bit true") return "ignore-attached-bit";
+  if (value == "ignore-attached-bit false") return "no ignore-attached-bit";
+  if (value == "suppress-attached-bit true") return "suppress-attached-bit";
+  if (value == "suppress-attached-bit false") return "no suppress-attached-bit";
   if (value == "strict-adjacency-check true") return "strict-adjacency-check";
   if (value == "strict-adjacency-check false") return "no strict-adjacency-check";
   if (value == "advertise-passive-only true") return "advertise-passive-only";

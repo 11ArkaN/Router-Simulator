@@ -6,6 +6,7 @@
 
 #include "router/isis_control_worker.hpp"
 #include "router/isis_rib_input.hpp"
+#include "router/isis_attached_default.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -95,8 +96,7 @@ RuntimeClock::time_point ControlWorker::service_routes(DeviceState &device,
         const auto &decision = instance->route_families[family].decisions[level];
         if (!decision) continue;
         const auto &bindings = instance->route_families[family].bindings[level];
-        const auto collected = visit_prefix_routes(*decision, std::span{bindings},
-            [&](std::size_t, const PrefixRouteCandidate &candidate) {
+        const auto append = [&](std::size_t, const PrefixRouteCandidate &candidate) {
           const auto preference = candidate.external ? program->preferences[level].external : program->preferences[level].internal;
           if (family) {
             if (output.ipv6_count == output.ipv6.size()) { failure = Status::capacity; return false; }
@@ -110,9 +110,17 @@ RuntimeClock::time_point ControlWorker::service_routes(DeviceState &device,
             output.ipv4[output.ipv4_count++] = *mapped;
           }
           return true;
-        });
+        };
+        const auto collected = visit_prefix_routes(*decision, std::span{bindings}, append);
         if (collected.status != PrefixRoutesStatus::applied && failure == Status::pending)
           failure = collected.status == PrefixRoutesStatus::capacity ? Status::capacity : Status::invalid;
+        if (!level && failure == Status::pending) {
+          const auto attached = visit_attached_default_routes(instance->process->level(0U)->database().database(),
+              *decision, std::span{bindings}, {family ? ip::AddressFamily::ipv6 : ip::AddressFamily::ipv4,
+                  0U, program->ignore_attached_bit}, now, append);
+          if (attached.status != PrefixRoutesStatus::applied && failure == Status::pending)
+            failure = attached.status == PrefixRoutesStatus::capacity ? Status::capacity : Status::invalid;
+        }
       }
     }
   }

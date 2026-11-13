@@ -89,7 +89,7 @@ struct ControlDeviceCheckpoint {
   std::chrono::milliseconds route_retry{};
 };
 struct ControlWorkerCheckpoint {
-  std::uint32_t version{5U};
+  std::uint32_t version{6U};
   std::uint64_t barrier_epoch{};
   std::size_t forwarding_shards{}, maximum_circuits{}, active_circuits{}, first_device{};
   std::vector<ControlDeviceCheckpoint> devices;

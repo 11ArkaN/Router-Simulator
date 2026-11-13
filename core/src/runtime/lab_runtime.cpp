@@ -27799,13 +27799,13 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
     checkpoint_bytes_.clear();
     return {};
   }
-  try { checkpoint_bytes_ = checkpoint_v16::encode(*checkpoint, secret_vault_ ? &*secret_vault_ : nullptr); }
+  try { checkpoint_bytes_ = checkpoint_v17::encode(*checkpoint, secret_vault_ ? &*secret_vault_ : nullptr); }
   catch (...) { checkpoint_bytes_.clear(); return {}; }
   return checkpoint_bytes_;
 }
 
 bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
-  auto checkpoint = checkpoint_v16::decode(bytes, secret_vault_ ? &*secret_vault_ : nullptr);
+  auto checkpoint = checkpoint_v17::decode(bytes, secret_vault_ ? &*secret_vault_ : nullptr);
   if (!checkpoint)
     return false;
   try {
@@ -28117,6 +28117,13 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
             }
 
           }
+        }
+        if (matched) {
+          const bool ignore = instance.ignore_attached_bit.value_or(isis::configuration_profile::ignore_attached_bit_default);
+          for (const auto &family : matched->configuration.routing)
+            if (family && family->ignore_attached_bit != ignore) return false;
+          if (matched->configuration.origination && matched->configuration.origination->suppress_attached_bit !=
+              instance.suppress_attached_bit.value_or(isis::configuration_profile::suppress_attached_bit_default)) return false;
         }
         const bool enabled = instance.admin_enabled.value_or(false);
         if ((enabled && !matched) || (matched && matched->admin_enabled != enabled)) return false;

@@ -43,6 +43,8 @@ void isis_prefix_attributes_tests();
 void isis_reachability_tests();
 void isis_multi_topology_tests();
 void isis_link_graph_tests();
+void isis_attached_default_tests();
+void isis_area_attachment_control_tests();
 void isis_neighbor_key_tests();
 void isis_basic_tlvs_tests();
 void isis_next_hop_tests();
@@ -501,6 +503,8 @@ int main() {
     isis_reachability_tests();
     isis_multi_topology_tests();
     isis_link_graph_tests();
+    isis_attached_default_tests();
+  isis_area_attachment_control_tests();
     isis_neighbor_key_tests();
     isis_basic_tlvs_tests();
     isis_next_hop_tests();

@@ -27,6 +27,8 @@ struct InstanceProgramContext {
   std::chrono::milliseconds resource_retry{};
   std::uint64_t random{};
   std::array<std::optional<P2pRouteFamilyProgram>, 2U> routing;
+  // Explicit family-independent L2 graph budgets for automatic area attachment.
+  std::optional<P2pDecisionProgram> hierarchy_decision;
   std::span<const InstanceOriginInterface> interfaces;
   std::span<const packet::Ipv4> ipv4_addresses;
   std::span<const packet::Ipv6> ipv6_addresses;

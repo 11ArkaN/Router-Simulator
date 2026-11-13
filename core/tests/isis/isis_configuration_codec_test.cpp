@@ -9,7 +9,7 @@ void isis_configuration_codec_tests() {
   using namespace router::isis;
   constexpr std::size_t budget = 65536U;
   RouterConfiguration value;
-  require(configuration_codec::encode(value, 5U) == std::optional{std::vector<std::uint8_t>{4U, 0U, 0U, 0U, 0U}});
+  require(configuration_codec::encode(value, 5U) == std::optional{std::vector<std::uint8_t>{5U, 0U, 0U, 0U, 0U}});
   require(!configuration_codec::encode(value, 4U));
   value.instances.emplace_back();
   auto &instance = value.instances.back();
@@ -21,6 +21,8 @@ void isis_configuration_codec_tests() {
   empty_instance.resize(41U); empty_instance[0U] = 3U;
   require(*configuration_codec::decode(empty_instance, budget) == value);
   empty_instance.resize(42U); empty_instance[0U] = 4U;
+  require(*configuration_codec::decode(empty_instance, budget) == value);
+  empty_instance.resize(44U); empty_instance[0U] = 5U;
   require(configuration_codec::encode(value, budget) == std::optional{empty_instance});
   instance.instance = 127U; instance.admin_enabled = true;
   instance.ipv4_routing = false; instance.ipv6_routing = ConfiguredIpv6Routing::native;
@@ -37,17 +39,17 @@ void isis_configuration_codec_tests() {
   interface.level[1U].hello_interval_seconds = std::uint16_t{20000U};
   interface.level[1U].hello_multiplier = std::uint8_t{100U};
   auto legacy = *configuration_codec::encode(value, budget);
-  legacy.resize(legacy.size() - 8U); legacy[0U] = 1U;
+  legacy.resize(legacy.size() - 10U); legacy[0U] = 1U;
   require(*configuration_codec::decode(legacy, budget) == value);
   instance.spf_wait = {550U, 10U, 100000U};
   instance.lsp_wait = {120000U, 99U, 1000U};
   instance.advertise_passive_only = true;
   const auto encoded = configuration_codec::encode(value, budget);
   require(encoded.has_value());
-  auto previous = *encoded; previous.resize(previous.size() - 3U); previous[0U] = 2U;
+  auto previous = *encoded; previous.resize(previous.size() - 5U); previous[0U] = 2U;
   auto prior_intent = value; prior_intent.instances.front().advertise_passive_only.reset();
   require(*configuration_codec::decode(previous, budget) == prior_intent);
-  auto invalid_boolean = *encoded; invalid_boolean[invalid_boolean.size() - 2U] = 2U;
+  auto invalid_boolean = *encoded; invalid_boolean[invalid_boolean.size() - 4U] = 2U;
   require(!configuration_codec::decode(invalid_boolean, budget));
   instance.advertise_passive_only = false;
   const auto explicit_false = configuration_codec::encode(value, budget);
@@ -81,7 +83,17 @@ void isis_configuration_codec_tests() {
   strict.instances.emplace_back().strict_adjacency_check = true;
   const auto strict_bytes = configuration_codec::encode(strict, budget);
   require(strict_bytes && *configuration_codec::decode(*strict_bytes, budget) == strict);
-  auto version3 = *strict_bytes; version3.resize(version3.size() - 2U); version3[0U] = 3U;
+  auto version4 = *strict_bytes; version4.resize(version4.size() - 2U); version4[0U] = 4U;
+  require(*configuration_codec::decode(version4, budget) == strict);
+  for (const bool ignore : {false, true}) for (const bool suppress : {false, true}) {
+    strict.instances.front().ignore_attached_bit = ignore;
+    strict.instances.front().suppress_attached_bit = suppress;
+    const auto attached = configuration_codec::encode(strict, budget);
+    require(attached && *configuration_codec::decode(*attached, budget) == strict);
+  }
+  strict.instances.front().ignore_attached_bit.reset();
+  strict.instances.front().suppress_attached_bit.reset();
+  auto version3 = *strict_bytes; version3.resize(version3.size() - 4U); version3[0U] = 3U;
   strict.instances.front().strict_adjacency_check.reset();
   require(*configuration_codec::decode(version3, budget) == strict);
 

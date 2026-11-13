@@ -170,6 +170,8 @@ struct LocalOriginProgram {
   // Address-specific assignment gates and immutable LSP metadata share this
   // root owner. Forwarding AF messages are validated before editing readiness.
   std::optional<LocalIpv6AddressCatalog> ipv6_addresses{};
+  // Canonical L1/L2 programs derive attachment from family-independent L2 SPF.
+  bool automatic_area_attachment{}, suppress_attached_bit{};
   [[nodiscard]] bool automatic_roots() const noexcept {
     return neighbors || broadcast_neighbors || prefixes || ipv6_addresses;
   }
@@ -195,6 +197,8 @@ struct P2pRouteFamilyProgram {
     bool operator==(const Preference &) const = default;
   };
   std::array<Preference, 2U> preferences;
+  // The instance owner applies this receive policy only to L1 fallback routes.
+  bool ignore_attached_bit{};
   bool operator==(const P2pRouteFamilyProgram &) const = default;
 };
 struct UpdateInstanceProgram {

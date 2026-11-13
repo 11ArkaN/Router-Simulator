@@ -822,6 +822,8 @@ if(ROUTER_BUILD_TESTS)
     tests/ospf/ospf_spf_test.cpp
     tests/isis/isis_spf_test.cpp
     tests/isis/isis_link_graph_test.cpp
+    tests/isis/isis_attached_default_test.cpp
+  tests/isis/isis_area_attachment_control_test.cpp
     tests/isis/isis_neighbor_key_test.cpp
     tests/ospf/ospf_topology_test.cpp
     tests/forwarding/route_policy_test.cpp

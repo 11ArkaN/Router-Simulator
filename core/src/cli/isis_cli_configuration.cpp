@@ -184,11 +184,13 @@ EditResult edit(isis::RouterConfiguration &configuration,
       std::sort(instance->areas.begin(), instance->areas.end(), [](const auto &a, const auto &b) {
         return std::lexicographical_compare(a.view().begin(), a.view().end(), b.view().begin(), b.view().end());
       });
-    } else if (leaf == "ipv4-routing" || leaf == "advertise-passive-only" || leaf == "strict-adjacency-check" || leaf == "passive" || leaf == "wide-metrics-only") {
+    } else if (leaf == "ipv4-routing" || leaf == "advertise-passive-only" || leaf == "ignore-attached-bit" || leaf == "suppress-attached-bit" || leaf == "strict-adjacency-check" || leaf == "passive" || leaf == "wide-metrics-only") {
       const auto boolean = engine == CliEngine::classic ? (remove ? "false" : "true") : value;
-      const bool reset = remove && (engine == CliEngine::md || leaf == "advertise-passive-only" || leaf == "strict-adjacency-check");
+      const bool reset = remove && (engine == CliEngine::md || leaf == "advertise-passive-only" || leaf == "suppress-attached-bit" || leaf == "strict-adjacency-check" || leaf == "ignore-attached-bit");
       if (leaf == "ipv4-routing") accepted = scalar(instance->ipv4_routing, boolean, reset);
       else if (leaf == "advertise-passive-only") accepted = scalar(instance->advertise_passive_only, boolean, reset);
+      else if (leaf == "ignore-attached-bit") accepted = scalar(instance->ignore_attached_bit, boolean, reset);
+      else if (leaf == "suppress-attached-bit") accepted = scalar(instance->suppress_attached_bit, boolean, reset);
       else if (leaf == "strict-adjacency-check") accepted = scalar(instance->strict_adjacency_check, boolean, reset);
       else if (leaf == "wide-metrics-only" && rl) accepted = scalar(rl->wide_metrics_only, boolean, reset);
       else if (il) accepted = scalar(il->passive, boolean, reset);

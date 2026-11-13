@@ -84,6 +84,15 @@ void isis_instance_program_tests() {
   intent = before; intent.ipv4_routing = false;
   result = prepare_instance_program(intent, context);
   require(result.status == InstanceProgramStatus::prepared && !result.program->routing[0U]);
+  intent = before; intent.ignore_attached_bit = true; intent.suppress_attached_bit = true;
+  context.hierarchy_decision = P2pDecisionProgram{8U, 32U, 64U, {}, {}};
+  result = prepare_instance_program(intent, context);
+  require(result.status == InstanceProgramStatus::prepared && result.program->decision == context.hierarchy_decision &&
+      result.program->origination->automatic_area_attachment && result.program->origination->suppress_attached_bit &&
+      result.program->routing[0U]->ignore_attached_bit);
+  context.hierarchy_decision->protocol = packet::isis::ipv4_nlpid;
+  require(prepare_instance_program(intent, context).status == InstanceProgramStatus::invalid_context);
+  context.hierarchy_decision.reset();
   intent = before; intent.interfaces[0U].type = ConfiguredInterfaceType::broadcast;
   result = prepare_instance_program(intent, context);
   require(result.status == InstanceProgramStatus::prepared && result.program->origination->neighbors->empty() &&
