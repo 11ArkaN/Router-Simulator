@@ -71,7 +71,19 @@ void isis_cli_configuration_tests() {
       throw std::runtime_error("IS-IS surface editor rejected: " + text);
     ++checked;
   }
-  require(checked == 239U, "IS-IS surface coverage changed without test review");
+  require(checked == 245U, "IS-IS surface coverage changed without test review");
+  router::isis::RouterConfiguration strict_md, strict_classic;
+  require(apply(strict_md, CliEngine::md, "configure router \"Base\" isis 0 strict-adjacency-check true").valid &&
+      apply(strict_classic, CliEngine::classic, "configure router isis strict-adjacency-check").valid &&
+      strict_md == strict_classic && strict_md.instances.front().strict_adjacency_check == true,
+      "strict family policy differs between engines");
+  require(apply(strict_md, CliEngine::md, "delete router \"Base\" isis 0 strict-adjacency-check").valid &&
+      apply(strict_classic, CliEngine::classic, "configure router isis no strict-adjacency-check").valid &&
+      strict_md == strict_classic && !strict_md.instances.front().strict_adjacency_check,
+      "strict family removal did not restore absence");
+  require(apply(strict_md, CliEngine::md, "configure router \"Base\" isis 0 strict-adjacency-check false").valid &&
+      strict_md.instances.front().strict_adjacency_check == false,
+      "explicit false lost strict policy presence");
   router::isis::RouterConfiguration passive_md, passive_classic;
   require(apply(passive_md, CliEngine::md, "configure router \"Base\" isis 0 advertise-passive-only true").valid &&
       apply(passive_classic, CliEngine::classic, "configure router isis advertise-passive-only").valid &&

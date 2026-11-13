@@ -64,7 +64,8 @@ InterfaceProgramResult prepare_interface_program(const InstanceIntent &instance,
     hello.maximum_area_addresses = context.maximum_areas;
     hello.maximum_pdu_octets = context.maximum_pdu_octets;
     hello.peer_attribute_octets = context.peer_attribute_octets;
-    hello.padding = context.padding; hello.strict_adjacency_check = context.strict_adjacency_check;
+    hello.padding = context.padding;
+    hello.strict_adjacency_check = instance.strict_adjacency_check.value_or(context.strict_adjacency_check);
     const auto timing = resolve_hello_timing(resolved.level[level], false);
     hello.hello_interval = timing.interval;
     hello.holding_seconds = static_cast<std::uint16_t>(timing.holding_seconds);

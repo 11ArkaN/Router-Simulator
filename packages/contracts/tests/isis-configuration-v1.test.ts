@@ -41,11 +41,11 @@ it("level ranges do not accept NaN, fractions or a larger numeric type", () => {
 });
 
 it("binary management payload preserves the native empty-tree golden", () => {
-  expect(encodeIsisConfigurationHex({instances: []})).toBe("0300000000");
+  expect(encodeIsisConfigurationHex({instances: []})).toBe("0400000000");
   const value = fixture();
   const instance = value.instances[0];
   instance.instance = 0; instance.adminEnabled = null;
-  expect(encodeIsisConfigurationHex(value)).toBe("0301000000" + "00".repeat(36));
+  expect(encodeIsisConfigurationHex(value)).toBe("0401000000" + "00".repeat(37));
 });
 
 it("sparse arrays cannot bypass entry validation or wire counts", () => {
@@ -78,10 +78,24 @@ it("passive-only presence is optional for older projects and remains a canonical
   for (const configured of [null, false, true]) {
     value.instances[0].advertisePassiveOnly = configured;
     expect(isRouterIsisIntent(value)).toBe(true);
-    expect(encodeIsisConfigurationHex(value).endsWith(configured === null ? "00" : configured ? "0101" : "0100")).toBe(true);
+    expect(encodeIsisConfigurationHex(value).slice(0, -2).endsWith(configured === null ? "00" : configured ? "0101" : "0100")).toBe(true);
   }
   delete value.instances[0].advertisePassiveOnly;
   expect(encodeIsisConfigurationHex(value)).toBe(absent);
   for (const invalid of [0, 1, "false", undefined])
     expect(isRouterIsisIntent({...value, instances: [{...value.instances[0], advertisePassiveOnly: invalid}]})).toBe(false);
+});
+
+it("strict adjacency preserves absent, explicit false and true", () => {
+  const value = fixture();
+  const absent = encodeIsisConfigurationHex(value);
+  for (const configured of [null, false, true]) {
+    value.instances[0].strictAdjacencyCheck = configured;
+    expect(isRouterIsisIntent(value)).toBe(true);
+    expect(encodeIsisConfigurationHex(value).endsWith(configured === null ? "00" : configured ? "0101" : "0100")).toBe(true);
+  }
+  delete value.instances[0].strictAdjacencyCheck;
+  expect(encodeIsisConfigurationHex(value)).toBe(absent);
+  for (const invalid of [0, 1, "false", undefined])
+    expect(isRouterIsisIntent({...value, instances: [{...value.instances[0], strictAdjacencyCheck: invalid}]})).toBe(false);
 });

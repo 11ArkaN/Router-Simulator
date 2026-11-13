@@ -160,7 +160,7 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
     if (const auto lease = channels_.isis_generations.receive()) {
       const auto &generation = *lease->value;
       if (generation.command_id == command.id && generation.device == command.device)
-        result.success = plane_.replace_isis_generation(command.device, generation.circuits, generation.new_instances, generation.retired_instances, generation.administrative);
+        result.success = plane_.replace_isis_generation(command.device, generation.circuits, generation.new_instances, generation.retired_instances, generation.administrative, generation.adjacency_policies);
       if (!channels_.isis_generations.release(lease->handle)) std::terminate();
     }
     break;

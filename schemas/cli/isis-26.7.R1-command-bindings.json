@@ -298,6 +298,13 @@
       "classic_source": "https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-a-commands-addr-2.html#ai9j785d1m",
       "md_remove": true,
       "classic_no": true
+    },
+    {
+      "yang_path": "/configure/router/isis/strict-adjacency-check",
+      "md_source": "https://documentation.nokia.com/sr/26-7/7750-sr/books/md-cli-command-reference/router-router_0.html#d46322",
+      "classic_source": "https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-s-commands-stat-5.html#ai9j785or8",
+      "md_remove": true,
+      "classic_no": true
     }
   ]
 }

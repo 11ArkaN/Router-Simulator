@@ -67,6 +67,10 @@ public:
   // retains monotonically increasing receipt tickets; configuration replacement
   // additionally requires a fresh circuit epoch in the enclosing owner.
   [[nodiscard]] bool up(Clock::time_point now) noexcept;
+  // Circuit owner only. Preflights retained attributes before changing policy.
+  // Matching peers, timers and counters survive; mismatched peers complete Down
+  // synchronously. Missing observer or malformed retained input changes nothing.
+  [[nodiscard]] bool set_strict_adjacency_check(bool enabled, void *context, P2pCircuitObserver observer) noexcept;
   [[nodiscard]] bool operational() const noexcept { return operational_; }
   [[nodiscard]] bool hello_pending() const noexcept { return hello_.pending(); }
   [[nodiscard]] std::optional<Clock::time_point> holding_deadline() const noexcept {
@@ -83,7 +87,7 @@ public:
   [[nodiscard]] P2pSnapshot adjacency() const noexcept { return adjacency_.snapshot(); }
   [[nodiscard]] std::span<const std::uint8_t> peer_attributes() const noexcept { return peer_; }
   // Same-owner immutable construction value. Borrow only until circuit removal
-  // or generation replacement; no forwarding or UI owner may retain the view.
+  // or generation replacement or a policy edit; no forwarding or UI owner may retain the view.
   [[nodiscard]] const P2pCircuitConfiguration &configuration() const noexcept { return configuration_; }
 
   // Same circuit owner after transport quiescence. Capture owns non-secret

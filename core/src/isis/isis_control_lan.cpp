@@ -2,6 +2,7 @@
 // encoded Hello receipts. Callback contexts live only on the current stack;
 // moving cold/live aggregates cannot leave retained observer pointers behind.
 
+#include "router/isis_address_family_policy.hpp"
 #include "router/isis_control_worker.hpp"
 
 #include <algorithm>
@@ -115,6 +116,31 @@ void ControlWorker::lan_designated(void *opaque, const std::optional<DisSelectio
     OwnedInstance::level_event(context.circuit.update, {LevelEventKind::circuit_changed,
         context.level ? packet::isis::PduType::lsp_l2 : packet::isis::PduType::lsp_l1, std::nullopt});
 }
+ControlError ControlWorker::set_strict_policy(DeviceState &device, std::uint8_t instance, bool enabled) noexcept {
+  // One serialized control command preflights the complete instance before the
+  // first policy change. Callbacks consume Down synchronously and cannot edit
+  // the circuit registry; the subsequent bounded commit cannot allocate.
+  for (const auto &owned : device.circuits) {
+    if (owned.identity.instance != instance) continue;
+    if (const auto *lan = owned.lan()) {
+      for (std::size_t level{}; level < 2U; ++level) if (const auto *circuit = lan->at(level))
+        for (std::size_t peer{}; peer < circuit->neighbors().size(); ++peer)
+          if (!peer_address_family_mask(circuit->neighbors().at(peer)->attributes)) return ControlError::invalid_argument;
+    } else if (!peer_address_family_mask(owned.p2p().peer_attributes())) return ControlError::invalid_argument;
+  }
+  const auto now = RuntimeClock::now();
+  for (auto &owned : device.circuits) {
+    if (owned.identity.instance != instance) continue;
+    if (auto *lan = owned.lan()) {
+      for (std::size_t level{}; level < 2U; ++level) if (auto *circuit = lan->at(level)) {
+        LanObserverContext context{owned, level};
+        if (!circuit->set_strict_adjacency_check(enabled, now, lan_observer(context))) std::terminate();
+      }
+    } else if (!owned.p2p().set_strict_adjacency_check(enabled, &owned, event)) std::terminate();
+  }
+  return ControlError::none;
+}
+
 void ControlWorker::circuit_down(OwnedCircuit &owned) noexcept {
   owned.transmission.cancel();
   if (auto *broadcast = owned.lan()) {

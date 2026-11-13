@@ -11,10 +11,10 @@ auto nonadministrative(const InstanceIntent &value) noexcept {
   // leaf must be classified rather than disappearing in a combined gate edit.
   [[maybe_unused]] const auto &[instance, admin_enabled, ipv4_routing, ipv6_routing, levels,
       system_id, router_id, lsp_lifetime_seconds, lsp_mtu_octets, level, areas, interfaces,
-      spf_wait, lsp_wait, advertise_passive_only] = value;
+      spf_wait, lsp_wait, advertise_passive_only, strict_adjacency_check] = value;
   return std::tie(value.instance, value.ipv4_routing, value.ipv6_routing, value.levels,
       value.system_id, value.router_id, value.lsp_lifetime_seconds, value.lsp_mtu_octets,
-      value.level, value.areas, value.interfaces, value.spf_wait, value.lsp_wait, value.advertise_passive_only);
+      value.level, value.areas, value.interfaces, value.spf_wait, value.lsp_wait, value.advertise_passive_only, value.strict_adjacency_check);
 }
 const InstanceIntent *find(const RouterConfiguration &value, std::uint8_t key) noexcept {
   const auto entry = std::find_if(value.instances.begin(), value.instances.end(),

@@ -2,6 +2,7 @@
 // originate in accepted wire TLVs. Projection admission precedes holding-time
 // refresh; expiry events retain old attributes through synchronous Down work.
 
+#include "router/isis_address_family_policy.hpp"
 #include "router/isis_p2p_circuit.hpp"
 
 #include <algorithm>
@@ -63,6 +64,22 @@ bool PointToPointCircuit::down(void *context, P2pCircuitObserver observer) noexc
   if (update.outcome == P2pOutcome::down) {
     peer_.swap(staged_);
     peer_.clear();
+    event(before, update, staged_, context, observer);
+    staged_.clear();
+  }
+  return true;
+}
+
+bool PointToPointCircuit::set_strict_adjacency_check(bool enabled,
+    void *context, P2pCircuitObserver observer) noexcept {
+  if (!observer) return false;
+  const auto before = adjacency_.snapshot();
+  const auto peer = peer_address_family_mask(peer_);
+  if (!peer) return false;
+  configuration_.strict_adjacency_check = enabled;
+  if (enabled && before.present && *peer != address_family_mask(configuration_.protocols)) {
+    const auto update = adjacency_.circuit_down();
+    peer_.swap(staged_); peer_.clear();
     event(before, update, staged_, context, observer);
     staged_.clear();
   }

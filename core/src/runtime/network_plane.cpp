@@ -5308,10 +5308,11 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     std::span<const IsisCircuitProgram> circuits,
     std::span<const isis::NewUpdateInstance> new_instances,
     std::span<const std::uint8_t> retired_instances,
-    std::span<const isis::UpdateAdminState> administrative) noexcept {
+    std::span<const isis::UpdateAdminState> administrative,
+    std::span<const isis::UpdateAdjacencyPolicy> adjacency_policies) noexcept {
   if (!impl_->live(device) || circuits.size() > device_catalog::maximum_routers * device_catalog::maximum_ports_per_router)
     return false;
-  if (circuits.empty() && new_instances.empty() && retired_instances.empty() && administrative.empty() && !impl_->isis_registered[device.index]) return true;
+  if (circuits.empty() && new_instances.empty() && retired_instances.empty() && administrative.empty() && adjacency_policies.empty() && !impl_->isis_registered[device.index]) return true;
   if (!std::is_sorted(retired_instances.begin(), retired_instances.end()) ||
       std::adjacent_find(retired_instances.begin(), retired_instances.end()) != retired_instances.end()) return false;
   if (!administrative.empty() && (!impl_->route_managers[device.index] ||
@@ -5352,6 +5353,7 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     generation.new_instances.assign(new_instances.begin(), new_instances.end());
     generation.retired_instances.assign(retired_instances.begin(), retired_instances.end());
     generation.administrative.assign(administrative.begin(), administrative.end());
+    generation.adjacency_policies.assign(adjacency_policies.begin(), adjacency_policies.end());
     if (!administrative.empty()) generation.route_generation_floor = impl_->route_managers[device.index]->isis_generation;
     if (!retired_instances.empty() || !administrative.empty()) if (const auto &manager = impl_->route_managers[device.index]) {
       const auto ipv4 = manager->ipv4_candidates.second();

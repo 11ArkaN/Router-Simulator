@@ -125,6 +125,7 @@ export function renderConfigurationProfile(inventory, format = "cpp") {
     ["interface_admin_enabled", "interface/admin-state", "enable"],
     ["ipv4_routing", "ipv4-routing", "true"],
     ["advertise_passive_only", "advertise-passive-only", "true"],
+    ["strict_adjacency_check", "strict-adjacency-check", "true"],
     ["interface_passive", "interface/passive", "true"],
     ["interface_level_passive", "interface/level/passive", "true"],
     ["wide_metrics_only", "level/wide-metrics-only", "true"]

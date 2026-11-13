@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: nokia.sros.26_7.isis.strict_adjacency_check
+    kind: routing-protocol-adjacency-policy
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: nokia-official-doc-and-yang
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-s-commands-stat-5.html#ai9j785or8
+    section: Strict IPv4 and IPv6 family equality, existing adjacency removal and pinned false default
+    rfc_refs: [RFC1195, RFC5308]
+    yang_path: /configure/router/isis/strict-adjacency-check
+    last_verified_at: 2026-11-13
+    implementation: [core/include/router/isis_configuration.hpp, core/include/router/isis_address_family_policy.hpp, core/src/isis/isis_configuration_codec.cpp, core/src/isis/isis_interface_program.cpp, core/src/isis/isis_p2p_circuit.cpp, core/src/isis/isis_lan_circuit.cpp, core/src/isis/isis_control_lan.cpp, core/src/isis/isis_control_worker.cpp, core/src/runtime/lab_runtime_isis.cpp, core/src/runtime/network_plane.cpp, core/src/runtime/isis_configuration_projection.cpp, core/src/cli/isis_cli_configuration.cpp, core/src/cli/isis_cli_info.cpp, schemas/cli/26.7.R1.yaml]
+    tests: [core/tests/cli/isis_cli_configuration_test.cpp, core/tests/cli/isis_cli_info_test.cpp, core/tests/isis/isis_configuration_codec_test.cpp, core/tests/isis/isis_p2p_circuit_test.cpp, core/tests/isis/isis_lan_circuit_test.cpp, core/tests/runtime/isis_datastore_runtime_test.cpp, packages/contracts/tests/isis-configuration-v1.test.ts]
+    status: experimental
+    notes: MD true and false retain presence; delete and classic no restore absence and the YANG false default. Intent codec 4 reads versions 1 through 3 with an absent new leaf. A prepared generation applies sorted root policy changes without replacing circuit epochs or matching peers. Strict mode removes mismatched accepted peers through existing synchronous Down observers; permissive mode still requires a common configured family. BFD-dependent failure behavior requires the excluded BFD owner. Wider public AF admission remains incomplete.
   - id: iso.10589.2002.queued_lsp_lifetime
     kind: routing-protocol-physical-transmission-lifetime
     release: 26.7.R1

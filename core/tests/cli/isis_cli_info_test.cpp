@@ -21,6 +21,7 @@ void isis_cli_info_tests() {
       "configure router \"Base\" isis 127 area-address[49.0001 49.0002]",
       "configure router \"Base\" isis 127 admin-state disable",
       "configure router \"Base\" isis 127 advertise-passive-only true",
+      "configure router \"Base\" isis 127 strict-adjacency-check true",
       "configure router \"Base\" isis 127 ipv6-routing native",
       "configure router \"Base\" isis 127 level-capability 1/2",
       "configure router \"Base\" isis 127 system-id 0000.0000.0127",
@@ -56,6 +57,18 @@ void isis_cli_info_tests() {
       detail.find("lsp-mtu-size 1492") != std::string::npos);
   require(classic_leaf("advertise-passive-only true") == "advertise-passive-only" &&
       classic_leaf("advertise-passive-only false") == "no advertise-passive-only");
+  for (const bool enabled : {false, true}) {
+    const auto command = classic_leaf(enabled ? "strict-adjacency-check true" : "strict-adjacency-check false");
+    require(command == (enabled ? "strict-adjacency-check" : "no strict-adjacency-check"));
+    const auto full_command = "configure router isis 0 " + command;
+    const auto parsed = router::cli_detail::parse_command(router::CliEngine::classic,
+        router::MdCliWorkflow::explicit_private, full_command);
+    router::isis::RouterConfiguration restored;
+    restored.instances.emplace_back();
+    restored.instances.front().strict_adjacency_check = !enabled;
+    require(parsed && edit(restored, *parsed, router::CliEngine::classic).valid &&
+        restored.instances.front().strict_adjacency_check.value_or(false) == enabled);
+  }
   require(classic_leaf("area-address 49.0001") == "area-id 49.0001");
   require(classic_leaf("level-capability 1/2") == "level-capability level-1/2");
   require(classic_leaf("ipv4-routing false") == "no ipv4-routing");

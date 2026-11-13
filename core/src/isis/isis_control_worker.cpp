@@ -112,6 +112,13 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         std::binary_search(command.retired_instances.begin(), command.retired_instances.end(), index))
       return ControlError::invalid_argument;
   }
+  for (std::size_t ordinal{}; ordinal < command.adjacency_policies.size(); ++ordinal) {
+    const auto index = command.adjacency_policies[ordinal].instance;
+    if (index >= device.instances.size() || !device.instances[index] ||
+        (ordinal && command.adjacency_policies[ordinal - 1U].instance >= index) ||
+        std::binary_search(command.retired_instances.begin(), command.retired_instances.end(), index))
+      return ControlError::invalid_argument;
+  }
   const auto route_floor = std::max(device.route_generation, command.route_generation_floor);
   if (!command.administrative.empty() && route_floor == std::numeric_limits<std::uint64_t>::max())
     return ControlError::epoch_exhausted;
@@ -214,6 +221,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
     staged.device = device.handle;
     staged.retired_instances = std::move(command.retired_instances);
     staged.administrative = std::move(command.administrative);
+    staged.adjacency_policies = std::move(command.adjacency_policies);
     if (!staged.administrative.empty()) staged.route_commit_generation = route_floor + 1U;
     staged.output.reserve(definitions.size());
     staged.plan.reserve(definitions.size());
@@ -361,6 +369,8 @@ void ControlWorker::commit_generation(DeviceState &device) noexcept {
   }
   for (const auto &edit : staged.administrative)
     set_admin_state(device, *device.instances[edit.instance], edit.enabled);
+  for (const auto &edit : staged.adjacency_policies)
+    if (set_strict_policy(device, edit.instance, edit.strict_families) != ControlError::none) std::terminate();
   if (staged.route_commit_generation) {
     // The network owner has committed the matching dual-family RIB under its
     // forwarding barrier. Older queued receipts cannot acknowledge this key.

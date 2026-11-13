@@ -182,6 +182,13 @@ void isis_p2p_circuit_tests() {
     require(remote.receive(first, key, start, &remote_events, event) == CircuitReceive::accepted);
   }
   require(strict.adjacency().iso_up);
+  const auto matching_deadline = strict.holding_deadline();
+  require(!strict.set_strict_adjacency_check(false, nullptr, nullptr) &&
+      strict.configuration().strict_adjacency_check);
+  require(strict.set_strict_adjacency_check(false, &strict_events, event) &&
+      strict.set_strict_adjacency_check(true, &strict_events, event) &&
+      strict.adjacency().iso_up && strict.holding_deadline() == matching_deadline && strict_events.down == 0U);
+
   auto stranger_configuration = configuration(3U);
   stranger_configuration.protocols = {packet::isis::ipv6_nlpid};
   PointToPointCircuit stranger(std::move(stranger_configuration), 654U, start);
@@ -190,6 +197,8 @@ void isis_p2p_circuit_tests() {
       strict.adjacency().iso_up && strict_events.down == 0U);
   auto dual_configuration = configuration(2U);
   dual_configuration.protocols.push_back(packet::isis::ipv6_nlpid);
+  dual_configuration.ipv6_addresses.push_back({0xfeU, 0x80U, 0U, 0U, 0U, 0U, 0U, 0U,
+      0U, 0U, 0U, 0U, 0U, 0U, 0U, 2U});
   auto common_dual_configuration = dual_configuration;
   dual_configuration.topologies = {{2U, false, false}};
   PointToPointCircuit dual(std::move(dual_configuration), 789U, start);
@@ -199,8 +208,23 @@ void isis_p2p_circuit_tests() {
       strict_events.old_attributes_preserved);
   PointToPointCircuit permissive(configuration(1U), 321U, start);
   PointToPointCircuit common_dual(std::move(common_dual_configuration), 951U, start);
-  require(common_dual.hello(last, key, *scratch, start) == HelloBuildResult::encoded);
-  require(permissive.receive(last, key, start, &strict_events, event) == CircuitReceive::accepted);
+  for (unsigned round_index{}; round_index < 2U; ++round_index) {
+    packet::Frame local_hello;
+    require(permissive.hello(local_hello, key, *scratch, start) == HelloBuildResult::encoded &&
+        permissive.complete_hello(true, start));
+    require(common_dual.hello(last, key, *scratch, start) == HelloBuildResult::encoded &&
+        common_dual.complete_hello(true, start));
+    require(permissive.receive(last, key, start, &strict_events, event) == CircuitReceive::accepted);
+    require(common_dual.receive(local_hello, key, start, &remote_events, event) == CircuitReceive::accepted);
+  }
+  require(permissive.adjacency().iso_up);
+  const auto prior_down = strict_events.down;
+  require(permissive.set_strict_adjacency_check(true, &strict_events, event) &&
+      !permissive.adjacency().present && permissive.operational() && strict_events.down == prior_down + 1U &&
+      permissive.peer_attributes().empty() && strict_events.old_attributes_preserved);
+  require(permissive.set_strict_adjacency_check(false, &strict_events, event) &&
+      permissive.receive(last, key, start, &strict_events, event) == CircuitReceive::accepted);
+
   auto ipv6_configuration = configuration(2U);
   ipv6_configuration.protocols = {packet::isis::ipv6_nlpid};
   PointToPointCircuit ipv6_only(std::move(ipv6_configuration), 987U, start);

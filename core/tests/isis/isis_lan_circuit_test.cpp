@@ -142,9 +142,92 @@ void delivered(void *opaque, const lab::MultiDeviceFabric::Delivery &delivery) {
     require(context.events[index].update_ok);
   }
 }
+void strict_family_policy_tests() {
+  for (const bool mismatched_dis : {false, true}) {
+    auto pool = std::make_unique<PacketPool>();
+    lab::EthernetSwitch bridge(device_catalog::ethernet_switch_profiles[0U], *pool);
+    auto fabric = std::make_unique<lab::MultiDeviceFabric>();
+    const auto start = RuntimeClock::time_point{100s};
+    std::array<std::unique_ptr<LanCircuit>, 3U> circuits;
+    std::array<Events, 3U> events;
+    auto scratch = std::make_unique<PduScratch>();
+    auto frame = std::make_unique<packet::Frame>();
+    for (std::uint16_t index{}; index < circuits.size(); ++index) {
+      auto program = configuration(static_cast<std::uint8_t>(index + 1U));
+      if (index == 1U) {
+        program.protocols.push_back(packet::isis::ipv6_nlpid);
+        program.ipv6_addresses.push_back({0xfeU, 0x80U, 0U, 0U, 0U, 0U, 0U, 0U,
+            0U, 0U, 0U, 0U, 0U, 0U, 0U, 2U});
+        if (mismatched_dis) program.local.priority = 100U;
+      }
+      circuits[index] = std::make_unique<LanCircuit>(std::move(program), index + 71U, start);
+      events[index].circuit = circuits[index].get();
+      require(bridge.configure_port(index, {1000U, 1514U, true, true}));
+      require(fabric->configure({index, 1U}, {lab::node(lab::DeviceHandle{index, 1U}), 0U, 1U},
+          {lab::node(lab::SwitchHandle{0U, 1U}), index, 1U}, 1'000'000'000U, 100ns, true));
+    }
+    struct PolicyContext {
+      std::array<std::unique_ptr<LanCircuit>, 3U> &circuits;
+      std::array<Events, 3U> &events;
+      lab::EthernetSwitch &bridge;
+      RuntimeClock::time_point now;
+    } context{circuits, events, bridge, start};
+    const auto observer = [&](std::size_t index) { return LanCircuitObserver{&events[index], peer, designated}; };
+    const auto receive = +[](void *opaque, const lab::MultiDeviceFabric::Delivery &wire) {
+      auto &value = *static_cast<PolicyContext *>(opaque);
+      if (wire.destination.node.kind == lab::NodeKind::ethernet_switch) {
+        require(!value.bridge.ingress(wire.destination.ordinal, wire.frame, value.now).malformed);
+      } else {
+        const auto index = wire.destination.node.index;
+        const auto result = value.circuits[index]->receive(wire.frame, {}, value.now,
+            {&value.events[index], peer, designated});
+        const bool policy_drop = index == 0U && value.circuits[index]->configuration().strict_adjacency_check &&
+            wire.frame.bytes[11U] == 2U;
+        require(result == (policy_drop ? LanCircuitReceive::discarded : LanCircuitReceive::accepted));
+      }
+    };
+    const auto exchange = [&] {
+      context.now += 1s;
+      for (std::uint16_t index{}; index < circuits.size(); ++index) {
+        circuits[index]->service(context.now, 4U, observer(index));
+        require(circuits[index]->hello(*frame, {}, *scratch, context.now, observer(index)) == HelloBuildResult::encoded);
+        require(fabric->enqueue({index, 1U}, 0U, *frame) == lab::MultiDeviceFabric::DropReason::none);
+        require(circuits[index]->complete_hello(true, context.now));
+      }
+      for (unsigned flight{}; flight < 6U; ++flight) {
+        fabric->pump_transmit(context.now); context.now += 1ms;
+        fabric->pump_delivery(&context, receive, context.now);
+        for (std::uint16_t index{}; index < circuits.size(); ++index)
+          while (const auto queued = bridge.dequeue(index)) {
+            require(fabric->enqueue({index, 1U}, 1U, *queued->frame) == lab::MultiDeviceFabric::DropReason::none);
+            bridge.release(queued->handle);
+          }
+      }
+    };
+    for (unsigned round{}; round < 3U; ++round) exchange();
+    auto &local = *circuits[0U];
+    const auto matching = configuration(3U).mac;
+    require(local.neighbors().size() == 2U && local.neighbors().find(matching)->adjacency.state == LanState::up);
+    std::optional<RuntimeClock::time_point> holding;
+    for (std::size_t index{}; index < local.neighbors().size(); ++index)
+      if (local.neighbors().at(index)->adjacency.mac == matching) holding = local.neighbors().holding_deadline(index);
+    const auto down = events[0U].down, elections = events[0U].changes;
+    require(local.set_strict_adjacency_check(true, context.now, observer(0U)) && local.operational() &&
+        local.neighbors().size() == 1U && local.neighbors().at(0U)->adjacency.mac == matching &&
+        local.neighbors().holding_deadline(0U) == holding && events[0U].down == down + 1U && events[0U].old_areas);
+    require(events[0U].changes == elections + (mismatched_dis ? 1U : 0U));
+    require(!local.set_strict_adjacency_check(false, context.now, {}) && local.configuration().strict_adjacency_check);
+    exchange();
+    require(local.neighbors().size() == 1U && events[0U].down == down + 1U);
+    require(local.set_strict_adjacency_check(false, context.now, observer(0U)) && local.neighbors().size() == 1U);
+    exchange(); exchange();
+    require(local.neighbors().size() == 2U && local.neighbors().find(configuration(2U).mac)->adjacency.state == LanState::up);
+  }
+}
 }
 
 void isis_lan_circuit_tests() {
+  strict_family_policy_tests();
   auto pool = std::make_unique<PacketPool>();
   lab::EthernetSwitch bridge(device_catalog::ethernet_switch_profiles[0U], *pool);
   auto fabric = std::make_unique<lab::MultiDeviceFabric>();

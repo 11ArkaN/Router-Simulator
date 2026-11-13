@@ -66,10 +66,14 @@ public:
   // retained PRNG continuation, without restoring any old peer or DIS identity.
   // False leaves an already operational circuit unchanged; allocates nothing.
   [[nodiscard]] bool up(Clock::time_point now) noexcept;
+  // Circuit owner only. Preflights retained attributes before changing policy.
+  // Matching peers, timers and counters survive; mismatched peers complete Down
+  // synchronously. Missing observer or malformed retained input changes nothing.
+  [[nodiscard]] bool set_strict_adjacency_check(bool enabled, Clock::time_point now, LanCircuitObserver observer) noexcept;
   [[nodiscard]] bool operational() const noexcept { return operational_; }
   [[nodiscard]] Clock::time_point deadline() const noexcept;
   [[nodiscard]] bool hello_pending() const noexcept { return hello_.pending(); }
-  // Borrow immutable effective configuration until move or destruction.
+  // Borrow immutable effective configuration until a policy edit, move or destruction.
   [[nodiscard]] const LanCircuitConfiguration &configuration() const noexcept { return configuration_; }
   [[nodiscard]] const LanAdjacencySet &neighbors() const noexcept { return neighbors_; }
   [[nodiscard]] std::optional<DisSelection> designated() const noexcept { return designated_; }

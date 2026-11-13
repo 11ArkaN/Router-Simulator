@@ -214,6 +214,9 @@ struct NewUpdateInstance {
 // edits to the control pthread through the command SPSC lease. The receiver
 // exclusively owns their storage; invalid keys or exhausted epochs refuse
 // preparation without changing live state. Capacity is the local instance range.
+// Cold root-policy edit. Configuration publishes sorted unique instance keys;
+// the control owner commits all edits only after generation preparation succeeds.
+struct UpdateAdjacencyPolicy { std::uint8_t instance{}; bool strict_families{}; };
 struct UpdateAdminState {
   std::uint8_t instance{};
   bool enabled{};
@@ -258,6 +261,7 @@ struct ControlCommand {
   std::vector<CircuitDefinition> circuits;
   std::vector<NewUpdateInstance> new_instances;
   std::vector<UpdateAdminState> administrative;
+  std::vector<UpdateAdjacencyPolicy> adjacency_policies;
   // Serialized RIB high water. Preparation reserves a strictly newer local
   // publication for synchronous administrative withdrawal of both families.
   std::uint64_t route_generation_floor{};
@@ -679,6 +683,7 @@ private:
     std::unique_ptr<DeviceState> additions;
     std::vector<std::uint8_t> retired_instances;
     std::vector<UpdateAdminState> administrative;
+  std::vector<UpdateAdjacencyPolicy> adjacency_policies;
     std::uint64_t route_commit_generation{};
     struct UpdateReservation { OwnedInstance *instance{}; UpdateCircuitAdmission admission; };
     std::vector<UpdateReservation> update_reservations;
@@ -751,6 +756,7 @@ private:
   [[nodiscard]] RuntimeClock::time_point service_previous_pseudonodes(OwnedCircuit &circuit,
       RuntimeClock::time_point now, std::size_t &budget) noexcept;
   static void synchronize_lan(OwnedCircuit &circuit, std::size_t level) noexcept;
+  [[nodiscard]] static ControlError set_strict_policy(DeviceState &device, std::uint8_t instance, bool enabled) noexcept;
   static void circuit_down(OwnedCircuit &owned) noexcept;
   static void circuit_up(OwnedCircuit &owned, RuntimeClock::time_point now) noexcept;
   [[nodiscard]] static bool valid_transmission(const UpdateTransmissionProgram &program) noexcept;

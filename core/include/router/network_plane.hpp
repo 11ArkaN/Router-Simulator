@@ -680,7 +680,8 @@ public:
       std::span<const IsisCircuitProgram> circuits,
       std::span<const isis::NewUpdateInstance> new_instances,
       std::span<const std::uint8_t> retired_instances,
-      std::span<const isis::UpdateAdminState> administrative = {}) noexcept;
+      std::span<const isis::UpdateAdminState> administrative = {},
+      std::span<const isis::UpdateAdjacencyPolicy> adjacency_policies = {}) noexcept;
   [[nodiscard]] bool replace_isis_p2p_generation(DeviceHandle device,
       std::span<const IsisP2pCircuitProgram> circuits) noexcept {
     return replace_isis_generation(device, circuits);

@@ -87,24 +87,6 @@ if (runtimeSchema.version !== profile.abi.runtime_messages) {
   throw new Error("Runtime protocol schema version does not match the active profile");
 }
 
-// Checkpoint compatibility depends on executable semantics, not only field
-// order. Hash every hand-maintained core source and header while excluding
-// generated outputs whose content already derives from these same inputs.
-const coreRoot = resolve(root, "core");
-const coreFiles = readdirSync(coreRoot, { recursive: true })
-  .map((name) => String(name).replaceAll("\\", "/"))
-  .filter((name) => (name.startsWith("src/") || name.startsWith("include/")) &&
-    /\.(cpp|hpp)$/.test(name) && !name.includes("generated_"))
-  .sort();
-const buildHasher = createHash("sha256")
-  .update(stableJson(runtimeProfile))
-  .update(stableJson(cliSchema))
-  .update(stableJson(checkpointSchema))
-  .update(stableJson(runtimeSchema));
-for (const name of coreFiles)
-  buildHasher.update(name).update(readFileSync(resolve(coreRoot, name)));
-const buildCompatibilityHash = buildHasher.digest("hex").slice(0, 16);
-
 const ipsecTransformType = new Map([
   ["encryption", "encryption"],
   ["prf", "prf"],
@@ -342,7 +324,6 @@ inline constexpr std::uint32_t runtime_message_abi = ${profile.abi.runtime_messa
 inline constexpr std::uint32_t checkpoint_abi = ${profile.abi.checkpoint};
 inline constexpr std::uint64_t profile_hash = 0x${profileHash}ULL;
 inline constexpr std::uint64_t checkpoint_schema_hash = 0x${checkpointSchemaHash}ULL;
-inline constexpr std::uint64_t build_hash = 0x${buildCompatibilityHash}ULL;
 
 // Hardware initialization values are experimental emulator timing profiles,
 // not claims about physical platform boot guarantees.

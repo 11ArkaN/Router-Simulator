@@ -306,6 +306,58 @@ void isis_datastore_runtime_tests() {
   require(network_state && network_state->network.isis && network_state->network.isis->ports.size() == 2U,
       "canonical wire checkpoint omitted its physical bindings");
   const auto old_epoch = network_state->network.isis->ports.front().identity.configuration_generation;
+  terminal("isis-console", "edit-config private");
+  terminal("isis-console", "/configure router isis 0 strict-adjacency-check true");
+  terminal("isis-console", "commit"); terminal("isis-console", "quit-config");
+  const auto strict_state = checkpoint_v14::decode(runtime->export_checkpoint(), &*protector);
+  require(strict_state && strict_state->network.isis &&
+      strict_state->network.isis->ports.front().identity.configuration_generation == old_epoch &&
+      strict_state->network.isis->control.devices.front().circuits.front().definition.configuration.strict_adjacency_check &&
+      terminal("isis-console", "show router isis adjacency").find("Adjacencies : 1") != std::string::npos,
+      "live strict family policy restarted a matching circuit or lost its adjacency");
+  strict_state->portable_routers.front().isis.instances.front().strict_adjacency_check = false;
+  const auto inconsistent_strict = checkpoint_v14::encode(*strict_state, &*protector);
+  require(!runtime->import_checkpoint(inconsistent_strict),
+      "checkpoint accepted disagreement between running strict policy and its circuit owner");
+
+  terminal("isis-console", "edit-config private");
+  terminal("isis-console", "/configure router isis 0 strict-adjacency-check false");
+  terminal("isis-console", "commit"); terminal("isis-console", "quit-config");
+  require(runtime->command(message(lab_runtime_protocol::snapshot)).find("\"strictAdjacencyCheck\":false") != std::string_view::npos,
+      "live explicit false lost canonical policy presence");
+  terminal("isis-console", "edit-config private");
+  terminal("isis-console", "delete router isis 0 strict-adjacency-check");
+  terminal("isis-console", "commit"); terminal("isis-console", "quit-config");
+
+  terminal("isis-console", "edit-config private");
+  terminal("isis-console", "/configure router isis 0 strict-adjacency-check true");
+  terminal("isis-console", "/configure router isis 0 admin-state disable");
+  terminal("isis-console", "commit"); terminal("isis-console", "quit-config");
+  auto combined = checkpoint_v14::decode(runtime->export_checkpoint(), &*protector);
+  require(combined && combined->network.isis &&
+      !combined->network.isis->control.devices.front().instances.front().admin_enabled &&
+      combined->network.isis->control.devices.front().circuits.front().definition.configuration.strict_adjacency_check &&
+      combined->network.isis->ports.front().identity.configuration_generation == old_epoch,
+      "combined strict policy and shutdown lost its retained owner");
+  terminal("isis-console", "edit-config private");
+  terminal("isis-console", "/configure router isis 0 strict-adjacency-check false");
+  terminal("isis-console", "commit"); terminal("isis-console", "quit-config");
+  combined = checkpoint_v14::decode(runtime->export_checkpoint(), &*protector);
+  require(combined && combined->network.isis &&
+      !combined->network.isis->control.devices.front().instances.front().admin_enabled &&
+      !combined->network.isis->control.devices.front().circuits.front().definition.configuration.strict_adjacency_check,
+      "disabled owner failed to accept strict family policy");
+  terminal("isis-console", "edit-config private");
+  terminal("isis-console", "/configure router isis 0 strict-adjacency-check true");
+  terminal("isis-console", "/configure router isis 0 admin-state enable");
+  terminal("isis-console", "commit"); terminal("isis-console", "quit-config");
+  combined = checkpoint_v14::decode(runtime->export_checkpoint(), &*protector);
+  require(combined && combined->network.isis &&
+      combined->network.isis->control.devices.front().instances.front().admin_enabled &&
+      combined->network.isis->control.devices.front().circuits.front().definition.configuration.strict_adjacency_check &&
+      combined->network.isis->ports.front().identity.configuration_generation == old_epoch,
+      "combined strict policy and resume replaced its owner");
+
   runtime.reset(); runtime = std::make_unique<LabRuntime>();
   require(runtime->initialize_secret_vault(key, context) && runtime->import_checkpoint(network_saved),
       "canonical wire checkpoint fresh-owner restoration failed");

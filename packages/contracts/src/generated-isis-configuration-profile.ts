@@ -61,6 +61,7 @@ export const ISIS_CONFIGURATION_PROFILE = {
   "interface_admin_enabled_default": true,
   "ipv4_routing_default": true,
   "advertise_passive_only_default": false,
+  "strict_adjacency_check_default": false,
   "interface_passive_default": false,
   "interface_level_passive_default": false,
   "wide_metrics_only_default": false,

@@ -66,6 +66,7 @@ void wait_timer(std::ostream &out, const isis::WaitTimerIntent &value) {
 void instance(std::ostream &out, const isis::InstanceIntent &value) {
   Object object{out}; object.field("instance", value.instance); object.field("adminEnabled", value.admin_enabled);
   object.field("advertisePassiveOnly", value.advertise_passive_only);
+  object.field("strictAdjacencyCheck", value.strict_adjacency_check);
   object.field("ipv4Routing", value.ipv4_routing); object.field("ipv6Routing", value.ipv6_routing);
   object.field("levelCapability", value.levels);
   object.field("systemId", value.system_id ? std::optional{isis::format_configured_system_id(*value.system_id)} : std::nullopt);

@@ -2,6 +2,7 @@
 // Circuit-local monotonic deadlines control election and Hello scheduling.
 // ISO 10589 clauses 8.4.1 through 8.4.5; no remote owner state is inspected.
 
+#include "router/isis_address_family_policy.hpp"
 #include "router/isis_lan_circuit.hpp"
 
 #include <algorithm>
@@ -206,6 +207,25 @@ bool LanCircuit::down(LanCircuitObserver observer) noexcept {
   }
   if (hello_.pending()) static_cast<void>(hello_.complete(false, Clock::time_point{}));
   operational_ = false;
+  return true;
+}
+
+bool LanCircuit::set_strict_adjacency_check(bool enabled, Clock::time_point now,
+    LanCircuitObserver observer) noexcept {
+  if (!valid_observer(observer)) return false;
+  for (std::size_t index{}; index < neighbors_.size(); ++index)
+    if (!peer_address_family_mask(neighbors_.at(index)->attributes)) return false;
+  configuration_.strict_adjacency_check = enabled;
+  if (enabled) {
+    const auto local = address_family_mask(configuration_.protocols);
+    for (std::size_t index{}; index < neighbors_.size();) {
+      const auto peer = *neighbors_.at(index);
+      if (*peer_address_family_mask(peer.attributes) == local) { ++index; continue; }
+      if (neighbors_.policy_down(peer.adjacency.mac, observer.context, observer.peer)) hello_.changed();
+      else return false;
+    }
+    elect(now, observer);
+  }
   return true;
 }
 

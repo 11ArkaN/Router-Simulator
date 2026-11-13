@@ -86,6 +86,22 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
       if (!retain()) return false;
       generation.administrative.push_back({action.instance, action.change == ConfigurationChange::resume});
       changed = true; continue;
+    case ConfigurationChange::reconfigure: case ConfigurationChange::reconfigure_disabled:
+    case ConfigurationChange::suspend_and_reconfigure: case ConfigurationChange::resume_and_reconfigure: {
+      const auto previous = std::find_if(before.isis.instances.begin(), before.isis.instances.end(),
+          [&](const auto &entry) { return entry.instance == action.instance; });
+      if (previous == before.isis.instances.end() || configured == after.isis.instances.end()) return false;
+      auto compare = *previous;
+      compare.strict_adjacency_check = configured->strict_adjacency_check;
+      compare.admin_enabled = configured->admin_enabled;
+      if (compare != *configured || !retain()) return false;
+      generation.adjacency_policies.push_back({action.instance,
+          configured->strict_adjacency_check.value_or(configuration_profile::strict_adjacency_check_default)});
+      if (action.change == ConfigurationChange::suspend_and_reconfigure ||
+          action.change == ConfigurationChange::resume_and_reconfigure)
+        generation.administrative.push_back({action.instance, action.change == ConfigurationChange::resume_and_reconfigure});
+      changed = true; continue;
+    }
     case ConfigurationChange::create: case ConfigurationChange::restart: break;
     default: return false;
     }
@@ -165,6 +181,7 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
       hello.random = epoch + local_circuit; hello.maximum_pdu_octets = mtu;
       hello.peer_attribute_octets = 4096U; hello.lan_neighbors = neighbors;
       hello.protocols = protocols; hello.ipv4_addresses = addresses; hello.operational = live->operational;
+      hello.strict_adjacency_check = configured->strict_adjacency_check.value_or(configuration_profile::strict_adjacency_check_default);
       const auto transmission = prepare_interface_update_program(resolved, {2U, mtu, 1U, 1ms});
       auto prepared = prepare_interface_program(*configured, attached, hello);
       if (transmission.status != InterfaceUpdateStatus::prepared ||
