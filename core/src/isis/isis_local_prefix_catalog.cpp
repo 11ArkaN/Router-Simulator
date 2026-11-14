@@ -57,6 +57,15 @@ bool set_local_prefix_carrier(LocalPrefixCatalogProgram &program, std::uint16_t 
     }
   return changed;
 }
+bool local_prefix_unit_available(const LocalPrefixCatalogProgram &program,
+    const LocalPrefixCatalogUnit &unit, LocalPrefixAvailability gate) noexcept {
+  return std::any_of(unit.owners.begin(),unit.owners.end(),[&](auto id) {
+    const auto source=std::lower_bound(program.interfaces.begin(),program.interfaces.end(),id,
+        [](const auto &entry,auto key) { return entry.interface_id<key; });
+    return source!=program.interfaces.end() && source->interface_id==id && source->available &&
+        (!gate.available || gate.available(gate.context,id,unit.prefix));
+  });
+}
 bool append_local_prefix_catalog(OriginFragmentWorkspace &workspace,
     const LocalPrefixCatalogProgram &program, std::size_t level, bool all_possible,
     LocalPrefixAvailability gate) noexcept {
@@ -64,12 +73,7 @@ bool append_local_prefix_catalog(OriginFragmentWorkspace &workspace,
   for (std::size_t index{}; index < program.units.size(); ++index) {
     const auto &unit = program.units[index];
     if (unit.level != level) continue;
-    const bool available = all_possible || std::any_of(unit.owners.begin(), unit.owners.end(), [&](auto id) {
-      const auto source = std::lower_bound(program.interfaces.begin(), program.interfaces.end(), id,
-          [](const auto &entry, auto key) { return entry.interface_id < key; });
-      return source != program.interfaces.end() && source->interface_id == id && source->available &&
-          (!gate.available || gate.available(gate.context, id, unit.prefix));
-    });
+    const bool available = all_possible || local_prefix_unit_available(program,unit,gate);
     if (available && !workspace.add_options({3U, index + 1U}, unit.options, {}, false)) return false;
   }
   return true;

@@ -22,7 +22,7 @@ struct IsisInstalledRoutesCheckpoint {
   std::vector<routing::Ipv6DynamicInput> ipv6;
 };
 struct IsisRuntimeCheckpoint {
-  std::uint32_t version{2U};
+  std::uint32_t version{3U};
   isis::ControlWorkerCheckpoint control;
   std::vector<protocol::PacketChannel<device_catalog::isis_packet_ring_frames>::Checkpoint> ingress;
   std::vector<IsisCheckpointEgress::Checkpoint> egress;

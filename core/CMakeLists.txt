@@ -377,6 +377,7 @@ add_library(router_network STATIC
   src/isis/isis_control_update_egress.cpp
   src/isis/isis_control_update_lifetime.cpp
   src/isis/isis_control_origin.cpp
+  src/isis/isis_interlevel_composition.cpp
   src/isis/isis_interlevel_attributes.cpp
   src/isis/isis_interlevel_export_state.cpp
   src/isis/isis_interlevel_templates.cpp
@@ -831,6 +832,9 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_link_graph_test.cpp
     tests/isis/isis_attached_default_test.cpp
   tests/isis/isis_area_attachment_control_test.cpp
+    tests/isis/isis_interlevel_network_test.cpp
+    tests/isis/isis_interlevel_retry_test.cpp
+    tests/isis/isis_interlevel_composition_test.cpp
     tests/isis/isis_interlevel_control_test.cpp
     tests/isis/isis_interlevel_attributes_test.cpp
     tests/isis/isis_interlevel_export_state_test.cpp

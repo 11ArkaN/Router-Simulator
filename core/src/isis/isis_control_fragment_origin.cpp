@@ -7,7 +7,8 @@
 #include <limits>
 #include <stdexcept>
 namespace router::isis {
-std::unique_ptr<OriginFragmentWorkspace> ControlWorker::make_fragment_workspace(const UpdateInstanceProgram &program) {
+std::unique_ptr<OriginFragmentWorkspace> ControlWorker::make_fragment_workspace(const UpdateInstanceProgram &program,
+    std::optional<InterlevelTemplateBudget> exports) {
   const auto &origin = *program.origination;
   auto units = origin.content.records.size();
   if (origin.prefixes) {
@@ -56,7 +57,64 @@ std::unique_ptr<OriginFragmentWorkspace> ControlWorker::make_fragment_workspace(
       throw std::invalid_argument("Invalid IS-IS fragment buffer");
     semantic = std::max(semantic, static_cast<std::size_t>(level->maximum_pdu_octets - packet::isis::lsp_header_octets));
   }
-  return std::make_unique<OriginFragmentWorkspace>(units, fragments, semantic);
+  if (exports && origin.automatic_area_attachment) {
+    // Static base-content sources have no interface/AF ownership catalog. A
+    // matching direct L2 prefix is already represented; an L1-only static
+    // source needs its separate adapter before this experimental API admits it.
+    for (const auto &record : origin.content.records) if (!record.level && !record.id[6U] && record.active) {
+      packet::isis::TlvCursor options(record.options);
+      while (const auto option=options.next()) if (option->code==135U || option->code==236U) {
+        packet::isis::ExtendedPrefixCursor prefixes(*option);
+        while (const auto prefix=prefixes.next()) {
+          bool represented{};
+          for (const auto &l2 : origin.content.records) if (l2.level==1U && !l2.id[6U] && l2.active) {
+            packet::isis::TlvCursor candidates(l2.options);
+            while (const auto candidate=candidates.next()) if (candidate->code==135U || candidate->code==236U) {
+              packet::isis::ExtendedPrefixCursor entries(*candidate);
+              while (const auto entry=entries.next()) represented=represented || entry->prefix==prefix->prefix;
+            }
+          }
+          if (!represented) return nullptr;
+        }
+      }
+    }
+    const auto bounds=interlevel_composition_bounds(*exports);
+    if (!bounds || bounds->parts>SIZE_MAX-units || !origin.content.levels[1U])
+      throw std::length_error("IS-IS export workspace budget overflow");
+    units+=bounds->parts;
+    const auto l2_semantic=origin.content.levels[1U]->maximum_pdu_octets-packet::isis::lsp_header_octets;
+    std::uint64_t bytes=bounds->wire_octets+2ULL+
+        program.maximum_areas*(packet::isis::maximum_area_octets+1ULL);
+    std::size_t maximum_unit=257U, roots{};
+    for (const auto &record : origin.content.records) if (record.level==1U && !record.id[6U]) {
+      ++roots;
+      if (record.active) bytes+=record.options.size();
+    }
+    if (origin.prefixes) for (const auto &unit : origin.prefixes->units) {
+      maximum_unit=std::max(maximum_unit,unit.options.size());
+      if (unit.level==1U) bytes+=unit.options.size();
+      else {
+        // Local L1-only reachability is not a received route candidate. Reserve
+        // its separate source path, including one extra canonical flag/part.
+        if (units>SIZE_MAX-2U) throw std::length_error("IS-IS local export unit overflow");
+        units+=2U; bytes+=unit.options.size()+28ULL;
+      }
+    }
+    if (origin.ipv6_addresses) for (const auto &unit : origin.ipv6_addresses->units) {
+      bytes+=unit.metadata.size(); maximum_unit=std::max(maximum_unit,unit.metadata.size());
+    }
+    if (origin.neighbors) for (const auto &edge : *origin.neighbors) if (edge.levels[1U]) bytes+=27U;
+    if (origin.broadcast_neighbors) for (const auto &edge : *origin.broadcast_neighbors) if (edge.levels[1U]) bytes+=27U;
+    // Ignore the first fragment's usable capacity to cover pinned root metadata.
+    // Dense packing of units no larger than maximum_unit then fills each
+    // remaining nonfinal fragment beyond semantic-maximum_unit. This reserves
+    // the complete admitted prefix/attribute superset before learning packets.
+    if (!roots || maximum_unit>l2_semantic || (bytes>l2_semantic &&
+        (roots<2U || l2_semantic<=maximum_unit || bytes>(roots-1U)*(l2_semantic-maximum_unit))))
+      throw std::length_error("IS-IS L2 export fragment capacity refused");
+  }
+  return std::make_unique<OriginFragmentWorkspace>(units,fragments,semantic,
+      exports && origin.automatic_area_attachment ? 257U : 27U);
 }
 ControlError ControlWorker::prepare_fragment_origination(UpdateInstanceProgram &program) noexcept {
   try {

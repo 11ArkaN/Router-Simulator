@@ -25,6 +25,9 @@ struct FragmentUnit {
   std::span<const std::uint8_t> tlv;
   std::optional<std::uint8_t> previous_fragment;
   bool root_only{};
+  // Multipart precedence names an earlier sorted unit. Its LSP number must
+  // not exceed this unit's number; sorted byte order resolves equal numbers.
+  std::optional<FragmentUnitId> after{};
 };
 struct FragmentOptions {
   std::span<std::uint8_t> storage;

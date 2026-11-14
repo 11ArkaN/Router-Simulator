@@ -63,6 +63,8 @@ ControlWorkerCheckpoint ControlWorker::capture_checkpoint(RuntimeClock::time_poi
       saved.decision_status = instance.decision_status;
       saved.local_roots_dirty = instance.local_roots_dirty;
       saved.first_root_level = instance.first_root_level;
+      saved.composition_status = instance.composition_status;
+      saved.composition_retry = deadline(instance.composition_retry_at);
       saved.database_validations = instance.database_validations;
       saved.decision_revisions = instance.decision_revisions;
       saved.revision = instance.revision;

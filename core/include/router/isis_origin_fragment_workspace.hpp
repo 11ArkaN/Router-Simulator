@@ -15,8 +15,10 @@ public:
   // Cold allocation before instance publication. Fragments are 1..256, and
   // semantic capacity fits a 16-bit PDU after its fixed header. Throws on
   // invalid/overflowing bounds or allocation refusal. One control shard only.
+  // Inline width defaults to the existing maximum encoded link pair; larger
+  // derived wire units require explicit cold admission before activation.
   OriginFragmentWorkspace(std::size_t maximum_units, std::size_t maximum_fragments,
-      std::size_t maximum_semantic_octets);
+      std::size_t maximum_semantic_octets, std::size_t inline_unit_octets = 27U);
   OriginFragmentWorkspace(const OriginFragmentWorkspace &) = delete;
   OriginFragmentWorkspace &operator=(const OriginFragmentWorkspace &) = delete;
   // Discards only derived preparation and borrowed views, without allocation.
@@ -26,6 +28,13 @@ public:
   // latch the first refusal; no local protocol/configuration state changes.
   [[nodiscard]] bool add_options(FragmentUnitId key, std::span<const std::uint8_t> options,
       std::optional<std::uint8_t> previous, bool root_only) noexcept;
+  // Same control owner, complete nonempty framed options. Copies bytes into
+  // cold-reserved inline storage, so caller scratch may expire immediately.
+  // Refusal latches invalid/capacity without publishing any local LSP. No
+  // allocation; successful views last until compose/reset. Input must not alias
+  // this workspace's inline storage. Width is an explicit emulator admission.
+  [[nodiscard]] bool copy_options(FragmentUnitId key, std::span<const std::uint8_t> options,
+      std::optional<std::uint8_t> previous = {}, std::optional<FragmentUnitId> after = {}) noexcept;
   // Adds active non-pseudonode base content as individual complete TLVs.
   // Only Area Addresses are pinned to zero; movable root metadata/prefixes
   // retain their previous fragment where possible. Program storage outlives

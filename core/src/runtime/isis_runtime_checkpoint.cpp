@@ -150,7 +150,7 @@ bool valid_isis_runtime_links(const IsisRuntimeCheckpoint &saved) noexcept {
   const auto &control = saved.control;
   const auto cohort = control.barrier_epoch;
   const auto shards = control.forwarding_shards;
-  if (saved.version != 2U || control.version != 8U || !cohort || !shards ||
+  if (saved.version != 3U || control.version != 9U || !cohort || !shards ||
       shards > device_catalog::high_forwarding_shards || saved.ingress.size() != shards || saved.egress.size() != shards ||
       (!saved.forwarding.empty() && saved.forwarding.size() != shards) ||
       (saved.forwarding.empty() && shards != 1U) ||

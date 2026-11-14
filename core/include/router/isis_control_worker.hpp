@@ -19,6 +19,7 @@
 #include "router/route_publication.hpp"
 #include "router/isis_selection_channel.hpp"
 #include "router/isis_interlevel_export_state.hpp"
+#include "router/isis_interlevel_composition.hpp"
 #include "router/isis_database_validation.hpp"
 #include "router/isis_sequence_recovery.hpp"
 #include "router/isis_area_set.hpp"
@@ -404,6 +405,10 @@ struct ControlResult {
   std::uint64_t configuration_epoch{};
   bool route_withdrawal_pending{};
   ::router::routing::RouteInstallStatus route_install_status{::router::routing::RouteInstallStatus::pending};
+  // Copied local export diagnostics distinguish a retained last-good L2 root
+  // from a failed RIB installation. No deadline or mutable view crosses shards.
+  InterlevelCompositionStatus local_export_status{InterlevelCompositionStatus::applied};
+  bool local_export_retry_pending{};
   bool sequence_recovery_pending{};
   UpdateStatus update_status{UpdateStatus::inactive};
   LocalContentResult local_content_result{LocalContentResult::missing};
@@ -503,6 +508,10 @@ private:
     std::vector<packet::isis::SystemId> lan_projection;
     std::array<bool, 2U> local_roots_dirty{true, true};
     std::size_t first_root_level{};
+    // This instance alone owns export refusal and its retry deadline. It does
+    // not delay SPF, L1 roots or the independent selected-RIB publisher.
+    InterlevelCompositionStatus composition_status{InterlevelCompositionStatus::applied};
+    RuntimeClock::time_point composition_retry_at{RuntimeClock::time_point::min()};
     std::array<std::optional<DatabaseValidation>, 2U> validation;
     std::array<std::uint64_t, 2U> database_validations{}, decision_revisions{};
     std::optional<packet::isis::LspId> corrupted_lsp;
@@ -736,6 +745,7 @@ private:
     // the same physical handle. Pending snapshots own exact revision values;
     // no hash or pointer substitutes for a freshness fence.
     std::unique_ptr<InterlevelExportState> interlevel;
+    std::unique_ptr<InterlevelComposition> interlevel_composition;
     RouteStamps installed_routes{}, pending_routes{};
     std::uint64_t route_generation{}, route_installed{}, route_pending{};
     ::router::routing::RouteInstallStatus route_status{::router::routing::RouteInstallStatus::pending};
@@ -760,6 +770,8 @@ private:
     std::uint64_t route_commit_generation{}, configuration_epoch{};
     std::uint64_t retained_route_publication{};
     std::unique_ptr<InterlevelExportState> interlevel_admission;
+    std::unique_ptr<InterlevelComposition> composition_admission;
+    std::vector<std::pair<OwnedInstance *,std::unique_ptr<OriginFragmentWorkspace>>> export_workspaces;
     struct UpdateReservation { OwnedInstance *instance{}; UpdateCircuitAdmission admission; };
     std::vector<UpdateReservation> update_reservations;
     bool committed{};
@@ -793,15 +805,19 @@ private:
   void refresh_local_ipv6_hello(DeviceState &, std::size_t instance, std::uint64_t interface_id) noexcept;
   [[nodiscard]] static std::unique_ptr<AreaAddressSet> make_area_set(const UpdateInstanceProgram &);
   static void service_area_decision(OwnedInstance &, RuntimeClock::time_point) noexcept;
-  [[nodiscard]] static std::unique_ptr<OriginFragmentWorkspace> make_fragment_workspace(const UpdateInstanceProgram &program);
+  [[nodiscard]] static bool local_l2_prefix_present(const void *,const ip::IpPrefix &) noexcept;
+  // Cold same-owner reservation. Null explicitly refuses an unsupported static
+  // L1-only base source; invalid bounds throw and no live state is modified.
+  [[nodiscard]] static std::unique_ptr<OriginFragmentWorkspace> make_fragment_workspace(const UpdateInstanceProgram &program,
+      std::optional<InterlevelTemplateBudget> exports = {});
   [[nodiscard]] static ControlError prepare_fragment_origination(UpdateInstanceProgram &program) noexcept;
   [[nodiscard]] static ControlError prepare_neighbor_origination(UpdateInstanceProgram &program) noexcept;
   [[nodiscard]] static ControlError prepare_lan_origination(UpdateInstanceProgram &program) noexcept;
-  [[nodiscard]] bool compose_lan_pseudonodes(OwnedInstance &instance, const DeviceState &device,
+  [[nodiscard]] static bool compose_lan_pseudonodes(OwnedInstance &instance, const DeviceState &device,
       std::size_t index, std::size_t level, LocalLspSet &target, RuntimeClock::time_point now) noexcept;
   [[nodiscard]] static bool append_lan_links(const OwnedInstance &instance, const DeviceState &device,
       std::size_t index, std::size_t level, OriginFragmentWorkspace &workspace, const LocalLspSet &target) noexcept;
-  [[nodiscard]] bool compose_local_neighbors(OwnedInstance &instance, const DeviceState &device,
+  [[nodiscard]] static bool compose_local_neighbors(OwnedInstance &instance, const DeviceState &device,
       std::size_t index, LocalLspSet &target, RuntimeClock::time_point now, std::size_t &budget) noexcept;
   [[nodiscard]] static std::optional<std::size_t> catalog_budget(const LocalOriginProgram &origin) noexcept;
   [[nodiscard]] static DecisionStatus prepare_decision_input(OwnedInstance &instance, const DeviceState &device,

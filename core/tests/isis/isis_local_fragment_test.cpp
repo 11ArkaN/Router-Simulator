@@ -423,4 +423,29 @@ void isis_local_fragment_composition_tests() {
   require(update.level(0U)->database().database().find(unchanged_id, now + 7s)->purge_installed &&
       !update.level(0U)->database().database().find(sparse_id, now + 7s)->purge_installed);
 
+  std::array<std::uint8_t,82U> copied_options{};
+  copied_options[0U] = 99U; copied_options[1U] = 80U;
+  std::fill(copied_options.begin()+2U,copied_options.end(),0xa5U);
+  OriginFragmentWorkspace narrow_inline(1U,1U,101U);
+  require(!narrow_inline.copy_options({5U,1U},copied_options));
+  OriginFragmentWorkspace copied_inline(2U,1U,101U,82U);
+  require(copied_inline.add_options({0U,0U},area,0U,true) &&
+      copied_inline.copy_options({5U,1U},copied_options));
+  std::fill(copied_options.begin(),copied_options.end(),0U);
+  require(copied_inline.compose(local,0U,source,1U,1U,101U,now+8s) == LocalContentResult::changed);
+  const auto copied_root = local.fragment(0U,root);
+  require(copied_root.has_value());
+  bool found_copy{};
+  TlvCursor copied_cursor(copied_root->options);
+  while (const auto option = copied_cursor.next()) if (option->code == 99U) {
+    found_copy = option->value.size() == 80U &&
+        std::all_of(option->value.begin(),option->value.end(),[](auto byte) { return byte == 0xa5U; });
+  }
+  require(found_copy && copied_cursor.valid());
+  const std::vector<std::uint8_t> copied_snapshot(copied_root->options.begin(),copied_root->options.end());
+  const std::array<std::uint8_t,3U> malformed_copy{99U,2U,0U};
+  require(!copied_inline.copy_options({5U,1U},malformed_copy) &&
+      copied_inline.compose(local,0U,source,1U,1U,101U,now+9s) == LocalContentResult::invalid &&
+      std::ranges::equal(local.fragment(0U,root)->options,copied_snapshot));
+
 }

@@ -62,4 +62,18 @@ void isis_fragment_plan_tests() {
   require(planner.plan(relocate, 10U, 2U, false, output) == FragmentPlanStatus::planned &&
       output[0U] == 1U && output[1U] == 1U && output[2U] == 0U);
 
+  const std::array<std::uint8_t,22U> root_metadata{137U,20U};
+  const std::array<std::uint8_t,34U> multipart_head{250U,32U};
+  const std::array<std::uint8_t,18U> multipart_tail{250U,16U};
+  std::array multipart{FragmentUnit{1U,root_metadata,{},true},
+      FragmentUnit{2U,multipart_head,{},false},FragmentUnit{3U,multipart_tail,0U,false,FragmentUnitId{2U}}};
+  require(planner.plan(multipart,40U,3U,false,output)==FragmentPlanStatus::planned &&
+      output[0U]==0U && output[1U]==1U && output[2U]==2U);
+  const auto ordered_before=output;
+  require(planner.plan(multipart,40U,2U,false,output)==FragmentPlanStatus::capacity && output==ordered_before);
+  multipart[2U].after=FragmentUnitId{4U};
+  require(planner.plan(multipart,40U,3U,false,output)==FragmentPlanStatus::malformed && output==ordered_before);
+  multipart[2U].after=FragmentUnitId{0U};
+  require(planner.plan(multipart,40U,3U,false,output)==FragmentPlanStatus::malformed && output==ordered_before);
+
 }

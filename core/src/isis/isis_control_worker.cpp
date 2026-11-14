@@ -243,8 +243,10 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
     staged.device = device.handle;
     staged.configuration_epoch = device.configuration_epoch + 1U;
     staged.retained_route_publication = command.retained_route_publication;
-    if (command.interlevel_export && !device.interlevel)
+    if (command.interlevel_export && !device.interlevel) {
       staged.interlevel_admission = std::make_unique<InterlevelExportState>(device.handle,*command.interlevel_export);
+      staged.composition_admission = std::make_unique<InterlevelComposition>(*command.interlevel_export);
+    }
     staged.retired_instances = std::move(command.retired_instances);
     staged.administrative = std::move(command.administrative);
     staged.adjacency_policies = std::move(command.adjacency_policies);
@@ -259,6 +261,20 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
       if (status != ControlError::none) return status;
       if (proposed.origination->content != current.origination->content) return ControlError::invalid_argument;
       staged.prefix_workspaces.push_back(make_fragment_workspace(proposed));
+    }
+    const auto *export_owner=device.interlevel ? device.interlevel.get() : staged.interlevel_admission.get();
+    if (export_owner) for (std::size_t index{}; index<device.instances.size(); ++index) {
+      if (std::binary_search(staged.retired_instances.begin(),staged.retired_instances.end(),index) && !replacing(index)) continue;
+      const auto &instance=selected_instance(index);
+      if (!instance || !instance->configuration.origination ||
+          !instance->configuration.origination->automatic_area_attachment) continue;
+      auto proposed=instance->configuration;
+      const auto edit=std::find_if(staged.prefix_catalogs.begin(),staged.prefix_catalogs.end(),
+          [&](const auto &value) { return value.instance==index; });
+      if (edit!=staged.prefix_catalogs.end()) proposed.origination->prefixes=edit->program;
+      auto workspace=make_fragment_workspace(proposed,export_owner->budget());
+      if (!workspace) return ControlError::unsupported_origination;
+      staged.export_workspaces.emplace_back(instance.get(),std::move(workspace));
     }
     if (!staged.administrative.empty()) staged.route_commit_generation = route_floor + 1U;
     staged.output.reserve(definitions.size());
@@ -375,6 +391,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
     prepared_.emplace(std::move(staged));
     return ControlError::none;
   } catch (const std::bad_alloc &) { return ControlError::capacity; }
+    catch (const std::length_error &) { return ControlError::capacity; }
     catch (const std::exception &) { return ControlError::construction_failed; }
 }
 
@@ -440,6 +457,11 @@ void ControlWorker::commit_generation(DeviceState &device) noexcept {
   }
   if (device.first_circuit >= device.circuits.size()) device.first_circuit = 0U;
   if (staged.interlevel_admission) device.interlevel = std::move(staged.interlevel_admission);
+  if (staged.composition_admission) device.interlevel_composition=std::move(staged.composition_admission);
+  for (auto &entry : staged.export_workspaces) {
+    entry.first->fragment_workspace.swap(entry.second);
+    entry.first->local_roots_dirty[1U]=true;
+  }
   if (device.interlevel && !device.interlevel->confirm_retained_source(staged.retained_route_publication)) std::terminate();
   reconcile_interlevel(device);
   device.configuration_epoch = staged.configuration_epoch;
@@ -584,6 +606,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
         device.retired_epoch_floor = 0U;
         device.configuration_epoch = 0U;
         device.interlevel.reset();
+        device.interlevel_composition.reset();
         device.update_fences.fill(0U);
         for (auto &gate : device.sequence_recovery) gate.reset();
         device.installed_routes = {};
@@ -713,6 +736,8 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
         }
       }
       result.update_status = instance.status;
+      result.local_export_status=instance.composition_status;
+      result.local_export_retry_pending=instance.composition_retry_at>RuntimeClock::now();
       result.admin_enabled = instance.admin_enabled;
       result.update_epoch = instance.process ? instance.process->maximum_synchronization_epoch() : device.update_fences[index];
       result.decision_runs = instance.decision_runs;

@@ -29,12 +29,12 @@ std::span<const std::uint8_t> local_fragment_slots(const LocalLspProgram &progra
   return slots;
 }
 OriginFragmentWorkspace::OriginFragmentWorkspace(std::size_t maximum_units,
-    std::size_t maximum_fragments, std::size_t maximum_semantic_octets)
+    std::size_t maximum_fragments, std::size_t maximum_semantic_octets, std::size_t inline_unit_octets)
     : planner_(maximum_units), maximum_units_(maximum_units), maximum_semantic_(maximum_semantic_octets) {
-  if (!maximum_fragments || maximum_fragments > 256U ||
+  if (!inline_unit_octets || inline_unit_octets > 65535U || !maximum_fragments || maximum_fragments > 256U ||
       maximum_semantic_octets > 65535U - packet::isis::lsp_header_octets)
     throw std::invalid_argument("Invalid IS-IS fragment workspace bounds");
-  input_.resize(product(maximum_units, 27U));
+  input_.resize(product(maximum_units, inline_unit_octets));
   output_.resize(product(maximum_fragments, maximum_semantic_octets));
   units_.reserve(maximum_units);
   fragments_.reserve(maximum_fragments);
@@ -49,6 +49,20 @@ bool OriginFragmentWorkspace::add_options(FragmentUnitId key, std::span<const st
   if (error_ != LocalContentResult::unchanged) return false;
   if (units_.size() == maximum_units_) { error_ = LocalContentResult::capacity; return false; }
   units_.push_back({key, options, previous, root_only});
+  return true;
+}
+bool OriginFragmentWorkspace::copy_options(FragmentUnitId key, std::span<const std::uint8_t> options,
+    std::optional<std::uint8_t> previous, std::optional<FragmentUnitId> after) noexcept {
+  if (error_ != LocalContentResult::unchanged) return false;
+  packet::isis::TlvCursor cursor(options);
+  while (cursor.next()) {}
+  if (options.empty() || !cursor.valid()) { error_ = LocalContentResult::invalid; return false; }
+  if (units_.size() == maximum_units_ || options.size() > input_.size() - input_size_) {
+    error_ = LocalContentResult::capacity; return false;
+  }
+  std::copy(options.begin(),options.end(),input_.begin()+input_size_);
+  if (!finish_link(key,options.size(),previous)) return false;
+  units_.back().after=after;
   return true;
 }
 bool OriginFragmentWorkspace::add_root_options(const LocalLspProgram &program, std::size_t level,

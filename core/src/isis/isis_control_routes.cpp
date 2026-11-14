@@ -34,7 +34,10 @@ void ControlWorker::reconcile_interlevel(DeviceState &device) noexcept {
   const auto result = device.interlevel->reconcile(owners);
   if (result.status == InterlevelApplyStatus::invalid) std::terminate();
   for (std::size_t index{}; index < device.instances.size(); ++index)
-    if (result.dirty[index] && device.instances[index]) device.instances[index]->local_roots_dirty[1U] = true;
+    if (result.dirty[index] && device.instances[index]) {
+      device.instances[index]->local_roots_dirty[1U]=true;
+      device.instances[index]->composition_retry_at=RuntimeClock::time_point::min();
+    }
 }
 void ControlWorker::complete_selections() noexcept {
   // At most the channel's two credits per turn, even if the producer refills
@@ -49,7 +52,10 @@ void ControlWorker::complete_selections() noexcept {
         const auto owners = interlevel_owners(device);
         const auto result = device.interlevel->accept(selection,device.configuration_epoch,owners);
         for (std::size_t index{}; index < device.instances.size(); ++index)
-          if (result.dirty[index] && device.instances[index]) device.instances[index]->local_roots_dirty[1U] = true;
+          if (result.dirty[index] && device.instances[index]) {
+      device.instances[index]->local_roots_dirty[1U]=true;
+      device.instances[index]->composition_retry_at=RuntimeClock::time_point::min();
+    }
       }
     }
     if (!channels_.selections->release(lease->handle)) std::terminate();

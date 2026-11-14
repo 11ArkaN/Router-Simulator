@@ -56,6 +56,27 @@ ControlError ControlWorker::prepare_neighbor_origination(UpdateInstanceProgram &
     if (program.levels[level] && !roots[level]) return ControlError::invalid_argument;
   return prepare_fragment_origination(program);
 }
+bool ControlWorker::local_l2_prefix_present(const void *context,const ip::IpPrefix &prefix) noexcept {
+  const auto &instance=*static_cast<const OwnedInstance *>(context);
+  const auto &origin=*instance.configuration.origination;
+  for (const auto &record : origin.content.records) if (record.level==1U && !record.id[6U] && record.active) {
+    packet::isis::TlvCursor options(record.options);
+    while (const auto option=options.next()) if (option->code==135U || option->code==236U) {
+      packet::isis::ExtendedPrefixCursor entries(*option);
+      while (const auto entry=entries.next()) if (entry->prefix==prefix) return true;
+    }
+  }
+  if (!origin.prefixes) return false;
+  const auto available=[](const void *addresses,std::uint64_t id,const ip::IpPrefix &candidate) noexcept {
+    return candidate.network.family==ip::AddressFamily::ipv4 ||
+        local_ipv6_prefix_available(*static_cast<const LocalIpv6AddressCatalog *>(addresses),id,candidate);
+  };
+  const LocalPrefixAvailability gate=origin.ipv6_addresses
+      ? LocalPrefixAvailability{&*origin.ipv6_addresses,available} : LocalPrefixAvailability{};
+  return std::any_of(origin.prefixes->units.begin(),origin.prefixes->units.end(),[&](const auto &unit) {
+    return unit.level==1U && unit.prefix==prefix && local_prefix_unit_available(*origin.prefixes,unit,gate);
+  });
+}
 bool ControlWorker::compose_local_neighbors(OwnedInstance &instance, const DeviceState &device,
     std::size_t index, LocalLspSet &target, RuntimeClock::time_point now, std::size_t &budget) noexcept {
   const auto &origin = *instance.configuration.origination;
@@ -79,6 +100,7 @@ bool ControlWorker::compose_local_neighbors(OwnedInstance &instance, const Devic
   const auto first = instance.first_root_level;
   for (std::size_t offset{}; offset < 2U && budget; ++offset) {
     const auto level = (first + offset) % 2U;
+    if (level==1U && instance.composition_retry_at>now) continue;
     if (!instance.local_roots_dirty[level]) continue;
     const auto root = std::find_if(origin.content.records.begin(), origin.content.records.end(), [&](const auto &record) {
       return record.level == level && !record.id[6U] && !record.id[7U];
@@ -103,6 +125,28 @@ bool ControlWorker::compose_local_neighbors(OwnedInstance &instance, const Devic
       if (origin.ipv6_addresses)
         valid = append_local_ipv6_addresses(workspace, *origin.ipv6_addresses, *origin.prefixes) && valid;
     }
+    if (level==1U && device.interlevel && device.interlevel_composition && origin.automatic_area_attachment &&
+        &target==instance.local.get()) {
+      // Fresh replacement/recovery owners compose only local intent until their
+      // new entity fence has invalidated historical selected advertisements.
+      auto exported=device.interlevel_composition->append(workspace,*device.interlevel,
+          static_cast<std::uint8_t>(index),false,{&instance,local_l2_prefix_present});
+      if (exported==InterlevelCompositionStatus::applied && origin.prefixes) {
+        const auto available=[](const void *addresses,std::uint64_t id,const ip::IpPrefix &prefix) noexcept {
+          return prefix.network.family==ip::AddressFamily::ipv4 ||
+              local_ipv6_prefix_available(*static_cast<const LocalIpv6AddressCatalog *>(addresses),id,prefix);
+        };
+        const LocalPrefixAvailability gate=origin.ipv6_addresses
+            ? LocalPrefixAvailability{&*origin.ipv6_addresses,available} : LocalPrefixAvailability{};
+        exported=device.interlevel_composition->append_local(workspace,*origin.prefixes,false,gate,
+            {&instance,local_l2_prefix_present});
+      }
+      if (exported!=InterlevelCompositionStatus::applied) {
+        workspace.reset(); instance.composition_status=exported;
+        instance.composition_retry_at=now+origin.resource_retry;
+        continue;
+      }
+    }
     packet::isis::LanId source{};
     std::copy_n(root->id.begin(), source.size(), source.begin());
     for (std::size_t slot{}; slot < interfaces.size(); ++slot) {
@@ -123,6 +167,7 @@ bool ControlWorker::compose_local_neighbors(OwnedInstance &instance, const Devic
       instance.status = UpdateStatus::invalid_configuration;
       return false;
     }
+    if (level==1U) { instance.composition_status=InterlevelCompositionStatus::applied; instance.composition_retry_at=RuntimeClock::time_point::min(); }
     instance.local_roots_dirty[level] = false;
     instance.first_root_level = (level + 1U) % 2U;
     --budget;

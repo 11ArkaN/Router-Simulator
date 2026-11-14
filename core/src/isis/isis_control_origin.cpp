@@ -123,9 +123,15 @@ RuntimeClock::time_point ControlWorker::service_local_instance(DeviceState &devi
   if (instance.status != UpdateStatus::applied) return stop_local_instance(device, index, instance.status);
   std::size_t no_publication{};
   const auto generated = instance.local->service(*instance.process, {}, now, scratch_, instance.observer(),
-      composed ? budget : no_publication);
+      composed || instance.composition_status!=InterlevelCompositionStatus::applied ? budget : no_publication);
   if (generated.terminal == GenerationStatus::waiting) {
-    if (!composed) return now;
+    if (!composed) {
+      if (instance.composition_status==InterlevelCompositionStatus::applied) return now;
+      service_p2p_decision(instance,device,index,now,budget);
+      if (instance.status!=UpdateStatus::applied) return stop_local_instance(device,index,instance.status);
+      return std::min({validation_deadline,generated.deadline.value_or(never),instance.decision_deadline(now),
+          instance.composition_retry_at});
+    }
     service_p2p_decision(instance, device, index, now, budget);
     if (instance.status != UpdateStatus::applied) return stop_local_instance(device, index, instance.status);
     if (instance.local_roots_dirty[0U] || instance.local_roots_dirty[1U]) return now;
@@ -174,6 +180,8 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
   // payloads and metadata before allocating a replacement, rather than needing
   // memory for two complete databases. Desired configuration stays in the shell.
   instance.local.reset();
+  instance.composition_status=InterlevelCompositionStatus::applied;
+  instance.composition_retry_at=RuntimeClock::time_point::min();
   instance.process.reset();
   if (instance.areas) instance.areas->reset_to_manual();
   // Attachment is derived from the destroyed L2 database. A fresh entity has
@@ -236,6 +244,7 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
     instance.process = std::move(process);
     instance.entity_epoch = entity_epoch;
     instance.local = std::move(local);
+    if (device.interlevel && configuration.origination->automatic_area_attachment) instance.local_roots_dirty[1U]=true;
     instance.status = UpdateStatus::applied;
     instance.corrupted_lsp.reset();
     for (std::size_t slot{}; slot < bindings.size(); ++slot) {

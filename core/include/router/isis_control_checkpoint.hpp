@@ -67,6 +67,8 @@ struct ControlInstanceCheckpoint {
   std::optional<AreaSetCheckpoint> areas;
   std::optional<ManualAreaDropped> last_area_drop;
   std::uint64_t admission_epoch{}, entity_epoch{};
+  InterlevelCompositionStatus composition_status{InterlevelCompositionStatus::applied};
+  checkpoint_time::DeadlineCheckpoint composition_retry{checkpoint_time::DeadlineKind::minimum,0};
 };
 struct ControlRouteStamp {
   std::uint64_t epoch{};
@@ -95,7 +97,7 @@ struct ControlDeviceCheckpoint {
   std::optional<InterlevelExportCheckpoint> interlevel{};
 };
 struct ControlWorkerCheckpoint {
-  std::uint32_t version{8U};
+  std::uint32_t version{9U};
   std::uint64_t barrier_epoch{};
   std::size_t forwarding_shards{}, maximum_circuits{}, active_circuits{}, first_device{};
   std::vector<ControlDeviceCheckpoint> devices;

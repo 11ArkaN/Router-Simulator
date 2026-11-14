@@ -20,6 +20,10 @@ FragmentPlanStatus FragmentPlanner::prepare(std::span<const FragmentUnit> units,
     const auto &unit = units[index];
     if ((index && units[index - 1U].identity >= unit.identity) || unit.tlv.empty())
       return FragmentPlanStatus::malformed;
+    if (unit.after && (unit.root_only || *unit.after>=unit.identity ||
+        !std::binary_search(units.begin(),units.begin()+index,FragmentUnit{*unit.after,{}, {},false},
+            [](const auto &a,const auto &b) { return a.identity<b.identity; })))
+      return FragmentPlanStatus::malformed;
     packet::isis::TlvCursor cursor(unit.tlv);
     while (const auto option = cursor.next())
       if (option->code == 7U || option->code == 10U || option->code == 13U ||
@@ -41,7 +45,7 @@ FragmentPlanStatus FragmentPlanner::prepare(std::span<const FragmentUnit> units,
     const auto &unit = units[index];
     if (unit.root_only) continue;
     const auto old = unit.previous_fragment;
-    if (old && *old < fragment_count && unit.tlv.size() <= semantic_octets - used[*old]) {
+    if (!unit.after && old && *old < fragment_count && unit.tlv.size() <= semantic_octets - used[*old]) {
       assignments_[index] = *old;
       used[*old] += unit.tlv.size();
     } else assignments_[index] = 256U;
@@ -50,6 +54,14 @@ FragmentPlanStatus FragmentPlanner::prepare(std::span<const FragmentUnit> units,
     if (assignments_[index] != 256U) continue;
     const auto &unit = units[index];
     std::size_t fragment{};
+    if (unit.after) {
+      const auto parent=std::lower_bound(units.begin(),units.begin()+index,*unit.after,
+          [](const auto &entry,auto identity) { return entry.identity<identity; });
+      fragment=assignments_[static_cast<std::size_t>(parent-units.begin())];
+      const auto old=unit.previous_fragment;
+      if (old && *old>=fragment && *old<fragment_count && unit.tlv.size()<=semantic_octets-used[*old])
+        fragment=*old;
+    }
     while (fragment < fragment_count && unit.tlv.size() > semantic_octets - used[fragment]) ++fragment;
     if (fragment == fragment_count) return dense(units, semantic_octets, fragment_count);
     assignments_[index] = static_cast<std::uint8_t>(fragment);
@@ -64,7 +76,8 @@ FragmentPlanStatus FragmentPlanner::dense(std::span<const FragmentUnit> units,
   // no byte is split and no caller output has changed at this point.
   order_.resize(units.size());
   std::iota(order_.begin(), order_.end(), std::size_t{});
-  std::sort(order_.begin(), order_.end(), [&](auto left, auto right) {
+  const bool ordered=std::any_of(units.begin(),units.end(),[](const auto &unit) { return unit.after.has_value(); });
+  if (!ordered) std::sort(order_.begin(), order_.end(), [&](auto left, auto right) {
     return units[left].tlv.size() != units[right].tlv.size() ?
         units[left].tlv.size() > units[right].tlv.size() : left < right;
   });
@@ -77,7 +90,13 @@ FragmentPlanStatus FragmentPlanner::dense(std::span<const FragmentUnit> units,
     const auto &unit = units[index];
     if (unit.root_only) continue;
     auto best = fragment_count;
-    for (std::size_t fragment{}; fragment < fragment_count; ++fragment)
+    std::size_t first{};
+    if (unit.after) {
+      const auto parent=std::lower_bound(units.begin(),units.begin()+index,*unit.after,
+          [](const auto &entry,auto identity) { return entry.identity<identity; });
+      first=assignments_[static_cast<std::size_t>(parent-units.begin())];
+    }
+    for (std::size_t fragment=first; fragment < fragment_count; ++fragment)
       if (unit.tlv.size() <= semantic_octets - used[fragment] &&
           (best == fragment_count || used[fragment] > used[best])) best = fragment;
     if (best == fragment_count) return FragmentPlanStatus::capacity;

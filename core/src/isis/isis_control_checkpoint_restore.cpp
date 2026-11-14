@@ -10,7 +10,7 @@
 namespace router::isis {
 std::unique_ptr<ControlWorker::PreparedCheckpoint> ControlWorker::prepare_checkpoint_restore(
     const ControlWorkerCheckpoint &saved, std::uint64_t source_epoch, RuntimeClock::time_point now) const noexcept {
-  if (saved.version != 8U || !source_epoch || saved.barrier_epoch != source_epoch ||
+  if (saved.version != 9U || !source_epoch || saved.barrier_epoch != source_epoch ||
       saved.forwarding_shards != forwarding_shards_ || saved.maximum_circuits != maximum_circuits_ ||
       saved.active_circuits > maximum_circuits_ || saved.first_device >= devices_.size() ||
       saved.devices.size() > devices_.size()) return nullptr;
@@ -91,6 +91,10 @@ std::unique_ptr<ControlWorker::PreparedCheckpoint> ControlWorker::prepare_checkp
         if (target.instances[instance] && target.instances[instance]->configuration.origination &&
             (!target.sequence_recovery[instance] || (!target.instances[instance]->process &&
                 !target.sequence_recovery[instance]->disabled()))) return nullptr;
+      for (const auto &instance : target.instances) if (instance &&
+          instance->composition_status!=InterlevelCompositionStatus::applied &&
+          (!source.interlevel || !instance->configuration.origination ||
+              !instance->configuration.origination->automatic_area_attachment)) return nullptr;
       if (source.interlevel) {
         const auto &bank = *source.interlevel;
         if (bank.active.publication > source.route_generation || bank.pending.publication > source.route_generation ||
@@ -99,6 +103,12 @@ std::unique_ptr<ControlWorker::PreparedCheckpoint> ControlWorker::prepare_checkp
         target.interlevel = std::make_unique<InterlevelExportState>(source.handle,bank.active.budget);
         const auto owners = interlevel_owners(target);
         if (!target.interlevel->restore(bank,owners)) return nullptr;
+        target.interlevel_composition=std::make_unique<InterlevelComposition>(bank.active.budget);
+        for (auto &instance : target.instances) if (instance && instance->configuration.origination &&
+            instance->configuration.origination->automatic_area_attachment) {
+          instance->fragment_workspace=make_fragment_workspace(instance->configuration,bank.active.budget);
+          if (!instance->fragment_workspace) return nullptr;
+        }
       }
       if (source.circuits.size() > maximum_circuits_ - result->active_circuits) return nullptr;
       target.circuits.reserve(source.circuits.size());
@@ -113,6 +123,32 @@ std::unique_ptr<ControlWorker::PreparedCheckpoint> ControlWorker::prepare_checkp
           return existing.update == restored->update && existing.update_slot == restored->update_slot;
         })) return nullptr;
         target.circuits.push_back(std::move(*restored));
+      }
+      // Settled desired roots must be reproducible from the copied selection,
+      // local AF gates and restored circuits. Recompose on a separate cold
+      // instance so timers, sequence counters and pending publications remain
+      // byte-for-byte those of the accepted image. Dirty roots retain their
+      // legitimate older semantic content until ordinary owner service resumes.
+      if (target.interlevel) for (const auto &image : source.instances) {
+        const auto &owner=target.instances[image.instance];
+        if (!owner->admin_enabled || owner->status!=UpdateStatus::applied || !owner->local || !owner->configuration.origination ||
+            !owner->configuration.origination->automatic_area_attachment || image.local_roots_dirty[1U] ||
+            owner->composition_status!=InterlevelCompositionStatus::applied) continue;
+        auto expected=restore_checkpoint_instance(image,now);
+        if (!expected) return nullptr;
+        expected->fragment_workspace=make_fragment_workspace(expected->configuration,target.interlevel->budget());
+        if (!expected->fragment_workspace) return nullptr;
+        expected->local_roots_dirty={false,true};
+        std::size_t budget{1U};
+        if (!compose_local_neighbors(*expected,target,image.instance,*expected->local,now,budget) ||
+            expected->composition_status!=InterlevelCompositionStatus::applied) return nullptr;
+        const auto recomposed=expected->local->checkpoint(now);
+        for (const auto &entry : recomposed.entries) if (entry.content.level==1U && !entry.content.id[6U]) {
+          const auto original=std::find_if(image.local->entries.begin(),image.local->entries.end(),[&](const auto &value) {
+            return value.content.level==entry.content.level && value.content.id==entry.content.id;
+          });
+          if (original==image.local->entries.end() || original->content!=entry.content) return nullptr;
+        }
       }
       result->active_circuits += target.circuits.size();
     }

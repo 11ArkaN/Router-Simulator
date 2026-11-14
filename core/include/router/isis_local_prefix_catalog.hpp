@@ -48,6 +48,11 @@ struct LocalPrefixAvailability {
   const void *context{};
   bool (*available)(const void *, std::uint64_t, const ip::IpPrefix &) noexcept{};
 };
+// Same control owner, validated catalog/unit association and borrowed AF gate.
+// Returns whether any configured owner currently permits this exact prefix.
+// No allocation, mutation or retained callback; false means no available owner.
+[[nodiscard]] bool local_prefix_unit_available(const LocalPrefixCatalogProgram &,
+    const LocalPrefixCatalogUnit &, LocalPrefixAvailability = {}) noexcept;
 // Requires a validated program. Adds immutable units to same-owner reserved scratch. Program storage
 // outlives compose/reset. all_possible admits the worst-case cold capacity;
 // ordinary composition emits each prefix once if any owner is available.

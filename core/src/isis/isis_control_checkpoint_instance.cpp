@@ -11,7 +11,8 @@
 namespace router::isis {
 std::unique_ptr<ControlWorker::OwnedInstance> ControlWorker::restore_checkpoint_instance(
     const ControlInstanceCheckpoint &saved, RuntimeClock::time_point now) const noexcept {
-  if (!saved.admission_epoch || saved.entity_epoch < saved.admission_epoch ||
+  if (saved.composition_status > InterlevelCompositionStatus::conflicting_attributes ||
+      !saved.admission_epoch || saved.entity_epoch < saved.admission_epoch ||
       (saved.process && saved.entity_epoch != saved.process->configuration.initial_synchronization_epoch) ||
       saved.instance > device_catalog::isis_instance_last || saved.first_root_level > 1U ||
       saved.status > UpdateStatus::adjacency || (!saved.process && (saved.local || saved.status == UpdateStatus::applied ||
@@ -119,6 +120,13 @@ std::unique_ptr<ControlWorker::OwnedInstance> ControlWorker::restore_checkpoint_
     result->decision_status = saved.decision_status;
     result->local_roots_dirty = saved.local_roots_dirty;
     result->first_root_level = saved.first_root_level;
+    const auto composition_retry = checkpoint_time::restore_deadline(saved.composition_retry,now);
+    if (!composition_retry || (saved.composition_status == InterlevelCompositionStatus::applied &&
+        *composition_retry != RuntimeClock::time_point::min()) ||
+        (saved.composition_status != InterlevelCompositionStatus::applied &&
+            (!saved.local || !saved.local_roots_dirty[1U]))) return nullptr;
+    result->composition_status=saved.composition_status;
+    result->composition_retry_at=*composition_retry;
     result->database_validations = saved.database_validations;
     result->decision_revisions = saved.decision_revisions;
     result->revision = saved.revision;
