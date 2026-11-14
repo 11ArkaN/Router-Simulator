@@ -81,16 +81,87 @@ bool pending_snp(const Slot &slot, const isis::SnpExchangeCheckpoint &saved,
   return !entries.next() && entries.valid();
 }
 }
+namespace {
+bool valid_selection_owners(const IsisRuntimeCheckpoint &saved) noexcept {
+  if (saved.selection_producers.size() > device_catalog::maximum_routers) return false;
+  std::optional<std::size_t> previous;
+  for (const auto &producer : saved.selection_producers) {
+    if (producer.version != 1U || producer.capacity != device_catalog::maximum_dynamic_routes_per_router ||
+        producer.device.index >= device_catalog::maximum_routers || !producer.device.generation ||
+        (previous && producer.device.index <= *previous) ||
+        (producer.revision == UINT64_MAX && producer.dirty) ||
+        (!producer.publication && (producer.revision || producer.dirty || producer.filtered ||
+            producer.original_counts != std::array<std::uint32_t,2U>{})) ||
+        (producer.publication && !producer.revision && !producer.dirty)) return false;
+    previous = producer.device.index;
+    const auto owner = std::find_if(saved.control.devices.begin(),saved.control.devices.end(),
+        [&](const auto &device) { return device.handle == producer.device; });
+    if (owner == saved.control.devices.end() || !owner->interlevel ||
+        producer.publication > owner->route_generation ||
+        owner->interlevel->last_selection_revision > producer.revision) return false;
+    const auto &exports = *owner->interlevel;
+    const auto *bank = producer.publication == exports.pending.publication && producer.publication
+        ? &exports.pending : producer.publication == exports.active.publication ? &exports.active : nullptr;
+    if (!bank || (exports.pending_confirmed && producer.publication != exports.pending.publication)) return false;
+    const auto installed = std::find_if(saved.installed.begin(),saved.installed.end(),
+        [&](const auto &value) { return value.device == producer.device; });
+    const auto retained4 = installed == saved.installed.end() ? std::span<const routing::DynamicInput>{} :
+        std::span<const routing::DynamicInput>{installed->ipv4};
+    const auto retained6 = installed == saved.installed.end() ? std::span<const routing::Ipv6DynamicInput>{} :
+        std::span<const routing::Ipv6DynamicInput>{installed->ipv6};
+    if (producer.publication && (installed == saved.installed.end() || producer.publication > installed->generation)) return false;
+    const std::array sizes{retained4.size(),retained6.size()};
+    const std::array original_sizes{producer.original_ipv4.size(),producer.original_ipv6.size()};
+    for (std::size_t family{}; family < 2U; ++family) {
+      const auto &map = producer.ordinals[family];
+      if (producer.original_counts[family] > producer.capacity || map.size() != sizes[family] ||
+          bank->candidates[family].size() != producer.original_counts[family] ||
+          (producer.filtered ? original_sizes[family] != producer.original_counts[family] :
+              (original_sizes[family] || map.size() != producer.original_counts[family]))) return false;
+      for (std::size_t index{}; index < map.size(); ++index)
+        if (map[index] >= producer.original_counts[family] || (index && map[index-1U] >= map[index]) ||
+            (!producer.filtered && map[index] != index)) return false;
+    }
+    if (producer.filtered) {
+      for (std::size_t index{}; index < retained4.size(); ++index)
+        if (retained4[index] != producer.original_ipv4[producer.ordinals[0U][index]]) return false;
+      for (std::size_t index{}; index < retained6.size(); ++index)
+        if (retained6[index] != producer.original_ipv6[producer.ordinals[1U][index]]) return false;
+    }
+  }
+  for (const auto &owner : saved.control.devices) if (owner.interlevel &&
+      std::none_of(saved.selection_producers.begin(),saved.selection_producers.end(),
+          [&](const auto &value) { return value.device == owner.handle; })) return false;
+  for (const auto &slot : saved.selections.occupied) {
+    const auto &value = slot.value;
+    const auto owner = std::find_if(saved.control.devices.begin(),saved.control.devices.end(),
+        [&](const auto &device) { return device.handle == value.identity.device; });
+    if (owner == saved.control.devices.end()) continue;
+    const auto producer = std::find_if(saved.selection_producers.begin(),saved.selection_producers.end(),
+        [&](const auto &candidate) { return candidate.device == value.identity.device; });
+    if (producer == saved.selection_producers.end() || value.identity.configuration_epoch > owner->configuration_epoch ||
+        value.identity.publication > producer->publication || value.identity.revision > producer->revision ||
+        (value.identity.publication == producer->publication && value.counts != producer->original_counts)) return false;
+  }
+  return true;
+}
+}
 bool valid_isis_runtime_links(const IsisRuntimeCheckpoint &saved) noexcept {
   const auto &control = saved.control;
   const auto cohort = control.barrier_epoch;
   const auto shards = control.forwarding_shards;
-  if (saved.version != 1U || control.version != 7U || !cohort || !shards ||
+  if (saved.version != 2U || control.version != 8U || !cohort || !shards ||
       shards > device_catalog::high_forwarding_shards || saved.ingress.size() != shards || saved.egress.size() != shards ||
       (!saved.forwarding.empty() && saved.forwarding.size() != shards) ||
       (saved.forwarding.empty() && shards != 1U) ||
       !::router::routing::RoutePublication::valid_checkpoint(saved.routes, cohort) || !saved.routes.editing.empty() ||
+      !::router::routing::IsisSelectionChannel::valid_checkpoint(saved.selections, cohort) ||
+      !saved.selections.editing.empty() || !saved.selections.borrowed.empty() ||
+      saved.selection_first_device >= device_catalog::maximum_routers ||
       saved.ports.size() != control.active_circuits || saved.installed.size() > device_catalog::maximum_routers) return false;
+  for (const auto &slot : saved.selections.occupied)
+    if (!::router::routing::valid_isis_route_selection(slot.value)) return false;
+  if (!valid_selection_owners(saved)) return false;
   for (std::size_t shard{}; shard < shards; ++shard) {
     if (!protocol::PacketChannel<device_catalog::isis_packet_ring_frames>::valid_checkpoint(saved.ingress[shard], cohort) ||
         !saved.ingress[shard].borrowed.empty() || !IsisCheckpointEgress::valid_checkpoint(saved.egress[shard], cohort)) return false;

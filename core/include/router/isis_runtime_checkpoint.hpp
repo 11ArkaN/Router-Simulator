@@ -3,6 +3,7 @@
 // one acknowledged cohort. No host clock epoch or runtime pointer is persisted.
 
 #pragma once
+#include "router/isis_selection_producer.hpp"
 
 #include "router/isis_control_checkpoint.hpp"
 #include "router/network_transfer_checkpoint.hpp"
@@ -21,7 +22,7 @@ struct IsisInstalledRoutesCheckpoint {
   std::vector<routing::Ipv6DynamicInput> ipv6;
 };
 struct IsisRuntimeCheckpoint {
-  std::uint32_t version{1U};
+  std::uint32_t version{2U};
   isis::ControlWorkerCheckpoint control;
   std::vector<protocol::PacketChannel<device_catalog::isis_packet_ring_frames>::Checkpoint> ingress;
   std::vector<IsisCheckpointEgress::Checkpoint> egress;
@@ -31,6 +32,9 @@ struct IsisRuntimeCheckpoint {
   std::vector<ForwardShardTransferCheckpoint> forwarding;
   std::vector<IsisTransportPortCheckpoint> ports;
   std::vector<IsisInstalledRoutesCheckpoint> installed;
+  ::router::routing::IsisSelectionChannel::Checkpoint selections{};
+  std::size_t selection_first_device{};
+  std::vector<::router::routing::IsisSelectionProducerCheckpoint> selection_producers;
 };
 // Coordinator only after both sides of every channel acknowledge quiescence.
 // Child owner preparation separately validates configuration and mutable state.

@@ -128,7 +128,7 @@ void isis_checkpoint_barrier_tests() {
   capture.checkpoint_now_nanoseconds = RuntimeClock::time_point::max().time_since_epoch().count();
   require(command(capture).error == ControlError::invalid_argument && captured.version == 9U);
   capture.checkpoint_now_nanoseconds = barrier.checkpoint_anchor_nanoseconds;
-  require(command(capture).error == ControlError::none && captured.version == 7U &&
+  require(command(capture).error == ControlError::none && captured.version == 8U &&
       captured.barrier_epoch == barrier.checkpoint_barrier_epoch && captured.active_circuits == 1U &&
       captured.devices.size() == 1U && captured.devices[0U].circuits.size() == 1U &&
       captured.devices[0U].instances.size() == 1U);
@@ -145,6 +145,7 @@ void isis_checkpoint_barrier_tests() {
   joined.ingress.push_back(ingress);
   joined.egress.push_back(egress);
   joined.routes = channels->routes->checkpoint_quiescent(captured.barrier_epoch);
+  joined.selections = channels->selections->checkpoint_quiescent(captured.barrier_epoch);
   joined.ports.push_back({identity, {lab::node(identity.device), identity.physical_port_ordinal, 1U}});
   require(lab::valid_isis_runtime_links(joined));
   std::array<std::uint8_t, 32U> checkpoint_key{}, checkpoint_binding{};
@@ -327,6 +328,7 @@ void isis_checkpoint_barrier_tests() {
   joined.ingress[0U] = channels->ingress[0U].checkpoint_quiescent(captured.barrier_epoch);
   joined.egress[0U] = channels->egress[0U].checkpoint_quiescent(captured.barrier_epoch);
   joined.routes = channels->routes->checkpoint_quiescent(captured.barrier_epoch);
+  joined.selections = channels->selections->checkpoint_quiescent(captured.barrier_epoch);
   joined.ports[0U].identity = add_lan.identity;
   require(lab::valid_isis_runtime_links(joined)); // Old canceled P2P wire remains legal deferred work.
   const auto encoded_lan = lab::isis_checkpoint::encode(joined, *checkpoint_vault, checkpoint_binding);

@@ -87,6 +87,12 @@ ControlWorker::PreparedGeneration::~PreparedGeneration() {
 }
 
 ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceState &device) noexcept {
+  if (device.configuration_epoch == std::numeric_limits<std::uint64_t>::max()) return ControlError::epoch_exhausted;
+  if (device.interlevel && (!device.interlevel->can_retain_source(command.retained_route_publication) ||
+      (command.interlevel_export && *command.interlevel_export != device.interlevel->budget())))
+    return ControlError::invalid_argument;
+  if (!device.interlevel && command.interlevel_export &&
+      (command.retained_route_publication || device.route_generation)) return ControlError::unsupported_origination;
   const auto &definitions = command.circuits;
   if (definitions.size() > maximum_circuits_ ||
       active_circuits_ - device.circuits.size() > maximum_circuits_ - definitions.size()) return ControlError::capacity;
@@ -235,6 +241,10 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
     PreparedGeneration staged;
     staged.additions = std::move(additions);
     staged.device = device.handle;
+    staged.configuration_epoch = device.configuration_epoch + 1U;
+    staged.retained_route_publication = command.retained_route_publication;
+    if (command.interlevel_export && !device.interlevel)
+      staged.interlevel_admission = std::make_unique<InterlevelExportState>(device.handle,*command.interlevel_export);
     staged.retired_instances = std::move(command.retired_instances);
     staged.administrative = std::move(command.administrative);
     staged.adjacency_policies = std::move(command.adjacency_policies);
@@ -429,6 +439,10 @@ void ControlWorker::commit_generation(DeviceState &device) noexcept {
     device.route_retry_at = {};
   }
   if (device.first_circuit >= device.circuits.size()) device.first_circuit = 0U;
+  if (staged.interlevel_admission) device.interlevel = std::move(staged.interlevel_admission);
+  if (device.interlevel && !device.interlevel->confirm_retained_source(staged.retained_route_publication)) std::terminate();
+  reconcile_interlevel(device);
+  device.configuration_epoch = staged.configuration_epoch;
   prepared_.reset();
 }
 
@@ -552,6 +566,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
       commit_generation(device);
       result.active_circuits = static_cast<std::uint32_t>(active_circuits_);
     }
+    if (result.error == ControlError::none) result.configuration_epoch = device.configuration_epoch;
     return result;
   }
   if (prepared_ && command.kind != ControlCommandKind::query_circuit &&
@@ -567,6 +582,8 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     else {
       if (device.handle != handle) {
         device.retired_epoch_floor = 0U;
+        device.configuration_epoch = 0U;
+        device.interlevel.reset();
         device.update_fences.fill(0U);
         for (auto &gate : device.sequence_recovery) gate.reset();
         device.installed_routes = {};
@@ -579,6 +596,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
       device.handle = handle;
       device.active = true;
     }
+    if (result.error == ControlError::none) result.configuration_epoch = device.configuration_epoch;
     return result;
   }
   if (!device.active || device.handle != handle) { result.error = ControlError::stale_device; return result; }
@@ -618,6 +636,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     result.carrier = command.carrier;
     return result;
   }
+  result.configuration_epoch = device.configuration_epoch;
   result.route_published_generation = device.route_generation;
   result.route_installed_generation = device.route_installed;
   result.route_install_status = device.route_status;
@@ -636,6 +655,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
   }
   if (command.kind == ControlCommandKind::prepare_generation) {
     result.error = prepare_generation(command, device);
+    if (result.error == ControlError::none) result.configuration_epoch = prepared_->configuration_epoch;
     if (result.error == ControlError::none && prepared_->route_commit_generation)
       result.route_published_generation = prepared_->route_commit_generation;
     return result;
@@ -965,12 +985,14 @@ void ControlWorker::run() noexcept {
   std::optional<ControlResult> pending_result;
   while (!stop_.load(std::memory_order_acquire)) {
     work_.store(false, std::memory_order_release);
+    for (auto &device : devices_) reconcile_interlevel(device);
     if (pending_result && results_.try_push(*pending_result)) pending_result.reset();
     auto command_budget = device_catalog::network_command_work_budget;
     while (!pending_result && command_budget--) {
       const auto command = commands_.receive();
       if (!command) break;
       const auto result = apply(*command->value);
+      for (auto &device : devices_) reconcile_interlevel(device);
       static_cast<void>(commands_.release(command->handle));
       if (!results_.try_push(result)) pending_result = result;
       if (stop_.load(std::memory_order_acquire)) break;
@@ -991,6 +1013,7 @@ void ControlWorker::run() noexcept {
     }
     const auto now = PointToPointCircuit::Clock::now();
     complete_routes(now);
+    complete_selections();
     for (std::size_t shard{}; shard < forwarding_shards_; ++shard) {
       auto budget = device_catalog::isis_work_budget_packets;
       while (budget--) {

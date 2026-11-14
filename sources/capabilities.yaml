@@ -1,6 +1,9 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  routing.isis.selected_interlevel_feedback:
+    status: experimental
+    source_ids: [ietf.isis.selected_interlevel_export]
   routing.isis.selected_interlevel_projection:
     status: experimental
     source_ids: [ietf.isis.selected_interlevel_export]

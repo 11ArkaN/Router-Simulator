@@ -3,6 +3,7 @@
 
 #include "router/isis_lsp_lifetime.hpp"
 #include "router/network_plane.hpp"
+#include "router/isis_selection_producer.hpp"
 #include "router/isis_ipv6_af_binding.hpp"
 #include "router/route_input_store.hpp"
 #include "router/network_transfer_checkpoint.hpp"
@@ -1267,7 +1268,13 @@ struct NetworkPlane::Impl {
   // its cold publisher. Checkpoint restore reconstructs both after queue drain.
   std::array<std::uint64_t, device_catalog::maximum_routers> ipv6_readiness_epochs{};
   std::array<bool, device_catalog::maximum_routers> isis_registered{};
+  // Serialized network-owner copy of the committed control configuration
+  // identity. Command/result release-acquire publishes it; checkpoint restore
+  // reconstructs it from the same quiescent control cohort, without a second
+  // independently editable serialized epoch. No circuit timer changes it.
+  std::array<std::uint64_t, device_catalog::maximum_routers> isis_configuration_epochs{};
   std::array<std::size_t, device_catalog::maximum_routers> isis_instance_count{};
+  std::size_t first_isis_selection_device{};
   std::uint64_t next_isis_command_id{1U};
   std::uint64_t next_forward_command_id{1};
   // Serialized link owner exclusively reuses this staging value while waiting
@@ -1288,6 +1295,7 @@ struct NetworkPlane::Impl {
     ::router::routing::RouteInputStore<routing::DynamicInput> ipv4_candidates;
     ::router::routing::RouteInputStore<routing::Ipv6DynamicInput> ipv6_candidates;
     std::uint64_t isis_generation{};
+    std::unique_ptr<::router::routing::IsisSelectionProducer> isis_selection;
     // Configured rows retain policy-accepted intent even while their source
     // route is absent from the selected RIB. Active rows are the last complete
     // transaction published to the OSPF owner. Separating both is what lets a
@@ -1363,6 +1371,7 @@ struct NetworkPlane::Impl {
          network_detail::EndpointStack::outbound_scratch_allocation_bytes);
     static_assert(sizeof(Impl) + sizeof(ForwardCommand) + endpoint_heap_arenas +
                       sizeof(ospf::RouteChannel) + sizeof(::router::routing::RoutePublication) +
+                      sizeof(::router::routing::IsisSelectionChannel) +
                       sizeof(RouteStaging) + sizeof(routing::RouteTable) +
                       sizeof(routing::Ipv6RouteTable) +
                       device_catalog::maximum_routers * (sizeof(RouteManagerState) +
@@ -1456,6 +1465,7 @@ struct NetworkPlane::Impl {
       const routing::RouteTable &ipv4, const routing::Ipv6RouteTable &ipv6,
       std::vector<OspfExternalRouteProgram> &active, bool &prepared) noexcept;
   void drain_ospf_routes() noexcept;
+  void publish_isis_selections() noexcept;
 
   [[nodiscard]] bool live(DeviceHandle handle) const noexcept {
     return handle && handle.index < router_generations.size() &&
@@ -1541,11 +1551,12 @@ struct NetworkPlane::Impl {
     const IsisRuntimeCheckpoint *source{};
     Clock::time_point expiry_anchor{};
     std::unique_ptr<::router::routing::RoutePublication::PreparedRestore> routes;
+    std::unique_ptr<::router::routing::IsisSelectionChannel::PreparedRestore> selections;
     std::vector<std::unique_ptr<ForwardingShardWorker::PreparedTransfers>> forwarding;
     std::array<std::vector<IsisTransportBinding>, device_catalog::maximum_routers> links;
     std::array<bool, device_catalog::maximum_routers> registered{};
     std::array<std::size_t, device_catalog::maximum_routers> instances{};
-    std::array<std::uint64_t, device_catalog::maximum_routers> af_epochs{};
+    std::array<std::uint64_t, device_catalog::maximum_routers> af_epochs{}, configuration_epochs{};
   };
   [[nodiscard]] IsisRuntimeCheckpoint empty_isis_checkpoint(std::uint64_t epoch) const;
   [[nodiscard]] std::unique_ptr<PreparedIsisCheckpoint> prepare_isis_checkpoint(
@@ -4492,6 +4503,9 @@ std::unique_ptr<IsisRuntimeCheckpoint> NetworkPlane::Impl::capture_isis_checkpoi
     capture_command.checkpoint_now_nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(anchor.time_since_epoch()).count();
     capture_command.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(&result->control);
     if (execute_isis(std::move(capture_command)).error != isis::ControlError::none) return nullptr;
+    for (const auto &device : result->control.devices)
+      if (device.active && (device.handle.index >= isis_configuration_epochs.size() ||
+          isis_configuration_epochs[device.handle.index] != device.configuration_epoch)) return nullptr;
     const auto count = result->control.forwarding_shards;
     result->ingress.reserve(count);
     result->egress.reserve(count);
@@ -4500,6 +4514,8 @@ std::unique_ptr<IsisRuntimeCheckpoint> NetworkPlane::Impl::capture_isis_checkpoi
       result->egress.push_back(isis_channels.egress[index].checkpoint_quiescent(epoch, anchor));
     }
     result->routes = isis_channels.routes->checkpoint_quiescent(epoch);
+    result->selections = isis_channels.selections->checkpoint_quiescent(epoch);
+    result->selection_first_device = first_isis_selection_device;
     result->forwarding.reserve(separate_forwarding_shards);
     for (std::size_t index{}; index < separate_forwarding_shards; ++index)
       result->forwarding.push_back(forwarding_shards[index]->checkpoint_transfers(epoch, pending_isis_receipts[index], anchor));
@@ -4508,6 +4524,7 @@ std::unique_ptr<IsisRuntimeCheckpoint> NetworkPlane::Impl::capture_isis_checkpoi
       result->ports.push_back({binding.identity, binding.port});
     for (std::size_t index{}; index < route_managers.size(); ++index) {
       const auto &manager = route_managers[index];
+      if (manager && manager->isis_selection) result->selection_producers.push_back(manager->isis_selection->checkpoint());
       if (!manager || !manager->isis_generation) continue;
       auto &installed = result->installed.emplace_back();
       installed.device = {static_cast<std::uint16_t>(index), router_generations[index]};
@@ -4536,6 +4553,7 @@ IsisRuntimeCheckpoint NetworkPlane::Impl::empty_isis_checkpoint(std::uint64_t ep
   for (auto &image : result.ingress) empty(image);
   for (auto &image : result.egress) empty(image);
   empty(result.routes);
+  empty(result.selections);
   result.forwarding.resize(separate_forwarding_shards);
   for (auto &image : result.forwarding) image.barrier_epoch = epoch;
   return result;
@@ -4552,6 +4570,8 @@ std::unique_ptr<NetworkPlane::Impl::PreparedIsisCheckpoint> NetworkPlane::Impl::
     result->expiry_anchor = anchor;
     result->routes = ::router::routing::RoutePublication::prepare_restore(source.routes, source.control.barrier_epoch);
     if (!result->routes) return nullptr;
+    result->selections = ::router::routing::IsisSelectionChannel::prepare_restore(source.selections, source.control.barrier_epoch);
+    if (!result->selections) return nullptr;
     result->forwarding.reserve(separate_forwarding_shards);
     for (const auto &image : source.forwarding) {
       auto prepared = ForwardingShardWorker::prepare_transfers(image, source.control.barrier_epoch, anchor);
@@ -4561,6 +4581,7 @@ std::unique_ptr<NetworkPlane::Impl::PreparedIsisCheckpoint> NetworkPlane::Impl::
     for (const auto &device : source.control.devices) {
       if (!device.handle || device.handle.index >= result->registered.size()) return nullptr;
       result->registered[device.handle.index] = device.active;
+      result->configuration_epochs[device.handle.index] = device.configuration_epoch;
       result->instances[device.handle.index] = device.instances.size();
     }
     // Preserve the captured transport dispatch order, independently of the
@@ -4656,6 +4677,16 @@ bool NetworkPlane::Impl::stage_isis_checkpoint(PreparedIsisCheckpoint &prepared,
           !manager.ipv6_candidates.replace_second(installed.ipv6)) return false;
       manager.isis_generation = installed.generation;
     }
+    for (const auto &producer : protocol.selection_producers) {
+      if (producer.device.index >= route_candidates.size() ||
+          router_candidates[producer.device.index].generation != producer.device.generation ||
+          !route_candidates[producer.device.index]) return false;
+      auto &manager = *route_candidates[producer.device.index];
+      if (manager.isis_selection) return false;
+      manager.isis_selection = std::make_unique<::router::routing::IsisSelectionProducer>(producer.device,
+          device_catalog::maximum_dynamic_routes_per_router);
+      if (!manager.isis_selection->restore(producer,manager.ipv4_candidates.second(),manager.ipv6_candidates.second())) return false;
+    }
     // Forwarding owns the exact selected FIB. Require each restored IS-IS row
     // to originate in the RIB owner's accepted generation, including repair
     // membership. Losing candidates need not occur in the selected FIB.
@@ -4690,13 +4721,16 @@ void NetworkPlane::Impl::commit_isis_checkpoint(PreparedIsisCheckpoint &prepared
   for (std::size_t index{}; index < source.ingress.size(); ++index)
     if (!isis_channels.ingress[index].restore_quiescent(source.ingress[index], source.control.barrier_epoch) ||
         !isis_channels.egress[index].restore_quiescent(source.egress[index], source.control.barrier_epoch, prepared.expiry_anchor)) std::terminate();
-  if (!isis_channels.routes->commit_quiescent(*prepared.routes, source.control.barrier_epoch)) std::terminate();
+  if (!isis_channels.routes->commit_quiescent(*prepared.routes, source.control.barrier_epoch) ||
+      !isis_channels.selections->commit_quiescent(*prepared.selections, source.control.barrier_epoch)) std::terminate();
+  first_isis_selection_device = source.selection_first_device;
   for (std::size_t index{}; index < prepared.forwarding.size(); ++index) {
     if (!forwarding_shards[index]->commit_transfers(*prepared.forwarding[index], source.control.barrier_epoch)) std::terminate();
     pending_isis_receipts[index] = source.forwarding[index].retained_receipt;
   }
   isis_transports.swap(prepared.links);
   isis_registered = prepared.registered;
+  isis_configuration_epochs = prepared.configuration_epochs;
   isis_instance_count = prepared.instances;
   ipv6_readiness_epochs = prepared.af_epochs;
   isis::ControlCommand commit;
@@ -4924,6 +4958,12 @@ bool NetworkPlane::Impl::prepare_managed_routes(
 bool NetworkPlane::Impl::commit_managed_routes(DeviceHandle device, RouteManagerState &state,
     std::vector<OspfExternalRouteProgram> &active, bool prepared, bool forwarding_quiescent,
     ::router::routing::RouteInstallStatus *failure) noexcept {
+  if (state.isis_selection && !state.isis_selection->can_change()) {
+    if (prepared) static_cast<void>(execute_ospf({.process = {.device = device},
+        .kind = ospf::ControlCommandKind::abort_external_generation}));
+    if (failure) *failure = ::router::routing::RouteInstallStatus::stale;
+    return false;
+  }
   auto &staged = *route_staging;
   bool installed = true;
   if (staged.install_ipv4 || staged.install_ipv6) {
@@ -4956,7 +4996,30 @@ bool NetworkPlane::Impl::commit_managed_routes(DeviceHandle device, RouteManager
   if (state.base_ipv6_configured) state.ipv6_rib.swap(staged.ipv6);
   if (staged.install_ipv4) ++state.installed_ipv4_generation;
   if (staged.install_ipv6) ++state.installed_ipv6_generation;
+  if (state.isis_selection && state.isis_selection->publication() && !state.isis_selection->mark_dirty()) std::terminate();
   return true;
+}
+
+void NetworkPlane::Impl::publish_isis_selections() noexcept {
+  for (std::size_t offset{}; offset < route_managers.size(); ++offset) {
+    const auto index = (first_isis_selection_device + offset) % route_managers.size();
+    auto &manager = route_managers[index];
+    if (!manager || !manager->isis_selection || !manager->isis_selection->ready()) continue;
+    const auto lease = isis_channels.selections->acquire();
+    if (!lease) { first_isis_selection_device = index; return; }
+    const auto status = manager->isis_selection->project(isis_configuration_epochs[index],
+        manager->ipv4_candidates.first(),manager->ipv4_candidates.second(),
+        manager->ipv6_candidates.first(),manager->ipv6_candidates.second(),
+        *manager->ipv4_rib,*manager->ipv6_rib,*lease->value);
+    if (status != ::router::routing::IsisSelectionStatus::applied) {
+      if (!isis_channels.selections->cancel(lease->handle)) std::terminate();
+      std::terminate();
+    }
+    const auto identity = lease->value->identity;
+    if (!isis_channels.selections->publish(lease->handle) || !manager->isis_selection->published(identity)) std::terminate();
+    isis_worker->notify();
+  }
+  first_isis_selection_device = (first_isis_selection_device + 1U) % route_managers.size();
 }
 
 void NetworkPlane::Impl::drain_ospf_routes() noexcept {
@@ -5425,10 +5488,11 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     std::span<const isis::UpdateAdjacencyPolicy> adjacency_policies,
     std::span<const isis::UpdatePrefixCatalog> prefix_catalogs,
     std::optional<std::span<const Ipv6ReadinessWatch>> ipv6_watches,
-    std::span<const isis::UpdateAttachedPolicy> attached_policies) noexcept {
+    std::span<const isis::UpdateAttachedPolicy> attached_policies,
+    std::optional<isis::InterlevelTemplateBudget> interlevel_export) noexcept {
   if (!impl_->live(device) || circuits.size() > device_catalog::maximum_routers * device_catalog::maximum_ports_per_router)
     return false;
-  if (circuits.empty() && new_instances.empty() && retired_instances.empty() && administrative.empty() && adjacency_policies.empty() && attached_policies.empty() && prefix_catalogs.empty() && !ipv6_watches && !impl_->isis_registered[device.index]) return true;
+  if (circuits.empty() && new_instances.empty() && retired_instances.empty() && administrative.empty() && adjacency_policies.empty() && attached_policies.empty() && prefix_catalogs.empty() && !ipv6_watches && !interlevel_export && !impl_->isis_registered[device.index]) return true;
   std::unique_ptr<Ipv6ReadinessProjection> prepared_ipv6;
   const auto old_af_epoch = impl_->ipv6_readiness_epochs[device.index];
   const bool subscribing = ipv6_watches && !ipv6_watches->empty();
@@ -5460,6 +5524,9 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
           return edit.instance == entry.protocol_instance && !edit.enabled;
         });
   };
+  std::unique_ptr<::router::routing::IsisSelectionProducer> selection_admission;
+  std::unique_ptr<::router::routing::IsisSelectionProducer::PreparedRetain> selection_retention;
+  std::array<std::vector<std::uint16_t>,2U> retained_ordinals;
   std::vector<routing::DynamicInput> retained_ipv4;
   std::vector<routing::Ipv6DynamicInput> retained_ipv6;
   bool routes_changed{};
@@ -5484,6 +5551,13 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
   std::array<bool, device_catalog::maximum_ports_per_router> affected{}, exchanged{};
   try {
     groups = std::make_unique<Groups>();
+    auto &selection_manager = impl_->route_managers[device.index];
+    if (interlevel_export && !selection_manager) return false;
+    if (selection_manager && selection_manager->isis_selection && !selection_manager->isis_selection->can_change()) return false;
+    if (interlevel_export && !selection_manager->isis_selection)
+      selection_admission = std::make_unique<::router::routing::IsisSelectionProducer>(device,device_catalog::maximum_dynamic_routes_per_router);
+    generation.interlevel_export = interlevel_export;
+    generation.retained_route_publication = selection_manager && selection_manager->isis_selection ? selection_manager->isis_selection->publication() : 0U;
     generation.new_instances.assign(new_instances.begin(), new_instances.end());
     generation.retired_instances.assign(retired_instances.begin(), retired_instances.end());
     generation.administrative.assign(administrative.begin(), administrative.end());
@@ -5495,9 +5569,17 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
       const auto ipv4 = manager->ipv4_candidates.second();
       const auto ipv6 = manager->ipv6_candidates.second();
       retained_ipv4.reserve(ipv4.size()); retained_ipv6.reserve(ipv6.size());
-      for (const auto &entry : ipv4) if (!retires(entry)) retained_ipv4.push_back(entry);
-      for (const auto &entry : ipv6) if (!retires(entry)) retained_ipv6.push_back(entry);
+      for (std::size_t index{}; index < ipv4.size(); ++index) if (!retires(ipv4[index])) {
+        retained_ipv4.push_back(ipv4[index]); retained_ordinals[0U].push_back(static_cast<std::uint16_t>(index));
+      }
+      for (std::size_t index{}; index < ipv6.size(); ++index) if (!retires(ipv6[index])) {
+        retained_ipv6.push_back(ipv6[index]); retained_ordinals[1U].push_back(static_cast<std::uint16_t>(index));
+      }
       routes_changed = retained_ipv4.size() != ipv4.size() || retained_ipv6.size() != ipv6.size();
+      if (routes_changed && manager->isis_selection) {
+        selection_retention = manager->isis_selection->prepare_retain(retained_ordinals[0U],retained_ordinals[1U],ipv4,ipv6);
+        if (!selection_retention) return false;
+      }
     }
     if (ipv6_watches) generation.local_ipv6_watches.emplace(ipv6_watches->begin(), ipv6_watches->end());
     link_projection.reserve(circuits.size());
@@ -5581,7 +5663,9 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     isis::ControlCommand registration;
     registration.kind = isis::ControlCommandKind::register_device;
     registration.identity.device = device;
-    if (impl_->execute_isis(std::move(registration)).error != isis::ControlError::none) return false;
+    const auto registered = impl_->execute_isis(std::move(registration));
+    if (registered.error != isis::ControlError::none) return false;
+    impl_->isis_configuration_epochs[device.index] = registered.configuration_epoch;
     impl_->isis_registered[device.index] = true;
   }
   const auto discard_registration = [&] {
@@ -5643,17 +5727,24 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
   }
   // Preparation reserves the owner commit. A refusal after the atomic FIB
   // transaction would violate that lease and cannot be treated as a rollback.
-  if (impl_->execute_isis(std::move(commit)).error != isis::ControlError::none) std::terminate();
+  const auto committed_owner = impl_->execute_isis(std::move(commit));
+  if (committed_owner.error != isis::ControlError::none ||
+      committed_owner.configuration_epoch != prepared_owner.configuration_epoch) std::terminate();
+  impl_->isis_configuration_epochs[device.index] = committed_owner.configuration_epoch;
+  if (selection_admission) impl_->route_managers[device.index]->isis_selection = std::move(selection_admission);
   if (routes_changed) {
     auto &manager = *impl_->route_managers[device.index];
     if (!manager.ipv4_candidates.replace_second(retained_ipv4) ||
         !manager.ipv6_candidates.replace_second(retained_ipv6)) std::terminate();
+    if (selection_retention && !manager.isis_selection->commit_retain(*selection_retention)) std::terminate();
   }
   if (!administrative.empty()) {
     // The prepared owner reserved this synchronous RIB generation. All older
     // channel publications now fail the same installed high-water check.
     impl_->route_managers[device.index]->isis_generation = prepared_owner.route_published_generation;
   }
+  if (auto &manager = impl_->route_managers[device.index]; manager && manager->isis_selection && manager->isis_selection->publication())
+    if (!manager->isis_selection->mark_dirty()) std::terminate();
   // The barrier excludes packet observers. All publications are non-allocating
   // ownership swaps after the protocol owner has accepted commit.
   if (ipv6_watches) {
@@ -5722,7 +5813,9 @@ bool NetworkPlane::add_isis_update_instance(DeviceHandle device, std::uint8_t in
     isis::ControlCommand registration;
     registration.kind = isis::ControlCommandKind::register_device;
     registration.identity.device = device;
-    if (impl_->execute_isis(std::move(registration)).error != isis::ControlError::none) return false;
+    const auto registered = impl_->execute_isis(std::move(registration));
+    if (registered.error != isis::ControlError::none) return false;
+    impl_->isis_configuration_epochs[device.index] = registered.configuration_epoch;
     impl_->isis_registered[device.index] = true;
   }
   isis::ControlCommand command;
@@ -6277,6 +6370,7 @@ bool NetworkPlane::program_fib(DeviceHandle device,
       device.index >= impl_->route_managers.size())
     return false;
   auto &manager = impl_->route_managers[device.index];
+  if (manager && manager->isis_selection && !manager->isis_selection->can_change()) return false;
   // Low-level NetworkPlane tests may deliberately program an already selected
   // FIB without a control RIB. Preserve that narrow API contract. Production
   // RuntimeSupervisor always publishes RoutePolicyProgram first.
@@ -6315,6 +6409,7 @@ bool NetworkPlane::program_ipv6_fib(
       device.index >= impl_->route_managers.size())
     return false;
   auto &manager = impl_->route_managers[device.index];
+  if (manager && manager->isis_selection && !manager->isis_selection->can_change()) return false;
   if (!manager || !manager->policy_configured)
     return impl_->install_ipv6_fib(device, fib);
   if (!manager->base_ipv6_configured || !manager->installed_ipv6_generation) {
@@ -6370,6 +6465,7 @@ bool NetworkPlane::program_route_policy(
   // consume another FIB generation or block the subsequent base update.
   if (unchanged)
     return true;
+  if (manager->isis_selection && !manager->isis_selection->can_change()) return false;
   manager->policy = policy;
   manager->policy_configured = true;
   // The first policy arrives before base FIB publication. Later ECMP or static
@@ -6389,6 +6485,8 @@ bool NetworkPlane::program_route_policy(
   auto &manager = impl_->route_managers[device.index];
   if (!generation.generation || !manager || !manager->policy_configured) return Status::invalid;
   if (generation.generation <= manager->isis_generation) return Status::stale;
+  if (manager->isis_selection && !manager->isis_selection->can_replace(generation.generation,
+      {generation.ipv4_count,generation.ipv6_count})) return Status::stale;
   if (generation.ipv4_count > generation.ipv4.size() || generation.ipv6_count > generation.ipv6.size() ||
       manager->ipv4_candidates.first().size() > generation.ipv4.size() - generation.ipv4_count ||
       manager->ipv6_candidates.first().size() > generation.ipv6.size() - generation.ipv6_count) return Status::capacity;
@@ -6422,6 +6520,8 @@ bool NetworkPlane::program_route_policy(
   if (!manager->ipv4_candidates.replace_second(ipv4)) std::terminate();
   if (!manager->ipv6_candidates.replace_second(ipv6)) std::terminate();
   manager->isis_generation = generation.generation;
+  if (manager->isis_selection && !manager->isis_selection->replace(generation.generation,
+      {generation.ipv4_count,generation.ipv6_count})) std::terminate();
   return Status::installed;
 }
 
@@ -9477,6 +9577,7 @@ void NetworkPlane::pump(Clock::time_point now) noexcept {
     if (!impl_->isis_channels.routes->complete(borrowed->handle, device, generation, status)) std::terminate();
     impl_->isis_worker->notify();
   }
+  impl_->publish_isis_selections();
   for (std::size_t index{}; index < impl_->isis_registered.size(); ++index)
     if (impl_->isis_registered[index] && !impl_->isis_instance_count[index] && impl_->isis_transports[index].empty())
       impl_->retire_idle_isis_registration({static_cast<std::uint16_t>(index), impl_->router_generations[index]});

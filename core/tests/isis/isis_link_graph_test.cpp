@@ -736,6 +736,17 @@ void isis_link_graph_tests() {
   require(candidate_result.status == PrefixRoutesStatus::applied && candidate_result.count == 2U &&
       routes[0U].next_hop.interface.interface_id == 42U &&
       routes[1U].next_hop.interface.interface_id == 43U && routes[0U].distance == routes[1U].distance);
+  std::size_t mapped_candidates{};
+  const auto mapped_ecmp = visit_prefix_routes(prefix_decision, bindings,
+      [&](std::size_t ordinal, const PrefixRouteCandidate &candidate, std::size_t advertisement) {
+        require(ordinal == mapped_candidates && advertisement < prefix_decision.prefixes().size() &&
+            candidate.destination == prefix_decision.prefixes()[advertisement].prefix &&
+            candidate.origin == prefix_decision.prefixes()[advertisement].origin &&
+            candidate == routes[ordinal]);
+        ++mapped_candidates;
+        return true;
+      });
+  require(mapped_ecmp.status == PrefixRoutesStatus::applied && mapped_candidates == 2U);
   const auto retained_ecmp = routes;
   require(collect_prefix_routes(prefix_decision, bindings, std::span{routes}.first(1U)).status ==
       PrefixRoutesStatus::capacity && routes == retained_ecmp);

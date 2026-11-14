@@ -186,6 +186,8 @@ void isis_area_set_control_tests() {
           saved.consumed_decision_revision[level] == saved.decision_revisions[level];
     if (settled) {
       require(saved.areas && saved.areas->manual_addresses_dropped == 2U && saved.last_area_drop);
+      require(saved.admission_epoch && saved.entity_epoch >= saved.admission_epoch && saved.process &&
+          saved.entity_epoch == saved.process->configuration.initial_synchronization_epoch);
       ControlCommand restore; restore.kind = ControlCommandKind::prepare_checkpoint_restore;
       restore.checkpoint_barrier_epoch = barrier.checkpoint_barrier_epoch;
       restore.checkpoint_source_epoch = image.barrier_epoch;
@@ -200,6 +202,8 @@ void isis_area_set_control_tests() {
         auto request = restore; request.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(&changed);
         require(command(request).error == ControlError::invalid_argument);
       };
+      refuses([](auto &owner) { owner.admission_epoch = 0U; });
+      refuses([](auto &owner) { ++owner.entity_epoch; });
       refuses([](auto &owner) { owner.areas.reset(); });
       refuses([](auto &owner) { owner.last_area_drop.reset(); });
       refuses([](auto &owner) { owner.areas->rejected.back() = 0U; });

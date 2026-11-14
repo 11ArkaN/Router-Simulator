@@ -66,6 +66,7 @@ struct ControlInstanceCheckpoint {
   bool admin_enabled{true};
   std::optional<AreaSetCheckpoint> areas;
   std::optional<ManualAreaDropped> last_area_drop;
+  std::uint64_t admission_epoch{}, entity_epoch{};
 };
 struct ControlRouteStamp {
   std::uint64_t epoch{};
@@ -79,6 +80,7 @@ struct ControlDeviceCheckpoint {
   lab::DeviceHandle handle{};
   bool active{};
   std::uint64_t retired_epoch_floor{};
+  std::uint64_t configuration_epoch{};
   std::vector<ControlCircuitCheckpoint> circuits;
   std::vector<ControlInstanceCheckpoint> instances;
   std::vector<Gate> gates;
@@ -90,9 +92,10 @@ struct ControlDeviceCheckpoint {
   routing::RouteInstallStatus route_status{routing::RouteInstallStatus::pending};
   checkpoint_time::DeadlineCheckpoint route_retry_at;
   std::chrono::milliseconds route_retry{};
+  std::optional<InterlevelExportCheckpoint> interlevel{};
 };
 struct ControlWorkerCheckpoint {
-  std::uint32_t version{7U};
+  std::uint32_t version{8U};
   std::uint64_t barrier_epoch{};
   std::size_t forwarding_shards{}, maximum_circuits{}, active_circuits{}, first_device{};
   std::vector<ControlDeviceCheckpoint> devices;

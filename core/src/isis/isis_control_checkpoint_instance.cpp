@@ -11,7 +11,9 @@
 namespace router::isis {
 std::unique_ptr<ControlWorker::OwnedInstance> ControlWorker::restore_checkpoint_instance(
     const ControlInstanceCheckpoint &saved, RuntimeClock::time_point now) const noexcept {
-  if (saved.instance > device_catalog::isis_instance_last || saved.first_root_level > 1U ||
+  if (!saved.admission_epoch || saved.entity_epoch < saved.admission_epoch ||
+      (saved.process && saved.entity_epoch != saved.process->configuration.initial_synchronization_epoch) ||
+      saved.instance > device_catalog::isis_instance_last || saved.first_root_level > 1U ||
       saved.status > UpdateStatus::adjacency || (!saved.process && (saved.local || saved.status == UpdateStatus::applied ||
           !saved.configuration.origination))) return nullptr;
   try {
@@ -40,7 +42,8 @@ std::unique_ptr<ControlWorker::OwnedInstance> ControlWorker::restore_checkpoint_
       static_cast<void>(validation);
     }
     auto result = std::make_unique<OwnedInstance>(std::move(configuration), std::span<const UpdateCircuitConfiguration>{},
-        std::uint64_t{1U}, true);
+        saved.admission_epoch, true);
+    result->entity_epoch = saved.entity_epoch;
     const auto &policy = result->configuration;
     if (saved.process) {
       const auto &source = *saved.process;

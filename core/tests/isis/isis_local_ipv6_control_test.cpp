@@ -76,6 +76,7 @@ void isis_local_ipv6_control_tests() {
   joined->ingress.push_back(channels->ingress[0U].checkpoint_quiescent(barrier.checkpoint_barrier_epoch));
   joined->egress.push_back(channels->egress[0U].checkpoint_quiescent(barrier.checkpoint_barrier_epoch));
   joined->routes = channels->routes->checkpoint_quiescent(barrier.checkpoint_barrier_epoch);
+  joined->selections = channels->selections->checkpoint_quiescent(barrier.checkpoint_barrier_epoch);
   require(lab::valid_isis_runtime_links(*joined));
   std::array<std::uint8_t, 32U> key{}, binding{}; key.fill(0x59U); binding.fill(0x97U);
   auto vault = vault::SecretVault::create(key, std::array<std::uint8_t, 3U>{'l', 'a', 'b'}, 1U);

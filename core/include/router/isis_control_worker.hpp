@@ -17,6 +17,8 @@
 #include "router/isis_spf_throttle.hpp"
 #include "router/isis_next_hop.hpp"
 #include "router/route_publication.hpp"
+#include "router/isis_selection_channel.hpp"
+#include "router/isis_interlevel_export_state.hpp"
 #include "router/isis_database_validation.hpp"
 #include "router/isis_sequence_recovery.hpp"
 #include "router/isis_area_set.hpp"
@@ -54,6 +56,12 @@ struct ControlChannels {
   // contract. The aggregate outlives both owners; no LSDB pointer crosses it.
   std::unique_ptr<::router::routing::RoutePublication> routes{
       std::make_unique<::router::routing::RoutePublication>()};
+  // Reverse SPSC: one serialized RIB producer and this control consumer.
+  // Two owned release-acquire slots apply backpressure. This small global
+  // channel is allocated before startup; per-device export banks remain cold
+  // admissions. Its address outlives both roles and is never republished.
+  std::unique_ptr<::router::routing::IsisSelectionChannel> selections{
+      std::make_unique<::router::routing::IsisSelectionChannel>()};
   void *route_wakeup_context{};
   void (*route_wakeup)(void *){};
   // Installed before startup. Notification carries no network information.
@@ -298,6 +306,12 @@ struct ControlCommand {
   // Serialized RIB high water. Preparation reserves a strictly newer local
   // publication for synchronous administrative withdrawal of both families.
   std::uint64_t route_generation_floor{};
+  // Complete-generation admission only. The explicit device-wide cold budget
+  // enables copied L1 export banks; raw instance admission does not enable it.
+  std::optional<InterlevelTemplateBudget> interlevel_export{};
+  // Actual retained candidate source, distinct from the RIB high-water floor.
+  // Required after export admission; zero denotes no retained source yet.
+  std::uint64_t retained_route_publication{};
   // Sorted live keys withdrawn by this complete generation. No candidate
   // circuit may reference a pure retirement. An explicit replacement supplies
   // its fresh owner and fresh circuit epochs. Prepare never detaches live state.
@@ -386,6 +400,8 @@ struct ControlResult {
   // Administrative prepare returns its reserved synchronous publication key;
   // ordinary queries report the actual published and installed high water.
   std::uint64_t route_published_generation{}, route_installed_generation{};
+  // Complete configuration commits advance this independent receiver fence.
+  std::uint64_t configuration_epoch{};
   bool route_withdrawal_pending{};
   ::router::routing::RouteInstallStatus route_install_status{::router::routing::RouteInstallStatus::pending};
   bool sequence_recovery_pending{};
@@ -424,6 +440,9 @@ public:
 private:
   struct OwnedInstance {
     UpdateInstanceProgram configuration;
+    // Immutable shell admission and current process incarnation. Ordinary
+    // circuit synchronization changes neither value; fresh recovery changes entity.
+    std::uint64_t admission_epoch{}, entity_epoch{};
     // The control pthread retains configuration, LSDBs, sequence floors and
     // counters while administratively down. Local lifetime aging continues;
     // origination, SPF, ingress and circuit output require this gate.
@@ -492,7 +511,7 @@ private:
     std::array<std::vector<packet::isis::LspId>, 2U> expiration_blocked;
     OwnedInstance(UpdateInstanceProgram program, std::span<const UpdateCircuitConfiguration> circuits,
         std::uint64_t epoch, bool deferred = false)
-        : configuration(std::move(program)), process(deferred ? std::unique_ptr<InstanceUpdateProcess>{} : std::make_unique<InstanceUpdateProcess>(
+        : configuration(std::move(program)), admission_epoch(epoch), entity_epoch(epoch), process(deferred ? std::unique_ptr<InstanceUpdateProcess>{} : std::make_unique<InstanceUpdateProcess>(
             configuration.local, configuration.maximum_areas, configuration.levels, circuits,
             UpdateInstanceSelector{configuration.format, configuration.wire_instance},
             configuration.maximum_circuits, epoch)) {
@@ -696,6 +715,9 @@ private:
     // handle is unregistered. New logical circuits must exceed every retired
     // epoch; unchanged live circuits retain their independent older epochs.
     std::uint64_t retired_epoch_floor{};
+    // Monotonic complete-generation fence, independent of route publication
+    // and circuit epochs. Survives unregistering the same physical handle.
+    std::uint64_t configuration_epoch{};
     std::vector<OwnedCircuit> circuits;
     // Heap-stable instance owners survive circuit-vector moves. Fences belong
     // to the device scope and survive protocol removal for this same handle.
@@ -713,6 +735,7 @@ private:
     // This protocol owner keeps publication high water across unregistering
     // the same physical handle. Pending snapshots own exact revision values;
     // no hash or pointer substitutes for a freshness fence.
+    std::unique_ptr<InterlevelExportState> interlevel;
     RouteStamps installed_routes{}, pending_routes{};
     std::uint64_t route_generation{}, route_installed{}, route_pending{};
     ::router::routing::RouteInstallStatus route_status{::router::routing::RouteInstallStatus::pending};
@@ -734,7 +757,9 @@ private:
     std::vector<UpdateAttachedPolicy> attached_policies;
     std::vector<UpdatePrefixCatalog> prefix_catalogs;
     std::vector<std::unique_ptr<OriginFragmentWorkspace>> prefix_workspaces;
-    std::uint64_t route_commit_generation{};
+    std::uint64_t route_commit_generation{}, configuration_epoch{};
+    std::uint64_t retained_route_publication{};
+    std::unique_ptr<InterlevelExportState> interlevel_admission;
     struct UpdateReservation { OwnedInstance *instance{}; UpdateCircuitAdmission admission; };
     std::vector<UpdateReservation> update_reservations;
     bool committed{};
@@ -830,6 +855,10 @@ private:
   [[nodiscard]] RuntimeClock::time_point service_routes(DeviceState &device,
       RuntimeClock::time_point now) noexcept;
   void complete_routes(RuntimeClock::time_point now) noexcept;
+  using InterlevelOwners = std::array<InterlevelEligibility, device_catalog::isis_instance_last + 1U>;
+  [[nodiscard]] static InterlevelOwners interlevel_owners(const DeviceState &) noexcept;
+  static void reconcile_interlevel(DeviceState &) noexcept;
+  void complete_selections() noexcept;
   // Protocol owner only with an acknowledged persistence barrier. Caller owns
   // the destination until the synchronous operation completes. Capture stages
   // every owned value before replacing the destination and can throw allocation,

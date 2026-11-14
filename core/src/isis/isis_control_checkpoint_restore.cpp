@@ -10,7 +10,7 @@
 namespace router::isis {
 std::unique_ptr<ControlWorker::PreparedCheckpoint> ControlWorker::prepare_checkpoint_restore(
     const ControlWorkerCheckpoint &saved, std::uint64_t source_epoch, RuntimeClock::time_point now) const noexcept {
-  if (saved.version != 7U || !source_epoch || saved.barrier_epoch != source_epoch ||
+  if (saved.version != 8U || !source_epoch || saved.barrier_epoch != source_epoch ||
       saved.forwarding_shards != forwarding_shards_ || saved.maximum_circuits != maximum_circuits_ ||
       saved.active_circuits > maximum_circuits_ || saved.first_device >= devices_.size() ||
       saved.devices.size() > devices_.size()) return nullptr;
@@ -36,6 +36,7 @@ std::unique_ptr<ControlWorker::PreparedCheckpoint> ControlWorker::prepare_checkp
       target.handle = source.handle;
       target.active = source.active;
       target.retired_epoch_floor = source.retired_epoch_floor;
+      target.configuration_epoch = source.configuration_epoch;
       target.update_fences = source.update_fences;
       target.first_instance = source.first_instance;
       target.first_circuit = source.first_circuit;
@@ -61,7 +62,8 @@ std::unique_ptr<ControlWorker::PreparedCheckpoint> ControlWorker::prepare_checkp
         if (instance.instance > device_catalog::isis_instance_last || (previous_instance && instance.instance <= *previous_instance)) return nullptr;
         previous_instance = instance.instance;
         target.instances[instance.instance] = restore_checkpoint_instance(instance, now);
-        if (!target.instances[instance.instance]) return nullptr;
+        if (!target.instances[instance.instance] || (!instance.process &&
+            instance.entity_epoch > source.update_fences[instance.instance])) return nullptr;
       }
       std::array<bool, device_catalog::isis_instance_last + 1U> ordered{};
       for (const auto instance : source.instance_order) {
@@ -89,6 +91,15 @@ std::unique_ptr<ControlWorker::PreparedCheckpoint> ControlWorker::prepare_checkp
         if (target.instances[instance] && target.instances[instance]->configuration.origination &&
             (!target.sequence_recovery[instance] || (!target.instances[instance]->process &&
                 !target.sequence_recovery[instance]->disabled()))) return nullptr;
+      if (source.interlevel) {
+        const auto &bank = *source.interlevel;
+        if (bank.active.publication > source.route_generation || bank.pending.publication > source.route_generation ||
+            (source.route_pending && source.route_pending != bank.pending.publication &&
+                source.route_pending != bank.active.publication)) return nullptr;
+        target.interlevel = std::make_unique<InterlevelExportState>(source.handle,bank.active.budget);
+        const auto owners = interlevel_owners(target);
+        if (!target.interlevel->restore(bank,owners)) return nullptr;
+      }
       if (source.circuits.size() > maximum_circuits_ - result->active_circuits) return nullptr;
       target.circuits.reserve(source.circuits.size());
       for (const auto &circuit : source.circuits) {

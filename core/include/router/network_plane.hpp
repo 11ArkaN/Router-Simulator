@@ -684,7 +684,8 @@ public:
       std::span<const isis::UpdateAdjacencyPolicy> adjacency_policies = {},
       std::span<const isis::UpdatePrefixCatalog> prefix_catalogs = {},
       std::optional<std::span<const Ipv6ReadinessWatch>> ipv6_watches = {},
-      std::span<const isis::UpdateAttachedPolicy> attached_policies = {}) noexcept;
+      std::span<const isis::UpdateAttachedPolicy> attached_policies = {},
+      std::optional<isis::InterlevelTemplateBudget> interlevel_export = {}) noexcept;
   [[nodiscard]] bool replace_isis_p2p_generation(DeviceHandle device,
       std::span<const IsisP2pCircuitProgram> circuits) noexcept {
     return replace_isis_generation(device, circuits);

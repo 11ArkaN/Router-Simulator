@@ -2042,12 +2042,17 @@ void isis_network_plane_route_publication_tests() {
         }
         if (!cycle && !index) {
           const std::array detached{NewUpdateInstance{0U, initial, false, false}};
-          require(plane->replace_isis_generation(devices[index], {}, detached));
+          // The first complete generation cold-admits copied feedback owners.
+          // This fixture exercises the real dual-family RIB and physical links;
+          // its manually supplied roots do not enable interlevel origination.
+          require(plane->replace_isis_generation(devices[index], {}, detached, {}, {}, {}, {}, {}, {},
+              InterlevelTemplateBudget{32U,1024U,device_catalog::maximum_dynamic_routes_per_router}));
           require(plane->replace_isis_generation(devices[index], std::span{&circuits[index], 1U}));
           require(!plane->query_isis_update_instance(devices[index], 0U)->admin_enabled);
           const auto cold = plane->checkpoint();
-          require(cold && cold->isis && !std::get<P2pCircuitCheckpoint>(
-              cold->isis->control.devices[0U].circuits[0U].medium).operational);
+          require(cold && cold->isis && cold->isis->control.devices[0U].interlevel &&
+              cold->isis->selection_producers.size() == 1U && !cold->isis->selection_producers[0U].publication &&
+              !std::get<P2pCircuitCheckpoint>(cold->isis->control.devices[0U].circuits[0U].medium).operational);
           // No prior transport exists from which to inherit this gate. Even a
           // structurally valid newer route must refuse while its owner is off.
           auto refused = std::make_unique<::router::routing::RouteGeneration>();
@@ -2196,7 +2201,11 @@ void isis_network_plane_route_publication_tests() {
       obsolete->device = devices[0U]; obsolete->generation = before_admin->route_published_generation;
       require(plane->program_isis_routes(*obsolete) == Install::stale);
       const auto checkpoint = plane->checkpoint();
-      require(checkpoint && plane->restore(*checkpoint));
+      require(checkpoint && checkpoint->isis && checkpoint->isis->selection_producers.size() == 1U &&
+          checkpoint->isis->selection_producers[0U].publication &&
+          checkpoint->isis->selection_producers[0U].filtered &&
+          checkpoint->isis->selection_producers[0U].ordinals[0U].empty() &&
+          checkpoint->isis->selection_producers[0U].ordinals[1U].empty() && plane->restore(*checkpoint));
       // RuntimeSupervisor owns canonical policy and connected inputs. A direct
       // NetworkPlane restore caller must replay those same local projections.
       for (std::size_t index{}; index < devices.size(); ++index) {

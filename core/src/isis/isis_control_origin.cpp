@@ -204,9 +204,10 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
       bindings.push_back(ordinal);
     }
     const auto &configuration = instance.configuration;
+    const auto entity_epoch = device.update_fences[index] + 1U;
     auto process = std::make_unique<InstanceUpdateProcess>(configuration.local, configuration.maximum_areas,
         configuration.levels, slots, UpdateInstanceSelector{configuration.format, configuration.wire_instance},
-        configuration.maximum_circuits, device.update_fences[index] + 1U);
+        configuration.maximum_circuits, entity_epoch);
     auto local = std::make_unique<LocalLspSet>(configuration.local, configuration.maximum_areas,
         UpdateInstanceSelector{configuration.format, configuration.wire_instance}, configuration.origination->content, now);
     if (!local->reserve_publication(*process)) throw std::invalid_argument("IS-IS fragment transaction capacity refused");
@@ -233,6 +234,7 @@ RuntimeClock::time_point ControlWorker::rebuild_local_instance(DeviceState &devi
     instance.reset_validation(now);
     if (!gate.recovered(now)) { instance.status = UpdateStatus::invalid_event; return never; }
     instance.process = std::move(process);
+    instance.entity_epoch = entity_epoch;
     instance.local = std::move(local);
     instance.status = UpdateStatus::applied;
     instance.corrupted_lsp.reset();

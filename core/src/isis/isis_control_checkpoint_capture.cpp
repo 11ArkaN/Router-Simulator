@@ -27,6 +27,7 @@ ControlWorkerCheckpoint ControlWorker::capture_checkpoint(RuntimeClock::time_poi
     out.handle = device.handle;
     out.active = device.active;
     out.retired_epoch_floor = device.retired_epoch_floor;
+    out.configuration_epoch = device.configuration_epoch;
     out.update_fences = device.update_fences;
     out.instance_order.assign(device.instance_order.begin(), device.instance_order.begin() +
         static_cast<std::ptrdiff_t>(device.instance_count));
@@ -38,6 +39,7 @@ ControlWorkerCheckpoint ControlWorker::capture_checkpoint(RuntimeClock::time_poi
     out.route_status = device.route_status;
     out.route_retry_at = deadline(device.route_retry_at);
     out.route_retry = device.route_retry;
+    if (device.interlevel) out.interlevel = device.interlevel->checkpoint();
     for (std::size_t index{}; index < device.instances.size(); ++index) {
       const auto project = [](const auto &stamp) { return ControlRouteStamp{stamp.epoch, stamp.decision, stamp.status, stamp.families, stamp.ignored_attached_families}; };
       out.installed_routes[index] = project(device.installed_routes[index]);
@@ -49,6 +51,8 @@ ControlWorkerCheckpoint ControlWorker::capture_checkpoint(RuntimeClock::time_poi
       auto &saved = out.instances.emplace_back();
       saved.instance = static_cast<std::uint8_t>(index);
       saved.configuration = instance.configuration;
+      saved.admission_epoch = instance.admission_epoch;
+      saved.entity_epoch = instance.entity_epoch;
       saved.admin_enabled = instance.admin_enabled;
       if (instance.areas) saved.areas = instance.areas->checkpoint();
       saved.last_area_drop = instance.last_area_drop;

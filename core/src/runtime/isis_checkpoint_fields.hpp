@@ -27,6 +27,8 @@ using EgressReturn = IsisCheckpointEgress::ReturnCheckpoint;
 using RouteImage = ::router::routing::RoutePublication::Checkpoint;
 using RouteSlot = typename decltype(std::declval<RouteImage>().occupied)::value_type;
 using RouteValue = decltype(std::declval<RouteSlot>().value);
+using SelectionImage = ::router::routing::IsisSelectionChannel::Checkpoint;
+using SelectionSlot = ::router::routing::IsisSelectionChannel::SlotCheckpoint;
 template <typename Base, typename T> auto &base(T &value) noexcept {
   return static_cast<std::conditional_t<std::is_const_v<T>, const Base, Base> &>(value);
 }
@@ -45,7 +47,7 @@ auto members(T &v) noexcept { [[maybe_unused]] auto &[definition, medium, transm
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::ControlCircuitCheckpoint::PreviousDis>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[remote, fragment, retry] = v; return std::tie(v.remote, v.fragment, v.retry); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::ControlDeviceCheckpoint>
-auto members(T &v) noexcept { [[maybe_unused]] auto &[handle, active, retired_epoch_floor, circuits, instances, gates, update_fences, instance_order, first_instance, first_circuit, installed_routes, pending_routes, route_generation, route_installed, route_pending, route_status, route_retry_at, route_retry] = v; return std::tie(v.handle, v.active, v.retired_epoch_floor, v.circuits, v.instances, v.gates, v.update_fences, v.instance_order, v.first_instance, v.first_circuit, v.installed_routes, v.pending_routes, v.route_generation, v.route_installed, v.route_pending, v.route_status, v.route_retry_at, v.route_retry); }
+auto members(T &v) noexcept { [[maybe_unused]] auto &[handle, active, retired_epoch_floor, configuration_epoch, circuits, instances, gates, update_fences, instance_order, first_instance, first_circuit, installed_routes, pending_routes, route_generation, route_installed, route_pending, route_status, route_retry_at, route_retry, interlevel] = v; return std::tie(v.handle, v.active, v.retired_epoch_floor, v.configuration_epoch, v.circuits, v.instances, v.gates, v.update_fences, v.instance_order, v.first_instance, v.first_circuit, v.installed_routes, v.pending_routes, v.route_generation, v.route_installed, v.route_pending, v.route_status, v.route_retry_at, v.route_retry, v.interlevel); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::ControlDeviceCheckpoint::Gate>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[instance, state] = v; return std::tie(v.instance, v.state); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::ControlEgressCheckpoint>
@@ -57,7 +59,7 @@ auto members(T &v) noexcept { [[maybe_unused]] auto &[level, epoch, ticket] = v;
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::ControlFamilyCheckpoint>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[decisions, consumed, status, bindings] = v; return std::tie(v.decisions, v.consumed, v.status, v.bindings); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::ControlInstanceCheckpoint>
-auto members(T &v) noexcept { [[maybe_unused]] auto &[instance, configuration, process, local, decisions, consumed_decision_revision, decision_runs, decision_status, families, local_roots_dirty, first_root_level, validation, database_validations, decision_revisions, revision, expiration_revision, expiration_blocked, corrupted_lsp, status, spf, admin_enabled, areas, last_area_drop] = v; return std::tie(v.instance, v.configuration, v.process, v.local, v.decisions, v.consumed_decision_revision, v.decision_runs, v.decision_status, v.families, v.local_roots_dirty, v.first_root_level, v.validation, v.database_validations, v.decision_revisions, v.revision, v.expiration_revision, v.expiration_blocked, v.corrupted_lsp, v.status, v.spf, v.admin_enabled, v.areas, v.last_area_drop); }
+auto members(T &v) noexcept { [[maybe_unused]] auto &[instance, configuration, process, local, decisions, consumed_decision_revision, decision_runs, decision_status, families, local_roots_dirty, first_root_level, validation, database_validations, decision_revisions, revision, expiration_revision, expiration_blocked, corrupted_lsp, status, spf, admin_enabled, areas, last_area_drop, admission_epoch, entity_epoch] = v; return std::tie(v.instance, v.configuration, v.process, v.local, v.decisions, v.consumed_decision_revision, v.decision_runs, v.decision_status, v.families, v.local_roots_dirty, v.first_root_level, v.validation, v.database_validations, v.decision_revisions, v.revision, v.expiration_revision, v.expiration_blocked, v.corrupted_lsp, v.status, v.spf, v.admin_enabled, v.areas, v.last_area_drop, v.admission_epoch, v.entity_epoch); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::ControlWorkerCheckpoint>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[version, barrier_epoch, forwarding_shards, maximum_circuits, active_circuits, first_device, devices] = v; return std::tie(v.version, v.barrier_epoch, v.forwarding_shards, v.maximum_circuits, v.active_circuits, v.first_device, v.devices); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::BroadcastTransmissionProgram>
@@ -209,7 +211,7 @@ auto members(T &v) noexcept { [[maybe_unused]] auto &[records, attributes] = v; 
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::PrefixSetCheckpoint>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[version, budget, entries, attributes, ignored] = v; return std::tie(v.version, v.budget, v.entries, v.attributes, v.ignored); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::lab::IsisRuntimeCheckpoint>
-auto members(T &v) noexcept { [[maybe_unused]] auto &[version, control, ingress, egress, routes, forwarding, ports, installed] = v; return std::tie(v.version, v.control, v.ingress, v.egress, v.routes, v.forwarding, v.ports, v.installed); }
+auto members(T &v) noexcept { [[maybe_unused]] auto &[version, control, ingress, egress, routes, forwarding, ports, installed, selections, selection_first_device, selection_producers] = v; return std::tie(v.version, v.control, v.ingress, v.egress, v.routes, v.forwarding, v.ports, v.installed, v.selections, v.selection_first_device, v.selection_producers); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::lab::IsisTransportPortCheckpoint>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[identity, port] = v; return std::tie(v.identity, v.port); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::SequenceRecoveryCheckpoint>
@@ -268,9 +270,9 @@ template <typename T> requires std::is_same_v<std::remove_const_t<T>, IngressRet
 auto members(T &v) noexcept { [[maybe_unused]] auto &[handle, enqueued] = v; return std::tie(v.handle, v.enqueued); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, EgressReturn>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[handle, enqueued] = v; return std::tie(v.handle, v.enqueued); }
-template <typename T> requires std::is_same_v<std::remove_const_t<T>, RouteImage>
+template <typename T> requires (std::is_same_v<std::remove_const_t<T>, RouteImage> || std::is_same_v<std::remove_const_t<T>, SelectionImage>)
 auto members(T &v) noexcept { [[maybe_unused]] auto &[version, barrier_epoch, capacity, with_completions, available, ready, borrowed, returned, editing, occupied] = v; return std::tie(v.version, v.barrier_epoch, v.capacity, v.with_completions, v.available, v.ready, v.borrowed, v.returned, v.editing, v.occupied); }
-template <typename T> requires std::is_same_v<std::remove_const_t<T>, RouteSlot>
+template <typename T> requires (std::is_same_v<std::remove_const_t<T>, RouteSlot> || std::is_same_v<std::remove_const_t<T>, SelectionSlot>)
 auto members(T &v) noexcept { [[maybe_unused]] auto &[handle, value] = v; return std::tie(v.handle, v.value); }
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, RouteValue>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[routes, status] = v; return std::tie(v.routes, v.status); }
@@ -279,3 +281,26 @@ auto members(T &v) noexcept { [[maybe_unused]] auto &[epoch, decision, status, f
 template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::lab::IsisInstalledRoutesCheckpoint>
 auto members(T &v) noexcept { [[maybe_unused]] auto &[device, generation, ipv4, ipv6] = v; return std::tie(v.device, v.generation, v.ipv4, v.ipv6); }
 } // namespace router::lab::isis_checkpoint::detail
+
+namespace router::lab::isis_checkpoint::detail {
+template <typename T> requires std::is_same_v<std::remove_const_t<T>, ::router::routing::IsisSelectionIdentity>
+auto members(T &v) noexcept { [[maybe_unused]] auto &[device, publication, configuration_epoch, revision] = v; return std::tie(v.device, v.publication, v.configuration_epoch, v.revision); }
+template <typename T> requires std::is_same_v<std::remove_const_t<T>, ::router::routing::IsisRouteSelection>
+auto members(T &v) noexcept { [[maybe_unused]] auto &[version, identity, counts, selected] = v; return std::tie(v.version, v.identity, v.counts, v.selected); }
+template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::InterlevelTemplateBudget>
+auto members(T &v) noexcept { auto &[prefixes, attributes, candidates_per_family] = v; return std::tie(prefixes, attributes, candidates_per_family); }
+template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::InterlevelOwner>
+auto members(T &v) noexcept { auto &[instance, admission, entity] = v; return std::tie(instance, admission, entity); }
+template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::PrefixDistance>
+auto members(T &v) noexcept { auto &[rank, metric, internal_metric] = v; return std::tie(rank, metric, internal_metric); }
+template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::InterlevelTemplate>
+auto members(T &v) noexcept { auto &[advertisement, distance, owner] = v; return std::tie(advertisement, distance, owner); }
+template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::InterlevelTemplatesCheckpoint>
+auto members(T &v) noexcept { auto &[version, budget, device, publication, entries, attributes, candidates] = v; return std::tie(version, budget, device, publication, entries, attributes, candidates); }
+template <typename T> requires std::is_same_v<std::remove_const_t<T>, router::isis::InterlevelExportCheckpoint>
+auto members(T &v) noexcept { auto &[version, device, active, pending, selected, pending_confirmed, last_selection_revision] = v; return std::tie(version, device, active, pending, selected, pending_confirmed, last_selection_revision); }
+
+template <typename T> requires std::is_same_v<std::remove_const_t<T>, ::router::routing::IsisSelectionProducerCheckpoint>
+auto members(T &v) noexcept { auto &[version, device, capacity, publication, revision, dirty, filtered, original_counts, ordinals, original_ipv4, original_ipv6] = v; return std::tie(version, device, capacity, publication, revision, dirty, filtered, original_counts, ordinals, original_ipv4, original_ipv6); }
+
+}

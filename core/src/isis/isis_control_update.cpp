@@ -185,6 +185,8 @@ ControlError ControlWorker::add_update_instance(ControlCommand &command, DeviceS
       !valid_transmission(command.update->transmission) ||
       !valid_origination(*command.update) ||
       command.update->format > packet::isis::InstanceFormat::standard) return ControlError::invalid_argument;
+  if (device.interlevel && command.update->origination && command.update->origination->automatic_area_attachment)
+    return ControlError::unsupported_origination;
   if (device.instances[index]) return ControlError::already_exists;
   const auto now = RuntimeClock::now();
   const auto &previous_recovery = device.sequence_recovery[index];

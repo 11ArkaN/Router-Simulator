@@ -8,7 +8,8 @@ namespace router::routing {
 // Producer: network RIB shard. Consumer: IS-IS control pthread. Two usable
 // slots, FIFO release/acquire publication and return credits. Capacity is an
 // emulator transfer budget, not a vendor limit. Full preserves the producer's
-// latest dirty projection for a later retry; it never drops a withdrawal.
+// latest dirty projection for a later retry. A withdrawal stays pending unless
+// a later actual FIB commit supersedes it with a new complete selection.
 // Consumer copies any retained value before release and wakes the producer
 // after returning credit. Identity/epoch validation belongs to that consumer.
 // Capture/restore require both owners quiescent and preserve exact slot states.

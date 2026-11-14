@@ -164,6 +164,8 @@ struct DynamicInput {
   IsisPathType isis_path_type{IsisPathType::none};
   std::uint8_t isis_rank{};
   std::uint64_t interface_generation{};
+  // Exact candidate values bind retained publication ordinals during restore.
+  bool operator==(const DynamicInput &) const = default;
 };
 
 struct FibProgram {
@@ -313,6 +315,8 @@ struct Ipv6DynamicInput {
   IsisPathType isis_path_type{IsisPathType::none};
   std::uint8_t isis_rank{};
   std::uint64_t interface_generation{};
+  // Same complete replay identity as the IPv4 candidate boundary.
+  bool operator==(const Ipv6DynamicInput &) const = default;
 };
 
 struct Ipv6FibProgram {

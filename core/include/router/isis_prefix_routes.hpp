@@ -8,6 +8,7 @@
 
 #include "router/isis_next_hop.hpp"
 #include "router/isis_p2p_decision.hpp"
+#include <type_traits>
 
 namespace router::isis {
 struct PrefixRouteCandidate {
@@ -35,6 +36,9 @@ struct PrefixRoutesResult { PrefixRoutesStatus status{}; std::size_t count{}; };
 // storage. A late
 // refusal can leave callback side effects there; no partial generation may
 // escape. false means output capacity refusal. Inputs remain immutable.
+// An optional third callback argument is the exact advertisement index in this
+// decision. It permits copying joined attributes without matching by prefix or
+// confusing an ECMP candidate ordinal with its shared advertisement identity.
 template <typename Visit>
 [[nodiscard]] inline PrefixRoutesResult visit_prefix_routes(
     const P2pRouteDecision &decision,
@@ -54,8 +58,14 @@ template <typename Visit>
       if (!binding) continue;
       if (binding->level != prefix.level || binding->address.family != prefix.prefix.network.family)
         return {PrefixRoutesStatus::invalid, 0U};
-      if (!visit(count, PrefixRouteCandidate{prefix.prefix, *distance, *binding,
-              prefix.origin, prefix.down, prefix.external})) return {PrefixRoutesStatus::capacity, 0U};
+      const PrefixRouteCandidate candidate{prefix.prefix, *distance, *binding,
+          prefix.origin, prefix.down, prefix.external};
+      const bool accepted = [&] {
+        if constexpr (std::is_invocable_r_v<bool, Visit &, std::size_t, const PrefixRouteCandidate &, std::size_t>)
+          return visit(count, candidate, index);
+        else return visit(count, candidate);
+      }();
+      if (!accepted) return {PrefixRoutesStatus::capacity, 0U};
       ++count;
     }
   }
