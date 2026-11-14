@@ -162,6 +162,7 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
       }
       return true;
     };
+    bool replacement=action.change==ConfigurationChange::restart;
     switch (action.change) {
     case ConfigurationChange::unchanged:
       if (!retain()) return false;
@@ -178,7 +179,19 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
       const auto previous = std::find_if(before.isis.instances.begin(), before.isis.instances.end(),
           [&](const auto &entry) { return entry.instance == action.instance; });
       if (previous == before.isis.instances.end() || configured == after.isis.instances.end()) return false;
+      const auto fallback=static_cast<ConfiguredLevels>(configuration_profile::level_capability_default);
+      const auto old_levels=previous->levels.value_or(fallback), new_levels=configured->levels.value_or(fallback);
+      if (old_levels!=new_levels) {
+        if (action.change!=ConfigurationChange::reconfigure) return false;
+        // The canonical plan remains a reconfiguration. A detached complete
+        // owner replacement supplies the changed database set, preserving
+        // sequence floors and fencing old RIB work through the generation API.
+        replacement=true; break;
+      }
       auto compare = *previous;
+      compare.levels=configured->levels;
+      for (std::size_t level{}; level<2U; ++level)
+        if (!(static_cast<std::uint8_t>(old_levels) & (1U<<level))) compare.level[level]=configured->level[level];
       compare.strict_adjacency_check = configured->strict_adjacency_check;
       compare.advertise_passive_only = configured->advertise_passive_only;
       compare.ignore_attached_bit = configured->ignore_attached_bit;
@@ -206,12 +219,20 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
     case ConfigurationChange::create: case ConfigurationChange::restart: break;
     default: return false;
     }
-    if (configured == after.isis.instances.end() || action.instance ||
-        (configured->levels != ConfiguredLevels::level1 && configured->levels != ConfiguredLevels::level2) ||
+    if (configured == after.isis.instances.end() || action.instance) return false;
+    const auto selected_levels=configured->levels.value_or(
+        static_cast<ConfiguredLevels>(configuration_profile::level_capability_default));
+    if ((selected_levels!=ConfiguredLevels::level1 && selected_levels!=ConfiguredLevels::level2 &&
+         selected_levels!=ConfiguredLevels::both) ||
         (!configured->ipv4_routing.value_or(configuration_profile::ipv4_routing_default) &&
          configured->ipv6_routing != ConfiguredIpv6Routing::native) ||
-        configured->ipv6_routing == ConfiguredIpv6Routing::multi_topology ||
-        !resolve_instance_level(*configured, configured->levels == ConfiguredLevels::level1 ? 0U : 1U).wide_metrics_only || configured->areas.empty()) return false;
+        configured->ipv6_routing == ConfiguredIpv6Routing::multi_topology || configured->areas.empty()) return false;
+    for (std::size_t level{}; level<2U; ++level) {
+      const auto resolved=resolve_instance_level(*configured,level);
+      if (resolved.enabled && !resolved.wide_metrics_only) return false;
+    }
+    if (selected_levels==ConfiguredLevels::both)
+      generation.interlevel_export=InterlevelTemplateBudget{256U,8192U,device_catalog::maximum_dynamic_routes_per_router};
     const auto wait = resolve_wait_timer(WaitTimerKind::lsp, configured->lsp_wait);
     // A fixed hold policy has no unresolved adaptive growth/reset behavior.
     if (!wait || wait->initial != 0ms || wait->second != wait->maximum || wait->maximum <= 0ms) return false;
@@ -227,7 +248,7 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
     context.transmission = {2U, 5U, 10U, 100ms, 10U, mtu, 1U};
     context.minimum_generation_interval = wait->maximum; context.resource_retry = 100ms;
     context.random = epoch; context.hostname = after.system_name;
-    if (configured->levels == ConfiguredLevels::level1 || configured->levels == ConfiguredLevels::both)
+    if (selected_levels == ConfiguredLevels::level1 || selected_levels == ConfiguredLevels::both)
       context.hierarchy_decision = P2pDecisionProgram{64U, 256U, 512U, {}, {}};
     if (configured->ipv4_routing.value_or(configuration_profile::ipv4_routing_default)) {
       context.routing[0U].emplace();
@@ -312,7 +333,6 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
     if (prepared.status != InstanceProgramStatus::prepared || !prepared.program) return false;
     prepared.program->origination->prefixes = std::move(prefixes.program);
     prepared.program->origination->ipv6_addresses = std::move(prefixes.ipv6_addresses);
-    const bool replacement = action.change == ConfigurationChange::restart;
     if (replacement) generation.retired_instances.push_back(action.instance);
     generation.new_instances.push_back({action.instance, std::move(*prepared.program), replacement, true});
     changed = true;

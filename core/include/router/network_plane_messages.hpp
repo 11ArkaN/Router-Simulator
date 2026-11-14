@@ -14,9 +14,9 @@
 
 namespace router::lab {
 
-// Version 43 adds administrative state to owned IS-IS generation transfers.
+// Version 47 adds cold interlevel export budgets to owned IS-IS generations.
 // Mixed owners must refuse rather than interpret another ring layout.
-inline constexpr std::uint32_t network_plane_message_version = 46;
+inline constexpr std::uint32_t network_plane_message_version = 47;
 
 struct NetworkDhcpv4ClientBegin {
   // RFC 2131 caps each ordinary option payload at 255 octets. Carrying the two
@@ -470,6 +470,10 @@ struct NetworkIsisGeneration {
   std::vector<isis::UpdateAdjacencyPolicy> adjacency_policies;
   std::vector<isis::UpdateAttachedPolicy> attached_policies;
   std::vector<isis::UpdatePrefixCatalog> prefix_catalogs;
+  // Serialized datastore producer to network consumer, within the same owned
+  // generation lease. Optional cold capacity admits both protocol banks and
+  // the reverse RIB-selection producer atomically; refusal preserves live state.
+  std::optional<isis::InterlevelTemplateBudget> interlevel_export;
   // Present replaces the complete local AF subscription, including an empty
   // list when retiring it. Absent preserves explicit raw AF-owner contracts.
   std::optional<std::vector<Ipv6ReadinessWatch>> ipv6_watches;

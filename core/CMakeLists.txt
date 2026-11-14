@@ -597,6 +597,7 @@ if(ROUTER_BUILD_TESTS)
     tests/runtime/isis_generation_transfer_test.cpp
     tests/runtime/isis_configuration_projection_test.cpp
     tests/runtime/isis_datastore_runtime_test.cpp
+    tests/runtime/isis_interlevel_datastore_runtime_test.cpp
     tests/runtime/lab_runtime_test.cpp
     tests/ip/neighbor_discovery_packet_test.cpp
     tests/forwarding/packet_test.cpp

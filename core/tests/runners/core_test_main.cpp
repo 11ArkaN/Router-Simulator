@@ -8,6 +8,7 @@ void isis_generation_transfer_tests();
 void isis_configuration_projection_tests();
 void isis_datastore_runtime_tests();
 void isis_ipv6_datastore_runtime_tests();
+void isis_interlevel_datastore_runtime_tests();
 void lab_runtime_tests();
 void ospf_flap_recovery_tests();
 void cli_tests();
@@ -42,6 +43,7 @@ int main() {
     run("isis_configuration_projection_tests", isis_configuration_projection_tests);
     run("isis_datastore_runtime_tests", isis_datastore_runtime_tests);
     run("isis_ipv6_datastore_runtime_tests", isis_ipv6_datastore_runtime_tests);
+    run("isis_interlevel_datastore_runtime_tests", isis_interlevel_datastore_runtime_tests);
     run("lab_runtime_tests", lab_runtime_tests);
     run("ospf_flap_recovery_tests", ospf_flap_recovery_tests);
     // Exercise the final C ABI after standalone runtime fixtures have joined

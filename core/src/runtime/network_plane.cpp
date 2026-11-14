@@ -5529,7 +5529,7 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
   std::array<std::vector<std::uint16_t>,2U> retained_ordinals;
   std::vector<routing::DynamicInput> retained_ipv4;
   std::vector<routing::Ipv6DynamicInput> retained_ipv6;
-  bool routes_changed{};
+  bool routes_changed{}, reset_route_source{};
   if (const auto &manager = impl_->route_managers[device.index]) {
     const auto retained = [&](const auto &entry) {
       return retires(entry) || std::any_of(circuits.begin(), circuits.end(), [&](const auto &program) {
@@ -5556,6 +5556,7 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     if (selection_manager && selection_manager->isis_selection && !selection_manager->isis_selection->can_change()) return false;
     if (interlevel_export && !selection_manager->isis_selection)
       selection_admission = std::make_unique<::router::routing::IsisSelectionProducer>(device,device_catalog::maximum_dynamic_routes_per_router);
+    reset_route_source=interlevel_export.has_value() && !selection_manager->isis_selection;
     generation.interlevel_export = interlevel_export;
     generation.retained_route_publication = selection_manager && selection_manager->isis_selection ? selection_manager->isis_selection->publication() : 0U;
     generation.new_instances.assign(new_instances.begin(), new_instances.end());
@@ -5564,7 +5565,8 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     generation.adjacency_policies.assign(adjacency_policies.begin(), adjacency_policies.end());
     generation.attached_policies.assign(attached_policies.begin(), attached_policies.end());
     generation.prefix_catalogs.assign(prefix_catalogs.begin(), prefix_catalogs.end());
-    if (!administrative.empty()) generation.route_generation_floor = impl_->route_managers[device.index]->isis_generation;
+    if (!administrative.empty() || (interlevel_export && !selection_manager->isis_selection))
+      generation.route_generation_floor = selection_manager->isis_generation;
     if (!retired_instances.empty() || !administrative.empty()) if (const auto &manager = impl_->route_managers[device.index]) {
       const auto ipv4 = manager->ipv4_candidates.second();
       const auto ipv6 = manager->ipv6_candidates.second();
@@ -5738,7 +5740,7 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
         !manager.ipv6_candidates.replace_second(retained_ipv6)) std::terminate();
     if (selection_retention && !manager.isis_selection->commit_retain(*selection_retention)) std::terminate();
   }
-  if (!administrative.empty()) {
+  if (!administrative.empty() || (reset_route_source && prepared_owner.route_published_generation)) {
     // The prepared owner reserved this synchronous RIB generation. All older
     // channel publications now fail the same installed high-water check.
     impl_->route_managers[device.index]->isis_generation = prepared_owner.route_published_generation;

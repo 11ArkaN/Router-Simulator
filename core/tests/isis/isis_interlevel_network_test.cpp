@@ -152,10 +152,51 @@ void isis_interlevel_network_tests() {
         require(!plane->replace_isis_generation(devices[device],circuits[device],refused,{}, {},{}, {},{}, {},
             InterlevelTemplateBudget{16U,512U,device_catalog::maximum_dynamic_routes_per_router}));
       }
-      const std::array added{NewUpdateInstance{0U,programs[device]}};
-      require(plane->replace_isis_generation(devices[device],circuits[device],added,{}, {},{}, {},{}, {},
-          device==0U ? std::optional{InterlevelTemplateBudget{16U,512U,device_catalog::maximum_dynamic_routes_per_router}} : std::nullopt));
+      auto initial=programs[device];
+      if (!device) {
+        initial.levels[1U].reset(); initial.origination->content.levels[1U].reset();
+        initial.origination->automatic_area_attachment=false;
+        std::erase_if(initial.origination->content.records,[](const auto &record) { return record.level==1U; });
+        for (auto &record : initial.origination->content.records) record.flags=1U;
+        for (auto &edge : *initial.origination->neighbors) edge.levels[1U].reset();
+        std::erase_if(*initial.origination->neighbors,[](const auto &edge) { return !edge.levels[0U]; });
+        std::erase_if(initial.origination->prefixes->units,[](const auto &unit) { return unit.level==1U; });
+      }
+      const std::array added{NewUpdateInstance{0U,initial}};
+      const auto admitted=std::span<const lab::IsisCircuitProgram>{circuits[device]}.first(device ? circuits[device].size() : 1U);
+      require(plane->replace_isis_generation(devices[device],admitted,added));
     }
+    const auto legacy_ready_by=RuntimeClock::now()+12s;
+    for (;;) {
+      plane->pump(); const auto state=view(*plane,devices[0U]); require(state!=nullptr);
+      if (std::any_of(state->fib.routes.begin(),state->fib.routes.begin()+state->fib.count,[](const auto &route) {
+        return route.source==lab::routing::RouteSource::isis && route.network==0xc6336402U && route.prefix_length==32U;
+      })) break;
+      require(RuntimeClock::now()<legacy_ready_by);
+    }
+    const auto previous=plane->query_isis_update_instance(devices[0U],0U);
+    require(previous && previous->route_published_generation);
+    const InterlevelTemplateBudget exports{16U,512U,device_catalog::maximum_dynamic_routes_per_router};
+    // An existing source cannot acquire an empty bank while retaining its old
+    // owner. Failed cold admission preserves both routes and circuit epochs.
+    require(!plane->replace_isis_generation(devices[0U],std::span<const lab::IsisCircuitProgram>{circuits[0U]}.first(1U),
+        {},{}, {},{}, {},{}, {},exports));
+    for (auto &circuit : circuits[0U]) ++circuit.circuit.identity.configuration_generation;
+    const std::array replacement{NewUpdateInstance{0U,programs[0U],true,true}};
+    const std::array<std::uint8_t,1U> retired{0U};
+    require(!plane->replace_isis_generation(devices[0U],circuits[0U],replacement,retired,{}, {},{}, {},{},
+        InterlevelTemplateBudget{0U,512U,device_catalog::maximum_dynamic_routes_per_router}));
+    const auto preserved=view(*plane,devices[0U]); require(preserved!=nullptr);
+    require(std::any_of(preserved->fib.routes.begin(),preserved->fib.routes.begin()+preserved->fib.count,[](const auto &route) {
+      return route.source==lab::routing::RouteSource::isis && route.network==0xc6336402U && route.interface_generation==7U;
+    }));
+    require(plane->replace_isis_generation(devices[0U],circuits[0U],replacement,retired,{}, {},{}, {},{},exports));
+    const auto migrated=plane->query_isis_update_instance(devices[0U],0U);
+    require(migrated && migrated->route_installed_generation>previous->route_published_generation);
+    auto stale=std::make_unique<routing::RouteGeneration>();
+    stale->device=devices[0U]; stale->generation=previous->route_published_generation;
+    require(plane->program_isis_routes(*stale)==routing::RouteInstallStatus::stale);
+    require(plane->checkpoint().has_value());
     const auto converged=[&](bool present,const char *phase) {
       const auto end=RuntimeClock::now()+12s;
       for (;;) {

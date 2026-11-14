@@ -1,6 +1,9 @@
 release: 26.7.R1
 profile: 7750-sr-7-iom4-e
 features:
+  routing.isis.canonical_interlevel_activation:
+    status: experimental
+    source_ids: [nokia.sros.26_7.isis.canonical_admission, ietf.isis.selected_interlevel_export, iso.10589.2002.attached_default]
   routing.isis.selected_interlevel_origination:
     status: experimental
     source_ids: [ietf.isis.selected_interlevel_export]

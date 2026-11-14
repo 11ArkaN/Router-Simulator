@@ -91,8 +91,16 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
   if (device.interlevel && (!device.interlevel->can_retain_source(command.retained_route_publication) ||
       (command.interlevel_export && *command.interlevel_export != device.interlevel->budget())))
     return ControlError::invalid_argument;
-  if (!device.interlevel && command.interlevel_export &&
-      (command.retained_route_publication || device.route_generation)) return ControlError::unsupported_origination;
+  const bool admitting_exports=!device.interlevel && command.interlevel_export.has_value();
+  if (admitting_exports && command.retained_route_publication) return ControlError::unsupported_origination;
+  if (admitting_exports && (device.route_generation || command.route_generation_floor)) {
+    // A fresh bank has no payload for a retained old owner's publication. A
+    // complete owner retirement instead reserves an empty synchronous RIB
+    // generation below, fencing every queued old publication and receipt.
+    for (std::size_t index{}; index<device.instances.size(); ++index)
+      if (device.instances[index] && std::find(command.retired_instances.begin(),command.retired_instances.end(),index)==
+          command.retired_instances.end()) return ControlError::unsupported_origination;
+  }
   const auto &definitions = command.circuits;
   if (definitions.size() > maximum_circuits_ ||
       active_circuits_ - device.circuits.size() > maximum_circuits_ - definitions.size()) return ControlError::capacity;
@@ -140,7 +148,8 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
       return ControlError::invalid_argument;
   }
   const auto route_floor = std::max(device.route_generation, command.route_generation_floor);
-  if (!command.administrative.empty() && route_floor == std::numeric_limits<std::uint64_t>::max())
+  const bool reset_route_source=admitting_exports && route_floor;
+  if ((!command.administrative.empty() || reset_route_source) && route_floor == std::numeric_limits<std::uint64_t>::max())
     return ControlError::epoch_exhausted;
   const auto af_subscription = validate_local_af_subscription(command, device);
   if (af_subscription != ControlError::none) return af_subscription;
@@ -276,7 +285,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
       if (!workspace) return ControlError::unsupported_origination;
       staged.export_workspaces.emplace_back(instance.get(),std::move(workspace));
     }
-    if (!staged.administrative.empty()) staged.route_commit_generation = route_floor + 1U;
+    if (!staged.administrative.empty() || reset_route_source) staged.route_commit_generation = route_floor + 1U;
     staged.output.reserve(definitions.size());
     staged.plan.reserve(definitions.size());
     staged.keep.resize(device.circuits.size());
@@ -452,6 +461,7 @@ void ControlWorker::commit_generation(DeviceState &device) noexcept {
     device.route_generation = device.route_installed = staged.route_commit_generation;
     device.route_pending = 0U;
     device.installed_routes = {};
+    device.pending_routes = {};
     device.route_status = ::router::routing::RouteInstallStatus::installed;
     device.route_retry_at = {};
   }
