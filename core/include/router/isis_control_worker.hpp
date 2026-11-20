@@ -249,6 +249,16 @@ struct UpdateAdjacencyPolicy { std::uint8_t instance{}; bool strict_families{}; 
 // existing owned SPSC generation lease. Preparation validates sorted unique
 // keys; commit is allocation-free on the sole control writer. Abort discards it.
 struct UpdateAttachedPolicy { std::uint8_t instance{}; bool ignore{}, suppress{}; };
+// Serialized configuration producer transfers sorted unique instance edits in
+// the owned SPSC generation lease. The control consumer validates family shape,
+// timer bounds and revision capacity before commit. Refusal preserves all live
+// state. The lease publishes with release/acquire ordering; a full channel
+// refuses before consuming inputs. Commit retains LSDBs and circuits.
+struct UpdateDecisionPolicy {
+  std::uint8_t instance{};
+  SpfDelayPolicy spf;
+  std::array<std::optional<std::array<P2pRouteFamilyProgram::Preference,2U>>,2U> preferences;
+};
 // Owned cold catalog transfers with its root generation. No live prefix view
 // crosses the configuration/control SPSC boundary; commit swaps reserved state.
 struct UpdatePrefixCatalog { std::uint8_t instance{}; LocalPrefixCatalogProgram program; };
@@ -302,6 +312,7 @@ struct ControlCommand {
   std::vector<UpdateAdminState> administrative;
   std::vector<UpdateAdjacencyPolicy> adjacency_policies;
   std::vector<UpdateAttachedPolicy> attached_policies;
+  std::vector<UpdateDecisionPolicy> decision_policies;
   std::vector<UpdatePrefixCatalog> prefix_catalogs;
   std::optional<std::vector<lab::Ipv6ReadinessWatch>> local_ipv6_watches;
   // Serialized RIB high water. Preparation reserves a strictly newer local
@@ -765,6 +776,12 @@ private:
     std::vector<UpdateAdminState> administrative;
     std::vector<UpdateAdjacencyPolicy> adjacency_policies;
     std::vector<UpdateAttachedPolicy> attached_policies;
+    struct DecisionEdit {
+      UpdateDecisionPolicy policy;
+      std::array<std::optional<SpfThrottle>,2U> timers;
+      bool replace_timers{}, republish_routes{};
+    };
+    std::vector<DecisionEdit> decision_policies;
     std::vector<UpdatePrefixCatalog> prefix_catalogs;
     std::vector<std::unique_ptr<OriginFragmentWorkspace>> prefix_workspaces;
     std::uint64_t route_commit_generation{}, configuration_epoch{};

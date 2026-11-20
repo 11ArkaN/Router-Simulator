@@ -346,7 +346,7 @@ void isis_datastore_runtime_tests() {
   ping_stub();
   terminal("isis-console", "edit-config private");
   terminal("isis-console", "/configure port 1/1/2 admin-state disable");
-  terminal("isis-console", "/configure router isis 0 interface edge level 1 hello-interval 2");
+  terminal("isis-console", "/configure router isis 0 interface edge lsp-pacing-interval 3");
   const std::string refused_port{runtime->command(message(lab_runtime_protocol::session_execute, {"isis-console", "commit"}))};
   require(refused_port.find("Candidate commit failed") != std::string::npos,
       "unsupported compound interface edit was accepted");
@@ -490,11 +490,11 @@ void isis_datastore_runtime_tests() {
       "live passive-only removal failed to add its active interface subnet");
   await_stub(true); ping_stub();
   terminal("isis-console", "edit-config private");
-  terminal("isis-console", "/configure router isis 0 interface edge level 1 hello-interval 2");
+  terminal("isis-console", "/configure router isis 0 interface edge lsp-pacing-interval 3");
   const std::string refused{runtime->command(message(lab_runtime_protocol::session_execute, {"isis-console", "commit"}))};
   require(refused.find("Candidate commit failed") != std::string::npos &&
       runtime->command(message(lab_runtime_protocol::snapshot)).find("\"advertisePassiveOnly\":false") != std::string_view::npos,
-      "unsupported live timer edit succeeded or changed running intent");
+      "unsupported live pacing edit succeeded or changed running intent");
   terminal("isis-console", "discard"); terminal("isis-console", "/configure");
   terminal("isis-console", "delete router isis 0"); terminal("isis-console", "commit");
   terminal("isis-console", "quit-config");

@@ -140,6 +140,26 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         std::binary_search(command.retired_instances.begin(), command.retired_instances.end(), index))
       return ControlError::invalid_argument;
   }
+  const auto route_floor = std::max(device.route_generation, command.route_generation_floor);
+  for (std::size_t ordinal{}; ordinal<command.decision_policies.size(); ++ordinal) {
+    const auto &edit=command.decision_policies[ordinal];
+    if (edit.instance>=device.instances.size() || !device.instances[edit.instance] ||
+        (ordinal && command.decision_policies[ordinal-1U].instance>=edit.instance) ||
+        std::binary_search(command.retired_instances.begin(),command.retired_instances.end(),edit.instance) ||
+        !valid_spf_delay_policy(edit.spf)) return ControlError::invalid_argument;
+    const auto &instance=*device.instances[edit.instance];
+    for (std::size_t family{}; family<edit.preferences.size(); ++family) {
+      if (edit.preferences[family].has_value()!=instance.configuration.routing[family].has_value())
+        return ControlError::invalid_argument;
+      if (edit.preferences[family]) for (const auto &value : *edit.preferences[family])
+        if (!value.internal || value.internal>255U || !value.external || value.external>255U)
+          return ControlError::invalid_argument;
+    }
+    if (route_floor==std::numeric_limits<std::uint64_t>::max())
+      for (std::size_t family{}; family<edit.preferences.size(); ++family)
+        if (edit.preferences[family] && *edit.preferences[family]!=instance.configuration.routing[family]->preferences)
+          return ControlError::epoch_exhausted;
+  }
   for (std::size_t ordinal{}; ordinal < command.prefix_catalogs.size(); ++ordinal) {
     const auto index = command.prefix_catalogs[ordinal].instance;
     if (index >= device.instances.size() || !device.instances[index] || !device.instances[index]->configuration.origination ||
@@ -147,7 +167,6 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         std::binary_search(command.retired_instances.begin(), command.retired_instances.end(), index))
       return ControlError::invalid_argument;
   }
-  const auto route_floor = std::max(device.route_generation, command.route_generation_floor);
   const bool reset_route_source=admitting_exports && route_floor;
   if ((!command.administrative.empty() || reset_route_source) && route_floor == std::numeric_limits<std::uint64_t>::max())
     return ControlError::epoch_exhausted;
@@ -260,6 +279,18 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
     staged.administrative = std::move(command.administrative);
     staged.adjacency_policies = std::move(command.adjacency_policies);
     staged.attached_policies = std::move(command.attached_policies);
+    staged.decision_policies.reserve(command.decision_policies.size());
+    for (auto &policy : command.decision_policies) {
+      PreparedGeneration::DecisionEdit edit{std::move(policy),{},false,false};
+      const auto &instance=*device.instances[edit.policy.instance];
+      edit.replace_timers=instance.configuration.spf_delay!=edit.policy.spf;
+      if (edit.replace_timers) for (std::size_t level{}; level<2U; ++level)
+        if (instance.configuration.levels[level]) edit.timers[level].emplace(edit.policy.spf);
+      for (std::size_t family{}; family<edit.policy.preferences.size(); ++family)
+        edit.republish_routes=edit.republish_routes || (edit.policy.preferences[family] &&
+            *edit.policy.preferences[family]!=instance.configuration.routing[family]->preferences);
+      staged.decision_policies.push_back(std::move(edit));
+    }
     staged.prefix_catalogs = std::move(command.prefix_catalogs);
     staged.prefix_workspaces.reserve(staged.prefix_catalogs.size());
     for (const auto &edit : staged.prefix_catalogs) {
@@ -435,6 +466,21 @@ void ControlWorker::commit_generation(DeviceState &device) noexcept {
     set_admin_state(device, *device.instances[edit.instance], edit.enabled);
   for (const auto &edit : staged.adjacency_policies)
     if (set_strict_policy(device, edit.instance, edit.strict_families) != ControlError::none) std::terminate();
+  for (auto &edit : staged.decision_policies) {
+    auto &instance=*device.instances[edit.policy.instance];
+    instance.configuration.spf_delay=edit.policy.spf;
+    if (edit.replace_timers) instance.spf=std::move(edit.timers);
+    for (std::size_t family{}; family<edit.policy.preferences.size(); ++family)
+      if (edit.policy.preferences[family]) instance.configuration.routing[family]->preferences=*edit.policy.preferences[family];
+    if (edit.republish_routes) {
+      // An old in-flight receipt copies only the invalidated pending stamp.
+      // The next publication therefore uses new preferences and the retained
+      // complete decisions, without fabricating a topology change or SPF run.
+      device.installed_routes[edit.policy.instance]={};
+      device.pending_routes[edit.policy.instance]={};
+      device.route_retry_at={};
+    }
+  }
   for (const auto &edit : staged.attached_policies) {
     auto &instance = *device.instances[edit.instance];
     for (auto &family : instance.configuration.routing) if (family) family->ignore_attached_bit = edit.ignore;

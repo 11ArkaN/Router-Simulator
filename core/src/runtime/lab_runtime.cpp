@@ -16,6 +16,7 @@
 #include "cli/isis_cli_operational.hpp"
 #include "isis_configuration_projection.hpp"
 #include "router/isis_configuration_codec.hpp"
+#include "router/isis_configuration_resolution.hpp"
 #include "cli/pki_cli_configuration.hpp"
 #include "router/cli.hpp"
 #include "router/dns_master_file.hpp"
@@ -28114,6 +28115,12 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
                 if (matched->configuration.levels[level].has_value()!=static_cast<bool>(levels & (1U<<level))) return false;
               if (levels==3U && !instance.areas.empty() && (!owner->interlevel || !matched->configuration.origination ||
                   !matched->configuration.origination->automatic_area_attachment)) return false;
+              const auto spf=isis::resolve_wait_timer(isis::WaitTimerKind::spf,instance.spf_wait);
+              if (!spf || matched->configuration.spf_delay!=isis::SpfDelayPolicy{spf->maximum,spf->initial,spf->second}) return false;
+              for (std::size_t level{}; level<2U; ++level) if (levels & (1U<<level))
+                for (const auto &family : matched->configuration.routing) if (family && family->preferences[level]!=
+                    isis::P2pRouteFamilyProgram::Preference{instance.level[level].preference.value_or(level ? 18U : 15U),
+                        instance.level[level].external_preference.value_or(level ? 165U : 160U)}) return false;
             }
             if (instance.areas.empty() && matched && matched->admin_enabled &&
                 (matched->areas || (matched->configuration.origination &&

@@ -32,7 +32,8 @@ void isis_interlevel_datastore_runtime_tests() {
   };
   const auto terminal=[&](std::string_view session,std::string_view command) {
     const std::string output{runtime->command(message(protocol::session_execute,{session,command}))};
-    if (output.starts_with("ERROR:") || output.find("MINOR:")!=std::string::npos || output.find("MAJOR:")!=std::string::npos)
+    if (output.find("ERROR:")!=std::string::npos || output.find("Error:")!=std::string::npos ||
+        output.find("MINOR:")!=std::string::npos || output.find("MAJOR:")!=std::string::npos)
       throw std::runtime_error("Interlevel CLI "+std::string{session}+" "+std::string{command}+": "+output);
     return output;
   };
@@ -126,6 +127,73 @@ void isis_interlevel_datastore_runtime_tests() {
     await_route("il-c","10.0.12.0/30",true,false); await_route("il-c","2001:db8:12::/64",true,true);
   };
   await_exports();
+  terminal("il-c","configure router isis 0"); terminal("il-c","no interface right"); terminal("il-c","exit all");
+  await_route("il-c","10.0.13.0/30",true,false); await_route("il-c","2001:db8:13::/64",true,true);
+  await_route("il-c","10.255.0.2/32",false,false); await_route("il-c","2001:db8:ffff::2/128",false,true);
+  for (const auto command : {"configure router isis 0","interface right","interface-type point-to-point",
+      "level-capability level-2","level 1","hello-interval 1","exit","no shutdown","exit","exit all"}) terminal("il-c",command);
+  await_exports();
+  terminal("il-b","edit-config private"); terminal("il-b","/delete router isis 0 interface left");
+  terminal("il-b","commit"); terminal("il-b","quit-config");
+  await_route("il-c","10.255.0.2/32",false,false); await_route("il-c","2001:db8:ffff::2/128",false,true);
+  terminal("il-b","edit-config private");
+  for (const auto command : {"/configure router isis 0 interface left interface-type point-to-point",
+      "/configure router isis 0 interface left level-capability 1",
+      "/configure router isis 0 interface left level 1 hello-interval 1","commit","quit-config"}) terminal("il-b",command);
+  await_exports();
+  const auto before_policy=capture();
+  terminal("il-c","//"); terminal("il-c","edit-config private");
+  for (const auto command : {"/configure router isis 0 level 2 preference 19",
+      "/configure router isis 0 level 2 external-preference 170",
+      "/configure router isis 0 timers spf-wait spf-max-wait 550",
+      "/configure router isis 0 timers spf-wait spf-initial-wait 10",
+      "/configure router isis 0 timers spf-wait spf-second-wait 100","commit","quit-config"}) terminal("il-c",command);
+  await_exports();
+  auto preference=capture();
+  const auto &preference_owner=preference->network.isis->control.devices.back().instances.front();
+  const auto &previous_owner=before_policy->network.isis->control.devices.back();
+  const auto &current_owner=preference->network.isis->control.devices.back();
+  require(preference_owner.admission_epoch==previous_owner.instances.front().admission_epoch &&
+      preference_owner.entity_epoch==previous_owner.instances.front().entity_epoch &&
+      current_owner.circuits.size()==previous_owner.circuits.size(),"Decision policy replaced the live instance");
+  for (std::size_t circuit{}; circuit<current_owner.circuits.size(); ++circuit)
+    require(current_owner.circuits[circuit].definition.identity==previous_owner.circuits[circuit].definition.identity &&
+        current_owner.circuits[circuit].counters.adjacency_up==previous_owner.circuits[circuit].counters.adjacency_up,
+        "Decision policy replaced a circuit epoch or re-established an adjacency");
+  require(preference_owner.configuration.spf_delay==router::isis::SpfDelayPolicy{500ms,0ms,100ms} &&
+      preference_owner.configuration.routing[0U]->preferences[1U]==router::isis::P2pRouteFamilyProgram::Preference{19U,170U} &&
+      preference_owner.configuration.routing[1U]->preferences[1U]==router::isis::P2pRouteFamilyProgram::Preference{19U,170U},
+      "Live preference or normalized SPF policy did not reach both family owners");
+  auto &preference_intent=preference->portable_routers.back().isis.instances.front();
+  preference_intent.level[1U].preference=20U;
+  const auto forged_preference=checkpoint_v21::encode(*preference,&*protector);
+  require(!forged_preference.empty() && !runtime->import_checkpoint(forged_preference),
+      "Checkpoint accepted a managed preference inconsistent with its route owners");
+  preference_intent.level[1U].preference=19U; preference_intent.spf_wait.initial=110U;
+  const auto forged_spf=checkpoint_v21::encode(*preference,&*protector);
+  require(!forged_spf.empty() && !runtime->import_checkpoint(forged_spf),
+      "Checkpoint accepted a managed SPF timer inconsistent with its scheduler");
+  for (const bool ipv6 : {false,true}) {
+    const auto until=std::chrono::steady_clock::now()+8s;
+    for (;;) {
+      const auto output=terminal("il-c",ipv6 ? "show router route-table ipv6" : "show router route-table");
+      const auto begin=output.find(ipv6 ? "2001:db8:ffff::2/128" : "10.255.0.2/32");
+      if (begin!=std::string::npos && output.substr(begin,output.find('\n',begin)-begin).find("  19")!=std::string::npos) break;
+      require(std::chrono::steady_clock::now()<until,"Live preference did not reach the installed route");
+      std::this_thread::yield();
+    }
+  }
+  terminal("il-c","//");
+  for (const auto command : {"configure router isis 0","level 2","no preference","no external-preference","exit",
+      "timers","spf-wait 100 spf-initial-wait 100 spf-second-wait 100","exit","exit all"}) terminal("il-c",command);
+  await_exports();
+  const auto restored_policy=capture();
+  const auto &restored_intent=restored_policy->portable_routers.back().isis.instances.front();
+  require(!restored_intent.level[1U].preference && !restored_intent.level[1U].external_preference,
+      "Classic removal retained explicit preference values");
+  for (const auto &family : restored_policy->network.isis->control.devices.back().instances.front().configuration.routing)
+    require(family && family->preferences[1U]==router::isis::P2pRouteFamilyProgram::Preference{18U,165U},
+        "Classic preference removal did not restore the level defaults");
   auto mismatched=capture();
   const auto wrong=std::find_if(mismatched->portable_routers.begin(),mismatched->portable_routers.end(),
       [](const auto &router) { return router.device.index==0U; });

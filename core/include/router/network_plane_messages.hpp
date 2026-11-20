@@ -14,9 +14,9 @@
 
 namespace router::lab {
 
-// Version 47 adds cold interlevel export budgets to owned IS-IS generations.
+// Version 48 adds detached IS-IS decision policy edits to owned generations.
 // Mixed owners must refuse rather than interpret another ring layout.
-inline constexpr std::uint32_t network_plane_message_version = 47;
+inline constexpr std::uint32_t network_plane_message_version = 48;
 
 struct NetworkDhcpv4ClientBegin {
   // RFC 2131 caps each ordinary option payload at 255 octets. Carrying the two
@@ -469,6 +469,7 @@ struct NetworkIsisGeneration {
   std::vector<isis::UpdateAdminState> administrative;
   std::vector<isis::UpdateAdjacencyPolicy> adjacency_policies;
   std::vector<isis::UpdateAttachedPolicy> attached_policies;
+  std::vector<isis::UpdateDecisionPolicy> decision_policies;
   std::vector<isis::UpdatePrefixCatalog> prefix_catalogs;
   // Serialized datastore producer to network consumer, within the same owned
   // generation lease. Optional cold capacity admits both protocol banks and

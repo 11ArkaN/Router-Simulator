@@ -1,5 +1,33 @@
 schema_version: 1
 records:
+  - id: nokia.sros.26_7.isis.live_level_policy
+    kind: routing-protocol-effective-level-policy
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: nokia-official-yang-and-cli
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-p-commands-pool-3.html#ai9j785l4t
+    section: Level preference; classic-e-commands-even-3.html#ai9j785g1i external-preference; classic-s-commands-sid-3.html#ai9j785oej SPF wait
+    rfc_refs: []
+    yang_path: /configure/router/isis/level
+    last_verified_at: 2026-11-20
+    implementation: [core/src/runtime/lab_runtime_isis.cpp, core/src/runtime/lab_runtime.cpp, core/src/isis/isis_control_worker.cpp, core/include/router/isis_control_worker.hpp, core/src/runtime/network_plane.cpp, core/src/runtime/network_plane_worker.cpp]
+    tests: [core/tests/runtime/isis_interlevel_datastore_runtime_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
+    status: experimental
+    notes: Live preference and normalized SPF timer edits transfer validated policy values and cold timer state through the owned generation lease. Commit preserves the instance, LSDBs, circuit epochs and administrative state. Invalidated installed and pending publication stamps fence old receipts and republish preferences from retained complete decisions. Preference-only edits retain the existing SPF timer state. Both family programs receive effective internal and external preferences. Existing source-backed timer normalization and SPF backoff remain shared with initial activation. Tests verify installed internal preference, both family programs, normalized timer values and classic default restoration. Managed checkpoint joins reject effective preference or SPF policy mismatches. Unsupported metric and MTU policies still refuse during complete preparation.
+  - id: nokia.sros.26_7.isis.interface_membership
+    kind: routing-protocol-interface-lifecycle
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: nokia-official-cli
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-i-commands-indi-2.html#ai9j785ijz
+    section: configure router isis interface; no interface removes IS-IS from the interface
+    rfc_refs: []
+    yang_path: /configure/router/isis/interface
+    last_verified_at: 2026-11-20
+    implementation: [core/src/runtime/lab_runtime_isis.cpp]
+    tests: [core/tests/runtime/isis_interlevel_datastore_runtime_test.cpp]
+    status: experimental
+    notes: Interface membership edits prepare a complete detached owner and circuit generation. Removed membership contributes no protocol circuit or local prefix. Base interface configuration remains owned by the router datastore. Replacement retains sequence floors and the administrative gate. Supported interface parameter edits use the same detached replacement so classic CLI can prepare a newly created interface through successive commands. Unsupported effective policies refuse before publication.
   - id: nokia.sros.26_7.isis.activation_prerequisites
     kind: routing-protocol-operational-prerequisites
     release: 26.7.R1

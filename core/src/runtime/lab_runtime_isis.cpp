@@ -181,9 +181,10 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
       if (previous == before.isis.instances.end() || configured == after.isis.instances.end()) return false;
       const auto fallback=static_cast<ConfiguredLevels>(configuration_profile::level_capability_default);
       const auto old_levels=previous->levels.value_or(fallback), new_levels=configured->levels.value_or(fallback);
-      if (old_levels!=new_levels || previous->areas!=configured->areas) {
+      if (old_levels!=new_levels || previous->areas!=configured->areas ||
+          previous->interfaces!=configured->interfaces) {
         // The canonical plan remains a reconfiguration. A detached complete
-        // owner replacement supplies the changed database or manual area set, preserving
+        // owner replacement supplies changed databases, areas or circuits, preserving
         // sequence floors and fencing old RIB work through the generation API.
         replacement=true; break;
       }
@@ -191,6 +192,11 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
       compare.levels=configured->levels;
       for (std::size_t level{}; level<2U; ++level)
         if (!(static_cast<std::uint8_t>(old_levels) & (1U<<level))) compare.level[level]=configured->level[level];
+      compare.spf_wait=configured->spf_wait;
+      for (std::size_t level{}; level<2U; ++level) {
+        compare.level[level].preference=configured->level[level].preference;
+        compare.level[level].external_preference=configured->level[level].external_preference;
+      }
       compare.strict_adjacency_check = configured->strict_adjacency_check;
       compare.advertise_passive_only = configured->advertise_passive_only;
       compare.ignore_attached_bit = configured->ignore_attached_bit;
@@ -203,6 +209,19 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
       const auto prior = std::find_if(owner->instances.begin(), owner->instances.end(),
           [&](const auto &entry) { return entry.instance == action.instance; });
       if (prior == owner->instances.end() || !prior->configuration.origination) return false;
+      const auto spf=resolve_wait_timer(WaitTimerKind::spf,configured->spf_wait);
+      if (!spf) return false;
+      UpdateDecisionPolicy policy{action.instance,{spf->maximum,spf->initial,spf->second},{}};
+      bool policy_changed=prior->configuration.spf_delay!=policy.spf;
+      for (std::size_t family{}; family<policy.preferences.size(); ++family) if (prior->configuration.routing[family]) {
+        auto values=prior->configuration.routing[family]->preferences;
+        for (std::size_t level{}; level<2U; ++level) if (prior->configuration.levels[level])
+          values[level]={configured->level[level].preference.value_or(level ? 18U : 15U),
+              configured->level[level].external_preference.value_or(level ? 165U : 160U)};
+        policy_changed=policy_changed || values!=prior->configuration.routing[family]->preferences;
+        policy.preferences[family]=values;
+      }
+      if (policy_changed) generation.decision_policies.push_back(std::move(policy));
       if (!prior->configuration.origination->prefixes || *prior->configuration.origination->prefixes != *prefixes.program)
         generation.prefix_catalogs.push_back({action.instance, std::move(*prefixes.program)});
       generation.attached_policies.push_back({action.instance,

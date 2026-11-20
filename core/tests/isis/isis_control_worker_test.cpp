@@ -334,6 +334,18 @@ void isis_control_carrier_tests() {
     require(command(generation).error == ControlError::none);
     generation.kind = ControlCommandKind::commit_generation;
     require(command(generation).error == ControlError::none);
+    ControlCommand invalid_policy;
+    invalid_policy.kind=ControlCommandKind::prepare_generation; invalid_policy.identity=identity;
+    invalid_policy.circuits=generation.circuits;
+    invalid_policy.decision_policies.push_back({identity.instance,{50ms,100ms,100ms},{}});
+    require(command(invalid_policy).error==ControlError::invalid_argument);
+    invalid_policy.decision_policies.front().spf={100ms,100ms,100ms};
+    invalid_policy.decision_policies.front().preferences[0U]=std::array{
+        P2pRouteFamilyProgram::Preference{15U,160U},P2pRouteFamilyProgram::Preference{18U,165U}};
+    require(command(invalid_policy).error==ControlError::invalid_argument);
+    invalid_policy.decision_policies.front().preferences[0U].reset();
+    invalid_policy.decision_policies.push_back(invalid_policy.decision_policies.front());
+    require(command(invalid_policy).error==ControlError::invalid_argument);
     ControlCommand cold_begin;
     cold_begin.kind = ControlCommandKind::begin_checkpoint_barrier;
     const auto cold_barrier = command(cold_begin);
@@ -345,6 +357,8 @@ void isis_control_carrier_tests() {
     cold_capture.checkpoint_now_nanoseconds = cold_barrier.checkpoint_anchor_nanoseconds;
     cold_capture.checkpoint_transfer = reinterpret_cast<std::uintptr_t>(cold_image.get());
     require(command(cold_capture).error == ControlError::none);
+    require(!cold_image->devices[0U].instances[0U].configuration.spf_delay &&
+        !cold_image->devices[0U].instances[0U].spf[0U] && !cold_image->devices[0U].instances[0U].spf[1U]);
     const auto &cold_medium = cold_image->devices[0U].circuits[0U].medium;
     if (broadcast) require(!std::get<LanPairCheckpoint>(cold_medium).levels[0U]->operational &&
         !std::get<LanPairCheckpoint>(cold_medium).levels[1U]->operational);
