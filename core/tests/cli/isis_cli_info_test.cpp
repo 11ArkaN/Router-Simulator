@@ -125,4 +125,21 @@ void isis_cli_info_tests() {
   require(!adjacency_table(query, {}));
   query.version = 2U;
   require(!adjacency_table(query, names));
+  router::isis::HostnameQuery hosts;
+  hosts.device={0U,1U}; hosts.maximum_rows=2U; hosts.maximum_name_octets=512U;
+  hosts.rows.push_back({*router::isis::parse_configured_system_id("0000.0000.0002"),"peer-name"});
+  auto host_report=hostname_table(hosts);
+  require(host_report && host_report->find("Rtr Base ISIS Instance 0 Hostnames")!=std::string::npos &&
+      host_report->find("0000.0000.0002           peer-name")!=std::string::npos);
+  hosts.rows.front().hostname=std::string{"\x1b[31m",5U};
+  host_report=hostname_table(hosts);
+  require(host_report && host_report->find(static_cast<char>(0x1bU))==std::string::npos &&
+      host_report->find("\\x1b[31m")!=std::string::npos);
+  hosts.rows.push_back(hosts.rows.front()); require(!hostname_table(hosts)); hosts.rows.pop_back();
+  hosts.maximum_name_octets=1U; require(!hostname_table(hosts));
+  hosts.maximum_name_octets=512U; hosts.rows.front().hostname=std::string(1U,static_cast<char>(0x80U));
+  require(!hostname_table(hosts)); hosts.rows.front().hostname="zero"; hosts.rows.front().system.fill(0U);
+  require(hostname_table(hosts).has_value()); hosts.rows.clear(); require(hostname_table(hosts).has_value());
+  hosts.version=2U; require(!hostname_table(hosts));
+
 }

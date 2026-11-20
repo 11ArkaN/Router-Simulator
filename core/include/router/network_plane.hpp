@@ -697,6 +697,10 @@ public:
   // Serialized network owner only. The protocol pthread samples all accepted
   // neighbors for this local instance in one command. Returned storage is
   // immutable and independently retained; null means invalid scope/capacity.
+  // Same cold immutable query contract; names come only from live non-pseudonode
+  // LSPs on the protocol owner. Byte budget counts selected raw name octets.
+  [[nodiscard]] std::shared_ptr<const isis::HostnameQuery> isis_hostnames(DeviceHandle,
+      std::uint8_t instance, std::size_t maximum_rows, std::size_t maximum_name_octets) noexcept;
   [[nodiscard]] std::shared_ptr<const isis::AdjacencyQuery> isis_adjacencies(DeviceHandle,
       std::uint8_t instance, std::size_t maximum_rows, std::size_t maximum_attribute_octets) noexcept;
   // Serialized network owner. Read a selected accepted LAN Hello binding;

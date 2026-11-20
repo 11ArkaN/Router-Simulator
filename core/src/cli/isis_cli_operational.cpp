@@ -1,4 +1,4 @@
-// Operational formatting follows the source-bound adjacency report columns.
+// Operational formatting follows source-bound adjacency and hostname columns.
 // Topologies are read from accepted Hello TLVs, including explicit MT-only
 // membership. No configuration or packet path depends on this renderer.
 #include "cli/isis_cli_operational.hpp"
@@ -54,4 +54,30 @@ std::optional<std::string> adjacency_table(const isis::AdjacencyQuery &query,
   out << separator << "\nAdjacencies : " << query.rows.size() << '\n' << rule;
   return out.str();
 }
+std::optional<std::string> hostname_table(const isis::HostnameQuery &query) {
+  if (query.version!=1U || query.instance>device_catalog::isis_instance_last ||
+      !query.maximum_rows || !query.maximum_name_octets || query.rows.size()>query.maximum_rows) return std::nullopt;
+  std::ostringstream out;
+  const std::string rule(73U,'='), separator(73U,'-');
+  out << rule << "\nRtr Base ISIS Instance " << unsigned(query.instance) << " Hostnames\n" << rule
+      << "\nSystem Id                Hostname\n" << separator << '\n';
+  std::size_t octets{};
+  for (std::size_t index{}; index<query.rows.size(); ++index) {
+    const auto &row=query.rows[index];
+    if ((index && query.rows[index-1U].system>=row.system) ||
+        row.hostname.empty() || row.hostname.size()>255U || row.hostname.size()>query.maximum_name_octets-octets ||
+        std::any_of(row.hostname.begin(),row.hostname.end(),[](unsigned char value) { return value>0x7fU; })) return std::nullopt;
+    octets+=row.hostname.size();
+    out << std::left << std::setw(25) << isis::format_configured_system_id(row.system);
+    constexpr std::string_view hex="0123456789abcdef";
+    for (const unsigned char value : row.hostname) {
+      if (value>=0x20U && value<=0x7eU) out << static_cast<char>(value);
+      else out << "\\x" << hex[value>>4U] << hex[value&15U];
+    }
+    out << '\n';
+  }
+  out << rule;
+  return out.str();
+}
+
 }

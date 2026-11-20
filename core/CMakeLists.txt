@@ -684,6 +684,7 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_configuration_resolution_test.cpp
     tests/isis/isis_configuration_plan_test.cpp
     tests/isis/isis_configuration_test.cpp
+    tests/isis/isis_hostname_query_test.cpp
     tests/isis/isis_root_content_test.cpp
     tests/isis/isis_interface_program_test.cpp
     tests/isis/isis_instance_program_test.cpp

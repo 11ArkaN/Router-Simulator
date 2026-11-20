@@ -1055,6 +1055,10 @@ public:
   // Serialized control only. Explicit cold query budgets cross a fixed SPSC
   // command; a matching result acquire freezes the independently owned values.
   // Null reports stale device, invalid bounds, backpressure or owner refusal.
+  // Same cold immutable query contract; names come only from live non-pseudonode
+  // LSPs on the protocol owner. Byte budget counts selected raw name octets.
+  [[nodiscard]] std::shared_ptr<const isis::HostnameQuery> isis_hostnames(DeviceHandle,
+      std::uint8_t instance, std::uint32_t maximum_rows, std::uint32_t maximum_name_octets) noexcept;
   [[nodiscard]] std::shared_ptr<const isis::AdjacencyQuery> isis_adjacencies(DeviceHandle,
       std::uint8_t instance, std::uint32_t maximum_rows, std::uint32_t maximum_attribute_octets) noexcept;
   [[nodiscard]] std::uint64_t network_thread_id() const noexcept {

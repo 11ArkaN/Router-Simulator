@@ -69,6 +69,7 @@ void isis_configuration_codec_tests();
 void isis_configuration_resolution_tests();
 void isis_configuration_plan_tests();
 void isis_configuration_tests();
+void isis_hostname_query_tests();
 void isis_root_content_tests();
 void isis_interface_update_program_tests();
 void isis_interface_program_tests();
@@ -540,6 +541,7 @@ int main() {
     isis_configuration_resolution_tests();
     isis_configuration_plan_tests();
     isis_configuration_tests();
+    isis_hostname_query_tests();
     isis_root_content_tests();
     isis_interface_update_program_tests();
     isis_interface_program_tests();

@@ -279,6 +279,7 @@ literals:
   type: "Configure the OSPF external metric type"
   set: "Replace the route metric with the supplied value"
   trace-path: "Mark and reject routes using the OSPF domain bit"
+  hostname: "Display protocol System ID to hostname mappings"
   overload: "Advertise the router as overloaded"
   graceful-restart: "Configure graceful restart helper behavior"
   helper: "Assist a gracefully restarting OSPF neighbor"
@@ -1319,6 +1320,8 @@ commands:
   - { id: classic_keychain_no_entry, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, keychain, { parameter: ospf_keychain_name }, direction, bi, no, entry, { parameter: ospf_key_id }] }
   - { id: classic_no_keychain, engines: [classic], source_id: nokia.sros.26_7.ospf.keychain, tokens: [configure, system, security, no, keychain, { parameter: ospf_keychain_name }] }
 
+  - { id: show_router_isis_hostname, engines: [md, classic], source_id: nokia.sros.26_7.isis.operational_hostname, tokens: [show, router, isis, hostname] }
+  - { id: show_router_isis_instance_hostname, engines: [md, classic], source_id: nokia.sros.26_7.isis.operational_hostname, tokens: [show, router, isis, { parameter: isis_instance }, hostname] }
   - { id: show_router_isis_adjacency, engines: [md, classic], source_id: nokia.sros.26_7.isis.operational_adjacency, tokens: [show, router, isis, adjacency] }
   - { id: show_router_isis_instance_adjacency, engines: [md, classic], source_id: nokia.sros.26_7.isis.operational_adjacency, tokens: [show, router, isis, { parameter: isis_instance }, adjacency] }
   - { id: show_router_ospf_status, engines: [md, classic], source_id: nokia.sros.26_7.ospf.configuration_model, tokens: [show, router, ospf, status] }

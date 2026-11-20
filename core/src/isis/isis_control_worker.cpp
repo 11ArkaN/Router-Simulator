@@ -693,6 +693,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
   if (prepared_ && command.kind != ControlCommandKind::query_circuit &&
       command.kind != ControlCommandKind::query_local_port_usage &&
       command.kind != ControlCommandKind::query_adjacencies &&
+      command.kind != ControlCommandKind::query_hostnames &&
       command.kind != ControlCommandKind::query_update_instance &&
       command.kind != ControlCommandKind::query_sequence_recovery) {
     result.error = ControlError::generation_pending;
@@ -769,6 +770,10 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
     const auto now = RuntimeClock::now();
     result.sequence_recovery_pending = std::any_of(device.sequence_recovery.begin(), device.sequence_recovery.end(),
         [&](const auto &gate) { return gate && gate->disabled() && !gate->ready(now); });
+    return result;
+  }
+  if (command.kind == ControlCommandKind::query_hostnames) {
+    result.error=command.hostname_query ? query_hostnames(device,*command.hostname_query) : ControlError::invalid_argument;
     return result;
   }
   if (command.kind == ControlCommandKind::query_adjacencies) {

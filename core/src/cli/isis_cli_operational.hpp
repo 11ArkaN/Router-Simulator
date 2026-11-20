@@ -4,6 +4,10 @@
 #pragma once
 #include "router/isis_operational.hpp"
 namespace router::lab::isis_cli {
+// Version-one, sorted unique IDs and RFC 5301 names are required.
+// Returned text owns storage. Control bytes are escaped rather than executed
+// by the terminal. Invalid bounds or rows refuse; allocation may throw.
+[[nodiscard]] std::optional<std::string> hostname_table(const isis::HostnameQuery &);
 struct InterfaceName { std::uint64_t identity{}; std::string_view name; };
 // Valid version-one projection and distinct local interface bindings required.
 // Returned text owns all storage. Missing names, invalid states or malformed

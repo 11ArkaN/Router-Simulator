@@ -23336,6 +23336,20 @@ std::string LabRuntime::execute_session_command(std::string_view session_id,
                        "not allowed";
     }
     output += cli_prompt(view, terminal->cli);
+  } else if (parsed->spec->id == cli_schema::CommandId::show_router_isis_hostname ||
+             parsed->spec->id == cli_schema::CommandId::show_router_isis_instance_hostname) {
+    const auto instance_text=cli_detail::argument(*parsed,cli_schema::TokenKind::isis_instance);
+    unsigned instance{};
+    std::optional<std::string> report;
+    if ((!instance_text || decimal(*instance_text,instance)) && instance<=device_catalog::isis_instance_last &&
+        std::any_of(intent->isis.instances.begin(),intent->isis.instances.end(),
+            [&](const auto &configured) { return configured.instance==instance; })) {
+      const auto projection=supervisor_.isis_hostnames(intent->handle,static_cast<std::uint8_t>(instance),1024U,4U*1024U*1024U);
+      if (projection) report=isis_cli::hostname_table(*projection);
+    }
+    output=report ? *report : terminal->cli.engine==CliEngine::classic ? "Error: IS-IS hostname query failed." :
+        "MINOR: MGMT_CORE #2203: IS-IS hostname query failed";
+    output+=cli_prompt(view,terminal->cli);
   } else if (parsed->spec->id == cli_schema::CommandId::show_router_isis_adjacency ||
              parsed->spec->id == cli_schema::CommandId::show_router_isis_instance_adjacency) {
     const auto instance_text = cli_detail::argument(*parsed, cli_schema::TokenKind::isis_instance);

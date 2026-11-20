@@ -53,9 +53,11 @@ void isis_lsdb_tests() {
   auto retained = database.find(input.id, now + 1900ms);
   require(retained && retained->header.remaining_seconds == 29U &&
             retained->pdu.bytes.size() == first_wire->size(), "IS-IS LSDB lifetime projection failed");
+  require(retained->installed_age==1900ms,"IS-IS LSDB admission age lost subsecond precision");
   require(database.install(*first_wire, now + 2s, 1200U, 60s) == LspInstallResult::identical &&
             database.find(input.id, now + 3s)->header.remaining_seconds == 27U,
           "IS-IS duplicate receipt refreshed the lifetime");
+  require(database.find(input.id,now+3s)->installed_age==3s,"Duplicate receipt reset the LSDB admission age");
   std::array<std::uint8_t, 256U> second{};
   auto other = input;
   other.id[7U] = 2U;

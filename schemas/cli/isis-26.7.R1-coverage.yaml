@@ -4229,14 +4229,23 @@ nodes:
     schema_id: /state/router/isis/hostname
     scope: base
     status: pending
+    tests:
+      - core/tests/isis/isis_hostname_query_test.cpp
+      - core/tests/runtime/isis_interlevel_datastore_runtime_test.cpp
   - domain: state
     schema_id: /state/router/isis/hostname/system-id
     scope: base
     status: pending
+    tests:
+      - core/tests/isis/isis_hostname_query_test.cpp
+      - core/tests/runtime/isis_interlevel_datastore_runtime_test.cpp
   - domain: state
     schema_id: /state/router/isis/hostname/host-name
     scope: base
     status: pending
+    tests:
+      - core/tests/isis/isis_hostname_query_test.cpp
+      - core/tests/runtime/isis_interlevel_datastore_runtime_test.cpp
   - domain: state
     schema_id: /state/router/isis/route
     scope: base

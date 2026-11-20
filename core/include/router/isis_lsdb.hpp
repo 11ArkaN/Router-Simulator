@@ -84,6 +84,9 @@ struct StoredLspView {
   packet::isis::LspView header;
   bool purge_installed{};
   bool expiration_notified{};
+  // Same-owner relative age of the last admitted incarnation. Duplicate
+  // receipts do not reset it. No host epoch escapes this borrowed LSDB view.
+  std::chrono::nanoseconds installed_age{};
 };
 
 enum class LspDeadlineKind : std::uint8_t { finalize_expiration, retire_purge };

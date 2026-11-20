@@ -212,13 +212,22 @@ void isis_interlevel_datastore_runtime_tests() {
         while (const auto option=options.next()) if (option->code==137U &&
             std::string_view{reinterpret_cast<const char *>(option->value.data()),option->value.size()}==expected) found=true;
       }
-      if (found) return image;
+      if (found) {
+        const auto report=terminal("il-a","show router isis hostname");
+        require(report.find(expected)!=std::string::npos,"MD hostname report disagreed with the received LSP database");
+        return image;
+      }
       require(std::chrono::steady_clock::now()<deadline,"Changed hostname did not arrive through encoded L2 flooding");
       std::this_thread::sleep_for(2ms);
     }
   };
   terminal("il-c","configure system name il-c-renamed");
   auto renamed=await_name("il-c-renamed");
+  const auto l1_names=terminal("il-b","show router isis hostname");
+  require(l1_names.find("il-a")!=std::string::npos && l1_names.find("il-b")!=std::string::npos &&
+      l1_names.find("il-c-renamed")==std::string::npos,"L1-only hostname report consumed another level or topology configuration");
+  require(terminal("il-c","show router isis 0 hostname").find("il-c-renamed")!=std::string::npos,
+      "Classic explicit-instance hostname report omitted the local origin");
   const auto &old_name_owner=before_name->network.isis->control.devices.back();
   const auto &new_name_owner=renamed->network.isis->control.devices.back();
   require(old_name_owner.instances.front().admission_epoch==new_name_owner.instances.front().admission_epoch &&

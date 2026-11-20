@@ -5766,6 +5766,20 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
   return true;
 }
 
+std::shared_ptr<const isis::HostnameQuery> NetworkPlane::isis_hostnames(DeviceHandle device,
+    std::uint8_t instance, std::size_t maximum_rows, std::size_t maximum_name_octets) noexcept {
+  if (!impl_->live(device) || instance>device_catalog::isis_instance_last || !maximum_rows || !maximum_name_octets) return nullptr;
+  try {
+    auto query=std::make_shared<isis::HostnameQuery>();
+    query->device=device; query->instance=instance; query->maximum_rows=maximum_rows; query->maximum_name_octets=maximum_name_octets;
+    if (!impl_->isis_registered[device.index]) return query;
+    isis::ControlCommand command; command.kind=isis::ControlCommandKind::query_hostnames;
+    command.identity.device=device; command.hostname_query=query;
+    if (impl_->execute_isis(std::move(command)).error!=isis::ControlError::none) return nullptr;
+    return query;
+  } catch (const std::bad_alloc &) { return nullptr; }
+    catch (const std::length_error &) { return nullptr; }
+}
 std::shared_ptr<const isis::AdjacencyQuery> NetworkPlane::isis_adjacencies(DeviceHandle device,
     std::uint8_t instance, std::size_t maximum_rows, std::size_t maximum_attribute_octets) noexcept {
   if (!impl_->live(device) || instance > device_catalog::isis_instance_last || !maximum_rows || !maximum_attribute_octets)

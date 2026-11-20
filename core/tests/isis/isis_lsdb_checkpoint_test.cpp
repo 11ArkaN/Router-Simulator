@@ -45,6 +45,8 @@ void isis_lsdb_checkpoint_tests() {
   LinkStateDatabase destination(PduType::lsp_l1, limits);
   const auto sentinel = install(destination, 9U, 30U, resumed);
   require(destination.restore(saved, resumed, 1200U) && destination.size() == 4U && !destination.find(sentinel, resumed));
+  require(destination.find(live,resumed)->installed_age==2500ms &&
+      destination.find(live,resumed+999ms)->installed_age==3499ms);
   const auto copy = destination.checkpoint(resumed);
   for (std::size_t index{}; index < saved.records.size(); ++index) {
     const auto &before = saved.records[index], &after = copy.records[index];
@@ -104,4 +106,6 @@ void isis_lsdb_checkpoint_tests() {
   ancient.records[0U].age_nanoseconds = std::numeric_limits<std::int64_t>::max();
   require(destination.restore(ancient, RuntimeClock::time_point{}, 1200U) &&
       !destination.find(live, RuntimeClock::time_point{1ns})->header.remaining_seconds);
+  require(destination.find(live,RuntimeClock::time_point{1ns})->installed_age==
+      std::chrono::nanoseconds::max());
 }

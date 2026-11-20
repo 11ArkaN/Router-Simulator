@@ -16,7 +16,7 @@ namespace router::lab {
 
 // Version 48 adds detached IS-IS decision policy edits to owned generations.
 // Mixed owners must refuse rather than interpret another ring layout.
-inline constexpr std::uint32_t network_plane_message_version = 49;
+inline constexpr std::uint32_t network_plane_message_version = 50;
 
 struct NetworkDhcpv4ClientBegin {
   // RFC 2131 caps each ordinary option payload at 255 octets. Carrying the two
@@ -341,7 +341,7 @@ enum class NetworkCommandKind : std::uint8_t {
   prepare_checkpoint,
   restore_checkpoint,
   shutdown,
-  admit_isis_generation, prepare_isis_adjacencies
+  admit_isis_generation, prepare_isis_adjacencies, prepare_isis_hostnames
 };
 
 struct NetworkCommand {

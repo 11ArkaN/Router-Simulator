@@ -2103,6 +2103,11 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
     result.success = true;
     result.value = plane_.dropped_packets();
     break;
+  case NetworkCommandKind::prepare_isis_hostnames:
+    prepared_isis_hostnames_=plane_.isis_hostnames(command.device,command.isis_query.instance,
+        command.isis_query.rows,command.isis_query.attributes);
+    result.success=bool(prepared_isis_hostnames_);
+    break;
   case NetworkCommandKind::prepare_isis_adjacencies:
     prepared_isis_adjacencies_ = plane_.isis_adjacencies(command.device, command.isis_query.instance,
         command.isis_query.rows, command.isis_query.attributes);

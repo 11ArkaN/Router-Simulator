@@ -7,6 +7,7 @@
 // Source: iso.10589.2002.lsdb
 
 #include "router/isis_lsdb.hpp"
+#include "router/isis_checkpoint_time.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -64,8 +65,12 @@ StoredLspView LinkStateDatabase::view(const Record &record, RuntimeClock::time_p
   auto header = record.header;
   header.remaining_seconds = remaining(header, record.installed_at, now);
   const std::span<const std::uint8_t> bytes(record.bytes);
+  // Expired checkpoint bodies can span both signed clock endpoints. Saturate
+  // their diagnostic age instead of subtracting epochs with signed overflow.
   return {{type_, static_cast<std::uint8_t>(bytes[7U] ? bytes[7U] : 3U), bytes,
-           bytes.subspan(packet::isis::lsp_header_octets)}, header, record.purge_installed, record.expiration_notified};
+           bytes.subspan(packet::isis::lsp_header_octets)}, header, record.purge_installed, record.expiration_notified,
+          now>record.installed_at ? std::chrono::nanoseconds{checkpoint_time::offset(now,record.installed_at)
+              .value_or(std::numeric_limits<std::int64_t>::max())} : std::chrono::nanoseconds{}};
 }
 
 std::optional<StoredLspView> LinkStateDatabase::find(const packet::isis::LspId &id,
