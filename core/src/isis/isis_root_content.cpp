@@ -10,6 +10,7 @@
 #include <exception>
 #include <type_traits>
 #include <tuple>
+#include <limits>
 namespace router::isis {
 namespace {
 struct Unit { std::vector<std::uint8_t> bytes; bool root{}; };
@@ -135,6 +136,77 @@ RootContentResult prepare_root_content(const RootContentInput &input,
     result.records.push_back({input.level, id, index ? static_cast<std::uint8_t>(input.flags & 3U) : input.flags,
         std::move(storage[index]), true});
   }
+  return result;
+}
+RootContentResult rewrite_root_hostname(std::span<const LocalLspContent> records,
+    std::string_view hostname,std::array<std::size_t,2U> semantic_octets) {
+  namespace wire=packet::isis;
+  if (records.empty() || hostname.size()>255U || std::any_of(hostname.begin(),hostname.end(),
+      [](unsigned char value) { return value>0x7fU; })) return {};
+  RootContentResult result{RootContentStatus::prepared,{records.begin(),records.end()}};
+  std::optional<wire::SystemId> local;
+  bool have_root{};
+  for (const auto &record : records) {
+    if (record.level>1U) return {};
+    wire::SystemId id{}; std::copy_n(record.id.begin(),id.size(),id.begin());
+    if ((local && *local!=id) || std::all_of(id.begin(),id.end(),[](auto value) { return !value; })) return {};
+    local=id;
+  }
+  for (std::size_t level{}; level<2U; ++level) {
+    const auto missing=std::numeric_limits<std::size_t>::max();
+    std::array<std::size_t,256U> slots; slots.fill(missing);
+    std::size_t count{};
+    for (std::size_t index{}; index<records.size(); ++index) {
+      const auto &record=records[index];
+      if (record.level!=level || record.id[6U]) continue;
+      if (slots[record.id[7U]]!=missing) return {};
+      slots[record.id[7U]]=index; ++count;
+    }
+    if (!count) { if (semantic_octets[level]) return {}; continue; }
+    have_root=true;
+    const auto extent=semantic_octets[level];
+    if (!extent || extent>65535U-wire::lsp_header_octets || slots[0U]==missing || !records[slots[0U]].active) return {};
+    struct Option { std::vector<std::uint8_t> bytes; bool root{}; std::optional<std::uint8_t> previous; };
+    std::vector<Option> encoded;
+    const auto add=[&](std::uint8_t code,std::span<const std::uint8_t> value,std::optional<std::uint8_t> previous) {
+      std::array<std::uint8_t,257U> bytes{}; wire::TlvWriter writer(bytes);
+      if (!writer.append(code,value)) return false;
+      encoded.push_back({{writer.bytes().begin(),writer.bytes().end()},code==1U,previous}); return true;
+    };
+    std::optional<std::uint8_t> old_hostname;
+    for (std::size_t fragment{}; fragment<count; ++fragment) {
+      if (slots[fragment]==missing) return {};
+      const auto &record=records[slots[fragment]];
+      if (!record.active) continue;
+      wire::TlvCursor cursor(record.options);
+      while (const auto option=cursor.next()) {
+        if (option->code==1U && fragment) return {};
+        if (option->code==137U) {
+          if (old_hostname) return {};
+          old_hostname=static_cast<std::uint8_t>(fragment);
+        } else if ((option->code!=1U && option->code!=129U && option->code!=132U && option->code!=232U) ||
+            !add(option->code,option->value,static_cast<std::uint8_t>(fragment))) return {};
+      }
+      if (!cursor.valid()) return {};
+    }
+    if (!hostname.empty() && !add(137U,{reinterpret_cast<const std::uint8_t *>(hostname.data()),hostname.size()},old_hostname)) return {};
+    std::vector<FragmentUnit> units; units.reserve(encoded.size());
+    for (std::size_t index{}; index<encoded.size(); ++index)
+      units.push_back({FragmentUnitId{index},encoded[index].bytes,encoded[index].previous,encoded[index].root});
+    std::vector<std::vector<std::uint8_t>> storage(count);
+    std::vector<FragmentOptions> output; output.reserve(count);
+    for (auto &bytes : storage) { bytes.resize(extent); output.push_back({bytes,0U}); }
+    FragmentPlanner planner(units.size());
+    const auto status=planner.compose(units,extent,false,output);
+    if (status!=FragmentPlanStatus::planned)
+      return {status==FragmentPlanStatus::capacity ? RootContentStatus::capacity : RootContentStatus::invalid,{}};
+    for (std::size_t fragment{}; fragment<count; ++fragment) {
+      auto &record=result.records[slots[fragment]];
+      storage[fragment].resize(output[fragment].size);
+      record.options=std::move(storage[fragment]); record.active=!fragment || !record.options.empty();
+    }
+  }
+  if (!have_root) return {};
   return result;
 }
 }

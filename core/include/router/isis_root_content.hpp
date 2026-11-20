@@ -6,6 +6,7 @@
 #include "router/isis_neighbor_attributes.hpp"
 #include "router/isis_reachability.hpp"
 #include <string_view>
+#include <array>
 namespace router::isis {
 struct RootPrefix {
   ip::IpPrefix prefix;
@@ -51,4 +52,13 @@ struct RootContentResult {
 // Inputs expire on return and must not alias internal temporary storage.
 [[nodiscard]] RootContentResult prepare_root_content(const RootContentInput &input,
     std::size_t semantic_octets, std::size_t fragments);
+// Cold configuration/control owner only. Input is one local program's canonical
+// root metadata (TLVs 1, 129, 132, 137 and 232), with contiguous reserved root
+// fragment IDs per level. Pseudonode records are preserved. Budgets are semantic
+// PDU extents after framing. Empty hostname withdraws TLV 137; other values use
+// the same ASCII/length contract as RootContentInput. Success retains record
+// identities/flags and owns all bytes. Invalid framing, unsupported options or
+// capacity returns no records and leaves input unchanged. Allocation may throw.
+[[nodiscard]] RootContentResult rewrite_root_hostname(std::span<const LocalLspContent> records,
+    std::string_view hostname, std::array<std::size_t,2U> semantic_octets);
 }

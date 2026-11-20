@@ -401,11 +401,25 @@ records:
     section: RFC 1195 section 5; RFC 5305 section 4; RFC 5308 sections 2 and 3; RFC 5301 section 3; ISO 10589 clause 7.3.4
     rfc_refs: [RFC1195, RFC5301, RFC5305, RFC5308]
     yang_path: /configure/router/isis
-    last_verified_at: 2026-11-08
+    last_verified_at: 2026-11-20
     implementation: [core/include/router/isis_root_content.hpp, core/src/isis/isis_root_content.cpp]
     tests: [core/tests/isis/isis_root_content_test.cpp, core/tests/isis/isis_instance_generation_test.cpp, core/tests/isis/isis_control_worker_test.cpp]
     status: experimental
-    notes: Cold local-only composition uses existing typed TLV encoders and whole-unit fragment packing. Area Addresses remain in fragment zero; higher fragments retain only IS-type bits. Explicit IPv4 and IPv6 declarations, interface addresses, RFC 5301 seven-bit ASCII dynamic hostname and canonical local prefixes produce owned root records. Optional narrow metrics are explicit and never clipped from wide values. Invalid ordering, duplicate areas, link-local IPv6 LSP addresses and insufficient capacity return no records. Address lists split at the TLV value bound. Runtime neighbor recomposition treats each base TLV as a separate movable unit and pins only Area Addresses to fragment zero, so a full initial root can admit new adjacencies by relocating complete metadata. Prefix export policy and active CLI publication remain separate configuration-owner responsibilities.
+    notes: Cold local-only composition uses existing typed TLV encoders and whole-unit fragment packing. Area Addresses remain in fragment zero; higher fragments retain only IS-type bits. Explicit IPv4 and IPv6 declarations, interface addresses, RFC 5301 seven-bit ASCII dynamic hostname and canonical local prefixes produce owned root records. Optional narrow metrics are explicit and never clipped from wide values. Invalid ordering, duplicate areas, link-local IPv6 LSP addresses and insufficient capacity return no records. Address lists split at the TLV value bound. Runtime neighbor recomposition treats each base TLV as a separate movable unit and pins only Area Addresses to fragment zero, so a full initial root can admit new adjacencies by relocating complete metadata. Cold hostname replacement repacks only canonical metadata, retains reserved root IDs and flags, preserves pseudonode records, and rejects malformed, unsupported or oversized input without changing its source. Empty replacement withdraws TLV 137. Prefix export policy and active CLI publication remain separate configuration-owner responsibilities.
+  - id: ietf.isis.live_root_hostname
+    kind: routing-protocol-hostname-origination
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: ietf-rfc
+    source_url: https://www.rfc-editor.org/rfc/rfc5301.html#section-3
+    section: RFC 5301 sections 3 and 4; existing SR OS system name configuration binding
+    rfc_refs: [RFC5301]
+    yang_path: /configure/system/name
+    last_verified_at: 2026-11-20
+    implementation: [core/include/router/isis_root_content.hpp, core/src/isis/isis_root_content.cpp, core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp, core/include/router/network_plane_messages.hpp, core/include/router/network_plane.hpp, core/src/runtime/network_plane.cpp, core/src/runtime/network_plane_worker.cpp, core/src/runtime/lab_runtime_isis.cpp, core/src/runtime/lab_runtime.cpp]
+    tests: [core/tests/isis/isis_root_content_test.cpp, core/tests/runtime/isis_interlevel_datastore_runtime_test.cpp]
+    status: experimental
+    notes: Existing MD and classic system-name commands transfer local ASCII metadata through the complete generation lease. Cold preparation validates root packing, all configured neighbors, local AF catalogs and retained interlevel export capacity before swapping owned metadata and fragment scratch. The instance, LSDB, circuit identities and adjacency counters remain retained. Ordinary encoded LSP transactions publish the new name. Managed checkpoints require canonical system-name agreement with base TLV 137. The existing configuration-string admission remains printable seven-bit ASCII; no Unicode conversion is implied.
   - id: project.isis.atomic_instance_admission
     kind: protocol-instance-generation
     release: 26.7.R1

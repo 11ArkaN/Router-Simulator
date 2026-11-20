@@ -36,6 +36,7 @@
 #include <thread>
 #include <variant>
 #include <stdexcept>
+#include <string>
 
 namespace router::isis {
 
@@ -262,6 +263,10 @@ struct UpdateDecisionPolicy {
 // Owned cold catalog transfers with its root generation. No live prefix view
 // crosses the configuration/control SPSC boundary; commit swaps reserved state.
 struct UpdatePrefixCatalog { std::uint8_t instance{}; LocalPrefixCatalogProgram program; };
+// Serialized local configuration producer transfers owned ASCII to the sole
+// control writer through the generation SPSC lease. Release/acquire publishes
+// bytes; a full channel refuses before mutation. Empty withdraws TLV 137.
+struct UpdateRootHostname { std::uint8_t instance{}; std::string hostname; };
 struct UpdateAdminState {
   std::uint8_t instance{};
   bool enabled{};
@@ -314,6 +319,7 @@ struct ControlCommand {
   std::vector<UpdateAttachedPolicy> attached_policies;
   std::vector<UpdateDecisionPolicy> decision_policies;
   std::vector<UpdatePrefixCatalog> prefix_catalogs;
+  std::vector<UpdateRootHostname> hostnames;
   std::optional<std::vector<lab::Ipv6ReadinessWatch>> local_ipv6_watches;
   // Serialized RIB high water. Preparation reserves a strictly newer local
   // publication for synchronous administrative withdrawal of both families.
@@ -784,6 +790,12 @@ private:
     std::vector<DecisionEdit> decision_policies;
     std::vector<UpdatePrefixCatalog> prefix_catalogs;
     std::vector<std::unique_ptr<OriginFragmentWorkspace>> prefix_workspaces;
+    struct HostnameEdit {
+      std::uint8_t instance{};
+      std::vector<LocalLspContent> records;
+      std::unique_ptr<OriginFragmentWorkspace> workspace;
+    };
+    std::vector<HostnameEdit> hostname_edits;
     std::uint64_t route_commit_generation{}, configuration_epoch{};
     std::uint64_t retained_route_publication{};
     std::unique_ptr<InterlevelExportState> interlevel_admission;

@@ -18668,10 +18668,10 @@ std::string LabRuntime::execute_session_command(std::string_view session_id,
       } else if (applied && id == configure_system_name) {
         const auto raw = argument(cli_schema::TokenKind::system_name);
         const auto name = raw ? cli_detail::unquote(*raw) : std::string_view{};
+        auto next = before_running;
+        next.system_name.assign(name);
         applied = !name.empty() && cli_detail::valid_cli_string(*raw) &&
-                  supervisor_.set_system_name(intent->handle, name);
-        if (applied)
-          intent->system_name.assign(name);
+                  apply_configuration(*intent, next);
       } else if (applied &&
                  (id == configure_card_type || id == classic_remove_card_type ||
                   id == classic_card_shutdown ||
@@ -27148,9 +27148,10 @@ std::string_view LabRuntime::command(std::string_view message) {
   else if (operation == lab_runtime_protocol::system_name_set &&
            fields.size() == 2U) {
     auto *device = router(fields[0]);
-    if (device && supervisor_.set_system_name(device->handle, fields[1])) {
-      device->system_name.assign(fields[1]);
-      changed = true;
+    if (device) {
+      auto next = running_configuration(*device);
+      next.system_name.assign(fields[1]);
+      changed = apply_configuration(*device, next);
     }
   } else if (operation == lab_runtime_protocol::host_create)
     changed = create_host(fields);

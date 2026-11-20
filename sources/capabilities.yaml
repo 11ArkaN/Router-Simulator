@@ -97,6 +97,9 @@ features:
   routing.isis.local_root_content:
     status: experimental
     source_ids: [ietf.isis.local_root_content]
+  routing.isis.live_hostname:
+    status: experimental
+    source_ids: [ietf.isis.live_root_hostname]
   runtime.isis_atomic_instance_admission:
     status: experimental
     source_ids: [project.isis.atomic_instance_admission]

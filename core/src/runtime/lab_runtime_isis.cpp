@@ -131,9 +131,9 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
   const auto old_identity = identity(before.interfaces), new_identity = identity(after.interfaces);
   const auto plan = plan_configuration(before.isis, after.isis, ownership, old_identity, new_identity);
   if (plan.status != ConfigurationPlanStatus::prepared) return false;
-  // Live local-prefix and hostname edits need a dedicated in-place consumer.
+  // Base interface edits need a dedicated in-place consumer.
   // Refuse them before claiming a successful unchanged protocol generation.
-  if (!ownership.empty() && (before.interfaces != after.interfaces || before.system_name != after.system_name)) return false;
+  if (!ownership.empty() && before.interfaces != after.interfaces) return false;
   NetworkIsisGeneration generation;
   generation.device = before.handle;
   bool changed{};
@@ -361,6 +361,10 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
         configured->admin_enabled.value_or(configuration_profile::instance_admin_enabled_default)});
     changed = true;
   }
+  if (owner && before.system_name!=after.system_name) for (const auto &entry : owner->instances) {
+    if (std::find(generation.retired_instances.begin(),generation.retired_instances.end(),entry.instance)!=generation.retired_instances.end()) continue;
+    generation.hostnames.push_back({entry.instance,after.system_name}); changed=true;
+  }
   if (!changed) return true;
   std::sort(generation.circuits.begin(), generation.circuits.end(), [](const auto &a, const auto &b) {
     return std::tie(a.circuit.identity.interface_id, a.circuit.identity.instance) <
@@ -401,6 +405,18 @@ bool LabRuntime::validate_isis_prefix_checkpoint(const RouterIntent &router,
         [&](const auto &entry) { return entry.instance == intent.instance; });
     if (owner == device->instances.end()) continue;
     if (!owner->configuration.origination || !owner->configuration.origination->prefixes) return false;
+    std::array<std::size_t,2U> names{};
+    const auto &content=owner->configuration.origination->content;
+    for (const auto &record : content.records) if (!record.id[6U] && record.active) {
+      packet::isis::TlvCursor options(record.options);
+      while (const auto option=options.next()) if (option->code==137U) {
+        if (record.level>1U || ++names[record.level]!=1U ||
+            std::string_view{reinterpret_cast<const char *>(option->value.data()),option->value.size()}!=router.system_name) return false;
+      }
+      if (!options.valid()) return false;
+    }
+    for (std::size_t level{}; level<2U; ++level)
+      if (content.levels[level] && names[level]!=(router.system_name.empty() ? 0U : 1U)) return false;
     const auto expected = router_prefixes(router.interfaces, intent, *hardware, network->forwarding);
     if (expected.status != isis::LocalPrefixCatalogStatus::prepared || !expected.program ||
         *expected.program != *owner->configuration.origination->prefixes ||

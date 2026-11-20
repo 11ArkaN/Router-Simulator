@@ -5490,11 +5490,13 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     std::optional<std::span<const Ipv6ReadinessWatch>> ipv6_watches,
     std::span<const isis::UpdateAttachedPolicy> attached_policies,
     std::optional<isis::InterlevelTemplateBudget> interlevel_export,
-    std::span<const isis::UpdateDecisionPolicy> decision_policies) noexcept {
+    std::span<const isis::UpdateDecisionPolicy> decision_policies,
+    std::span<const isis::UpdateRootHostname> hostnames) noexcept {
   if (!impl_->live(device) || decision_policies.size()>device_catalog::isis_instance_last+1U ||
+      hostnames.size()>device_catalog::isis_instance_last+1U ||
       circuits.size() > device_catalog::maximum_routers * device_catalog::maximum_ports_per_router)
     return false;
-  if (circuits.empty() && new_instances.empty() && retired_instances.empty() && administrative.empty() && adjacency_policies.empty() && attached_policies.empty() && decision_policies.empty() && prefix_catalogs.empty() && !ipv6_watches && !interlevel_export && !impl_->isis_registered[device.index]) return true;
+  if (circuits.empty() && new_instances.empty() && retired_instances.empty() && administrative.empty() && adjacency_policies.empty() && attached_policies.empty() && decision_policies.empty() && prefix_catalogs.empty() && hostnames.empty() && !ipv6_watches && !interlevel_export && !impl_->isis_registered[device.index]) return true;
   std::unique_ptr<Ipv6ReadinessProjection> prepared_ipv6;
   const auto old_af_epoch = impl_->ipv6_readiness_epochs[device.index];
   const bool subscribing = ipv6_watches && !ipv6_watches->empty();
@@ -5568,6 +5570,7 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
     generation.attached_policies.assign(attached_policies.begin(), attached_policies.end());
     generation.decision_policies.assign(decision_policies.begin(), decision_policies.end());
     generation.prefix_catalogs.assign(prefix_catalogs.begin(), prefix_catalogs.end());
+    generation.hostnames.assign(hostnames.begin(), hostnames.end());
     if (!administrative.empty() || (interlevel_export && !selection_manager->isis_selection))
       generation.route_generation_floor = selection_manager->isis_generation;
     if (!retired_instances.empty() || !administrative.empty()) if (const auto &manager = impl_->route_managers[device.index]) {

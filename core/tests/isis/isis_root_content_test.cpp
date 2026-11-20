@@ -65,6 +65,68 @@ void isis_root_content_tests() {
   }
   require(area_count == 2U && wide4 == 20U && narrow4 == 20U && wide6 == 1U &&
       hostnames == 1U && protocols == 1U && address_count == 2U);
+  auto metadata_input=input; metadata_input.prefixes={};
+  auto reserved=prepare_root_content(metadata_input,100U,8U).records;
+  for (std::size_t fragment=reserved.size(); fragment<8U; ++fragment) {
+    auto id=reserved.front().id; id[7U]=static_cast<std::uint8_t>(fragment);
+    reserved.push_back({0U,id,3U,{},false});
+  }
+  auto pseudonode=reserved.front(); pseudonode.id[6U]=7U; pseudonode.options={22U,0U}; pseudonode.active=false;
+  reserved.push_back(pseudonode);
+  const auto original=reserved;
+  const auto other_options=[](const auto &records) {
+    std::vector<std::vector<std::uint8_t>> values;
+    for (const auto &record : records) if (!record.id[6U] && record.active) {
+      wire::TlvCursor cursor(record.options);
+      while (const auto option=cursor.next()) if (option->code!=137U) {
+        std::vector<std::uint8_t> value{option->code,static_cast<std::uint8_t>(option->value.size())};
+        value.insert(value.end(),option->value.begin(),option->value.end()); values.push_back(std::move(value));
+      }
+      require(cursor.valid());
+    }
+    std::sort(values.begin(),values.end()); return values;
+  };
+  const std::string replacement(80U,'r');
+  const auto rewritten=rewrite_root_hostname(reserved,replacement,{100U,0U});
+  require(rewritten.status==RootContentStatus::prepared && reserved==original &&
+      rewritten.records.size()==reserved.size() && rewritten.records.back()==pseudonode &&
+      other_options(rewritten.records)==other_options(original));
+  std::size_t rewritten_names{};
+  for (std::size_t index{}; index<rewritten.records.size(); ++index) {
+    const auto &record=rewritten.records[index];
+    require(record.id==original[index].id && record.flags==original[index].flags);
+    if (record.id[6U] || !record.active) continue;
+    wire::TlvCursor cursor(record.options);
+    while (const auto option=cursor.next()) {
+      if (option->code==1U) require(!record.id[7U]);
+      if (option->code==137U) {
+        ++rewritten_names; require(std::string_view{reinterpret_cast<const char *>(option->value.data()),option->value.size()}==replacement);
+      }
+    }
+    require(cursor.valid());
+  }
+  require(rewritten_names==1U);
+  const auto withdrawn=rewrite_root_hostname(rewritten.records,"",{100U,0U});
+  require(withdrawn.status==RootContentStatus::prepared && other_options(withdrawn.records)==other_options(original));
+  for (const auto &record : withdrawn.records) if (!record.id[6U] && record.active) {
+    wire::TlvCursor cursor(record.options);
+    while (const auto option=cursor.next()) require(option->code!=137U);
+  }
+  auto both=reserved;
+  for (auto record : reserved) { record.level=1U; both.push_back(std::move(record)); }
+  const auto dual=rewrite_root_hostname(both,replacement,{100U,100U});
+  require(dual.status==RootContentStatus::prepared && dual.records.size()==both.size());
+  require(rewrite_root_hostname(both,replacement,{100U,64U}).status==RootContentStatus::capacity);
+  require(rewrite_root_hostname(reserved,replacement,{64U,0U}).status==RootContentStatus::capacity);
+  require(rewrite_root_hostname(reserved,std::string(256U,'r'),{100U,0U}).status==RootContentStatus::invalid);
+  require(rewrite_root_hostname(reserved,std::string(1U,static_cast<char>(0x80U)),{100U,0U}).status==RootContentStatus::invalid);
+  auto malformed=reserved; malformed.front().options={137U};
+  require(rewrite_root_hostname(malformed,replacement,{100U,0U}).status==RootContentStatus::invalid);
+  auto duplicate=reserved; duplicate.push_back(duplicate.front());
+  require(rewrite_root_hostname(duplicate,replacement,{100U,0U}).status==RootContentStatus::invalid);
+  require(rewrite_root_hostname(std::span{reserved}.last(1U),replacement,{0U,0U}).status==RootContentStatus::invalid);
+  require(rewrite_root_hostname(result.records,replacement,{100U,0U}).status==RootContentStatus::invalid);
+
   require(prepare_root_content(input, 100U, 1U).status == RootContentStatus::capacity);
   auto invalid = input; invalid.level = 2U;
   require(prepare_root_content(invalid, 100U, 8U).records.empty());

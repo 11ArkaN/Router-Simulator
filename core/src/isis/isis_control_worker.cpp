@@ -5,6 +5,7 @@
 #include "router/isis_control_worker.hpp"
 #include "router/isis_control_checkpoint.hpp"
 #include "router/isis_operational.hpp"
+#include "router/isis_root_content.hpp"
 
 #include <algorithm>
 #include <new>
@@ -167,6 +168,15 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         std::binary_search(command.retired_instances.begin(), command.retired_instances.end(), index))
       return ControlError::invalid_argument;
   }
+  for (std::size_t ordinal{}; ordinal<command.hostnames.size(); ++ordinal) {
+    const auto index=command.hostnames[ordinal].instance;
+    if (index>=device.instances.size() || !device.instances[index] ||
+        !device.instances[index]->configuration.origination ||
+        !device.instances[index]->configuration.origination->automatic_roots() ||
+        (ordinal && command.hostnames[ordinal-1U].instance>=index) ||
+        std::binary_search(command.retired_instances.begin(),command.retired_instances.end(),index))
+      return ControlError::invalid_argument;
+  }
   const bool reset_route_source=admitting_exports && route_floor;
   if ((!command.administrative.empty() || reset_route_source) && route_floor == std::numeric_limits<std::uint64_t>::max())
     return ControlError::epoch_exhausted;
@@ -302,6 +312,27 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
       if (proposed.origination->content != current.origination->content) return ControlError::invalid_argument;
       staged.prefix_workspaces.push_back(make_fragment_workspace(proposed));
     }
+    staged.hostname_edits.reserve(command.hostnames.size());
+    for (const auto &edit : command.hostnames) {
+      auto proposed=device.instances[edit.instance]->configuration;
+      std::array<std::size_t,2U> extents{};
+      for (std::size_t level{}; level<2U; ++level) if (proposed.origination->content.levels[level]) {
+        const auto size=proposed.origination->content.levels[level]->maximum_pdu_octets;
+        if (size<=packet::isis::lsp_header_octets) return ControlError::invalid_argument;
+        extents[level]=size-packet::isis::lsp_header_octets;
+      }
+      auto rewritten=rewrite_root_hostname(proposed.origination->content.records,edit.hostname,extents);
+      if (rewritten.status!=RootContentStatus::prepared)
+        return rewritten.status==RootContentStatus::capacity ? ControlError::capacity : ControlError::invalid_argument;
+      proposed.origination->content.records=std::move(rewritten.records);
+      const auto prefixes=std::find_if(staged.prefix_catalogs.begin(),staged.prefix_catalogs.end(),
+          [&](const auto &value) { return value.instance==edit.instance; });
+      if (prefixes!=staged.prefix_catalogs.end()) proposed.origination->prefixes=prefixes->program;
+      const auto status=prepare_neighbor_origination(proposed);
+      if (status!=ControlError::none) return status;
+      auto workspace=make_fragment_workspace(proposed);
+      staged.hostname_edits.push_back({edit.instance,std::move(proposed.origination->content.records),std::move(workspace)});
+    }
     const auto *export_owner=device.interlevel ? device.interlevel.get() : staged.interlevel_admission.get();
     if (export_owner) for (std::size_t index{}; index<device.instances.size(); ++index) {
       if (std::binary_search(staged.retired_instances.begin(),staged.retired_instances.end(),index) && !replacing(index)) continue;
@@ -312,6 +343,9 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
       const auto edit=std::find_if(staged.prefix_catalogs.begin(),staged.prefix_catalogs.end(),
           [&](const auto &value) { return value.instance==index; });
       if (edit!=staged.prefix_catalogs.end()) proposed.origination->prefixes=edit->program;
+      const auto hostname=std::find_if(staged.hostname_edits.begin(),staged.hostname_edits.end(),
+          [&](const auto &value) { return value.instance==index; });
+      if (hostname!=staged.hostname_edits.end()) proposed.origination->content.records=hostname->records;
       auto workspace=make_fragment_workspace(proposed,export_owner->budget());
       if (!workspace) return ControlError::unsupported_origination;
       staged.export_workspaces.emplace_back(instance.get(),std::move(workspace));
@@ -499,6 +533,15 @@ void ControlWorker::commit_generation(DeviceState &device) noexcept {
     // occur on the sole writer before service can borrow the new catalog.
     instance.configuration.origination->prefixes = std::move(edit.program);
     instance.fragment_workspace.swap(staged.prefix_workspaces[index]);
+    instance.local_roots_dirty.fill(true);
+  }
+  for (auto &edit : staged.hostname_edits) {
+    auto &instance=*device.instances[edit.instance];
+    // Preparation proved the complete local catalog, neighbors and export
+    // workspace fit. Swap only owned intent and scratch; the existing origin
+    // service publishes encoded changes through ordinary LSDB/SRM transactions.
+    instance.configuration.origination->content.records.swap(edit.records);
+    instance.fragment_workspace.swap(edit.workspace);
     instance.local_roots_dirty.fill(true);
   }
   if (staged.route_commit_generation) {

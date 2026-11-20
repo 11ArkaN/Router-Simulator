@@ -194,6 +194,56 @@ void isis_interlevel_datastore_runtime_tests() {
   for (const auto &family : restored_policy->network.isis->control.devices.back().instances.front().configuration.routing)
     require(family && family->preferences[1U]==router::isis::P2pRouteFamilyProgram::Preference{18U,165U},
         "Classic preference removal did not restore the level defaults");
+  const auto before_name=capture();
+  const auto await_name=[&](std::string_view expected) {
+    const auto deadline=std::chrono::steady_clock::now()+8s;
+    for (;;) {
+      auto image=capture();
+      const auto &remote=image->network.isis->control.devices.front().instances.front();
+      const auto &source=image->network.isis->control.devices.back().instances.front();
+      bool found{};
+      require(remote.process && remote.process->levels[1U],"Hostname receiver lacks L2 database");
+      for (const auto &record : remote.process->levels[1U]->database.database.records) {
+        router::packet::isis::DecodeError error{};
+        const auto pdu=router::packet::isis::parse(record.bytes,error);
+        const auto header=pdu ? router::packet::isis::lsp(*pdu) : std::nullopt;
+        if (!header || !header->remaining_seconds || !std::equal(source.configuration.local.begin(),source.configuration.local.end(),header->id.begin()) || header->id[6U]) continue;
+        router::packet::isis::TlvCursor options(pdu->tlvs);
+        while (const auto option=options.next()) if (option->code==137U &&
+            std::string_view{reinterpret_cast<const char *>(option->value.data()),option->value.size()}==expected) found=true;
+      }
+      if (found) return image;
+      require(std::chrono::steady_clock::now()<deadline,"Changed hostname did not arrive through encoded L2 flooding");
+      std::this_thread::sleep_for(2ms);
+    }
+  };
+  terminal("il-c","configure system name il-c-renamed");
+  auto renamed=await_name("il-c-renamed");
+  const auto &old_name_owner=before_name->network.isis->control.devices.back();
+  const auto &new_name_owner=renamed->network.isis->control.devices.back();
+  require(old_name_owner.instances.front().admission_epoch==new_name_owner.instances.front().admission_epoch &&
+      old_name_owner.instances.front().entity_epoch==new_name_owner.instances.front().entity_epoch &&
+      old_name_owner.circuits.front().definition.identity==new_name_owner.circuits.front().definition.identity &&
+      old_name_owner.circuits.front().counters.adjacency_up==new_name_owner.circuits.front().counters.adjacency_up,
+      "Hostname change restarted the instance or adjacency");
+  const auto renamed_bytes=runtime->export_checkpoint();
+  const std::vector<std::uint8_t> renamed_saved(renamed_bytes.begin(),renamed_bytes.end());
+  require(runtime->import_checkpoint(renamed_saved),"Active renamed owner checkpoint restore failed");
+  static_cast<void>(await_name("il-c-renamed"));
+  renamed->devices.entries.back().system_name="forged-name";
+  const auto forged_name=checkpoint_v21::encode(*renamed,&*protector);
+  require(!forged_name.empty() && !runtime->import_checkpoint(forged_name),"Checkpoint accepted hostname intent inconsistent with root metadata");
+  terminal("il-c","//"); terminal("il-c","edit-config private");
+  terminal("il-c","/configure system name il-c"); terminal("il-c","commit"); terminal("il-c","quit-config");
+  static_cast<void>(await_name("il-c"));
+  terminal("il-c","edit-config private");
+  const std::string invalid_name{runtime->command(message(protocol::session_execute,
+      {"il-c","/configure system name \"\xC3\xB3\""}))};
+  require(invalid_name.find("MINOR: MGMT_CORE #2301")!=std::string::npos,"Hostname edit bypassed printable ASCII admission");
+  terminal("il-c","discard"); terminal("il-c","quit-config");
+  operation(protocol::system_name_set,{"il-c","il-c-from-ui"}); static_cast<void>(await_name("il-c-from-ui"));
+  operation(protocol::system_name_set,{"il-c","il-c"}); static_cast<void>(await_name("il-c"));
+  terminal("il-c","//");
   auto mismatched=capture();
   const auto wrong=std::find_if(mismatched->portable_routers.begin(),mismatched->portable_routers.end(),
       [](const auto &router) { return router.device.index==0U; });
