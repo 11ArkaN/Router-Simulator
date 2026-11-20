@@ -36,6 +36,8 @@ The router terminal shows its prompt again after a completed or cancelled ping. 
 
 The packet runtime is written in C++20 and compiled with Emscripten to WebAssembly. It runs outside the React thread and requires pthreads with shared WebAssembly memory.
 
+The workspace displays Loading project until project recovery completes. The topology then opens with the recovered panel layout.
+
 At startup, the generated CPU policy creates three, five or seven pthreads in addition to the browser control Worker. Hosts with up to four logical CPUs use one control owner and one combined forwarding and link owner. Hosts with five to eight logical CPUs use one control, two forwarding and one link owner. Larger hosts use two control, three forwarding and one link owner. Every policy also starts separate permanent OSPF and IS-IS owners. Stable device handles select owner shards and live devices do not migrate. Shared packet state does not cross the browser boundary through per-packet `postMessage` calls.
 
 Each IS-IS forwarding/control direction has 16 maximum-frame credits per forwarding shard. Full egress retains unsent protocol work and completed frame credits return only after receipt consumption. The six channel rings fit within 1 MiB and share the unchanged 24 MiB network metadata reserve with OSPF and forwarding. These transport capacities are emulator budgets; active-instance scale remains subject to the IS-IS acceptance measurements.
