@@ -181,10 +181,9 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
       if (previous == before.isis.instances.end() || configured == after.isis.instances.end()) return false;
       const auto fallback=static_cast<ConfiguredLevels>(configuration_profile::level_capability_default);
       const auto old_levels=previous->levels.value_or(fallback), new_levels=configured->levels.value_or(fallback);
-      if (old_levels!=new_levels) {
-        if (action.change!=ConfigurationChange::reconfigure) return false;
+      if (old_levels!=new_levels || previous->areas!=configured->areas) {
         // The canonical plan remains a reconfiguration. A detached complete
-        // owner replacement supplies the changed database set, preserving
+        // owner replacement supplies the changed database or manual area set, preserving
         // sequence floors and fencing old RIB work through the generation API.
         replacement=true; break;
       }
@@ -220,18 +219,22 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
     default: return false;
     }
     if (configured == after.isis.instances.end() || action.instance) return false;
+    // Detached compilation describes configured circuits even for a disabled
+    // replacement. Admission applies the actual administrative gate before bind.
+    auto program_intent=*configured;
+    program_intent.admin_enabled=true;
     const auto selected_levels=configured->levels.value_or(
         static_cast<ConfiguredLevels>(configuration_profile::level_capability_default));
     if ((selected_levels!=ConfiguredLevels::level1 && selected_levels!=ConfiguredLevels::level2 &&
          selected_levels!=ConfiguredLevels::both) ||
         (!configured->ipv4_routing.value_or(configuration_profile::ipv4_routing_default) &&
          configured->ipv6_routing != ConfiguredIpv6Routing::native) ||
-        configured->ipv6_routing == ConfiguredIpv6Routing::multi_topology || configured->areas.empty()) return false;
+        configured->ipv6_routing == ConfiguredIpv6Routing::multi_topology) return false;
     for (std::size_t level{}; level<2U; ++level) {
       const auto resolved=resolve_instance_level(*configured,level);
       if (resolved.enabled && !resolved.wide_metrics_only) return false;
     }
-    if (selected_levels==ConfiguredLevels::both)
+    if (selected_levels==ConfiguredLevels::both && !configured->areas.empty())
       generation.interlevel_export=InterlevelTemplateBudget{256U,8192U,device_catalog::maximum_dynamic_routes_per_router};
     const auto wait = resolve_wait_timer(WaitTimerKind::lsp, configured->lsp_wait);
     // A fixed hold policy has no unresolved adaptive growth/reset behavior.
@@ -248,7 +251,8 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
     context.transmission = {2U, 5U, 10U, 100ms, 10U, mtu, 1U};
     context.minimum_generation_interval = wait->maximum; context.resource_retry = 100ms;
     context.random = epoch; context.hostname = after.system_name;
-    if (selected_levels == ConfiguredLevels::level1 || selected_levels == ConfiguredLevels::both)
+    if (!configured->areas.empty() &&
+        (selected_levels == ConfiguredLevels::level1 || selected_levels == ConfiguredLevels::both))
       context.hierarchy_decision = P2pDecisionProgram{64U, 256U, 512U, {}, {}};
     if (configured->ipv4_routing.value_or(configuration_profile::ipv4_routing_default)) {
       context.routing[0U].emplace();
@@ -275,7 +279,7 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
       if (!base->port_configured) return false;
       const auto ordinal = hardware->coordinate_ordinal(base->port_id);
       if (!ordinal) return false;
-      const bool active = resolved.admin_enabled && std::any_of(resolved.level.begin(), resolved.level.end(),
+      const bool active = !configured->areas.empty() && resolved.admin_enabled && std::any_of(resolved.level.begin(), resolved.level.end(),
           [](const auto &level) { return level.enabled && !level.passive; });
       if (active && configured->ipv4_routing.value_or(configuration_profile::ipv4_routing_default) && !base->address_configured)
         return false;
@@ -315,7 +319,7 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
               dad.port_ordinal == *ordinal && dad.state == Ipv6DadState::preferred; });
       hello.operational = live->operational;
       hello.strict_adjacency_check = configured->strict_adjacency_check.value_or(configuration_profile::strict_adjacency_check_default);
-      auto prepared = prepare_interface_program(*configured, attached, hello);
+      auto prepared = prepare_interface_program(program_intent, attached, hello);
       if (prepared.status != InterfaceProgramStatus::prepared && prepared.status != InterfaceProgramStatus::inactive) return false;
       if (prepared.circuit) {
         const auto transmission = prepare_interface_update_program(resolved, {2U, mtu, 1U, 1ms});
@@ -329,12 +333,13 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
     auto prefixes = router_prefixes(after.interfaces, *configured, *hardware, *operational);
     if (prefixes.status != LocalPrefixCatalogStatus::prepared || !prefixes.program) return false;
     context.interfaces = origins; context.ipv4_addresses = prefixes.addresses;
-    auto prepared = prepare_instance_program(*configured, context);
+    auto prepared = prepare_instance_program(program_intent, context);
     if (prepared.status != InstanceProgramStatus::prepared || !prepared.program) return false;
     prepared.program->origination->prefixes = std::move(prefixes.program);
     prepared.program->origination->ipv6_addresses = std::move(prefixes.ipv6_addresses);
     if (replacement) generation.retired_instances.push_back(action.instance);
-    generation.new_instances.push_back({action.instance, std::move(*prepared.program), replacement, true});
+    generation.new_instances.push_back({action.instance, std::move(*prepared.program), replacement,
+        configured->admin_enabled.value_or(configuration_profile::instance_admin_enabled_default)});
     changed = true;
   }
   if (!changed) return true;

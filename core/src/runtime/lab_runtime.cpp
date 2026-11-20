@@ -28112,9 +28112,16 @@ bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
                   static_cast<isis::ConfiguredLevels>(isis::configuration_profile::level_capability_default)));
               for (std::size_t level{}; level<2U; ++level)
                 if (matched->configuration.levels[level].has_value()!=static_cast<bool>(levels & (1U<<level))) return false;
-              if (levels==3U && (!owner->interlevel || !matched->configuration.origination ||
+              if (levels==3U && !instance.areas.empty() && (!owner->interlevel || !matched->configuration.origination ||
                   !matched->configuration.origination->automatic_area_attachment)) return false;
             }
+            if (instance.areas.empty() && matched && matched->admin_enabled &&
+                (matched->areas || (matched->configuration.origination &&
+                    (matched->configuration.origination->automatic_area_set ||
+                     matched->configuration.origination->automatic_area_attachment)) ||
+                 std::any_of(owner->circuits.begin(),owner->circuits.end(),[&](const auto &circuit) {
+                   return circuit.definition.identity.instance==instance.instance;
+                 }))) return false;
             const auto strict = instance.strict_adjacency_check.value_or(isis::configuration_profile::strict_adjacency_check_default);
             for (const auto &circuit : owner->circuits) {
               if (circuit.definition.identity.instance != instance.instance) continue;

@@ -67,8 +67,7 @@ void isis_interlevel_datastore_runtime_tests() {
   }
   for (const auto id : {"il-a","il-b"}) {
     terminal(id,"edit-config private");
-    for (const auto command : {"/configure router isis 0 area-address[49.0001]",
-        "/configure router isis 0 level-capability 1","/configure router isis 0 level 1 wide-metrics-only true",
+    for (const auto command : {"/configure router isis 0 level-capability 1","/configure router isis 0 level 1 wide-metrics-only true",
         "/configure router isis 0 ipv6-routing native","/configure router isis 0 interface system",
         "/configure router isis 0 interface left interface-type point-to-point",
         "/configure router isis 0 interface left level-capability 1",
@@ -78,6 +77,17 @@ void isis_interlevel_datastore_runtime_tests() {
         "/configure router isis 0 timers lsp-wait lsp-initial-wait 10",
         "/configure router isis 0 timers lsp-wait lsp-second-wait 100","/configure router isis 0 timers lsp-wait lsp-max-wait 100",
         "/configure router isis 0 admin-state enable","commit","quit-config"}) terminal(id,command);
+    const auto dormant=capture();
+    const auto inactive=std::find_if(dormant->network.isis->control.devices.begin(),dormant->network.isis->control.devices.end(),
+        [&](const auto &device) { return device.handle.index==(std::string_view{id}=="il-a" ? 0U : 1U); });
+    require(inactive!=dormant->network.isis->control.devices.end() && inactive->circuits.empty() &&
+        inactive->instances.size()==1U && inactive->instances.front().admin_enabled && !inactive->instances.front().areas,
+        "Enabled area-less instance did not remain dormant");
+    const auto dormant_bytes=runtime->export_checkpoint();
+    const std::vector<std::uint8_t> dormant_saved(dormant_bytes.begin(),dormant_bytes.end());
+    require(runtime->import_checkpoint(dormant_saved),"Area-less instance checkpoint restore failed");
+    terminal(id,"edit-config private"); terminal(id,"/configure router isis 0 area-address[49.0001]");
+    terminal(id,"commit"); terminal(id,"quit-config");
   }
   terminal("il-c","//");
   for (const auto command : {"configure router isis 0","area-id 49.0002","level-capability level-2",
@@ -110,6 +120,8 @@ void isis_interlevel_datastore_runtime_tests() {
       "/configure router isis 0 interface right level-capability 2",
       "/configure router isis 0 interface right level 1 hello-interval 1","commit","quit-config"}) terminal("il-a",command);
   const auto await_exports=[&] {
+    await_route("il-a","10.255.0.2/32",true,false); await_route("il-a","2001:db8:ffff::2/128",true,true);
+    await_route("il-b","0.0.0.0/0",true,false); await_route("il-b","::/0",true,true);
     await_route("il-c","10.255.0.2/32",true,false); await_route("il-c","2001:db8:ffff::2/128",true,true);
     await_route("il-c","10.0.12.0/30",true,false); await_route("il-c","2001:db8:12::/64",true,true);
   };
@@ -121,22 +133,39 @@ void isis_interlevel_datastore_runtime_tests() {
   wrong->isis.instances.front().levels=router::isis::ConfiguredLevels::level1;
   require(!runtime->import_checkpoint(checkpoint_v21::encode(*mismatched,&*protector)),
       "Checkpoint accepted managed levels inconsistent with the running owner");
+  wrong->isis.instances.front().levels=router::isis::ConfiguredLevels::both;
+  wrong->isis.instances.front().areas.clear();
+  require(!runtime->import_checkpoint(checkpoint_v21::encode(*mismatched,&*protector)),
+      "Checkpoint accepted active circuits under empty canonical manual areas");
+  std::size_t ping_ordinal{};
   const auto ping=[&](std::string_view session,std::string_view address) {
+    ++ping_ordinal;
     const auto ready_by=std::chrono::steady_clock::now()+8s;
     for (;;) {
       const auto image=capture();
       if (std::all_of(image->network.routers.begin(),image->network.routers.end(),[](const auto &device) {
         return std::all_of(device.forwarding.ipv6_dad.begin(),device.forwarding.ipv6_dad.end(),
             [](const auto &dad) { return dad.state==Ipv6DadState::preferred; });
-      })) break;
-      require(std::chrono::steady_clock::now()<ready_by,"Interlevel DAD did not finish"); std::this_thread::yield();
+      }) && std::all_of(image->network.isis->control.devices.begin(),image->network.isis->control.devices.end(),
+          [](const auto &device) {
+            return std::all_of(device.circuits.begin(),device.circuits.end(),[](const auto &circuit) {
+              const auto *common=circuit.definition.common();
+              return common && common->ipv6_addresses_ready;
+            });
+          })) break;
+      require(std::chrono::steady_clock::now()<ready_by,"Interlevel DAD or protocol readiness did not finish"); std::this_thread::yield();
     }
+    const bool ipv6=address.find(':')!=std::string_view::npos;
+    await_route(session,session=="il-b" ? (ipv6 ? "::/0" : "0.0.0.0/0") :
+        std::string{address}+(ipv6 ? "/128" : "/32"),true,ipv6);
     auto output=terminal(session,"ping "+std::string{address}+" count 1");
     const auto until=std::chrono::steady_clock::now()+5s;
     while (output.find("PING Statistics")==std::string::npos && std::chrono::steady_clock::now()<until) {
       output+=runtime->command(message(protocol::session_poll,{session})); std::this_thread::yield();
     }
-    require(output.find("1 packets transmitted, 1 packets received")!=std::string::npos,"Interlevel public Echo did not return");
+    if (output.find("1 packets transmitted, 1 packets received")==std::string::npos)
+      throw std::runtime_error("Interlevel public Echo #"+std::to_string(ping_ordinal)+" "+std::string{session}+" to "+std::string{address}+": "+output+
+          "\nC routes: "+terminal("il-c","show router route-table")+"\nA adjacency: "+terminal("il-a","show router isis 0 adjacency"));
   };
   ping("il-c","10.255.0.2"); ping("il-c","2001:db8:ffff::2");
   ping("il-b","10.255.0.3"); ping("il-b","2001:db8:ffff::3");
@@ -154,10 +183,32 @@ void isis_interlevel_datastore_runtime_tests() {
   terminal("il-a","/configure router isis 0 level-capability 1/2"); terminal("il-a","commit");
   terminal("il-a","/delete router isis 0 level-capability"); terminal("il-a","commit"); terminal("il-a","quit-config");
   await_exports();
+  terminal("il-a","edit-config private"); terminal("il-a","/delete router isis 0 area-address[49.0001]");
+  terminal("il-a","commit"); terminal("il-a","quit-config");
+  await_route("il-c","10.255.0.2/32",false,false); await_route("il-c","2001:db8:ffff::2/128",false,true);
+  const auto unaddressed=runtime->export_checkpoint();
+  const std::vector<std::uint8_t> unaddressed_saved(unaddressed.begin(),unaddressed.end());
+  require(runtime->import_checkpoint(unaddressed_saved),"Combined area-less checkpoint restore failed");
+  terminal("il-a","//"); terminal("il-a","configure router isis 0");
+  terminal("il-a","area-id 49.0001"); terminal("il-a","exit all"); await_exports();
+  ping("il-c","10.255.0.2"); ping("il-c","2001:db8:ffff::2");
+  terminal("il-a","configure router isis 0"); terminal("il-a","no area-id 49.0001");
+  terminal("il-a","exit all"); await_route("il-c","10.255.0.2/32",false,false);
+  terminal("il-a","configure router isis 0"); terminal("il-a","area-id 49.0001");
+  terminal("il-a","exit all"); await_exports();
   operation(protocol::port_configure,{"il-a","1/1/1","0","9212","100000",""});
   await_route("il-c","10.255.0.2/32",false,false); await_route("il-c","2001:db8:ffff::2/128",false,true);
   await_route("il-c","10.0.12.0/30",false,false); await_route("il-c","2001:db8:12::/64",false,true);
   operation(protocol::port_configure,{"il-a","1/1/1","1","9212","100000",""}); await_exports();
+  terminal("il-a","//"); terminal("il-a","edit-config private");
+  terminal("il-a","/configure router isis 0 admin-state disable"); terminal("il-a","commit");
+  terminal("il-a","/delete router isis 0 area-address[49.0001]"); terminal("il-a","commit");
+  const auto disabled=capture();
+  require(!disabled->network.isis->control.devices.front().instances.front().admin_enabled,
+      "Area edit enabled a disabled instance");
+  terminal("il-a","/configure router isis 0 area-address[49.0001]"); terminal("il-a","commit");
+  terminal("il-a","/configure router isis 0 admin-state enable"); terminal("il-a","commit");
+  terminal("il-a","quit-config"); await_exports();
   const auto bytes=runtime->export_checkpoint(); const std::vector<std::uint8_t> saved(bytes.begin(),bytes.end());
   runtime.reset(); runtime=std::make_unique<LabRuntime>();
   require(runtime->initialize_secret_vault(key,context) && runtime->import_checkpoint(saved),"Combined fresh-owner checkpoint restore failed");

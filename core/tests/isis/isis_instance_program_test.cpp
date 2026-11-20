@@ -90,6 +90,12 @@ void isis_instance_program_tests() {
   require(result.status == InstanceProgramStatus::prepared && result.program->decision == context.hierarchy_decision &&
       result.program->origination->automatic_area_attachment && result.program->origination->suppress_attached_bit &&
       result.program->routing[0U]->ignore_attached_bit);
+  auto unaddressed=intent; unaddressed.areas.clear();
+  unaddressed.interfaces.front().type=ConfiguredInterfaceType::broadcast;
+  const auto dormant=prepare_instance_program(unaddressed,context);
+  require(dormant.status==InstanceProgramStatus::prepared && !dormant.program->decision &&
+      !dormant.program->origination->automatic_area_set && !dormant.program->origination->automatic_area_attachment &&
+      dormant.program->origination->neighbors->empty() && dormant.program->origination->broadcast_neighbors->empty());
   context.hierarchy_decision->protocol = packet::isis::ipv4_nlpid;
   require(prepare_instance_program(intent, context).status == InstanceProgramStatus::invalid_context);
   context.hierarchy_decision.reset();

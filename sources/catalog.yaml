@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: nokia.sros.26_7.isis.activation_prerequisites
+    kind: routing-protocol-operational-prerequisites
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: nokia-official-guide
+    source_url: https://documentation.nokia.com/sr/26-7/7x50-shared/unicast-routing-protocols/is-is.html
+    section: 4.7.2 Basic IS-IS configuration; 4.7.1.2 Configuring area address attributes
+    rfc_refs: []
+    yang_path: /configure/router/isis/area-address
+    last_verified_at: 2026-11-14
+    implementation: [core/src/isis/isis_instance_program.cpp, core/src/runtime/lab_runtime_isis.cpp, core/src/runtime/lab_runtime.cpp]
+    tests: [core/tests/isis/isis_instance_program_test.cpp, core/tests/runtime/isis_interlevel_datastore_runtime_test.cpp]
+    status: experimental
+    notes: An administratively enabled instance without an area address retains its protocol owner but creates no Hello circuits and exchanges no routes. Adding or removing manual areas prepares a complete owner replacement with sequence floors retained. Removing the last area withdraws learned routes and leaves the instance enabled. Checkpoint joins reject active circuits or computed area state under empty canonical manual areas. Native tests cover MD removal, classic addition, activation and checkpoint restoration before and after area assignment.
   - id: ietf.isis.selected_interlevel_export
     kind: routing-protocol-selected-route-projection
     release: 26.7.R1

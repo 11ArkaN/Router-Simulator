@@ -32,7 +32,7 @@ InstanceProgramResult prepare_instance_program(const InstanceIntent &intent,
   const auto lifetime = intent.lsp_lifetime_seconds.value_or(defaults::lsp_lifetime_seconds_default);
   const auto mtu = intent.lsp_mtu_octets.value_or(defaults::lsp_mtu_octets_default);
   const auto mask = static_cast<std::uint8_t>(intent.levels.value_or(ConfiguredLevels::both));
-  origin.automatic_area_set = (mask & 1U) && context.hierarchy_decision.has_value();
+  origin.automatic_area_set = !intent.areas.empty() && (mask & 1U) && context.hierarchy_decision.has_value();
   origin.automatic_area_attachment = mask == 3U && origin.automatic_area_set;
   origin.suppress_attached_bit = intent.suppress_attached_bit.value_or(defaults::suppress_attached_bit_default);
   if (origin.automatic_area_set) {
@@ -91,7 +91,7 @@ InstanceProgramResult prepare_instance_program(const InstanceIntent &intent,
         [&](const auto &entry) { return entry.name == binding.name; });
     if (attached == intent.interfaces.end()) return fail(Status::invalid_context);
     const auto resolved = resolve_interface(intent, *attached, binding.default_type);
-    if (!resolved.admin_enabled || binding.loopback) continue;
+    if (intent.areas.empty() || !resolved.admin_enabled || binding.loopback) continue;
     if (!resolved.type) return fail(Status::unresolved_media);
     std::array<std::optional<P2pOriginMetric>, 2U> metrics;
     for (std::size_t level{}; level < metrics.size(); ++level) {
