@@ -19,14 +19,22 @@ ControlError ControlWorker::validate_local_af_subscription(ControlCommand &comma
         !device.instances[index] || !device.instances[index]->configuration.origination) return nullptr;
     return &*device.instances[index]->configuration.origination;
   };
+  const auto catalog = [&](std::size_t index) -> const LocalIpv6AddressCatalog * {
+    const auto *program=origin(index);
+    if (!program) return nullptr;
+    const auto edit=std::find_if(command.prefix_catalogs.begin(),command.prefix_catalogs.end(),
+        [index](const auto &value) { return value.instance==index; });
+    if (edit!=command.prefix_catalogs.end() && edit->ipv6_addresses) return &*edit->ipv6_addresses;
+    return program->ipv6_addresses ? &*program->ipv6_addresses : nullptr;
+  };
   const auto key = [](const lab::Ipv6ReadinessWatch &watch) { return std::tie(watch.interface_id, watch.address); };
   try {
     std::vector<lab::Ipv6ReadinessWatch> expected;
     expected.reserve(device_catalog::ipv6_dad_entries_per_node);
     for (std::size_t index{}; index < device.instances.size(); ++index) {
-      const auto *program = origin(index);
-      if (!program || !program->ipv6_addresses) continue;
-      for (const auto &unit : program->ipv6_addresses->units) if (unit.source.physical_port) {
+      const auto *addresses = catalog(index);
+      if (!addresses) continue;
+      for (const auto &unit : addresses->units) if (unit.source.physical_port) {
         const lab::Ipv6ReadinessWatch watch{unit.source.interface_id, *unit.source.physical_port, unit.source.address};
         const auto at = std::lower_bound(expected.begin(), expected.end(), watch,
             [&](const auto &a, const auto &b) { return key(a) < key(b); });
@@ -42,16 +50,16 @@ ControlError ControlWorker::validate_local_af_subscription(ControlCommand &comma
     if (supplied != expected) return ControlError::invalid_argument;
     for (auto &circuit : command.circuits) {
       if (circuit.identity.instance >= device.instances.size()) return ControlError::invalid_argument;
-      const auto *program = origin(circuit.identity.instance);
-      if (!program || !program->ipv6_addresses) continue;
+      const auto *addresses = catalog(circuit.identity.instance);
+      if (!addresses) continue;
       const auto *hello = circuit.common();
       if (!hello) return ControlError::invalid_argument;
       for (const auto &address : hello->ipv6_addresses)
-        if (std::none_of(program->ipv6_addresses->units.begin(), program->ipv6_addresses->units.end(), [&](const auto &unit) {
+        if (std::none_of(addresses->units.begin(), addresses->units.end(), [&](const auto &unit) {
           return unit.source.interface_id == circuit.identity.interface_id && unit.source.address == address &&
               unit.source.physical_port == circuit.identity.physical_port_ordinal;
         })) return ControlError::invalid_argument;
-      const bool ready = circuit.carrier && local_ipv6_hello_available(*program->ipv6_addresses,
+      const bool ready = circuit.carrier && local_ipv6_hello_available(*addresses,
           circuit.identity.interface_id, hello->ipv6_addresses);
       // Readiness may advance after the datastore captures a retained circuit.
       // Derive this mutable AF gate from the selected owner, preserving its

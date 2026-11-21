@@ -368,4 +368,39 @@ void isis_interlevel_datastore_runtime_tests() {
   const auto restored=capture();
   require(restored->network.isis->selection_producers.size()==2U,"Combined checkpoint lost the real selection producer");
   await_exports(); ping("il-c","10.255.0.2"); ping("il-c","2001:db8:ffff::2");
+  const auto before_extra=capture();
+  terminal("il-a","edit-config private");
+  terminal("il-a","/configure router interface right ipv6 address 2001:db8:feed::1 prefix-length 128");
+  terminal("il-a","commit"); terminal("il-a","quit-config");
+  await_route("il-c","2001:db8:feed::1/128",true,true);
+  ping("il-c","2001:db8:feed::1");
+  const auto after_extra=capture();
+  const auto &old_extra_owner=before_extra->network.isis->control.devices.front();
+  const auto &new_extra_owner=after_extra->network.isis->control.devices.front();
+  require(old_extra_owner.instances.front().admission_epoch==new_extra_owner.instances.front().admission_epoch &&
+      old_extra_owner.circuits.front().definition.identity==new_extra_owner.circuits.front().definition.identity &&
+      old_extra_owner.circuits.front().counters.adjacency_up==new_extra_owner.circuits.front().counters.adjacency_up,
+      "Additional IPv6 address restarted the IS-IS owner or adjacency");
+  const auto extra_bytes=runtime->export_checkpoint();
+  const std::vector<std::uint8_t> extra_saved(extra_bytes.begin(),extra_bytes.end());
+  require(runtime->import_checkpoint(extra_saved),"Additional IPv6 address checkpoint restore failed");
+  await_route("il-c","2001:db8:feed::1/128",true,true);
+  ping("il-c","2001:db8:feed::1");
+  terminal("il-a","edit-config private");
+  terminal("il-a","/delete router interface right ipv6 address 2001:db8:feed::1");
+  terminal("il-a","commit"); terminal("il-a","quit-config");
+  await_route("il-c","2001:db8:feed::1/128",false,true);
+  ping("il-c","2001:db8:ffff::1");
+  terminal("il-a","edit-config private");
+  terminal("il-a","/configure router interface system ipv6 address 2001:db8:feed::2 prefix-length 128");
+  terminal("il-a","commit"); terminal("il-a","quit-config");
+  await_route("il-c","2001:db8:feed::2/128",true,true); ping("il-c","2001:db8:feed::2");
+  terminal("il-a","edit-config private");
+  terminal("il-a","/delete router interface system ipv6 address 2001:db8:feed::2");
+  terminal("il-a","commit"); terminal("il-a","quit-config");
+  await_route("il-c","2001:db8:feed::2/128",false,true);
+  terminal("il-c","configure router interface right ipv6 address 2001:db8:cafe::2/128");
+  await_route("il-a","2001:db8:cafe::2/128",true,true); ping("il-a","2001:db8:cafe::2");
+  terminal("il-c","configure router interface right ipv6 no address 2001:db8:cafe::2/128");
+  await_route("il-a","2001:db8:cafe::2/128",false,true);
 }

@@ -16,6 +16,12 @@
 
 namespace router::isis {
 namespace {
+// Cold candidates only, inside the allocation-failure boundary. Both values
+// form one source binding and must be sized together before publication.
+void project_prefix_edit(UpdateInstanceProgram &program,const UpdatePrefixCatalog &edit) {
+  program.origination->prefixes=edit.program;
+  if (edit.ipv6_addresses) program.origination->ipv6_addresses=*edit.ipv6_addresses;
+}
 bool same_circuit(const CircuitIdentity &left, const CircuitIdentity &right) noexcept {
   return left.device == right.device && left.interface_id == right.interface_id && left.instance == right.instance;
 }
@@ -167,6 +173,10 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
         (ordinal && command.prefix_catalogs[ordinal - 1U].instance >= index) ||
         std::binary_search(command.retired_instances.begin(), command.retired_instances.end(), index))
       return ControlError::invalid_argument;
+    const auto &edit=command.prefix_catalogs[ordinal];
+    if (edit.ipv6_addresses && (!command.local_ipv6_watches ||
+        !device.instances[index]->configuration.origination->ipv6_addresses ||
+        !valid_local_ipv6_address_catalog(*edit.ipv6_addresses,edit.program))) return ControlError::invalid_argument;
   }
   for (std::size_t ordinal{}; ordinal<command.hostnames.size(); ++ordinal) {
     const auto index=command.hostnames[ordinal].instance;
@@ -306,7 +316,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
     for (const auto &edit : staged.prefix_catalogs) {
       const auto &current = device.instances[edit.instance]->configuration;
       auto proposed = current;
-      proposed.origination->prefixes = edit.program;
+      project_prefix_edit(proposed,edit);
       const auto status = prepare_neighbor_origination(proposed);
       if (status != ControlError::none) return status;
       if (proposed.origination->content != current.origination->content) return ControlError::invalid_argument;
@@ -327,7 +337,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
       proposed.origination->content.records=std::move(rewritten.records);
       const auto prefixes=std::find_if(staged.prefix_catalogs.begin(),staged.prefix_catalogs.end(),
           [&](const auto &value) { return value.instance==edit.instance; });
-      if (prefixes!=staged.prefix_catalogs.end()) proposed.origination->prefixes=prefixes->program;
+      if (prefixes!=staged.prefix_catalogs.end()) project_prefix_edit(proposed,*prefixes);
       const auto status=prepare_neighbor_origination(proposed);
       if (status!=ControlError::none) return status;
       auto workspace=make_fragment_workspace(proposed);
@@ -342,7 +352,7 @@ ControlError ControlWorker::prepare_generation(ControlCommand &command, DeviceSt
       auto proposed=instance->configuration;
       const auto edit=std::find_if(staged.prefix_catalogs.begin(),staged.prefix_catalogs.end(),
           [&](const auto &value) { return value.instance==index; });
-      if (edit!=staged.prefix_catalogs.end()) proposed.origination->prefixes=edit->program;
+      if (edit!=staged.prefix_catalogs.end()) project_prefix_edit(proposed,*edit);
       const auto hostname=std::find_if(staged.hostname_edits.begin(),staged.hostname_edits.end(),
           [&](const auto &value) { return value.instance==index; });
       if (hostname!=staged.hostname_edits.end()) proposed.origination->content.records=hostname->records;
@@ -529,9 +539,10 @@ void ControlWorker::commit_generation(DeviceState &device) noexcept {
   for (std::size_t index{}; index < staged.prefix_catalogs.size(); ++index) {
     auto &edit = staged.prefix_catalogs[index];
     auto &instance = *device.instances[edit.instance];
-    // The cold lease proved complete worst-case fragment capacity. Both swaps
-    // occur on the sole writer before service can borrow the new catalog.
+    // Cold admission sized both catalogs and scratch. Publication moves only
+    // owned storage on the sole writer before service borrows either catalog.
     instance.configuration.origination->prefixes = std::move(edit.program);
+    if (edit.ipv6_addresses) instance.configuration.origination->ipv6_addresses=std::move(*edit.ipv6_addresses);
     instance.fragment_workspace.swap(staged.prefix_workspaces[index]);
     instance.local_roots_dirty.fill(true);
   }

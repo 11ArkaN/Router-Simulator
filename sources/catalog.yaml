@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: nokia.sros.26_7.isis.live_ipv6_addresses
+    kind: routing-protocol-local-address-reconfiguration
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: nokia-official-yang-and-rfc
+    source_url: https://github.com/nokia/7x50_YangModels/blob/6656cbb0905c7b952afaa1d7c2b63aa4da6cc5f7/YANG/nokia-submodule/nokia-conf-router.yang#L4516
+    section: Keyed IPv6 interface address list, RFC 5308 sections 2 and 3, RFC 4862 address assignment
+    rfc_refs: [RFC5308, RFC4862]
+    yang_path: /configure/router/interface/ipv6/address
+    last_verified_at: 2026-11-21
+    implementation: [core/include/router/isis_control_worker.hpp, core/include/router/network_plane_messages.hpp, core/src/isis/isis_control_worker.cpp, core/src/isis/isis_control_local_af.cpp, core/src/runtime/lab_runtime_isis.cpp]
+    tests: [core/tests/isis/isis_local_ipv6_control_test.cpp, core/tests/runtime/isis_interlevel_datastore_runtime_test.cpp]
+    status: experimental
+    notes: An owned cold prefix edit can replace the matching IPv6 assignment catalog in the same prepared generation. Admission validates the complete source binding, exact DAD subscription and worst-case fragment capacity before either catalog changes. Commit preserves the instance and circuit identities. Base address-list edits require an already configured IPv6 interface and retain every other interface field including link-local Hello input. Final-address removal and unrelated Base interface edits remain explicitly refused.
   - id: nokia.sros.26_7.isis.hello_padding_policy
     kind: routing-protocol-hello-padding-policy
     release: 26.7.R1

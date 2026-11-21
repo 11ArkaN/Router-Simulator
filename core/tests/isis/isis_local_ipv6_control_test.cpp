@@ -136,4 +136,25 @@ void isis_local_ipv6_control_tests() {
   const auto reassigned_sequence = wait_sequence(withdrawn_sequence);
   require(send(readiness).error == ControlError::none);
   require(send(command).local_root_sequences[1U] == reassigned_sequence);
+  auto secondary=address; secondary.back()=2U;
+  const std::array replacement_sources{candidates.front(),
+      LocalIpv6Address{identity.interface_id,std::uint16_t{0U},secondary,64U,true}};
+  auto replacement_addresses=prepare_local_ipv6_address_catalog(replacement_sources,2U);
+  require(replacement_addresses.has_value());
+  ControlCommand edit; edit.kind=ControlCommandKind::prepare_generation; edit.identity=identity;
+  edit.prefix_catalogs.emplace_back(0U,*program.origination->prefixes,*replacement_addresses);
+  require(send(edit).error==ControlError::invalid_argument);
+  edit.local_ipv6_watches=std::vector<lab::Ipv6ReadinessWatch>{{identity.interface_id,0U,address}};
+  require(send(edit).error==ControlError::invalid_argument);
+  edit.local_ipv6_watches->push_back({identity.interface_id,0U,secondary});
+  edit.prefix_catalogs.front().ipv6_addresses->units.back().source.physical_port=1U;
+  require(send(edit).error==ControlError::invalid_argument);
+  edit.prefix_catalogs.front().ipv6_addresses->units.back().source.physical_port=0U;
+  require(send(edit).error==ControlError::none);
+  require(send(command).local_root_sequences[1U]==reassigned_sequence);
+  ControlCommand abort; abort.kind=ControlCommandKind::abort_generation; abort.identity=identity;
+  require(send(abort).error==ControlError::none && send(command).local_root_sequences[1U]==reassigned_sequence);
+  require(send(edit).error==ControlError::none);
+  edit.kind=ControlCommandKind::commit_generation; require(send(edit).error==ControlError::none);
+  static_cast<void>(wait_sequence(reassigned_sequence));
 }

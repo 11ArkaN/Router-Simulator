@@ -9,6 +9,7 @@
 #include "router/isis_local_ipv6_address_catalog.hpp"
 #include <algorithm>
 #include <limits>
+#include <new>
 #include <tuple>
 namespace router::lab {
 namespace {
@@ -131,9 +132,23 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
   const auto old_identity = identity(before.interfaces), new_identity = identity(after.interfaces);
   const auto plan = plan_configuration(before.isis, after.isis, ownership, old_identity, new_identity);
   if (plan.status != ConfigurationPlanStatus::prepared) return false;
-  // Base interface edits need a dedicated in-place consumer.
-  // Refuse them before claiming a successful unchanged protocol generation.
-  if (!ownership.empty() && before.interfaces != after.interfaces) return false;
+  const bool base_ipv6_changed=before.interfaces!=after.interfaces;
+  if (!ownership.empty() && base_ipv6_changed) {
+    // Only global IPv6 address-list edits on an existing IPv6 interface have
+    // an in-place consumer. Identity, binding, link-local Hello input and all
+    // other Base policy must remain identical until their own adapter exists.
+    if (before.interfaces.size()!=after.interfaces.size()) return false;
+    try { for (std::size_t index{}; index<before.interfaces.size(); ++index) {
+      if (before.interfaces[index]==after.interfaces[index]) continue;
+      if (!before.interfaces[index].ipv6_address_configured || !after.interfaces[index].ipv6_address_configured)
+        return false;
+      auto retained=before.interfaces[index];
+      retained.ipv6_address=after.interfaces[index].ipv6_address;
+      retained.ipv6_prefix_length=after.interfaces[index].ipv6_prefix_length;
+      retained.ipv6_addresses=after.interfaces[index].ipv6_addresses;
+      if (retained!=after.interfaces[index]) return false;
+    } } catch (const std::bad_alloc &) { return false; }
+  }
   NetworkIsisGeneration generation;
   generation.device = before.handle;
   bool changed{};
@@ -144,7 +159,9 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
   auto operational = supervisor_.router_operational_state(before.handle);
   if (!operational) return false;
   for (std::size_t index{}; index < plan.count; ++index) {
-    const auto action = plan.changes[index];
+    auto action = plan.changes[index];
+    if (base_ipv6_changed && action.change==ConfigurationChange::unchanged)
+      action.change=ConfigurationChange::reconfigure;
     const auto configured = std::find_if(after.isis.instances.begin(), after.isis.instances.end(),
         [&](const auto &entry) { return entry.instance == action.instance; });
     const auto retain = [&] {
@@ -222,8 +239,9 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
         policy.preferences[family]=values;
       }
       if (policy_changed) generation.decision_policies.push_back(std::move(policy));
-      if (!prior->configuration.origination->prefixes || *prior->configuration.origination->prefixes != *prefixes.program)
-        generation.prefix_catalogs.push_back({action.instance, std::move(*prefixes.program)});
+      if (!prior->configuration.origination->prefixes || *prior->configuration.origination->prefixes != *prefixes.program ||
+          prior->configuration.origination->ipv6_addresses!=prefixes.ipv6_addresses)
+        generation.prefix_catalogs.emplace_back(action.instance,std::move(*prefixes.program),std::move(prefixes.ipv6_addresses));
       generation.attached_policies.push_back({action.instance,
           configured->ignore_attached_bit.value_or(configuration_profile::ignore_attached_bit_default),
           configured->suppress_attached_bit.value_or(configuration_profile::suppress_attached_bit_default)});
@@ -371,15 +389,21 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
         std::tie(b.circuit.identity.interface_id, b.circuit.identity.instance);
   });
   generation.ipv6_watches.emplace();
+  const auto collect_addresses = [&](const LocalIpv6AddressCatalog &catalog) {
+    for (const auto &unit : catalog.units) if (unit.source.physical_port)
+      generation.ipv6_watches->push_back({unit.source.interface_id, *unit.source.physical_port, unit.source.address});
+  };
   const auto collect = [&](const UpdateInstanceProgram &program) {
-    if (program.origination && program.origination->ipv6_addresses)
-      for (const auto &unit : program.origination->ipv6_addresses->units) if (unit.source.physical_port)
-        generation.ipv6_watches->push_back({unit.source.interface_id, *unit.source.physical_port, unit.source.address});
+    if (program.origination && program.origination->ipv6_addresses) collect_addresses(*program.origination->ipv6_addresses);
   };
   for (const auto &entry : generation.new_instances) collect(entry.program);
   if (owner) for (const auto &entry : owner->instances)
-    if (std::find(generation.retired_instances.begin(), generation.retired_instances.end(), entry.instance) == generation.retired_instances.end())
-      collect(entry.configuration);
+    if (std::find(generation.retired_instances.begin(), generation.retired_instances.end(), entry.instance) == generation.retired_instances.end()) {
+      const auto edit=std::find_if(generation.prefix_catalogs.begin(),generation.prefix_catalogs.end(),
+          [&](const auto &value) { return value.instance==entry.instance; });
+      if (edit!=generation.prefix_catalogs.end() && edit->ipv6_addresses) collect_addresses(*edit->ipv6_addresses);
+      else collect(entry.configuration);
+    }
   auto &watches = *generation.ipv6_watches;
   std::sort(watches.begin(), watches.end(), [](const auto &a, const auto &b) {
     return std::tie(a.interface_id, a.address, a.port_ordinal) < std::tie(b.interface_id, b.address, b.port_ordinal);

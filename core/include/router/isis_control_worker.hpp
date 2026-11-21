@@ -30,6 +30,7 @@
 #include "router/protocol_transmission.hpp"
 
 #include <algorithm>
+#include <utility>
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -265,7 +266,17 @@ struct UpdateDecisionPolicy {
 };
 // Owned cold catalog transfers with its root generation. No live prefix view
 // crosses the configuration/control SPSC boundary; commit swaps reserved state.
-struct UpdatePrefixCatalog { std::uint8_t instance{}; LocalPrefixCatalogProgram program; };
+struct UpdatePrefixCatalog {
+  UpdatePrefixCatalog()=default;
+  UpdatePrefixCatalog(std::uint8_t selected,LocalPrefixCatalogProgram prefixes,
+      std::optional<LocalIpv6AddressCatalog> addresses={})
+      : instance(selected),program(std::move(prefixes)),ipv6_addresses(std::move(addresses)) {}
+  std::uint8_t instance{};
+  LocalPrefixCatalogProgram program;
+  // Present replaces the complete owned assignment catalog in the same cold
+  // transaction. Absent preserves it. This cannot enable a new address family.
+  std::optional<LocalIpv6AddressCatalog> ipv6_addresses;
+};
 // Serialized local configuration producer transfers owned ASCII to the sole
 // control writer through the generation SPSC lease. Release/acquire publishes
 // bytes; a full channel refuses before mutation. Empty withdraws TLV 137.
