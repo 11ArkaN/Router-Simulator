@@ -967,6 +967,7 @@ void parameter_candidates(const DeviceState &state, CliEngine engine,
   case isis_instance:
   case isis_level:
   case isis_system_id:
+  case isis_database_id:
   case isis_classic_system_id:
   case isis_area_address:
   case isis_md_levels:

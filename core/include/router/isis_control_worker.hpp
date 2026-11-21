@@ -21,6 +21,7 @@
 #include "router/isis_interlevel_export_state.hpp"
 #include "router/isis_interlevel_composition.hpp"
 #include "router/isis_database_validation.hpp"
+#include "router/isis_database_summary.hpp"
 #include "router/isis_sequence_recovery.hpp"
 #include "router/isis_area_set.hpp"
 #include "router/generated_isis_configuration_profile.hpp"
@@ -45,6 +46,7 @@ struct ControlInstanceCheckpoint;
 struct ControlCircuitCheckpoint;
 struct AdjacencyQuery;
 struct HostnameQuery;
+struct DatabaseQuery;
 
 struct ControlChannels {
   // One forwarding producer and this control consumer per ingress pair. Roles
@@ -88,7 +90,7 @@ enum class ControlCommandKind : std::uint8_t {
   query_sequence_recovery, replace_local_content, withdraw_local_content, add_lan_circuit, begin_checkpoint_barrier, end_checkpoint_barrier, capture_checkpoint,
   prepare_checkpoint_restore, commit_checkpoint_restore, abort_checkpoint_restore,
   set_circuit_carrier, set_update_admin_state, query_adjacencies,
-  set_local_port_carrier, query_local_port_usage, set_local_ipv6_readiness, query_hostnames
+  set_local_port_carrier, query_local_port_usage, set_local_ipv6_readiness, query_hostnames, query_database
 };
 // Exactly one medium is supplied. A broadcast program requires the legacy
 // P2P value to remain empty; selecting LAN never constructs a P2P state owner.
@@ -282,6 +284,7 @@ struct ControlCommand {
   std::shared_ptr<AdjacencyQuery> adjacency_query{};
   // Same one-shot query lease and publication rules as adjacency_query.
   std::shared_ptr<HostnameQuery> hostname_query{};
+  std::shared_ptr<DatabaseQuery> database_query{};
   std::uint64_t id{};
   ControlCommandKind kind{ControlCommandKind::query_worker};
   // Serialized persistence coordinator. Begin requires zero and returns a new
@@ -859,6 +862,7 @@ private:
   [[nodiscard]] ControlError edit_local_content(ControlCommand &command, OwnedInstance &instance,
       ControlResult &result) noexcept;
   [[nodiscard]] static ControlError query_hostnames(const DeviceState &, HostnameQuery &) noexcept;
+  [[nodiscard]] static ControlError query_database(const DeviceState &, DatabaseQuery &) noexcept;
   [[nodiscard]] static ControlError query_adjacencies(const DeviceState &,
       AdjacencyQuery &) noexcept;
   [[nodiscard]] RuntimeClock::time_point stop_local_instance(DeviceState &device, std::size_t index,

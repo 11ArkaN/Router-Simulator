@@ -69,6 +69,9 @@ public:
   [[nodiscard]] std::shared_ptr<const isis::AdjacencyQuery> prepared_isis_adjacencies() const noexcept {
     return prepared_isis_adjacencies_;
   }
+  [[nodiscard]] std::shared_ptr<const isis::DatabaseQuery> prepared_isis_database() const noexcept {
+    return prepared_isis_database_;
+  }
   [[nodiscard]] std::shared_ptr<const isis::HostnameQuery> prepared_isis_hostnames() const noexcept {
     return prepared_isis_hostnames_;
   }
@@ -116,6 +119,7 @@ private:
   std::unique_ptr<RouterForwarderCheckpoint> prepared_router_checkpoint_;
   std::shared_ptr<const isis::AdjacencyQuery> prepared_isis_adjacencies_;
   std::shared_ptr<const isis::HostnameQuery> prepared_isis_hostnames_;
+  std::shared_ptr<const isis::DatabaseQuery> prepared_isis_database_;
   std::unique_ptr<NetworkPlaneCheckpoint> pending_restore_;
   // NetworkCommand contains the largest fixed FIB generation supported by the
   // selected hardware profile. Keeping one owner-local scratch object on the

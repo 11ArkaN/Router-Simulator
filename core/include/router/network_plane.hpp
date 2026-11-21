@@ -699,6 +699,10 @@ public:
   // immutable and independently retained; null means invalid scope/capacity.
   // Same cold immutable query contract; names come only from live non-pseudonode
   // LSPs on the protocol owner. Byte budget counts selected raw name octets.
+  // Cold immutable accepted-header query. Independent header/name budgets refuse
+  // atomically; no PDU body or authentication value leaves the protocol owner.
+  [[nodiscard]] std::shared_ptr<const isis::DatabaseQuery> isis_database(DeviceHandle,
+      const isis::DatabaseRequest &) noexcept;
   [[nodiscard]] std::shared_ptr<const isis::HostnameQuery> isis_hostnames(DeviceHandle,
       std::uint8_t instance, std::size_t maximum_rows, std::size_t maximum_name_octets) noexcept;
   [[nodiscard]] std::shared_ptr<const isis::AdjacencyQuery> isis_adjacencies(DeviceHandle,

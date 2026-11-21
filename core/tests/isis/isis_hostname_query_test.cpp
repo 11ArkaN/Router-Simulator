@@ -58,6 +58,21 @@ void isis_hostname_query_tests() {
   const auto original=query(); require(original.first==ControlError::none && original.second->rows.size()==1U);
   const auto original_name=original.second->rows.front().hostname;
   require(original_name=="older-l1" || original_name=="older-l2");
+  const auto database_query=[&](std::uint32_t rows,std::uint32_t version=1U) {
+    auto projection=std::make_shared<DatabaseQuery>(); projection->device=identity.device;
+    projection->request.version=version; projection->request.maximum_rows=rows;
+    projection->request.maximum_names=8U; projection->request.maximum_name_octets=1024U;
+    ControlCommand value; value.kind=ControlCommandKind::query_database; value.database_query=projection;
+    return std::pair{execute(std::move(value)).error,std::move(projection)};
+  };
+  const auto database=database_query(4U);
+  require(database.first==ControlError::none && database.second->summary.rows.size()==3U &&
+      database.second->hostnames.rows.size()==1U);
+  const auto database_capacity=database_query(1U);
+  require(database_capacity.first==ControlError::capacity && database_capacity.second->summary.rows.empty() &&
+      database_capacity.second->hostnames.rows.empty());
+  const auto database_version=database_query(4U,2U);
+  require(database_version.first==ControlError::invalid_argument && database_version.second->summary.rows.empty());
   const auto replace=[&](std::size_t level_index,const packet::isis::LspId &id,std::vector<std::uint8_t> options) {
     ControlCommand value; value.kind=ControlCommandKind::replace_local_content;
     value.local_content=LocalLspContent{static_cast<std::uint8_t>(level_index),id,3U,std::move(options),true};
@@ -78,6 +93,7 @@ void isis_hostname_query_tests() {
   const auto bounded=query(1U,1U);
   require(bounded.first==ControlError::none && bounded.second->rows.size()==1U && bounded.second->rows.front().hostname=="n");
   require(original.second->rows.front().hostname==original_name);
+  require(database.second->summary.rows.size()==3U && database.second->hostnames.rows.front().hostname==original_name);
   for (const auto &[rows,bytes,version] : {std::tuple{0U,1U,1U},std::tuple{1U,0U,1U},std::tuple{1U,1U,2U}}) {
     const auto invalid=query(rows,bytes,version); require(invalid.first==ControlError::invalid_argument && invalid.second->rows.empty());
   }

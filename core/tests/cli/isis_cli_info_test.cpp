@@ -5,8 +5,11 @@
 #include "cli/isis_cli_operational.hpp"
 #include <sstream>
 #include <stdexcept>
+#include <source_location>
 namespace {
-void require(bool value) { if (!value) throw std::runtime_error("IS-IS info invariant"); }
+void require(bool value,std::source_location where=std::source_location::current()) {
+  if (!value) throw std::runtime_error("IS-IS info invariant at "+std::to_string(where.line()));
+}
 void apply_command(router::isis::RouterConfiguration &value, std::string_view text) {
   const auto parsed = router::cli_detail::parse_command(router::CliEngine::md,
       router::MdCliWorkflow::explicit_private, text);
@@ -141,5 +144,35 @@ void isis_cli_info_tests() {
   require(!hostname_table(hosts)); hosts.rows.front().hostname="zero"; hosts.rows.front().system.fill(0U);
   require(hostname_table(hosts).has_value()); hosts.rows.clear(); require(hostname_table(hosts).has_value());
   hosts.version=2U; require(!hostname_table(hosts));
+  router::isis::DatabaseQuery database;
+  database.device={0U,1U}; database.request.maximum_rows=4U;
+  database.request.maximum_names=2U; database.request.maximum_name_octets=512U;
+  database.summary.maximum_rows=4U;
+  database.hostnames={1U,database.device,0U,2U,512U,{{*router::isis::parse_configured_system_id("0000.0000.0002"),"peer-name"}}};
+  database.summary.rows={
+      {0U,{{0U,0U,0U,0U,0U,2U,0U,0U},1200U,7U,0x1234U,0x0fU}},
+      {1U,{{0U,0U,0U,0U,0U,3U,1U,2U},600U,8U,0x5678U,3U}}};
+  auto database_report=database_table(database);
+  require(database_report && database_report->find("peer-name.00-00")!=std::string::npos &&
+      database_report->find("0000.0000.0003.01-02")!=std::string::npos &&
+      database_report->find("L1L2 OV ATT")!=std::string::npos &&
+      database_report->find("Level (1) LSP Count : 1")!=std::string::npos &&
+      database_report->find("Level (2) LSP Count : 1")!=std::string::npos && database_report->find("0x1234")!=std::string::npos);
+  database.hostnames.rows.front().hostname=std::string{"\x1b[31m",5U};
+  database_report=database_table(database);
+  require(database_report && database_report->find(static_cast<char>(0x1bU))==std::string::npos &&
+      database_report->find("\\x1b[31m.00-00")!=std::string::npos);
+  database.hostnames.rows.front().hostname=std::string(255U,'x');
+  database.summary.rows.front().header.sequence=0xffffffffU;
+  database_report=database_table(database);
+  require(database_report && database_report->find(std::string(255U,'x')+".00-00 0xffffffff 0x1234")!=std::string::npos);
+  database.summary.rows.push_back(database.summary.rows.back()); require(!database_table(database)); database.summary.rows.pop_back();
+  database.request.levels=database.summary.levels=2U; require(!database_table(database));
+  database.summary.rows.erase(database.summary.rows.begin()); database_report=database_table(database);
+  require(database_report && database_report->find("Displaying Level 1")==std::string::npos);
+  database.request.maximum_rows=0U; require(!database_table(database));
+  database.request.maximum_rows=4U; database.hostnames.version=2U; require(!database_table(database));
+  database.hostnames.version=1U; database.summary.rows.clear();
+  require(database_table(database)->find("Level (2) LSP Count : 0")!=std::string::npos);
 
 }

@@ -14,9 +14,9 @@
 
 namespace router::lab {
 
-// Version 48 adds detached IS-IS decision policy edits to owned generations.
+// Version 51 adds bounded accepted-LSP summary requests.
 // Mixed owners must refuse rather than interpret another ring layout.
-inline constexpr std::uint32_t network_plane_message_version = 50;
+inline constexpr std::uint32_t network_plane_message_version = 51;
 
 struct NetworkDhcpv4ClientBegin {
   // RFC 2131 caps each ordinary option payload at 255 octets. Carrying the two
@@ -341,10 +341,11 @@ enum class NetworkCommandKind : std::uint8_t {
   prepare_checkpoint,
   restore_checkpoint,
   shutdown,
-  admit_isis_generation, prepare_isis_adjacencies, prepare_isis_hostnames
+  admit_isis_generation, prepare_isis_adjacencies, prepare_isis_hostnames, prepare_isis_database
 };
 
 struct NetworkCommand {
+  isis::DatabaseRequest isis_database_query{};
   // Cold diagnostic resource budget. These are emulator query bounds, not
   // router protocol capacities. A complete projection or explicit refusal.
   struct IsisQuery { std::uint8_t instance{}; std::uint32_t rows{}, attributes{}; } isis_query{};

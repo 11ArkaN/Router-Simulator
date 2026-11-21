@@ -2108,6 +2108,10 @@ NetworkPlaneWorker::apply(const NetworkCommand &command) noexcept {
         command.isis_query.rows,command.isis_query.attributes);
     result.success=bool(prepared_isis_hostnames_);
     break;
+  case NetworkCommandKind::prepare_isis_database:
+    prepared_isis_database_=plane_.isis_database(command.device,command.isis_database_query);
+    result.success=bool(prepared_isis_database_);
+    break;
   case NetworkCommandKind::prepare_isis_adjacencies:
     prepared_isis_adjacencies_ = plane_.isis_adjacencies(command.device, command.isis_query.instance,
         command.isis_query.rows, command.isis_query.attributes);

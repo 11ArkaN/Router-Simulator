@@ -38,4 +38,13 @@ struct AdjacencyQuery {
   std::size_t maximum_rows{}, maximum_attribute_octets{};
   std::vector<AdjacencyOperational> rows;
 };
+// One protocol-owner command fills both collections without intervening ingress
+// or timer service. Matching response publication freezes the owned values.
+// Only non-secret headers and the Dynamic Hostname catalog cross shards.
+struct DatabaseQuery {
+  lab::DeviceHandle device;
+  DatabaseRequest request;
+  DatabaseSummaryQuery summary;
+  HostnameQuery hostnames;
+};
 }

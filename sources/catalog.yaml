@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: nokia.sros.26_7.isis.operational_database
+    kind: routing-protocol-operational-projection
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: nokia-official-yang-and-cli
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/clear-monitor-show-tools-commands/cmst-d-commands.html#ai9j784kiv
+    section: IS-IS database summary and selectors; pinned state database keys and header leaves; pinned types-isis lsp-id
+    rfc_refs: [RFC5301]
+    yang_path: /state/router/isis/database
+    last_verified_at: 2026-11-21
+    implementation: [schemas/cli/26.7.R1.yaml, core/include/router/isis_lsp_identity.hpp, core/src/isis/isis_lsp_identity.cpp, core/include/router/isis_database_summary.hpp, core/src/isis/isis_database_summary.cpp, core/include/router/isis_operational.hpp, core/include/router/isis_control_worker.hpp, core/src/isis/isis_control_worker.cpp, core/src/isis/isis_control_operational.cpp, core/include/router/network_plane_messages.hpp, core/include/router/network_plane.hpp, core/include/router/network_plane_worker.hpp, core/src/runtime/network_plane.cpp, core/src/runtime/network_plane_worker.cpp, core/include/router/runtime_supervisor.hpp, core/src/runtime/runtime_supervisor_isis.cpp, core/src/cli/isis_cli_operational.hpp, core/src/cli/isis_cli_operational.cpp, core/src/cli/cli_parser.cpp, core/src/runtime/lab_runtime.cpp]
+    tests: [core/tests/isis/isis_lsp_identity_test.cpp, core/tests/isis/isis_database_summary_test.cpp, core/tests/isis/isis_hostname_query_test.cpp, core/tests/cli/isis_cli_info_test.cpp, core/tests/runtime/isis_interlevel_datastore_runtime_test.cpp]
+    status: experimental
+    notes: One protocol-owner command copies bounded accepted LSP headers from the requested actual local LSDB levels and an independently bounded Dynamic Hostname catalog. No PDU body, authentication value, borrowed view or host epoch crosses shards. Rows retain pseudonodes and purges, exact header sequence and checksum, and effective live remaining lifetime. The common summary supports default or explicit instance, level, raw System ID, raw LSP ID and unambiguous exact learned-name LSP selectors. The hexadecimal LSP spelling follows the pinned 20-character YANG pattern including zero IDs. Names are escaped for terminal safety. Detailed TLV output, plain-name system selectors, ambiguous-name resolution, full MD state navigation and purge-retirement state leaves remain incomplete.
   - id: nokia.sros.26_7.isis.live_level_policy
     kind: routing-protocol-effective-level-policy
     release: 26.7.R1

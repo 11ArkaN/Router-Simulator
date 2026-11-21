@@ -67,6 +67,26 @@ ControlError ControlWorker::query_adjacencies(const DeviceState &device, Adjacen
   } catch (const std::bad_alloc &) { return fail(ControlError::capacity); }
     catch (const std::length_error &) { return fail(ControlError::capacity); }
 }
+ControlError ControlWorker::query_database(const DeviceState &device,DatabaseQuery &query) noexcept {
+  const auto fail=[&](ControlError error) { query.summary.rows.clear(); query.hostnames.rows.clear(); return error; };
+  const auto &request=query.request;
+  if (request.version!=1U || query.device!=device.handle || request.instance>device_catalog::isis_instance_last ||
+      !request.levels || request.levels>3U || !request.maximum_rows || !request.maximum_names ||
+      !request.maximum_name_octets || !query.summary.rows.empty() || !query.hostnames.rows.empty())
+    return fail(ControlError::invalid_argument);
+  query.summary={1U,request.levels,request.maximum_rows,request.system,request.lsp,{}};
+  std::array<const LinkStateDatabase *,2U> databases{};
+  const auto &instance=device.instances[request.instance];
+  if (instance && instance->process) for (std::size_t level{}; level<databases.size(); ++level)
+    if (const auto *process=instance->process->level(level)) databases[level]=&process->database().database();
+  const auto status=collect_database_summary(databases,RuntimeClock::now(),query.summary);
+  if (status!=DatabaseSummaryResult::collected)
+    return fail(status==DatabaseSummaryResult::capacity ? ControlError::capacity : ControlError::invalid_argument);
+  query.hostnames.device=query.device; query.hostnames.instance=request.instance;
+  query.hostnames.maximum_rows=request.maximum_names; query.hostnames.maximum_name_octets=request.maximum_name_octets;
+  const auto names=query_hostnames(device,query.hostnames);
+  return names==ControlError::none ? names : fail(names);
+}
 ControlError ControlWorker::query_hostnames(const DeviceState &device, HostnameQuery &query) noexcept {
   const auto fail=[&](ControlError error) { query.rows.clear(); return error; };
   if (query.version!=1U || query.device!=device.handle ||

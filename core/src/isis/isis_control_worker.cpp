@@ -694,6 +694,7 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
       command.kind != ControlCommandKind::query_local_port_usage &&
       command.kind != ControlCommandKind::query_adjacencies &&
       command.kind != ControlCommandKind::query_hostnames &&
+      command.kind != ControlCommandKind::query_database &&
       command.kind != ControlCommandKind::query_update_instance &&
       command.kind != ControlCommandKind::query_sequence_recovery) {
     result.error = ControlError::generation_pending;
@@ -774,6 +775,10 @@ ControlResult ControlWorker::apply(ControlCommand &command) noexcept {
   }
   if (command.kind == ControlCommandKind::query_hostnames) {
     result.error=command.hostname_query ? query_hostnames(device,*command.hostname_query) : ControlError::invalid_argument;
+    return result;
+  }
+  if (command.kind == ControlCommandKind::query_database) {
+    result.error=command.database_query ? query_database(device,*command.database_query) : ControlError::invalid_argument;
     return result;
   }
   if (command.kind == ControlCommandKind::query_adjacencies) {

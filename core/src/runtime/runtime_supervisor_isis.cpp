@@ -3,6 +3,14 @@
 #include "runtime_supervisor_internal.hpp"
 #include <limits>
 namespace router::lab {
+std::shared_ptr<const isis::DatabaseQuery> RuntimeSupervisor::isis_database(DeviceHandle device,
+    const isis::DatabaseRequest &request) noexcept {
+  if (!devices_.get(device)) return nullptr;
+  auto &command=prepare(NetworkCommandKind::prepare_isis_database);
+  command.device=device; command.isis_database_query=request;
+  const auto result=dispatch(command);
+  return result && result->success ? network_worker_->prepared_isis_database() : nullptr;
+}
 std::shared_ptr<const isis::HostnameQuery> RuntimeSupervisor::isis_hostnames(DeviceHandle device,
     std::uint8_t instance, std::uint32_t maximum_rows, std::uint32_t maximum_name_octets) noexcept {
   if (!devices_.get(device) || instance>device_catalog::isis_instance_last || !maximum_rows || !maximum_name_octets) return nullptr;

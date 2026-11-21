@@ -16,6 +16,7 @@
 #include "cli/isis_cli_operational.hpp"
 #include "isis_configuration_projection.hpp"
 #include "router/isis_configuration_codec.hpp"
+#include "router/isis_lsp_identity.hpp"
 #include "router/isis_configuration_resolution.hpp"
 #include "cli/pki_cli_configuration.hpp"
 #include "router/cli.hpp"
@@ -23336,6 +23337,39 @@ std::string LabRuntime::execute_session_command(std::string_view session_id,
                        "not allowed";
     }
     output += cli_prompt(view, terminal->cli);
+  } else if (parsed->spec->handler_id == cli_schema::CommandId::show_router_isis_database) {
+    isis::DatabaseRequest request;
+    request.maximum_rows=1024U; request.maximum_names=1024U; request.maximum_name_octets=4U*1024U*1024U;
+    unsigned instance{}, level{};
+    const auto instance_text=cli_detail::argument(*parsed,cli_schema::TokenKind::isis_instance);
+    const auto level_text=cli_detail::argument(*parsed,cli_schema::TokenKind::isis_level);
+    bool valid=(!instance_text || decimal(*instance_text,instance)) && instance<=device_catalog::isis_instance_last &&
+        (!level_text || (decimal(*level_text,level) && level>=1U && level<=2U)) &&
+        std::any_of(intent->isis.instances.begin(),intent->isis.instances.end(),
+            [&](const auto &configured) { return configured.instance==instance; });
+    request.instance=static_cast<std::uint8_t>(instance);
+    if (level_text && valid) request.levels=static_cast<std::uint8_t>(1U<<(level-1U));
+    if (const auto selector=cli_detail::argument(*parsed,cli_schema::TokenKind::isis_database_id); valid && selector) {
+      request.system=isis::parse_configured_system_id(*selector);
+      if (!request.system) request.lsp=isis::parse_lsp_id(*selector);
+      if (!request.system && !request.lsp) {
+        // Resolve only a complete learned-name LSP spelling. The catalog is a
+        // detached protocol-owner result, never a topology/configuration lookup.
+        valid=false;
+        if (selector->size()>6U) if (auto suffix=isis::parse_lsp_id(std::string{"0000.0000.0000"}+std::string{selector->substr(selector->size()-6U)})) {
+          const auto names=supervisor_.isis_hostnames(intent->handle,request.instance,request.maximum_names,request.maximum_name_octets);
+          if (names) for (const auto &name : names->rows) if (name.hostname==selector->substr(0U,selector->size()-6U)) {
+            if (valid) { valid=false; break; }
+            std::copy(name.system.begin(),name.system.end(),suffix->begin()); request.lsp=*suffix; valid=true;
+          }
+        }
+      }
+    }
+    std::optional<std::string> report;
+    if (valid) if (const auto projection=supervisor_.isis_database(intent->handle,request)) report=isis_cli::database_table(*projection);
+    output=report ? *report : terminal->cli.engine==CliEngine::classic ? "Error: IS-IS database query failed." :
+        "MINOR: MGMT_CORE #2203: IS-IS database query failed";
+    output+=cli_prompt(view,terminal->cli);
   } else if (parsed->spec->id == cli_schema::CommandId::show_router_isis_hostname ||
              parsed->spec->id == cli_schema::CommandId::show_router_isis_instance_hostname) {
     const auto instance_text=cli_detail::argument(*parsed,cli_schema::TokenKind::isis_instance);

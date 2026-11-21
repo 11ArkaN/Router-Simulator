@@ -4,6 +4,8 @@
 #include "router/lab_runtime.hpp"
 #include "router/lab_checkpoint.hpp"
 #include "router/generated_lab_runtime_protocol.hpp"
+#include "router/isis_configuration.hpp"
+#include "router/isis_lsp_identity.hpp"
 #include <algorithm>
 #include <memory>
 #include <stdexcept>
@@ -201,7 +203,7 @@ void isis_interlevel_datastore_runtime_tests() {
       auto image=capture();
       const auto &remote=image->network.isis->control.devices.front().instances.front();
       const auto &source=image->network.isis->control.devices.back().instances.front();
-      bool found{};
+      std::optional<router::packet::isis::LspId> found;
       require(remote.process && remote.process->levels[1U],"Hostname receiver lacks L2 database");
       for (const auto &record : remote.process->levels[1U]->database.database.records) {
         router::packet::isis::DecodeError error{};
@@ -210,11 +212,26 @@ void isis_interlevel_datastore_runtime_tests() {
         if (!header || !header->remaining_seconds || !std::equal(source.configuration.local.begin(),source.configuration.local.end(),header->id.begin()) || header->id[6U]) continue;
         router::packet::isis::TlvCursor options(pdu->tlvs);
         while (const auto option=options.next()) if (option->code==137U &&
-            std::string_view{reinterpret_cast<const char *>(option->value.data()),option->value.size()}==expected) found=true;
+            std::string_view{reinterpret_cast<const char *>(option->value.data()),option->value.size()}==expected) found=header->id;
       }
       if (found) {
         const auto report=terminal("il-a","show router isis hostname");
         require(report.find(expected)!=std::string::npos,"MD hostname report disagreed with the received LSP database");
+        const auto raw=router::isis::format_lsp_id(*found);
+        const auto named=std::string{expected}+raw.substr(14U);
+        for (const auto session : {"il-a","il-c"}) for (const bool explicit_instance : {false,true}) {
+          const auto prefix=std::string{"show router isis "}+(explicit_instance ? "0 database" : "database");
+          for (const auto &selector : {std::string{},raw,named,router::isis::format_configured_system_id(source.configuration.local)}) {
+            const auto selected=selector.empty() ? std::string{} : " "+selector;
+            for (const auto &suffix : {std::string{},std::string{" level 2"}}) {
+              const auto database=terminal(session,prefix+selected+suffix);
+              require(database.find(named)!=std::string::npos,"Database summary omitted the accepted remote or local named LSP");
+              if (!suffix.empty()) require(database.find("Displaying Level 1")==std::string::npos,"Database level selector leaked another level");
+              if (selector==raw || selector==named) require(database.find("Level (2) LSP Count : 1")!=std::string::npos,
+                  "Exact LSP selector returned another retained identity");
+            }
+          }
+        }
         return image;
       }
       require(std::chrono::steady_clock::now()<deadline,"Changed hostname did not arrive through encoded L2 flooding");
@@ -226,6 +243,11 @@ void isis_interlevel_datastore_runtime_tests() {
   const auto l1_names=terminal("il-b","show router isis hostname");
   require(l1_names.find("il-a")!=std::string::npos && l1_names.find("il-b")!=std::string::npos &&
       l1_names.find("il-c-renamed")==std::string::npos,"L1-only hostname report consumed another level or topology configuration");
+  const auto l1_database=terminal("il-b","show router isis database level 1");
+  require(l1_database.find("il-a.00-00")!=std::string::npos && l1_database.find("il-b.00-00")!=std::string::npos &&
+      l1_database.find("il-c-renamed")==std::string::npos,"L1 database summary read another router's topology or level");
+  require(terminal("il-b","show router isis 0 database level 2").find("Level (2) LSP Count : 0")!=std::string::npos,
+      "Absent L2 database fabricated entries");
   require(terminal("il-c","show router isis 0 hostname").find("il-c-renamed")!=std::string::npos,
       "Classic explicit-instance hostname report omitted the local origin");
   const auto &old_name_owner=before_name->network.isis->control.devices.back();

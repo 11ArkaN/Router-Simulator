@@ -63,6 +63,8 @@ void isis_narrow_reachability_tests();
 void isis_authentication_tests();
 void isis_instance_tlv_tests();
 void isis_lsdb_tests();
+void isis_lsp_identity_tests();
+void isis_database_summary_tests();
 void isis_lsdb_batch_tests();
 void isis_level_batch_tests();
 void isis_configuration_codec_tests();
@@ -535,6 +537,8 @@ int main() {
     isis_authentication_tests();
     isis_instance_tlv_tests();
     isis_lsdb_tests();
+    isis_lsp_identity_tests();
+    isis_database_summary_tests();
     isis_lsdb_batch_tests();
     isis_level_batch_tests();
     isis_configuration_codec_tests();

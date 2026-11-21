@@ -91,6 +91,8 @@ add_library(router_primitives STATIC
   src/isis/isis_authentication.cpp
   src/isis/isis_instance_tlv.cpp
   src/isis/isis_lsdb.cpp
+  src/isis/isis_lsp_identity.cpp
+  src/isis/isis_database_summary.cpp
   src/isis/isis_lsdb_checkpoint.cpp
   src/isis/isis_level_database.cpp
   src/isis/isis_level_database_checkpoint.cpp
@@ -678,6 +680,8 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_authentication_test.cpp
     tests/isis/isis_instance_tlv_test.cpp
     tests/isis/isis_lsdb_test.cpp
+    tests/isis/isis_lsp_identity_test.cpp
+    tests/isis/isis_database_summary_test.cpp
     tests/isis/isis_lsdb_batch_test.cpp
     tests/isis/isis_level_batch_test.cpp
     tests/isis/isis_configuration_codec_test.cpp

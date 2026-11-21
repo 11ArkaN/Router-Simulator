@@ -4133,22 +4133,37 @@ nodes:
     schema_id: /state/router/isis/database
     scope: base
     status: pending
+    tests:
+      - core/tests/isis/isis_database_summary_test.cpp
+      - core/tests/runtime/isis_interlevel_datastore_runtime_test.cpp
   - domain: state
     schema_id: /state/router/isis/database/level-number
     scope: base
     status: pending
+    tests:
+      - core/tests/isis/isis_database_summary_test.cpp
+      - core/tests/runtime/isis_interlevel_datastore_runtime_test.cpp
   - domain: state
     schema_id: /state/router/isis/database/lsp-id
     scope: base
     status: pending
+    tests:
+      - core/tests/isis/isis_database_summary_test.cpp
+      - core/tests/runtime/isis_interlevel_datastore_runtime_test.cpp
   - domain: state
     schema_id: /state/router/isis/database/seq
     scope: base
     status: pending
+    tests:
+      - core/tests/isis/isis_database_summary_test.cpp
+      - core/tests/runtime/isis_interlevel_datastore_runtime_test.cpp
   - domain: state
     schema_id: /state/router/isis/database/checksum
     scope: base
     status: pending
+    tests:
+      - core/tests/isis/isis_database_summary_test.cpp
+      - core/tests/runtime/isis_interlevel_datastore_runtime_test.cpp
   - domain: state
     schema_id: /state/router/isis/database/zero-rtl
     scope: base
@@ -4173,6 +4188,9 @@ nodes:
     schema_id: /state/router/isis/database/attributes
     scope: base
     status: pending
+    tests:
+      - core/tests/isis/isis_database_summary_test.cpp
+      - core/tests/runtime/isis_interlevel_datastore_runtime_test.cpp
   - domain: state
     schema_id: /state/router/isis/database/max-area
     scope: base

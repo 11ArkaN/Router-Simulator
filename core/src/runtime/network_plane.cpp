@@ -5766,6 +5766,24 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
   return true;
 }
 
+std::shared_ptr<const isis::DatabaseQuery> NetworkPlane::isis_database(DeviceHandle device,
+    const isis::DatabaseRequest &request) noexcept {
+  if (!impl_->live(device) || request.version!=1U || request.instance>device_catalog::isis_instance_last ||
+      !request.levels || request.levels>3U || !request.maximum_rows || !request.maximum_names || !request.maximum_name_octets)
+    return nullptr;
+  try {
+    auto query=std::make_shared<isis::DatabaseQuery>(); query->device=device; query->request=request;
+    query->summary={1U,request.levels,request.maximum_rows,request.system,request.lsp,{}};
+    query->hostnames.device=device; query->hostnames.instance=request.instance;
+    query->hostnames.maximum_rows=request.maximum_names; query->hostnames.maximum_name_octets=request.maximum_name_octets;
+    if (!impl_->isis_registered[device.index]) return query;
+    isis::ControlCommand command; command.kind=isis::ControlCommandKind::query_database;
+    command.identity.device=device; command.database_query=query;
+    if (impl_->execute_isis(std::move(command)).error!=isis::ControlError::none) return nullptr;
+    return query;
+  } catch (const std::bad_alloc &) { return nullptr; }
+    catch (const std::length_error &) { return nullptr; }
+}
 std::shared_ptr<const isis::HostnameQuery> NetworkPlane::isis_hostnames(DeviceHandle device,
     std::uint8_t instance, std::size_t maximum_rows, std::size_t maximum_name_octets) noexcept {
   if (!impl_->live(device) || instance>device_catalog::isis_instance_last || !maximum_rows || !maximum_name_octets) return nullptr;
