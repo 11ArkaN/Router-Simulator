@@ -15,3 +15,4 @@ export * from "./lab-project-v4";
 export * from "./reference-lab-v4";
 export * from "./lab-runtime-v6";
 export * from "./terminal-presentation-v2";
+export * from "./isis-configuration-v1";

@@ -819,10 +819,10 @@ void ipsec_cli_configuration_tests() {
        {"configure ipsec no ike-transform 99",
         "configure ipsec no static-sa ghost",
         "configure ipsec static-sa classic-manual no description"}) {
-    const auto rejected = router::lab::ipsec_cli::edit(
+    const auto absent_result = router::lab::ipsec_cli::edit(
         classic, parse(CliEngine::classic, text), CliEngine::classic,
         &classic_vault);
-    require(rejected.recognized && !rejected.valid,
+    require(absent_result.recognized && !absent_result.valid,
             "classic no form accepted an absent IPsec element");
   }
 
@@ -1016,12 +1016,12 @@ void ipsec_cli_configuration_tests() {
   edit(classic_clients, CliEngine::classic,
        "configure ipsec client-db branch-a create", &classic_client_vault);
   {
-    const auto selected = router::lab::ipsec_cli::edit(
+    const auto selected_database = router::lab::ipsec_cli::edit(
         classic_clients,
         parse(CliEngine::classic,
               "configure ipsec client-db branch-a create"),
         CliEngine::classic, &classic_client_vault);
-    require(selected.recognized && selected.valid && !selected.changed,
+    require(selected_database.recognized && selected_database.valid && !selected_database.changed,
             "classic client-db create of an existing database was not a "
             "select");
   }
@@ -1079,12 +1079,12 @@ void ipsec_cli_configuration_tests() {
                   .tunnel_template_configured == false,
           "classic no tunnel-template retained the reference");
   {
-    const auto rejected = router::lab::ipsec_cli::edit(
+    const auto absent_client = router::lab::ipsec_cli::edit(
         classic_clients,
         parse(CliEngine::classic,
               "configure ipsec client-db branch-a no client 8"),
         CliEngine::classic, &classic_client_vault);
-    require(rejected.recognized && !rejected.valid,
+    require(absent_client.recognized && !absent_client.valid,
             "classic removal accepted an absent client entry");
   }
   edit(classic_clients, CliEngine::classic,
@@ -1163,13 +1163,13 @@ void ipsec_cli_configuration_tests() {
        "configure ipsec radius-authentication-policy auth-classic create",
        &radius_vault);
   {
-    const auto selected = router::lab::ipsec_cli::edit(
+    const auto selected_radius_policy = router::lab::ipsec_cli::edit(
         radius,
         parse(CliEngine::classic,
               "configure ipsec radius-authentication-policy auth-classic "
               "create"),
         CliEngine::classic, &radius_vault);
-    require(selected.recognized && selected.valid && !selected.changed,
+    require(selected_radius_policy.recognized && selected_radius_policy.valid && !selected_radius_policy.changed,
             "classic RADIUS create of an existing policy was not a select");
   }
   edit(radius, CliEngine::classic,

@@ -1,0 +1,200 @@
+// Normal info must replay through the generated parser into identical intent.
+// Detail output shows immutable defaults without mutating the original model.
+#include "cli/isis_cli_info.hpp"
+#include "cli/isis_cli_configuration.hpp"
+#include "cli/isis_cli_operational.hpp"
+#include <sstream>
+#include <stdexcept>
+#include <source_location>
+namespace {
+void require(bool value,std::source_location where=std::source_location::current()) {
+  if (!value) throw std::runtime_error("IS-IS info invariant at "+std::to_string(where.line()));
+}
+void apply_command(router::isis::RouterConfiguration &value, std::string_view text) {
+  const auto parsed = router::cli_detail::parse_command(router::CliEngine::md,
+      router::MdCliWorkflow::explicit_private, text);
+  require(parsed.has_value());
+  require(router::lab::isis_cli::edit(value, *parsed, router::CliEngine::md).valid);
+}
+}
+void isis_cli_info_tests() {
+  using namespace router::lab::isis_cli;
+  router::isis::RouterConfiguration original;
+  for (const auto text : {
+      "configure router \"Base\" isis 127 area-address[49.0001 49.0002]",
+      "configure router \"Base\" isis 127 admin-state disable",
+      "configure router \"Base\" isis 127 advertise-passive-only true",
+      "configure router \"Base\" isis 127 strict-adjacency-check true",
+      "configure router \"Base\" isis 127 ipv6-routing native",
+      "configure router \"Base\" isis 127 level-capability 1/2",
+      "configure router \"Base\" isis 127 system-id 0000.0000.0127",
+      "configure router \"Base\" isis 127 router-id 10.0.0.127",
+      "configure router \"Base\" isis 127 timers spf-wait spf-max-wait 550",
+      "configure router \"Base\" isis 127 timers lsp-wait lsp-initial-wait 99",
+      "configure router \"Base\" isis 127 level 1 default-metric 20",
+      "configure router \"Base\" isis 127 level 2",
+      "configure router \"Base\" isis 127 interface \"edge one\" level 1 metric 30",
+      "configure router \"Base\" isis 127 interface \"edge one\" level 2",
+      "configure router \"Base\" isis 127 interface \"edge one\" passive false"}) apply_command(original, text);
+  const auto tree = md_tree(original, false);
+  std::istringstream lines{tree};
+  std::vector<std::string> contexts;
+  router::isis::RouterConfiguration replay;
+  for (std::string line; std::getline(lines, line);) {
+    const auto first = line.find_first_not_of(' ');
+    if (first == std::string::npos) continue;
+    auto value = line.substr(first);
+    if (value == "}") { require(!contexts.empty()); contexts.pop_back(); continue; }
+    const bool context = value.ends_with(" {");
+    if (context) value.resize(value.size() - 2U);
+    std::string command = "configure router \"Base\"";
+    for (const auto &parent : contexts) command += ' ' + parent;
+    command += ' ' + value;
+    apply_command(replay, command);
+    if (context) contexts.push_back(value);
+  }
+  require(contexts.empty() && original == replay);
+  const auto before = original;
+  const auto detail = md_tree(original, true);
+  require(original == before && detail.find("hello-interval 9") != std::string::npos &&
+      detail.find("lsp-mtu-size 1492") != std::string::npos);
+  require(classic_leaf("advertise-passive-only true") == "advertise-passive-only" &&
+      classic_leaf("advertise-passive-only false") == "no advertise-passive-only");
+  for (const bool enabled : {false, true}) {
+    const auto command = classic_leaf(enabled ? "strict-adjacency-check true" : "strict-adjacency-check false");
+    require(command == (enabled ? "strict-adjacency-check" : "no strict-adjacency-check"));
+    const auto full_command = "configure router isis 0 " + command;
+    const auto parsed = router::cli_detail::parse_command(router::CliEngine::classic,
+        router::MdCliWorkflow::explicit_private, full_command);
+    router::isis::RouterConfiguration restored;
+    restored.instances.emplace_back();
+    restored.instances.front().strict_adjacency_check = !enabled;
+    require(parsed && edit(restored, *parsed, router::CliEngine::classic).valid &&
+        restored.instances.front().strict_adjacency_check.value_or(false) == enabled);
+  }
+  require(classic_leaf("area-address 49.0001") == "area-id 49.0001");
+  require(classic_leaf("level-capability 1/2") == "level-capability level-1/2");
+  require(classic_leaf("ipv4-routing false") == "no ipv4-routing");
+  require(classic_leaf("ipv6-routing false") == "no ipv6-routing");
+  require(classic_leaf("wide-metrics-only false") == "no wide-metrics-only");
+  const std::array<std::string, 4U> timer_body{"  spf-max-wait 550", "  spf-initial-wait 10", "}", "next-sibling"};
+  const auto classic_timer = classic_timer_block("spf-wait", timer_body);
+  require(classic_timer && classic_timer->lines == 3U &&
+      classic_timer->command == "spf-wait 550 spf-initial-wait 10 spf-second-wait 1000");
+  require(!classic_timer_block("other", timer_body));
+  require(!classic_timer_block("spf-wait", std::span{timer_body}.first(2U)));
+  for (const auto &invalid : {std::array<std::string, 3U>{"spf-max-wait 550", "spf-max-wait 600", "}"},
+      std::array<std::string, 3U>{"spf-max-wait 550", "lsp-initial-wait 10", "}"},
+      std::array<std::string, 3U>{"spf-max-wait 550", "spf-initial-wait 9", "}"}})
+    require(!classic_timer_block("spf-wait", invalid));
+  require(tree.find("spf-max-wait 550") != std::string::npos && tree.find("lsp-initial-wait 99") != std::string::npos);
+  auto edited = original;
+  edited.instances[0U].interfaces[0U].level[0U].metric = 40U;
+  auto delta = md_compare(original, edited);
+  require(delta.find("router \"Base\" {") != std::string::npos &&
+      delta.find("isis 127 {") != std::string::npos && delta.find("interface \"edge one\" {") != std::string::npos &&
+      delta.find("-                metric 30") != std::string::npos &&
+      delta.find("+                metric 40") != std::string::npos && delta.find("system-id") == std::string::npos);
+  require(md_compare(original, original).empty());
+  edited = original; edited.instances[0U].areas.pop_back();
+  delta = md_compare(original, edited);
+  require(delta.find("-        area-address 49.0002") != std::string::npos &&
+      delta.find("area-address 49.0001") == std::string::npos);
+  edited = original; edited.instances[0U].interfaces.clear();
+  delta = md_compare(original, edited);
+  require(delta.find("-        interface \"edge one\" {") != std::string::npos);
+  require(md_compare({}, original).find("+    isis 127 {") != std::string::npos);
+  require(md_compare(original, {}).find("-    isis 127 {") != std::string::npos);
+  router::isis::AdjacencyQuery query;
+  query.device = {0U, 1U}; query.instance = 0U;
+  query.rows.push_back({{{0U, 1U}, 7U, 1U, 0U, 0U},
+      *router::isis::parse_configured_system_id("0000.0000.0002"), {}, router::isis::Levels::level2,
+      router::isis::OperationalAdjacencyState::up, std::chrono::milliseconds{2500}, {}});
+  const std::array names{InterfaceName{7U, "edge one"}};
+  auto report = adjacency_table(query, names);
+  require(report && report->find("Adjacencies : 1") != std::string::npos && report->find("edge one") != std::string::npos);
+  const auto row = [&](const std::string &text) {
+    const auto begin = text.find("0000.0000.0002");
+    require(begin != std::string::npos);
+    return text.substr(begin, text.find('\n', begin) - begin);
+  };
+  require(row(*report).ends_with('0'));
+  query.rows[0U].attributes = {229U, 2U, 0U, 2U};
+  report = adjacency_table(query, names);
+  require(report && row(*report).ends_with('2') && !row(*report).ends_with("0,2"));
+  query.rows[0U].attributes = {229U, 1U, 2U};
+  require(!adjacency_table(query, names));
+  query.rows[0U].attributes.clear();
+  require(!adjacency_table(query, {}));
+  query.version = 2U;
+  require(!adjacency_table(query, names));
+  router::isis::HostnameQuery hosts;
+  hosts.device={0U,1U}; hosts.maximum_rows=2U; hosts.maximum_name_octets=512U;
+  hosts.rows.push_back({*router::isis::parse_configured_system_id("0000.0000.0002"),"peer-name"});
+  auto host_report=hostname_table(hosts);
+  require(host_report && host_report->find("Rtr Base ISIS Instance 0 Hostnames")!=std::string::npos &&
+      host_report->find("0000.0000.0002           peer-name")!=std::string::npos);
+  hosts.rows.front().hostname=std::string{"\x1b[31m",5U};
+  host_report=hostname_table(hosts);
+  require(host_report && host_report->find(static_cast<char>(0x1bU))==std::string::npos &&
+      host_report->find("\\x1b[31m")!=std::string::npos);
+  hosts.rows.push_back(hosts.rows.front()); require(!hostname_table(hosts)); hosts.rows.pop_back();
+  hosts.maximum_name_octets=1U; require(!hostname_table(hosts));
+  hosts.maximum_name_octets=512U; hosts.rows.front().hostname=std::string(1U,static_cast<char>(0x80U));
+  require(!hostname_table(hosts)); hosts.rows.front().hostname="zero"; hosts.rows.front().system.fill(0U);
+  require(hostname_table(hosts).has_value()); hosts.rows.clear(); require(hostname_table(hosts).has_value());
+  hosts.version=2U; require(!hostname_table(hosts));
+  router::isis::DatabaseQuery database;
+  database.device={0U,1U}; database.request.maximum_rows=4U;
+  database.request.maximum_names=2U; database.request.maximum_name_octets=512U;
+  database.summary.maximum_rows=4U;
+  database.hostnames={1U,database.device,0U,2U,512U,{{*router::isis::parse_configured_system_id("0000.0000.0002"),"peer-name"}}};
+  database.summary.rows={
+      {0U,{{0U,0U,0U,0U,0U,2U,0U,0U},1200U,7U,0x1234U,0x0fU}},
+      {1U,{{0U,0U,0U,0U,0U,3U,1U,2U},600U,8U,0x5678U,3U}}};
+  auto database_report=database_table(database);
+  require(database_report && database_report->find("peer-name.00-00")!=std::string::npos &&
+      database_report->find("0000.0000.0003.01-02")!=std::string::npos &&
+      database_report->find("L1L2 OV ATT")!=std::string::npos &&
+      database_report->find("Level (1) LSP Count : 1")!=std::string::npos &&
+      database_report->find("Level (2) LSP Count : 1")!=std::string::npos && database_report->find("0x1234")!=std::string::npos);
+  database.hostnames.rows.front().hostname=std::string{"\x1b[31m",5U};
+  database_report=database_table(database);
+  require(database_report && database_report->find(static_cast<char>(0x1bU))==std::string::npos &&
+      database_report->find("\\x1b[31m.00-00")!=std::string::npos);
+  database.hostnames.rows.front().hostname=std::string(255U,'x');
+  database.summary.rows.front().header.sequence=0xffffffffU;
+  database_report=database_table(database);
+  require(database_report && database_report->find(std::string(255U,'x')+".00-00 0xffffffff 0x1234")!=std::string::npos);
+  database.summary.rows.push_back(database.summary.rows.back()); require(!database_table(database)); database.summary.rows.pop_back();
+  database.request.levels=database.summary.levels=2U; require(!database_table(database));
+  database.summary.rows.erase(database.summary.rows.begin()); database_report=database_table(database);
+  require(database_report && database_report->find("Displaying Level 1")==std::string::npos);
+  database.request.maximum_rows=0U; require(!database_table(database));
+  database.request.maximum_rows=4U; database.hostnames.version=2U; require(!database_table(database));
+  database.hostnames.version=1U; database.summary.rows.clear();
+  require(database_table(database)->find("Level (2) LSP Count : 0")!=std::string::npos);
+  database.request.detailed=database.summary.detailed=true;
+  database.request.maximum_tlv_octets=3U; database.summary.maximum_tlv_octets=3U;
+  router::isis::DatabaseSummaryRow detailed{1U,{{0U,0U,0U,0U,0U,3U,0U,0U},60U,1U,0x1111U,3U}};
+  detailed.allocated_octets=128U; detailed.used_octets=router::packet::isis::lsp_header_octets+3U;
+  detailed.version=detailed.packet_version=1U; detailed.system_id_octets=6U; detailed.maximum_areas=3U;
+  detailed.tlvs={137U,1U,'a'}; database.summary.rows.push_back(detailed);
+  const auto detail_report=database_table(database);
+  require(detail_report && detail_report->find("Database (detail)")!=std::string::npos &&
+      detail_report->find("Alloc Len : 128")!=std::string::npos && detail_report->find("IS-Hostname   : a")!=std::string::npos &&
+      detail_report->find("Pkt Type  : 20")!=std::string::npos);
+  database.hostnames.rows.front().system.back()=3U;
+  require(database_table(database)->find(std::string(255U,'x')+".00-00 Level     : L2")!=std::string::npos);
+  database.summary.rows.front().authentication_types={1U}; require(!database_table(database));
+  database.request.maximum_tlv_octets=4U; database.summary.maximum_tlv_octets=4U;
+  database.summary.rows.front().used_octets+=4U;
+  require(database_table(database)->find("Password(1) (1 bytes)")!=std::string::npos);
+  database.summary.rows.front().authentication_types={54U}; require(!database_table(database));
+  database.summary.rows.front().used_octets=router::packet::isis::lsp_header_octets+3U+3U+16U;
+  require(database_table(database)->find("MD5(54) (16 bytes)")!=std::string::npos);
+  database.summary.rows.front().authentication_types.clear(); database.summary.rows.front().tlvs={250U,0U};
+  database.summary.rows.front().used_octets=router::packet::isis::lsp_header_octets+2U;
+  require(!database_table(database));
+
+}

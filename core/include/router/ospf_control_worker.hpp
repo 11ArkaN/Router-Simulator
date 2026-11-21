@@ -46,7 +46,7 @@ struct ControlChannels {
   // only closes the condition-variable notify-before-wait race so a periodic
   // Hello or retransmission is drained at its real monotonic deadline.
   void *egress_wakeup_context{};
-  void (*egress_wakeup)(void *){};
+  void (*egress_wakeup)(void *, std::size_t forwarding_shard){};
   // Producer: sole OSPF control pthread. Consumer: sole network/link owner.
   // A generation contains every OSPF and OSPF3 route candidate for one router;
   // the route manager never observes a partially copied SPF result.
@@ -79,6 +79,7 @@ enum class ControlCommandKind : std::uint8_t {
   commit_generation,
   abort_generation,
   begin_external_generation,
+  prepare_external_generation,
   commit_external_generation,
   abort_external_generation,
   query_process,
@@ -89,7 +90,10 @@ enum class ControlCommandKind : std::uint8_t {
   reset_database,
   checkpoint,
   restore_checkpoint,
-  shutdown
+  shutdown,
+  prepare_checkpoint_restore,
+  commit_checkpoint_restore,
+  abort_checkpoint_restore
 };
 
 struct ProcessIdentity {
@@ -113,6 +117,10 @@ struct ControlCommand {
   // owns the pointed value and waits for this exact command result before its
   // lifetime can end. No pointer is persisted or published to another queue.
   std::uintptr_t checkpoint_transfer{};
+  // Prepare retains this caller-owned checkpoint through matching commit or
+  // abort. One serialized coordinator keeps the source alive until that result.
+  // The token belongs to the enclosing restore barrier and is never persisted.
+  std::uint64_t checkpoint_transaction{};
   std::int64_t operation_now_nanoseconds{};
   std::uint32_t router_id{};
   std::uint32_t initial_dd_sequence{};
@@ -210,6 +218,10 @@ public:
   explicit ControlWorker(ControlChannels &channels,
                          std::size_t forwarding_shards);
   ~ControlWorker();
+  // Serialized control owner joins once before forwarding producers stop.
+  // Notification storage stays alive until those producers have joined.
+  // Later submit rejects; notify remains safe until object destruction.
+  void stop() noexcept;
   ControlWorker(const ControlWorker &) = delete;
   ControlWorker &operator=(const ControlWorker &) = delete;
 
@@ -308,6 +320,21 @@ private:
     ~OwnedProcess();
   };
 
+  struct PreparedCheckpoint {
+    std::array<std::vector<OwnedProcess>, device_catalog::maximum_routers> processes;
+    std::array<std::uint64_t, device_catalog::maximum_routers> next_route_generation{};
+    std::array<lab::DeviceHandle, device_catalog::maximum_routers> active_devices{};
+    std::array<bool, device_catalog::maximum_routers> route_publication_pending{}, route_coordination_pending{};
+    ControlWorkerCheckpoint *source{};
+    std::uint64_t transaction{};
+  };
+  // Same protocol owner. Prepare allocates detached owners; matching commit
+  // only swaps and clears source key copies. Abort preserves all live owners.
+  [[nodiscard]] bool prepare_checkpoint_restore(ControlWorkerCheckpoint &source,
+      RuntimeClock::time_point now, std::uint64_t transaction) noexcept;
+  [[nodiscard]] bool commit_checkpoint_restore(std::uint64_t transaction) noexcept;
+  std::unique_ptr<PreparedCheckpoint> checkpoint_restore_;
+
   struct GenerationStaging {
     // Only the OSPF owner pthread mutates these vectors. Begin reserves the
     // exact declared counts, stage only appends value records, and Commit
@@ -347,6 +374,7 @@ private:
   [[nodiscard]] bool coordinate_routes(
       std::span<OwnedProcess> processes,
       RuntimeClock::time_point now) noexcept;
+  [[nodiscard]] bool prepare_external_generation(std::size_t device) noexcept;
   void run() noexcept;
 
   ControlChannels &channels_;
@@ -366,6 +394,11 @@ private:
   std::array<std::optional<std::vector<ControlCommand>>,
              device_catalog::maximum_routers>
       external_staging_;
+  // A prepared export leases this router's process layout until commit or
+  // abort. Only this worker owns these vectors; commit performs no allocation.
+  std::array<std::optional<std::vector<std::vector<CoordinatorAdvertisement>>>,
+             device_catalog::maximum_routers>
+      prepared_external_;
   std::array<std::uint32_t, device_catalog::maximum_routers>
       expected_external_staging_{};
   std::array<std::uint64_t, device_catalog::maximum_routers>
@@ -392,12 +425,13 @@ private:
       commands_;
   SpscRing<ControlResult, device_catalog::network_result_ring_entries>
       results_;
-  std::thread thread_;
   std::mutex wait_mutex_;
   std::condition_variable wait_condition_;
   std::atomic_bool stop_requested_{};
   std::atomic_bool work_pending_{};
   std::atomic_uint64_t thread_id_{};
+  // Construct every synchronization object before the run loop may enter.
+  std::thread thread_;
 };
 
 } // namespace router::ospf

@@ -1,0 +1,17 @@
+schema_version: 1
+verified_at: "2026-10-26"
+documents:
+  - identifier: RFC5304
+    source_url: https://www.rfc-editor.org/rfc/rfc5304.html
+    errata_url: https://www.rfc-editor.org/errata/rfc5304
+    errata: []
+    updated_by: [RFC6232, RFC6233]
+  - identifier: RFC5310
+    source_url: https://www.rfc-editor.org/rfc/rfc5310.html
+    errata_url: https://www.rfc-editor.org/errata/rfc5310
+    rejected_errata: [2461, 2462]
+    updated_by: [RFC6232, RFC6233]
+  - identifier: RFC6233
+    source_url: https://www.rfc-editor.org/rfc/rfc6233.html
+    sections_read: ["2", "3"]
+    purge_policy_owner: isis_process

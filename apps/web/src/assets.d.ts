@@ -5,3 +5,8 @@ declare module "*.netsim?raw" {
   const manifestText: string;
   export default manifestText;
 }
+
+declare module "*.netsim.json?raw" {
+  const content: string;
+  export default content;
+}

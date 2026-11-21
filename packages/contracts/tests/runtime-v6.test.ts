@@ -12,7 +12,7 @@ function snapshotWithPort(port: {
   oper: boolean;
 }) {
   return {
-    abiVersion: 9,
+    abiVersion: 10,
     protocolVersion: 4,
     status: "ready",
     routers: [{
@@ -43,7 +43,7 @@ function snapshotWithPort(port: {
       staticRoutes: [],
       ipv6StaticRoutes: [],
       policyOptions: { prefixLists: [], statements: [] },
-      ospf: { instances: [] }
+      ospf: { instances: [] }, isis: { instances: [] }
     }],
     hosts: [],
     switches: [],

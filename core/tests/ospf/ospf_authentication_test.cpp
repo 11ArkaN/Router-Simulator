@@ -186,6 +186,25 @@ void ospf_authentication_tests() {
       plain_storage, packet::ospf::PacketType::hello, 0x01010101U, 0U,
       0U, ipv6_source, ipv6_destination, v3_hello);
   std::array<std::uint8_t, 256U> ah_storage{};
+  // Independent Python HMAC vectors use a key longer than the digest but
+  // shorter than its block. AH follows RFC 2104, not OSPF's RFC 5709 rule.
+  std::array<std::uint8_t, 40U> long_ah_key{};
+  long_ah_key.fill('K');
+  const std::array<std::array<std::uint8_t, 12U>, 2U> expected_ah{{
+    {0x9bU, 0xcdU, 0xcfU, 0x2aU, 0x2aU, 0xfeU, 0x19U, 0x5aU, 0xf0U, 0x5cU, 0xd2U, 0x03U},
+    {0xbaU, 0x2eU, 0xc6U, 0x99U, 0xccU, 0x4bU, 0x55U, 0xd3U, 0xcdU, 0xc1U, 0x01U, 0xd5U}}};
+  std::size_t ah_vector{};
+  for (const auto algorithm : {ospf::authentication::IpsecAhAlgorithm::hmac_md5_96,
+                               ospf::authentication::IpsecAhAlgorithm::hmac_sha1_96}) {
+    const auto encoded_ah = plain_v3 ? ospf::authentication::encode_ipv6_ipsec_ah(
+        ah_storage, ipv6_source, ipv6_destination, 1U, 4096U, 7U,
+        algorithm, long_ah_key, *plain_v3) : std::nullopt;
+    require(encoded_ah && std::equal(expected_ah[ah_vector].begin(), expected_ah[ah_vector].end(),
+              encoded_ah->begin() + 52U) &&
+              ospf::authentication::verify_ipv6_ipsec_ah(*encoded_ah, algorithm, long_ah_key),
+            "AH long-key HMAC disagreed with independent vector");
+    ++ah_vector;
+  }
   const auto ah_wire = plain_v3
       ? ospf::authentication::encode_ipv6_ipsec_ah(
             ah_storage, ipv6_source, ipv6_destination, 1U, 4096U, 7U,

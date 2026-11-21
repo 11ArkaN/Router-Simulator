@@ -4,6 +4,7 @@
 
 #include "router/secret_vault.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <ranges>
@@ -146,9 +147,9 @@ void secret_vault_tests() {
         full_vault->seal(all_kinds[index], material);
     if (seal_result != Result::applied || !handle)
       throw std::runtime_error("defined secret purpose was rejected at seal");
-    const auto [open_result, opened_material] =
+    const auto [material_result, opened_material] =
         full_vault->open(handle, all_kinds[index]);
-    if (open_result != Result::applied || !opened_material ||
+    if (material_result != Result::applied || !opened_material ||
         !std::ranges::equal(opened_material->bytes(), material))
       throw std::runtime_error("defined secret purpose did not round-trip");
   }

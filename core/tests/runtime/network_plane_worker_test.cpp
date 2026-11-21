@@ -280,7 +280,7 @@ void network_plane_worker_tests() {
   std::uint32_t streamed{};
   while (streamed < interface_id_octets) {
     Dhcpv6RelayInterfaceIdChunk chunk;
-    chunk.size = static_cast<std::uint16_t>(std::min<std::uint32_t>(
+    chunk.size = static_cast<std::uint16_t>(std::min<std::size_t>(
         chunk.octets.size(), interface_id_octets - streamed));
     for (std::uint16_t index = 0; index < chunk.size; ++index)
       chunk.octets[index] =

@@ -1,0 +1,8 @@
+schema_version: 1
+identifier: RFC5303
+source_url: https://www.rfc-editor.org/rfc/rfc5303.html
+errata_url: https://www.rfc-editor.org/errata/rfc5303
+verified_at: "2026-10-26"
+verified_errata: [2587, 2588]
+held_for_document_update: [2589, 2590, 2591, 2593, 2594]
+algorithm_table_changed_by_verified_errata: false

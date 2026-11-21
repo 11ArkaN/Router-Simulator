@@ -8,6 +8,7 @@
 #include "router/generated_device_catalog.hpp"
 #include "router/lab_registry.hpp"
 #include "router/packet_pool.hpp"
+#include "router/protocol_frame_expiry.hpp"
 
 #include <array>
 #include <chrono>
@@ -23,6 +24,7 @@ struct FabricFrameCheckpoint {
   // Zero for TX and RX stages. In-flight entries carry their remaining
   // delivery interval relative to the checkpoint barrier.
   std::int64_t delivery_remaining_nanoseconds{};
+  protocol::FrameExpiryCheckpoint expiry{};
 };
 
 struct FabricDirectionCheckpoint {
@@ -60,8 +62,8 @@ public:
 
   struct Delivery {
     // Delivery is a borrowed callback value. The frame reference remains valid
-    // only during the callback because pool ownership is released immediately
-    // afterwards. Consumers must copy or parse all required bytes synchronously.
+    // only during the callback. The fabric transfers or releases pool ownership
+    // afterward; consumers must copy or parse required bytes synchronously.
     LinkHandle link;
     PortHandle source;
     PortHandle destination;
@@ -91,8 +93,12 @@ public:
 
   // endpoint is zero for the first configured port and one for the second.
   // The method copies bytes into the shared pool and never calls a peer device.
+  // Optional expiry is consumed once at the scheduled TX start. Its offset
+  // must select a producer-authorized field in this exact encoded envelope.
+  // Expiry drops release the unique pool handle and increment dropped_frames.
   [[nodiscard]] DropReason enqueue(LinkHandle link, std::uint8_t endpoint,
-                                   const packet::Frame &frame) noexcept;
+                                   const packet::Frame &frame,
+                                   protocol::FrameExpiry expiry = {}) noexcept;
   // enqueue_shared transfers an additional reference to the TX queue without
   // copying frame bytes. The caller and fabric must share this exact pool and
   // the caller retains its own reference until this method returns.
@@ -107,7 +113,10 @@ public:
                                  std::size_t frames) const noexcept;
   // These pump methods run only on the link owner. The explicit time argument
   // supports deterministic native unit tests; production passes steady_clock.
-  void pump_transmit(Clock::time_point now = Clock::now()) noexcept;
+  // Optional observation borrows finalized wire bytes after expiry processing.
+  // It must not reenter or mutate the fabric and cannot retain the frame view.
+  void pump_transmit(Clock::time_point now = Clock::now(),
+      void *context = nullptr, DeliveryObserver observer = nullptr) noexcept;
   void pump_delivery(void *context, DeliveryObserver observer,
                      Clock::time_point now = Clock::now()) noexcept;
   [[nodiscard]] std::optional<Clock::time_point> next_delivery() const noexcept;
@@ -141,11 +150,16 @@ public:
 private:
   static constexpr std::uint32_t no_in_flight = 0xffffffffU;
 
+  struct QueuedFrame {
+    PacketHandle handle{};
+    protocol::FrameExpiry expiry{};
+  };
+
   struct Direction {
     // Ownership flow is TX queue -> global in-flight slab -> RX queue ->
     // callback. The direction owns only its linked-list head and transmitter
     // deadline, so 128 directions do not each reserve a worst-case frame list.
-    BoundedQueue<PacketHandle, device_catalog::link_queue_capacity> tx;
+    BoundedQueue<QueuedFrame, device_catalog::link_queue_capacity> tx;
     BoundedQueue<PacketHandle, device_catalog::link_queue_capacity> rx;
     std::uint64_t bits_per_second{};
     std::chrono::nanoseconds propagation{};
@@ -182,7 +196,8 @@ private:
   serialization_time(std::uint64_t bits,
                      std::uint64_t bits_per_second) const noexcept;
   [[nodiscard]] DropReason enqueue_owned_reference(
-      LinkHandle link, std::uint8_t endpoint, PacketHandle frame) noexcept;
+      LinkHandle link, std::uint8_t endpoint, PacketHandle frame,
+      protocol::FrameExpiry expiry = {}) noexcept;
 
   // One packet pool is shared by all 64 links. This makes laboratory-wide
   // memory pressure explicit instead of reserving 64 independent 64 MiB pools.

@@ -15,11 +15,11 @@ void shard_policy_tests() {
 
   // hardware_concurrency may legally report zero. Treating it as the smallest
   // host is safe because it never overcommits an unknown execution budget.
-  if (!unknown.combined_forwarding_link() || unknown.pthreads() != 2U ||
-      !low.combined_forwarding_link() || low.worker_domains() != 3U ||
+  if (!unknown.combined_forwarding_link() || unknown.pthreads() != 3U ||
+      !low.combined_forwarding_link() || low.worker_domains() != 4U ||
       medium.control != 1U || medium.forwarding != 2U || medium.link != 1U ||
-      medium.ospf != 1U || medium_edge.worker_domains() != 5U ||
+      medium.ospf != 1U || medium.isis != 1U || medium_edge.worker_domains() != 6U ||
       high.control != 2U || high.forwarding != 3U || high.link != 1U ||
-      high.ospf != 1U || high.pthreads() != 6U)
+      high.ospf != 1U || high.isis != 1U || high.pthreads() != 7U)
     throw std::runtime_error("generated shard placement policy is inconsistent");
 }

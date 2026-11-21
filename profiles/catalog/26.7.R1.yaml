@@ -57,10 +57,10 @@ runtime:
   low_link_shards: 0
   medium_link_shards: 1
   high_link_shards: 1
-  pthread_pool_low: 2
-  pthread_pool_medium: 4
-  pthread_pool_high: 6
-  maximum_worker_domains: 7
+  pthread_pool_low: 3
+  pthread_pool_medium: 5
+  pthread_pool_high: 7
+  maximum_worker_domains: 8
   # Chromium may still be retiring the previous page's pthread Workers during
   # an intentional reload. The startup gate remains fail-closed, but permits
   # the new fixed pool to publish both distinct owners for up to ten seconds.
@@ -279,6 +279,14 @@ runtime:
   # forwarding owner and one protocol owner. These capacities bound emulator
   # memory and scheduling work; they are not Nokia platform scale claims.
   ospf_packet_ring_frames: 256
+  # IS-IS uses independent frame credits and owned control-generation slots.
+  # Six maximum-frame rings must share the existing 24 MiB network metadata
+  # reserve with OSPF and forwarding. Full preserves producer obligations.
+  # These are emulator transport budgets, not active-instance scale claims.
+  isis_packet_ring_frames: 16
+  isis_control_generation_slots: 8
+  isis_work_budget_packets: 16
+  isis_instance_last: 127
   ospf_lsas_per_instance: 4096
   ospf_vertices_per_area: 2048
   ospf_edges_per_area: 8192

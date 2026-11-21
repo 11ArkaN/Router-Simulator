@@ -15,6 +15,21 @@
 
 namespace router::cli_detail {
 
+struct TokenizedLine {
+  // The schema generator publishes the largest legal command width. Keeping
+  // token views in a fixed array makes parsing allocation-free and places an
+  // explicit upper bound on work for malformed terminal input.
+  std::array<std::string_view, cli_schema::maximum_tokens> tokens{};
+  std::uint8_t count{};
+  bool trailing_space{};
+  bool valid{true};
+};
+
+// Read-only CLI-shard lexical projection. Views borrow input until return to
+// the caller; input must outlive their use. Open quotes are accepted for help,
+// malformed separators and excess tokens set valid=false. No allocation.
+[[nodiscard]] TokenizedLine tokenize_completion_line(std::string_view input, CliEngine engine) noexcept;
+
 // Removal operators are grammar literals in the release schema: MD-CLI delete
 // paths start with the delete literal and classic removal rows carry a no
 // literal. Deriving the classification from the generated row keeps editor

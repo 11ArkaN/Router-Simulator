@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <utility>
+#include <stdexcept>
 
 namespace router::lab {
 
@@ -105,7 +106,7 @@ bool MultiDeviceFabric::set_carrier(LinkHandle link, bool up) noexcept {
 
 MultiDeviceFabric::DropReason
 MultiDeviceFabric::enqueue(LinkHandle link, std::uint8_t endpoint,
-                           const packet::Frame &frame) noexcept {
+                           const packet::Frame &frame, protocol::FrameExpiry expiry) noexcept {
   auto *slot = find(link);
   if (!slot || endpoint > 1U) {
     ++dropped_frames_;
@@ -123,7 +124,7 @@ MultiDeviceFabric::enqueue(LinkHandle link, std::uint8_t endpoint,
     ++dropped_frames_;
     return DropReason::packet_pool_full;
   }
-  return enqueue_owned_reference(link, endpoint, *handle);
+  return enqueue_owned_reference(link, endpoint, *handle, expiry);
 }
 
 MultiDeviceFabric::DropReason
@@ -141,7 +142,7 @@ MultiDeviceFabric::enqueue_shared(LinkHandle link, std::uint8_t endpoint,
 MultiDeviceFabric::DropReason
 MultiDeviceFabric::enqueue_owned_reference(LinkHandle link,
                                             std::uint8_t endpoint,
-                                            PacketHandle frame) noexcept {
+                                            PacketHandle frame, protocol::FrameExpiry expiry) noexcept {
   auto *slot = find(link);
   if (!slot || endpoint > 1U) {
     pool_.release(frame);
@@ -154,7 +155,7 @@ MultiDeviceFabric::enqueue_owned_reference(LinkHandle link,
     return DropReason::carrier_down;
   }
   auto &direction = slot->directions[endpoint];
-  if (!direction.tx.try_push(frame)) {
+  if (!direction.tx.try_push({frame, expiry})) {
     pool_.release(frame);
     ++dropped_frames_;
     return DropReason::transmit_queue_full;
@@ -174,7 +175,8 @@ bool MultiDeviceFabric::can_enqueue(LinkHandle link, std::uint8_t endpoint,
          frames <= slot->directions[endpoint].tx.available();
 }
 
-void MultiDeviceFabric::pump_transmit(Clock::time_point now) noexcept {
+void MultiDeviceFabric::pump_transmit(Clock::time_point now,
+    void *context, DeliveryObserver observer) noexcept {
   // One frame per direction per visit prevents a saturated cable from filling
   // the global medium slab before another cable gets an admission opportunity.
   std::size_t budget = device_catalog::fabric_work_budget_frames;
@@ -184,8 +186,9 @@ void MultiDeviceFabric::pump_transmit(Clock::time_point now) noexcept {
     if (!slot.active || !slot.carrier)
       continue;
     for (auto &direction : slot.directions) {
-      PacketHandle handle{};
-      if (budget && direction.tx.try_peek(handle)) {
+      QueuedFrame queued;
+      if (budget && direction.tx.try_peek(queued)) {
+        const auto handle = queued.handle;
         // One in-flight node is reserved before the TX handle is transferred.
         // The slab is sized to the packet pool, but allocation can still fail
         // while every existing frame happens to occupy the medium stage.
@@ -197,7 +200,27 @@ void MultiDeviceFabric::pump_transmit(Clock::time_point now) noexcept {
             std::max<std::uint64_t>(frame.size() + 4U, 64U);
         const auto delivery_bits = (8U + mac_octets) * 8U;
         const auto spacing_bits = (8U + mac_octets + 12U) * 8U;
-        const auto start = std::max(now, direction.transmitter_available);
+        // The owner turn can sample time before another shard publishes this
+        // frame. A scheduled physical start must never predate its encoding.
+        const auto start = std::max(std::max(now, direction.transmitter_available),
+            queued.expiry.offset ? queued.expiry.prepared : now);
+        if (queued.expiry.offset) {
+          auto *owned = pool_.edit_exclusive(handle);
+          if (!owned || !queued.expiry.apply(*owned, start,
+              serialization_time(delivery_bits, direction.bits_per_second) + direction.propagation)) {
+            static_cast<void>(direction.tx.try_pop(queued));
+            pool_.release(handle);
+            release_in_flight(*node_index);
+            ++dropped_frames_;
+            --budget;
+            continue;
+          }
+        }
+        if (observer) {
+          const auto endpoint = static_cast<std::size_t>(&direction - slot.directions.data());
+          observer(context, Delivery{{static_cast<std::uint16_t>(slot_index), slot.generation},
+              slot.endpoints[endpoint], slot.endpoints[endpoint ^ 1U], frame});
+        }
         direction.transmitter_available =
             start + serialization_time(spacing_bits,
                                        direction.bits_per_second);
@@ -216,7 +239,7 @@ void MultiDeviceFabric::pump_transmit(Clock::time_point now) noexcept {
         else
           in_flight_[direction.in_flight_tail].next = *node_index;
         direction.in_flight_tail = *node_index;
-        static_cast<void>(direction.tx.try_pop(handle));
+        static_cast<void>(direction.tx.try_pop(queued));
         --budget;
       }
     }
@@ -330,9 +353,11 @@ MultiDeviceFabric::checkpoint(Clock::time_point now) const {
               : 0;
       output.transmit.reserve(direction.tx.size());
       for (std::size_t offset = 0; offset < direction.tx.size(); ++offset) {
-        PacketHandle handle{};
-        static_cast<void>(direction.tx.copy_at(offset, handle));
-        output.transmit.push_back({pool_.get(handle), 0});
+        QueuedFrame queued;
+        static_cast<void>(direction.tx.copy_at(offset, queued));
+        const auto expiry = queued.expiry.checkpoint(now);
+        if (!expiry) throw std::logic_error("Fabric frame expiry anchor corrupted");
+        output.transmit.push_back({pool_.get(queued.handle), 0, *expiry});
       }
       for (auto node_index = direction.in_flight_head;
            node_index != no_in_flight; node_index = in_flight_[node_index].next) {
@@ -366,7 +391,9 @@ bool MultiDeviceFabric::validate_checkpoint(
   std::size_t total_frames{};
   const auto valid_frame = [](const FabricFrameCheckpoint &entry) {
     return entry.frame.size() > 0U &&
-           entry.frame.size() <= entry.frame.bytes.size();
+           entry.frame.size() <= entry.frame.bytes.size() &&
+           protocol::FrameExpiry::restore(entry.expiry, {}).has_value() &&
+           (!entry.expiry.offset || static_cast<std::size_t>(entry.expiry.offset) + 1U < entry.frame.size());
   };
   for (const auto &link : state.links) {
     if (!link.link || link.link.index >= device_catalog::maximum_links ||
@@ -384,7 +411,7 @@ bool MultiDeviceFabric::validate_checkpoint(
       for (const auto &entry : direction.in_flight) {
         // A direction's medium list is FIFO by delivery deadline. Accepting a
         // decreasing deadline would change delivery order after restoration.
-        if (!valid_frame(entry) || entry.delivery_remaining_nanoseconds < 0 ||
+        if (!valid_frame(entry) || entry.expiry.offset || entry.delivery_remaining_nanoseconds < 0 ||
             entry.delivery_remaining_nanoseconds < prior_delivery)
           return false;
         prior_delivery = entry.delivery_remaining_nanoseconds;
@@ -392,7 +419,7 @@ bool MultiDeviceFabric::validate_checkpoint(
       if (!std::all_of(direction.transmit.begin(), direction.transmit.end(),
                        valid_frame) ||
           !std::all_of(direction.receive.begin(), direction.receive.end(),
-                       valid_frame))
+                       [&](const auto &entry) { return valid_frame(entry) && !entry.expiry.offset; }))
         return false;
       total_frames += direction.transmit.size() + direction.in_flight.size() +
                       direction.receive.size();
@@ -440,7 +467,7 @@ bool MultiDeviceFabric::restore(const MultiDeviceFabricCheckpoint &state,
                     input.transmitter_remaining_nanoseconds);
       for (const auto &entry : input.transmit) {
         const auto handle = pool_.allocate(entry.frame);
-        if (!handle || !direction.tx.try_push(*handle))
+        if (!handle || !direction.tx.try_push({*handle, *protocol::FrameExpiry::restore(entry.expiry, now)}))
           std::terminate();
       }
       for (const auto &entry : input.in_flight) {
@@ -474,8 +501,9 @@ void MultiDeviceFabric::drain(Slot &slot, Clock::time_point now) noexcept {
   static_cast<void>(now);
   for (auto &direction : slot.directions) {
     PacketHandle handle{};
-    while (direction.tx.try_pop(handle)) {
-      pool_.release(handle);
+    QueuedFrame queued;
+    while (direction.tx.try_pop(queued)) {
+      pool_.release(queued.handle);
       ++dropped_frames_;
     }
 

@@ -1,3 +1,7 @@
+// Fixed frame storage belongs to one forwarding or link shard per pool.
+// Reference counts share immutable frames only within that owner. Dependencies
+// point to encoded frame values and generated resource budgets.
+
 #pragma once
 
 #include "router/generated_device_catalog.hpp"
@@ -56,6 +60,13 @@ public:
     return slots_[handle];
   }
 
+  // Sole pool owner only. An exclusive reference permits a final wire-field
+  // rewrite before TX transfers into the medium. Shared switch replicas refuse;
+  // callers must not retain this pointer across any ownership transfer.
+  [[nodiscard]] packet::Frame *edit_exclusive(PacketHandle handle) noexcept {
+    return handle < references_.size() && references_[handle] == 1U ? &slots_[handle] : nullptr;
+  }
+
   // retain adds one immutable consumer before a shared frame handle is copied
   // into another queue. The 16-bit counter exceeds the maximum generated
   // switch fanout while avoiding an atomic operation: one link/switch shard is
@@ -82,7 +93,7 @@ public:
   [[nodiscard]] std::size_t available() const noexcept { return free_count_; }
 
 private:
-  // The forwarding shard is the only owner. Handles cross device queues, but
+  // The enclosing shard is the only owner. Handles cross device queues, but
   // pointers never enter shared ABI or persisted state.
   std::vector<packet::Frame> slots_;
   std::vector<PacketHandle> free_;

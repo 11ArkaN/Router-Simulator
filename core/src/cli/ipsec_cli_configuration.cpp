@@ -390,7 +390,7 @@ bool ipsec_referenced(const Configuration &state, std::uint16_t transform) {  co
                      });
 }
 
-bool ike_policy_referenced(const Configuration &state, std::uint16_t policy) {
+bool ike_policy_referenced(const Configuration &state, std::uint32_t policy) {
   // The YANG ike-policy leafref lives under the transport profile dynamic
   // keying context; tunnel templates reference transforms directly.
   return std::any_of(state.transport_mode_profiles.begin(),

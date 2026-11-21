@@ -60,6 +60,7 @@ void ospf_route_channel_tests() {
   const auto third = channel->try_acquire();
   require(second && third && !channel->try_acquire(),
           "route channel capacity did not enforce bounded ownership");
-  require(channel->cancel(second->handle) && channel->cancel(third->handle),
+  require(channel->cancel(second->handle) && channel->cancel(third->handle) &&
+              !channel->cancel(second->handle) && !channel->publish(third->handle),
           "route channel could not cancel unpublished writable slots");
 }

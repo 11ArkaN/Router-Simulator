@@ -4,6 +4,7 @@
 
 #include "router/dhcpv4_leasequery.hpp"
 
+#include <algorithm>
 #include <array>
 #include <stdexcept>
 #include <vector>

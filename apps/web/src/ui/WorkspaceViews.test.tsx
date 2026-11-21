@@ -119,18 +119,21 @@ describe("multi-router workspace controls", () => {
     const user = userEvent.setup();
     const toggle = vi.fn();
     const exportCapture = vi.fn();
+    const downloadCapture = vi.fn();
     const checkpoint = vi.fn();
     const selection = vi.fn();
     render(<CaptureWorkspace project={projectWithRouter()} selections={[]}
       onSelection={selection} onToggle={toggle}
-      onExport={exportCapture} onCheckpoint={checkpoint} />);
+      onExport={exportCapture} onDownload={downloadCapture} onCheckpoint={checkpoint} />);
 
     await user.click(screen.getByRole("button", { name: "Start capture" }));
     await user.click(screen.getByRole("button", { name: "Export PCAPNG" }));
+    await user.click(screen.getByRole("button", { name: "Download PCAPNG" }));
     await user.click(screen.getByRole("button", { name: "Export checkpoint" }));
     await user.click(screen.getByRole("button", { name: /CPM punt/ }));
     expect(toggle).toHaveBeenCalledOnce();
     expect(exportCapture).toHaveBeenCalledOnce();
+    expect(downloadCapture).toHaveBeenCalledOnce();
     expect(checkpoint).toHaveBeenCalledOnce();
     expect(selection).toHaveBeenCalledWith("cpm-punt", "r1", "", 0, true);
   });
@@ -168,13 +171,22 @@ describe("multi-router workspace controls", () => {
     expect(changed).toHaveBeenCalled();
   });
 
-  it("opens checkpoint import through the owned binary input", async () => {
+  it("imports the same portable format exported by the snapshot panel", async () => {
     const user = userEvent.setup();
     const input = createRef<HTMLInputElement>();
-    render(<SnapshotWorkspace checkpointInput={input} onExport={vi.fn()}
-      onImport={vi.fn()} />);
+    const exported = vi.fn();
+    const imported = vi.fn((event: React.ChangeEvent<HTMLInputElement>) =>
+      event.target.files?.[0]);
+    render(<SnapshotWorkspace checkpointInput={input} onExport={exported}
+      onImport={imported} />);
     const click = vi.spyOn(input.current!, "click");
+    await user.click(screen.getByRole("button", { name: "Export checkpoint" }));
+    expect(exported).toHaveBeenCalledOnce();
     await user.click(screen.getByRole("button", { name: "Import checkpoint" }));
     expect(click).toHaveBeenCalledOnce();
-  });
-});
+    const file = new File(["protected checkpoint"], "lab.checkpoint.netsim",
+      { type: "application/json" });
+    await user.upload(input.current!, file);
+    expect(imported).toHaveBeenCalledOnce();
+    expect(imported.mock.results[0].value).toBe(file);
+  });});
