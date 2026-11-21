@@ -167,7 +167,7 @@ An incompatible checkpoint is rejected before runtime replacement. The user can 
 
 The agreed [IS-IS implementation plan](docs/isis-implementation-plan.md) covers the Base-router scope, pinned SR OS 26.7.R1 YANG models, both CLI engines, packet processing, routing, checkpoint continuity and acceptance gates.
 
-The Ethernet LLC UI codec supports ordinary Length framing and the IEEE 802.1AC `0x8870` encapsulation, including QinQ and bounded jumbo frames. Ordinary receive views exclude Ethernet padding. A protocol-neutral SPSC frame channel supplies the shared ownership mechanism for control protocols; OSPF uses the same implementation through its existing API. LLC runtime dispatch and the IS-IS worker remain in progress.
+The Ethernet LLC UI codec supports ordinary Length framing and the IEEE 802.1AC `0x8870` encapsulation, including QinQ and bounded jumbo frames. Ordinary receive views exclude Ethernet padding. Native IS-IS ingress and egress enforce the current physical port MTU, including the Ethernet header; oversized received IIHs do not reach adjacency processing. A protocol-neutral SPSC frame channel supplies the shared ownership mechanism for control protocols; OSPF uses the same implementation through its existing API. LLC runtime dispatch and the IS-IS worker remain in progress.
 
 Core tests send all nine IS-IS PDU types through physical link queues and a learning bridge. The forwarding boundary admits configured protocol multicast without requiring an IP address and enforces the egress port MTU. The P2P adjacency owner keeps ISO state, three-way state and holding expiry separate; the instance worker and runtime configuration still need to connect these components.
 

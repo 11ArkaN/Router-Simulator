@@ -136,4 +136,25 @@ void router_forwarder_isis_tests() {
       "IS-IS rejected projection exchange consumed the caller's staged values");
   receive(frame);
   require(observed.punts == 5U, "IS-IS rejected exchange changed the active projection");
+  // The receive port owns its physical frame limit independently of the
+  // sender. Padding must not let a larger-MTU peer establish an adjacency.
+  const auto fitting_options = port.mtu - packet::ethernet_header_octets -
+      packet::llc_ui_header_octets - point_to_point_hello_header_octets;
+  TlvWriter fitting_writer(std::span(padding).first(fitting_options));
+  require(fitting_writer.pad_to(fitting_options), "IS-IS boundary padding failed");
+  const auto fitting = encode_hello(bytes, input, fitting_writer.bytes());
+  packet::Frame boundary;
+  require(fitting && ethernet_pdu_into(boundary, peer, group, *fitting) && boundary.size() == port.mtu,
+      "IS-IS exact receive MTU fixture failed");
+  receive(boundary);
+  require(observed.punts == 6U, "IS-IS rejected a frame at the receive MTU");
+  TlvWriter oversized_writer(padding);
+  require(oversized_writer.pad_to(padding.size()), "IS-IS oversized ingress padding failed");
+  const auto oversized = encode_hello(bytes, input, oversized_writer.bytes());
+  require(oversized && ethernet_pdu_into(jumbo, peer, group, *oversized), "IS-IS oversized ingress fixture failed");
+  const auto dropped_before = forwarder->dropped_frames();
+  receive(jumbo);
+  require(observed.punts == 6U && forwarder->dropped_frames() == dropped_before + 1U &&
+      forwarder->last_drop() == ForwardDrop::mtu_exceeded,
+      "IS-IS oversized ingress bypassed physical MTU admission or drop accounting");
 }

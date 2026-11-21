@@ -7811,6 +7811,12 @@ void RouterForwarder::receive(std::uint16_t ingress_port,
         llc->payload.front() == packet::isis::discriminator &&
         std::binary_search(isis_groups_[ingress_port].begin(), isis_groups_[ingress_port].end(),
                             ethernet->destination)) {
+      // The physical receiver rejects oversized frames before CPM admission.
+      // A larger peer MTU must not bypass the IIH padding compatibility check.
+      if (frame.size() > physical_ingress->mtu) {
+        drop(ForwardDrop::mtu_exceeded);
+        return;
+      }
       if (punt_observer) punt_observer(punt_context, ingress_port, frame);
       return;
     }
