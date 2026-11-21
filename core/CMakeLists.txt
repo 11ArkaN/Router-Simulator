@@ -122,6 +122,7 @@ add_library(router_primitives STATIC
   src/isis/isis_broadcast_checkpoint.cpp
   src/isis/isis_jitter.cpp
   src/isis/isis_hello_schedule.cpp
+  src/isis/isis_hello_padding.cpp
   src/isis/isis_hello_checkpoint.cpp
   src/isis/isis_flooding.cpp
     src/dns/dns_packet.cpp
@@ -719,6 +720,7 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_broadcast_scan_test.cpp
     tests/isis/isis_jitter_test.cpp
     tests/isis/isis_hello_schedule_test.cpp
+    tests/isis/isis_hello_padding_test.cpp
     tests/isis/isis_flooding_test.cpp
     tests/isis/isis_level_database_test.cpp
     tests/isis/isis_level_database_checkpoint_test.cpp

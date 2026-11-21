@@ -175,7 +175,7 @@ IS-IS egress requires the protocol owner's encoded source MAC to match the curre
 
 LAN adjacency records track two-way neighbor MAC reporting and independent holding deadlines at each level. Capacity decisions follow the ISO priority and MAC order, with insertion waiting for the victim's Down completion. Periodic jitter uses the ISO 25 percent range and a caller-owned PRNG continuation.
 
-Hello composition splits neighbor and interface-address lists across complete TLVs, places IID first and authenticates the final padding. A one-octet padding gap remains below the selected PDU maximum. Shared frame channels reject duplicate slot returns and invalid frame lengths before either can corrupt ownership.
+Hello composition splits neighbor and interface-address lists across complete TLVs, places IID first and authenticates the final padding. A one-octet padding gap remains below the selected PDU maximum. A separate source-bound padding policy selects strict, none, LAN adaptive/loose and three-way P2P behavior from local adjacency state. Loose legacy behavior explicitly remains unresolved; CLI inheritance, runtime integration and MTU target selection are still pending. Shared frame channels reject duplicate slot returns and invalid frame lengths before either can corrupt ownership.
 
 CSNP and PSNP composition preserves ascending LSP-ID order across complete TLV 9 lists, checks CSNP range bounds and authenticates the final batch. A batch that exceeds the selected PDU size fails without emitting partial acknowledgements. Empty CSNP ranges can describe an empty database. Instance scheduling, range partitioning and flood-flag updates after real egress remain in progress.
 

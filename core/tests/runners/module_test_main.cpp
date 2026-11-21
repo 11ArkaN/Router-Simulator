@@ -117,6 +117,7 @@ void isis_lan_circuit_checkpoint_tests();
 void isis_broadcast_scan_tests();
 void isis_jitter_tests();
 void isis_hello_schedule_tests();
+void isis_hello_padding_tests();
 void isis_flooding_tests();
 void isis_level_database_tests();
 void isis_level_database_checkpoint_tests();
@@ -593,6 +594,7 @@ int main() {
     isis_broadcast_scan_tests();
     isis_jitter_tests();
     isis_hello_schedule_tests();
+    isis_hello_padding_tests();
     isis_flooding_tests();
     isis_level_database_tests();
     isis_level_database_checkpoint_tests();

@@ -1,5 +1,19 @@
 schema_version: 1
 records:
+  - id: nokia.sros.26_7.isis.hello_padding_policy
+    kind: routing-protocol-hello-padding-policy
+    release: 26.7.R1
+    platforms: [browser-wasm, native-test]
+    source_type: nokia-official-yang-and-cli
+    source_url: https://documentation.nokia.com/sr/26-7/7750-sr/cli-books/classic-cli-command-reference/classic-h-commands.html#ai9j785htg
+    section: Base router hello-padding parameter behavior
+    rfc_refs: [RFC3719, RFC5303]
+    yang_path: /configure/router/isis/hello-padding
+    last_verified_at: 2026-11-21
+    implementation: [core/include/router/isis_hello_padding.hpp, core/src/isis/isis_hello_padding.cpp]
+    tests: [core/tests/isis/isis_hello_padding_test.cpp]
+    status: partially-implemented
+    notes: Pure per-transmission selection covers strict and none, LAN adaptive and loose, and three-way P2P adaptive and loose. Release-specific adaptive behavior continues padding with legacy neighbors. Loose legacy behavior returns an unresolved result rather than inventing a wire policy. Canonical inheritance, command exposure, circuit integration and MTU target resolution remain pending.
   - id: nokia.sros.26_7.isis.operational_database
     kind: routing-protocol-operational-projection
     release: 26.7.R1
