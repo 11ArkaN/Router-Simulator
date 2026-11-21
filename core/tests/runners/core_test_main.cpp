@@ -19,6 +19,7 @@ void packet_tests();
 void ipv4_forwarded_fragmentation_tests();
 void ip_address_tests();
 void runtime_supervisor_tests();
+void port_ipv6_mtu_runtime_tests();
 void runtime_memory_growth_tests();
 void wasm_api_tests();
 
@@ -38,6 +39,7 @@ int main() {
     run("control_projection_worker_tests", control_projection_worker_tests);
     run("network_plane_worker_tests", network_plane_worker_tests);
     run("runtime_supervisor_tests", runtime_supervisor_tests);
+    run("port_ipv6_mtu_runtime_tests", port_ipv6_mtu_runtime_tests);
     run("runtime_memory_growth_tests", runtime_memory_growth_tests);
     run("isis_generation_transfer_tests", isis_generation_transfer_tests);
     run("isis_configuration_projection_tests", isis_configuration_projection_tests);

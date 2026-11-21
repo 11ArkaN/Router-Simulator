@@ -606,6 +606,7 @@ if(ROUTER_BUILD_TESTS)
     tests/ip/neighbor_discovery_packet_test.cpp
     tests/forwarding/packet_test.cpp
     tests/runtime/runtime_supervisor_test.cpp
+    tests/runtime/port_ipv6_mtu_runtime_test.cpp
     tests/runtime/runtime_memory_growth_test.cpp
     tests/runtime/wasm_api_test.cpp
     tests/runtime/network_plane_worker_test.cpp

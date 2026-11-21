@@ -661,10 +661,24 @@ RuntimeSupervisor::configure_port(DeviceHandle device, std::string_view port_id,
   auto *inventory = hardware(device);
   if (!inventory)
     return HardwareEditResult::invalid_slot;
+  // The serialized control owner checks the existing IPv6 child before any
+  // hardware mutation. An incompatible MTU returns incompatible_children and
+  // preserves both hardware and forwarding projections, including link state.
+  const auto ordinal=inventory->coordinate_ordinal(port_id);
+  if (ordinal && device.index<router_network_.size() && router_network_[device.index]) {
+    const auto &ports=router_network_[device.index]->ports;
+    if (*ordinal>=ports.size()) return HardwareEditResult::invalid_slot;
+    if (ports[*ordinal].ipv6_configured && mtu<packet::ipv6_minimum_ethernet_mtu)
+      return HardwareEditResult::incompatible_children;
+  }
   const auto result =
       inventory->configure_port(port_id, admin_enabled, mtu, speed_mbps);
-  if (result == HardwareEditResult::applied)
+  if (result == HardwareEditResult::applied) {
     reconcile(node(device));
+    // Link reconciliation refreshes linked routers. Configured unlinked
+    // interfaces still need the same committed MTU in their forwarding owner.
+    if (!topology_.attached(node(device)).count) refresh_router(device);
+  }
   return result;
 }
 

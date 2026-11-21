@@ -3410,13 +3410,13 @@ records:
     source_type: nokia-official-doc
     source_url: https://documentation.nokia.com/sr/26-7/7x50-shared/interface-configuration/mtu-configuration-guidelines.html
     section: Ethernet MTU defaults and limits
-    rfc_refs: []
+    rfc_refs: [RFC8200]
     yang_path: /configure/port/ethernet/mtu
     last_verified_at: 2026-11-21
-    implementation: [profiles/7750-sr-7-iom4-e.yaml, core/src/cli/cli_md.cpp, core/src/cli/cli_classic.cpp, core/src/runtime/lab_runtime.cpp, core/src/forwarding/router_forwarder.cpp]
-    tests: [core/tests/cli/cli_test.cpp, core/tests/forwarding/router_forwarder_test.cpp, core/tests/forwarding/router_forwarder_isis_test.cpp, core/tests/forwarding/router_forwarder_ospfv3_test.cpp, core/tests/forwarding/router_forwarder_local_ipv4_test.cpp, core/tests/forwarding/router_forwarder_ipv4_redirect_test.cpp, core/tests/forwarding/packet_test.cpp]
+    implementation: [profiles/7750-sr-7-iom4-e.yaml, core/src/cli/cli_md.cpp, core/src/cli/cli_classic.cpp, core/src/runtime/lab_runtime.cpp, core/src/forwarding/router_forwarder.cpp, core/src/runtime/runtime_supervisor.cpp]
+    tests: [core/tests/runtime/port_ipv6_mtu_runtime_test.cpp, core/tests/cli/cli_test.cpp, core/tests/forwarding/router_forwarder_test.cpp, core/tests/forwarding/router_forwarder_isis_test.cpp, core/tests/forwarding/router_forwarder_ospfv3_test.cpp, core/tests/forwarding/router_forwarder_local_ipv4_test.cpp, core/tests/forwarding/router_forwarder_ipv4_redirect_test.cpp, core/tests/forwarding/packet_test.cpp]
     status: implemented
-    notes: Modeled 10 Gb/s network Ethernet ports use default 9212 and configured range 512 to 9212. IS-IS ingress and egress enforce this frame extent, including an exact-boundary acceptance test and an oversized encoded IIH refusal. The SR OS value includes the untagged Ethernet header, so forwarding subtracts 14 octets before comparing IPv4 total length or reporting next-hop IP MTU.
+    notes: The supervisor refuses a port MTU incompatible with its attached native IPv6 projection before hardware mutation, preserving both owners on refusal. Configured unlinked ports refresh their forwarding MTU too. Modeled 10 Gb/s network Ethernet ports use default 9212 and configured range 512 to 9212. IS-IS ingress and egress enforce this frame extent, including an exact-boundary acceptance test and an oversized encoded IIH refusal. The SR OS value includes the untagged Ethernet header, so forwarding subtracts 14 octets before comparing IPv4 total length or reporting next-hop IP MTU.
   - id: nokia.sros.26_7.arp.aging
     kind: protocol-default
     release: 26.7.R1
