@@ -106,6 +106,19 @@ RouterPrefixProjection router_prefixes(const auto &interfaces,
   if (!availability || !valid_local_ipv6_address_catalog(*availability, *selected.program)) return {};
   return {selected.status, std::move(selected.program), std::move(selected.ipv4_addresses), std::move(availability)};
 }
+// Managed import and restore share the same refusal until canonical padding
+// has a complete runtime consumer. Raw circuit checkpoint policy is separate.
+bool unconsumed_padding(const isis::RouterConfiguration &configuration) noexcept {
+  for (const auto &instance : configuration.instances) {
+    if (instance.hello_padding) return true;
+    for (const auto &level : instance.level) if (level.hello_padding) return true;
+    for (const auto &interface : instance.interfaces) {
+      if (interface.hello_padding) return true;
+      for (const auto &level : interface.level) if (level.hello_padding) return true;
+    }
+  }
+  return false;
+}
 isis::IdentityContext identity(const auto &interfaces) noexcept {
   isis::IdentityContext result;
   result.fallback_router_id = 0xff000000U;
@@ -118,6 +131,7 @@ isis::IdentityContext identity(const auto &interfaces) noexcept {
 bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
     const ConfigurationIntent &after, const RuntimeSupervisorCheckpoint &saved) {
   using namespace isis;
+  if (unconsumed_padding(after.isis)) return false;
   const ControlDeviceCheckpoint *owner{};
   if (saved.network.isis) {
     const auto &devices = saved.network.isis->control.devices;
@@ -413,6 +427,7 @@ bool LabRuntime::apply_isis_configuration(const RouterIntent &before,
 }
 bool LabRuntime::validate_isis_prefix_checkpoint(const RouterIntent &router,
     const RuntimeSupervisorCheckpoint &saved) const {
+  if (unconsumed_padding(router.isis)) return false;
   if (router.isis.instances.empty() || !saved.network.isis) return true;
   const auto device = std::find_if(saved.network.isis->control.devices.begin(), saved.network.isis->control.devices.end(),
       [&](const auto &entry) { return entry.handle == router.handle && entry.active; });

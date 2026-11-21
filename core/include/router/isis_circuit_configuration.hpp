@@ -7,6 +7,7 @@
 #include "router/isis_hello_builder.hpp"
 #include "router/isis_circuit_destinations.hpp"
 #include "router/isis_neighbor_attributes.hpp"
+#include "router/isis_hello_padding.hpp"
 
 #include <vector>
 
@@ -44,6 +45,9 @@ struct CircuitHelloConfiguration {
   // Explicit raw circuit callers supply assigned addresses by default. Managed
   // circuits clear this gate until local link-local DAD has completed.
   bool ipv6_addresses_ready{true};
+  // The circuit owner evaluates this mode against its own current adjacency
+  // before every Hello. Absence retains the explicit raw padding flag above.
+  std::optional<HelloPadding> padding_mode;
   bool operator==(const CircuitHelloConfiguration &) const = default;
 };
 

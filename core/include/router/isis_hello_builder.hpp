@@ -37,7 +37,7 @@ struct HelloContents {
 using HelloScratch = PduScratch;
 
 enum class HelloBuildResult : std::uint8_t {
-  encoded, invalid_header, capacity, areas, addresses, instance, topologies, three_way, authentication
+  encoded, invalid_header, capacity, areas, addresses, instance, topologies, three_way, authentication, unresolved_padding
 };
 
 // Requires effective configuration already accepted by its source-backed

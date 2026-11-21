@@ -1,8 +1,10 @@
 // Portable IS-IS intent owns explicit leaf presence. Release bounds come from
 // generated YANG facts; this contract cannot access runtime or browser state.
 import { ISIS_CONFIGURATION_PROFILE as profile } from "./generated-isis-configuration-profile";
+export type IsisHelloPadding = "adaptive" | "loose" | "strict" | "none";
 export type IsisLevels = "1" | "2" | "1/2";
 export interface IsisInterfaceLevelIntent {
+  helloPadding?: IsisHelloPadding | null;
   present: boolean;
   metric: number | null;
   helloIntervalSeconds: number | null;
@@ -11,6 +13,7 @@ export interface IsisInterfaceLevelIntent {
   passive: boolean | null;
 }
 export interface IsisInstanceLevelIntent {
+  helloPadding?: IsisHelloPadding | null;
   present: boolean;
   defaultMetric: number | null;
   lspMtuOctets: number | null;
@@ -19,6 +22,7 @@ export interface IsisInstanceLevelIntent {
   wideMetricsOnly: boolean | null;
 }
 export interface IsisInterfaceIntent {
+  helloPadding?: IsisHelloPadding | null;
   name: string;
   type: "point-to-point" | "broadcast" | null;
   levelCapability: IsisLevels | null;
@@ -35,6 +39,7 @@ export interface IsisWaitTimerIntent {
   secondMilliseconds: number | null;
 }
 export interface IsisInstanceIntent {
+  helloPadding?: IsisHelloPadding | null;
   instance: number;
   adminEnabled: boolean | null;
   ipv4Routing: boolean | null;
@@ -71,6 +76,8 @@ const dense = <T>(values: T[], predicate: (value: T) => boolean): boolean => {
   for (const value of values) if (!predicate(value)) return false;
   return true;
 };
+const padding = (value: Record<string, unknown>) => !Object.hasOwn(value, "helloPadding") ||
+  enumeration(value.helloPadding, ["adaptive", "loose", "strict", "none"]);
 const levelCapability = (value: unknown) => enumeration(value, ["1", "2", "1/2"]);
 function areaKey(value: unknown): string | null {
   if (typeof value !== "string" || !/^[a-f0-9]{2}(?:\.(?:[a-f0-9]{4}|[a-f0-9]{2}))*$/i.test(value)) return null;
@@ -80,7 +87,7 @@ function areaKey(value: unknown): string | null {
 function level(value: unknown, parent: boolean): boolean {
   const fields = parent ? "present defaultMetric lspMtuOctets preference externalPreference wideMetricsOnly" :
     "present metric helloIntervalSeconds helloMultiplier priority passive";
-  if (!shape(value, fields) || typeof value.present !== "boolean") return false;
+  if (!shape(value, fields, "helloPadding") || !padding(value) || typeof value.present !== "boolean") return false;
   if (!value.present && Object.entries(value).some(([key, field]) => key !== "present" && field !== null)) return false;
   return parent ? range(value.defaultMetric, "default_metric") && range(value.lspMtuOctets, "level_lsp_mtu_octets") &&
     range(value.preference, "preference") && range(value.externalPreference, "external_preference") && boolean(value.wideMetricsOnly) :
@@ -88,7 +95,7 @@ function level(value: unknown, parent: boolean): boolean {
     range(value.helloMultiplier, "hello_multiplier") && range(value.priority, "priority") && boolean(value.passive);
 }
 function interfaceIntent(value: unknown): value is IsisInterfaceIntent {
-  if (!shape(value, "name type levelCapability adminEnabled passive csnpIntervalSeconds retransmitIntervalSeconds lspPacingIntervalMilliseconds levels") ||
+  if (!shape(value, "name type levelCapability adminEnabled passive csnpIntervalSeconds retransmitIntervalSeconds lspPacingIntervalMilliseconds levels", "helloPadding") || !padding(value) ||
       typeof value.name !== "string" || !Array.isArray(value.levels) || value.levels.length !== 2) return false;
   const characters = [...value.name];
   return characters.length >= profile.interface_name_minimum && characters.length <= profile.interface_name_maximum &&
@@ -105,7 +112,7 @@ function waitTimer(value: unknown, kind: "spf" | "lsp"): value is IsisWaitTimerI
     range(value.secondMilliseconds, `${kind}_second_wait_milliseconds`);
 }
 function instanceIntent(value: unknown): value is IsisInstanceIntent {
-  if (!shape(value, "instance adminEnabled ipv4Routing ipv6Routing levelCapability systemId routerId lspLifetimeSeconds lspMtuOctets levels areas interfaces", "spfWait lspWait advertisePassiveOnly strictAdjacencyCheck ignoreAttachedBit suppressAttachedBit") ||
+  if (!shape(value, "instance adminEnabled ipv4Routing ipv6Routing levelCapability systemId routerId lspLifetimeSeconds lspMtuOctets levels areas interfaces", "spfWait lspWait advertisePassiveOnly strictAdjacencyCheck ignoreAttachedBit suppressAttachedBit helloPadding") || !padding(value) ||
       !integer(value.instance, profile.instance_minimum, profile.instance_maximum) ||
       (Object.hasOwn(value, "advertisePassiveOnly") && !boolean(value.advertisePassiveOnly)) ||
       (Object.hasOwn(value, "strictAdjacencyCheck") && !boolean(value.strictAdjacencyCheck)) ||
@@ -145,7 +152,14 @@ export function encodeIsisConfigurationHex(configuration: RouterIsisIntent): str
   const vector = <T>(values: T[], write: (entry: T) => void) => { number(values.length, 4); values.forEach(write); };
   const hexBytes = (text: string) => text.match(/../g)!.map((pair) => parseInt(pair, 16));
   const string = (text: string) => { const encoded = new TextEncoder().encode(text); number(encoded.length, 2); bytes.push(...encoded); };
-  number(5, 1);
+  const version = configuration.instances.some((instance) => instance.helloPadding != null ||
+    instance.levels.some((level) => level.helloPadding != null) || instance.interfaces.some((item) =>
+      item.helloPadding != null || item.levels.some((level) => level.helloPadding != null))) ? 6 : 5;
+  const padding = (value: {helloPadding?: IsisHelloPadding | null}) => {
+    if (version === 6) optional(value.helloPadding ?? null,
+      (mode) => number(["adaptive", "loose", "strict", "none"].indexOf(mode) + 1, 1));
+  };
+  number(version, 1);
   vector(configuration.instances, (instance) => {
     number(instance.instance, 1); optional(instance.adminEnabled, boolean); optional(instance.ipv4Routing, boolean);
     optional(instance.ipv6Routing, (value) => number(["false", "native", "mt"].indexOf(value), 1)); levels(instance.levelCapability);
@@ -154,7 +168,7 @@ export function encodeIsisConfigurationHex(configuration: RouterIsisIntent): str
     integer(instance.lspLifetimeSeconds, 2); integer(instance.lspMtuOctets, 2);
     for (const level of instance.levels) {
       boolean(level.present); integer(level.defaultMetric, 4); integer(level.lspMtuOctets, 2);
-      integer(level.preference, 1); integer(level.externalPreference, 1); optional(level.wideMetricsOnly, boolean);
+      integer(level.preference, 1); integer(level.externalPreference, 1); optional(level.wideMetricsOnly, boolean); padding(level);
     }
     vector(instance.areas, (value) => { const octets = hexBytes(areaKey(value)!); bytes.push(...octets, ...Array(13 - octets.length).fill(0)); number(octets.length, 1); });
     vector(instance.interfaces, (interfaceIntent) => {
@@ -163,8 +177,9 @@ export function encodeIsisConfigurationHex(configuration: RouterIsisIntent): str
       integer(interfaceIntent.csnpIntervalSeconds, 2); integer(interfaceIntent.retransmitIntervalSeconds, 2); integer(interfaceIntent.lspPacingIntervalMilliseconds, 2);
       for (const level of interfaceIntent.levels) {
         boolean(level.present); integer(level.metric, 4); integer(level.helloIntervalSeconds, 2);
-        integer(level.helloMultiplier, 1); integer(level.priority, 1); optional(level.passive, boolean);
+        integer(level.helloMultiplier, 1); integer(level.priority, 1); optional(level.passive, boolean); padding(level);
       }
+      padding(interfaceIntent);
     });
     for (const timer of [instance.spfWait, instance.lspWait]) {
       integer(timer?.maximumMilliseconds ?? null, 4);
@@ -174,7 +189,7 @@ export function encodeIsisConfigurationHex(configuration: RouterIsisIntent): str
     optional(instance.advertisePassiveOnly ?? null, boolean);
     optional(instance.strictAdjacencyCheck ?? null, boolean);
     optional(instance.ignoreAttachedBit ?? null, boolean);
-    optional(instance.suppressAttachedBit ?? null, boolean);
+    optional(instance.suppressAttachedBit ?? null, boolean); padding(instance);
   });
   return bytes.map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }

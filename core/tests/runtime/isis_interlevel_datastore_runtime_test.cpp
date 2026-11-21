@@ -42,7 +42,7 @@ void isis_interlevel_datastore_runtime_tests() {
   const auto capture=[&] {
     const auto bytes=runtime->export_checkpoint();
     require(!bytes.empty(),"Interlevel public checkpoint export failed");
-    auto image=checkpoint_v21::decode(bytes,&*protector);
+    auto image=checkpoint_v22::decode(bytes,&*protector);
     require(image && image->network.isis,"Interlevel public checkpoint decode failed"); return image;
   };
   for (const auto id : {"il-a","il-b","il-c"}) {
@@ -168,11 +168,11 @@ void isis_interlevel_datastore_runtime_tests() {
       "Live preference or normalized SPF policy did not reach both family owners");
   auto &preference_intent=preference->portable_routers.back().isis.instances.front();
   preference_intent.level[1U].preference=20U;
-  const auto forged_preference=checkpoint_v21::encode(*preference,&*protector);
+  const auto forged_preference=checkpoint_v22::encode(*preference,&*protector);
   require(!forged_preference.empty() && !runtime->import_checkpoint(forged_preference),
       "Checkpoint accepted a managed preference inconsistent with its route owners");
   preference_intent.level[1U].preference=19U; preference_intent.spf_wait.initial=110U;
-  const auto forged_spf=checkpoint_v21::encode(*preference,&*protector);
+  const auto forged_spf=checkpoint_v22::encode(*preference,&*protector);
   require(!forged_spf.empty() && !runtime->import_checkpoint(forged_spf),
       "Checkpoint accepted a managed SPF timer inconsistent with its scheduler");
   for (const bool ipv6 : {false,true}) {
@@ -266,7 +266,7 @@ void isis_interlevel_datastore_runtime_tests() {
   require(runtime->import_checkpoint(renamed_saved),"Active renamed owner checkpoint restore failed");
   static_cast<void>(await_name("il-c-renamed"));
   renamed->devices.entries.back().system_name="forged-name";
-  const auto forged_name=checkpoint_v21::encode(*renamed,&*protector);
+  const auto forged_name=checkpoint_v22::encode(*renamed,&*protector);
   require(!forged_name.empty() && !runtime->import_checkpoint(forged_name),"Checkpoint accepted hostname intent inconsistent with root metadata");
   terminal("il-c","//"); terminal("il-c","edit-config private");
   terminal("il-c","/configure system name il-c"); terminal("il-c","commit"); terminal("il-c","quit-config");
@@ -284,11 +284,11 @@ void isis_interlevel_datastore_runtime_tests() {
       [](const auto &router) { return router.device.index==0U; });
   require(wrong!=mismatched->portable_routers.end(),"Combined managed owner missing");
   wrong->isis.instances.front().levels=router::isis::ConfiguredLevels::level1;
-  require(!runtime->import_checkpoint(checkpoint_v21::encode(*mismatched,&*protector)),
+  require(!runtime->import_checkpoint(checkpoint_v22::encode(*mismatched,&*protector)),
       "Checkpoint accepted managed levels inconsistent with the running owner");
   wrong->isis.instances.front().levels=router::isis::ConfiguredLevels::both;
   wrong->isis.instances.front().areas.clear();
-  require(!runtime->import_checkpoint(checkpoint_v21::encode(*mismatched,&*protector)),
+  require(!runtime->import_checkpoint(checkpoint_v22::encode(*mismatched,&*protector)),
       "Checkpoint accepted active circuits under empty canonical manual areas");
   std::size_t ping_ordinal{};
   const auto ping=[&](std::string_view session,std::string_view address) {

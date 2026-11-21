@@ -27853,13 +27853,13 @@ std::span<const std::uint8_t> LabRuntime::export_checkpoint() {
     checkpoint_bytes_.clear();
     return {};
   }
-  try { checkpoint_bytes_ = checkpoint_v21::encode(*checkpoint, secret_vault_ ? &*secret_vault_ : nullptr); }
+  try { checkpoint_bytes_ = checkpoint_v22::encode(*checkpoint, secret_vault_ ? &*secret_vault_ : nullptr); }
   catch (...) { checkpoint_bytes_.clear(); return {}; }
   return checkpoint_bytes_;
 }
 
 bool LabRuntime::import_checkpoint(std::span<const std::uint8_t> bytes) {
-  auto checkpoint = checkpoint_v21::decode(bytes, secret_vault_ ? &*secret_vault_ : nullptr);
+  auto checkpoint = checkpoint_v22::decode(bytes, secret_vault_ ? &*secret_vault_ : nullptr);
   if (!checkpoint)
     return false;
   try {

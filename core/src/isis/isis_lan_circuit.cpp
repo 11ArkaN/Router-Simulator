@@ -32,6 +32,7 @@ LanCircuit::LanCircuit(LanCircuitConfiguration configuration, std::uint64_t rand
       static_cast<unsigned>(configuration_.levels) > 3U || configuration_.local.priority > 127U ||
       configuration_.local.mac != configuration_.mac || (configuration_.mac[0U] & 1U) ||
       !configuration_.destinations().valid() ||
+      (configuration_.padding_mode && format_hello_padding(*configuration_.padding_mode).empty()) ||
       configuration_.hello_destination != configuration_.destinations().levels[level - 1U] ||
       (configuration_.emit_instance && !configuration_.instance_format) ||
       (!configuration_.emit_instance && configuration_.wire_instance))
@@ -180,6 +181,17 @@ std::optional<HelloBuildResult> LanCircuit::hello(packet::Frame &frame,
   for (std::size_t index{}; index < neighbors_.size(); ++index)
     hello_neighbors_.push_back(neighbors_.at(index)->adjacency.mac);
   auto contents = circuit_hello_contents(configuration_, areas_, key);
+  if (configuration_.padding_mode) {
+    bool any_up{};
+    for (std::size_t index{};index<neighbors_.size();++index)
+      any_up=any_up || neighbors_.at(index)->adjacency.state==LanState::up;
+    const auto padding=lan_hello_padding(*configuration_.padding_mode,any_up);
+    if (!padding) {
+      static_cast<void>(hello_.complete(false,now));
+      return HelloBuildResult::unresolved_padding;
+    }
+    contents.padding=*padding;
+  }
   contents.header.type = configuration_.type;
   contents.header.source = configuration_.local.system;
   contents.header.circuit_type = static_cast<std::uint8_t>(configuration_.levels);

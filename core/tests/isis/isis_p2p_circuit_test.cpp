@@ -265,4 +265,43 @@ void isis_p2p_circuit_tests() {
   require(ipv6_only.hello(last, key, *scratch, start) == HelloBuildResult::encoded);
   require(permissive.receive(last, key, start, &strict_events, event) == CircuitReceive::address_family &&
       !permissive.adjacency().present);
+  for (const auto mode : {HelloPadding::adaptive,HelloPadding::loose,HelloPadding::strict,HelloPadding::none}) {
+    auto first_configuration=configuration(1U),second_configuration=configuration(2U);
+    first_configuration.padding_mode=mode;second_configuration.padding_mode=HelloPadding::none;
+    PointToPointCircuit first(first_configuration,123U,start),second(second_configuration,456U,start);
+    Context padding_context{{&first,&second},{},key,start};
+    auto padding_fabric=std::make_unique<MultiDeviceFabric>();
+    require(padding_fabric->configure(cable,{node(DeviceHandle{0U,1U}),0U,1U},
+        {node(DeviceHandle{1U,1U}),0U,1U},1'000'000'000U,100ns,true));
+    const auto padding_round=[&](unsigned phase) {
+      for (std::uint8_t index{};index<2U;++index) {
+        auto &circuit=*padding_context.circuits[index];
+        packet::Frame frame;
+        require(circuit.hello(frame,key,*scratch,padding_context.now)==HelloBuildResult::encoded);
+        packet::isis::EthernetDecodeError decode_error;
+        const auto decoded=packet::isis::parse_ethernet_pdu(frame.view(),decode_error);
+        const auto selected=index ? HelloPadding::none : mode;
+        const bool padded=selected==HelloPadding::strict || (selected==HelloPadding::adaptive && phase<2U) ||
+            (selected==HelloPadding::loose && phase==0U);
+        require(decoded && (padded ? decoded->pdu.bytes.size()==1492U : decoded->pdu.bytes.size()<1491U));
+        const bool enqueued=padding_fabric->enqueue(cable,index,frame)==MultiDeviceFabric::DropReason::none;
+        require(enqueued && circuit.complete_hello(enqueued,padding_context.now));
+      }
+      padding_fabric->pump_transmit(padding_context.now);
+      padding_context.now+=1ms;
+      padding_fabric->pump_delivery(&padding_context,delivered,padding_context.now);
+    };
+    padding_round(0U); padding_round(1U); padding_round(2U);
+    require(first.adjacency().iso_up && second.adjacency().iso_up);
+    const auto padding_saved=first.checkpoint(padding_context.now);
+    const auto padding_restored=PointToPointCircuit::restore_checkpoint(padding_saved,first_configuration,start+9000s);
+    require(padding_restored && padding_restored->configuration().padding_mode==mode);
+    first_configuration.padding_mode=mode==HelloPadding::none ? HelloPadding::strict : HelloPadding::none;
+    require(!PointToPointCircuit::restore_checkpoint(padding_saved,first_configuration,start+9000s));
+    padding_context.now+=3s;
+    require(first.expire(padding_context.now,&padding_context.events[0],event));
+    require(second.expire(padding_context.now,&padding_context.events[1],event));
+    padding_round(0U);
+  }
+
 }

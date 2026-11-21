@@ -117,3 +117,32 @@ for (const field of ["ignoreAttachedBit", "suppressAttachedBit"] as const) {
       expect(isRouterIsisIntent({...value, instances: [{...value.instances[0], [field]: invalid}]})).toBe(false);
   });
 }
+
+it("padding at every scope preserves removal and rejects invalid enums or absent parents", () => {
+  const value=fixture();
+  const instance=value.instances[0];
+  instance.levels[0].present=true;
+  instance.interfaces.push({name:"padding", type:null, levelCapability:null, adminEnabled:null,
+    passive:null, csnpIntervalSeconds:null, retransmitIntervalSeconds:null, lspPacingIntervalMilliseconds:null,
+    levels:[{present:true,metric:null,helloIntervalSeconds:null,helloMultiplier:null,priority:null,passive:null},
+      {present:false,metric:null,helloIntervalSeconds:null,helloMultiplier:null,priority:null,passive:null}]});
+  const iface=instance.interfaces[0];
+  const absent=encodeIsisConfigurationHex(value);
+  for (const scope of [instance, instance.levels[0], iface, iface.levels[0]]) {
+    for (const helloPadding of ["adaptive","loose","strict","none"] as const) {
+      scope.helloPadding=helloPadding;
+      expect(isRouterIsisIntent(value)).toBe(true);
+      expect(encodeIsisConfigurationHex(value).startsWith("06")).toBe(true);
+      delete scope.helloPadding;
+      expect(encodeIsisConfigurationHex(value)).toBe(absent);
+    }
+    Object.assign(scope,{helloPadding:"disabled"});
+    expect(isRouterIsisIntent(value)).toBe(false);
+    delete scope.helloPadding;
+  }
+  instance.levels[1].helloPadding="none";
+  expect(isRouterIsisIntent(value)).toBe(false);
+  delete instance.levels[1].helloPadding;
+  iface.levels[1].helloPadding="strict";
+  expect(isRouterIsisIntent(value)).toBe(false);
+});

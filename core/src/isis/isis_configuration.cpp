@@ -16,6 +16,9 @@ template <typename Value> bool range(const std::optional<Value> &value,
     std::uint32_t minimum, std::uint32_t maximum) noexcept {
   return !value || (*value >= minimum && *value <= maximum);
 }
+bool padding(const std::optional<HelloPadding> &value) noexcept {
+  return !value || (*value >= HelloPadding::adaptive && *value <= HelloPadding::none);
+}
 bool levels(const std::optional<ConfiguredLevels> &value) noexcept {
   return !value || (*value >= ConfiguredLevels::level1 && *value <= ConfiguredLevels::both);
 }
@@ -134,6 +137,7 @@ ConfigurationError validate_configuration(const RouterConfiguration &configurati
   for (auto instance = configuration.instances.begin(); instance != configuration.instances.end(); ++instance) {
     if (instance->instance > instance_maximum) return Error::instance_id;
     if (std::any_of(configuration.instances.begin(), instance, [&](const auto &other) { return other.instance == instance->instance; })) return Error::duplicate_instance;
+    if (!padding(instance->hello_padding)) return Error::hello_padding;
     if (!levels(instance->levels)) return Error::levels;
     if (instance->ipv6_routing && *instance->ipv6_routing > ConfiguredIpv6Routing::multi_topology) return Error::ipv6_routing;
     if (!range(instance->lsp_lifetime_seconds, lsp_lifetime_seconds_minimum, lsp_lifetime_seconds_maximum)) return Error::lsp_lifetime;
@@ -145,8 +149,9 @@ ConfigurationError validate_configuration(const RouterConfiguration &configurati
         !range(instance->lsp_wait.initial, lsp_initial_wait_milliseconds_minimum, lsp_initial_wait_milliseconds_maximum) ||
         !range(instance->lsp_wait.second, lsp_second_wait_milliseconds_minimum, lsp_second_wait_milliseconds_maximum)) return Error::wait_timer;
     for (const auto &level : instance->level) {
+      if (!padding(level.hello_padding)) return Error::hello_padding;
       if (!level.present && (level.default_metric || level.lsp_mtu_octets || level.preference ||
-          level.external_preference || level.wide_metrics_only)) return Error::context_presence;
+          level.external_preference || level.wide_metrics_only || level.hello_padding)) return Error::context_presence;
       if (!range(level.default_metric, default_metric_minimum, default_metric_maximum)) return Error::metric;
       if (!range(level.lsp_mtu_octets, level_lsp_mtu_octets_minimum, level_lsp_mtu_octets_maximum)) return Error::lsp_mtu;
       if (!range(level.preference, preference_minimum, preference_maximum)) return Error::preference;
@@ -161,14 +166,16 @@ ConfigurationError validate_configuration(const RouterConfiguration &configurati
       const auto length = characters(interface->name);
       if (!length || *length < interface_name_minimum || *length > interface_name_maximum) return Error::interface_name;
       if (std::any_of(instance->interfaces.begin(), interface, [&](const auto &other) { return other.name == interface->name; })) return Error::duplicate_interface;
+      if (!padding(interface->hello_padding)) return Error::hello_padding;
       if (!levels(interface->levels)) return Error::levels;
       if (interface->type && *interface->type > ConfiguredInterfaceType::broadcast) return Error::interface_type;
       if (!range(interface->csnp_interval_seconds, csnp_interval_seconds_minimum, csnp_interval_seconds_maximum)) return Error::csnp_interval;
       if (!range(interface->retransmit_interval_seconds, retransmit_interval_seconds_minimum, retransmit_interval_seconds_maximum)) return Error::retransmit_interval;
       if (!range(interface->lsp_pacing_interval_milliseconds, lsp_pacing_interval_milliseconds_minimum, lsp_pacing_interval_milliseconds_maximum)) return Error::lsp_pacing_interval;
       for (const auto &level : interface->level) {
+        if (!padding(level.hello_padding)) return Error::hello_padding;
         if (!level.present && (level.metric || level.hello_interval_seconds || level.hello_multiplier ||
-            level.priority || level.passive)) return Error::context_presence;
+            level.priority || level.passive || level.hello_padding)) return Error::context_presence;
         if (!range(level.metric, metric_minimum, metric_maximum)) return Error::metric;
         if (!range(level.hello_interval_seconds, hello_interval_seconds_minimum, hello_interval_seconds_maximum)) return Error::hello_interval;
         if (!range(level.hello_multiplier, hello_multiplier_minimum, hello_multiplier_maximum)) return Error::hello_multiplier;

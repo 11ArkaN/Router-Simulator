@@ -18,6 +18,7 @@ PointToPointCircuit::PointToPointCircuit(P2pCircuitConfiguration configuration,
   if (!configuration_.holding_seconds || !configuration_.maximum_area_addresses ||
       !configuration_.maximum_pdu_octets || !configuration_.peer_attribute_octets ||
       !configuration_.destinations().valid() ||
+      (configuration_.padding_mode && format_hello_padding(*configuration_.padding_mode).empty()) ||
       configuration_.physical_point_to_point == configuration_.local.over_lan ||
       (configuration_.emit_instance && !configuration_.instance_format) ||
       (!configuration_.emit_instance && configuration_.wire_instance))
@@ -211,6 +212,16 @@ std::optional<HelloBuildResult> PointToPointCircuit::hello(packet::Frame &output
     return HelloBuildResult::authentication;
   }
   auto contents = circuit_hello_contents(configuration_, areas_, key);
+  if (configuration_.padding_mode) {
+    const auto state=adjacency_.snapshot();
+    const auto padding=p2p_hello_padding(*configuration_.padding_mode,state.three_way,
+        state.present && !state.uses_three_way);
+    if (!padding) {
+      static_cast<void>(hello_.complete(false,now));
+      return HelloBuildResult::unresolved_padding;
+    }
+    contents.padding=*padding;
+  }
   contents.header.type = packet::isis::PduType::point_to_point_hello;
   contents.header.source = configuration_.local.system;
   contents.header.holding_seconds = configuration_.holding_seconds;

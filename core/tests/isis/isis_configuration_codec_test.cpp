@@ -97,4 +97,45 @@ void isis_configuration_codec_tests() {
   strict.instances.front().strict_adjacency_check.reset();
   require(*configuration_codec::decode(version3, budget) == strict);
 
+  RouterConfiguration padded;
+  auto &padding_instance=padded.instances.emplace_back();
+  auto &padding_interface=padding_instance.interfaces.emplace_back();
+  padding_interface.name="padding";
+  padding_instance.level[0].present=true;
+  padding_interface.level[1].present=true;
+  const auto unconfigured=*configuration_codec::encode(padded,budget);
+  require(unconfigured.front()==5U);
+  for (const auto mode : {HelloPadding::adaptive,HelloPadding::loose,HelloPadding::strict,HelloPadding::none}) {
+    for (auto *field : {&padding_instance.hello_padding,&padding_instance.level[0].hello_padding,
+        &padding_interface.hello_padding,&padding_interface.level[1].hello_padding}) {
+      *field=mode;
+      const auto image=configuration_codec::encode(padded,budget);
+      require(image && image->front()==6U && *configuration_codec::decode(*image,budget)==padded);
+      for (std::size_t size{};size<image->size();++size)
+        require(!configuration_codec::decode(std::span{*image}.first(size),budget));
+      field->reset();
+      require(configuration_codec::encode(padded,budget)==std::optional{unconfigured});
+      *field=static_cast<HelloPadding>(0U);
+      require(!configuration_codec::encode(padded,budget));
+      *field=static_cast<HelloPadding>(5U);
+      require(!configuration_codec::encode(padded,budget));
+      field->reset();
+    }
+  }
+  padding_instance.hello_padding=HelloPadding::strict;
+  const auto padding_wire=*configuration_codec::encode(padded,budget);
+  for (const auto invalid_mode : {0U,5U,255U}) {
+    auto invalid_padding=padding_wire;
+    invalid_padding.back()=static_cast<std::uint8_t>(invalid_mode);
+    require(!configuration_codec::decode(invalid_padding,budget));
+  }
+  padding_instance.hello_padding.reset();
+  padding_instance.level[0].present=false;
+  padding_instance.level[0].hello_padding=HelloPadding::none;
+  require(validate_configuration(padded)==ConfigurationError::context_presence);
+  padding_instance.level[0].hello_padding.reset();
+  padding_interface.level[1].present=false;
+  padding_interface.level[1].hello_padding=HelloPadding::strict;
+  require(validate_configuration(padded)==ConfigurationError::context_presence);
+
 }

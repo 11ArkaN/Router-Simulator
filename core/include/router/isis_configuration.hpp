@@ -5,6 +5,7 @@
 
 #include "router/generated_isis_configuration_profile.hpp"
 #include "router/isis_neighbor_attributes.hpp"
+#include "router/isis_hello_padding.hpp"
 
 #include <optional>
 #include <string>
@@ -28,6 +29,7 @@ struct InterfaceLevelIntent {
   std::optional<std::uint16_t> hello_interval_seconds;
   std::optional<std::uint8_t> hello_multiplier, priority;
   std::optional<bool> passive;
+  std::optional<HelloPadding> hello_padding;
   bool operator==(const InterfaceLevelIntent &) const = default;
 };
 struct InstanceLevelIntent {
@@ -36,6 +38,7 @@ struct InstanceLevelIntent {
   std::optional<std::uint16_t> lsp_mtu_octets;
   std::optional<std::uint8_t> preference, external_preference;
   std::optional<bool> wide_metrics_only;
+  std::optional<HelloPadding> hello_padding;
   bool operator==(const InstanceLevelIntent &) const = default;
 };
 struct InterfaceIntent {
@@ -46,6 +49,7 @@ struct InterfaceIntent {
   std::optional<std::uint16_t> csnp_interval_seconds, retransmit_interval_seconds,
       lsp_pacing_interval_milliseconds;
   std::array<InterfaceLevelIntent, 2U> level;
+  std::optional<HelloPadding> hello_padding;
   bool operator==(const InterfaceIntent &) const = default;
 };
 struct InstanceIntent {
@@ -63,6 +67,7 @@ struct InstanceIntent {
   std::vector<InterfaceIntent> interfaces;
   WaitTimerIntent spf_wait, lsp_wait;
   std::optional<bool> advertise_passive_only, strict_adjacency_check, ignore_attached_bit, suppress_attached_bit;
+  std::optional<HelloPadding> hello_padding;
   bool operator==(const InstanceIntent &) const = default;
 };
 struct RouterConfiguration {
@@ -74,7 +79,7 @@ enum class ConfigurationError : std::uint8_t {
   duplicate_area, interface_name, duplicate_interface, interface_type,
   metric, hello_interval, hello_multiplier, priority, csnp_interval,
   retransmit_interval, lsp_pacing_interval, lsp_lifetime, lsp_mtu,
-  context_presence, preference, external_preference, wait_timer
+  context_presence, preference, external_preference, wait_timer, hello_padding
 };
 // Control-shard synchronous validation of intent only, without allocation or
 // mutation. Base-interface references and effective hardware policy belong to

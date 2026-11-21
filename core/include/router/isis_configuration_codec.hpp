@@ -5,8 +5,9 @@
 #include <memory>
 #include <span>
 namespace router::isis::configuration_codec {
-// Version 3 appends optional advertise-passive-only intent after version 2
-// wait timers. Versions 1 and 2 remain readable with absent new leaves. All
+// Version 6 appends optional Hello padding at each scope. Configurations with
+// no padding leaves retain the version 5 encoding. Versions 1 through 5 remain
+// readable with absent new leaves. All
 // versions use little-endian integers and canonical one-byte bools,
 // presence-prefixed optional leaves, uint32 vector counts and uint16 UTF-8 byte
 // lengths. Limits are coordinator allocation guards, not SR OS platform limits.

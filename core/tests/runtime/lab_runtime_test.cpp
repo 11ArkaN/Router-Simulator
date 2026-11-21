@@ -6,6 +6,7 @@
 #include "router/lab_checkpoint.hpp"
 #include "router/lab_runtime.hpp"
 #include "router/shard_policy.hpp"
+#include "router/isis_configuration_codec.hpp"
 
 #include <algorithm>
 #include <array>
@@ -2244,6 +2245,27 @@ void lab_runtime_tests() {
         replacement_result);
   const std::string before_invalid{
       runtime.command(message(lab_runtime_protocol::snapshot))};
+  // A portable payload must not turn an unconsumed managed padding leaf into
+  // a successful no-op. Refusal preserves the entire preceding datastore.
+  for (unsigned scope{};scope<4U;++scope) {
+    isis::RouterConfiguration padding;
+    auto &instance=padding.instances.emplace_back();
+    instance.level[0].present=true;
+    auto &interface=instance.interfaces.emplace_back();interface.name="edge";
+    interface.level[1].present=true;
+    auto *field=scope==0U ? &instance.hello_padding : scope==1U ? &instance.level[0].hello_padding :
+        scope==2U ? &interface.hello_padding : &interface.level[1].hello_padding;
+    *field=isis::HelloPadding::strict;
+    const auto encoded=isis::configuration_codec::encode(padding,65536U);
+    require(encoded.has_value(),"padding refusal fixture could not encode");
+    std::string hex;
+    constexpr std::string_view digits="0123456789abcdef";
+    for (const auto byte : *encoded) {hex+=digits[byte>>4U];hex+=digits[byte&15U];}
+    const auto rejected=replacement+nested({hex});
+    require(runtime.command(message(lab_runtime_protocol::router_configuration_replace,{"r1",rejected})).starts_with("ERROR:") &&
+        runtime.command(message(lab_runtime_protocol::snapshot))==before_invalid,
+        "managed import accepted or partially published an unconsumed padding leaf");
+  }
   const auto duplicate_interface = nested({"R1",
                                            "1",
                                            "1",
@@ -3943,7 +3965,7 @@ void lab_runtime_tests() {
   const std::vector<std::uint8_t> owned_multi_address_checkpoint(
       multi_address_checkpoint.begin(), multi_address_checkpoint.end());
   const auto decoded_multi_address =
-      checkpoint_v21::decode(owned_multi_address_checkpoint);
+      checkpoint_v22::decode(owned_multi_address_checkpoint);
   const PortableInterfaceIntentCheckpoint *multi_address_interface{};
   if (decoded_multi_address) {
     const auto device =
@@ -5138,7 +5160,7 @@ void lab_runtime_tests() {
   const auto precommit_checkpoint = runtime.export_checkpoint();
   const std::vector<std::uint8_t> precommit_owned(precommit_checkpoint.begin(),
                                                   precommit_checkpoint.end());
-  const auto precommit_state = checkpoint_v21::decode(precommit_owned);
+  const auto precommit_state = checkpoint_v22::decode(precommit_owned);
   if (!precommit_state || precommit_state->portable_routers.size() != 1U ||
       !precommit_state->portable_routers.front().global_candidate_initialized)
     throw std::runtime_error(
@@ -5320,7 +5342,7 @@ void lab_runtime_tests() {
   const auto checkpoint = runtime.export_checkpoint();
   require(!checkpoint.empty(), "protocol 4 checkpoint export failed");
   const std::vector<std::uint8_t> owned(checkpoint.begin(), checkpoint.end());
-  const auto decoded_addresses = checkpoint_v21::decode(owned);
+  const auto decoded_addresses = checkpoint_v22::decode(owned);
   require(decoded_addresses &&
               !decoded_addresses->network.ospf.processes.empty() &&
               !decoded_addresses->network.ospf.processes.front()
@@ -5335,8 +5357,8 @@ void lab_runtime_tests() {
     decoded_addresses->network.ospf.processes.front()
         .process.interfaces.front()
         .runtime.state = ospf::InterfaceState::designated;
-    const auto elected_bytes = checkpoint_v21::encode(*decoded_addresses);
-    require(checkpoint_v21::decode(elected_bytes) != nullptr,
+    const auto elected_bytes = checkpoint_v22::encode(*decoded_addresses);
+    require(checkpoint_v22::decode(elected_bytes) != nullptr,
             "checkpoint rejected a valid OSPF Designated Router state");
   }
   const auto contains_plaintext = [&owned](std::string_view secret) {
@@ -5372,12 +5394,12 @@ void lab_runtime_tests() {
     // Flip a ciphertext byte through the public checkpoint codec so the test
     // does not depend on a private byte offset. The import must authenticate
     // the complete vault before restoring any router or terminal owner.
-    auto tampered_state = checkpoint_v21::decode(owned);
+    auto tampered_state = checkpoint_v22::decode(owned);
     require(tampered_state && !tampered_state->secret_vault.records.empty() &&
                 !tampered_state->secret_vault.records.front().sealed.empty(),
             "checkpoint fixture did not retain configured IPsec credentials");
     tampered_state->secret_vault.records.front().sealed.back() ^= 0x01U;
-    const auto tampered = checkpoint_v21::encode(*tampered_state);
+    const auto tampered = checkpoint_v22::encode(*tampered_state);
     auto tampered_runtime_owner = std::make_unique<LabRuntime>();
     auto &tampered_runtime = *tampered_runtime_owner;
     require(

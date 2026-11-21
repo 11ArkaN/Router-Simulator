@@ -81,4 +81,25 @@ void isis_configuration_plan_tests() {
   plan = plan_configuration(before, after, {}, identity, identity);
   require(plan.status == Status::prepared && plan.count == 2U &&
       plan.changes[0U].instance == 0U && plan.changes[1U].instance == 127U);
+  RouterConfiguration padding_before;
+  auto &padding_instance=padding_before.instances.emplace_back();
+  padding_instance.admin_enabled=true;
+  padding_instance.level[0].present=true;
+  auto &padding_interface=padding_instance.interfaces.emplace_back();
+  padding_interface.name="padding";
+  padding_interface.level[1].present=true;
+  for (unsigned scope{};scope<4U;++scope) {
+    auto padding_after=padding_before;
+    auto &instance=padding_after.instances[0];
+    auto &interface=instance.interfaces[0];
+    auto *field=scope==0U ? &instance.hello_padding : scope==1U ? &instance.level[0].hello_padding :
+        scope==2U ? &interface.hello_padding : &interface.level[1].hello_padding;
+    *field=HelloPadding::none;
+    const auto edited=plan_configuration(padding_before,padding_after,active,identity,identity);
+    require(edited.status==Status::prepared && edited.count==1U && edited.changes[0].change==Change::reconfigure);
+    instance.admin_enabled=false;
+    const auto suspended_edit=plan_configuration(padding_before,padding_after,active,identity,identity);
+    require(suspended_edit.status==Status::prepared && suspended_edit.changes[0].change==Change::suspend_and_reconfigure);
+  }
+
 }

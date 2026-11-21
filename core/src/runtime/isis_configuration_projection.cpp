@@ -28,6 +28,7 @@ private:
   template<class T> void scalar(const T &value) {
     if constexpr (std::is_same_v<T, bool>) out_ << (value ? "true" : "false");
     else if constexpr (std::is_integral_v<T>) out_ << +value;
+    else if constexpr (std::is_same_v<T, isis::HelloPadding>) quoted(out_, isis::format_hello_padding(value));
     else if constexpr (std::is_same_v<T, isis::ConfiguredLevels>) quoted(out_, value == isis::ConfiguredLevels::both ? "1/2" : value == isis::ConfiguredLevels::level1 ? "1" : "2");
     else if constexpr (std::is_same_v<T, isis::ConfiguredInterfaceType>) quoted(out_, value == isis::ConfiguredInterfaceType::point_to_point ? "point-to-point" : "broadcast");
     else if constexpr (std::is_same_v<T, isis::ConfiguredIpv6Routing>) quoted(out_, value == isis::ConfiguredIpv6Routing::disabled ? "false" : value == isis::ConfiguredIpv6Routing::native ? "native" : "mt");
@@ -42,17 +43,17 @@ template<class Range, class Function> void array(std::ostream &out, const Range 
   out << ']';
 }
 void level(std::ostream &out, const isis::InterfaceLevelIntent &value) {
-  Object object{out}; object.field("present", value.present); object.field("metric", value.metric);
+  Object object{out}; object.field("helloPadding", value.hello_padding); object.field("present", value.present); object.field("metric", value.metric);
   object.field("helloIntervalSeconds", value.hello_interval_seconds); object.field("helloMultiplier", value.hello_multiplier);
   object.field("priority", value.priority); object.field("passive", value.passive); object.finish();
 }
 void level(std::ostream &out, const isis::InstanceLevelIntent &value) {
-  Object object{out}; object.field("present", value.present); object.field("defaultMetric", value.default_metric);
+  Object object{out}; object.field("helloPadding", value.hello_padding); object.field("present", value.present); object.field("defaultMetric", value.default_metric);
   object.field("lspMtuOctets", value.lsp_mtu_octets); object.field("preference", value.preference);
   object.field("externalPreference", value.external_preference); object.field("wideMetricsOnly", value.wide_metrics_only); object.finish();
 }
 void interface(std::ostream &out, const isis::InterfaceIntent &value) {
-  Object object{out}; object.field("name", value.name); object.field("type", value.type);
+  Object object{out}; object.field("helloPadding", value.hello_padding); object.field("name", value.name); object.field("type", value.type);
   object.field("levelCapability", value.levels); object.field("adminEnabled", value.admin_enabled);
   object.field("passive", value.passive); object.field("csnpIntervalSeconds", value.csnp_interval_seconds);
   object.field("retransmitIntervalSeconds", value.retransmit_interval_seconds);
@@ -64,7 +65,7 @@ void wait_timer(std::ostream &out, const isis::WaitTimerIntent &value) {
   object.field("initialMilliseconds", value.initial); object.field("secondMilliseconds", value.second); object.finish();
 }
 void instance(std::ostream &out, const isis::InstanceIntent &value) {
-  Object object{out}; object.field("instance", value.instance); object.field("adminEnabled", value.admin_enabled);
+  Object object{out}; object.field("helloPadding", value.hello_padding); object.field("instance", value.instance); object.field("adminEnabled", value.admin_enabled);
   object.field("advertisePassiveOnly", value.advertise_passive_only);
   object.field("strictAdjacencyCheck", value.strict_adjacency_check);
   object.field("ignoreAttachedBit", value.ignore_attached_bit);

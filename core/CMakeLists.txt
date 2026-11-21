@@ -722,6 +722,7 @@ if(ROUTER_BUILD_TESTS)
     tests/isis/isis_jitter_test.cpp
     tests/isis/isis_hello_schedule_test.cpp
     tests/isis/isis_hello_padding_test.cpp
+  tests/isis/isis_hello_padding_circuit_test.cpp
     tests/isis/isis_flooding_test.cpp
     tests/isis/isis_level_database_test.cpp
     tests/isis/isis_level_database_checkpoint_test.cpp
