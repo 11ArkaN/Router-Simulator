@@ -23340,6 +23340,10 @@ std::string LabRuntime::execute_session_command(std::string_view session_id,
   } else if (parsed->spec->handler_id == cli_schema::CommandId::show_router_isis_database) {
     isis::DatabaseRequest request;
     request.maximum_rows=1024U; request.maximum_names=1024U; request.maximum_name_octets=4U*1024U*1024U;
+    request.detailed=std::any_of(parsed->spec->tokens.begin(),parsed->spec->tokens.end(),[](const auto &token) {
+      return token.kind==cli_schema::TokenKind::literal && token.display=="detail";
+    });
+    if (request.detailed) request.maximum_tlv_octets=4U*1024U*1024U;
     unsigned instance{}, level{};
     const auto instance_text=cli_detail::argument(*parsed,cli_schema::TokenKind::isis_instance);
     const auto level_text=cli_detail::argument(*parsed,cli_schema::TokenKind::isis_level);

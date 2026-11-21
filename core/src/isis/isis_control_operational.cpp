@@ -75,6 +75,7 @@ ControlError ControlWorker::query_database(const DeviceState &device,DatabaseQue
       !request.maximum_name_octets || !query.summary.rows.empty() || !query.hostnames.rows.empty())
     return fail(ControlError::invalid_argument);
   query.summary={1U,request.levels,request.maximum_rows,request.system,request.lsp,{}};
+  query.summary.detailed=request.detailed; query.summary.maximum_tlv_octets=request.maximum_tlv_octets;
   std::array<const LinkStateDatabase *,2U> databases{};
   const auto &instance=device.instances[request.instance];
   if (instance && instance->process) for (std::size_t level{}; level<databases.size(); ++level)

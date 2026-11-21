@@ -87,6 +87,9 @@ struct StoredLspView {
   // Same-owner relative age of the last admitted incarnation. Duplicate
   // receipts do not reset it. No host epoch escapes this borrowed LSDB view.
   std::chrono::nanoseconds installed_age{};
+  // Actual retained PDU allocation, excluding the metadata owner. This value
+  // does not expose storage and remains valid after the borrowed view expires.
+  std::size_t allocated_octets{};
 };
 
 enum class LspDeadlineKind : std::uint8_t { finalize_expiration, retire_purge };

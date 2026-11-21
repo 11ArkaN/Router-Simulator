@@ -70,7 +70,7 @@ StoredLspView LinkStateDatabase::view(const Record &record, RuntimeClock::time_p
   return {{type_, static_cast<std::uint8_t>(bytes[7U] ? bytes[7U] : 3U), bytes,
            bytes.subspan(packet::isis::lsp_header_octets)}, header, record.purge_installed, record.expiration_notified,
           now>record.installed_at ? std::chrono::nanoseconds{checkpoint_time::offset(now,record.installed_at)
-              .value_or(std::numeric_limits<std::int64_t>::max())} : std::chrono::nanoseconds{}};
+              .value_or(std::numeric_limits<std::int64_t>::max())} : std::chrono::nanoseconds{},record.bytes.capacity()};
 }
 
 std::optional<StoredLspView> LinkStateDatabase::find(const packet::isis::LspId &id,

@@ -229,6 +229,10 @@ void isis_interlevel_datastore_runtime_tests() {
               if (!suffix.empty()) require(database.find("Displaying Level 1")==std::string::npos,"Database level selector leaked another level");
               if (selector==raw || selector==named) require(database.find("Level (2) LSP Count : 1")!=std::string::npos,
                   "Exact LSP selector returned another retained identity");
+              const auto detailed=terminal(session,prefix+selected+" detail"+suffix);
+              require(detailed.find("Database (detail)")!=std::string::npos && detailed.find("Used Len  :")!=std::string::npos &&
+                  detailed.find("IS-Hostname   : "+std::string{expected})!=std::string::npos,
+                  "Detailed database report omitted accepted metadata or hostname");
             }
           }
         }

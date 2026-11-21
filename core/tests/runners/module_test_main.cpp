@@ -237,6 +237,7 @@ void ospf_fsm_tests();
 void ospf_area_coordinator_tests();
 void ospf_configuration_tests();
 void isis_cli_info_tests();
+void isis_lsp_basic_report_tests();
 void isis_cli_configuration_tests();
 void ospf_cli_configuration_tests();
 void ospf_interface_tests();
@@ -425,6 +426,7 @@ int main() {
     ospf_area_coordinator_tests();
     ospf_configuration_tests();
     isis_cli_info_tests();
+    isis_lsp_basic_report_tests();
     isis_cli_configuration_tests();
     ospf_cli_configuration_tests();
     ospf_interface_tests();

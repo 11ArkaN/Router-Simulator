@@ -174,5 +174,27 @@ void isis_cli_info_tests() {
   database.request.maximum_rows=4U; database.hostnames.version=2U; require(!database_table(database));
   database.hostnames.version=1U; database.summary.rows.clear();
   require(database_table(database)->find("Level (2) LSP Count : 0")!=std::string::npos);
+  database.request.detailed=database.summary.detailed=true;
+  database.request.maximum_tlv_octets=3U; database.summary.maximum_tlv_octets=3U;
+  router::isis::DatabaseSummaryRow detailed{1U,{{0U,0U,0U,0U,0U,3U,0U,0U},60U,1U,0x1111U,3U}};
+  detailed.allocated_octets=128U; detailed.used_octets=router::packet::isis::lsp_header_octets+3U;
+  detailed.version=detailed.packet_version=1U; detailed.system_id_octets=6U; detailed.maximum_areas=3U;
+  detailed.tlvs={137U,1U,'a'}; database.summary.rows.push_back(detailed);
+  const auto detail_report=database_table(database);
+  require(detail_report && detail_report->find("Database (detail)")!=std::string::npos &&
+      detail_report->find("Alloc Len : 128")!=std::string::npos && detail_report->find("IS-Hostname   : a")!=std::string::npos &&
+      detail_report->find("Pkt Type  : 20")!=std::string::npos);
+  database.hostnames.rows.front().system.back()=3U;
+  require(database_table(database)->find(std::string(255U,'x')+".00-00 Level     : L2")!=std::string::npos);
+  database.summary.rows.front().authentication_types={1U}; require(!database_table(database));
+  database.request.maximum_tlv_octets=4U; database.summary.maximum_tlv_octets=4U;
+  database.summary.rows.front().used_octets+=4U;
+  require(database_table(database)->find("Password(1) (1 bytes)")!=std::string::npos);
+  database.summary.rows.front().authentication_types={54U}; require(!database_table(database));
+  database.summary.rows.front().used_octets=router::packet::isis::lsp_header_octets+3U+3U+16U;
+  require(database_table(database)->find("MD5(54) (16 bytes)")!=std::string::npos);
+  database.summary.rows.front().authentication_types.clear(); database.summary.rows.front().tlvs={250U,0U};
+  database.summary.rows.front().used_octets=router::packet::isis::lsp_header_octets+2U;
+  require(!database_table(database));
 
 }

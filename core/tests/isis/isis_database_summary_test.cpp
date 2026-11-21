@@ -36,4 +36,24 @@ void isis_database_summary_tests() {
   require(l1.retire_purge(pn,start+60s) && all.rows[1U].header.id==pn && all.rows.size()==3U);
   DatabaseSummaryQuery empty; empty.maximum_rows=1U;
   require(collect_database_summary({nullptr,nullptr},start,empty)==DatabaseSummaryResult::collected && empty.rows.empty());
+  LinkStateDatabase protected_database(PduType::lsp_l1,{2U,1024U,128U});
+  const std::array<std::uint8_t,9U> options{10U,4U,1U,'k','e','y',137U,1U,'a'};
+  const auto protected_wire=encode_lsp(wire,{PduType::lsp_l1,root,1200U,1U,3U},options);
+  require(protected_wire && protected_database.install(*protected_wire,start,1200U,60s,
+      {LspAdmissionOrigin::originated})==LspInstallResult::installed);
+  DatabaseSummaryQuery detail; detail.maximum_rows=1U; detail.levels=1U;
+  detail.detailed=true; detail.maximum_tlv_octets=4U;
+  require(collect_database_summary({&protected_database,nullptr},start,detail)==DatabaseSummaryResult::collected && detail.rows.size()==1U);
+  const auto &row=detail.rows.front();
+  require(row.tlvs==std::vector<std::uint8_t>{137U,1U,'a'} && row.authentication_types==std::vector<std::uint8_t>{1U} &&
+      row.allocated_octets>=row.used_octets && row.used_octets==protected_wire->size() && row.version==1U && row.packet_version==1U);
+  detail.rows.clear(); detail.maximum_tlv_octets=3U;
+  require(collect_database_summary({&protected_database,nullptr},start,detail)==DatabaseSummaryResult::capacity && detail.rows.empty());
+  auto second=root; second[7U]=1U;
+  const auto second_wire=encode_lsp(wire,{PduType::lsp_l1,second,1200U,1U,3U},options);
+  require(second_wire && protected_database.install(*second_wire,start,1200U,60s,
+      {LspAdmissionOrigin::originated})==LspInstallResult::installed);
+  detail.maximum_rows=2U; detail.maximum_tlv_octets=7U;
+  require(collect_database_summary({&protected_database,nullptr},start,detail)==DatabaseSummaryResult::capacity &&
+      detail.rows.empty() && protected_database.size()==2U);
 }

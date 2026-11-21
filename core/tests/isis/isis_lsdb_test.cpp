@@ -51,6 +51,8 @@ void isis_lsdb_tests() {
       database.next_deadline()->id == input.id && database.next_deadline()->kind == LspDeadlineKind::finalize_expiration,
       "IS-IS active LSP deadline did not require expiration finalization");
   auto retained = database.find(input.id, now + 1900ms);
+  require(retained && retained->allocated_octets==allocation && retained->allocated_octets>=retained->pdu.bytes.size(),
+      "LSDB diagnostic allocation disagreed with retained storage");
   require(retained && retained->header.remaining_seconds == 29U &&
             retained->pdu.bytes.size() == first_wire->size(), "IS-IS LSDB lifetime projection failed");
   require(retained->installed_age==1900ms,"IS-IS LSDB admission age lost subsecond precision");

@@ -2,6 +2,7 @@
 // Topologies are read from accepted Hello TLVs, including explicit MT-only
 // membership. No configuration or packet path depends on this renderer.
 #include "cli/isis_cli_operational.hpp"
+#include "cli/isis_lsp_basic_report.hpp"
 #include "router/isis_configuration.hpp"
 #include "router/isis_multi_topology.hpp"
 #include "router/isis_lsp_identity.hpp"
@@ -97,11 +98,14 @@ std::optional<std::string> database_table(const isis::DatabaseQuery &query) {
   const auto &request=query.request;
   const auto &summary=query.summary;
   if (request.version!=1U || request.instance>device_catalog::isis_instance_last || !request.levels || request.levels>3U ||
+      summary.detailed!=request.detailed || summary.maximum_tlv_octets!=request.maximum_tlv_octets ||
+      (request.detailed && !request.maximum_tlv_octets) ||
       summary.version!=1U || summary.levels!=request.levels || summary.maximum_rows!=request.maximum_rows ||
       !request.maximum_rows || summary.rows.size()>request.maximum_rows || summary.system!=request.system || summary.lsp!=request.lsp ||
       query.hostnames.device!=query.device || query.hostnames.instance!=request.instance ||
       query.hostnames.maximum_rows!=request.maximum_names || query.hostnames.maximum_name_octets!=request.maximum_name_octets ||
       !valid_hostnames(query.hostnames)) return std::nullopt;
+  std::size_t copied{};
   for (std::size_t index{}; index<summary.rows.size(); ++index) {
     const auto &row=summary.rows[index];
     if (row.level>1U || !(request.levels&(1U<<row.level)) ||
@@ -109,12 +113,27 @@ std::optional<std::string> database_table(const isis::DatabaseQuery &query) {
         (request.system && !std::equal(request.system->begin(),request.system->end(),row.header.id.begin())) ||
         (index && std::tie(summary.rows[index-1U].level,summary.rows[index-1U].header.id)>=std::tie(row.level,row.header.id)))
       return std::nullopt;
+    if (request.detailed) {
+      if (row.tlvs.size()>request.maximum_tlv_octets-copied || row.authentication_types.size()>1U ||
+          row.used_octets<packet::isis::lsp_header_octets || row.allocated_octets<row.used_octets ||
+          row.version!=1U || row.packet_version!=1U || row.system_id_octets!=6U) return std::nullopt;
+      copied+=row.tlvs.size();
+      if (row.authentication_types.size()>request.maximum_tlv_octets-copied) return std::nullopt;
+      copied+=row.authentication_types.size();
+      if (row.authentication_types.empty() && row.used_octets!=packet::isis::lsp_header_octets+row.tlvs.size()) return std::nullopt;
+      if (!row.authentication_types.empty()) {
+        const auto type=row.authentication_types.front();
+        if ((type!=1U && type!=54U) || row.used_octets<packet::isis::lsp_header_octets+row.tlvs.size()+3U) return std::nullopt;
+        if (type==54U && row.used_octets-packet::isis::lsp_header_octets-row.tlvs.size()-3U!=16U) return std::nullopt;
+      }
+    }
   }
   const auto hex=[](auto value) { std::ostringstream out; out << "0x" << std::hex << value; return out.str(); };
   std::ostringstream out;
   const std::string rule(79U,'='), separator(79U,'-');
-  out << rule << "\nRtr Base ISIS Instance " << unsigned(request.instance) << " Database\n" << rule
-      << "\nLSP ID                                  Sequence  Checksum Lifetime Attributes\n" << separator << '\n';
+  out << rule << "\nRtr Base ISIS Instance " << unsigned(request.instance) << " Database"
+      << (request.detailed ? " (detail)" : "") << '\n' << rule << '\n';
+  if (!request.detailed) out << "LSP ID                                  Sequence  Checksum Lifetime Attributes\n" << separator << '\n';
   for (std::size_t level{}; level<2U; ++level) if (request.levels&(1U<<level)) {
     out << "Displaying Level " << level+1U << " database\n" << separator << '\n';
     std::size_t count{};
@@ -127,10 +146,35 @@ std::optional<std::string> database_table(const isis::DatabaseQuery &query) {
         std::ostringstream escaped; terminal_name(escaped,name->hostname); label=escaped.str()+label.substr(14U);
       }
       constexpr std::array<std::string_view,4U> types{"","L1","L2","L1L2"};
+      std::string flags{types[row.header.flags&3U]};
+      if (row.header.flags&0x04U) flags+=" OV";
+      if (row.header.flags&0x78U) flags+=" ATT";
+      if (request.detailed) {
+        const auto options=basic_lsp_options(row.tlvs,query.hostnames.rows);
+        if (!options) return std::nullopt;
+        out << std::left << "LSP ID    : " << std::setw(41) << label << ' ' << "Level     : L" << level+1U
+            << "\nSequence  : " << std::setw(23) << hex(row.header.sequence) << "Checksum  : " << std::setw(9) << hex(row.header.checksum)
+            << "Lifetime  : " << row.header.remaining_seconds
+            << "\nVersion   : " << std::setw(23) << unsigned(row.version) << "Pkt Type  : " << std::setw(9) << (level ? 20U : 18U)
+            << "Pkt Ver   : " << unsigned(row.packet_version)
+            << "\nAttributes: " << std::setw(23) << flags << "Max Area  : " << std::setw(9) << unsigned(row.maximum_areas)
+            << "Alloc Len : " << row.allocated_octets
+            << "\nSYS ID    : " << std::setw(23) << isis::format_configured_system_id(system) << "SysID Len : " << std::setw(9) << unsigned(row.system_id_octets)
+            << "Used Len  : " << row.used_octets << "\nTLVs :\n" << *options;
+        if (!row.authentication_types.empty()) {
+          // Every non-authentication TLV remains byte-exact. With one excluded
+          // TLV, the original PDU length determines its value extent without
+          // copying or reconstructing any authentication value.
+          const auto type=row.authentication_types.front();
+          const auto octets=row.used_octets-packet::isis::lsp_header_octets-row.tlvs.size()-3U;
+          out << "  Authentication  :\n    Auth Type       : " << (type==1U ? "Password(1)" : "MD5(54)")
+              << " (" << octets << " bytes)\n";
+        }
+        out << separator << '\n';
+        ++count; continue;
+      }
       out << std::left << std::setw(39) << label << ' ' << std::setw(9) << hex(row.header.sequence) << ' '
-          << std::setw(8) << hex(row.header.checksum) << ' ' << std::setw(8) << row.header.remaining_seconds << ' ' << types[row.header.flags&3U];
-      if (row.header.flags&0x04U) out << " OV";
-      if (row.header.flags&0x78U) out << " ATT";
+          << std::setw(8) << hex(row.header.checksum) << ' ' << std::setw(8) << row.header.remaining_seconds << ' ' << flags;
       out << '\n'; ++count;
     }
     out << "Level (" << level+1U << ") LSP Count : " << count << '\n';

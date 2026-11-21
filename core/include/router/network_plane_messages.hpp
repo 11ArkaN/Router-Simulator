@@ -14,9 +14,9 @@
 
 namespace router::lab {
 
-// Version 51 adds bounded accepted-LSP summary requests.
+// Version 52 adds bounded non-secret LSP detail requests.
 // Mixed owners must refuse rather than interpret another ring layout.
-inline constexpr std::uint32_t network_plane_message_version = 51;
+inline constexpr std::uint32_t network_plane_message_version = 52;
 
 struct NetworkDhcpv4ClientBegin {
   // RFC 2131 caps each ordinary option payload at 255 octets. Carrying the two

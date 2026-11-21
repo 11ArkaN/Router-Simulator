@@ -14,10 +14,21 @@ struct DatabaseRequest {
   std::uint32_t maximum_rows{}, maximum_names{}, maximum_name_octets{};
   std::optional<packet::isis::SystemId> system;
   std::optional<packet::isis::LspId> lsp;
+  bool detailed{};
+  std::uint32_t maximum_tlv_octets{};
 };
 struct DatabaseSummaryRow {
+  DatabaseSummaryRow()=default;
+  DatabaseSummaryRow(std::uint8_t selected_level,packet::isis::LspView selected_header) noexcept
+      : level(selected_level),header(selected_header) {}
   std::uint8_t level{};
   packet::isis::LspView header;
+  std::size_t allocated_octets{}, used_octets{};
+  std::uint8_t version{}, packet_version{}, system_id_octets{}, maximum_areas{};
+  // Authentication values are excluded before publication. Only the public
+  // authentication type is retained; all remaining bytes are owned TLVs.
+  std::vector<std::uint8_t> tlvs;
+  std::vector<std::uint8_t> authentication_types;
 };
 struct DatabaseSummaryQuery {
   std::uint32_t version{1U};
@@ -26,6 +37,8 @@ struct DatabaseSummaryQuery {
   std::optional<packet::isis::SystemId> system;
   std::optional<packet::isis::LspId> lsp;
   std::vector<DatabaseSummaryRow> rows;
+  bool detailed{};
+  std::size_t maximum_tlv_octets{};
 };
 enum class DatabaseSummaryResult : std::uint8_t { collected, invalid, capacity };
 // Call synchronously on the owner of both databases. Null entries mean absent

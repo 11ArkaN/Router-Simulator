@@ -5769,11 +5769,13 @@ bool NetworkPlane::replace_isis_generation(DeviceHandle device,
 std::shared_ptr<const isis::DatabaseQuery> NetworkPlane::isis_database(DeviceHandle device,
     const isis::DatabaseRequest &request) noexcept {
   if (!impl_->live(device) || request.version!=1U || request.instance>device_catalog::isis_instance_last ||
-      !request.levels || request.levels>3U || !request.maximum_rows || !request.maximum_names || !request.maximum_name_octets)
+      !request.levels || request.levels>3U || !request.maximum_rows || !request.maximum_names || !request.maximum_name_octets ||
+      (request.detailed && !request.maximum_tlv_octets))
     return nullptr;
   try {
     auto query=std::make_shared<isis::DatabaseQuery>(); query->device=device; query->request=request;
     query->summary={1U,request.levels,request.maximum_rows,request.system,request.lsp,{}};
+    query->summary.detailed=request.detailed; query->summary.maximum_tlv_octets=request.maximum_tlv_octets;
     query->hostnames.device=device; query->hostnames.instance=request.instance;
     query->hostnames.maximum_rows=request.maximum_names; query->hostnames.maximum_name_octets=request.maximum_name_octets;
     if (!impl_->isis_registered[device.index]) return query;

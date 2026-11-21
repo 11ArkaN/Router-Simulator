@@ -433,6 +433,7 @@ add_library(router_management STATIC
   src/cli/ipsec_cli_configuration.cpp
   src/cli/isis_cli_info.cpp
   src/cli/isis_cli_operational.cpp
+  src/cli/isis_lsp_basic_report.cpp
   src/cli/isis_cli_configuration.cpp
   src/cli/ospf_cli_configuration.cpp
   src/cli/pki_cli_configuration.cpp
@@ -779,6 +780,7 @@ if(ROUTER_BUILD_TESTS)
     tests/cli/dhcpv6_cli_configuration_test.cpp
     tests/cli/bof_cli_configuration_test.cpp
     tests/cli/isis_cli_info_test.cpp
+    tests/cli/isis_lsp_basic_report_test.cpp
     tests/cli/isis_cli_configuration_test.cpp
     tests/cli/ospf_cli_configuration_test.cpp
     tests/ospf/ospf_area_coordinator_test.cpp
